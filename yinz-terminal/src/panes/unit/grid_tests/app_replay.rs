@@ -941,6 +941,94 @@ fn resizing_tracks_the_current_and_saved_cursor_independently() {
 }
 
 #[test]
+fn saved_cursor_reflow_after_an_earlier_wrapped_line() {
+    for (prefix, suffix, narrow_position, wide_position, marked) in [
+        ("i", "jklmnop", (4, 1), (1, 1), "iZklmnop"),
+        ("ijklm", "nop", (6, 1), (1, 5), "ijklmZop"),
+        ("ijkl", "mnop", (5, 2), (1, 4), "ijklZnop"),
+    ] {
+        for widths in [&[2][..], &[8], &[2, 8]] {
+            let content =
+                format!("abcdefgh\r\n{prefix}\x1b[31m\x1b[s\x1b[0m{suffix}\r\nqrst\x1b[1;2H");
+            let mut grid = create_grid_with_size_and_raw(10, 4, content.as_bytes());
+            let saved_styles = grid
+                .saved_cursor_position
+                .as_ref()
+                .unwrap()
+                .pending_styles
+                .clone();
+            for &width in widths {
+                grid.change_size(10, width);
+                let expected = if width == 2 {
+                    narrow_position
+                } else {
+                    wide_position
+                };
+                let saved = grid.saved_cursor_position.as_ref().unwrap();
+                assert_eq!(
+                    (saved.y, saved.x),
+                    expected,
+                    "prefix {prefix:?}, width {width}"
+                );
+                assert_eq!((grid.cursor.y, grid.cursor.x), (0, 1));
+            }
+            feed_bytes(&mut grid, b"\x1b[u");
+            assert_eq!(grid.cursor.pending_styles, saved_styles);
+            feed_bytes(&mut grid, b"Z");
+            assert_eq!(grid.dump_screen(true), format!("abcdefgh\n{marked}\nqrst"));
+        }
+    }
+}
+
+#[test]
+fn saved_cursor_reflow_with_a_wrapped_scrollback_prefix() {
+    for (save_position, positions, marked) in [
+        ("3;2", [(3, 2), (2, 5)], "abcdefghijkl\nmnopqZ\nstuv"),
+        ("1;2", [(0, 3), (1, 1)], "abcdefghiZkl\nmnopqr\nstuv"),
+    ] {
+        let mut grid = create_grid_with_size_and_raw(4, 4, b"abcdefghijkl\r\nmnopqr\r\nstuv");
+        assert!(!grid.viewport[0].is_canonical);
+        assert!(!grid.lines_above.is_empty());
+        feed_bytes(
+            &mut grid,
+            format!("\x1b[{save_position}H\x1b[s\x1b[4;2H").as_bytes(),
+        );
+        // Keep the leading saved position visible while narrowing, then pull scrollback back in.
+        for ((height, width), expected) in [(6, 3), (4, 8)].into_iter().zip(positions) {
+            grid.change_size(height, width);
+            let saved = grid.saved_cursor_position.as_ref().unwrap();
+            assert_eq!(
+                (saved.y, saved.x),
+                expected,
+                "save {save_position}, width {width}"
+            );
+        }
+        assert_eq!((grid.cursor.y, grid.cursor.x), (3, 1));
+        feed_bytes(&mut grid, b"\x1b[u");
+        assert_eq!((grid.cursor.y, grid.cursor.x), positions[1]);
+        feed_bytes(&mut grid, b"Z");
+        assert_eq!(grid.dump_screen(true), marked);
+    }
+}
+
+#[test]
+fn active_cursor_reflow_with_a_wrapped_scrollback_prefix() {
+    let mut grid = create_grid_with_size_and_raw(
+        4,
+        4,
+        b"abcdefghijkl\r\nmnopqr\r\nstuv\x1b[3;2H\x1b[s\x1b[1;2H",
+    );
+    grid.change_size(6, 3);
+    assert_eq!((grid.cursor.y, grid.cursor.x), (0, 3));
+    grid.change_size(4, 8);
+    assert_eq!((grid.cursor.y, grid.cursor.x), (1, 1));
+    feed_bytes(&mut grid, b"Z");
+    assert_eq!(grid.dump_screen(true), "abcdefghiZkl\nmnopqr\nstuv");
+    feed_bytes(&mut grid, b"\x1b[u");
+    assert_eq!((grid.cursor.y, grid.cursor.x), (2, 5));
+}
+
+#[test]
 fn saved_cursor_across_resize() {
     let mut vte_parser = vte::Parser::new();
     let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));

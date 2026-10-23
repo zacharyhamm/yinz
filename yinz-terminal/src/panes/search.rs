@@ -215,6 +215,7 @@ impl SearchResult {
                         hidx = start.unwrap().column(); // Will be incremented below
                         if start.unwrap().line() as usize == orig_ridx {
                             source = SearchSource::Main(row);
+                            tailit = tail.iter();
                             haystack_char = row.columns[hidx].character; // so that prev_char gets set correctly
                         } else {
                             // The -1 comes from the main row

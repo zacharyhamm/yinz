@@ -1321,6 +1321,17 @@ fn search_retries_overlapping_prefixes_in_rows_and_wrapped_tails() {
 }
 
 #[test]
+fn whole_word_search_retries_wrapped_tail_after_rejecting_a_match() {
+    let mut grid = create_grid_with_size_and_raw(3, 3, b"a a a ");
+    grid.search_results.whole_word_only = true;
+    grid.set_search_string("a a ");
+
+    assert_eq!(grid.search_results.selections.len(), 1);
+    assert_eq!(grid.search_results.selections[0].start, Position::new(0, 2));
+    assert_eq!(grid.search_results.selections[0].end, Position::new(1, 3));
+}
+
+#[test]
 fn searching_erased_wrapped_rows_does_not_index_empty_continuations() {
     for content in ["abcdx\x1b[2K", "abcdefghx\x1b[2K\x1b[A\x1b[2K"] {
         let mut grid = create_grid_with_size_and_raw(4, 4, content.as_bytes());

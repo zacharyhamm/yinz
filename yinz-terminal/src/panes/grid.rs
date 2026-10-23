@@ -1426,15 +1426,16 @@ impl Grid {
     fn set_active_charset(&mut self, index: CharsetIndex) {
         self.active_charset = index;
     }
-    fn cursor_canonical_line_index(&self) -> usize {
+    fn cursor_canonical_line_index(&self, cursor: &Cursor) -> usize {
         let mut cursor_canonical_line_index = 0;
         let mut canonical_lines_traversed = 0;
         for (i, line) in self.viewport.iter().enumerate() {
-            if line.is_canonical {
+            // A leading continuation becomes a logical line when rejoined with scrollback.
+            if i == 0 || line.is_canonical {
                 cursor_canonical_line_index = canonical_lines_traversed;
                 canonical_lines_traversed += 1;
             }
-            if i == self.cursor.y {
+            if i == cursor.y {
                 break;
             }
         }
@@ -1443,13 +1444,16 @@ impl Grid {
     fn cursor_index_in_canonical_line(&self, cursor: &Cursor) -> usize {
         let mut cursor_canonical_line_index = 0;
         let mut cursor_index_in_canonical_line = 0;
+        let mut scrollback_prefix_width = self.lines_above.back().map_or(0, Row::width);
         for (i, line) in self.viewport.iter().enumerate() {
             if line.is_canonical {
                 cursor_canonical_line_index = i;
+                scrollback_prefix_width = 0;
             }
             if i == cursor.y {
                 let line_wraps = cursor.y.saturating_sub(cursor_canonical_line_index);
-                cursor_index_in_canonical_line = (line_wraps * self.width) + cursor.x;
+                cursor_index_in_canonical_line =
+                    scrollback_prefix_width + (line_wraps * self.width) + cursor.x;
                 break;
             }
         }
@@ -1938,7 +1942,11 @@ impl Grid {
                 first_row.writing(&self.agent_theme);
                 first_row.is_canonical = true;
             }
-            let mut cursor_canonical_line_index = self.cursor_canonical_line_index();
+            let cursor_canonical_line_index = self.cursor_canonical_line_index(&self.cursor);
+            let saved_cursor_canonical_line_index = self
+                .saved_cursor_position
+                .as_ref()
+                .map(|cursor| self.cursor_canonical_line_index(cursor));
             let cursor_index_in_canonical_line = self.cursor_index_in_canonical_line(&self.cursor);
             let saved_cursor_index_in_canonical_line = self
                 .saved_cursor_position
@@ -1953,7 +1961,6 @@ impl Grid {
                 } else if let Some(mut first_line_above) = self.lines_above.pop_back() {
                     first_line_above.append(&mut row);
                     viewport_canonical_lines.push(first_line_above);
-                    cursor_canonical_line_index += 1;
                 }
             }
 
@@ -1996,10 +2003,10 @@ impl Grid {
 
             let mut new_cursor_y = self.canonical_line_y_coordinates(cursor_canonical_line_index)
                 + (cursor_index_in_canonical_line / new_columns);
-            let mut saved_cursor_y_coordinates =
-                self.saved_cursor_position.as_ref().map(|saved_cursor| {
-                    self.canonical_line_y_coordinates(saved_cursor.y)
-                        + saved_cursor_index_in_canonical_line.as_ref().unwrap() / new_columns
+            let mut saved_cursor_y_coordinates = saved_cursor_canonical_line_index
+                .zip(saved_cursor_index_in_canonical_line)
+                .map(|(line_index, column_index)| {
+                    self.canonical_line_y_coordinates(line_index) + column_index / new_columns
                 });
 
             // A cursor at EOL has two equivalent positions - end of this line or beginning of
@@ -4102,7 +4109,7 @@ impl Grid {
             }
         }
 
-        let mut column_count_in_row = position_row.columns.len();
+        let mut column_count_in_row = position_row.width();
         while position_end.column.get() == column_count_in_row {
             if let Some(position_row_below) =
                 self.viewport.get(position_end.line.get() as usize + 1)
@@ -4114,7 +4121,7 @@ impl Grid {
                     position_row_below.word_end_index_of_first_character(&self.word_separators);
                 position_end =
                     Position::new(position_end.line.get() as i32 + 1, new_end_index as u16);
-                column_count_in_row = position_row_below.columns.len();
+                column_count_in_row = position_row_below.width();
             } else {
                 break;
             }
@@ -7384,31 +7391,21 @@ impl Row {
         Some((start_position, end_position))
     }
     pub fn word_start_index_of_last_character(&self, word_separators: &str) -> usize {
-        self.columns
+        let word_width: usize = self
+            .columns
             .iter()
-            .enumerate()
             .rev()
-            .find_map(|(i, t_c)| {
-                if is_selection_boundary_character(t_c.character, word_separators) {
-                    Some(self.absolute_character_index(i + 1))
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(0)
+            .take_while(|t_c| !is_selection_boundary_character(t_c.character, word_separators))
+            .map(TerminalCharacter::width)
+            .sum();
+        self.width() - word_width
     }
     pub fn word_end_index_of_first_character(&self, word_separators: &str) -> usize {
         self.columns
             .iter()
-            .enumerate()
-            .find_map(|(i, t_c)| {
-                if is_selection_boundary_character(t_c.character, word_separators) {
-                    Some(self.absolute_character_index(i))
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(self.columns.len())
+            .take_while(|t_c| !is_selection_boundary_character(t_c.character, word_separators))
+            .map(TerminalCharacter::width)
+            .sum()
     }
 }
 
