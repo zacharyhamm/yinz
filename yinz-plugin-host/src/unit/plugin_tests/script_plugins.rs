@@ -281,7 +281,7 @@ pub fn a_reload_by_absolute_path_reloads_a_plugin_started_by_name() {
         Some("script_test_plugin".to_owned()),
         // The absolute path, which is all a plugin that just wrote the file can name.
         script_run_plugin_at(&plugin_file.display().to_string(), BTreeMap::new()),
-        TabId::new(1),
+        TabId::new(2), // A different client's destination must not move the existing instance.
         size,
         None,
     ));
@@ -307,6 +307,46 @@ pub fn a_reload_by_absolute_path_reloads_a_plugin_started_by_name() {
         panes_opened, 1,
         "the running plugin should have been reloaded, not started a second time in a new pane"
     );
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn a_missing_plugin_starts_in_the_requested_reload_tab() {
+    let temp_folder = tempdir().unwrap();
+    let (sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(temp_folder.path().to_owned()), None);
+    let received = Watched::new(vec![]);
+    let screen_thread = log_until_disconnect(&received, screen_receiver);
+    sender.send(PluginInstruction::AddClient(CLIENT_1)).unwrap();
+    sender
+        .send(PluginInstruction::AddClient(ClientId::new(2)))
+        .unwrap();
+    let destination = TabId::new(7);
+    sender
+        .send(PluginInstruction::Reload(
+            Some(false),
+            Some("new from reload".into()),
+            script_run_plugin(BTreeMap::new()),
+            destination,
+            Size { cols: 80, rows: 24 },
+            None,
+        ))
+        .unwrap();
+    let tab = received.wait_until(
+        "missing plugin's destination",
+        yinz_test_support::default_timeout(),
+        |instructions| {
+            instructions
+                .iter()
+                .find_map(|instruction| match instruction {
+                    ScreenInstruction::AddPlugin(_, _, _, _, _, tab, ..) => *tab,
+                    _ => None,
+                })
+        },
+    );
+    teardown();
+    screen_thread.join().unwrap();
+    assert_eq!(tab, destination);
 }
 
 #[test]

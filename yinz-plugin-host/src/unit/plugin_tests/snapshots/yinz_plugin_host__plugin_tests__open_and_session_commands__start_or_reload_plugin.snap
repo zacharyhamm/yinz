@@ -21,6 +21,9 @@ Some(
             },
         ),
         None,
+        ClientId(
+            1,
+        ),
         Some(
             NotificationEnd {
                 channel: None,

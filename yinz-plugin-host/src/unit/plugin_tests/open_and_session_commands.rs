@@ -75,6 +75,10 @@ pub fn start_or_reload_plugin() {
             }
         })
         .clone();
+    assert!(matches!(
+        new_tab_event,
+        Some(ScreenInstruction::StartOrReloadPluginPane(_, _, client, _)) if client == client_id
+    ));
     assert_snapshot!(format!("{:#?}", new_tab_event));
 }
 

@@ -1,5 +1,5 @@
 //! Bind a Codex UI's selected conversation to its pane while retaining the shared daemon.
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{future::OptionFuture, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -9,7 +9,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use yinz_runtime::agent::codex::bridge_options;
@@ -112,19 +112,14 @@ impl Registration {
     }
 
     async fn report(&self, hook: Value) {
-        let Some(yinz) = self.reporter.clone() else {
+        let Some(yinz) = &self.reporter else {
             return;
         };
-        let env = self.env.clone();
         // Finish reporting before the UI sees the selection or any later request is forwarded.
-        tokio::task::spawn_blocking(move || {
-            forward(&yinz, env, hook.to_string().as_bytes())
-                .context("report Codex lifecycle to its pane")
-                .non_fatal();
-        })
-        .await
-        .context("join Codex lifecycle report")
-        .non_fatal();
+        forward(yinz, &self.env, hook.to_string().as_bytes())
+            .await
+            .context("report Codex lifecycle to its pane")
+            .non_fatal();
     }
 
     fn select(&self, thread_id: &str) -> Result<()> {
@@ -394,14 +389,51 @@ impl Conversations {
     }
 }
 
-async fn proxy(
-    stream: tokio::net::UnixStream,
+async fn connections(
+    listener: tokio::net::UnixListener,
     program: &Path,
     registration: &Registration,
 ) -> Result<()> {
-    let ui = tokio_tungstenite::accept_async_with_config(stream, Some(websocket_config()))
-        .await
-        .context("accept Codex UI connection")?;
+    let mut pending = OptionFuture::from(None);
+    let mut active = OptionFuture::from(None);
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, _) = accepted.context("accept Codex UI")?;
+                pending = Some(Box::pin(async move {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        tokio_tungstenite::accept_async_with_config(stream, Some(websocket_config())),
+                    )
+                    .await
+                    .context("timed out accepting Codex UI connection")?
+                    .context("accept Codex UI connection")
+                })).into();
+            },
+            Some(result) = &mut pending => {
+                pending = None.into();
+                match result {
+                    Ok(ui) => {
+                        // Drop the old relay and its children before polling the replacement.
+                        active = Some(Box::pin(proxy(ui, program, registration))).into();
+                    },
+                    Err(error) => Err::<(), _>(error).non_fatal(),
+                }
+            },
+            Some(result) = &mut active => {
+                active = None.into();
+                // Connection failures must not end the UI's lifetime; Codex reconnects.
+                result.non_fatal();
+            },
+        }
+    }
+}
+
+async fn proxy(
+    ui: tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>,
+    program: &Path,
+    registration: &Registration,
+) -> Result<()> {
     let (backend, stream) = daemon_connection(program, registration.backend_socket.as_deref())?;
     let result = relay(ui, stream, registration, program).await;
     drop(backend);
@@ -817,15 +849,6 @@ fn launch_inner(program: &Path, args: &[String]) -> Result<std::process::ExitSta
             }
             let _theme = yinz_process::agent_theme::LaunchGuard::start("codex", program, args);
             let mut ui = yinz_process::agent_theme::AgentChild::spawn(command.args(args))?;
-            let connections = async {
-                loop {
-                    let (stream, _) = listener.accept().await.context("accept Codex UI")?;
-                    // Connection failures must not end the UI's lifetime; Codex reconnects.
-                    proxy(stream, program, &registration).await.non_fatal();
-                }
-                #[expect(unreachable_code, reason = "the connection loop exits through errors")]
-                Ok::<(), anyhow::Error>(())
-            };
             tokio::select! {
                 status = async {
                     loop {
@@ -833,7 +856,7 @@ fn launch_inner(program: &Path, args: &[String]) -> Result<std::process::ExitSta
                         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                     }
                 } => status,
-                result = connections => {
+                result = connections(listener, program, &registration) => {
                     result?;
                     Err(anyhow!("Codex pane connection stopped"))
                 },
@@ -1102,12 +1125,27 @@ pub fn report(yinz: &Path) -> Result<()> {
             env
         },
     };
-    forward(yinz, env, raw.as_bytes())
+    let raw = prune_for_forward(raw)?;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("start Codex hook forwarding")?
+        .block_on(forward(yinz, &env, raw.as_bytes()))
+}
+
+fn prune_for_forward(raw: String) -> Result<String> {
+    if raw.len() <= yinz_types::agent::HOOK_BROADCAST_MAX_BYTES {
+        return Ok(raw);
+    }
+    // Keep prompt fingerprints and completion identity within the remote broker's intake cap.
+    let (event, json) = yinz_runtime::agent::hooks::parse_hook_event("codex", raw)
+        .context("invalid Codex hook JSON")?;
+    Ok(event.broadcast_json(json))
 }
 
 /// Deliver one raw Codex hook to the pane that `env` identifies.
-fn forward(yinz: &Path, env: HashMap<String, String>, raw: &[u8]) -> Result<()> {
-    let mut command = Command::new(yinz);
+async fn forward(yinz: &Path, env: &HashMap<String, String>, raw: &[u8]) -> Result<()> {
+    let mut command = tokio::process::Command::new(yinz);
     for key in ROUTE_ENV {
         command.env_remove(key);
     }
@@ -1123,16 +1161,18 @@ fn forward(yinz: &Path, env: HashMap<String, String>, raw: &[u8]) -> Result<()> 
         .envs(env)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
+        .kill_on_drop(true)
         .spawn()
         .context("forward Codex hook to its pane")?;
-    child
-        .stdin
-        .take()
-        .context("open Codex report input")?
+    let mut input = child.stdin.take().context("open Codex report input")?;
+    input
         .write_all(raw)
+        .await
         .context("write Codex hook to its pane")?;
+    drop(input);
     if !child
         .wait()
+        .await
         .context("wait for Codex hook report")?
         .success()
     {

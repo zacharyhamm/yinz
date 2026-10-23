@@ -3,6 +3,10 @@ use super::HookEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+const ARGUMENT_BYTES: usize = 16 * 1024;
+const OUTPUT_BYTES: usize = 64 * 1024;
+const ERROR_BYTES: usize = 8 * 1024;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Payload {
     pub text: String,
@@ -94,6 +98,7 @@ fn clean(value: &mut Value, redacted: &mut bool, omitted: &mut bool) {
         },
         Value::Array(values) => values.iter_mut().for_each(|v| clean(v, redacted, omitted)),
         Value::String(text) => {
+            *text = literal(text);
             if text.starts_with("data:") && text.contains(";base64,") {
                 *text = "[attachment omitted]".into();
                 *omitted = true;
@@ -105,6 +110,13 @@ fn clean(value: &mut Value, redacted: &mut bool, omitted: &mut bool) {
         },
         _ => {},
     }
+}
+
+fn literal(text: &str) -> String {
+    let mut text =
+        String::from_utf8_lossy(&strip_ansi_escapes::strip(text.as_bytes())).into_owned();
+    text.retain(|c| !c.is_control() || matches!(c, '\n' | '\t'));
+    text
 }
 
 fn cut(text: &mut String, limit: usize) -> bool {
@@ -119,7 +131,20 @@ fn cut(text: &mut String, limit: usize) -> bool {
     true
 }
 
-fn payload(value: &Value, limit: usize) -> Payload {
+fn metadata(text: &str, truncated: &mut bool, redacted: &mut bool) -> String {
+    let mut text = literal(text);
+    text.retain(|c| !c.is_control());
+    let mut safe = redact_secrets(&text);
+    *redacted |= safe != text;
+    *truncated |= cut(&mut safe, 512);
+    while serde_json::to_string(&safe).map_or(usize::MAX, |v| v.len()) > 512 {
+        let next = safe.len() * 3 / 4;
+        *truncated |= cut(&mut safe, next);
+    }
+    safe
+}
+
+fn payload(value: &Value, limit: usize, retained: Option<&Payload>) -> Payload {
     let original_bytes = match value {
         Value::String(s) => s.len(),
         _ => value.to_string().len(),
@@ -128,28 +153,49 @@ fn payload(value: &Value, limit: usize) -> Payload {
     let mut redacted = false;
     let mut attachments_omitted = false;
     clean(&mut value, &mut redacted, &mut attachments_omitted);
-    let (mut text, format) = match value {
+    let (text, format) = match value {
         Value::String(text) => (text, "text"),
         value => (value.to_string(), "json"),
     };
-    // Sanitized literal text; terminal escape sequences never reach archive renderers.
-    text = String::from_utf8_lossy(&strip_ansi_escapes::strip(text.as_bytes())).into_owned();
-    text.retain(|c| !c.is_control() || matches!(c, '\n' | '\t'));
     let mut result = Payload {
-        truncated: cut(&mut text, limit),
+        truncated: false,
         text,
         format: format.into(),
         original_bytes,
         redacted,
         attachments_omitted,
     };
-    // JSON escaping counts against the retained byte budget too.
-    while serde_json::to_vec(&result).map_or(usize::MAX, |v| v.len()) > limit {
-        let next = result.text.len() * 3 / 4;
-        cut(&mut result.text, next);
-        result.truncated = true;
+    if let Some(retained) = retained {
+        result.original_bytes = retained.original_bytes;
+        result.redacted |= retained.redacted;
+        result.truncated |= retained.truncated;
+        result.attachments_omitted |= retained.attachments_omitted;
     }
+    result.bound(limit);
     result
+}
+
+impl Payload {
+    fn bound(&mut self, limit: usize) {
+        self.truncated |= cut(&mut self.text, limit);
+        // JSON escaping and the retained provenance count against the byte budget too.
+        while serde_json::to_vec(&self).map_or(usize::MAX, |v| v.len()) > limit {
+            let next = self.text.len() * 3 / 4;
+            cut(&mut self.text, next);
+            self.truncated = true;
+        }
+        if self.format == "json"
+            && self.truncated
+            && serde_json::from_str::<Value>(&self.text).is_err()
+        {
+            // A JSON fragment must already satisfy the text fallback on its next hop.
+            self.format = "text".into();
+            let safe = redact_secrets(&self.text);
+            self.redacted |= safe != self.text;
+            self.text = safe;
+            self.bound(limit);
+        }
+    }
 }
 
 pub fn prepare(provider: &str, event: &HookEvent) -> Option<ToolCapture> {
@@ -195,18 +241,7 @@ pub fn prepare(provider: &str, event: &HookEvent) -> Option<ToolCapture> {
     }
     let mut metadata_truncated = false;
     let mut metadata_redacted = false;
-    let mut metadata = |text: &str| {
-        let safe = redact_secrets(text);
-        metadata_redacted |= safe != text;
-        let mut text = safe;
-        text.retain(|c| !c.is_control());
-        metadata_truncated |= cut(&mut text, 512);
-        while serde_json::to_string(&text).map_or(usize::MAX, |v| v.len()) > 512 {
-            let next = text.len() * 3 / 4;
-            metadata_truncated |= cut(&mut text, next);
-        }
-        text
-    };
+    let mut metadata = |text: &str| metadata(text, &mut metadata_truncated, &mut metadata_redacted);
     let capture = ToolCapture {
         name: metadata(event.tool_name.as_deref().unwrap_or("unknown")),
         call_id: event
@@ -219,9 +254,15 @@ pub fn prepare(provider: &str, event: &HookEvent) -> Option<ToolCapture> {
         parent_call_id: event.parent_tool_use_id.as_deref().map(&mut metadata),
         source_event: metadata(&event.hook_event_name),
         status: status.into(),
-        arguments: event.tool_input.as_ref().map(|v| payload(v, 16 * 1024)),
-        output: event.tool_response.as_ref().map(|v| payload(v, 64 * 1024)),
-        error: event.error.as_ref().map(|v| payload(v, 8 * 1024)),
+        arguments: event
+            .tool_input
+            .as_ref()
+            .map(|v| payload(v, ARGUMENT_BYTES, None)),
+        output: event
+            .tool_response
+            .as_ref()
+            .map(|v| payload(v, OUTPUT_BYTES, None)),
+        error: event.error.as_ref().map(|v| payload(v, ERROR_BYTES, None)),
         duration_ms: event.duration_ms,
         output_unavailable: status != "requested" && event.tool_response.is_none(),
         metadata_truncated,
@@ -244,6 +285,60 @@ pub fn prepare(provider: &str, event: &HookEvent) -> Option<ToolCapture> {
 }
 
 impl ToolCapture {
+    /// Validate a forwarded capture without deriving its identity or outcome from pruned fields.
+    pub fn normalize(&mut self) -> serde_json::Result<()> {
+        if self.identity.as_ref().is_some_and(|identity| {
+            !identity.strip_prefix("tool:").is_some_and(|hash| {
+                hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        }) || !matches!(
+            self.status.as_str(),
+            "requested" | "cancelled" | "failed" | "denied" | "succeeded" | "completed"
+        ) {
+            return Err(<serde_json::Error as serde::de::Error>::custom(
+                "invalid tool capture identity or status",
+            ));
+        }
+        for text in [
+            Some(&mut self.name),
+            self.call_id.as_mut(),
+            self.turn_id.as_mut(),
+            self.worker_id.as_mut(),
+            self.parent_call_id.as_mut(),
+            Some(&mut self.source_event),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *text = metadata(
+                text,
+                &mut self.metadata_truncated,
+                &mut self.metadata_redacted,
+            );
+        }
+        for (preview, limit) in [
+            (&mut self.arguments, ARGUMENT_BYTES),
+            (&mut self.output, OUTPUT_BYTES),
+            (&mut self.error, ERROR_BYTES),
+        ] {
+            if let Some(preview) = preview {
+                if preview.format != "json" {
+                    preview.format = "text".into();
+                }
+                if self.payload_omitted {
+                    preview.text.clear();
+                    continue;
+                }
+                let value = (preview.format == "json")
+                    .then(|| serde_json::from_str::<Value>(&preview.text).ok())
+                    .flatten()
+                    .unwrap_or_else(|| Value::String(preview.text.clone()));
+                *preview = payload(&value, limit, Some(preview));
+            }
+        }
+        Ok(())
+    }
+
     pub fn event_id(&self) -> Option<String> {
         self.identity.clone()
     }

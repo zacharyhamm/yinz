@@ -771,11 +771,46 @@ fn tool_payload_survives_host_normalization_and_broadcast_pruning() {
         let raw = json!({"hook_event_name":"PostToolUse", "session_id":"s", "tool_use_id":"c", "tool_name":"shell", "agent_id":"worker", "tool_response":{"text":"雪".repeat(200000), "password":"must-not-persist"}}).to_string();
         let (event, raw) = parse_hook_event(provider, raw).unwrap();
         let capture = event.tool_capture.clone().unwrap();
-        let bounded = event.broadcast_json(raw);
+        let mut bounded = event.broadcast_json(raw);
         assert!(bounded.len() <= yinz_types::agent::HOOK_BROADCAST_MAX_BYTES);
-        let decoded: yinz_types::agent::HookEvent = serde_json::from_str(&bounded).unwrap();
-        assert_eq!(decoded.tool_capture, Some(capture.clone()));
+        for _ in 0..2 {
+            let (decoded, raw) = parse_hook_event(provider, bounded).unwrap();
+            assert_eq!(decoded.tool_capture.as_ref(), Some(&capture), "{provider}");
+            let serialized: HookEvent = serde_json::from_str(&raw).unwrap();
+            assert_eq!(
+                serialized.tool_capture.as_ref(),
+                Some(&capture),
+                "{provider}"
+            );
+            bounded = decoded.broadcast_json(raw);
+            assert!(bounded.len() <= yinz_types::agent::HOOK_BROADCAST_MAX_BYTES);
+        }
         assert!(!capture.text().contains("must-not-persist"));
+    }
+}
+
+#[test]
+fn forwarding_preserves_redacted_payload_at_serialized_limit() {
+    let raw = json!({
+        "hook_event_name":"PostToolUse", "tool_name":"shell", "tool_use_id":"call",
+        "tool_response":format!("PASSWORD=a {}", "x".repeat(65_413))
+    })
+    .to_string();
+    let (event, raw) = parse_hook_event("codex", raw).unwrap();
+    let capture = event.tool_capture.clone().unwrap();
+    let output = capture.output.as_ref().unwrap();
+    assert!(output.redacted);
+    assert!(!output.truncated);
+    assert_eq!(serde_json::to_vec(output).unwrap().len(), 64 * 1024);
+    let mut bounded = event.broadcast_json(raw);
+    for _ in 0..2 {
+        let (decoded, raw) = parse_hook_event("codex", bounded).unwrap();
+        let forwarded = decoded.tool_capture.as_ref().unwrap();
+        assert_eq!(forwarded.output.as_ref().unwrap().text.len(), 65_424);
+        assert_eq!(forwarded, &capture);
+        let serialized: HookEvent = serde_json::from_str(&raw).unwrap();
+        assert_eq!(serialized.tool_capture.as_ref(), Some(&capture));
+        bounded = decoded.broadcast_json(raw);
     }
 }
 
@@ -787,4 +822,161 @@ fn malformed_tool_metadata_diagnostics_do_not_quote_payload_values() {
         .to_string();
     assert!(!error.contains("confidential-value"));
     assert!(error.contains("bytes"));
+}
+
+#[test]
+fn supplied_tool_captures_are_bounded_and_sanitized_before_broadcast() {
+    use yinz_types::agent::{
+        report::{AgentReport, AgentReportState},
+        tool_capture::Payload,
+        AgentEvent,
+    };
+    use yinz_types::{
+        internal_ids::{ProcessId, TerminalId},
+        pane_id::PaneId,
+    };
+
+    let (mut hook, _) = parse_hook_event(
+        "codex",
+        json!({"hook_event_name":"PostToolUse", "session_id":"s", "tool_name":"shell",
+            "tool_use_id":"call", "agent_id":"worker", "tool_response":{"exit_code":1}})
+        .to_string(),
+    )
+    .unwrap();
+    // Forwarded hooks may no longer carry the evidence used to prepare the capture.
+    hook.tool_response = None;
+    hook.prompt = Some("prose".repeat(100000));
+    let capture = hook.tool_capture.as_mut().unwrap();
+    let identity = capture.identity.clone();
+    let metadata = format!(
+        "\x1b[31mPASSWORD=metadata-secret\x1b[0m {}",
+        "\"\\雪".repeat(10000)
+    );
+    capture.name = metadata.clone();
+    capture.call_id = Some(metadata.clone());
+    capture.turn_id = Some(metadata.clone());
+    capture.worker_id = Some(metadata.clone());
+    capture.parent_call_id = Some(metadata.clone());
+    capture.source_event = metadata;
+    capture.arguments = Some(Payload {
+        text: json!({"nested":{"api_key":"argument-secret"},
+            "image":{"type":"image", "data":"image-body"},
+            "text":"\"\\雪\t".repeat(30000)})
+        .to_string(),
+        format: "json".into(),
+        original_bytes: 1_000_000,
+        redacted: false,
+        truncated: false,
+        attachments_omitted: false,
+    });
+    capture.output = Some(Payload {
+        text: format!(
+            "\x1b[31mPASSWORD=output-secret\x1b[0m {}",
+            "x".repeat(300 * 1024)
+        ),
+        format: "text".into(),
+        original_bytes: 1_000_000,
+        redacted: false,
+        truncated: false,
+        attachments_omitted: true,
+    });
+    capture.error = Some(Payload {
+        text: format!("PASSWORD=error-secret {}", "\"\\雪\t".repeat(30000)),
+        format: "untrusted-format".repeat(30000),
+        original_bytes: 1_000_000,
+        redacted: true,
+        truncated: true,
+        attachments_omitted: false,
+    });
+
+    for provider in ["claude", "codex", "muse", "pi", "opencode", "agy", "custom"] {
+        let (event, raw) =
+            parse_hook_event(provider, serde_json::to_string(&hook).unwrap()).unwrap();
+        let capture = event.tool_capture.as_ref().unwrap();
+        assert_eq!(capture.identity, identity);
+        assert_eq!(capture.status, "failed");
+        assert!(!capture.output_unavailable);
+        assert!(capture.metadata_redacted && capture.metadata_truncated);
+        for field in [
+            Some(&capture.name),
+            capture.call_id.as_ref(),
+            capture.turn_id.as_ref(),
+            capture.worker_id.as_ref(),
+            capture.parent_call_id.as_ref(),
+            Some(&capture.source_event),
+        ] {
+            assert!(serde_json::to_vec(field.unwrap()).unwrap().len() <= 512);
+        }
+        for (payload, limit) in [
+            (&capture.arguments, 16 * 1024),
+            (&capture.output, 64 * 1024),
+            (&capture.error, 8 * 1024),
+        ] {
+            let payload = payload.as_ref().unwrap();
+            assert!(serde_json::to_vec(payload).unwrap().len() <= limit);
+            assert_eq!(payload.original_bytes, 1_000_000);
+            assert!(payload.redacted && payload.truncated);
+            assert!(matches!(payload.format.as_str(), "json" | "text"));
+        }
+        assert!(capture.arguments.as_ref().unwrap().attachments_omitted);
+        assert!(capture.output.as_ref().unwrap().attachments_omitted);
+        let text = capture.text();
+        for forbidden in [
+            "metadata-secret",
+            "argument-secret",
+            "output-secret",
+            "error-secret",
+            "image-body",
+            "\x1b",
+            "[31m",
+        ] {
+            assert!(!text.contains(forbidden), "{provider}: {forbidden}");
+        }
+        let serialized: HookEvent = serde_json::from_str(&raw).unwrap();
+        assert_eq!(serialized.tool_capture.as_ref(), Some(capture));
+        let mut bounded = event.broadcast_json(raw);
+        assert!(bounded.len() <= yinz_types::agent::HOOK_BROADCAST_MAX_BYTES);
+        for _ in 0..2 {
+            let (decoded, raw) = parse_hook_event(provider, bounded).unwrap();
+            assert_eq!(decoded.tool_capture.as_ref(), Some(capture), "{provider}");
+            bounded = decoded.broadcast_json(raw);
+        }
+        let report = AgentReport {
+            report_id: uuid::Uuid::new_v4().to_string(),
+            pane_id: PaneId::Terminal(TerminalId::new(1)),
+            state: AgentReportState::Unchanged,
+            event: Some(AgentEvent::from_hook(
+                provider,
+                TerminalId::new(1),
+                &event,
+                bounded,
+            )),
+            trace: false,
+            process_id: ProcessId::new(1),
+            kind: provider.into(),
+        };
+        crate::agent::report::validate_report(&report).unwrap();
+    }
+}
+
+#[test]
+fn supplied_tool_capture_identity_and_status_errors_do_not_quote_values() {
+    let (_, raw) = parse_hook_event(
+        "codex",
+        json!({"hook_event_name":"PostToolUse", "tool_name":"shell", "tool_use_id":"call"})
+            .to_string(),
+    )
+    .unwrap();
+    for field in ["identity", "status"] {
+        let mut hook: Value = serde_json::from_str(&raw).unwrap();
+        hook["tool_capture"][field] = "confidential-value".repeat(30000).into();
+        for provider in ["claude", "codex"] {
+            let Err(error) = parse_hook_event(provider, hook.to_string()) else {
+                panic!("invalid capture must be rejected");
+            };
+            let error = error.to_string();
+            assert!(!error.contains("confidential-value"));
+            assert!(error.contains("tool capture"));
+        }
+    }
 }

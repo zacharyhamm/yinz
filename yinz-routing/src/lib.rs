@@ -1656,6 +1656,7 @@ pub fn route_action(
                 .send_to_screen(ScreenInstruction::StartOrReloadPluginPane(
                     run_plugin,
                     None,
+                    client_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;

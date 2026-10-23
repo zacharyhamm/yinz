@@ -2066,6 +2066,7 @@ mod override_layout;
 mod pane_animations;
 mod pane_state;
 mod plugin_broadcasts;
+mod plugin_launch;
 mod quit;
 mod reconfigure;
 mod render_pacing;

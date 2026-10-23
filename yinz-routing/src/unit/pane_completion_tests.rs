@@ -3,6 +3,45 @@ use crossbeam::channel::{unbounded, RecvTimeoutError};
 use yinz_runtime::channels::SenderWithContext;
 use yinz_types::internal_ids::TerminalId;
 
+#[test]
+fn start_or_reload_plugin_preserves_the_requesting_client() {
+    let client = ClientId::new(2);
+    let (screen_tx, screen_rx) = unbounded();
+    let senders = ThreadSenders {
+        to_screen: Some(SenderWithContext::new(screen_tx)),
+        should_silently_fail: true,
+        ..Default::default()
+    };
+    let screen = std::thread::spawn(move || {
+        let (instruction, _) = screen_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let ScreenInstruction::StartOrReloadPluginPane(_, _, requested_client, Some(completion)) =
+            instruction
+        else {
+            panic!("expected a start-or-reload request");
+        };
+        assert_eq!(requested_client, client);
+        drop(completion);
+    });
+    let (_, result) = route_action(
+        Action::StartOrReloadPlugin {
+            plugin: Default::default(),
+        },
+        client,
+        None,
+        None,
+        senders,
+        None,
+        None,
+        InputMode::Normal,
+        None,
+        false,
+        false,
+    )
+    .unwrap();
+    screen.join().unwrap();
+    assert!(result.unwrap().error_message.is_none());
+}
+
 fn creation_actions() -> Vec<Action> {
     let mut actions = vec![
         Action::NewPane {
