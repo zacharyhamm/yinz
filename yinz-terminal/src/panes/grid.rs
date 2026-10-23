@@ -2873,13 +2873,16 @@ impl Grid {
     }
     pub fn add_canonical_line(&mut self) {
         let (scroll_region_top, scroll_region_bottom) = self.scroll_region;
-        self.hyperlink_tracker.update(
+        if let Some(rows) = self.hyperlink_tracker.update(
             '\n',
             &self.cursor,
+            self.width,
             &mut self.viewport,
             &mut self.lines_above,
             &mut self.link_handler.borrow_mut(),
-        );
+        ) {
+            self.output_buffer.update_lines(*rows.start(), *rows.end());
+        }
         if self.cursor.y == scroll_region_bottom {
             if scroll_region_top >= self.viewport.len() {
                 return;
@@ -2916,13 +2919,16 @@ impl Grid {
         terminal_character: TerminalCharacter,
         should_insert_character: bool,
     ) {
-        self.hyperlink_tracker.update(
+        if let Some(rows) = self.hyperlink_tracker.update(
             terminal_character.character,
             &self.cursor,
+            self.width,
             &mut self.viewport,
             &mut self.lines_above,
             &mut self.link_handler.borrow_mut(),
-        );
+        ) {
+            self.output_buffer.update_lines(*rows.start(), *rows.end());
+        }
         // this function assumes the current line has enough room for terminal_character (that its
         // width has been checked beforehand)
         match self.viewport.get_mut(self.cursor.y) {

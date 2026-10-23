@@ -1285,6 +1285,7 @@ mod app_replay;
 mod command_respawn;
 mod highlights;
 mod host_capabilities;
+mod hyperlinks;
 mod kitty_animation;
 mod kitty_graphics;
 mod kitty_properties;
