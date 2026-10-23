@@ -26,6 +26,32 @@ fn text_of(row: &Row) -> String {
     row.columns.iter().map(|c| c.character).collect()
 }
 
+#[test]
+fn cross_row_word_offsets_are_terminal_columns() {
+    for (text, separators, start, end) in [
+        ("界 ab", "", 3, 2),
+        ("界ab", "", 0, 4),
+        ("界:ab", ":", 3, 2),
+        ("界:ab", "", 0, 5),
+        ("界界ab", "界", 4, 0),
+        ("界ab ", "", 5, 4),
+        (" 界ab", "", 1, 0),
+        ("", "", 0, 0),
+    ] {
+        let row = row_of(text);
+        assert_eq!(
+            row.word_start_index_of_last_character(separators),
+            start,
+            "{text:?}"
+        );
+        assert_eq!(
+            row.word_end_index_of_first_character(separators),
+            end,
+            "{text:?}"
+        );
+    }
+}
+
 /// The two caches, checked against values recomputed from `columns`.
 ///
 /// `width()` always walks the row, so it is the oracle for the `width` cache; `all_single_width`

@@ -145,6 +145,70 @@ fn osc133_command_selection_can_be_re_enabled_for_existing_markers() {
 }
 
 #[test]
+fn wrapped_word_selection_uses_terminal_columns() {
+    for (text, width, separators, clicks, start, end, word) in [
+        (
+            "界abcd",
+            4,
+            "",
+            vec![(0, 0), (0, 1), (0, 2), (1, 0)],
+            (0, 0),
+            (1, 2),
+            "界abcd",
+        ),
+        (
+            "界:abcd",
+            5,
+            ":",
+            vec![(0, 3), (1, 0)],
+            (0, 3),
+            (1, 2),
+            "abcd",
+        ),
+        (
+            "ab界cd:ef",
+            4,
+            ":",
+            vec![(0, 0), (1, 1)],
+            (0, 0),
+            (1, 2),
+            "ab界cd",
+        ),
+        (
+            "ab界界cdef",
+            4,
+            "",
+            vec![(0, 0), (1, 0), (1, 1), (2, 0)],
+            (0, 0),
+            (2, 2),
+            "ab界界cdef",
+        ),
+        (
+            "界ab\r\ncd",
+            4,
+            "",
+            vec![(0, 0), (0, 1)],
+            (0, 0),
+            (0, 4),
+            "界ab",
+        ),
+        ("界ab\r\ncd", 4, "", vec![(1, 0)], (1, 0), (1, 2), "cd"),
+    ] {
+        for (line, column) in clicks {
+            let mut grid = create_grid_with_size_and_raw(4, width, text.as_bytes());
+            grid.set_selection_options(true, separators);
+            let click = Position::new(line, column);
+            assert_eq!(
+                grid.word_around_position(&click),
+                Some((Position::new(start.0, start.1), Position::new(end.0, end.1))),
+                "{text:?} at {click:?}"
+            );
+            assert_eq!(select_with_click_count(&mut grid, click, 2), word);
+        }
+    }
+}
+
+#[test]
 fn configured_word_separators_split_double_click_selection() {
     let mut grid = create_grid_with_content("foo:bar baz");
     grid.set_selection_options(true, ":");
