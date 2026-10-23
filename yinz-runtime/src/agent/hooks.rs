@@ -22,7 +22,11 @@ pub fn parse_hook_event(kind: &str, json: String) -> serde_json::Result<(HookEve
             error.column()
         ))
     })?;
-    event.tool_capture = yinz_types::agent::tool_capture::prepare(kind, &event);
+    if let Some(capture) = &mut event.tool_capture {
+        capture.normalize()?;
+    } else {
+        event.tool_capture = yinz_types::agent::tool_capture::prepare(kind, &event);
+    }
     let mut raw: Value = serde_json::from_str(&json)?;
     if event.tool_capture.is_some() || raw.get("tool_capture").is_some() {
         raw["tool_capture"] = serde_json::to_value(&event.tool_capture)?;

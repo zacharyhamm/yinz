@@ -819,6 +819,374 @@ fn launcher_reports_an_unresolvable_working_directory() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
 }
 
+async fn assert_bridge_child_stopped(pid: u32) {
+    let pid = nix::unistd::Pid::from_raw(pid as i32);
+    let status = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::task::spawn_blocking(move || nix::sys::wait::waitpid(pid, None)),
+    )
+    .await;
+    if status.is_err() {
+        // Release the waiter even when the regression leaves its child running.
+        nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL).unwrap();
+        panic!("bridge child {pid} survived cancellation");
+    }
+    let status = status.unwrap().unwrap();
+    assert!(
+        matches!(
+            status,
+            Ok(nix::sys::wait::WaitStatus::Signaled(
+                _,
+                nix::sys::signal::Signal::SIGKILL,
+                _
+            )) | Err(nix::errno::Errno::ECHILD)
+        ),
+        "{status:?}"
+    );
+}
+
+#[tokio::test]
+async fn reconnects_replace_only_after_handshake_and_cancel_owned_children() {
+    use tokio::io::AsyncReadExt;
+
+    const TEST: &str = "tests::reconnects_replace_only_after_handshake_and_cancel_owned_children";
+    if let Ok(socket) = std::env::var("YINZ_TEST_CODEX_PEER_SOCKET") {
+        let mut peer = tokio::net::UnixStream::connect(socket).await.unwrap();
+        peer.write_u32(std::process::id()).await.unwrap();
+        if std::env::var("YINZ_TEST_CODEX_PEER_ROLE").unwrap() == "backend" {
+            // The script keeps libtest output out of the WebSocket pipe.
+            let mut stream = tokio::io::join(tokio::io::stdin(), tokio::io::stderr());
+            tokio::io::copy_bidirectional(&mut peer, &mut stream)
+                .await
+                .unwrap();
+        } else {
+            let mut hook = Vec::new();
+            tokio::io::stdin().read_to_end(&mut hook).await.unwrap();
+            peer.write_all(&hook).await.unwrap();
+            peer.shutdown().await.unwrap();
+            // Hold the report open after receiving EOF on stdin, until killed by its owner.
+            peer.read_u8().await.unwrap();
+        }
+        return;
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("ui.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let peer_socket = root.path().join("peer.sock");
+    let peers = tokio::net::UnixListener::bind(&peer_socket).unwrap();
+    let program = root.path().join("backend");
+    let reporter = root.path().join("reporter");
+    for (path, role) in [(&program, "backend"), (&reporter, "reporter")] {
+        yinz_test_support::write_warm_script(
+            path,
+            &format!(
+                "export YINZ_TEST_CODEX_PEER_SOCKET='{}'\nexport YINZ_TEST_CODEX_PEER_ROLE={role}\nexec '{}' --exact '{TEST}' --nocapture 2>&1 >/dev/null\n",
+                peer_socket.display(),
+                std::env::current_exe().unwrap().display(),
+            ),
+        );
+    }
+    let mut registration = registration(root.path(), "aaaaaaaaaaaa");
+    registration.reporter = Some(reporter);
+
+    async fn backend(
+        peers: &tokio::net::UnixListener,
+    ) -> (
+        tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>,
+        u32,
+    ) {
+        let (mut stream, _) = peers.accept().await.unwrap();
+        let pid = stream.read_u32().await.unwrap();
+        (tokio_tungstenite::accept_async(stream).await.unwrap(), pid)
+    }
+
+    async fn exchange(
+        ui: &mut tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>,
+        backend: &mut tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>,
+    ) {
+        let request =
+            Message::text(r#"{"id":0,"method":"turn/start","params":{"threadId":"selected"}}"#);
+        ui.send(request.clone()).await.unwrap();
+        assert_eq!(backend.next().await.unwrap().unwrap(), request);
+        let reply = Message::text(r#"{"id":0,"result":true}"#);
+        backend.send(reply.clone()).await.unwrap();
+        assert_eq!(ui.next().await.unwrap().unwrap(), reply);
+    }
+
+    async fn stalled_report(
+        ui: &mut tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>,
+        backend: &mut tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>,
+        peers: &tokio::net::UnixListener,
+    ) -> (tokio::net::UnixStream, u32) {
+        let request = Message::text(r#"{"id":1,"method":"thread/resume"}"#);
+        ui.send(request.clone()).await.unwrap();
+        assert_eq!(backend.next().await.unwrap().unwrap(), request);
+        backend
+            .send(Message::text(
+                r#"{"id":1,"result":{"thread":{"id":"selected"}}}"#,
+            ))
+            .await
+            .unwrap();
+        let (mut stream, _) = peers.accept().await.unwrap();
+        let pid = stream.read_u32().await.unwrap();
+        let mut raw = String::new();
+        stream.read_to_string(&mut raw).await.unwrap();
+        let hook: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(hook["hook_event_name"], "SessionStart");
+        assert_eq!(hook["session_id"], "selected");
+        (stream, pid)
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let mut serve = Box::pin(connections(listener, &program, &registration));
+        let scenario = async {
+            let mut incomplete = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            let (mut ui, _) = tokio_tungstenite::client_async(
+                "ws://localhost",
+                tokio::net::UnixStream::connect(&socket).await.unwrap(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(incomplete.read(&mut [0]).await.unwrap(), 0);
+            let (mut daemon, mut daemon_pid) = backend(&peers).await;
+
+            let mut invalid = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            invalid.write_all(b"GET / HTTP/1.0\r\n\r\n").await.unwrap();
+            assert_eq!(invalid.read(&mut [0]).await.unwrap(), 0);
+            exchange(&mut ui, &mut daemon).await;
+
+            let started = std::time::Instant::now();
+            let mut pending = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            exchange(&mut ui, &mut daemon).await;
+            assert_eq!(pending.read(&mut [0]).await.unwrap(), 0);
+            assert!(started.elapsed() >= std::time::Duration::from_secs(10));
+            exchange(&mut ui, &mut daemon).await;
+
+            for attempt in 0..3 {
+                let report = if attempt == 0 {
+                    None
+                } else {
+                    Some(stalled_report(&mut ui, &mut daemon, &peers).await)
+                };
+                let binding = std::fs::read(registration.dir.path().join("binding.json")).unwrap();
+                let (replacement, _) = tokio_tungstenite::client_async(
+                    "ws://localhost",
+                    tokio::net::UnixStream::connect(&socket).await.unwrap(),
+                )
+                .await
+                .unwrap();
+                let (next_daemon, next_pid) = backend(&peers).await;
+                assert!(ui.next().await.unwrap().is_err());
+                assert!(daemon.next().await.unwrap().is_err());
+                assert_bridge_child_stopped(daemon_pid).await;
+                if let Some((_stream, pid)) = report {
+                    assert_bridge_child_stopped(pid).await;
+                }
+                assert_eq!(
+                    std::fs::read(registration.dir.path().join("binding.json")).unwrap(),
+                    binding,
+                    "reconnect must retain the selected conversation"
+                );
+                ui = replacement;
+                daemon = next_daemon;
+                daemon_pid = next_pid;
+                exchange(&mut ui, &mut daemon).await;
+            }
+            let report = stalled_report(&mut ui, &mut daemon, &peers).await;
+            let mut displaced = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            let pending = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            assert_eq!(displaced.read(&mut [0]).await.unwrap(), 0);
+            (ui, daemon, daemon_pid, report, pending)
+        };
+        let (mut ui, mut daemon, daemon_pid, (_report_stream, report_pid), mut pending) =
+            tokio::select! {
+                result = &mut serve => panic!("connection loop stopped: {result:?}"),
+                peers = scenario => peers,
+            };
+        // Launcher exit drops this same future while the UI and its report are still connected.
+        drop(serve);
+        assert!(ui.next().await.unwrap().is_err());
+        assert!(daemon.next().await.unwrap().is_err());
+        assert_eq!(pending.read(&mut [0]).await.unwrap(), 0);
+        assert_bridge_child_stopped(daemon_pid).await;
+        assert_bridge_child_stopped(report_pid).await;
+    })
+    .await
+    .expect("Codex reconnect scenario timed out");
+}
+
+#[test]
+fn routed_native_hooks_preserve_small_payloads_and_bound_large_ones() {
+    const TEST: &str = "tests::routed_native_hooks_preserve_small_payloads_and_bound_large_ones";
+    if let Ok(reporter) = std::env::var("YINZ_TEST_CODEX_REPORTER") {
+        report(Path::new(&reporter)).unwrap();
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let delivered = root.path().join("delivered");
+    let reporter = root.path().join("reporter");
+    yinz_test_support::write_warm_script(
+        &reporter,
+        &format!(
+            "[ \"$*\" = '--pty-broker report codex' ] || exit 1\ncat > '{}'\n",
+            delivered.display(),
+        ),
+    );
+    let session = uuid::Uuid::new_v4().to_string();
+    let registration = Registration::new(
+        &directory(),
+        HashMap::from([("YINZ_REMOTE_PANE_TOKEN".into(), "remote-token".into())]),
+    )
+    .unwrap();
+    registration.select(&session).unwrap();
+    let forward = |raw: &str| {
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("YINZ_TEST_CODEX_REPORTER", &reporter)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(raw.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::fs::read_to_string(&delivered).unwrap()
+    };
+
+    let prompt = "review\n".repeat(100 * 1024);
+    let submit = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": session,
+        "turn_id": "turn-1",
+        "prompt": prompt,
+    })
+    .to_string();
+    assert!(submit.len() > yinz_types::agent::HOOK_BROADCAST_MAX_BYTES);
+    let forwarded = forward(&submit);
+    assert!(forwarded.len() <= yinz_types::agent::HOOK_BROADCAST_MAX_BYTES);
+    let hook: yinz_types::agent::HookEvent = serde_json::from_str(&forwarded).unwrap();
+    assert_eq!(hook.session_id, session);
+    assert_eq!(hook.turn_id.as_deref(), Some("turn-1"));
+    assert_eq!(
+        hook.prompt_sha256.as_deref(),
+        Some(yinz_types::agent::control::prompt_sha256(&prompt)).as_deref()
+    );
+    let event = yinz_types::agent::AgentEvent::from_hook(
+        "codex",
+        yinz_types::internal_ids::TerminalId::new(7),
+        &hook,
+        forwarded,
+    );
+    let mut observation =
+        yinz_types::agent::control::PromptObservation::new("codex", &session, &prompt);
+    assert_eq!(
+        observation.observe(&event, Some(&hook)),
+        Some(yinz_types::agent::control::AgentOutcome::Submitted)
+    );
+
+    let stop = json!({
+        "hook_event_name": "Stop",
+        "session_id": session,
+        "turn_id": "turn-1",
+        "last_assistant_message": "done\n".repeat(500 * 1024),
+    })
+    .to_string();
+    assert!(stop.len() > yinz_types::agent::NATIVE_HOOK_MAX_BYTES);
+    let forwarded = forward(&stop);
+    assert!(forwarded.len() <= yinz_types::agent::HOOK_BROADCAST_MAX_BYTES);
+    let hook: yinz_types::agent::HookEvent = serde_json::from_str(&forwarded).unwrap();
+    assert_eq!(hook.hook_event_name, "Stop");
+    assert_eq!(hook.session_id, session);
+    assert_eq!(hook.turn_id.as_deref(), Some("turn-1"));
+    assert_eq!(
+        yinz_types::agent::hook_state(&hook),
+        Some(yinz_types::agent::AgentState::Idle)
+    );
+
+    let payload = json!({
+        "text": format!("tool preview {}", "雪".repeat(200000)),
+        "password": "must-not-persist",
+    });
+    for (response, error, status) in [
+        (
+            json!({"exit_code": 1, "output": payload}),
+            Value::Null,
+            "failed",
+        ),
+        (
+            json!({"exit_code": 0, "output": payload}),
+            Value::Null,
+            "succeeded",
+        ),
+        (Value::Null, payload, "failed"),
+    ] {
+        let tool = json!({
+            "hook_event_name": "PostToolUse",
+            "session_id": session,
+            "turn_id": "turn-1",
+            "tool_use_id": "call-1",
+            "tool_name": "shell",
+            "agent_id": "worker",
+            "parent_tool_use_id": format!("PASSWORD=hidden {}", "parent".repeat(200)),
+            "tool_response": response,
+            "error": error,
+        })
+        .to_string();
+        assert!(tool.len() > yinz_types::agent::HOOK_BROADCAST_MAX_BYTES);
+        let (prepared, _) =
+            yinz_runtime::agent::hooks::parse_hook_event("codex", tool.clone()).unwrap();
+        let expected = prepared.tool_capture.unwrap();
+        let forwarded = forward(&tool);
+        assert!(forwarded.len() <= yinz_types::agent::HOOK_BROADCAST_MAX_BYTES);
+        let (hook, raw) = yinz_runtime::agent::hooks::parse_hook_event("codex", forwarded).unwrap();
+        assert_eq!(hook.session_id, session);
+        assert_eq!(hook.turn_id.as_deref(), Some("turn-1"));
+        assert!(hook.tool_response.is_none());
+        assert!(hook.error.is_none());
+        let capture = hook.tool_capture.unwrap();
+        assert_eq!(capture.status, status);
+        assert!(capture.identity.is_some());
+        assert_eq!(capture.identity, expected.identity);
+        assert_eq!(capture.output_unavailable, response.is_null());
+        let preview = capture.output.as_ref().or(capture.error.as_ref()).unwrap();
+        assert!(preview.text.contains("tool preview"));
+        assert!(preview.truncated && preview.redacted);
+        assert!(preview.original_bytes > yinz_types::agent::HOOK_BROADCAST_MAX_BYTES);
+        assert!(!capture.text().contains("must-not-persist"));
+        assert!(capture.metadata_truncated && capture.metadata_redacted);
+        assert_eq!(capture, expected);
+        let serialized: yinz_types::agent::HookEvent = serde_json::from_str(&raw).unwrap();
+        assert_eq!(serialized.tool_capture, Some(expected));
+    }
+
+    let small = format!(
+        " {{ \"hook_event_name\": \"Stop\", \"session_id\": \"{session}\", \"turn_id\": \"turn-1\", \"unknown\": true }}\n"
+    );
+    assert_eq!(forward(&small), small);
+    let at_cap = format!(
+        "{small}{}",
+        " ".repeat(yinz_types::agent::HOOK_BROADCAST_MAX_BYTES - small.len())
+    );
+    assert_eq!(forward(&at_cap), at_cap);
+    let malformed = format!(
+        "{{\"padding\": \"{}",
+        "x".repeat(yinz_types::agent::HOOK_BROADCAST_MAX_BYTES)
+    );
+    assert!(prune_for_forward(malformed).is_err());
+}
+
 #[test]
 fn registry_and_a_session_named_codex_coexist() {
     const CHILD_ENV: &str = "YINZ_TEST_CODEX_REGISTRY";

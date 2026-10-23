@@ -512,7 +512,12 @@ pub enum ScreenInstruction {
         bool,
     ), // Option<String> is an
     // optional pane title, first bool is skip cache, second bool is close_replaced_pane
-    StartOrReloadPluginPane(RunPluginOrAlias, Option<String>, Option<NotificationEnd>),
+    StartOrReloadPluginPane(
+        RunPluginOrAlias,
+        Option<String>,
+        ClientId,
+        Option<NotificationEnd>,
+    ),
     AddPlugin(
         Option<bool>, // should_float
         bool,         // should be opened in place

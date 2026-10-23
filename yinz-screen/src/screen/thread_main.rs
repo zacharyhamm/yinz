@@ -2616,13 +2616,14 @@ pub fn screen_thread_main(
                     {
                         break 'instruction;
                     }
-                    let tab_index = explicit_tab_id.unwrap_or_else(|| {
-                        *screen
-                            .active_tab_ids
-                            .values()
-                            .next()
-                            .unwrap_or(&TabId::new(1))
-                    });
+                    let Some(tab_index) = screen.tab_for_plugin_launch(
+                        client_id,
+                        explicit_tab_id,
+                        None,
+                        &mut completion_tx,
+                    ) else {
+                        break 'instruction;
+                    };
                     let size = Size::default();
                     let should_float = Some(false);
                     let should_be_opened_in_place = false;
@@ -2678,57 +2679,62 @@ pub fn screen_thread_main(
                     skip_cache,
                     close_replaced_pane,
                     client_id,
-                    completion_tx,
+                    mut completion_tx,
                     explicit_tab_id,
                     no_focus,
                 ) => {
-                    let resolved_tab_index =
-                        explicit_tab_id.or_else(|| screen.active_tab_ids.values().next().copied());
-                    match resolved_tab_index {
-                        Some(tab_index) => {
-                            let size = Size::default();
-                            let should_float = None;
-                            let should_be_in_place = true;
-                            let should_focus_plugin = if no_focus { Some(false) } else { None };
-                            screen
-                                .bus
-                                .senders
-                                .send_to_pty(PtyInstruction::FillPluginCwd(
-                                    should_float,
-                                    should_be_in_place,
-                                    close_replaced_pane,
-                                    pane_title,
-                                    run_plugin,
-                                    tab_index,
-                                    Some(pane_id_to_replace),
-                                    client_id,
-                                    size,
-                                    skip_cache,
-                                    None,
-                                    should_focus_plugin,
-                                    None,
-                                    completion_tx,
-                                    None,
-                                ))?;
-                        },
-                        None => {
-                            log::error!(
-                            "Could not find an active tab - is there at least 1 connected user?"
-                        );
-                        },
-                    }
+                    let Some(tab_index) = screen.tab_for_plugin_launch(
+                        client_id,
+                        explicit_tab_id,
+                        Some(pane_id_to_replace),
+                        &mut completion_tx,
+                    ) else {
+                        break 'instruction;
+                    };
+                    let size = Size::default();
+                    let should_float = None;
+                    let should_be_in_place = true;
+                    let should_focus_plugin = if no_focus { Some(false) } else { None };
+                    screen
+                        .bus
+                        .senders
+                        .send_to_pty(PtyInstruction::FillPluginCwd(
+                            should_float,
+                            should_be_in_place,
+                            close_replaced_pane,
+                            pane_title,
+                            run_plugin,
+                            tab_index,
+                            Some(pane_id_to_replace),
+                            client_id,
+                            size,
+                            skip_cache,
+                            None,
+                            should_focus_plugin,
+                            None,
+                            completion_tx,
+                            None,
+                        ))?;
                 },
                 ScreenInstruction::StartOrReloadPluginPane(
                     run_plugin,
                     pane_title,
-                    completion_tx,
+                    client_id,
+                    mut completion_tx,
                 ) => {
-                    let tab_index = screen
-                        .active_tab_ids
-                        .values()
-                        .next()
-                        .copied()
-                        .unwrap_or(TabId::new(1));
+                    let detached_tab = if screen.has_no_client_to_act_for(client_id) {
+                        screen.tabs.keys().next().copied()
+                    } else {
+                        None
+                    };
+                    let Some(tab_index) = screen.tab_for_plugin_launch(
+                        client_id,
+                        detached_tab,
+                        None,
+                        &mut completion_tx,
+                    ) else {
+                        break 'instruction;
+                    };
                     let size = Size::default();
                     let should_float = Some(false);
 

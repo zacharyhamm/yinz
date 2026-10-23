@@ -139,3 +139,142 @@ fn attachments_keep_nested_mime_metadata_and_omit_the_body() {
     assert!(output.text.contains("image/png"));
     assert!(!output.text.contains("unretained-image-body"));
 }
+
+#[test]
+fn supplied_small_payloads_are_sanitized_even_with_preexisting_flags() {
+    for (format, text, attachments) in [
+        (
+            "text",
+            "PASS\x1b[31mWORD=hidden\x1b[0m\n雪\tresult\x07".into(),
+            false,
+        ),
+        (
+            "json",
+            r#"{"password":"hidden", "unfinished":"value"#.into(),
+            false,
+        ),
+        ("unknown", "PASSWORD=hidden".into(), false),
+        (
+            "json",
+            json!({"nested":{"api_key":"hidden"},
+            "content":[{"type":"image", "data":"image-body"}],
+            "text":"\x1b]0;window-title\x07雪\tresult\x1b[31m"})
+            .to_string(),
+            true,
+        ),
+    ] {
+        let hook = HookEvent {
+            hook_event_name: "PostToolUse".into(),
+            tool_name: Some("PASS\nWORD=metadata-hidden\x1b[31m".into()),
+            tool_use_id: Some("call".into()),
+            ..Default::default()
+        };
+        let mut capture = prepare("codex", &hook).unwrap();
+        let identity = capture.identity.clone();
+        capture.output = Some(Payload {
+            text,
+            format: format.into(),
+            original_bytes: 1234,
+            redacted: true,
+            truncated: true,
+            attachments_omitted: false,
+        });
+        capture.normalize().unwrap();
+        assert_eq!(capture.identity, identity);
+        assert_eq!(capture.status, "completed");
+        assert!(!capture.name.contains("metadata-hidden"));
+        assert!(capture.metadata_redacted);
+        let output = capture.output.as_ref().unwrap();
+        assert_eq!(output.original_bytes, 1234);
+        assert!(output.redacted && output.truncated);
+        assert_eq!(output.attachments_omitted, attachments);
+        assert!(matches!(output.format.as_str(), "json" | "text"));
+        for forbidden in ["hidden", "image-body", "\x1b", "window-title", "[31m"] {
+            assert!(!output.text.contains(forbidden), "{format}: {forbidden}");
+        }
+        let normalized = capture.clone();
+        capture.normalize().unwrap();
+        assert_eq!(capture, normalized);
+    }
+}
+
+#[test]
+fn normalization_preserves_redacted_payload_at_serialized_limit() {
+    let hook = HookEvent {
+        hook_event_name: "PostToolUse".into(),
+        tool_name: Some("shell".into()),
+        tool_response: Some(json!(format!("PASSWORD=a {}", "x".repeat(65_413)))),
+        ..Default::default()
+    };
+    let mut capture = prepare("codex", &hook).unwrap();
+    let output = capture.output.as_ref().unwrap();
+    assert!(output.redacted);
+    assert!(!output.truncated);
+    assert_eq!(output.text.len(), 65_424);
+    assert_eq!(serde_json::to_vec(output).unwrap().len(), OUTPUT_BYTES);
+    let original = capture.clone();
+    for _ in 0..2 {
+        capture.normalize().unwrap();
+        assert_eq!(capture.output.as_ref().unwrap().text.len(), 65_424);
+        assert_eq!(capture, original);
+    }
+}
+
+#[test]
+fn prepared_capture_normalization_preserves_outcomes_provenance_and_omissions() {
+    let hook = HookEvent {
+        hook_event_name: "PostToolUse".into(),
+        tool_name: Some("shell".into()),
+        tool_use_id: Some("call".into()),
+        tool_response: Some(json!({"password":"x", "text":"雪".repeat(30000)})),
+        tool_input: Some(json!({"password":"x"})),
+        duration_ms: Some(123),
+        ..Default::default()
+    };
+    for status in [
+        "requested",
+        "cancelled",
+        "failed",
+        "denied",
+        "succeeded",
+        "completed",
+    ] {
+        for omitted in [false, true] {
+            let mut capture = prepare("codex", &hook).unwrap();
+            capture.status = status.into();
+            capture.metadata_redacted = true;
+            capture.metadata_truncated = true;
+            if omitted {
+                capture.identity = None;
+                capture.omit_payload();
+            }
+            let original = capture.clone();
+            for _ in 0..2 {
+                capture.normalize().unwrap();
+                assert_eq!(capture, original);
+            }
+        }
+    }
+}
+
+#[test]
+fn malformed_prepared_identities_are_rejected_without_rewriting_them() {
+    let hook = HookEvent {
+        hook_event_name: "PostToolUse".into(),
+        tool_name: Some("shell".into()),
+        ..Default::default()
+    };
+    for identity in [
+        String::new(),
+        format!("tool:{}", "a".repeat(63)),
+        format!("tool:{}", "a".repeat(65)),
+        format!("tool:{}", "g".repeat(64)),
+        format!("other:{}", "a".repeat(64)),
+    ] {
+        let mut capture = prepare("codex", &hook).unwrap();
+        capture.identity = Some(identity);
+        let original = capture.clone();
+        assert!(capture.normalize().is_err());
+        assert_eq!(capture, original);
+    }
+}

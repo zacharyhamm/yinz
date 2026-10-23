@@ -34,17 +34,38 @@ pub(super) struct PendingOverlayTabs {
 }
 
 impl Screen {
-    /// The tab a plugin launched by id, rather than for a client, goes into: the one named,
-    /// else the first active one. Reports a non-fatal error when there is none.
-    fn tab_for_plugin_launch(&self, explicit_tab_id: Option<TabId>) -> Option<TabId> {
-        let tab_index = explicit_tab_id.or_else(|| self.active_tab_ids.values().next().copied());
-        if tab_index.is_none() {
-            Err::<(), _>(anyhow!(
-                "Could not find an active tab - is there at least 1 connected user?"
-            ))
-            .non_fatal();
+    /// A replacement's tab wins over an explicit destination; otherwise use the acting client.
+    pub(super) fn tab_for_plugin_launch(
+        &self,
+        client_id: ClientId,
+        explicit_tab_id: Option<TabId>,
+        pane_id_to_replace: Option<PaneId>,
+        completion_tx: &mut Option<NotificationEnd>,
+    ) -> Option<TabId> {
+        let destination = if let Some(pane_id) = pane_id_to_replace {
+            self.tab_id_containing_pane(pane_id)
+                .with_context(|| format!("Pane with id {pane_id:?} not found"))
+        } else if let Some(tab_id) = explicit_tab_id {
+            self.tabs
+                .contains_key(&tab_id)
+                .then_some(tab_id)
+                .with_context(|| format!("Tab with id {tab_id} not found"))
+        } else {
+            self.client_to_act_for(client_id)
+                .and_then(|client_id| self.active_tab_ids.get(&client_id).copied())
+                .context("No active tab found - cannot launch plugin")
+        };
+        match destination {
+            Ok(tab_id) => Some(tab_id),
+            Err(error) => {
+                if let Some(completion) = completion_tx.as_mut() {
+                    completion.set_exit_status(1);
+                    completion.set_error_message(format!("{error:#}"));
+                }
+                Err::<(), _>(error).non_fatal();
+                None
+            },
         }
-        tab_index
     }
 
     /// Asks the pty thread to resolve `run_plugin`'s cwd and load it into `tab_index`, replacing
@@ -101,22 +122,16 @@ impl Screen {
         overlay_placement: Option<OverlayPlacement>,
     ) -> Result<()> {
         yinz_runtime::plugin_location::refresh_file_identity(&mut run_plugin);
-        let (tab_index, client_id) = if should_open_in_place && pane_id_to_replace.is_some() {
-            match self.tab_for_plugin_launch(explicit_tab_id) {
-                Some(tab_index) => (tab_index, client_id),
-                None => return Ok(()),
-            }
+        let replacement = pane_id_to_replace.filter(|_| should_open_in_place);
+        let Some(tab_index) =
+            self.tab_for_plugin_launch(client_id, explicit_tab_id, replacement, &mut completion_tx)
+        else {
+            return Ok(());
+        };
+        let client_id = if replacement.is_some() {
+            client_id
         } else {
-            match self.resolve_tab_and_client(client_id, explicit_tab_id) {
-                Some(resolved) => resolved,
-                None => {
-                    Err::<(), _>(anyhow!(
-                        "No connected clients found - cannot load or focus plugin"
-                    ))
-                    .non_fatal();
-                    return Ok(());
-                },
-            }
+            self.client_to_act_for(client_id).unwrap_or(client_id)
         };
         if !should_open_in_place
             && explicit_tab_id.is_none()
@@ -165,7 +180,12 @@ impl Screen {
         yinz_runtime::plugin_location::refresh_file_identity(&mut run_plugin);
         match pane_id_to_replace {
             Some(pane_id_to_replace) if should_open_in_place => {
-                if let Some(tab_index) = self.tab_for_plugin_launch(explicit_tab_id) {
+                if let Some(tab_index) = self.tab_for_plugin_launch(
+                    client_id,
+                    explicit_tab_id,
+                    Some(pane_id_to_replace),
+                    &mut completion_tx,
+                ) {
                     self.fill_plugin_cwd(
                         should_float,
                         should_open_in_place,
@@ -183,15 +203,15 @@ impl Screen {
                 }
             },
             _ => {
-                let Some((tab_index, client_id)) =
-                    self.resolve_tab_and_client(client_id, explicit_tab_id)
-                else {
-                    Err::<(), _>(anyhow!(
-                        "No connected clients found - cannot load or focus plugin"
-                    ))
-                    .non_fatal();
+                let Some(tab_index) = self.tab_for_plugin_launch(
+                    client_id,
+                    explicit_tab_id,
+                    None,
+                    &mut completion_tx,
+                ) else {
                     return Ok(());
                 };
+                let client_id = self.client_to_act_for(client_id).unwrap_or(client_id);
                 if !should_open_in_place
                     && explicit_tab_id.is_none()
                     && self.launch_overlay_tab(
@@ -459,7 +479,7 @@ impl Screen {
     }
 
     /// Asks the pty thread to resolve a cwd for, and then load, a plugin that opens floating
-    /// (or as the overlay `placement` names) in the given tab or the first active one.
+    /// (or as the overlay `placement` names) in the given tab or the acting client's tab.
     pub(super) fn new_floating_plugin_pane(
         &mut self,
         run_plugin: RunPluginOrAlias,
@@ -484,7 +504,9 @@ impl Screen {
         {
             return Ok(());
         }
-        let Some(tab_index) = self.tab_for_plugin_launch(explicit_tab_id) else {
+        let Some(tab_index) =
+            self.tab_for_plugin_launch(client_id, explicit_tab_id, None, &mut completion_tx)
+        else {
             return Ok(());
         };
         let size = Size::default();
