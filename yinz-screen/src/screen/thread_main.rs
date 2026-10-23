@@ -910,6 +910,7 @@ pub fn screen_thread_main(
                         }
                         screen.sync_scroll_mode_on_focus(client_id)?;
                         screen.render()?;
+                        screen.log_and_report_session_state()?;
                     }
                 },
                 ScreenInstruction::FocusPreviousPane(client_id, mut _completion_tx) => {

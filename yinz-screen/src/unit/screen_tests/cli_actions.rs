@@ -371,6 +371,86 @@ pub fn send_cli_focus_next_pane_action() {
 }
 
 #[test]
+fn focus_next_pane_reports_pane_and_session_focus() {
+    let mut mock_screen = MockScreen::new(Size { cols: 80, rows: 20 });
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::SetCliEventSubscribersPresent(true))
+        .unwrap();
+    let initial_layout = TiledPaneLayout {
+        children_split_direction: SplitDirection::Vertical,
+        children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
+        ..Default::default()
+    };
+    let session_metadata = mock_screen.clone_session_metadata();
+    let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
+    let received_plugin_instructions = Watched::new(vec![]);
+    let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
+    let plugin_thread = log_actions_in_thread!(
+        received_plugin_instructions,
+        PluginInstruction::Exit,
+        plugin_receiver
+    );
+    let first_pane = PaneId::Terminal(TerminalId::new(0));
+    let second_pane = PaneId::Terminal(TerminalId::new(1));
+    let wait_for_focus = |focused_pane| {
+        let has_expected_focus = |manifest: &yinz_types::data::PaneManifest| {
+            let focus: BTreeMap<_, _> = manifest
+                .panes
+                .values()
+                .flatten()
+                .map(|pane| (pane.id, pane.is_focused))
+                .collect();
+            focus
+                == BTreeMap::from([
+                    (first_pane, focused_pane == first_pane),
+                    (second_pane, focused_pane == second_pane),
+                ])
+        };
+        received_plugin_instructions.wait_until(
+            &format!(
+                "pane and session updates focused on {focused_pane:?} with the other pane unfocused"
+            ),
+            yinz_test_support::default_timeout(),
+            |instructions| {
+                let mut pane_report = false;
+                let mut session_report = false;
+                for instruction in instructions {
+                    let PluginInstruction::Update(updates) = instruction else {
+                        continue;
+                    };
+                    for (_, _, event) in updates {
+                        match event {
+                            Event::PaneUpdate(manifest) => {
+                                pane_report = has_expected_focus(manifest);
+                            },
+                            Event::SessionUpdate(sessions, _) => {
+                                session_report = sessions.iter().any(|session| {
+                                    session.is_current_session && has_expected_focus(&session.panes)
+                                });
+                            },
+                            _ => {},
+                        }
+                    }
+                }
+                (pane_report && session_report).then_some(())
+            },
+        );
+    };
+    wait_for_focus(first_pane);
+    for focused_pane in [second_pane, first_pane] {
+        received_plugin_instructions.lock().clear();
+        send_cli_action_to_server(
+            &session_metadata,
+            CliAction::FocusNextPane,
+            ClientId::new(10), // CLI client acts on the connected client's focus.
+        );
+        wait_for_focus(focused_pane);
+    }
+    mock_screen.teardown(vec![screen_thread, plugin_thread]);
+}
+
+#[test]
 pub fn send_cli_focus_previous_pane_action() {
     let size = Size { cols: 80, rows: 20 };
     let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
