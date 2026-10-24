@@ -15,10 +15,11 @@
     (test-wait-for-text "Layout saved")
     (open-layout-actions) (s-text "Edit layout") (test-wait-for-text "› Edit layout in editor") (s-key "Enter")
     (test-wait-for-text "LAYOUT EDITOR:")
-    (test-wait-for-text (string-append (substring home 0 (- (string-length home) 5)) "/config/layouts/palette-layout.kdl"))
+    ;; Check the title: once the "Layout editor opened" toast settles, it covers the path on screen.
+    (define layout-path (string-append (substring home 0 (- (string-length home) 5)) "/config/layouts/palette-layout.kdl"))
     (test-wait-for "focused tiled editor" (lambda ()
         (t-find (lambda (pane) (and (s-terminal? pane) (hash-ref pane "is_focused")
-              (string-contains? (hash-ref pane "title") "palette-layout.kdl")
+              (string-contains? (hash-ref pane "title") layout-path)
               (not (hash-ref pane "is_floating")) (not (hash-ref pane "is_suppressed")))) (s-panes))))
     (s-text "still-visible") (s-key "Enter") (test-wait-for-text "EDITOR INPUT: still-visible")
     (s-action "CloseFocus;")

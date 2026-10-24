@@ -1,4 +1,5 @@
 (require "./agents/state.scm")
+(require "./agents/activity.scm")
 (require "./agents/overlay.scm")
 (require "./agents/service.scm")
 (require "./agents/history.scm")
