@@ -81,6 +81,70 @@ fn semantic_mapping_precedes_selection_and_keeps_cells_and_capture_original() {
 }
 
 #[test]
+fn agent_painted_selection_background_takes_the_selection_foreground() {
+    let mut style = style();
+    style.colors.text_unselected.base = PaletteColor::Rgb((200, 201, 202));
+    style.colors.text_unselected.background = PaletteColor::Rgb((1, 2, 3));
+    style.colors.text_selected.base = PaletteColor::Rgb((40, 41, 42));
+    style.colors.text_selected.background = PaletteColor::Rgb((240, 241, 242));
+    let mut grid = create_grid_with_content("");
+    grid.update_theme(style.colors);
+    let mut snapshot = source("claude", Role::Success);
+    snapshot.definitions.extend([
+        Definition {
+            token: "text".into(),
+            channel: Channel::Foreground,
+            color: SourceColor::Rgb(255, 255, 255),
+            pair: None,
+            target: Some(Role::Foreground.into()),
+        },
+        Definition {
+            token: "selectionBg".into(),
+            channel: Channel::Background,
+            color: SourceColor::Rgb(38, 79, 120),
+            pair: None,
+            target: Some(Role::SelectionBackground.into()),
+        },
+    ]);
+    event(&mut grid, "fixture", Some(snapshot));
+    // Claude keeps each selected cell's foreground, mapped or not, under `selectionBg`.
+    feed_bytes(
+        &mut grid,
+        b"\x1b[38;2;255;255;255;48;2;38;79;120mS\x1b[0;38;2;255;255;255mT\x1b[38;2;9;9;9;48;2;38;79;120mU",
+    );
+    let capture = grid.serialize(None).unwrap();
+    let selected = Some(AnsiCode::RgbCode((40, 41, 42)));
+    let selection = Some(AnsiCode::RgbCode((240, 241, 242)));
+    assert_eq!(
+        painted(&mut grid)[..3],
+        [
+            ('S', selected, selection),
+            (
+                'T',
+                Some(AnsiCode::RgbCode((200, 201, 202))),
+                Some(AnsiCode::Reset)
+            ),
+            ('U', selected, selection),
+        ]
+    );
+    assert_eq!(grid.serialize(None).unwrap(), capture);
+    grid.set_agent_theme_mapping(AgentThemeMapping::Off);
+    let navy = Some(AnsiCode::RgbCode((38, 79, 120)));
+    assert_eq!(
+        painted(&mut grid)[..3],
+        [
+            ('S', Some(AnsiCode::RgbCode((255, 255, 255))), navy),
+            (
+                'T',
+                Some(AnsiCode::RgbCode((255, 255, 255))),
+                Some(AnsiCode::Reset)
+            ),
+            ('U', Some(AnsiCode::RgbCode((9, 9, 9))), navy),
+        ]
+    );
+}
+
+#[test]
 fn theme_preview_and_cancellation_repaint_cached_frames_without_recoloring_twice() {
     let mut grid = create_grid_with_content("");
     grid.update_theme(style().colors);

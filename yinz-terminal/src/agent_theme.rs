@@ -11,15 +11,19 @@ pub(crate) use codex_0_162_1::parse_reply as terminal_color_reply;
 struct Resolved {
     color: AnsiCode,
     theme_background: bool,
+    selection: bool,
 }
 
-#[derive(Debug, Default)]
-pub struct Mapping(BTreeMap<MatchKey, Option<Resolved>>);
+#[derive(Debug)]
+pub struct Mapping {
+    keys: BTreeMap<MatchKey, Option<Resolved>>,
+    selection_foreground: AnsiCode,
+}
 
 impl Mapping {
     pub fn new(snapshot: &AgentThemeSnapshot, style: Style) -> Self {
-        Self(
-            snapshot
+        Self {
+            keys: snapshot
                 .compile()
                 .0
                 .into_iter()
@@ -29,17 +33,32 @@ impl Mapping {
                         target.map(|target| Resolved {
                             color: AnsiCode::RgbCode(resolve(target, style)),
                             theme_background: target.role == Role::Background && !target.shimmer,
+                            selection: target.role == Role::SelectionBackground,
                         }),
                     )
                 })
                 .collect(),
-        )
+            selection_foreground: AnsiCode::RgbCode(resolve(
+                Role::SelectionForeground.into(),
+                style,
+            )),
+        }
+    }
+
+    fn lookup(&self, key: MatchKey) -> Option<&Resolved> {
+        // An ambiguous pair intentionally blocks a less specific single-color match.
+        self.keys
+            .get(&key)
+            .or_else(|| self.keys.get(&MatchKey { pair: None, ..key }))
+            .and_then(Option::as_ref)
     }
 
     pub fn apply(&self, mut styles: CharacterStyles) -> CharacterStyles {
         let foreground = source(styles.foreground);
         let background = source(styles.background);
         let pair = foreground.zip(background);
+        let mut selected = false;
+        let mut paired_foreground = false;
         for (channel, color) in [
             (Channel::Foreground, &mut styles.foreground),
             (Channel::Background, &mut styles.background),
@@ -53,14 +72,21 @@ impl Mapping {
                 color: original,
                 pair,
             };
-            // An ambiguous pair intentionally blocks a less specific single-color match.
-            let mapped = self
-                .0
-                .get(&key)
-                .or_else(|| self.0.get(&MatchKey { pair: None, ..key }));
-            if let Some(Some(mapped)) = mapped {
+            // Only a provider-defined pair has a key with `pair` set.
+            paired_foreground |= channel == Channel::Foreground
+                && pair.is_some()
+                && matches!(self.keys.get(&key), Some(Some(_)));
+            if let Some(mapped) = self.lookup(key) {
                 *color = Some(mapped.color);
+                selected |= channel == Channel::Background && mapped.selection;
             }
+        }
+        // Agents that paint their own selection (Claude) keep each cell's foreground, which
+        // was chosen for the text background; the destination selection pair stays readable.
+        // A foreground the provider paired with this background (Codex contrast-corrects
+        // accents against its fill) keeps its own role.
+        if selected && !paired_foreground {
+            styles.foreground = Some(self.selection_foreground);
         }
         styles
     }
@@ -69,16 +95,12 @@ impl Mapping {
         let Some(color) = source(styles.background) else {
             return false;
         };
-        let key = MatchKey {
+        self.lookup(MatchKey {
             channel: Channel::Background,
             color,
-            pair: source(styles.foreground).zip(source(styles.background)),
-        };
-        self.0
-            .get(&key)
-            .or_else(|| self.0.get(&MatchKey { pair: None, ..key }))
-            .and_then(Option::as_ref)
-            .is_some_and(|resolved| resolved.theme_background)
+            pair: source(styles.foreground).zip(Some(color)),
+        })
+        .is_some_and(|resolved| resolved.theme_background)
     }
 }
 
