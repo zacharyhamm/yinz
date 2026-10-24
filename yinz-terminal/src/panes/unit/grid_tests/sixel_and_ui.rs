@@ -66,6 +66,155 @@ fn serialize_sixel_chunk(
         .unwrap()
 }
 
+fn fill_sixel_pane(grid: &mut Grid, images: usize) {
+    *grid.character_cell_size.borrow_mut() = Some(SizeInPixels {
+        width: 8,
+        height: 6,
+    });
+    for i in 0..images {
+        feed_bytes(
+            grid,
+            format!(
+                "\x1b[{};{}H\x1bPq~\x1b\\",
+                i / grid.width + 1,
+                i % grid.width + 1
+            )
+            .as_bytes(),
+        );
+    }
+}
+
+#[test]
+fn erased_sixel_images_wait_for_read_changes_when_admission_has_capacity() {
+    let mut grid = create_grid_with_content("");
+    *grid.character_cell_size.borrow_mut() = Some(SizeInPixels {
+        width: 8,
+        height: 6,
+    });
+    feed_bytes(&mut grid, b"\x1bPq~\x1b\\");
+    feed_bytes(&mut grid, b"\x1b[1;1Hx\x1b[1;2H\x1bPq~\x1b\\");
+    let store = grid.sixel_grid.sixel_image_store.clone();
+    assert_eq!(store.borrow().image_count(), 2);
+
+    let (_, sixel_chunks, _) = grid.read_changes(0, 0);
+    assert_eq!(store.borrow().image_count(), 1);
+    assert_eq!(sixel_chunks.len(), 1);
+    assert_eq!(sixel_chunks[0].cell_x, 1);
+}
+
+#[test]
+fn overwritten_blank_sixels_release_capacity_on_read_changes() {
+    let mut grid = create_grid_with_content("");
+    *grid.character_cell_size.borrow_mut() = Some(SizeInPixels {
+        width: 8,
+        height: 6,
+    });
+    let width = grid.width;
+    for i in 0..500 {
+        feed_bytes(
+            &mut grid,
+            format!("\x1b[{};{}H\x1bPq?\x1b\\", i / width + 1, i % width + 1).as_bytes(),
+        );
+    }
+    let store = grid.sixel_grid.sixel_image_store.clone();
+    assert_eq!(store.borrow().image_count(), 500);
+    feed_bytes(&mut grid, b"\x1b[10;1H\x1bPq~\x1b\\");
+    assert_eq!(store.borrow().image_count(), 500);
+
+    for i in 0..500 {
+        feed_bytes(
+            &mut grid,
+            format!("\x1b[{};{}Hx", i / width + 1, i % width + 1).as_bytes(),
+        );
+    }
+    assert_eq!(store.borrow().image_count(), 500);
+    let (_, sixel_chunks, _) = grid.read_changes(0, 0);
+    assert!(sixel_chunks.is_empty());
+    assert_eq!(store.borrow().image_count(), 0);
+    assert_eq!(grid.sixel_grid.image_coordinates().count(), 0);
+
+    feed_bytes(&mut grid, b"\x1b[10;1H\x1bPq~\x1b\\");
+    let (_, sixel_chunks, _) = grid.read_changes(0, 0);
+    assert_eq!(store.borrow().image_count(), 1);
+    assert_eq!(sixel_chunks.len(), 1);
+    assert_eq!(sixel_chunks[0].cell_y, 9);
+}
+
+#[test]
+fn full_sixel_store_rejects_dcs_then_accepts_text_and_images_after_cleanup() {
+    let mut first = create_grid_with_content("");
+    let mut second = create_grid_with_content("");
+    let store = first.sixel_grid.sixel_image_store.clone();
+    second.sixel_grid.sixel_image_store = store.clone();
+    // Each source reserves two of the store's 1,000 image slots.
+    fill_sixel_pane(&mut first, 250);
+    fill_sixel_pane(&mut second, 250);
+    for grid in [&mut first, &mut second] {
+        grid.render(0, 0, &Style::default()).unwrap().unwrap();
+        assert_eq!(grid.completed_sixel.len(), 250);
+    }
+    assert_eq!(store.borrow().image_count(), 1_000);
+    let original = first.completed_sixel[0];
+    let pixels = serialize_sixel_chunk(&mut store.borrow_mut(), &original);
+    feed_bytes(&mut first, b"\x1b[10;1H\x1bPq~\x1b\\recovered");
+    assert!(!first.sixel_grid.is_parsing());
+    assert_eq!(viewport_texts(&first)[9].trim_end(), "recovered");
+    assert_eq!(first.sixel_grid.image_coordinates().count(), 250);
+    assert_eq!(store.borrow().image_count(), 1_000);
+    assert_eq!(
+        serialize_sixel_chunk(&mut store.borrow_mut(), &original),
+        pixels
+    );
+
+    second.clear_screen();
+    second.render(0, 0, &Style::default()).unwrap().unwrap();
+    assert_eq!(store.borrow().image_count(), 500);
+    feed_bytes(&mut first, b"\x1b[11;1H\x1bPq~\x1b\\");
+    assert_eq!(first.sixel_grid.image_coordinates().count(), 251);
+    first.render(0, 0, &Style::default()).unwrap().unwrap();
+    assert_eq!(store.borrow().image_count(), 502);
+    drop(first);
+    drop(second);
+    assert_eq!(store.borrow().image_count(), 0);
+}
+
+#[test]
+fn sixel_cleanup_releases_capacity_without_removing_another_panes_images() {
+    for cleanup in ["clear", "reset", "erase", "alternate", "drop"] {
+        let mut first = create_grid_with_content("");
+        let mut second = create_grid_with_content("");
+        let store = first.sixel_grid.sixel_image_store.clone();
+        second.sixel_grid.sixel_image_store = store.clone();
+        fill_sixel_pane(&mut second, 499);
+        if cleanup == "alternate" {
+            feed_bytes(&mut first, b"\x1b[?1049h");
+        }
+        fill_sixel_pane(&mut first, 1);
+        first.render(0, 0, &Style::default()).unwrap().unwrap();
+        assert_eq!(store.borrow().image_count(), 501);
+        if cleanup == "drop" {
+            drop(first);
+        } else {
+            match cleanup {
+                "clear" => first.clear_screen(),
+                "reset" => first.reset_terminal_state(),
+                "erase" => feed_bytes(&mut first, b"\x1b[2J"),
+                "alternate" => feed_bytes(&mut first, b"\x1b[?1049l"),
+                _ => unreachable!(),
+            }
+            first.render_full_viewport();
+            first.render(0, 0, &Style::default()).unwrap().unwrap();
+            assert_eq!(store.borrow().image_count(), 499, "{cleanup}");
+        }
+        assert_eq!(store.borrow().image_count(), 499, "{cleanup}");
+        assert_eq!(second.sixel_grid.image_coordinates().count(), 499);
+        feed_bytes(&mut second, b"\x1b[10;1H\x1bPq~\x1b\\");
+        assert_eq!(store.borrow().image_count(), 500, "{cleanup}");
+        drop(second);
+        assert_eq!(store.borrow().image_count(), 0, "{cleanup}");
+    }
+}
+
 #[test]
 fn locked_repaints_preserve_completed_sixel_pixels_after_incremental_render_and_erasure() {
     let mut grid = create_grid_with_size_and_raw(8, 10, b"");
@@ -78,6 +227,9 @@ fn locked_repaints_preserve_completed_sixel_pixels_after_incremental_render_and_
         &mut grid,
         b"\x1b[8;1H\x1b[2;2H\x1bPq\"1;1;16;12#1;2;100;0;0#1!16~-!16~\x1b\\",
     );
+    let mut filler = create_grid_with_content("");
+    filler.sixel_grid.sixel_image_store = store.clone();
+    fill_sixel_pane(&mut filler, 499);
     let original = grid.render(10, 20, &Style::default()).unwrap().unwrap().2;
     assert_eq!(original.len(), 1);
     let original = original[0];
@@ -92,7 +244,7 @@ fn locked_repaints_preserve_completed_sixel_pixels_after_incremental_render_and_
     let incremental = grid.render(10, 20, &Style::default()).unwrap().unwrap();
     assert_eq!(incremental.0.len(), 1);
     assert!(incremental.2.is_empty());
-    assert_eq!(store.borrow().image_count(), 2);
+    assert_eq!(store.borrow().image_count(), 501);
     feed_bytes(&mut grid, b"\x1b[?2026h\x1b[2;2HX");
     assert!(grid.render(0, 0, &Style::default()).unwrap().is_none());
     let pending_pixels = serialize_sixel_chunk(&mut store.borrow_mut(), &original);
