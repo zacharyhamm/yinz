@@ -112,7 +112,7 @@ pub enum ResumeRefusal {
 
 /// One pane in a broker's registry, as `ListPanes` describes it.
 ///
-/// Enough to recognise a pane and nothing more. In particular no pid: a remote
+/// Enough to recognise and recover a pane. In particular no pid: a remote
 /// pid is not merely useless to the asking side, it names an unrelated local
 /// process, which is the hazard `ChildSignal` exists to avoid.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -121,6 +121,9 @@ pub struct RemotePaneEntry {
     /// How the pane's command reads, already resolved — a pane that asked for
     /// the login shell shows the shell it actually got.
     pub command: String,
+    /// Resolved executable followed by its exact arguments; absent on older brokers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argv: Option<Vec<String>>,
     /// Whether some server is speaking for this pane right now. A pane stranded
     /// by a failed handoff is exactly one where this is false.
     pub attached: bool,

@@ -119,12 +119,14 @@ fn broker_messages() -> Vec<BrokerToServerMsg> {
                 RemotePaneEntry {
                     pane_token: "abc123".to_owned(),
                     command: "/bin/zsh".to_owned(),
+                    argv: Some(vec!["/bin/zsh".to_owned()]),
                     attached: true,
                     unattached_secs: None,
                 },
                 RemotePaneEntry {
                     pane_token: "def456".to_owned(),
                     command: "cargo watch -x test".to_owned(),
+                    argv: None,
                     attached: false,
                     unattached_secs: Some(1_800),
                 },
@@ -153,6 +155,59 @@ fn control_messages_round_trip_in_both_directions() {
         let got: BrokerToServerMsg = frame.decode_control().expect("decode failed");
         assert_eq!(got, msg);
     }
+}
+
+#[test]
+fn pane_list_argv_is_compatible_with_legacy_readers_and_writers() {
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct LegacyEntry {
+        pane_token: String,
+        command: String,
+        attached: bool,
+        unattached_secs: Option<u64>,
+    }
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    enum LegacyMessage {
+        PaneList { entries: Vec<LegacyEntry> },
+    }
+    let legacy = LegacyMessage::PaneList {
+        entries: vec![LegacyEntry {
+            pane_token: "abc123".to_owned(),
+            command: "display text".to_owned(),
+            attached: false,
+            unattached_secs: Some(90),
+        }],
+    };
+    let mut bytes = vec![];
+    write_control(&mut bytes, &legacy).unwrap();
+    let decoded: BrokerToServerMsg = read_frame(&mut Cursor::new(bytes))
+        .unwrap()
+        .unwrap()
+        .decode_control()
+        .unwrap();
+    let BrokerToServerMsg::PaneList { mut entries } = decoded else {
+        panic!("expected a pane list")
+    };
+    assert_eq!(entries[0].argv, None);
+    assert!(serde_json::to_value(&entries[0])
+        .unwrap()
+        .get("argv")
+        .is_none());
+    entries[0].argv = Some(vec![
+        "/my shell".to_owned(),
+        "".to_owned(),
+        "one two".to_owned(),
+    ]);
+    let message = BrokerToServerMsg::PaneList { entries };
+    let mut bytes = vec![];
+    write_control(&mut bytes, &message).unwrap();
+    let frame = read_frame(&mut Cursor::new(bytes)).unwrap().unwrap();
+    assert_eq!(frame.decode_control::<LegacyMessage>().unwrap(), legacy);
+    assert_eq!(
+        frame.decode_control::<BrokerToServerMsg>().unwrap(),
+        message
+    );
+    assert_eq!(REMOTE_PROTOCOL_VERSION, 8);
 }
 
 /// The kind byte is the whole reason pty bytes can stay raw. If output were ever

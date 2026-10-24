@@ -438,6 +438,14 @@ fn warped_pane_from_entry(
              recover"
         ));
     }
+    let argv = entry.argv.unwrap_or_else(|| {
+        // shortcut: legacy display text loses argument boundaries; upgrade the broker for exact argv.
+        entry.command.split(' ').map(str::to_owned).collect()
+    });
+    let mut argv = argv.into_iter();
+    let command = argv.next().ok_or_else(|| {
+        anyhow!("cannot recover pane '{pane_token}' on {host}: broker returned an empty argument vector")
+    })?;
     Ok(WarpedPane {
         agent_theme: None,
         bracketed_paste: false,
@@ -461,18 +469,9 @@ fn warped_pane_from_entry(
             // taken delivery of nothing. `replay_from` clamps to the ring, and
             // reports whatever it could not keep as dropped.
             received: 0,
-            // Reconstructed from what the broker reports rather than carried:
-            // the session that knew the full `RunCommand` is the one that is
-            // gone. The host is the part that has to be right, because it is
-            // what a later re-run reads.
             cmd: RunCommand {
-                command: PathBuf::from(entry.command.split(' ').next().unwrap_or_default()),
-                args: entry
-                    .command
-                    .split(' ')
-                    .skip(1)
-                    .map(str::to_owned)
-                    .collect(),
+                command: PathBuf::from(command),
+                args: argv.collect(),
                 target: yinz_types::command::PaneTarget::Ssh {
                     host: host.to_owned(),
                 },

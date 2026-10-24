@@ -151,12 +151,46 @@ fn test_session() -> (
     let (master, master_peer) = UnixStream::pair().expect("socketpair failed");
     let session = PaneSession::new(
         "token".to_owned(),
-        "/bin/sh".to_owned(),
+        vec!["/bin/sh".to_owned()],
         PtyHostHandle::for_test(control),
         OwnedFd::from(master),
         ProcessId::new(std::process::id()),
     );
     (session, control_peer, master_peer)
+}
+
+#[test]
+fn registry_preserves_command_arguments_and_display_text() {
+    use std::os::unix::net::UnixStream;
+
+    let argv = vec![
+        "/opt/my shell",
+        "",
+        "one two",
+        "'quoted'",
+        r"a\b",
+        "$HOME; *",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let (control, _control_peer) = UnixStream::pair().unwrap();
+    let (master, _master_peer) = UnixStream::pair().unwrap();
+    let registry = PaneRegistry::new();
+    registry.insert(Arc::new(PaneSession::new(
+        "token".to_owned(),
+        argv.clone(),
+        PtyHostHandle::for_test(control),
+        master.into(),
+        ProcessId::new(std::process::id()),
+    )));
+    let entries = registry.entries();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].argv.as_ref(), Some(&argv));
+    assert_eq!(
+        entries[0].command,
+        r"/opt/my shell  one two 'quoted' a\b $HOME; *"
+    );
 }
 
 mod exit_reporting {

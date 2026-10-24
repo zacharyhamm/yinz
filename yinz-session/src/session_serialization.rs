@@ -738,8 +738,12 @@ fn stack_layout_from_manifest(
     if children_stacks.is_empty() {
         return None;
     }
+    let mut children_stacks: Vec<_> = children_stacks.into_iter().collect();
+    children_stacks.sort_by_key(|(stack_id, panes)| {
+        (panes.iter().map(|p| (p.geom.y, p.geom.x)).min(), *stack_id)
+    });
     let mut stack_nodes = vec![];
-    for (_stack_id, mut stacked_panes) in children_stacks.into_iter() {
+    for (_stack_id, mut stacked_panes) in children_stacks {
         stacked_panes.sort_by_key(|p| p.geom.y);
         stack_nodes.push(TiledPaneLayout {
             split_size,
@@ -1344,14 +1348,7 @@ fn get_row_splits(
         }
     }
     for (_stack_id, mut geoms_in_stack) in stack_geoms.into_iter() {
-        let mut geom_of_whole_stack = geoms_in_stack.remove(0);
-        if let Some(last_geom) = geoms_in_stack.last() {
-            geom_of_whole_stack
-                .geom
-                .rows
-                .set_inner(last_geom.geom.y + last_geom.geom.rows.as_usize())
-        }
-        all_geoms.push(geom_of_whole_stack);
+        all_geoms.push(geoms_in_stack.remove(0));
     }
 
     all_geoms.sort_by_key(|g| g.geom.y);
@@ -1524,6 +1521,10 @@ fn serialize_pane_tabs(tabs: &yinz_types::pane_tabs::PaneTabsLayout, node: &mut 
     }
     node.set_children(children);
 }
+
+#[cfg(test)]
+#[path = "unit/session_serialization_stacks.rs"]
+mod stack_tests;
 
 #[cfg(test)]
 mod tests {

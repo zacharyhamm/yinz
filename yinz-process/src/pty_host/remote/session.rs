@@ -146,6 +146,7 @@ pub struct PaneSession {
     /// place it exists is the supervisor's copy, on the far side of a handle
     /// this would have to lock to ask.
     pub command: String,
+    pub argv: Vec<String>,
     handle: Mutex<PtyHostHandle>,
     /// Kept alive for as long as the pane exists. Both pumps borrow the raw
     /// descriptor; if either owned it, its exit would close a number the other
@@ -185,7 +186,7 @@ impl PaneSession {
     /// being built and being attached.
     pub fn new(
         token: String,
-        command: String,
+        argv: Vec<String>,
         handle: PtyHostHandle,
         master: OwnedFd,
         child_pid: ProcessId,
@@ -193,7 +194,8 @@ impl PaneSession {
         let master_fd = master.as_raw_fd();
         Self {
             token,
-            command,
+            command: argv.join(" "),
+            argv,
             handle: Mutex::new(handle),
             _master: master,
             master_fd,
@@ -499,6 +501,7 @@ impl PaneRegistry {
             .map(|session| RemotePaneEntry {
                 pane_token: session.token.clone(),
                 command: session.command.clone(),
+                argv: Some(session.argv.clone()),
                 attached: session.is_attached(),
                 unattached_secs: session.orphaned_for().map(|elapsed| elapsed.as_secs()),
             })
