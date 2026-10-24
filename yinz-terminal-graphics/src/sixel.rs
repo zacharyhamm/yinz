@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use sixel_image::{SixelDeserializer, SixelImage};
+use sixel_image::{Pixel, SixelDeserializer, SixelImage};
 use sixel_tokenizer::SixelEvent;
 
 use std::fmt::Debug;
@@ -273,7 +273,10 @@ impl SixelGrid {
             image_pixel_size.1,
         );
 
-        // Reclaim images fully covered by this one. Intersections are relative to the old image.
+        let ids = std::mem::take(&mut self.image_ids_to_reap);
+        self.reap_images(ids);
+        // Preflight replacements before removing them; a rejected image must preserve old pixels.
+        let mut replaced = vec![];
         for (image_id, pixel_rect) in &self.sixel_image_locations {
             if let Some(intersecting_rect) =
                 pixel_rect.intersecting_rect(&image_size_and_coordinates)
@@ -282,14 +285,14 @@ impl SixelGrid {
                 && intersecting_rect.height == pixel_rect.height
                 && intersecting_rect.width == pixel_rect.width
             {
-                self.image_ids_to_reap.push(*image_id);
+                replaced.push(*image_id);
             }
         }
-        for image_id in &self.image_ids_to_reap {
+        let image_id = self.new_sixel_image(sixel_image, &replaced)?;
+        for image_id in &replaced {
             self.sixel_image_locations.remove(image_id);
+            self.images_to_check_for_emptiness.remove(image_id);
         }
-
-        let image_id = self.new_sixel_image(sixel_image);
         self.sixel_image_locations
             .insert(image_id, image_size_and_coordinates);
         Some(image_pixel_size)
@@ -328,16 +331,27 @@ impl SixelGrid {
         }
     }
     pub fn drain_image_ids_to_reap(&mut self) -> Option<Vec<usize>> {
+        self.drain_image_ids_to_reap_impl(false)
+    }
+    fn drain_image_ids_to_reap_impl(&mut self, admission_only: bool) -> Option<Vec<usize>> {
         let store = self.sixel_image_store.borrow();
-        for image_id in self.images_to_check_for_emptiness.drain() {
-            let has_lit_pixels = store
-                .sixel_images
-                .get(&image_id)
-                .is_some_and(|(image, _)| image.pixels.iter().flatten().any(|pixel| pixel.on));
-            if !has_lit_pixels && self.sixel_image_locations.remove(&image_id).is_some() {
-                self.image_ids_to_reap.push(image_id);
+        self.images_to_check_for_emptiness.retain(|image_id| {
+            let stored = store.sixel_images.get(image_id);
+            // Retained frames keep the reservation alive, so scanning cannot help admission.
+            if admission_only
+                && stored.is_some_and(|stored| store.sixel_images.contains_key(&stored.retained_id))
+            {
+                return true;
             }
-        }
+            let has_lit_pixels = stored.is_some_and(|stored| {
+                !stored.initially_empty
+                    && stored.image.pixels.iter().flatten().any(|pixel| pixel.on)
+            });
+            if !has_lit_pixels && self.sixel_image_locations.remove(image_id).is_some() {
+                self.image_ids_to_reap.push(*image_id);
+            }
+            false
+        });
         let images_to_reap = self.image_ids_to_reap.drain(..);
         if images_to_reap.len() > 0 {
             Some(images_to_reap.collect())
@@ -374,32 +388,34 @@ impl SixelGrid {
             None
         }
     }
-    fn new_sixel_image(&mut self, sixel_image: SixelImage) -> usize {
+    fn new_sixel_image(&mut self, sixel_image: SixelImage, replaced: &[usize]) -> Option<usize> {
+        let bytes = image_storage_bytes(&sixel_image)?.checked_mul(2)?;
+        let needs_capacity = self
+            .sixel_image_store
+            .borrow()
+            .reservations_after_insert(bytes, replaced)
+            .is_none();
+        // Coalesce pixel scans until rendering unless admission needs the space.
+        if needs_capacity && let Some(ids) = self.drain_image_ids_to_reap_impl(true) {
+            self.reap_images(ids);
+        }
         self.sixel_image_store
             .borrow_mut()
-            .insert_image(Rc::new(sixel_image))
+            .insert_image(sixel_image, replaced)
     }
     pub fn remove_pixels_from_image(&mut self, image_id: usize, pixel_rect: PixelRect) {
-        self.images_to_check_for_emptiness.insert(image_id);
-        if let Some((sixel_image, sixel_image_cache)) = self
+        if self
             .sixel_image_store
             .borrow_mut()
-            .sixel_images
-            .get_mut(&image_id)
+            .remove_pixels_from_image(image_id, pixel_rect)
         {
-            Rc::make_mut(sixel_image).cut_out(
-                pixel_rect.x,
-                pixel_rect.y as usize,
-                pixel_rect.width,
-                pixel_rect.height,
-            );
-            sixel_image_cache
-                .retain(|cached_rect, _| cached_rect.intersecting_rect(&pixel_rect).is_none());
+            self.images_to_check_for_emptiness.insert(image_id);
         }
     }
     pub fn reap_images(&mut self, ids_to_reap: Vec<usize>) {
         for id in ids_to_reap {
-            drop(self.sixel_image_store.borrow_mut().sixel_images.remove(&id));
+            self.images_to_check_for_emptiness.remove(&id);
+            self.sixel_image_store.borrow_mut().remove_image(id);
         }
     }
     pub fn image_cell_coordinates_in_viewport(
@@ -483,25 +499,186 @@ impl Drop for SixelGrid {
     }
 }
 
-type SixelImageCache = HashMap<PixelRect, String>;
+type SixelImageCache = HashMap<PixelRect, Box<str>>;
+
+#[derive(Debug, Clone)]
+struct SixelLimits {
+    image_bytes: usize,
+    // Each source reserves one live image and one completed-frame snapshot.
+    images: usize,
+    cache_bytes: usize,
+    cache_entries: usize,
+}
+
+impl Default for SixelLimits {
+    fn default() -> Self {
+        Self {
+            image_bytes: 320 * 1024 * 1024,
+            images: 1_000,
+            cache_bytes: 16 * 1024 * 1024,
+            cache_entries: 4_096,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct StoredSixelImage {
+    image: Rc<SixelImage>,
+    initially_empty: bool,
+    cache: SixelImageCache,
+    reserved_bytes: usize,
+    live_id: usize,
+    retained_id: usize,
+}
+
+fn image_storage_bytes(image: &SixelImage) -> Option<usize> {
+    let mut bytes = size_of::<SixelImage>().checked_add(2 * size_of::<usize>())?;
+    bytes = bytes.checked_add(
+        image
+            .pixels
+            .capacity()
+            .checked_mul(size_of::<Vec<Pixel>>())?,
+    )?;
+    for row in &image.pixels {
+        bytes = bytes.checked_add(row.capacity().checked_mul(size_of::<Pixel>())?)?;
+    }
+    // Overestimate B-tree node storage per register, even for a one-entry palette.
+    bytes.checked_add(image.color_registers.len().checked_mul(256)?)
+}
+
+/// Bounds retained allocations; decoder and serialized output temporaries are separate.
 #[derive(Debug, Clone, Default)]
 pub struct SixelImageStore {
-    sixel_images: HashMap<usize, (Rc<SixelImage>, SixelImageCache)>,
+    sixel_images: HashMap<usize, StoredSixelImage>,
     next_image_id: usize,
+    limits: SixelLimits,
+    reserved_bytes: usize,
+    reserved_images: usize,
+    cache_bytes: usize,
+    cache_entries: usize,
 }
 
 impl SixelImageStore {
-    fn insert_image(&mut self, image: Rc<SixelImage>) -> usize {
-        // The store is shared by panes; removing an image must never recycle another live ID.
-        let image_id = self.next_image_id;
-        self.next_image_id += 1;
-        self.sixel_images.insert(image_id, (image, HashMap::new()));
-        image_id
+    fn reservations_after_insert(
+        &self,
+        bytes: usize,
+        replaced: &[usize],
+    ) -> Option<(usize, usize)> {
+        let mut reserved_bytes = self.reserved_bytes;
+        let mut reserved_images = self.reserved_images;
+        for id in replaced {
+            if let Some(old) = self.sixel_images.get(id)
+                && !self.sixel_images.contains_key(&old.retained_id)
+            {
+                reserved_bytes -= old.reserved_bytes;
+                reserved_images -= 2;
+            }
+        }
+        reserved_bytes = reserved_bytes.checked_add(bytes)?;
+        reserved_images = reserved_images.checked_add(2)?;
+        if reserved_bytes > self.limits.image_bytes || reserved_images > self.limits.images {
+            return None;
+        }
+        Some((reserved_bytes, reserved_images))
     }
-    /// Retain the current pixels under a separate ID until the completed frame is released.
+    fn insert_image(&mut self, image: SixelImage, replaced: &[usize]) -> Option<usize> {
+        // Reserve the live allocation and its possible copy-on-write completed frame together.
+        let bytes = image_storage_bytes(&image)?.checked_mul(2)?;
+        let (reserved_bytes, reserved_images) = self.reservations_after_insert(bytes, replaced)?;
+        // Reserve the snapshot ID too, so retaining a completed frame cannot exhaust IDs.
+        let image_id = self.next_image_id;
+        let next_image_id = image_id.checked_add(2)?;
+        for id in replaced {
+            self.remove_image(*id);
+        }
+        self.next_image_id = next_image_id;
+        self.reserved_bytes = reserved_bytes;
+        self.reserved_images = reserved_images;
+        let initially_empty = !image.pixels.iter().flatten().any(|pixel| pixel.on);
+        self.sixel_images.insert(
+            image_id,
+            StoredSixelImage {
+                image: Rc::new(image),
+                initially_empty,
+                cache: HashMap::new(),
+                reserved_bytes: bytes,
+                live_id: image_id,
+                retained_id: image_id + 1,
+            },
+        );
+        Some(image_id)
+    }
+    /// Retain the current pixels under a separate ID; release it before retaining another snapshot.
     pub fn retain_image(&mut self, image_id: usize) -> Option<usize> {
-        let image = self.sixel_images.get(&image_id)?.0.clone();
-        Some(self.insert_image(image))
+        let stored = self.sixel_images.get(&image_id)?;
+        if image_id != stored.live_id || self.sixel_images.contains_key(&stored.retained_id) {
+            return None;
+        }
+        let retained_id = stored.retained_id;
+        self.sixel_images.insert(
+            retained_id,
+            StoredSixelImage {
+                image: stored.image.clone(),
+                initially_empty: stored.initially_empty,
+                cache: HashMap::new(),
+                reserved_bytes: stored.reserved_bytes,
+                live_id: stored.live_id,
+                retained_id,
+            },
+        );
+        Some(retained_id)
+    }
+    fn remove_image(&mut self, image_id: usize) {
+        if let Some(stored) = self.sixel_images.remove(&image_id) {
+            if !self.sixel_images.contains_key(&stored.live_id)
+                && !self.sixel_images.contains_key(&stored.retained_id)
+            {
+                self.reserved_bytes -= stored.reserved_bytes;
+                self.reserved_images -= 2;
+            }
+            self.cache_entries -= stored.cache.len();
+            for cached in stored.cache.values() {
+                self.cache_bytes -= cached.len();
+            }
+        }
+    }
+    fn remove_pixels_from_image(&mut self, image_id: usize, pixel_rect: PixelRect) -> bool {
+        let Some(stored) = self.sixel_images.get_mut(&image_id) else {
+            return false;
+        };
+        let has_lit_pixels = stored
+            .image
+            .pixels
+            .iter()
+            .skip(pixel_rect.y as usize)
+            .take(pixel_rect.height)
+            .any(|row| {
+                row.iter()
+                    .skip(pixel_rect.x)
+                    .take(pixel_rect.width)
+                    .any(|pixel| pixel.on)
+            });
+        if !has_lit_pixels {
+            // Blank images still need cleanup when text overwrites them.
+            return stored.initially_empty;
+        }
+        Rc::make_mut(&mut stored.image).cut_out(
+            pixel_rect.x,
+            pixel_rect.y as usize,
+            pixel_rect.width,
+            pixel_rect.height,
+        );
+        stored.cache.retain(|cached_rect, cached| {
+            if cached_rect.intersecting_rect(&pixel_rect).is_none() {
+                true
+            } else {
+                self.cache_bytes -= cached.len();
+                self.cache_entries -= 1;
+                false
+            }
+        });
+        stored.cache.shrink_to_fit();
+        true
     }
     pub fn serialize_image(
         &mut self,
@@ -511,26 +688,26 @@ impl SixelImageStore {
         pixel_width: usize,
         pixel_height: usize,
     ) -> Option<String> {
-        self.sixel_images
-            .get_mut(&image_id)
-            .map(|(sixel_image, sixel_image_cache)| {
-                if let Some(cached_image) = sixel_image_cache.get(&PixelRect::new(
-                    pixel_x,
-                    pixel_y,
-                    pixel_height,
-                    pixel_width,
-                )) {
-                    cached_image.clone()
-                } else {
-                    let serialized_image =
-                        sixel_image.serialize_range(pixel_x, pixel_y, pixel_width, pixel_height);
-                    sixel_image_cache.insert(
-                        PixelRect::new(pixel_x, pixel_y, pixel_height, pixel_width),
-                        serialized_image.clone(),
-                    );
-                    serialized_image
-                }
-            })
+        let stored = self.sixel_images.get_mut(&image_id)?;
+        let rect = PixelRect::new(pixel_x, pixel_y, pixel_height, pixel_width);
+        if let Some(cached_image) = stored.cache.get(&rect) {
+            return Some(cached_image.to_string());
+        }
+        let serialized_image =
+            stored
+                .image
+                .serialize_range(pixel_x, pixel_y, pixel_width, pixel_height);
+        if let Some(bytes) = self.cache_bytes.checked_add(serialized_image.len())
+            && bytes <= self.limits.cache_bytes
+            && self.cache_entries < self.limits.cache_entries
+        {
+            stored
+                .cache
+                .insert(rect, serialized_image.clone().into_boxed_str());
+            self.cache_bytes = bytes;
+            self.cache_entries += 1;
+        }
+        Some(serialized_image)
     }
     pub fn image_count(&self) -> usize {
         self.sixel_images.len()
