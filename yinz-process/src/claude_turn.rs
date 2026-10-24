@@ -6,7 +6,7 @@ use std::{
     fs::OpenOptions,
     io::{BufRead, BufReader, Read, Write},
     os::unix::{fs::MetadataExt, process::CommandExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
@@ -67,31 +67,7 @@ pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
             yinz_runtime::consts::YINZ_TMP_DIR.join(format!("{kind}-conversation-{pid}-{started}"))
         });
         if let Some(path) = &conversation_file {
-            if hook.hook_event_name == "SessionEnd" {
-                if std::fs::read_to_string(path).ok().as_deref() == Some(&hook.session_id) {
-                    std::fs::remove_file(path)
-                        .with_context(|| format!("end {kind} conversation observation"))?;
-                }
-            } else {
-                std::fs::create_dir_all(&*yinz_runtime::consts::YINZ_TMP_DIR)
-                    .with_context(|| format!("create {kind} observation directory"))?;
-                let temporary = path.with_extension(uuid::Uuid::new_v4().to_string());
-                let result = (|| {
-                    let mut marker = std::fs::File::create_new(&temporary)
-                        .with_context(|| format!("create {kind} conversation marker"))?;
-                    marker
-                        .write_all(conversation_marker(kind, hook).as_bytes())
-                        .with_context(|| format!("write {kind} conversation marker"))?;
-                    std::fs::rename(&temporary, path)
-                        .with_context(|| format!("replace {kind} conversation marker"))
-                })();
-                if result.is_err() {
-                    std::fs::remove_file(&temporary)
-                        .with_context(|| format!("clean up {kind} conversation marker"))
-                        .non_fatal();
-                }
-                result?;
-            }
+            update_conversation_marker(path, kind, hook)?;
         }
         if hook.hook_event_name != "UserPromptSubmit"
             || hook.prompt_id.as_deref().is_none_or(str::is_empty)
@@ -216,14 +192,61 @@ pub fn run() -> Result<()> {
 
 fn conversation_marker(kind: &str, hook: &HookEvent) -> String {
     if kind == "agy" {
-        format!(
-            "{}:{}",
-            hook.session_id,
-            hook.prompt_id.as_deref().unwrap_or_default()
-        )
+        serde_json::json!([hook.session_id, hook.prompt_id]).to_string()
     } else {
         hook.session_id.clone()
     }
+}
+
+fn update_conversation_marker(path: &Path, kind: &str, hook: &HookEvent) -> Result<()> {
+    if hook.hook_event_name == "SessionEnd" {
+        let marker = match std::fs::read_to_string(path) {
+            Ok(marker) => marker,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(error).with_context(|| format!("read {kind} conversation marker"));
+            },
+        };
+        let matches_session = if kind == "agy" {
+            serde_json::from_str::<(String, Option<String>)>(&marker)
+                .map(|(session, _)| session == hook.session_id)
+                .unwrap_or_else(|_| {
+                    // Older AGY markers contain session: or session:session:<step>.
+                    marker == format!("{}:", hook.session_id)
+                        || marker
+                            .strip_prefix(&format!("{0}:{0}:", hook.session_id))
+                            .is_some_and(|step| {
+                                !step.is_empty() && step.bytes().all(|b| b.is_ascii_digit())
+                            })
+                })
+        } else {
+            marker == hook.session_id
+        };
+        if matches_session {
+            std::fs::remove_file(path)
+                .with_context(|| format!("end {kind} conversation observation"))?;
+        }
+    } else {
+        std::fs::create_dir_all(path.parent().context("conversation marker has no parent")?)
+            .with_context(|| format!("create {kind} observation directory"))?;
+        let temporary = path.with_extension(uuid::Uuid::new_v4().to_string());
+        let result = (|| {
+            let mut marker = std::fs::File::create_new(&temporary)
+                .with_context(|| format!("create {kind} conversation marker"))?;
+            marker
+                .write_all(conversation_marker(kind, hook).as_bytes())
+                .with_context(|| format!("write {kind} conversation marker"))?;
+            std::fs::rename(&temporary, path)
+                .with_context(|| format!("replace {kind} conversation marker"))
+        })();
+        if result.is_err() {
+            std::fs::remove_file(&temporary)
+                .with_context(|| format!("clean up {kind} conversation marker"))
+                .non_fatal();
+        }
+        result?;
+    }
+    Ok(())
 }
 
 fn follow(observation: &Observation) -> Result<Turn> {

@@ -2,6 +2,62 @@ use super::*;
 use std::process::{Command, Stdio};
 
 #[test]
+fn installed_claude_hooks_quote_the_binary_path_for_local_and_remote_reports() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin_dir = temp
+        .path()
+        .join("user's tools $(touch expanded) `touch backtick-expanded` $EXPANSION");
+    std::fs::create_dir(&bin_dir).unwrap();
+    let reporter = bin_dir.join("yinz");
+    let argv = temp.path().join("argv");
+    let input = temp.path().join("input");
+    let captured = temp.path().join("captured");
+    yinz_test_support::write_warm_script(
+        &reporter,
+        "printf '%s\\0' \"$@\" > \"$ARGV\"\n/bin/cat > \"$CAPTURE\"",
+    );
+    let installed = temp.path().join("yinz-hook.sh");
+    std::fs::write(&installed, script(HookAgent::Claude, &reporter)).unwrap();
+    let payload = b"{\"hook_event_name\":\"SessionEnd\",\"session_id\":\"user's $(touch payload-expanded) $EXPANSION\"}\n";
+    std::fs::write(&input, payload).unwrap();
+    for remote in [false, true] {
+        std::fs::write(&argv, "").unwrap();
+        std::fs::write(&captured, "").unwrap();
+        let output = Command::new("/bin/sh")
+            .arg(&installed)
+            .current_dir(temp.path())
+            .env("PATH", "/usr/bin:/bin")
+            .env("EXPANSION", "expanded-variable")
+            .env("ARGV", &argv)
+            .env("CAPTURE", &captured)
+            .env("YINZ_PANE_REF", "abcdef012345")
+            .env_remove("YINZ_CLAUDE_INLINE_HOOKS")
+            .env(
+                yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV,
+                if remote { "token" } else { "" },
+            )
+            .stdin(Stdio::from(std::fs::File::open(&input).unwrap()))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty(), "{output:?}");
+        assert_eq!(
+            std::fs::read(&argv).unwrap(),
+            if remote {
+                b"--pty-broker\0report\0claude\0".as_slice()
+            } else {
+                b"action\0agent-report\0--hook-json\0".as_slice()
+            }
+        );
+        assert_eq!(std::fs::read(&captured).unwrap(), payload);
+        for expanded in ["expanded", "backtick-expanded", "payload-expanded"] {
+            assert!(!temp.path().join(expanded).exists());
+        }
+    }
+}
+
+#[test]
 fn installed_and_inline_claude_hooks_report_once_with_unchanged_payloads() {
     let temp = tempfile::tempdir().unwrap();
     let reporter = temp.path().join("yinz");

@@ -61,7 +61,7 @@ fn pi_extension(yinz: &Path) -> String {
 ///
 /// A missed bump is silent and total: `status` calls the old script current, and every event
 /// on a machine installed before the change goes nowhere.
-const SCRIPT_VERSION: u32 = 12;
+const SCRIPT_VERSION: u32 = 13;
 
 /// The same discipline for the generated opencode plugin, which is one file rather than a
 /// script plus a settings block. Bumped whenever [`opencode_plugin`] changes.
@@ -454,7 +454,7 @@ finish "$1"
 "#
         );
     }
-    let yinz = yinz.display();
+    let yinz = shell_quote(yinz);
     let (name, wire_kind, kind, no_pane, output, output_rule) = match agent {
         HookAgent::Claude => (
             "Claude Code",
@@ -506,7 +506,7 @@ finish "$1"
 # means something else. Neither set: not a yinz pane at all, and nothing to report to.
 [ -n "${token_env}" ] || [ -n "$YINZ_PANE_REF" ] || {{ {no_pane}; }}
 
-YINZ_BIN='{yinz}'
+YINZ_BIN={yinz}
 [ -x "$YINZ_BIN" ] || YINZ_BIN=yinz
 
 # Either way the event travels on stdin rather than as an argument, clear of execve's
