@@ -1,5 +1,30 @@
-use super::*;
+use super::agent_control::{self, spawn_agent_for_control};
+use super::agent_launch::wait_for_agent_placement;
+use super::pane_creation::spawn_command_pane_near_plugin;
+use super::{run_plugin_command, spawn_agent_for_cli};
+use crate::plugin_map::PluginEnv;
+use crate::{PaneId, PluginInstruction};
+use prost::Message;
+use std::collections::{BTreeMap, HashSet};
+use std::path::PathBuf;
+use std::time::Duration;
+use std::{process, thread};
+use tokio::sync::oneshot;
+use yinz_bus::pty::{ClientTabIndexOrPaneId, PtyInstruction};
+use yinz_bus::route::NotificationEnd;
+use yinz_bus::screen::ScreenInstruction;
+use yinz_bus::thread_bus::ThreadSenders;
 use yinz_runtime::channels::{self, SenderWithContext};
+use yinz_runtime::errors::prelude::*;
+use yinz_storage::data_access::DataAccess;
+use yinz_types::agent::control::AgentOutcome;
+use yinz_types::agent::{AgentLaunchResources, AgentSpawnSpec};
+use yinz_types::command::{CommandToRun, PaneTarget};
+use yinz_types::data::{
+    Event, NewPanePlacement, PermissionType, PluginCommand, AGENT_PANE_CONTEXT,
+};
+use yinz_types::input::command::TerminalAction;
+use yinz_types::internal_ids::TerminalId;
 
 fn launch_failure_repository() -> (tempfile::TempDir, PathBuf, DataAccess) {
     let directory = tempfile::tempdir().unwrap();

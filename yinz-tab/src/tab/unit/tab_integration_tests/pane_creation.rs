@@ -250,7 +250,10 @@ fn pane_creation_characterization() {
                         if suppressed {
                             assert_eq!(
                                 pane.position_and_size(),
-                                crate::tab::half_size_middle_geom(&tab.viewport.borrow(), 0)
+                                crate::panes::floating_panes::floating_pane_grid::half_size_middle_geom(
+                                    &tab.viewport.borrow(),
+                                    0
+                                )
                             );
                             assert_eq!(pane.get_content_offset(), Offset::frame(1));
                             assert!(tab.suppressed_panes[&pid].restored_by.is_none());

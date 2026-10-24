@@ -1,12 +1,27 @@
-#[path = "palette_history.rs"]
-mod history;
-// Blocking native palette work. No Git operation or launch wait runs on screen.
-use super::*;
+//! Blocking native palette work. No Git operation or launch wait runs on screen.
+use super::agent_control;
+use super::agent_launch::{
+    branch_exists, prepare_agent, primary_worktree, spawn_agent_prepared, worktree_at, worktrees,
+    AgentSpawnError, PreparedAgent,
+};
+use std::path::{Path, PathBuf};
+use std::sync::atomic;
+use std::time::Duration;
 use yinz_bus::command_palette::{
     AgentAction, AgentChoice, AgentProject, AgentReply, AgentRequest, Instruction,
 };
+use yinz_bus::pty::PtyInstruction;
+use yinz_bus::screen::ScreenInstruction;
+use yinz_bus::thread_bus::ThreadSenders;
+use yinz_runtime::errors::prelude::*;
+use yinz_storage::data_access::DataAccess;
 use yinz_types::agent::control::AgentPlacement;
-use yinz_types::data::PaneInfo;
+use yinz_types::agent::AgentSpawnSpec;
+use yinz_types::command::PaneTarget;
+use yinz_types::data::{GetPaneCwdResponse, PaneInfo};
+
+#[path = "palette_history.rs"]
+mod history;
 
 pub(crate) fn handle(mut request: AgentRequest, senders: &ThreadSenders, data: &DataAccess) {
     // A newly opened shell can precede the first cwd broadcast. Query the captured

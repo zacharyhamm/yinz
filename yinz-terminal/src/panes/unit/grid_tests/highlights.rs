@@ -380,7 +380,7 @@ fn wide_char_display_column_mapping() {
 
 #[test]
 fn highlight_style_variants_resolve_colors() {
-    use super::super::resolve_highlight_colors;
+    use super::super::highlights::resolve_highlight_colors;
 
     let style = Style::default();
 
@@ -796,7 +796,7 @@ fn layer_ordering() {
 
 #[test]
 fn highlight_iterator_preserves_context_and_advances_over_utf8() {
-    use super::super::highlight_matches;
+    use super::super::highlights::highlight_matches;
     for (pattern, text, expected) in [
         (
             r"(?:^|\s)(\S+)(?:\s|$)",

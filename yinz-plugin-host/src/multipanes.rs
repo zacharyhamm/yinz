@@ -1,6 +1,19 @@
 //! Runtime-neutral multipane commands. Held terminals reserve launch slots without spawning
 //! a process; the existing launch paths then replace or start those slots in place.
-use super::*;
+use super::pane_creation::{run_command_action, run_command_in_pane};
+use super::write_response;
+use crate::plugin_map::PluginEnv;
+use crate::{PaneId, PluginInstruction};
+use prost::Message;
+use std::collections::BTreeMap;
+use tokio::sync::oneshot;
+use yinz_bus::pty::{ClientTabIndexOrPaneId, PtyInstruction, ReplacedPane};
+use yinz_bus::route::NotificationEnd;
+use yinz_bus::screen::ScreenInstruction;
+use yinz_routing::wait_for_action_completion;
+use yinz_runtime::errors::prelude::*;
+use yinz_types::data::{NewPanePlacement, PluginCommand};
+use yinz_types::input::command::{RunCommand, TerminalAction};
 use yinz_types::multipane::*;
 
 fn screen(env: &PluginEnv, operation: MultipaneOperation) -> Result<Option<MultipaneInfo>> {

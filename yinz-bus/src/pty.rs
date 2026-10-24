@@ -23,12 +23,13 @@ use yinz_types::{agent::AgentInfo, geometry::FloatingPaneCoordinates};
 use {
     yinz_types::data::CommandOrPlugin, yinz_types::data::GetPaneCwdResponse,
     yinz_types::data::GetPaneGitProbeResponse, yinz_types::data::GetPanePidResponse,
-    yinz_types::data::GetPaneRunningCommandResponse, yinz_types::data::NewPanePlacement,
-    yinz_types::data::OverlayPlacement, yinz_types::data::SessionInfo,
-    yinz_types::data::WarpPlacement, yinz_types::data::WarpedPane, yinz_types::data::WarpedTab,
-    yinz_types::input::command::RunCommand, yinz_types::input::command::TerminalAction,
-    yinz_types::input::layout::FloatingPaneLayout, yinz_types::input::layout::RunPluginOrAlias,
-    yinz_types::input::layout::TabLayoutInfo, yinz_types::input::layout::TiledPaneLayout,
+    yinz_types::data::GetPaneRunningCommandResponse, yinz_types::data::GetPanesMetadataResponse,
+    yinz_types::data::NewPanePlacement, yinz_types::data::OverlayPlacement,
+    yinz_types::data::SessionInfo, yinz_types::data::WarpPlacement, yinz_types::data::WarpedPane,
+    yinz_types::data::WarpedTab, yinz_types::input::command::RunCommand,
+    yinz_types::input::command::TerminalAction, yinz_types::input::layout::FloatingPaneLayout,
+    yinz_types::input::layout::RunPluginOrAlias, yinz_types::input::layout::TabLayoutInfo,
+    yinz_types::input::layout::TiledPaneLayout,
 };
 
 pub type VteBytes = Vec<u8>;
@@ -519,6 +520,11 @@ pub enum PtyInstruction {
     GetPaneCwd {
         pane_id: PaneId,
         response_channel: crossbeam::channel::Sender<GetPaneCwdResponse>,
+    },
+    /// `GetPaneRunningCommand` and `GetPaneCwd` for many panes in one batch.
+    GetPanesMetadata {
+        pane_ids: Vec<PaneId>,
+        response_channel: crossbeam::channel::Sender<GetPanesMetadataResponse>,
     },
     GetPaneGitProbe {
         refresh_token: Option<String>,

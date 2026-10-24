@@ -1,7 +1,56 @@
 //! Shared automation entry point. Waits run outside the plugin executor.
-use super::*;
+use super::agent_launch::{prepare_agent, spawn_agent_prepared, AgentSpawnError, PreparedAgent};
+use crate::{PaneId, PluginInstruction};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::process;
+use yinz_bus::pty::PtyInstruction;
+use yinz_bus::screen::ScreenInstruction;
+use yinz_bus::thread_bus::ThreadSenders;
+use yinz_runtime::errors::prelude::*;
+use yinz_storage::data_access::DataAccess;
 use yinz_types::agent::control::{AgentOutcome, AgentRequest, AgentResponse, MAX_TIMEOUT_MS};
+use yinz_types::agent::{AgentSpawnSpec, SpawnedAgent};
+use yinz_types::data::{DataError, FetchRequest, SpawnAgentResponse};
 use yinz_types::plugin_data::DataValue;
+
+/// Launch an agent for a direct CLI request, using the same planner and checkout policy as plugins.
+pub fn spawn_agent_for_cli(
+    spec: AgentSpawnSpec,
+    cwd: Option<PathBuf>,
+    project: Option<String>,
+    remote_host: Option<String>,
+    client_id: crate::ClientId,
+    senders: &ThreadSenders,
+    data_access: &DataAccess,
+) -> SpawnAgentResponse {
+    spawn_agent_for_control(
+        yinz_types::agent::control::AgentPlacement::Automatic,
+        spec,
+        cwd,
+        project,
+        remote_host,
+        client_id,
+        senders,
+        data_access,
+    )
+    .map_err(|error| error.to_string())
+}
+
+pub(super) fn spawn_agent_for_control(
+    placement: yinz_types::agent::control::AgentPlacement,
+    spec: AgentSpawnSpec,
+    cwd: Option<PathBuf>,
+    project: Option<String>,
+    remote_host: Option<String>,
+    client_id: crate::ClientId,
+    senders: &ThreadSenders,
+    data_access: &DataAccess,
+) -> Result<SpawnedAgent, AgentSpawnError> {
+    spawn_agent_prepared(placement, spec, client_id, senders, |spec| {
+        prepare_automation_agent(spec, cwd, project, remote_host, data_access)
+    })
+}
 
 pub fn control_agent(
     mut request: AgentRequest,

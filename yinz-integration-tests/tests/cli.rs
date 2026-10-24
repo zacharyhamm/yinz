@@ -904,3 +904,80 @@ fn pipe_focus_only_reveals_and_selects_new_panes() {
         yinz.quit();
     }
 }
+
+/// `list-panes --json` gathers every terminal pane's command and folder from the pty thread in
+/// one batch; each pane must still get its own answer, not a neighbour's or none.
+#[test]
+fn list_panes_json_reports_each_panes_command_and_cwd() {
+    let mut yinz = start_yinz();
+    claim_first_terminal_and_wait_for_prompt(&yinz);
+    let mut expected = Vec::new();
+    for index in 1..=3 {
+        let command = format!("listed-{index}");
+        let cwd = format!("/work/listed-{index}");
+        yinz.run_cli_action(CliAction::NewPane {
+            direction: None,
+            command: vec![command.clone()],
+            remote_host: None,
+            plugin: None,
+            cwd: Some(cwd.clone().into()),
+            floating: false,
+            in_place: false,
+            close_replaced_pane: false,
+            pane_id: None,
+            name: None,
+            close_on_exit: false,
+            start_suspended: false,
+            configuration: None,
+            configuration_json: None,
+            skip_plugin_cache: false,
+            x: None,
+            y: None,
+            width: None,
+            height: None,
+            pinned: None,
+            overlay: None,
+            modal: None,
+            stacked: false,
+            blocking: false,
+            block_until_exit: false,
+            block_until_exit_success: false,
+            block_until_exit_failure: false,
+            unblock_condition: None,
+            near_current_pane: false,
+            no_focus: false,
+            borderless: None,
+            tab_id: None,
+        });
+        let pane = yinz.expect_pty_spawn();
+        expected.push((pane.terminal_id().get(), command, cwd));
+    }
+
+    let (status, listed) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: false,
+        geometry: false,
+        all: false,
+        json: true,
+    });
+    assert_eq!(status, 0, "{listed}");
+    let panes: serde_json::Value = serde_json::from_str(&listed)
+        .unwrap_or_else(|e| panic!("list-panes --json did not answer with JSON: {e}\n{listed}"));
+    for (terminal_id, command, cwd) in expected {
+        let pane = panes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|pane| pane["id"] == terminal_id && pane["is_plugin"] == false)
+            .unwrap_or_else(|| panic!("terminal {terminal_id} is not listed: {panes}"));
+        assert_eq!(pane["pane_cwd"], cwd, "{pane}");
+        assert!(
+            pane["pane_command"]
+                .as_str()
+                .is_some_and(|listed| listed.contains(&command)),
+            "{pane}"
+        );
+    }
+    yinz.quit();
+}

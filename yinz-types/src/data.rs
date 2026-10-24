@@ -1606,6 +1606,17 @@ pub enum GetPaneCwdResponse {
     Err(String),
 }
 
+/// One pane's answers to `GetPaneRunningCommand` and `GetPaneCwd`, gathered in
+/// a single pass so a caller listing every pane pays one pty round trip.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PaneProcessMetadata {
+    pub running_command: Option<Vec<String>>,
+    pub cwd: Option<PathBuf>,
+}
+
+/// Panes with nothing to report — plugins, panes that are gone — are absent.
+pub type GetPanesMetadataResponse = HashMap<PaneId, PaneProcessMetadata>;
+
 /// What Git said about a remote pane's working directory, unparsed.
 ///
 /// Raw on purpose. `agent-service`'s `poll::repository` already turns exactly

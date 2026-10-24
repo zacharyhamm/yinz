@@ -1,3 +1,24 @@
+use super::layouts::PendingLayoutOverride;
+use super::warp::release_pane_for_warp;
+use super::warp::release_tab_for_warp;
+use super::warp::release_tab_with_held_for_warp;
+use super::warp::strand_pane_after_warp;
+use super::warp::warp_restart_command;
+use super::warp::READER_SHUTDOWN_TIMEOUT;
+use crate::pty_host::client::ReleasedPane;
+use crate::ServerInstruction;
+use std::time::Duration;
+use yinz_types::data::GetPaneCwdResponse;
+use yinz_types::data::GetPaneGitProbeResponse;
+use yinz_types::data::GetPanePidResponse;
+use yinz_types::data::GetPaneRunningCommandResponse;
+use yinz_types::data::PaneProcessMetadata;
+use yinz_types::data::WarpedPane;
+use yinz_types::data::WarpedTab;
+use yinz_types::input::layout::FloatingPaneLayout;
+use yinz_types::input::layout::RunPluginOrAlias;
+use yinz_types::input::layout::TabLayoutInfo;
+use yinz_types::input::layout::TiledPaneLayout;
 #[cfg(test)]
 const CLIENT_1: yinz_types::internal_ids::ClientId = yinz_types::internal_ids::ClientId::new(1);
 #[cfg(test)]
@@ -2250,6 +2271,81 @@ fn a_remote_pane_answers_the_plugin_facing_accessors() {
         GetPaneCwdResponse::Ok(cwd) => assert_eq!(cwd, PathBuf::from("/srv/build/project")),
         other => panic!("expected the cwd, got {other:?}"),
     }
+}
+
+/// `list-panes` asks for every pane at once. Each pane's answer has to match what
+/// the single-pane accessors say, whether it is local, sandboxed, remote or a plugin.
+#[test]
+fn batched_pane_metadata_matches_the_single_pane_accessors() {
+    let remote = TerminalId::new(7);
+    let foreground = TerminalId::new(1);
+    let sandboxed = TerminalId::new(2);
+    let not_running = TerminalId::new(3);
+    let (mut pty, mock, _plugin_rx, _screen_rx) = remote_pane(
+        remote,
+        RemoteStatus {
+            child_group_terminated: false,
+            cwd: Some("/srv/build/project".to_owned()),
+            shell_argv: Some(vec!["/bin/zsh".to_owned()]),
+            foreground_argv: Some(vec!["claude".to_owned()]),
+        },
+    );
+    set_active_terminal(&mut pty, foreground, ProcessId::new(100));
+    mock.set_cwd(ProcessId::new(100), PathBuf::from("/work/one"));
+    mock.set_cmd(ProcessId::new(100), vec!["/bin/bash".to_owned()]);
+    mock.set_foreground_cmd(ProcessId::new(100), vec!["nvim".to_owned()]);
+    set_active_terminal(&mut pty, sandboxed, ProcessId::new(200));
+    mock.set_cwd(ProcessId::new(200), PathBuf::from("/repo"));
+    mock.set_cmd(
+        ProcessId::new(200),
+        ["bwrap", "--chdir", "/repo", "--", "codex"]
+            .map(str::to_owned)
+            .to_vec(),
+    );
+    pty.track_launch(
+        sandboxed,
+        &RunCommand {
+            command: "codex".into(),
+            target: PaneTarget::Bubblewrap {
+                root: "/repo".into(),
+            },
+            ..Default::default()
+        },
+    );
+    let plugin = PaneId::Plugin(PluginId::new(4));
+
+    let pane_ids: Vec<PaneId> = [remote, foreground, sandboxed, not_running]
+        .map(PaneId::Terminal)
+        .into_iter()
+        .chain([plugin])
+        .collect();
+    let metadata = pty.get_panes_metadata(&pane_ids);
+
+    for terminal_id in [remote, foreground, sandboxed] {
+        let pane_id = PaneId::Terminal(terminal_id);
+        let GetPaneRunningCommandResponse::Ok(command) = pty.get_pane_running_command(pane_id)
+        else {
+            panic!("{pane_id:?} should have a running command");
+        };
+        let GetPaneCwdResponse::Ok(cwd) = pty.get_pane_cwd(pane_id) else {
+            panic!("{pane_id:?} should have a cwd");
+        };
+        assert_eq!(
+            metadata.get(&pane_id),
+            Some(&PaneProcessMetadata {
+                running_command: Some(command),
+                cwd: Some(cwd),
+            }),
+            "{pane_id:?}"
+        );
+    }
+    assert_eq!(
+        metadata[&PaneId::Terminal(sandboxed)].running_command,
+        Some(vec!["codex".to_owned()]),
+        "a sandboxed pane reports the command inside its sandbox"
+    );
+    assert!(!metadata.contains_key(&PaneId::Terminal(not_running)));
+    assert!(!metadata.contains_key(&plugin));
 }
 
 /// The far machine ran Git in the pane's folder, and the answer is handed to the

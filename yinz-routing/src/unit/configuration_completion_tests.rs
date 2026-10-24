@@ -1,5 +1,7 @@
 use super::*;
+use crate::completion::ACTION_COMPLETION_TIMEOUT;
 use crossbeam::channel::{unbounded, RecvTimeoutError};
+use std::time::Duration;
 use yinz_runtime::channels::SenderWithContext;
 
 #[test]

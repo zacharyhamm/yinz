@@ -1,4 +1,5 @@
-use super::*;
+use super::plugins::max_session_name_bytes;
+use std::path::Path;
 use yinz_runtime::consts::YINZ_SOCK_MAX_LENGTH;
 
 #[test]

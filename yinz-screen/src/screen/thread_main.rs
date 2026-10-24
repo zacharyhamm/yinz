@@ -1,3 +1,9 @@
+mod plugin_launch;
+
+pub(crate) use super::agent_reports::apply_pane_agent_report;
+pub(super) use super::agent_reports::{apply_pane_foreground_command, apply_queued_agent_report};
+pub(super) use super::pending_events::{replay_pending_pane_event, PendingEvents};
+
 use yinz_runtime::errors::prelude::*;
 use yinz_types::internal_ids::TabId;
 
@@ -10,10 +16,10 @@ use crate::plugins::PluginInstruction;
 use crate::pty::{ClientTabIndexOrPaneId, PtyInstruction};
 use crate::tab::Tab;
 use crate::thread_bus::Bus;
-use crate::{ClientId, ServerInstruction, TerminalId};
-use std::collections::{HashMap, HashSet};
+use crate::{ClientId, ServerInstruction};
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use yinz_config::config::Config;
 use yinz_config::screen_config::ScreenConfig;
 use yinz_ipc::get_mode_info;
@@ -21,287 +27,15 @@ use yinz_ipc::ipc::ClientAttributes;
 use yinz_ipc::nested_session;
 use yinz_ipc::nested_session::NestedSessionMessage;
 use yinz_types::diagnostics::ContextType;
+use yinz_types::geometry::Direction;
 use yinz_types::input::layout::Layout;
 use yinz_types::input::options::PaneFrameStyle;
-use yinz_types::pane_size::Size;
 use yinz_types::style::HostTerminalThemeMode;
-use yinz_types::{
-    agent::{AgentInfo, AgentSource},
-    geometry::Direction,
-};
 use {
     yinz_types::data::EventType, yinz_types::data::GetFocusedPaneInfoResponse,
     yinz_types::data::InputMode, yinz_types::data::PaneScrollbackResponse,
     yinz_types::data::PluginCapabilities,
 };
-
-pub(super) fn apply_queued_agent_report(
-    screen: &mut Screen,
-    report: &yinz_types::agent::report::AgentReport,
-    accepted_at: std::time::Instant,
-) -> Result<bool> {
-    let pane_id = report.pane_id;
-    if screen.tab_containing_pane(pane_id).is_none() {
-        return Ok(false);
-    }
-    let hook = report
-        .event
-        .as_ref()
-        .and_then(|event| serde_json::from_str::<yinz_types::agent::HookEvent>(&event.raw).ok());
-    // Older installed reporters can still send Idle for an ordinary Claude or Antigravity Stop.
-    // Correlate internal confirmations before applying or broadcasting any state.
-    if report.kind == "claude"
-        && hook
-            .as_ref()
-            .is_some_and(|hook| screen.ignore_claude_confirmation(pane_id, hook))
-    {
-        log::debug!(
-            "agent report ignored report={:?} reason=claude_confirmation",
-            report.report_id
-        );
-        return Ok(true);
-    }
-    if report.kind == "agy"
-        && hook
-            .as_ref()
-            .is_some_and(|hook| screen.ignore_agy_confirmation(pane_id, hook))
-    {
-        log::debug!(
-            "agent report ignored report={:?} reason=agy_confirmation",
-            report.report_id
-        );
-        return Ok(true);
-    }
-    let mut normalized;
-    let report = if matches!(report.kind.as_str(), "claude" | "agy")
-        && hook
-            .as_ref()
-            .is_some_and(|hook| hook.hook_event_name == "Stop")
-    {
-        let hook = hook.as_ref().expect("checked Stop hook");
-        normalized = report.clone();
-        let complete = match report.kind.as_str() {
-            "claude" => hook.claude_turn_complete,
-            "agy" => hook.agy_turn_complete,
-            _ => None,
-        };
-        if complete != Some(true) || screen.claude_turn_continues(pane_id, hook) {
-            if let yinz_types::agent::report::AgentReportState::Set(agent) = &mut normalized.state {
-                agent.state = yinz_types::agent::AgentState::Busy;
-            }
-            if let Some(event) = &mut normalized.event {
-                event.state = Some(yinz_types::agent::AgentState::Busy);
-            }
-        }
-        &normalized
-    } else {
-        report
-    };
-    // Bootstrap must not overwrite newer provider evidence or observe/broadcast stale startup.
-    if report.kind == "codex"
-        && hook.as_ref().is_some_and(|hook| {
-            hook.hook_event_name == "SessionStart"
-                && hook.codex_hooks_ready == Some(true)
-                && screen.has_agent_lifecycle(pane_id, &report.kind, &hook.session_id)
-        })
-    {
-        log::debug!(
-            "agent report ignored report={:?} reason=duplicate_codex_bootstrap",
-            report.report_id
-        );
-        return Ok(true);
-    }
-    // The Muse bootstrap is unpinned - it carries no session - so a pane whose
-    // provider has already spoken keeps its record whatever the launcher says.
-    if report.kind == "muse"
-        && hook.as_ref().is_some_and(|hook| {
-            hook.hook_event_name == "SessionStart"
-                && hook.muse_hooks_ready.is_some()
-                && hook.session_id.is_empty()
-        })
-        && screen
-            .get_pane_info(pane_id)
-            .and_then(|info| info.agent)
-            .is_some_and(|agent| {
-                agent.kind == "muse"
-                    && agent.source == AgentSource::Reported
-                    && agent.session_id.is_some()
-            })
-    {
-        log::debug!(
-            "agent report ignored report={:?} reason=late_muse_bootstrap",
-            report.report_id
-        );
-        return Ok(true);
-    }
-    // Work finishing after its turn was interrupted must not make the idle agent busy again.
-    if hook
-        .as_ref()
-        .is_some_and(|hook| screen.is_after_ended_turn(pane_id, &report.kind, hook))
-    {
-        log::debug!(
-            "agent report ignored report={:?} reason=ended_turn",
-            report.report_id
-        );
-        return Ok(true);
-    }
-    screen.refresh_agent_controls();
-    let mut trace = yinz_runtime::agent::report::report_diagnostics(report);
-    trace.session = screen.session_name.to_string();
-    trace.record("screen_queue", accepted_at.elapsed(), "ok");
-    let started = std::time::Instant::now();
-    trace.record("state", Duration::ZERO, "enter");
-    log::debug!(
-        "agent report applying report={:?} session={:?} pane={pane_id:?} kind={:?} hook={:?} conversation={:?}",
-        report.report_id, screen.session_name, report.kind,
-        hook.as_ref().map(|hook| &hook.hook_event_name),
-        hook.as_ref().map(|hook| &hook.session_id),
-    );
-    if let Some(hook) = hook
-        .as_ref()
-        .filter(|hook| hook.hook_event_name == "PermissionRequest")
-    {
-        log::debug!(
-            "agent permission report={:?} mode={:?} reviewer={:?} mapped_state={:?}",
-            report.report_id,
-            hook.permission_mode,
-            hook.approvals_reviewer,
-            yinz_types::agent::hook_state_for(&report.kind, hook),
-        );
-    }
-    let result = screen.apply_agent_report_state(report, hook.as_ref());
-    trace.record(
-        "state",
-        started.elapsed(),
-        if result.is_ok() { "ok" } else { "error" },
-    );
-    result?;
-    if let Some(event) = &report.event {
-        screen.agent_control_event(event, hook.as_ref());
-        if trace.enabled {
-            let lifecycle = screen
-                .get_pane_info(pane_id)
-                .and_then(|info| info.agent)
-                .is_some_and(|agent| {
-                    agent.source == AgentSource::Reported
-                        && (agent.session_id.as_deref().is_some_and(|conversation| {
-                            screen.has_agent_lifecycle(pane_id, &agent.kind, conversation)
-                        }) || (agent.kind == "muse"
-                            && agent.session_id.is_none()
-                            && screen.has_provisional_muse_lifecycle(pane_id)))
-                });
-            trace.record(
-                "lifecycle",
-                Duration::ZERO,
-                if lifecycle { "ok" } else { "unavailable" },
-            );
-        }
-        let submission = hook
-            .as_ref()
-            .and_then(|hook| screen.event_submission(pane_id, hook));
-        screen.observe_agent_event(event, hook.as_ref(), submission);
-    }
-    let started = std::time::Instant::now();
-    trace.record("event_enqueue", Duration::ZERO, "enter");
-    let result = if let Some(event) = &report.event {
-        screen
-            .bus
-            .senders
-            .send_to_plugin(PluginInstruction::Update(vec![(
-                None,
-                None,
-                yinz_types::data::Event::AgentEvent(event.clone()),
-            )]))
-    } else {
-        Ok(())
-    };
-    trace.record(
-        "event_enqueue",
-        started.elapsed(),
-        if result.is_ok() { "ok" } else { "error" },
-    );
-    result?;
-    Ok(true)
-}
-
-pub(super) fn apply_pane_foreground_command(
-    screen: &mut Screen,
-    terminal_id: TerminalId,
-    command: Vec<String>,
-    program: Option<String>,
-) -> bool {
-    let detected = command.split_first().is_some_and(|(program, args)| {
-        yinz_types::agent::kind_from_program_and_args(std::path::Path::new(program), args).is_some()
-    });
-    if command.is_empty() {
-        screen.terminal_foreground_cmds.remove(&terminal_id);
-    } else {
-        screen.terminal_foreground_cmds.insert(terminal_id, command);
-    }
-    screen
-        .with_pane(PaneId::Terminal(terminal_id), |pane| {
-            pane.set_detected_agent(detected);
-            pane.set_running_program(program)
-        })
-        .is_some()
-}
-
-// Reports and output waiting for creation are applied before newer instructions already in
-// the queue. Re-enqueuing them at the tail would invert state and byte arrival order.
-pub(super) fn replay_pending_pane_event(
-    screen: &mut Screen,
-    event: ScreenInstruction,
-    pending: &mut PendingEvents,
-) -> Result<()> {
-    match event {
-        ScreenInstruction::NewPane(
-            pid,
-            title,
-            hold,
-            invoked_with,
-            placement,
-            suppressed,
-            target,
-            completion,
-            blocking,
-        ) => {
-            screen
-                .place_new_pane(
-                    pid,
-                    title,
-                    hold,
-                    invoked_with,
-                    placement,
-                    suppressed,
-                    target,
-                    completion,
-                    blocking,
-                    pending,
-                )
-                .context("failed to replay pending pane placement")?;
-        },
-        ScreenInstruction::AgentReport(report, accepted_at) => {
-            apply_queued_agent_report(screen, &report, accepted_at)?;
-        },
-        ScreenInstruction::UpdatePaneForegroundCommand(terminal_id, command, program) => {
-            apply_pane_foreground_command(screen, terminal_id, command, program);
-        },
-        ScreenInstruction::SetPaneTitlePrefix(pane_id, prefix) => {
-            screen.with_pane(pane_id, |pane| pane.set_title_prefix(prefix));
-        },
-        ScreenInstruction::PtyBytes(pid, bytes) => {
-            screen
-                .handle_pty_bytes(pid, bytes, pending)
-                .context("failed to replay buffered terminal output")?;
-            let _ = screen
-                .bus
-                .senders
-                .send_to_background_jobs(BackgroundJob::RenderToClients);
-        },
-        event => screen.bus.senders.send_to_screen(event)?,
-    }
-    Ok(())
-}
 
 /// Whether `raw_bytes` is text a tab name, a pane name or a search term can take.
 ///
@@ -316,116 +50,6 @@ pub(super) fn replay_pending_pane_event(
 /// begin with ESC. Real pastes use `PasteFromClient` and update names/search directly.
 pub(super) fn is_typable_text(raw_bytes: &[u8]) -> bool {
     !raw_bytes.starts_with(&[0x1b])
-}
-
-pub(crate) fn apply_pane_agent_report(
-    screen: &mut Screen,
-    pane_id: PaneId,
-    agent: Option<AgentInfo>,
-) -> Result<bool> {
-    screen.claude_permission_waits.remove(&pane_id);
-    // Read before the write: which hooks a change fires is a question about the edge, and the
-    // pane only answers whether anything changed.
-    let Some(previous) = screen
-        .tab_containing_pane(pane_id)
-        .map(|tab| tab.pane_agent_info(pane_id))
-    else {
-        return Ok(false);
-    };
-    // The one field of a record the reporter does not know. A hook says everything the agent
-    // knows about itself and nothing about whose books it is being kept in, so a report that
-    // leaves the run id unset inherits the pane's rather than erasing it. Only clearing the
-    // record clears the run id with it. Done before the comparison below, so a report that is
-    // identical apart from the id it did not supply still costs no hook and no manifest.
-    let agent = agent.map(|mut agent| {
-        if agent.run_id.is_none() {
-            agent.run_id = previous
-                .as_ref()
-                .and_then(|previous| previous.run_id.clone());
-        }
-        agent
-    });
-    let changed = screen
-        .tab_containing_pane_mut(pane_id)
-        .map(|tab| tab.set_pane_agent(pane_id, agent.clone()))
-        .unwrap_or(false);
-    // A Muse pane verified at startup binds its conversation with its first turn:
-    // the record moves from the bootstrap's empty session to the provider's, and
-    // that expected edge must not end the submission that caused it.
-    let provisional_muse_bind = previous
-        .as_ref()
-        .is_some_and(|previous| previous.kind == "muse" && previous.session_id.is_none())
-        && agent
-            .as_ref()
-            .is_some_and(|agent| agent.kind == "muse" && agent.session_id.is_some());
-    if !provisional_muse_bind
-        && (previous
-            .as_ref()
-            .map(|agent| (&agent.kind, &agent.session_id))
-            != agent.as_ref().map(|agent| (&agent.kind, &agent.session_id))
-            || agent
-                .as_ref()
-                .is_none_or(|agent| agent.state == yinz_types::agent::AgentState::Exited))
-    {
-        let reason = if agent.is_none() {
-            "record_cleared"
-        } else if previous.as_ref().map(|agent| &agent.kind)
-            != agent.as_ref().map(|agent| &agent.kind)
-        {
-            "kind_changed"
-        } else if previous
-            .as_ref()
-            .and_then(|agent| agent.session_id.as_ref())
-            != agent.as_ref().and_then(|agent| agent.session_id.as_ref())
-        {
-            "conversation_changed"
-        } else {
-            "agent_exited"
-        };
-        screen.invalidate_agent_lifecycle(pane_id, reason);
-    }
-    // A report that repeats itself costs nothing; a changed one is news to every reader of the
-    // manifest.
-    if changed {
-        screen.fire_agent_state_hooks(pane_id, previous.as_ref(), agent.as_ref());
-        if screen.update_plugin_tab_names() {
-            screen.log_and_report_session_state()?;
-        } else {
-            screen.report_pane_state()?;
-        }
-        screen.render()?;
-    }
-    Ok(true)
-}
-
-/// Work the screen thread has accepted but cannot act on yet.
-///
-/// An instruction that names a tab, client or pane which does not exist yet is parked here and
-/// replayed once the thing it names arrives; a tab switch requested while a layout is still
-/// landing waits until the layout is applied. Owned by the screen thread's loop and handed to
-/// the `Screen` methods that queue or drain it.
-#[derive(Default)]
-pub(super) struct PendingEvents {
-    pub(super) tab_switches: HashSet<(TabId, ClientId)>,
-    pub(super) waiting_for_tab: Vec<ScreenInstruction>,
-    pub(super) waiting_for_client: Vec<ScreenInstruction>,
-    pub(super) waiting_for_pane: HashMap<PaneId, Vec<ScreenInstruction>>,
-}
-
-impl PendingEvents {
-    pub(super) fn remove_client_plugin_output(&mut self, client_id: ClientId) {
-        self.waiting_for_pane.retain(|_, events| {
-            events.retain_mut(|event| match event {
-                ScreenInstruction::PluginBytes(assets) => {
-                    assets.retain(|asset| asset.client_id != client_id);
-                    !assets.is_empty()
-                },
-                ScreenInstruction::ShowPluginCursor(_, client, _) => *client != client_id,
-                _ => true,
-            });
-            !events.is_empty()
-        });
-    }
 }
 
 pub fn screen_thread_main(
@@ -2601,54 +2225,21 @@ pub fn screen_thread_main(
                     skip_cache,
                     cwd,
                     client_id,
-                    mut completion_tx,
+                    completion_tx,
                     explicit_tab_id,
                     no_focus,
                 ) => {
-                    if explicit_tab_id.is_none()
-                        && !no_focus
-                        && screen.launch_overlay_tab(
-                            &run_plugin,
-                            cwd.clone(),
-                            skip_cache,
-                            client_id,
-                            &mut completion_tx,
-                        )?
-                    {
-                        break 'instruction;
-                    }
-                    let Some(tab_index) = screen.tab_for_plugin_launch(
+                    plugin_launch::new_tiled_plugin_pane(
+                        &mut screen,
+                        run_plugin,
+                        pane_title,
+                        skip_cache,
+                        cwd,
                         client_id,
+                        completion_tx,
                         explicit_tab_id,
-                        None,
-                        &mut completion_tx,
-                    ) else {
-                        break 'instruction;
-                    };
-                    let size = Size::default();
-                    let should_float = Some(false);
-                    let should_be_opened_in_place = false;
-                    let should_focus_plugin = if no_focus { Some(false) } else { None };
-                    screen
-                        .bus
-                        .senders
-                        .send_to_pty(PtyInstruction::FillPluginCwd(
-                            should_float,
-                            should_be_opened_in_place,
-                            false, // close_replaced_pane
-                            pane_title,
-                            run_plugin,
-                            tab_index,
-                            None,
-                            client_id,
-                            size,
-                            skip_cache,
-                            cwd,
-                            should_focus_plugin,
-                            None,
-                            completion_tx,
-                            None,
-                        ))?;
+                        no_focus,
+                    )?;
                 },
                 ScreenInstruction::NewFloatingPluginPane(
                     run_plugin,
@@ -2680,77 +2271,36 @@ pub fn screen_thread_main(
                     skip_cache,
                     close_replaced_pane,
                     client_id,
-                    mut completion_tx,
+                    completion_tx,
                     explicit_tab_id,
                     no_focus,
                 ) => {
-                    let Some(tab_index) = screen.tab_for_plugin_launch(
+                    plugin_launch::new_in_place_plugin_pane(
+                        &mut screen,
+                        run_plugin,
+                        pane_title,
+                        pane_id_to_replace,
+                        skip_cache,
+                        close_replaced_pane,
                         client_id,
+                        completion_tx,
                         explicit_tab_id,
-                        Some(pane_id_to_replace),
-                        &mut completion_tx,
-                    ) else {
-                        break 'instruction;
-                    };
-                    let size = Size::default();
-                    let should_float = None;
-                    let should_be_in_place = true;
-                    let should_focus_plugin = if no_focus { Some(false) } else { None };
-                    screen
-                        .bus
-                        .senders
-                        .send_to_pty(PtyInstruction::FillPluginCwd(
-                            should_float,
-                            should_be_in_place,
-                            close_replaced_pane,
-                            pane_title,
-                            run_plugin,
-                            tab_index,
-                            Some(pane_id_to_replace),
-                            client_id,
-                            size,
-                            skip_cache,
-                            None,
-                            should_focus_plugin,
-                            None,
-                            completion_tx,
-                            None,
-                        ))?;
+                        no_focus,
+                    )?;
                 },
                 ScreenInstruction::StartOrReloadPluginPane(
                     run_plugin,
                     pane_title,
                     client_id,
-                    mut completion_tx,
+                    completion_tx,
                 ) => {
-                    let detached_tab = if screen.has_no_client_to_act_for(client_id) {
-                        screen.tabs.keys().next().copied()
-                    } else {
-                        None
-                    };
-                    let Some(tab_index) = screen.tab_for_plugin_launch(
+                    plugin_launch::start_or_reload_plugin_pane(
+                        &mut screen,
+                        run_plugin,
+                        pane_title,
                         client_id,
-                        detached_tab,
-                        None,
-                        &mut completion_tx,
-                    ) else {
-                        break 'instruction;
-                    };
-                    let size = Size::default();
-                    let should_float = Some(false);
-
-                    screen
-                        .bus
-                        .senders
-                        // ClosePane queues unloading on PTY; reopening must follow that unload.
-                        .send_to_pty(PtyInstruction::ReloadPlugin {
-                            should_float,
-                            pane_title,
-                            run_plugin,
-                            tab_index,
-                            size,
-                            completion_tx,
-                        })?;
+                        completion_tx,
+                    )?;
                 },
                 ScreenInstruction::AddPlugin(
                     should_float,
@@ -4657,38 +4207,5 @@ pub fn screen_thread_main(
 }
 
 #[cfg(test)]
-mod typable_text_tests {
-    use super::is_typable_text;
-    use crate::panes::terminal_pane::{BRACKETED_PASTE_BEGIN, BRACKETED_PASTE_END};
-
-    #[test]
-    fn text_and_the_editing_keys_a_name_understands_are_typable() {
-        // `\0` clears a name and DEL/BS delete from it; `update_active_tab_name` reads all three.
-        for bytes in [
-            &b"a"[..],
-            b"!",
-            b" ",
-            "\u{e9}".as_bytes(),
-            b"\0",
-            b"\x7f",
-            b"\x08",
-        ] {
-            assert!(is_typable_text(bytes), "{bytes:?} should be typable");
-        }
-    }
-
-    #[test]
-    fn an_escape_sequence_is_not_typable() {
-        for bytes in [
-            // A key with no text of its own, under either kitty flag set.
-            &b"\x1b[97;3u"[..],
-            // A host that ignored REPORT_ALTERNATE_KEYS, leaving a shifted key unresolved.
-            b"\x1b[49;2u",
-            b"\x1b[D",
-            BRACKETED_PASTE_BEGIN,
-            BRACKETED_PASTE_END,
-        ] {
-            assert!(!is_typable_text(bytes), "{bytes:?} should not be typable");
-        }
-    }
-}
+#[path = "../unit/typable_text_tests.rs"]
+mod typable_text_tests;

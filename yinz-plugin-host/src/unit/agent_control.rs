@@ -1,7 +1,17 @@
+use super::super::agent_launch::{
+    agent_folder_tracked, apply_project_worktree_dir, prepare_git_checkout_in_tracked,
+    WorktreeGuard,
+};
 use super::*;
+use std::thread;
+use std::time::Duration;
+use yinz_bus::pty::ClientTabIndexOrPaneId;
 use yinz_types::agent::control::AgentStatus;
+use yinz_types::command::GitCheckout;
 use yinz_types::command::PaneTarget;
+use yinz_types::input::command::TerminalAction;
 use yinz_types::internal_ids::TabId;
+use yinz_types::internal_ids::TerminalId;
 use yinz_types::plugin_data::Mutation;
 
 #[test]

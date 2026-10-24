@@ -1,6 +1,12 @@
+use super::super::agent_launch::TILED;
 use super::*;
+use crate::{PaneId, TerminalId};
 use std::sync::{atomic::AtomicBool, Arc};
+use std::{fs, process, thread};
+use yinz_bus::pty::ClientTabIndexOrPaneId;
 use yinz_runtime::channels::{unbounded, SenderWithContext};
+use yinz_types::agent::control::AgentOutcome;
+use yinz_types::input::command::{RunCommand, TerminalAction};
 use yinz_types::internal_ids::{ClientId, HostId, TabId};
 
 fn repository() -> (tempfile::TempDir, DataAccess) {

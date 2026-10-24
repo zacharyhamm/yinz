@@ -1,12 +1,12 @@
-use super::plugin_log_lines;
-use crate::{background_worker::Workers, steel::SteelPlugin, test_env::test_env};
+use super::plugins::plugin_log_lines;
+use crate::background_worker::Workers;
+use crate::steel::SteelPlugin;
+use crate::test_env::test_env;
 use std::sync::OnceLock;
 use yinz_test_support::Watched;
-use yinz_types::input::{
-    git_plugin::GitPlugin,
-    layout::{RunPlugin, RunPluginLocation},
-    plugins::PluginAliases,
-};
+use yinz_types::input::git_plugin::GitPlugin;
+use yinz_types::input::layout::{RunPlugin, RunPluginLocation};
+use yinz_types::input::plugins::PluginAliases;
 
 struct Capture(Watched<Vec<String>>);
 impl log::Log for Capture {
