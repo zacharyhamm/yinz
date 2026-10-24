@@ -634,7 +634,7 @@ impl KeyCode {
                 let intro = match key {
                     Numpad0 => "\x1b[2",
                     Numpad3 => "\x1b[6",
-                    Numpad9 => "\x1b[6",
+                    Numpad9 => "\x1b[5",
                     Decimal => "\x1b[3",
                     _ => unreachable!(),
                 };
@@ -1250,14 +1250,6 @@ impl InputParser {
 
         map.insert(
             [0x7f],
-            InputEvent::Key(KeyEvent {
-                key: KeyCode::Backspace,
-                modifiers: Modifiers::NONE,
-            }),
-        );
-
-        map.insert(
-            [0x8],
             InputEvent::Key(KeyEvent {
                 key: KeyCode::Backspace,
                 modifiers: Modifiers::NONE,
