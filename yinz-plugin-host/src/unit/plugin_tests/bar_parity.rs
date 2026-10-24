@@ -125,7 +125,8 @@ impl Pair {
                 .unwrap_or(Value::Null))
         })
         .unwrap();
-        steel.eval(&format!("(define parity-clock (vector {NOW})) (define (yinz-wall-clock-ms) (vector-ref parity-clock 0))
+        steel.eval(&format!("(define parity-clock (vector {NOW})) (define (yinz-now-ms) (vector-ref parity-clock 0))
+            (define (yinz-wall-clock-ms) (vector-ref parity-clock 0))
             (define parity-random (vector 0)) (define (yinz-random-integer n) (vector-ref parity-random 0))
             (define (parity-choose-tip chosen cache)
               (vector-set! parity-random 0 (let loop ((names (sort (hash-keys->list (hash-ref cache \"cached_data\")) string<?)) (index 0))
@@ -218,16 +219,20 @@ impl Pair {
             normalize(expected.clone()),
             "Deno/Wasm host commands differ"
         );
+        // Steel tracks outstanding timers; its scheduling is covered by the status-bar tests.
+        let shared_command =
+            |command: &Value| !self.status_bar || command.get("SetTimeout").is_none();
         let steel = self
             .steel_commands
             .lock()
             .unwrap()
             .drain(..)
             .filter(filter)
+            .filter(&shared_command)
             .collect();
         assert_eq!(
             normalize(steel),
-            normalize(expected),
+            normalize(expected.into_iter().filter(shared_command).collect()),
             "Steel/Wasm host commands differ"
         );
     }

@@ -87,6 +87,7 @@ cursor control, and `Pick`, which default to a null reply.
 | `(test-event event)` | Deliver an event and process deferred callbacks |
 | `(test-pipe message)` | Deliver a typed pipe message |
 | `(test-palette message client-id)` | Deliver a raw command-palette request for the specified client |
+| `(test-step-wall-clock milliseconds)` | Change only the mock wall clock by a signed integer number of milliseconds, without delivering an event |
 | `(test-advance milliseconds)` | Advance the mock monotonic and wall clocks, then deliver a timer event |
 | `(test-render [rows columns])` | Render through the terminal grid and return visible text; defaults to 24 by 80 |
 | `(render-text text [rows columns])` | Render supplied terminal text through the same grid |
@@ -104,9 +105,11 @@ captured commands, update test state, or raise an error to simulate a host failu
   (hash "plugin_id" 7)))
 ```
 
-The test and mocked plugin share a clock that starts at zero.
-`test-advance` takes nonnegative integer
-milliseconds. It does not wait for real time. To resolve a permission request,
+The test and mocked plugin share monotonic and wall clocks that start at zero.
+`test-advance` takes nonnegative integer milliseconds and delivers one Timer, even
+if no timeout is due. It does not wait for real time or schedule pending timeouts.
+`test-step-wall-clock` takes signed integer milliseconds. It changes only wall
+time and does not deliver an event. To resolve a permission request,
 deliver `(hash "PermissionRequestResult" "Granted")` or `"Denied"` through
 `test-event`. Requests retain their original client and execute in queue order.
 

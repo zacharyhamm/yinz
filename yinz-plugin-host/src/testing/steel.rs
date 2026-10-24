@@ -1,7 +1,7 @@
 //! Scheme cases and mocked plugin instances run inside the existing disposable test worker.
 use super::*;
 use crate::permissions::{Completion, Permissions, Request as PermissionRequest};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicI64, AtomicU64};
 use std::sync::{Arc, Mutex};
 use yinz_steel::Runtime;
 use yinz_types::data::{PermissionStatus, PluginCommand};
@@ -211,6 +211,7 @@ struct State {
     started: Instant,
     pending: String,
     now: Arc<AtomicU64>,
+    wall_clock: Arc<AtomicI64>,
 }
 
 thread_local! {
@@ -345,11 +346,11 @@ impl State {
                 );
                 let capture = self.capture.clone();
                 let clock = self.now.clone();
-                let wall_clock = self.now.clone();
+                let wall_clock = self.wall_clock.clone();
                 let mut plugin = Runtime::new_with_clocks(
                     move |command| Capture::command(&capture, command),
                     move || clock.load(Ordering::Relaxed),
-                    move || wall_clock.load(Ordering::Relaxed) as i64,
+                    move || wall_clock.load(Ordering::Relaxed),
                 )?;
                 set_test_identity(&mut plugin)?;
                 plugin.eval(r#"
@@ -448,6 +449,18 @@ impl State {
                     .invoke("yinz-async-enter", vec![json!(client)])?;
                 self.plugin()?.palette(message).map(Value::Bool)
             },
+            "step-wall-clock" => {
+                let milliseconds = argument
+                    .as_i64()
+                    .context("wall clock step requires signed integer milliseconds")?;
+                let wall_clock = self
+                    .wall_clock
+                    .load(Ordering::Relaxed)
+                    .checked_add(milliseconds)
+                    .context("test wall clock overflow")?;
+                self.wall_clock.store(wall_clock, Ordering::Relaxed);
+                Ok(Value::Null)
+            },
             "advance" => {
                 let milliseconds = argument
                     .as_u64()
@@ -457,7 +470,13 @@ impl State {
                     .load(Ordering::Relaxed)
                     .checked_add(milliseconds)
                     .context("test clock overflow")?;
+                let wall_clock = self
+                    .wall_clock
+                    .load(Ordering::Relaxed)
+                    .checked_add(i64::try_from(milliseconds).context("test wall clock overflow")?)
+                    .context("test wall clock overflow")?;
                 self.now.store(now, Ordering::Relaxed);
+                self.wall_clock.store(wall_clock, Ordering::Relaxed);
                 self.plugin()?.invoke("yinz-async-enter", vec![json!(1)])?;
                 self.plugin()?
                     .update(json!({"Timer": milliseconds as f64 / 1000.0}))
@@ -585,6 +604,7 @@ pub(super) fn execute(request: Request) -> Result<Value> {
         capture: capture.clone(),
         plugin: None,
         now: Arc::new(AtomicU64::new(0)),
+        wall_clock: Arc::new(AtomicI64::new(0)),
         started: Instant::now(),
         pending: String::new(),
         session: request.session.map(|root| {
@@ -599,14 +619,14 @@ pub(super) fn execute(request: Request) -> Result<Value> {
         }),
     };
     let clock = state.now.clone();
-    let wall_clock = state.now.clone();
+    let wall_clock = state.wall_clock.clone();
     CALLBACK_CAPTURE.with(|slot| *slot.borrow_mut() = Some(capture.clone()));
     HOST.with(|host| *host.borrow_mut() = Some(state));
     let _reset = ResetHost;
     let mut runtime = Runtime::new_with_clocks(
         |_| bail!("host commands are unavailable in test cases; use a mocked plugin harness"),
         move || clock.load(Ordering::Relaxed),
-        move || wall_clock.load(Ordering::Relaxed) as i64,
+        move || wall_clock.load(Ordering::Relaxed),
     )?;
     runtime.register_json_function("%test-control", |request| {
         let operation = request["op"]

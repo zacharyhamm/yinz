@@ -72,6 +72,7 @@
 (define (test-pipe message) (%test "pipe" message))
 (define (test-palette message client)
   (%test "palette" (hash "message" message "client" client)))
+(define (test-step-wall-clock milliseconds) (%test "step-wall-clock" milliseconds))
 (define (test-advance milliseconds) (%test "advance" milliseconds))
 (define (test-render . dimensions)
   (%test "render" (hash "rows" (if (null? dimensions) 24 (car dimensions))
