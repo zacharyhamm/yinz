@@ -21,6 +21,10 @@ use crate::keys::{BareKey, KeyModifier, KeyWithModifier};
 
 pub mod viewport;
 
+#[cfg(test)]
+#[path = "unit/key_tests.rs"]
+mod key_tests;
+
 const MAX_UNDO_STACK_SIZE: usize = 100;
 
 /// Action returned by TextInput after handling a key event
@@ -521,9 +525,6 @@ impl TextInput {
                     self.delete_word_forward();
                     return InputAction::Continue;
                 },
-                // Without this, an unbound Ctrl-letter falls through to the
-                // bare-key arm below (which ignores modifiers) and gets typed
-                // into the buffer as a literal character.
                 BareKey::Char(_) => return InputAction::NoAction,
                 _ => {},
             }
@@ -552,7 +553,6 @@ impl TextInput {
             }
         }
 
-        // Handle bare keys (no modifiers)
         match key.bare_key {
             BareKey::Enter => InputAction::Submit,
             BareKey::Esc => InputAction::Cancel,
@@ -589,7 +589,9 @@ impl TextInput {
                 self.next_history();
                 InputAction::Continue
             },
-            BareKey::Char(c) => {
+            BareKey::Char(c)
+                if key.has_no_modifiers() || key.has_only_modifiers(&[KeyModifier::Shift]) =>
+            {
                 self.insert_char(c);
                 InputAction::Continue
             },

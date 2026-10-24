@@ -10,6 +10,10 @@ use yinz_types::keys::{BareKey, KeyModifier, KeyWithModifier};
 #[path = "unit/encoding_tests.rs"]
 mod encoding_tests;
 
+#[cfg(test)]
+#[path = "unit/decoding_tests.rs"]
+mod decoding_tests;
+
 #[cfg(not(target_family = "wasm"))]
 impl From<&KeyModifier> for Modifiers {
     fn from(val: &KeyModifier) -> Self {
@@ -340,19 +344,13 @@ pub fn parse_keys(input_bytes: &[u8]) -> Vec<KeyWithModifier> {
 /// this used to fall through to `Esc`, so a numpad or media key cancelled whatever mode
 /// the user was in.
 ///
-/// Two deliberate departures from a pure per-key mapping, both about bytes termwiz
-/// cannot tell apart: a raw `0x08` is read as Ctrl-h rather than Backspace, and a raw
-/// `0x0a` is read as Ctrl-j when the user has bound it (`is_bound`), Enter otherwise.
+/// A raw `0x0a` is read as Ctrl-j when the user has bound it (`is_bound`), Enter otherwise.
 pub fn cast_termwiz_key(
     event: KeyEvent,
     raw_bytes: &[u8],
     is_bound: impl FnOnce(&KeyWithModifier) -> bool,
 ) -> Option<KeyWithModifier> {
     let termwiz_modifiers = event.modifiers;
-
-    if raw_bytes == [8] {
-        return Some(KeyWithModifier::new(BareKey::Char('h')).with_ctrl_modifier());
-    };
 
     if raw_bytes == [10] {
         let ctrl_j = KeyWithModifier::new(BareKey::Char('j')).with_ctrl_modifier();
@@ -370,11 +368,15 @@ pub fn cast_termwiz_key(
     if termwiz_modifiers.contains(Modifiers::SHIFT) {
         modifiers.insert(KeyModifier::Shift);
     }
+    if termwiz_modifiers.contains(Modifiers::SUPER) {
+        modifiers.insert(KeyModifier::Super);
+    }
 
     let bare_key = match event.key {
         KeyCode::Char('\0') => {
             // NUL character, probably ctrl-space
-            return Some(KeyWithModifier::new(BareKey::Char(' ')).with_ctrl_modifier());
+            modifiers.insert(KeyModifier::Ctrl);
+            BareKey::Char(' ')
         },
         KeyCode::Char(c) => BareKey::Char(c),
         KeyCode::Backspace => BareKey::Backspace,
@@ -480,11 +482,18 @@ mod compatibility_tests {
             Some(ctrl_j.clone())
         );
         assert_eq!(
-            cast_termwiz_key(enter.clone(), b"\n", |_| false),
+            cast_termwiz_key(enter, b"\n", |_| false),
             Some(KeyWithModifier::new(BareKey::Enter))
         );
         assert_eq!(
-            cast_termwiz_key(enter, &[8], |_| panic!("only line feed consults bindings")),
+            cast_termwiz_key(
+                KeyEvent {
+                    key: KeyCode::Char('h'),
+                    modifiers: Modifiers::CTRL,
+                },
+                b"\x08",
+                |_| panic!("only line feed consults bindings"),
+            ),
             Some(KeyWithModifier::new(BareKey::Char('h')).with_ctrl_modifier())
         );
         // The existing encoder keeps Ctrl-J as line feed, including in Kitty mode.

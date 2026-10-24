@@ -834,7 +834,7 @@ impl CommandPalette {
             }
             return Outcome::None;
         }
-        // TextInput's Alt-letter fallback inserts text. These are shortcuts here.
+        // Leave Alt/Super character chords to palette shortcuts.
         if matches!(key.bare_key, BareKey::Char(_))
             && (key.has_modifiers(&[KeyModifier::Alt]) || key.has_modifiers(&[KeyModifier::Super]))
         {
