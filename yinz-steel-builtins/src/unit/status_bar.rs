@@ -15,9 +15,16 @@ struct Status {
 }
 impl Status {
     fn new(classic: bool) -> Self {
-        let (runtime, host) = plugin_with_prelude("status-bar",json!({"classic":classic.to_string()}),
-            BTreeMap::from([("GetLocalUtcOffset".to_owned(),json!(0)),("GetYinzVersion".to_owned(),json!("test"))]),
-            "(define test-clock (vector 0)) (define (yinz-wall-clock-ms) (vector-ref test-clock 0))");
+        let (runtime, host) = plugin_with_prelude(
+            "status-bar",
+            json!({"classic":classic.to_string()}),
+            BTreeMap::from([
+                ("GetLocalUtcOffset".to_owned(), json!(0)),
+                ("GetYinzVersion".to_owned(), json!("test")),
+            ]),
+            "(define test-clock (vector 0)) (define (yinz-now-ms) (vector-ref test-clock 0))
+             (define (yinz-wall-clock-ms) (vector-ref test-clock 0))",
+        );
         Self { runtime, host }
     }
     fn event(&mut self, value: Value) -> bool {
@@ -90,15 +97,13 @@ fn status_deduplicates_alt_pointer_and_late_timer_events() {
         vec![json!({"SetTimeout":60.0}), json!({"SetTimeout":3.0})]
     );
     status.advance(3000);
-    assert_eq!(
-        status.named("SetTimeout").last(),
-        Some(&json!({"SetTimeout":57.0}))
-    );
-    status.advance(4000);
-    assert_eq!(status.named("SetTimeout").len(), 3);
+    assert_eq!(status.named("SetTimeout").len(), 2);
     status.advance(60000);
-    assert_eq!(status.named("SetTimeout").len(), 4);
+    assert_eq!(status.named("SetTimeout").len(), 3);
     assert!(status.render(1, 80).contains("00:01"));
+    status.advance(120000);
+    assert_eq!(status.named("SetTimeout").len(), 4);
+    assert!(status.render(1, 80).contains("00:02"));
 }
 
 #[test]

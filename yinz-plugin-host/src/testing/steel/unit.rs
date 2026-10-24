@@ -66,6 +66,56 @@ fn scheme_installed_tests_load_modules_mock_commands_and_advance_deferred_callba
 }
 
 #[test]
+fn scheme_test_wall_clock_steps_leave_monotonic_time_and_events_unchanged() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("plugin.scm"),
+        r#"
+        (define events 0)
+        (define (update event) (set! events (+ events 1)) #t)
+        (define (render rows cols)
+          (string-append (number->string (yinz-now-ms)) "/"
+            (number->string (yinz-wall-clock-ms)) "/" (number->string events)))
+    "#,
+    )
+    .unwrap();
+    let path = root.path().join("plugin.test.scm");
+    std::fs::write(
+        &path,
+        r#"
+        (test "independent clocks" (lambda ()
+          (test-load-plugin "./plugin.scm")
+          (test-step-wall-clock -474)
+          (assert-equal (yinz-now-ms) 0)
+          (assert-equal (yinz-wall-clock-ms) -474)
+          (assert (string-contains? (test-render) "0/-474/0"))
+          (test-advance 60000)
+          (assert-equal (yinz-now-ms) 60000)
+          (assert-equal (yinz-wall-clock-ms) 59526)
+          (assert (string-contains? (test-render) "60000/59526/1"))
+          (test-step-wall-clock 474)
+          (assert (string-contains? (test-render) "60000/60000/1"))
+          (assert-throws (lambda () (test-step-wall-clock 0.5)) "signed integer")
+          (assert-throws (lambda () (test-step-wall-clock 9223372036854775807)) "overflow")
+          (assert-throws (lambda () (test-advance 9223372036854775807)) "overflow")
+          (assert-equal (yinz-now-ms) 60000)
+          (assert-equal (yinz-wall-clock-ms) 60000)
+          (assert (string-contains? (test-render) "60000/60000/1"))))
+    "#,
+    )
+    .unwrap();
+    let report = run(
+        super::super::fixture_data().path(),
+        &path,
+        &PluginTestOptions::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(report.passed(), "{report:#?}");
+}
+
+#[test]
 fn scheme_installed_integration_tests_use_the_disposable_session() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(

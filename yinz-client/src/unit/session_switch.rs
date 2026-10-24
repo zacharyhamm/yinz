@@ -489,7 +489,7 @@ fn blocked_ssh(root: &std::path::Path, phase: &str) -> std::fs::File {
         &format!(
             r#"
 case " $* " in
-    *" -N "*) ;;
+    *" -L "*) ;;
     *) if [ "$YINZ_TEST_PREPARATION_PHASE" = forward ]; then
         printf '%s\n' '{endpoint}'
         exit 0
@@ -1539,7 +1539,7 @@ fn legacy_remote_bootstrap_signals_restore_the_terminal_and_clean_up_children() 
             &format!(
                 r#"
 case " $* " in
-    *" -N "*) export {PHASE}=forward; exec "$YINZ_TEST_RECONNECT_EXE" --exact {TEST} --nocapture ;;
+    *" -L "*) export {PHASE}=forward; exec "$YINZ_TEST_RECONNECT_EXE" --exact {TEST} --nocapture ;;
 esac
 printf '%s\n' "$$" > "$YINZ_TEST_RECONNECT_ROOT/bootstrap.pid"
 printf 'ready\n' > "$YINZ_TEST_RECONNECT_ROOT/ready"
