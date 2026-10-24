@@ -2017,12 +2017,10 @@ fn quality_pass_editor_executable_path_preserves_spaces() {
     let file = directory.path().join("my note.md");
     let payload = yinz_types::input::command::OpenFilePayload::new(file.clone(), None, None);
 
-    let (command, fallback) =
-        build_command(TerminalAction::OpenFile(payload), Some(editor.clone()));
+    let command = build_command(TerminalAction::OpenFile(payload), Some(editor.clone()));
 
     assert_eq!(command.command, editor);
     assert_eq!(command.args, vec![file.to_str().unwrap()]);
-    assert!(fallback.is_none());
     let output = Command::new(&command.command)
         .args(&command.args)
         .output()
@@ -2076,20 +2074,57 @@ fn note_file_editor_precedence_and_arguments_use_executable_stubs() {
     let payload =
         yinz_types::input::command::OpenFilePayload::new("/tmp/note.md".into(), None, None);
     let configured = (level == "configured").then(|| PathBuf::from("configured --configured-arg"));
-    let (command, fallback) = build_command(TerminalAction::OpenFile(payload), configured);
+    let command = build_command(TerminalAction::OpenFile(payload), configured);
     assert_eq!(command.command, PathBuf::from(&level));
     assert_eq!(command.args.last().unwrap(), "/tmp/note.md");
     assert_eq!(command.args.len(), if level == "vi" { 1 } else { 2 });
     if level != "vi" {
         assert_eq!(command.args[0], format!("--{level}-arg"));
     }
-    assert!(fallback.is_none());
     let output = Command::new(&command.command)
         .args(&command.args)
         .output()
         .unwrap();
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("/tmp/note.md"));
+}
+
+#[test]
+fn editor_commands_preserve_configured_arguments_and_line_syntax() {
+    use yinz_types::input::command::OpenFilePayload;
+
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("my note.md");
+    let file = file.to_str().unwrap();
+    let helix_file = format!("{file}:42");
+    for (editor, at_line) in [
+        ("vim", vec!["+42", file]),
+        ("nvim", vec!["+42", file]),
+        ("emacs", vec!["+42", file]),
+        ("nano", vec!["+42", file]),
+        ("kak", vec!["+42", file]),
+        ("hx", vec![helix_file.as_str()]),
+        ("helix", vec![helix_file.as_str()]),
+        ("unknown-editor", vec![file]),
+    ] {
+        for (line, file_args) in [(Some(42), at_line), (None, vec![file])] {
+            let command = build_command(
+                TerminalAction::OpenFile(OpenFilePayload::new(
+                    "my note.md".into(),
+                    line,
+                    Some(directory.path().to_owned()),
+                )),
+                Some(format!("/usr/bin/{editor} --configured-arg another-arg").into()),
+            );
+            let mut expected = vec!["--configured-arg", "another-arg"];
+            expected.extend(file_args);
+            assert_eq!(command.command, PathBuf::from(format!("/usr/bin/{editor}")));
+            assert_eq!(command.args, expected, "{editor}, line {line:?}");
+            assert_eq!(command.cwd.as_deref(), Some(directory.path()));
+            assert!(!command.hold_on_close);
+            assert!(!command.hold_on_start);
+        }
+    }
 }
 
 /// A Bubblewrap launch that cannot be checked is refused, never run on the host, and the

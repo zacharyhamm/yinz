@@ -285,34 +285,16 @@ fn handle_openpty(
 /// `orig_termios`.
 fn handle_terminal(
     cmd: RunCommand,
-    failover_cmd: Option<RunCommand>,
     orig_termios: Option<termios::Termios>,
     quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     child_state_cb: Option<ChildStateCb>,
     terminal_id: TerminalId,
 ) -> Result<(OwnedFd, ProcessId)> {
-    let err_context = || "failed to spawn child terminal".to_string();
-
-    // Create a pipe to allow the child the communicate the shell's pid to its
-    // parent.
-    match openpty(None, &orig_termios) {
-        Ok(open_pty_res) => handle_openpty(open_pty_res, cmd, quit_cb, child_state_cb, terminal_id),
-        Err(e) => match failover_cmd {
-            Some(failover_cmd) => handle_terminal(
-                failover_cmd,
-                None,
-                orig_termios,
-                quit_cb,
-                child_state_cb,
-                terminal_id,
-            )
-            .with_context(err_context),
-            None => Err::<(OwnedFd, ProcessId), _>(e)
-                .context("failed to start pty")
-                .with_context(err_context)
-                .to_log(),
-        },
-    }
+    let open_pty_res = openpty(None, &orig_termios)
+        .context("failed to start pty")
+        .context("failed to spawn child terminal")
+        .to_log()?;
+    handle_openpty(open_pty_res, cmd, quit_cb, child_state_cb, terminal_id)
 }
 
 /// How a pane's pty is reached.
@@ -572,7 +554,6 @@ impl UnixPtyBackend {
         &self,
         host_bin: &std::path::Path,
         cmd: &RunCommand,
-        failover_cmd: &Option<RunCommand>,
         terminal_id: TerminalId,
     ) -> Result<pty_host_client::PendingHost> {
         // Kept here rather than left to the supervisor so that a mistyped command
@@ -591,7 +572,6 @@ impl UnixPtyBackend {
             terminal_id,
             session_name: yinz_runtime::envs::get_session_name().ok(),
             cmd: cmd.clone(),
-            failover_cmd: failover_cmd.clone(),
             termios: self.wire_termios.clone(),
             // Left unset on purpose: today's `openpty(None, ..)` means a pane
             // starts at 0x0 until the first TIOCSWINSZ, and matching that keeps
@@ -636,7 +616,6 @@ impl UnixPtyBackend {
     pub fn spawn_terminal(
         &self,
         cmd: RunCommand,
-        failover_cmd: Option<RunCommand>,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         terminal_id: TerminalId,
     ) -> Result<(Box<dyn AsyncReader>, ProcessId)> {
@@ -648,7 +627,7 @@ impl UnixPtyBackend {
         if self.pty_host_enabled.load(Ordering::Relaxed)
             && let Some(host_bin) = self.host_bin.as_ref()
         {
-            match self.spawn_via_pty_host(host_bin, &cmd, &failover_cmd, terminal_id) {
+            match self.spawn_via_pty_host(host_bin, &cmd, terminal_id) {
                 Ok(pending) => {
                     let spawned =
                         pending.finish(terminal_exit_callback(quit_cb), self.child_state_cb());
@@ -691,7 +670,6 @@ impl UnixPtyBackend {
             .context("failed to lock orig_termios")?;
         let (pid_primary, child_pid) = handle_terminal(
             cmd,
-            failover_cmd,
             orig_termios.clone(),
             quit_cb,
             self.child_state_cb(),
@@ -1415,7 +1393,6 @@ mod tests {
             let (master, _) = handle_terminal(
                 run_command.clone(),
                 None,
-                None,
                 Box::new(move |pane_id, status, command| {
                     exited.send((pane_id, status, command)).unwrap();
                 }),
@@ -1485,7 +1462,6 @@ mod tests {
                     args: vec!["-c".into(), "read line".into()],
                     ..Default::default()
                 },
-                None,
                 Box::new(|_, _, _| {}),
                 TerminalId::new(0),
             )
@@ -1598,7 +1574,6 @@ mod tests {
                         ],
                         ..Default::default()
                     },
-                    None,
                     Box::new(|_, _, _| {}),
                     id,
                 )

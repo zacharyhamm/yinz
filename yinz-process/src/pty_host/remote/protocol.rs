@@ -157,7 +157,6 @@ pub enum ServerToBrokerMsg {
     /// has no way to name. `broker::resolve_default_shell` fills it in.
     Spawn {
         cmd: RunCommand,
-        failover_cmd: Option<RunCommand>,
         initial_size: Option<WireWinsize>,
         /// What the *asking* machine is entitled to say about this pane: its
         /// terminal type and its locale, sampled per pane. Nothing else crosses

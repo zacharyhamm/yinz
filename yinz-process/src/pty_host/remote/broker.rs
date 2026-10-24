@@ -132,7 +132,6 @@ pub fn serve_connection(
     let (session, generation) = match request {
         ServerToBrokerMsg::Spawn {
             cmd,
-            failover_cmd,
             initial_size,
             env,
             terminal_id,
@@ -141,7 +140,6 @@ pub fn serve_connection(
             registry,
             &wire,
             cmd,
-            failover_cmd,
             initial_size,
             env,
             TerminalId::new(terminal_id),
@@ -387,13 +385,11 @@ pub(crate) fn resolve_default_shell(
     Some(arg0)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn start_pane(
     host_bin: &std::path::Path,
     registry: &Arc<PaneRegistry>,
     wire: &Wire,
     cmd: yinz_types::input::command::RunCommand,
-    failover_cmd: Option<yinz_types::input::command::RunCommand>,
     initial_size: Option<WireWinsize>,
     carried_env: Vec<(String, String)>,
     terminal_id: TerminalId,
@@ -427,7 +423,6 @@ fn start_pane(
         terminal_id,
         session_name: None,
         cmd: cmd.clone(),
-        failover_cmd,
         // Never sent across a machine boundary — the flag words and control
         // character indices are platform constants. See the note on `Spawn`.
         termios: None,

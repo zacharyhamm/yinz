@@ -41,7 +41,6 @@ fn server_messages() -> Vec<ServerToBrokerMsg> {
         },
         ServerToBrokerMsg::Spawn {
             cmd: sample_run_command(),
-            failover_cmd: None,
             // Non-empty, so the round-trip actually exercises the carried
             // environment rather than an absent one.
             env: vec![
@@ -303,6 +302,49 @@ fn frames_read_back_the_same_through_a_one_byte_at_a_time_reader() {
     );
 }
 
+#[test]
+fn spawn_json_is_compatible_with_legacy_editor_fallback() {
+    // The removed field was optional without an explicit serde default.
+    #[derive(serde::Deserialize)]
+    enum LegacyMessage {
+        Spawn {
+            cmd: RunCommand,
+            failover_cmd: Option<RunCommand>,
+        },
+    }
+
+    let message = ServerToBrokerMsg::Spawn {
+        cmd: sample_run_command(),
+        initial_size: None,
+        env: vec![],
+        terminal_id: 7,
+    };
+    let json = serde_json::to_value(&message).unwrap();
+    assert!(json["Spawn"].get("failover_cmd").is_none());
+    let LegacyMessage::Spawn { cmd, failover_cmd } = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(cmd, sample_run_command());
+    assert!(failover_cmd.is_none());
+
+    for fallback in [
+        None,
+        Some(serde_json::Value::Null),
+        Some(serde_json::to_value(sample_run_command()).unwrap()),
+    ] {
+        let mut incoming = json.clone();
+        if let Some(fallback) = fallback {
+            incoming["Spawn"]["failover_cmd"] = fallback;
+        }
+        let mut frame = Vec::new();
+        write_control(&mut frame, &incoming).unwrap();
+        let decoded: ServerToBrokerMsg = read_frame(&mut Cursor::new(frame))
+            .unwrap()
+            .unwrap()
+            .decode_control()
+            .unwrap();
+        assert_eq!(decoded, message);
+    }
+}
+
 /// The cross-platform guard, pinned rather than left to review.
 ///
 /// `WireTermios` ships raw termios flag words and control characters by index,
@@ -314,7 +356,6 @@ fn frames_read_back_the_same_through_a_one_byte_at_a_time_reader() {
 fn a_remote_spawn_carries_no_termios() {
     let spawn = ServerToBrokerMsg::Spawn {
         cmd: sample_run_command(),
-        failover_cmd: None,
         initial_size: None,
         env: vec![],
         terminal_id: 0,
@@ -359,7 +400,6 @@ fn the_remote_protocol_versions_independently_of_the_supervisor_protocol() {
 fn a_remote_spawn_carries_the_asking_sides_terminal_but_not_its_filesystem() {
     let spawn = ServerToBrokerMsg::Spawn {
         cmd: sample_run_command(),
-        failover_cmd: None,
         initial_size: None,
         env: crate::pty_host::remote::env::select_carried(
             [
@@ -400,5 +440,16 @@ fn legacy_spawn_frame_preserves_numeric_ids() {
     ));
     let mut encoded = Vec::new();
     write_control(&mut encoded, &message).unwrap();
-    assert_eq!(encoded, frame);
+    let Frame::Control(body) = read_frame(&mut Cursor::new(encoded)).unwrap().unwrap() else {
+        panic!("expected a control frame");
+    };
+    let mut expected: serde_json::Value = serde_json::from_slice(payload).unwrap();
+    expected["Spawn"]
+        .as_object_mut()
+        .unwrap()
+        .remove("failover_cmd");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+        expected
+    );
 }

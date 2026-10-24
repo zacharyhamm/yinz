@@ -134,7 +134,6 @@ impl TestHost {
             terminal_id: 0,
             session_name: Some("pty-host-tests".to_owned().into()),
             cmd,
-            failover_cmd: None,
             termios,
             initial_size,
             arg0,
@@ -1001,7 +1000,6 @@ fn a_missing_command_is_reported_rather_than_panicking() {
             target: Default::default(),
             remote_default_shell: false,
         },
-        failover_cmd: None,
         termios: None,
         initial_size: None,
         arg0: None,
@@ -1038,7 +1036,6 @@ fn an_exec_failure_is_reported_instead_of_announcing_a_spawned_child() {
                 command: script.clone(),
                 ..Default::default()
             },
-            failover_cmd: None,
             termios: None,
             initial_size: None,
             arg0: None,

@@ -41,7 +41,6 @@ pub struct SpawnParams<'a> {
     pub terminal_id: TerminalId,
     pub session_name: Option<SessionName>,
     pub cmd: RunCommand,
-    pub failover_cmd: Option<RunCommand>,
     pub termios: Option<WireTermios>,
     pub initial_size: Option<WireWinsize>,
     /// See `ServerToHostMsg::Spawn::arg0`. `None` everywhere but the remote
@@ -525,7 +524,6 @@ fn handshake_and_spawn(
             terminal_id: params.terminal_id.get(),
             session_name: params.session_name.clone(),
             cmd: params.cmd.clone(),
-            failover_cmd: params.failover_cmd.clone(),
             termios: params.termios.clone(),
             initial_size: params.initial_size,
             arg0: params.arg0.clone(),
