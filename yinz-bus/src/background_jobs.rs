@@ -514,6 +514,20 @@ pub fn background_jobs_main(
     serialization_interval: Option<ElapsedSeconds>,
     disable_session_metadata: bool,
 ) -> Result<()> {
+    background_jobs_with_runtime(
+        bus,
+        serialization_interval,
+        disable_session_metadata,
+        crate::global_async_runtime::get_tokio_runtime(),
+    )
+}
+
+fn background_jobs_with_runtime(
+    bus: Bus<BackgroundJob>,
+    serialization_interval: Option<ElapsedSeconds>,
+    disable_session_metadata: bool,
+    runtime: &tokio::runtime::Runtime,
+) -> Result<()> {
     let err_context = || "failed to write to pty".to_string();
     let mut running_jobs: HashMap<BackgroundJob, Instant> = HashMap::new();
     // the shared animation clock's cancel flag and the period it is ticking at, `Some` while it is
@@ -544,10 +558,8 @@ pub fn background_jobs_main(
     let mut next_stream_generation = 0u64;
 
     let http_client = web_http_client();
-    // We needn't do anything with the runtime, but it should exist at this point.
-    let runtime = crate::global_async_runtime::get_tokio_runtime();
 
-    {
+    let serialization_task = {
         let senders = bus.senders.clone();
         let serialization_period = serialization_interval
             .map(|seconds| Duration::from_secs(seconds.get()))
@@ -559,10 +571,10 @@ pub fn background_jobs_main(
                 ticker.tick().await;
                 let _ = senders.send_to_screen(ScreenInstruction::SerializeLayoutForResurrection);
             }
-        });
-    }
+        })
+    };
 
-    {
+    let cwd_task = {
         let senders = bus.senders.clone();
         runtime.spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_millis(
@@ -573,8 +585,8 @@ pub fn background_jobs_main(
                 ticker.tick().await;
                 let _ = senders.send_to_pty(PtyInstruction::UpdateAndReportCwds);
             }
-        });
-    }
+        })
+    };
 
     let checkpoint_task = if !disable_session_metadata {
         let session_checkpoint = bus.senders.session_checkpoint.clone();
@@ -677,8 +689,11 @@ pub fn background_jobs_main(
                         // busy to service must be dropped, not replayed as a backlog of wakeups
                         // that all arrive at once and then ask for the same frame several times.
                         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                        while running.load(Ordering::SeqCst) {
+                        loop {
                             tick.tick().await;
+                            if !running.load(Ordering::SeqCst) {
+                                break;
+                            }
                             let _ = senders.send_to_screen(ScreenInstruction::AnimationTick);
                         }
                     }
@@ -1169,25 +1184,33 @@ pub fn background_jobs_main(
                 }
             },
             BackgroundJob::FlashPaneBell(pane_ids) => {
-                let is_flashing = Arc::new(AtomicBool::new(true));
+                let mut flashes = Vec::with_capacity(pane_ids.len());
                 for &pane_id in &pane_ids {
-                    flashing_pane_bells.insert(pane_id, is_flashing.clone());
+                    let flag = Arc::new(AtomicBool::new(true));
+                    if let Some(previous) = flashing_pane_bells.insert(pane_id, flag.clone()) {
+                        previous.store(false, Ordering::SeqCst);
+                    }
+                    flashes.push((pane_id, flag));
                 }
+                let _ = bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::FlashPaneFrameColor(pane_ids));
                 runtime.spawn({
                     let senders = bus.senders.clone();
-                    let pane_ids_clone = pane_ids.clone();
-                    let flag = is_flashing.clone();
                     async move {
-                        let _ = senders.send_to_screen(ScreenInstruction::FlashPaneFrameColor(
-                            pane_ids_clone.clone(),
-                        ));
                         // the override eases itself out over exactly this window; the clear that
                         // follows is what actually frees the slot, and stays on the old schedule
                         tokio::time::sleep(std::time::Duration::from_millis(FLASH_DURATION_MS))
                             .await;
-                        if flag.load(Ordering::SeqCst) {
+                        let pane_ids = flashes
+                            .into_iter()
+                            .filter_map(|(pane_id, flag)| {
+                                flag.load(Ordering::SeqCst).then_some(pane_id)
+                            })
+                            .collect::<Vec<_>>();
+                        if !pane_ids.is_empty() {
                             let _ = senders.send_to_screen(
-                                ScreenInstruction::ClearPaneFrameColorOverride(pane_ids_clone),
+                                ScreenInstruction::ClearPaneFrameColorOverride(pane_ids),
                             );
                         }
                     }
@@ -1205,13 +1228,16 @@ pub fn background_jobs_main(
             },
             BackgroundJob::FlashTabBell(tab_id) => {
                 let is_flashing = Arc::new(AtomicBool::new(true));
-                flashing_tab_bells.insert(tab_id, is_flashing.clone());
+                if let Some(previous) = flashing_tab_bells.insert(tab_id, is_flashing.clone()) {
+                    previous.store(false, Ordering::SeqCst);
+                }
+                let _ = bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::SetTabBellFlash(tab_id, true));
                 runtime.spawn({
                     let senders = bus.senders.clone();
                     let flag = is_flashing.clone();
                     async move {
-                        let _ = senders
-                            .send_to_screen(ScreenInstruction::SetTabBellFlash(tab_id, true));
                         tokio::time::sleep(std::time::Duration::from_millis(FLASH_DURATION_MS))
                             .await;
                         if flag.load(Ordering::SeqCst) {
@@ -1257,17 +1283,26 @@ pub fn background_jobs_main(
             },
             BackgroundJob::Exit => {
                 log::info!("shutdown: background jobs received Exit");
-                if let Some((clock, _)) = animation_clock.take() {
-                    clock.store(false, Ordering::SeqCst);
-                }
-                for nested_guest_ping in nested_guest_pings.values() {
-                    nested_guest_ping.store(false, Ordering::SeqCst);
-                }
-
                 break Ok(());
             },
         }
     };
+    if let Some((clock, _)) = animation_clock {
+        clock.store(false, Ordering::SeqCst);
+    }
+    for flag in command_palette_sessions
+        .iter()
+        .chain(nested_guest_pings.values())
+        .chain(flashing_pane_bells.values())
+        .chain(flashing_tab_bells.values())
+    {
+        flag.store(false, Ordering::SeqCst);
+    }
+    serialization_task.abort();
+    cwd_task.abort();
+    runtime.block_on(async {
+        let _ = tokio::join!(serialization_task, cwd_task);
+    });
     if let Some(task) = checkpoint_task {
         let started = Instant::now();
         log::info!(
@@ -3669,3 +3704,7 @@ mod web_request_stream_tests {
 #[cfg(test)]
 #[path = "unit/checkpoint_shutdown_tests.rs"]
 mod checkpoint_shutdown_tests;
+
+#[cfg(test)]
+#[path = "unit/background_job_timers.rs"]
+mod background_job_timers;

@@ -1201,6 +1201,10 @@ pub use agents::short_age;
 mod regex_tests;
 
 #[cfg(test)]
+#[path = "unit/run_history_search.rs"]
+mod search_tests;
+
+#[cfg(test)]
 mod tests {
 
     /// The machine these runs were recorded on.
