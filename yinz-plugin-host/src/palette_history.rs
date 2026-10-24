@@ -1,13 +1,20 @@
 //! Read-only archive access on the native palette worker.
-use super::*;
+use super::super::{agent_control, agent_launch::PreparedAgent};
+use super::launch;
 use agent_proto::{
     agents::{AgentRunHeader, RunOutcome},
     run_history as history, store,
 };
+use std::path::Path;
+use std::sync::atomic;
+use yinz_bus::command_palette::{AgentReply, AgentRequest};
 use yinz_bus::command_palette::{
     HistoryAction, HistoryEvent, HistoryHeader, HistoryReply, HistoryRow,
 };
+use yinz_bus::thread_bus::ThreadSenders;
+use yinz_storage::data_access::DataAccess;
 use yinz_tile::prelude::*;
+use yinz_types::agent::AgentSpawnSpec;
 
 struct Reader<'a>(&'a DataAccess);
 impl store::Backend for Reader<'_> {

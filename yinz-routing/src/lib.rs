@@ -1,104 +1,31 @@
 //! Synchronous action dispatch over the thread bus, shared by the server and plugin host.
+mod completion;
+mod panes;
+mod queries;
+
+pub use completion::wait_for_action_completion;
+use completion::{send_error_to_client, send_output_to_client};
+use panes::new_pane_routing;
 use std::collections::{BTreeMap, HashSet};
 use tokio::sync::oneshot;
 use yinz_bus::route::{ActionCompletionResult, NotificationEnd};
-use yinz_types::internal_ids::TabId;
 
-use std::time::Duration;
 use uuid::Uuid;
-use yinz_bus::global_async_runtime::get_tokio_runtime;
 use yinz_bus::thread_bus::ThreadSenders;
 use yinz_bus::{
-    os_input_output::ServerOsApi,
-    plugins::PluginInstruction,
-    pty::{ClientTabIndexOrPaneId, PtyInstruction, ReplacedPane},
-    screen::ScreenInstruction,
-    PaneId, ServerInstruction,
+    os_input_output::ServerOsApi, plugins::PluginInstruction, pty::PtyInstruction,
+    screen::ScreenInstruction, PaneId, ServerInstruction,
 };
 use yinz_runtime::{envs, errors::prelude::*};
 use yinz_types::geometry::{Direction, ResizeStrategy};
 use {
-    yinz_ipc::ipc::ExitReason, yinz_ipc::ipc::ServerToClientMsg, yinz_types::data::Event,
-    yinz_types::data::InputMode, yinz_types::data::ListPanesResponse,
-    yinz_types::data::ListTabsResponse, yinz_types::data::NewPanePlacement,
-    yinz_types::data::PaneListEntry, yinz_types::data::SessionConnection,
-    yinz_types::data::TabInfo, yinz_types::input::actions::Action,
+    yinz_types::data::Event, yinz_types::data::InputMode, yinz_types::data::NewPanePlacement,
+    yinz_types::data::SessionConnection, yinz_types::input::actions::Action,
     yinz_types::input::actions::SearchDirection, yinz_types::input::actions::SearchOption,
     yinz_types::input::command::TerminalAction,
 };
 
 use yinz_bus::ClientId;
-
-const ACTION_COMPLETION_TIMEOUT: Duration = Duration::from_secs(1);
-
-pub fn wait_for_action_completion(
-    receiver: oneshot::Receiver<ActionCompletionResult>,
-    action_name: &str,
-    wait_forever: bool,
-) -> ActionCompletionResult {
-    let runtime = get_tokio_runtime();
-    if wait_forever {
-        runtime.block_on(async {
-            match receiver.await {
-                Ok(result) => result,
-                Err(e) => {
-                    log::error!("Failed to wait for action {}: {}", action_name, e);
-                    ActionCompletionResult {
-                        confirmed: false,
-                        agent_tab: None,
-                        exit_status: None,
-                        affected_pane_id: None,
-                        affected_tab_id: None,
-                        created_tab_id: None,
-                        error_message: None,
-                        stdout_message: None,
-                    }
-                },
-            }
-        })
-    } else {
-        match runtime
-            .block_on(async { tokio::time::timeout(ACTION_COMPLETION_TIMEOUT, receiver).await })
-        {
-            Ok(Ok(result)) => result,
-            // The sender was dropped rather than signalled. That is not a
-            // failure and emphatically not a timeout: an action that does its
-            // own waiting — every warp does, on a budget of its own — drops the
-            // completion channel on purpose, because the thing worth waiting
-            // for is not the one this channel reports. Logging it as a timeout
-            // put an `Action WarpTab did not complete within 1s timeout` on top
-            // of every warp, successful ones included, directly over the signal
-            // anyone debugging a warp is looking for.
-            Ok(Err(_)) => ActionCompletionResult {
-                confirmed: false,
-                agent_tab: None,
-                exit_status: None,
-                affected_pane_id: None,
-                affected_tab_id: None,
-                created_tab_id: None,
-                error_message: None,
-                stdout_message: None,
-            },
-            Err(_) => {
-                log::error!(
-                    "Action {} did not complete within {:?} timeout",
-                    action_name,
-                    ACTION_COMPLETION_TIMEOUT
-                );
-                ActionCompletionResult {
-                    confirmed: false,
-                    agent_tab: None,
-                    exit_status: None,
-                    affected_pane_id: None,
-                    affected_tab_id: None,
-                    created_tab_id: None,
-                    error_message: None,
-                    stdout_message: None,
-                }
-            },
-        }
-    }
-}
 
 // `route_action` must not borrow from the `session_data` read guard.
 // otherwise blocking-CLI actions
@@ -128,28 +55,6 @@ pub fn actions_leave_clipboard_message(actions: &[Action]) -> bool {
     actions
         .iter()
         .any(|action| action.leaves_clipboard_message())
-}
-
-fn new_pane_routing(
-    no_focus: bool,
-    near_current_pane: bool,
-    tab_id: Option<TabId>,
-    pane_id: Option<PaneId>,
-    client_id: ClientId,
-) -> ClientTabIndexOrPaneId {
-    if let Some(tab_id) = tab_id {
-        if no_focus {
-            ClientTabIndexOrPaneId::TabIndexNoFocus(tab_id)
-        } else {
-            ClientTabIndexOrPaneId::TabIndex(tab_id)
-        }
-    } else if let Some(pane_id) = pane_id.filter(|_| no_focus || near_current_pane) {
-        ClientTabIndexOrPaneId::PaneId(pane_id)
-    } else if no_focus {
-        ClientTabIndexOrPaneId::ClientIdNoFocus(client_id)
-    } else {
-        ClientTabIndexOrPaneId::ClientId(client_id)
-    }
 }
 
 pub fn route_action(
@@ -762,25 +667,15 @@ pub fn route_action(
             pane_name,
             start_suppressed,
         } => {
-            let shell = default_shell.clone();
-            let new_pane_placement = match direction {
-                Some(direction) => NewPanePlacement::Tiled {
-                    direction: Some(direction),
-                    borderless: None,
-                },
-                None => NewPanePlacement::NoPreference { borderless: None },
-            };
-            senders
-                .send_to_pty(PtyInstruction::SpawnTerminal(
-                    shell,
-                    pane_name,
-                    new_pane_placement,
-                    start_suppressed,
-                    ClientTabIndexOrPaneId::ClientId(client_id),
-                    Some(NotificationEnd::new(completion_tx)),
-                    false, // set_blocking
-                ))
-                .with_context(err_context)?;
+            panes::new_pane(
+                direction,
+                pane_name,
+                start_suppressed,
+                &senders,
+                &default_shell,
+                client_id,
+                completion_tx,
+            )?;
         },
         Action::NewBlockingPane {
             placement,
@@ -791,49 +686,20 @@ pub fn route_action(
             no_focus,
             tab_id,
         } => {
-            let command = command
-                .map(|cmd| TerminalAction::RunCommand(cmd.into()))
-                .or_else(|| default_shell.clone());
-            let set_pane_blocking = true;
-
-            let notification_end = if let Some(condition) = unblock_condition {
-                Some(NotificationEnd::new_with_condition(
-                    completion_tx,
-                    condition,
-                ))
-            } else {
-                Some(NotificationEnd::new(completion_tx))
-            };
-
-            // we prefer the pane id provided by the action explicitly over the one that originated
-            // it (this might be a bit misleading with "near_current_pane", but it's still the
-            // right behavior - in the latter case, if the originator does not wish for this
-            // behavior, they should not provide pane
-            // inside the placement, but rather have the current pane id be picked up instead)
-            let pane_id = match placement {
-                NewPanePlacement::Stacked {
-                    pane_id_to_stack_under,
-                    ..
-                } => pane_id_to_stack_under.or(pane_id),
-                NewPanePlacement::InPlace {
-                    pane_id_to_replace, ..
-                } => pane_id_to_replace.or(pane_id),
-                _ => pane_id,
-            };
-
-            let client_tab_index_or_paneid =
-                new_pane_routing(no_focus, near_current_pane, tab_id, pane_id, client_id);
-            senders
-                .send_to_pty(PtyInstruction::SpawnTerminal(
-                    command,
-                    pane_name,
-                    placement,
-                    false,
-                    client_tab_index_or_paneid,
-                    notification_end,
-                    set_pane_blocking,
-                ))
-                .with_context(err_context)?;
+            panes::new_blocking_pane(
+                placement,
+                pane_name,
+                command,
+                unblock_condition,
+                near_current_pane,
+                no_focus,
+                tab_id,
+                &senders,
+                &default_shell,
+                client_id,
+                pane_id,
+                completion_tx,
+            )?;
             wait_forever = true;
         },
         Action::EditFile {
@@ -848,39 +714,22 @@ pub fn route_action(
             no_focus,
             tab_id,
         } => {
-            let title = format!("Editing: {}", open_file_payload.path.display());
-            let open_file = TerminalAction::OpenFile(open_file_payload);
-            let pty_instr = if should_open_in_place {
-                let client_tab_index_or_paneid =
-                    new_pane_routing(no_focus, near_current_pane, tab_id, pane_id, client_id);
-                PtyInstruction::SpawnInPlaceTerminal(
-                    Some(open_file),
-                    Some(title),
-                    ReplacedPane::closed_if(close_replaced_pane),
-                    client_tab_index_or_paneid,
-                    Some(NotificationEnd::new(completion_tx)),
-                )
-            } else {
-                let client_tab_index_or_paneid =
-                    new_pane_routing(no_focus, near_current_pane, tab_id, pane_id, client_id);
-                PtyInstruction::SpawnTerminal(
-                    Some(open_file),
-                    Some(title),
-                    if should_float {
-                        placement
-                    } else {
-                        NewPanePlacement::Tiled {
-                            direction: split_direction,
-                            borderless: None,
-                        }
-                    },
-                    start_suppressed,
-                    client_tab_index_or_paneid,
-                    Some(NotificationEnd::new(completion_tx)),
-                    false, // set_blocking
-                )
-            };
-            senders.send_to_pty(pty_instr).with_context(err_context)?;
+            panes::edit_file(
+                open_file_payload,
+                split_direction,
+                should_float,
+                should_open_in_place,
+                close_replaced_pane,
+                start_suppressed,
+                placement,
+                near_current_pane,
+                no_focus,
+                tab_id,
+                &senders,
+                client_id,
+                pane_id,
+                completion_tx,
+            )?;
         },
         Action::SwitchModeForAllClients { input_mode } => {
             // ModeUpdate broadcast is handled by the screen thread via
@@ -905,22 +754,19 @@ pub fn route_action(
             no_focus,
             tab_id,
         } => {
-            let run_cmd = run_command
-                .map(|cmd| TerminalAction::RunCommand(cmd.into()))
-                .or_else(|| default_shell.clone());
-            let client_tab_index_or_paneid =
-                new_pane_routing(no_focus, near_current_pane, tab_id, pane_id, client_id);
-            senders
-                .send_to_pty(PtyInstruction::SpawnTerminal(
-                    run_cmd,
-                    name,
-                    placement,
-                    false,
-                    client_tab_index_or_paneid,
-                    Some(NotificationEnd::new(completion_tx)),
-                    false, // set_blocking
-                ))
-                .with_context(err_context)?;
+            panes::new_floating_pane(
+                run_command,
+                name,
+                placement,
+                near_current_pane,
+                no_focus,
+                tab_id,
+                &senders,
+                &default_shell,
+                client_id,
+                pane_id,
+                completion_tx,
+            )?;
         },
         Action::NewInPlacePane {
             command: run_command,
@@ -931,35 +777,20 @@ pub fn route_action(
             close_replaced_pane,
             tab_id,
         } => {
-            let run_cmd = run_command
-                .map(|cmd| TerminalAction::RunCommand(cmd.into()))
-                .or_else(|| default_shell.clone());
-            let explicit_pane_id_to_replace: Option<PaneId> = pane_id_to_replace;
-            let pane_id = explicit_pane_id_to_replace.or(pane_id);
-            let client_tab_index_or_paneid = if let Some(tab_id) = tab_id {
-                if no_focus {
-                    ClientTabIndexOrPaneId::TabIndexNoFocus(tab_id)
-                } else {
-                    ClientTabIndexOrPaneId::TabIndex(tab_id)
-                }
-            } else if let Some(pane_id) = pane_id
-                .filter(|_| explicit_pane_id_to_replace.is_some() || near_current_pane || no_focus)
-            {
-                ClientTabIndexOrPaneId::PaneId(pane_id)
-            } else if no_focus {
-                ClientTabIndexOrPaneId::ClientIdNoFocus(client_id)
-            } else {
-                ClientTabIndexOrPaneId::ClientId(client_id)
-            };
-            senders
-                .send_to_pty(PtyInstruction::SpawnInPlaceTerminal(
-                    run_cmd,
-                    name,
-                    ReplacedPane::closed_if(close_replaced_pane),
-                    client_tab_index_or_paneid,
-                    Some(NotificationEnd::new(completion_tx)),
-                ))
-                .with_context(err_context)?;
+            panes::new_in_place_pane(
+                run_command,
+                name,
+                near_current_pane,
+                no_focus,
+                pane_id_to_replace,
+                close_replaced_pane,
+                tab_id,
+                &senders,
+                &default_shell,
+                client_id,
+                pane_id,
+                completion_tx,
+            )?;
         },
         Action::NewStackedPane {
             command: run_command,
@@ -968,54 +799,18 @@ pub fn route_action(
             no_focus,
             tab_id,
         } => {
-            let run_cmd = run_command
-                .map(|cmd| TerminalAction::RunCommand(cmd.into()))
-                .or_else(|| default_shell.clone());
-
-            let (pane_placement, client_tab_index_or_paneid) = if let Some(tab_id) = tab_id {
-                (
-                    NewPanePlacement::Stacked {
-                        pane_id_to_stack_under: None,
-                        borderless: None,
-                    },
-                    if no_focus {
-                        ClientTabIndexOrPaneId::TabIndexNoFocus(tab_id)
-                    } else {
-                        ClientTabIndexOrPaneId::TabIndex(tab_id)
-                    },
-                )
-            } else if let Some(pane_id) = pane_id.filter(|_| no_focus || near_current_pane) {
-                (
-                    NewPanePlacement::Stacked {
-                        pane_id_to_stack_under: Some(pane_id),
-                        borderless: None,
-                    },
-                    ClientTabIndexOrPaneId::PaneId(pane_id),
-                )
-            } else {
-                (
-                    NewPanePlacement::Stacked {
-                        pane_id_to_stack_under: None,
-                        borderless: None,
-                    },
-                    if no_focus {
-                        ClientTabIndexOrPaneId::ClientIdNoFocus(client_id)
-                    } else {
-                        ClientTabIndexOrPaneId::ClientId(client_id)
-                    },
-                )
-            };
-            senders
-                .send_to_pty(PtyInstruction::SpawnTerminal(
-                    run_cmd,
-                    name,
-                    pane_placement,
-                    false,
-                    client_tab_index_or_paneid,
-                    Some(NotificationEnd::new(completion_tx)),
-                    false, // set_blocking
-                ))
-                .with_context(err_context)?;
+            panes::new_stacked_pane(
+                run_command,
+                name,
+                near_current_pane,
+                no_focus,
+                tab_id,
+                &senders,
+                &default_shell,
+                client_id,
+                pane_id,
+                completion_tx,
+            )?;
         },
         Action::NewTiledPane {
             direction,
@@ -1026,25 +821,20 @@ pub fn route_action(
             borderless,
             tab_id,
         } => {
-            let run_cmd = run_command
-                .map(|cmd| TerminalAction::RunCommand(cmd.into()))
-                .or_else(|| default_shell.clone());
-            let client_tab_index_or_paneid =
-                new_pane_routing(no_focus, near_current_pane, tab_id, pane_id, client_id);
-            senders
-                .send_to_pty(PtyInstruction::SpawnTerminal(
-                    run_cmd,
-                    name,
-                    NewPanePlacement::Tiled {
-                        direction,
-                        borderless,
-                    },
-                    false,
-                    client_tab_index_or_paneid,
-                    Some(NotificationEnd::new(completion_tx)),
-                    false, // set_blocking
-                ))
-                .with_context(err_context)?;
+            panes::new_tiled_pane(
+                direction,
+                run_command,
+                name,
+                near_current_pane,
+                no_focus,
+                borderless,
+                tab_id,
+                &senders,
+                &default_shell,
+                client_id,
+                pane_id,
+                completion_tx,
+            )?;
         },
         Action::TogglePaneEmbedOrFloating => {
             senders
@@ -2012,31 +1802,18 @@ pub fn route_action(
             show_all,
             output_json,
         } => {
-            let maybe_panes =
-                request_panes_from_screen(&senders, show_all).with_context(err_context)?;
-
-            if let Some(mut pane_entries) = maybe_panes {
-                if show_command || show_all || output_json {
-                    enrich_panes_with_pty_data(&mut pane_entries, &senders)
-                        .with_context(err_context)?;
-                }
-
-                let output_lines = if output_json {
-                    format_panes_as_json(&pane_entries)
-                } else {
-                    format_panes_table(
-                        &pane_entries,
-                        show_tab || show_all,
-                        show_command || show_all,
-                        show_state || show_all,
-                        show_geometry || show_all,
-                    )
-                };
-
-                send_output_to_client(cli_client_id, os_input.as_deref(), output_lines);
-            } else {
-                send_error_to_client(cli_client_id, os_input.as_deref(), "Timeout listing panes");
-            }
+            queries::list_panes(
+                show_tab,
+                show_command,
+                show_state,
+                show_geometry,
+                show_all,
+                output_json,
+                &senders,
+                cli_client_id,
+                os_input.as_deref(),
+                client_id,
+            )?;
             drop(NotificationEnd::new(completion_tx));
         },
         Action::ListTabs {
@@ -2047,49 +1824,28 @@ pub fn route_action(
             show_all,
             output_json,
         } => {
-            let maybe_tabs =
-                request_tabs_from_screen(&senders, client_id).with_context(err_context)?;
-
-            if let Some(tab_infos) = maybe_tabs {
-                let output_lines = if output_json {
-                    format_tabs_as_json(&tab_infos)
-                } else {
-                    format_tabs_table(
-                        &tab_infos,
-                        show_state || show_all,
-                        show_dimensions || show_all,
-                        show_panes || show_all,
-                        show_layout || show_all,
-                    )
-                };
-
-                send_output_to_client(cli_client_id, os_input.as_deref(), output_lines);
-            } else {
-                send_error_to_client(cli_client_id, os_input.as_deref(), "Timeout listing tabs");
-            }
+            queries::list_tabs(
+                show_state,
+                show_dimensions,
+                show_panes,
+                show_layout,
+                show_all,
+                output_json,
+                &senders,
+                client_id,
+                cli_client_id,
+                os_input.as_deref(),
+            )?;
             drop(NotificationEnd::new(completion_tx));
         },
         Action::CurrentTabInfo { output_json } => {
-            let maybe_tab_info = request_current_tab_info_from_screen(&senders, client_id)
-                .with_context(err_context)?;
-
-            match maybe_tab_info {
-                Some(tab_info) => {
-                    let output_lines = if output_json {
-                        format_current_tab_info_as_json(&tab_info)
-                    } else {
-                        format_current_tab_info_plain(&tab_info)
-                    };
-                    send_output_to_client(cli_client_id, os_input.as_deref(), output_lines);
-                },
-                None => {
-                    send_error_to_client(
-                        cli_client_id,
-                        os_input.as_deref(),
-                        "No active tab found for current client",
-                    );
-                },
-            }
+            queries::current_tab_info(
+                output_json,
+                &senders,
+                client_id,
+                cli_client_id,
+                os_input.as_deref(),
+            )?;
             drop(NotificationEnd::new(completion_tx));
         },
         Action::TogglePanePinned => {
@@ -2416,522 +2172,15 @@ pub fn route_action(
         },
     }
     let mut result = wait_for_action_completion(completion_rx, &action_name, wait_forever);
-    if creates_pane && result.affected_pane_id.is_none() && result.error_message.is_none() {
-        result.error_message = Some(format!("Action {action_name} completed without a pane ID"));
-    }
-    if let Some(error_message) = &result.error_message {
-        if let Some(cli_client_id) = cli_client_id
-            && let Some(ref os_input) = os_input
-        {
-            let _ = os_input.send_to_client(
-                cli_client_id,
-                ServerToClientMsg::LogError {
-                    lines: vec![error_message.clone()],
-                },
-            );
-        }
-    } else if let Some(stdout_message) = &result.stdout_message
-        && let Some(cli_client_id) = cli_client_id
-        && let Some(ref os_input) = os_input
-    {
-        let _ = os_input.send_to_client(
-            cli_client_id,
-            ServerToClientMsg::Log {
-                lines: vec![stdout_message.clone()],
-            },
-        );
-    }
-    // A group's first tab also produces tab/pane IDs; group commands return only the group ID.
-    if creates_group {
-        result.affected_tab_id = None;
-        result.affected_pane_id = None;
-    }
-    // Return tab ID to CLI clients as plain text
-    if let Some(tab_id) = result.affected_tab_id
-        && let Some(cli_client_id) = cli_client_id
-        && let Some(ref os_input) = os_input
-    {
-        let _ = os_input.send_to_client(
-            cli_client_id,
-            ServerToClientMsg::Log {
-                lines: vec![tab_id.to_string()],
-            },
-        );
-    }
-    // Return pane ID to CLI clients as plain text
-    if let Some(pane_id) = result.affected_pane_id
-        && let Some(cli_client_id) = cli_client_id
-        && let Some(ref os_input) = os_input
-    {
-        let _ = os_input.send_to_client(
-            cli_client_id,
-            ServerToClientMsg::Log {
-                lines: vec![pane_id.to_string()],
-            },
-        );
-    }
-    // A blocking pane's exit status, last: the client stops reading at `Exit`, so the ids above
-    // have to be on the wire before it. Not sent alongside an error or a stdout message, which
-    // already ended the client's wait.
-    if result.error_message.is_none()
-        && result.stdout_message.is_none()
-        && let Some(exit_status) = result.exit_status
-        && let Some(cli_client_id) = cli_client_id
-        && let Some(ref os_input) = os_input
-    {
-        let _ = os_input.send_to_client(
-            cli_client_id,
-            ServerToClientMsg::Exit {
-                exit_reason: ExitReason::CustomExitStatus(exit_status),
-            },
-        );
-    }
+    completion::report_action_completion(
+        &mut result,
+        &action_name,
+        creates_pane,
+        creates_group,
+        cli_client_id,
+        os_input.as_deref(),
+    );
     Ok((should_break, Some(result)))
-}
-
-// this should only be used for one-off startup instructions
-
-fn request_panes_from_screen(
-    senders: &ThreadSenders,
-    show_all: bool,
-) -> Result<Option<ListPanesResponse>> {
-    use crossbeam::channel::{unbounded, RecvTimeoutError};
-    use std::time::Duration;
-
-    let (response_sender, response_receiver) = unbounded();
-    senders.send_to_screen(ScreenInstruction::ListPanes {
-        show_all,
-        response_channel: response_sender,
-    })?;
-
-    match response_receiver.recv_timeout(Duration::from_secs(1)) {
-        Ok(entries) => Ok(Some(entries)),
-        Err(RecvTimeoutError::Timeout) => {
-            log::error!("ListPanes timed out waiting for Screen response");
-            Ok(None)
-        },
-        Err(RecvTimeoutError::Disconnected) => {
-            log::error!("ListPanes channel disconnected");
-            Ok(None)
-        },
-    }
-}
-
-fn request_tabs_from_screen(
-    senders: &ThreadSenders,
-    client_id: ClientId,
-) -> Result<Option<ListTabsResponse>> {
-    use crossbeam::channel::{unbounded, RecvTimeoutError};
-    use std::time::Duration;
-
-    let (response_sender, response_receiver) = unbounded();
-    senders.send_to_screen(ScreenInstruction::ListTabs {
-        client_id,
-        response_channel: response_sender,
-    })?;
-
-    match response_receiver.recv_timeout(Duration::from_secs(1)) {
-        Ok(entries) => Ok(Some(entries)),
-        Err(RecvTimeoutError::Timeout) => {
-            log::error!("ListTabs timed out waiting for Screen response");
-            Ok(None)
-        },
-        Err(RecvTimeoutError::Disconnected) => {
-            log::error!("ListTabs channel disconnected");
-            Ok(None)
-        },
-    }
-}
-
-fn request_current_tab_info_from_screen(
-    senders: &ThreadSenders,
-    client_id: ClientId,
-) -> Result<Option<TabInfo>> {
-    use crossbeam::channel::{unbounded, RecvTimeoutError};
-    use std::time::Duration;
-
-    let (response_sender, response_receiver) = unbounded();
-    senders.send_to_screen(ScreenInstruction::GetCurrentTabInfo {
-        client_id,
-        response_channel: response_sender,
-    })?;
-
-    match response_receiver.recv_timeout(Duration::from_secs(1)) {
-        Ok(tab_info_opt) => Ok(tab_info_opt),
-        Err(RecvTimeoutError::Timeout) => {
-            log::error!("GetCurrentTabInfo timed out waiting for Screen response");
-            Ok(None)
-        },
-        Err(RecvTimeoutError::Disconnected) => {
-            log::error!("GetCurrentTabInfo channel disconnected");
-            Ok(None)
-        },
-    }
-}
-
-fn enrich_panes_with_pty_data(
-    pane_entries: &mut [PaneListEntry],
-    senders: &ThreadSenders,
-) -> Result<()> {
-    for entry in pane_entries.iter_mut() {
-        if !entry.pane_info.is_plugin() {
-            let pane_id = entry.pane_info.id;
-            enrich_pane_with_running_command(entry, pane_id, senders)?;
-            enrich_pane_with_cwd(entry, pane_id, senders)?;
-        }
-    }
-    Ok(())
-}
-
-fn enrich_pane_with_running_command(
-    entry: &mut PaneListEntry,
-    pane_id: PaneId,
-    senders: &ThreadSenders,
-) -> Result<()> {
-    use crossbeam::channel::unbounded;
-    use std::time::Duration;
-    use yinz_types::data::GetPaneRunningCommandResponse;
-
-    let (cmd_sender, cmd_receiver) = unbounded();
-    senders.send_to_pty(PtyInstruction::GetPaneRunningCommand {
-        pane_id,
-        response_channel: cmd_sender,
-    })?;
-
-    if let Ok(GetPaneRunningCommandResponse::Ok(command_vec)) =
-        cmd_receiver.recv_timeout(Duration::from_millis(100))
-    {
-        entry.pane_command = Some(command_vec.join(" "));
-    }
-
-    Ok(())
-}
-
-fn enrich_pane_with_cwd(
-    entry: &mut PaneListEntry,
-    pane_id: PaneId,
-    senders: &ThreadSenders,
-) -> Result<()> {
-    use crossbeam::channel::unbounded;
-    use std::time::Duration;
-    use yinz_types::data::GetPaneCwdResponse;
-
-    let (cwd_sender, cwd_receiver) = unbounded();
-    senders.send_to_pty(PtyInstruction::GetPaneCwd {
-        pane_id,
-        response_channel: cwd_sender,
-    })?;
-
-    if let Ok(GetPaneCwdResponse::Ok(cwd)) = cwd_receiver.recv_timeout(Duration::from_millis(100)) {
-        entry.pane_cwd = Some(cwd.to_string_lossy().to_string());
-    }
-
-    Ok(())
-}
-
-fn format_panes_as_json(pane_entries: &[PaneListEntry]) -> Vec<String> {
-    vec![serde_json::to_string_pretty(pane_entries).unwrap_or_else(|_| "[]".to_string())]
-}
-
-fn format_panes_table(
-    entries: &[PaneListEntry],
-    show_tab: bool,
-    show_command: bool,
-    show_state: bool,
-    show_geometry: bool,
-) -> Vec<String> {
-    let mut lines = Vec::new();
-    lines.push(build_table_header(
-        show_tab,
-        show_command,
-        show_state,
-        show_geometry,
-    ));
-
-    for entry in entries {
-        lines.push(build_table_row(
-            entry,
-            show_tab,
-            show_command,
-            show_state,
-            show_geometry,
-        ));
-    }
-
-    lines
-}
-
-fn build_table_header(
-    show_tab: bool,
-    show_command: bool,
-    show_state: bool,
-    show_geometry: bool,
-) -> String {
-    let mut header = Vec::new();
-
-    if show_tab {
-        header.push("TAB_ID");
-        header.push("TAB_POS");
-        header.push("TAB_NAME");
-    }
-
-    header.push("PANE_ID");
-    header.push("TYPE");
-    header.push("TITLE");
-
-    if show_command {
-        header.push("COMMAND");
-        header.push("CWD");
-    }
-
-    if show_state {
-        header.push("FOCUSED");
-        header.push("FLOATING");
-        header.push("EXITED");
-    }
-
-    if show_geometry {
-        header.push("X");
-        header.push("Y");
-        header.push("ROWS");
-        header.push("COLS");
-    }
-
-    header.join("  ")
-}
-
-fn build_table_row(
-    entry: &PaneListEntry,
-    show_tab: bool,
-    show_command: bool,
-    show_state: bool,
-    show_geometry: bool,
-) -> String {
-    let mut row = Vec::new();
-
-    if show_tab {
-        row.push(entry.tab_id.to_string());
-        row.push(entry.tab_position.to_string());
-        row.push(entry.tab_name.clone());
-    }
-
-    row.push(format_pane_id(&entry.pane_info));
-    row.push(format_pane_type(&entry.pane_info));
-    row.push(entry.pane_info.title.clone());
-
-    if show_command {
-        row.push(extract_command(entry));
-        row.push(extract_cwd(entry));
-    }
-
-    if show_state {
-        row.push(entry.pane_info.is_focused.to_string());
-        row.push(entry.pane_info.is_floating.to_string());
-        row.push(entry.pane_info.exited.to_string());
-    }
-
-    if show_geometry {
-        row.push(entry.pane_info.pane_x.to_string());
-        row.push(entry.pane_info.pane_y.to_string());
-        row.push(entry.pane_info.pane_rows.to_string());
-        row.push(entry.pane_info.pane_columns.to_string());
-    }
-
-    row.join("  ")
-}
-
-fn format_pane_id(pane_info: &yinz_types::data::PaneInfo) -> String {
-    pane_info.id.to_string()
-}
-
-fn format_pane_type(pane_info: &yinz_types::data::PaneInfo) -> String {
-    if pane_info.is_plugin() {
-        "plugin".to_string()
-    } else {
-        "terminal".to_string()
-    }
-}
-
-fn extract_command(entry: &PaneListEntry) -> String {
-    entry
-        .pane_command
-        .as_ref()
-        .or(entry.pane_info.terminal_command.as_ref())
-        .or(entry.pane_info.plugin_url.as_ref())
-        .map(|s| s.as_str())
-        .unwrap_or("-")
-        .to_string()
-}
-
-fn extract_cwd(entry: &PaneListEntry) -> String {
-    entry.pane_cwd.as_deref().unwrap_or("-").to_string()
-}
-
-fn format_tabs_as_json(tab_infos: &[TabInfo]) -> Vec<String> {
-    vec![serde_json::to_string_pretty(tab_infos).unwrap_or_else(|_| "[]".to_string())]
-}
-
-fn format_tabs_table(
-    tabs: &[TabInfo],
-    show_state: bool,
-    show_dimensions: bool,
-    show_panes: bool,
-    show_layout: bool,
-) -> Vec<String> {
-    let mut lines = Vec::new();
-    lines.push(build_tabs_table_header(
-        show_state,
-        show_dimensions,
-        show_panes,
-        show_layout,
-    ));
-
-    for tab_info in tabs {
-        lines.push(build_tabs_table_row(
-            tab_info,
-            show_state,
-            show_dimensions,
-            show_panes,
-            show_layout,
-        ));
-    }
-
-    lines
-}
-
-fn build_tabs_table_header(
-    show_state: bool,
-    show_dimensions: bool,
-    show_panes: bool,
-    show_layout: bool,
-) -> String {
-    let mut header = Vec::new();
-
-    // Core fields (always shown)
-    header.push("TAB_ID");
-    header.push("POSITION");
-    header.push("NAME");
-
-    if show_state {
-        header.push("ACTIVE");
-        header.push("FULLSCREEN");
-        header.push("SYNC_PANES");
-        header.push("FLOATING_VIS");
-    }
-
-    if show_dimensions {
-        header.push("VP_ROWS");
-        header.push("VP_COLS");
-        header.push("DA_ROWS");
-        header.push("DA_COLS");
-    }
-
-    if show_panes {
-        header.push("TILED_PANES");
-        header.push("FLOAT_PANES");
-        header.push("HIDDEN_PANES");
-    }
-
-    if show_layout {
-        header.push("SWAP_LAYOUT");
-        header.push("LAYOUT_DIRTY");
-    }
-
-    header.join("  ")
-}
-
-fn build_tabs_table_row(
-    tab_info: &TabInfo,
-    show_state: bool,
-    show_dimensions: bool,
-    show_panes: bool,
-    show_layout: bool,
-) -> String {
-    let mut row = Vec::new();
-
-    // Core fields
-    row.push(tab_info.tab_id.to_string());
-    row.push(tab_info.position.to_string());
-    row.push(tab_info.name.clone());
-
-    if show_state {
-        row.push(tab_info.active.to_string());
-        row.push(tab_info.is_fullscreen_active.to_string());
-        row.push(tab_info.is_sync_panes_active.to_string());
-        row.push(tab_info.are_floating_panes_visible.to_string());
-    }
-
-    if show_dimensions {
-        row.push(tab_info.viewport_rows.to_string());
-        row.push(tab_info.viewport_columns.to_string());
-        row.push(tab_info.display_area_rows.to_string());
-        row.push(tab_info.display_area_columns.to_string());
-    }
-
-    if show_panes {
-        row.push(tab_info.selectable_tiled_panes_count.to_string());
-        row.push(tab_info.selectable_floating_panes_count.to_string());
-        row.push(tab_info.panes_to_hide.to_string());
-    }
-
-    if show_layout {
-        row.push(
-            tab_info
-                .active_swap_layout_name
-                .as_deref()
-                .unwrap_or("-")
-                .to_string(),
-        );
-        row.push(tab_info.is_swap_layout_dirty.to_string());
-    }
-
-    row.join("  ")
-}
-
-fn format_current_tab_info_as_json(tab_info: &TabInfo) -> Vec<String> {
-    vec![serde_json::to_string_pretty(tab_info).unwrap_or_else(|_| "{}".to_string())]
-}
-
-fn format_current_tab_info_plain(tab_info: &TabInfo) -> Vec<String> {
-    vec![
-        format!("name: {}", tab_info.name),
-        format!("id: {}", tab_info.tab_id),
-        format!("position: {}", tab_info.position),
-    ]
-}
-
-fn send_error_to_client(
-    cli_client_id: Option<ClientId>,
-    os_input: Option<&dyn ServerOsApi>,
-    error_message: &str,
-) {
-    if let Some(cli_client_id) = cli_client_id
-        && let Some(os_input) = os_input
-    {
-        let _ = os_input.send_to_client(
-            cli_client_id,
-            ServerToClientMsg::LogError {
-                lines: vec![error_message.to_string()],
-            },
-        );
-    }
-}
-
-fn send_output_to_client(
-    cli_client_id: Option<ClientId>,
-    os_input: Option<&dyn ServerOsApi>,
-    output_lines: Vec<String>,
-) {
-    if let Some(cli_client_id) = cli_client_id
-        && let Some(os_input) = os_input
-    {
-        let _ = os_input.send_to_client(
-            cli_client_id,
-            ServerToClientMsg::Log {
-                lines: output_lines,
-            },
-        );
-    }
 }
 
 #[cfg(test)]
@@ -2951,282 +2200,5 @@ mod input_barrier_tests;
 mod notification_tests;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use yinz_runtime::channels::SenderWithContext;
-
-    #[test]
-    fn keybind_pipe_forwards_in_place_intent_and_explicit_targets() {
-        use yinz_types::internal_ids::TerminalId;
-
-        let explicit = PaneId::Terminal(TerminalId::new(7));
-        for (in_place, pane_id, expected) in [
-            (true, None, None),
-            (true, Some(explicit), Some(explicit)),
-            (false, Some(explicit), None),
-            (false, None, None),
-        ] {
-            let (screen_tx, screen_rx) = yinz_runtime::channels::unbounded();
-            let (plugin_tx, plugin_rx) = yinz_runtime::channels::unbounded();
-            let senders = ThreadSenders {
-                to_screen: Some(SenderWithContext::new(screen_tx)),
-                to_plugin: Some(SenderWithContext::new(plugin_tx)),
-                ..Default::default()
-            };
-            let result = route_action(
-                Action::KeybindPipe {
-                    name: Some("message".into()),
-                    payload: None,
-                    args: None,
-                    plugin: None,
-                    plugin_id: None,
-                    configuration: None,
-                    launch_new: false,
-                    skip_cache: false,
-                    floating: None,
-                    in_place: Some(in_place),
-                    cwd: None,
-                    pane_title: None,
-                },
-                ClientId::new(1),
-                None,
-                pane_id,
-                senders,
-                None,
-                None,
-                InputMode::Normal,
-                None,
-                true,
-                true, // is_client_input
-            );
-            result.unwrap();
-            assert!(screen_rx.try_recv().is_err());
-            let (instruction, _) = plugin_rx.try_recv().unwrap();
-            let PluginInstruction::KeybindPipe {
-                should_open_in_place,
-                pane_id_to_replace,
-                ..
-            } = instruction
-            else {
-                panic!("unexpected plugin instruction");
-            };
-            assert_eq!(
-                (should_open_in_place, pane_id_to_replace),
-                (in_place, expected)
-            );
-        }
-    }
-
-    #[test]
-    fn cli_pipe_eof_requires_a_previous_message_on_the_same_connection() {
-        let (to_plugin, plugins) = yinz_runtime::channels::unbounded();
-        let (to_server, server) = yinz_runtime::channels::unbounded();
-        let senders = ThreadSenders {
-            to_plugin: Some(SenderWithContext::new(to_plugin)),
-            to_server: Some(SenderWithContext::new(to_server)),
-            should_silently_fail: true,
-            ..Default::default()
-        };
-        for focus_plugin in [false, true] {
-            let mut seen = HashSet::new();
-            for (pipe_id, payload, expected_eof) in [
-                ("empty", None, false),
-                ("stream", Some("input".to_owned()), false),
-                ("stream", Some(String::new()), false),
-                ("stream", None, true),
-                ("empty", None, true),
-            ] {
-                route_action(
-                    Action::CliPipe {
-                        focus_plugin,
-                        pipe_id: pipe_id.into(),
-                        name: Some("test".into()),
-                        payload,
-                        plugin: None,
-                        args: None,
-                        configuration: None,
-                        floating: None,
-                        in_place: None,
-                        launch_new: false,
-                        skip_cache: false,
-                        cwd: None,
-                        pane_title: None,
-                    },
-                    ClientId::new(1),
-                    Some(ClientId::new(2)),
-                    None,
-                    senders.clone(),
-                    None,
-                    Some(&mut seen),
-                    InputMode::Normal,
-                    None,
-                    true,
-                    true, // is_client_input
-                )
-                .unwrap();
-                let (
-                    PluginInstruction::CliPipe {
-                        is_eof,
-                        focus_plugin: forwarded_focus,
-                        ..
-                    },
-                    _,
-                ) = plugins.try_recv().unwrap()
-                else {
-                    panic!("expected a CLI pipe instruction");
-                };
-                assert_eq!(is_eof, expected_eof);
-                assert_eq!(forwarded_focus, focus_plugin);
-            }
-            assert_eq!(server.try_iter().count(), 2, "associate each pipe once");
-        }
-    }
-
-    /// The bug this guards: bound keys become their own screen instructions and never reach
-    /// `WriteCharacter`, so without a dismissal here a tab switch leaves a stale menu on screen,
-    /// still offering to act on the pane it was opened over.
-    #[test]
-    fn only_keys_bound_to_something_other_than_writing_dismiss_a_context_menu() {
-        let write = Action::Write {
-            key_with_modifier: None,
-            bytes: vec![b'a'],
-            is_kitty_keyboard_protocol: false,
-        };
-        assert!(!actions_dismiss_context_menu(std::slice::from_ref(&write)));
-        assert!(!actions_dismiss_context_menu(&[Action::WriteChars {
-            chars: "a".to_owned()
-        }]));
-        assert!(actions_dismiss_context_menu(&[Action::GoToNextTab]));
-        assert!(
-            actions_dismiss_context_menu(&[write, Action::GoToNextTab]),
-            "one non-writing action in the sequence is enough"
-        );
-    }
-
-    /// The bug this guards: `bind "Enter" { Copy; SwitchToMode "Normal"; }` set the status bar's
-    /// "Text copied to..." message with the first action and cleared it with the second's
-    /// `InputReceived`, so a keyboard selection copied silently while a mouse one did not.
-    #[test]
-    fn a_key_whose_batch_copies_leaves_the_clipboard_message_alone() {
-        assert!(actions_leave_clipboard_message(&[Action::Copy]));
-        assert!(
-            actions_leave_clipboard_message(&[
-                Action::Copy,
-                Action::SwitchToMode {
-                    input_mode: InputMode::Normal
-                },
-            ]),
-            "the trailing mode switch is part of the keystroke that copied"
-        );
-        assert!(actions_leave_clipboard_message(&[
-            Action::CopyLastCommandOutput,
-            Action::SwitchToMode {
-                input_mode: InputMode::Locked
-            },
-        ]));
-        assert!(!actions_leave_clipboard_message(&[
-            Action::SwitchToMode {
-                input_mode: InputMode::Normal
-            },
-            Action::GoToNextTab,
-        ]));
-    }
-
-    /// The other half of the same bug: the batch decision only helps if `route_action` honours
-    /// it, and the `InputReceived` it would otherwise send is what clears the message.
-    #[test]
-    fn a_suppressed_action_tells_the_plugins_nothing_about_the_input() {
-        let route = |leaves_clipboard_message| {
-            let (tx, rx) = yinz_runtime::channels::unbounded();
-            let senders = ThreadSenders {
-                to_plugin: Some(SenderWithContext::new(tx)),
-                should_silently_fail: true,
-                ..Default::default()
-            };
-            let _ = route_action(
-                Action::SwitchToMode {
-                    input_mode: InputMode::Normal,
-                },
-                ClientId::new(1),
-                None,
-                None,
-                senders,
-                None,
-                None,
-                InputMode::Normal,
-                None,
-                leaves_clipboard_message,
-                true, // is_client_input
-            );
-            let mut events = Vec::new();
-            while let Ok((instruction, _ctx)) = rx.try_recv() {
-                if let PluginInstruction::Update(updates) = instruction {
-                    events.extend(updates.into_iter().map(|(_, _, event)| event));
-                }
-            }
-            events
-        };
-        assert!(
-            route(false)
-                .iter()
-                .any(|event| matches!(event, Event::InputReceived)),
-            "an ordinary action still reports the input"
-        );
-        assert!(
-            !route(true)
-                .iter()
-                .any(|event| matches!(event, Event::InputReceived)),
-            "an action belonging to a keystroke that copied stays silent"
-        );
-    }
-
-    /// A keybind is routed with no pane id, so its `in_place` can never become a
-    /// `pane_id_to_replace`; the instruction carries the intent on its own for the host to
-    /// resolve against the client's focused pane.
-    #[test]
-    fn a_keybind_pipe_opened_in_place_carries_the_intent_without_a_pane_id() {
-        let (tx, rx) = yinz_runtime::channels::unbounded();
-        let senders = ThreadSenders {
-            to_plugin: Some(SenderWithContext::new(tx)),
-            should_silently_fail: true,
-            ..Default::default()
-        };
-        let _ = route_action(
-            Action::KeybindPipe {
-                name: Some("go".to_owned()),
-                payload: None,
-                args: None,
-                plugin: Some("yinz:configuration".to_owned()),
-                plugin_id: None,
-                configuration: None,
-                launch_new: false,
-                skip_cache: false,
-                floating: Some(false),
-                in_place: Some(true),
-                cwd: None,
-                pane_title: None,
-            },
-            ClientId::new(1),
-            None,
-            None,
-            senders,
-            None,
-            None,
-            InputMode::Normal,
-            None,
-            false,
-            true, // is_client_input
-        );
-        let placement = std::iter::from_fn(|| rx.try_recv().ok())
-            .find_map(|(instruction, _ctx)| match instruction {
-                PluginInstruction::KeybindPipe {
-                    should_open_in_place,
-                    pane_id_to_replace,
-                    ..
-                } => Some((should_open_in_place, pane_id_to_replace)),
-                _ => None,
-            })
-            .expect("the keybind reached the plugin thread");
-        assert_eq!(placement, (true, None));
-    }
-}
+#[path = "unit/routing_tests.rs"]
+mod tests;
