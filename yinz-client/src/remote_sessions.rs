@@ -89,8 +89,9 @@ pub fn check_versions(version: &str, contract: usize, bootstrap: usize) -> Resul
     Err(mismatch(&versions(version, contract, bootstrap)))
 }
 
-/// Explain a failed remote bootstrap or discovery from its stderr. A remote that rejects the
-/// command line predates [`REMOTE_BOOTSTRAP_VERSION`]; one that parsed it but disagrees says so.
+/// Explain a failed remote bootstrap or discovery from its stderr. A remote that rejects
+/// `--bootstrap-version` or the subcommand predates [`REMOTE_BOOTSTRAP_VERSION`]; one that
+/// rejects another flag is older but versioned; one that parsed it but disagrees says so.
 pub fn bootstrap_failure(host: &str, stderr: &[u8]) -> Option<anyhow::Error> {
     let stderr = String::from_utf8_lossy(stderr);
     let mut lines = stderr.lines().map(str::trim);
@@ -106,10 +107,22 @@ pub fn bootstrap_failure(host: &str, stderr: &[u8]) -> Option<anyhow::Error> {
     let rejected = lines.find(|line| {
         line.contains("unexpected argument") || line.contains("unrecognized subcommand")
     })?;
+    let unversioned = line_names_bootstrap_flag_or_subcommand(rejected);
     Some(mismatch(&format!(
-        "an older Yinz on {host} with no remote bootstrap version (it reported: {})",
+        "an older Yinz on {host}{} (it reported: {})",
+        if unversioned {
+            " with no remote bootstrap version"
+        } else {
+            ""
+        },
         rejected.trim_start_matches("error: ")
     )))
+}
+
+/// Whether clap's rejection is of `--bootstrap-version` itself or of the whole subcommand, the
+/// only rejections that prove the remote predates bootstrap versioning.
+fn line_names_bootstrap_flag_or_subcommand(line: &str) -> bool {
+    line.contains("unrecognized subcommand") || line.contains("'--bootstrap-version'")
 }
 
 pub fn validate_name(name: &str) -> Result<()> {

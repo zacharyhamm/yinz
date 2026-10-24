@@ -2506,8 +2506,10 @@ pub fn start_server_impl(
                 if !open
                     && session_state
                         .read()
-                        .unwrap()
-                        .supports_session_requests(&client_id)
+                        .to_anyhow()
+                        .context("failed to read which clients take session requests")
+                        .to_log()
+                        .is_ok_and(|state| state.supports_session_requests(&client_id))
                 {
                     send_to_client!(
                         client_id,

@@ -107,20 +107,39 @@ fn remote_command_line_rejections_are_compatibility_mismatches() {
         "--",
         "work",
     ]);
+    assert!(
+        unknown_flag.contains("unexpected argument '--from-a-newer-client'"),
+        "{unknown_flag}"
+    );
+    let ours = format!(
+        "Yinz {VERSION}, client/server contract {CLIENT_SERVER_CONTRACT_VERSION}, remote bootstrap {REMOTE_BOOTSTRAP_VERSION}"
+    );
+    let unknown_bootstrap_flag =
+        unknown_flag.replace("'--from-a-newer-client'", "'--bootstrap-version'");
     let unknown_subcommand =
         "error: unrecognized subcommand 'remote-session'\n\nUsage: yinz [OPTIONS] [COMMAND]\n";
-    for stderr in [unknown_flag.as_str(), unknown_subcommand] {
+    let mapped = |stderr: &str| {
         let error = bootstrap_failure("user@host", format!("Warning: banner\n{stderr}").as_bytes())
             .unwrap_or_else(|| panic!("not mapped: {stderr}"))
             .to_string();
         assert!(error.starts_with("Yinz compatibility mismatch"), "{error}");
+        assert!(error.contains(&ours), "{error}");
+        error
+    };
+    for stderr in [unknown_bootstrap_flag.as_str(), unknown_subcommand] {
+        let error = mapped(stderr);
         assert!(
-            error.contains(&format!(
-                "Yinz {VERSION}, client/server contract {CLIENT_SERVER_CONTRACT_VERSION}, remote bootstrap {REMOTE_BOOTSTRAP_VERSION}"
-            )) && error.contains("older Yinz on user@host with no remote bootstrap version"),
+            error.contains("older Yinz on user@host with no remote bootstrap version"),
             "{error}"
         );
     }
+    // Any other unknown flag comes from an older remote that may well be versioned.
+    let error = mapped(&unknown_flag);
+    assert!(
+        error.contains("older Yinz on user@host (it reported:"),
+        "{error}"
+    );
+    assert!(!error.contains("no remote bootstrap version"), "{error}");
     // A remote that understood the flags reports its own mismatch; keep it, naming the host.
     let reported = bootstrap_failure(
         "host",

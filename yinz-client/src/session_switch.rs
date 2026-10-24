@@ -315,11 +315,13 @@ impl<'a> Sessions<'a> {
                         None,
                     )
                 } else {
-                    CliAssets::default()
+                    CliAssets {
+                        supports_session_requests: true,
+                        ..Default::default()
+                    }
                 };
                 assets.terminal_window_size = os.get_terminal_size();
                 assets.host_terminal_env = yinz_runtime::host_terminal_env::host_terminal_env();
-                assets.supports_session_requests = true;
                 let config = self.cli_args.config.clone();
                 let termios = os.original_termios();
                 let (sender, receiver) = mpsc::channel();
