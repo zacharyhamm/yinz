@@ -1799,3 +1799,6 @@ fn agents_history_search_refresh_uses_the_latest_complete_header() {
 
 #[path = "agents_render.rs"]
 mod render_tests;
+
+#[path = "agents_activity.rs"]
+mod activity_tests;

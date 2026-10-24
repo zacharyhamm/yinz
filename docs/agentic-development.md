@@ -4,13 +4,13 @@ This fork already covers most of an agent's development cycle. The main gaps wer
 finding an agent that needs input, moving a planned task into a working session, and choosing launch settings.
 This change connects those steps through the existing launcher and agent panel.
 
-The implementation has five main parts:
+The implementation has four main parts:
 
 | Part | Role | Source |
 | --- | --- | --- |
-| Agent launcher | Select an agent, project, branch, worktree, and execution environment | `default-plugins/new-agent/src/main.rs`, `yinz-runtime/src/agent/launch.rs` |
-| State and history | Receive agent hooks, track panes, record runs, and produce summaries | `default-plugins/agent-service/src/main.rs`, `default-plugins/agent-proto/src/agents.rs` |
-| Agent panel | Browse live agents and archived runs, read transcripts, and resume conversations | `default-plugins/agents/src/main.rs` |
+| Agent launcher | Select an agent, project, branch, worktree, and execution environment | `yinz-steel-builtins/assets/plugins/new-agent.scm`, `yinz-runtime/src/agent/launch.rs` |
+| State and history | Receive agent hooks, track panes, record runs, and produce summaries | `yinz-steel-builtins/assets/plugins/agent-service.scm`, `default-plugins/agent-proto/src/agents.rs` |
+| Agent panel | Browse live agents and archived runs, read transcripts, and resume conversations | `yinz-steel-builtins/assets/plugins/agents.scm`, `yinz-steel-builtins/assets/plugins/agents/` |
 | Projects | Remember projects and manage their configuration through the CLI | `yinz-steel-builtins/assets/plugins/project-store.scm`, `default-plugins/project-data/src/projects.rs`, `yinz-cli/src/projects.rs` |
 
 Use the shipped keybindings to open **New agent** with `Ctrl e`, then `n`.
@@ -35,7 +35,16 @@ Drag the divider, or type `/split 40` or `/split 35%` in the conversation, to ch
 The `width`, `height`, `split`, and `pad` keys in the `agent` block of `config.kdl` set the starting size (60%, 66%, 50%, and 3 by default).
 agent reports a value it cannot read in the conversation and uses the default instead.
 
-In the **Agents** list, press `w` to show only the agents waiting for input.
+The **Agents** list shows live counts of agents by state: needing input, working, idle, held, exited, and unknown.
+Each live agent has a name and state line, followed by its current tool, question, or task title.
+The panel uses these two-line rows when the panel is at least eight rows tall and the list is at least 24 columns wide.
+Smaller lists use compact rows.
+The selected agent's details identify the tracking source, so observed activity is distinguishable from an explicit hook report.
+
+Press `n` to select the next live agent that needs input.
+This clears search, previous-runs, and waiting filters and keeps the full list visible.
+Press `Enter` to focus that agent.
+Press `w` to show only the agents waiting for input.
 While an agent is waiting, the list and history footers start with `w waiting (N)`; a search or previous-runs view shows it right after `Esc/c clear`, and the waiting view reads `Esc/w all · N waiting`.
 With nobody waiting, `w waiting (0)` follows the selection's own keys. A narrow pane can cut the count, like any other key.
 The waiting view keeps project and branch labels and updates when agent state changes.
@@ -51,6 +60,24 @@ The footer changes with the current selection to expose these actions.
 Waiting means the same thing as the existing `!` marker and the `agent_list` tool's `awaiting_confirmation` field.
 An agent hook takes precedence. Without hooks, the existing fallback requires an idle pane and a summary matching its current screen.
 An exited agent or a stale summary does not count as waiting. The `◆` marker identifies agents with a hook feed.
+
+## Agent awareness and Corgi
+
+Corgi separates an agent's execution state from its need for attention.
+Its sidebar combines status counts, two-line agent rows, current activity, and navigation to agents that need input.
+Its detail cards add recent work phases, child agents, context occupancy, and observed token usage.
+Here, awareness means helping the user understand concurrent work. It does not mean agents automatically know what other agents are doing.
+
+Yinz adopts the live overview, activity rows, tracking-source details, and next-waiting navigation through its existing agent service.
+Hook reports take precedence over inferred activity. Terminal activity and summaries can describe work, but neither proves that a turn completed successfully.
+
+Corgi also retains unread completion receipts and can generate activity phases with a separate model.
+Yinz does not add those features in this change.
+Unread receipts need reliable completion events and acknowledgements tied to the displayed conversation.
+Context meters and child-agent graphs need provider data that Yinz does not yet collect consistently.
+Model-generated activity phases would also require inference settings and explicit handling of model usage.
+
+## Launching agents
 
 The launcher now offers **Reasoning effort** and **Approval mode** alongside **Model**.
 The choices come from the existing launch planner and change with the selected agent.

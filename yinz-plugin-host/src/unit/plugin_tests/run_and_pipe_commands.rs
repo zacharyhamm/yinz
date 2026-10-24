@@ -984,14 +984,22 @@ pub fn disconnect_other_clients_plugins_command() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_render_containing(&received_screen_instructions, "Rows: 20, Cols: 121");
 
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::Key(KeyWithModifier::new(BareKey::Char('6')).with_ctrl_modifier()), // this triggers the enent in the fixture plugin
     )]));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    received_server_instruction.wait_until(
+        "the disconnect request to reach the server before teardown",
+        default_timeout(),
+        |log| {
+            log.iter()
+                .any(|event| matches!(event, ServerInstruction::DisconnectAllClientsExcept(..)))
+                .then_some(())
+        },
+    );
     teardown();
     server_thread.join().unwrap(); // this might take a while if the cache is cold
     let switch_session_event = received_server_instruction

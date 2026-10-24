@@ -37,9 +37,9 @@
       "focus" "list" "has_keyboard" 'json-null "pane_shown" #f "last_label_rows" 0
       "open_note" #f "strip_seen" #f "run_error" #f "key_sheet_scroll" #f
       "last_sheet_rows" 0 "last_sheet_max_scroll" 0 "selected" 0 "focused" #f
-      "last_window_start" 0 "list_scroll" #f "click_press" #f "mouse_position" #f
+      "last_window_start" 0 "list_scroll" #f "list_lines" '() "list_rich" #f "click_press" #f "mouse_position" #f
       "split_ratio" (/ 1.0 3) "divider_drag" #f "last_divider_col" #f "last_history_top" 0
-      "last_rows" 0 "last_cols" 0 "last_footer_row" #f "last_list_rows" 0 "last_history_rows" 0
+      "last_rows" 0 "last_cols" 0 "last_footer_row" #f "last_list_rows" 0 "last_list_max_scroll" 0 "last_history_rows" 0
       "last_history_body_rows" 0 "last_history_window_start" 0 "last_history_body_top" 0
       "last_history_max_scroll" 0 "generation" 0 "run_revision" 0 "history_cache" #f
       "summarizing" #f "confirming_resume" #f "resume_note" #f "search_revisions" (hash)

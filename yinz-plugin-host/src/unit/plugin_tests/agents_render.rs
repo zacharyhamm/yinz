@@ -58,8 +58,17 @@ fn render_at_width(
     style: Style,
     cols: usize,
 ) -> Vec<Vec<TerminalCharacter>> {
+    render_sized(plugin, style, 40, cols)
+}
+
+fn render_sized(
+    plugin: &mut SteelReference,
+    style: Style,
+    rows: usize,
+    cols: usize,
+) -> Vec<Vec<TerminalCharacter>> {
     let mut grid = Grid::new(
-        40,
+        rows,
         cols,
         Default::default(),
         Default::default(),
@@ -74,7 +83,7 @@ fn render_at_width(
         true,
         false,
     );
-    vte::Parser::new().advance(&mut grid, plugin.render(40, cols).as_bytes());
+    vte::Parser::new().advance(&mut grid, plugin.render(rows, cols).as_bytes());
     let lines = grid.as_character_lines();
     for cell in lines.iter().flatten() {
         assert!(
@@ -151,7 +160,7 @@ fn agents_selections_and_secondary_text_resolve_theme_colors() {
             assert_text(&lines, "project", style.colors.text_unselected.base, true);
             assert_text(&lines, "topic", style.colors.text_unselected.base, false);
             assert_text(&lines, selected, style.colors.text_selected.base, false);
-            let selected_row = if selected == "archived run" { 3 } else { 2 };
+            let selected_row = if selected == "archived run" { 5 } else { 3 };
             for cell in &lines[selected_row][..33] {
                 assert_eq!(
                     cell.styles.foreground,
@@ -207,8 +216,11 @@ fn agents_selections_and_secondary_text_resolve_theme_colors() {
             style.colors.text_unselected.base,
             false,
         );
+        let first_line: String = lines[0].iter().map(|cell| cell.character).collect();
+        assert!(first_line.starts_with("waiting for agent…"));
         plugin.runtime.eval("(a-set! \"strip_seen\" #t)").unwrap();
         let lines = render(&mut plugin, style);
+        cells(&lines, "0 agents");
         assert_text(
             &lines,
             "no agents",
@@ -392,10 +404,10 @@ fn agents_clipped_remote_hosts_preserve_status_and_waiting_emphasis() {
             ("a遠隔計算機.example", "7 CLA@a遠隔計算"),
         ] {
             for (symbol, status) in [
-                ('!', "waiting"),
+                ('!', "needs input"),
                 ('○', "idle"),
-                ('●', "busy"),
-                ('?', "running"),
+                ('●', "working"),
+                ('?', "unknown"),
                 ('■', "held"),
                 ('×', "exited"),
             ] {
@@ -420,7 +432,7 @@ fn agents_clipped_remote_hosts_preserve_status_and_waiting_emphasis() {
                     let lines = render_at_width(&mut plugin, style, 60);
                     assert_eq!(state(&mut plugin, "last_divider_col"), 20);
                     assert_eq!(state(&mut plugin, "rows"), rows);
-                    let row = &lines[1];
+                    let row = &lines[2];
                     let divider = row.iter().position(|cell| cell.character == '│').unwrap();
                     assert_eq!(
                         row[..divider]
@@ -438,7 +450,7 @@ fn agents_clipped_remote_hosts_preserve_status_and_waiting_emphasis() {
                     } else {
                         style.colors.text_unselected.base
                     };
-                    assert_text(&lines[1..2], &symbol.to_string(), color, false);
+                    assert_text(&lines[2..3], &symbol.to_string(), color, false);
                     if selected == 1 {
                         cells(&lines, &format!("7 · claude · {status}"));
                     }
@@ -460,7 +472,7 @@ fn agents_divider_drag_clamps_restores_and_never_activates() {
     let mut plugin = plugin();
     plugin.render(24, 90);
     assert_eq!(state(&mut plugin, "last_divider_col"), 30);
-    assert_eq!(state(&mut plugin, "last_list_rows"), 23);
+    assert_eq!(state(&mut plugin, "last_list_rows"), 22);
     plugin.take_commands();
     mouse(&mut plugin, "LeftClick", json!([2, 30]));
     mouse(&mut plugin, "Hold", json!([2, 45]));
@@ -522,9 +534,9 @@ fn agents_columns_clip_align_and_route_mouse_independently() {
             "title" "a long archived title that must stay in the list" "started_at_ms" 1000 "continuation" #f))) (range 30))))
     "#).unwrap();
     let lines = render(&mut plugin, themes()[0]);
-    assert_eq!(lines[1][2].character, 't');
-    assert_eq!(lines[2][2].character, '7');
-    assert_eq!(lines[2][33].character, '│');
+    assert_eq!(lines[2][2].character, 't');
+    assert_eq!(lines[3][2].character, '7');
+    assert_eq!(lines[3][33].character, '│');
     plugin.render(10, 90);
     mouse(&mut plugin, "Hover", json!([2, 4]));
     mouse(&mut plugin, "ScrollDown", json!(3));
@@ -538,7 +550,7 @@ fn agents_columns_clip_align_and_route_mouse_independently() {
     mouse(&mut plugin, "LeftClick", json!([2, 50]));
     assert_eq!(state(&mut plugin, "focus"), "history");
     assert_eq!(state(&mut plugin, "selected"), 2);
-    mouse(&mut plugin, "LeftClick", json!([0, 4]));
+    mouse(&mut plugin, "LeftClick", json!([2, 4]));
     assert_eq!(state(&mut plugin, "focus"), "list");
     assert_eq!(state(&mut plugin, "selected"), 3);
     mouse(&mut plugin, "Release", json!([100, 4]));
@@ -593,7 +605,9 @@ fn agents_detail_updates_repaint_without_changing_compact_rows() {
     let rows = state(&mut plugin, "rows");
     let first = render(&mut plugin, themes()[0]);
     cells(&first, "7 CLA ●");
-    cells(&first, "busy · Bash cargo test");
+    cells(&first, "working");
+    cells(&first, "Bash cargo test");
+    cells(&first, "State: hooks");
     snapshot["panes"][0]["title"] = json!("New title");
     snapshot["hooks"]["7"]["detail"] = json!("Read render.scm");
     message.payload = Some(snapshot.to_string());
@@ -602,8 +616,136 @@ fn agents_detail_updates_repaint_without_changing_compact_rows() {
     assert_eq!(state(&mut plugin, "rows"), rows);
     let next = render(&mut plugin, themes()[0]);
     cells(&next, "7 CLA ●");
-    cells(&next, "busy · Read render.scm");
+    cells(&next, "Read render.scm");
     cells(&next, "New title");
+
+    snapshot["hooks"]["8"]["waiting_on"] = json!("Review the patch?");
+    message.payload = Some(snapshot.to_string());
+    message.args.insert("seq".into(), "3".into());
+    assert_eq!(plugin.pipe(&message), Some(true));
+    assert_eq!(state(&mut plugin, "rows"), rows);
+    let next = render(&mut plugin, themes()[0]);
+    cells(&next, "Review the patch?");
+
+    // A shell's title and folder draw nowhere in the panel, so they do not repaint it.
+    snapshot["panes"].as_array_mut().unwrap().push(json!({
+        "pane_id": 9, "title": "zsh", "command": null, "cwd": "/work", "status": "Running",
+        "tab": [1, "work"]
+    }));
+    message.payload = Some(snapshot.to_string());
+    message.args.insert("seq".into(), "4".into());
+    assert_eq!(plugin.pipe(&message), Some(false));
+    snapshot["panes"][2]["title"] = json!("vim main.rs");
+    message.payload = Some(snapshot.to_string());
+    message.args.insert("seq".into(), "5".into());
+    assert_eq!(plugin.pipe(&message), Some(false));
+    assert_eq!(state(&mut plugin, "rows"), rows);
+
+    // A compact list draws no activity lines, so only the selected agent's details repaint it.
+    assert_eq!(state(&mut plugin, "selected"), 2);
+    plugin.render(7, 90);
+    snapshot["panes"][1]["title"] = json!("⠐ codex working");
+    snapshot["hooks"]["8"]["waiting_on"] = json!("Another question?");
+    message.payload = Some(snapshot.to_string());
+    message.args.insert("seq".into(), "6".into());
+    assert_eq!(plugin.pipe(&message), Some(false));
+    snapshot["hooks"]["7"]["detail"] = json!("Edit render.scm");
+    message.payload = Some(snapshot.to_string());
+    message.args.insert("seq".into(), "7".into());
+    assert_eq!(plugin.pipe(&message), Some(true));
+}
+
+#[test]
+fn agents_detail_wraps_a_long_question_the_list_row_cuts() {
+    let mut plugin = plugin();
+    plugin
+        .runtime
+        .eval(
+            r#"(a-set! "snapshot" (hash "hooks" (hash "7" (hash "phase" "Waiting"
+                "waiting_on" "Allow Bash to run the full release build with every feature enabled, then compare the outputs before finishing"))))"#,
+        )
+        .unwrap();
+    let lines = render(&mut plugin, themes()[0]);
+    cells(&lines, "Allow Bash to run");
+    cells(&lines, "before finishing");
+    cells(&lines, "State: hooks");
+}
+
+#[test]
+fn agents_short_history_keeps_the_start_of_long_details() {
+    let mut plugin = plugin();
+    plugin
+        .runtime
+        .eval(
+            r#"(a-set! "snapshot" (hash "hooks" (hash "7" (hash "phase" "Waiting"
+                "waiting_on" "Allow Bash to run the full release build with every feature enabled, compare the outputs, then write a report about every difference before finishing"))))"#,
+        )
+        .unwrap();
+    let lines = render_sized(&mut plugin, themes()[0], 24, 90);
+    cells(&lines, "State: hooks");
+    // Seven history rows cannot hold all five detail lines, so the status and question stay.
+    let lines = render_sized(&mut plugin, themes()[0], 10, 90);
+    cells(&lines, "7 · claude · needs input");
+    cells(&lines, "Allow Bash to run");
+}
+
+#[test]
+fn agents_activity_lines_share_selection_and_activate_only_on_release() {
+    let mut plugin = plugin();
+    plugin.runtime.eval(r#"(a-set! "selected" 3)"#).unwrap();
+    plugin.render(24, 90);
+    assert_eq!(state(&mut plugin, "list_lines")[3], json!([2, true]));
+    plugin.take_commands();
+    mouse(&mut plugin, "LeftClick", json!([4, 5]));
+    mouse(&mut plugin, "Release", json!([4, 5]));
+    assert_eq!(state(&mut plugin, "selected"), 2);
+    assert!(!plugin
+        .take_commands()
+        .iter()
+        .any(|command| command.get("FocusTerminalPane").is_some()));
+
+    mouse(&mut plugin, "LeftClick", json!([4, 5]));
+    assert!(!plugin
+        .take_commands()
+        .iter()
+        .any(|command| command.get("FocusTerminalPane").is_some()));
+    mouse(&mut plugin, "Release", json!([4, 5]));
+    assert!(plugin
+        .take_commands()
+        .iter()
+        .any(|command| command.get("FocusTerminalPane") == Some(&json!([7, false, false]))));
+}
+
+#[test]
+fn agents_activity_rows_collapse_in_small_views_without_losing_selection() {
+    let mut plugin = plugin();
+    let mut previous_rich = false;
+    for (rows, cols, rich) in [
+        (24, 90, true),
+        (7, 90, false),
+        (24, 23, false),
+        (24, 60, false),
+        (24, 90, true),
+    ] {
+        plugin.render(rows, cols);
+        let lines = state(&mut plugin, "list_lines");
+        assert_eq!(
+            lines.as_array().unwrap().iter().any(|line| line[1] == true),
+            rich
+        );
+        if rich != previous_rich {
+            assert_eq!(state(&mut plugin, "list_scroll"), false);
+        }
+        let start = state(&mut plugin, "last_window_start").as_u64().unwrap() as usize;
+        let height = state(&mut plugin, "last_list_rows").as_u64().unwrap() as usize;
+        assert!(lines.as_array().unwrap()
+            [start..lines.as_array().unwrap().len().min(start + height)]
+            .iter()
+            .any(|line| line[0] == 2));
+        assert_eq!(state(&mut plugin, "selected"), 2);
+        plugin.runtime.eval(r#"(a-set! "list_scroll" 1)"#).unwrap();
+        previous_rich = rich;
+    }
 }
 
 #[test]
@@ -620,6 +762,7 @@ fn agents_history_clicks_open_a_full_panel_reader_only_on_release() {
     let row = state(&mut plugin, "last_history_body_top")
         .as_u64()
         .unwrap()
+        + state(&mut plugin, "last_label_rows").as_u64().unwrap()
         + 1;
     mouse(&mut plugin, "LeftClick", json!([row, 50]));
     assert_eq!(state(&mut plugin, "focus"), "history");
