@@ -209,7 +209,8 @@
         (if (equal? destination "CurrentServer") (hash-ref inventory "current_machine") destination))
       (define (label entry)
         (define destination (machine entry))
-        (define host (if (hash? destination) (hash-ref destination "Remote") "Local"))
+        (define host (cond ((hash? destination) (hash-ref destination "Remote"))
+            ((equal? destination "CurrentServer") "Current server") (else "Local")))
         (string-append (clean host) (if (present? (hash-ref entry "name"))
             (string-append " / " (clean (hash-ref entry "name"))) "")))
       (map (lambda (entry)
@@ -218,8 +219,10 @@
           (display-description
             (describe (action (yinz-json-string (list (machine entry) name))
                 (label entry)
-                (if (present? name) (lambda (values context) (switch-destination entry values context))
-                  (lambda (values context) (error status))))
+                (cond ((not (present? name)) (lambda (values context) (error status)))
+                  ;; An older client cannot prepare a switch; the server switches it in place.
+                  ((get inventory "current_server_only" #f) (lambda (values context) (switch-to name #f #f)))
+                  (else (lambda (values context) (switch-destination entry values context)))))
               (if (hash-ref entry "current") "Running Current session" status)) status))
         (sorted (hash-ref inventory "entries") label string<?))) 0 ""
     (lambda () (command "SwitchSessionDestination" (hash "Cancel" id)))))

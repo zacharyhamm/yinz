@@ -17,7 +17,9 @@ use yinz_client::{start_client, ClientInfo};
 use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
 use yinz_ipc::probe::SessionProbe;
 use yinz_process::ssh;
-use yinz_runtime::consts::{CLIENT_SERVER_CONTRACT_VERSION, VERSION, YINZ_SOCK_DIR};
+use yinz_runtime::consts::{
+    CLIENT_SERVER_CONTRACT_VERSION, REMOTE_BOOTSTRAP_VERSION, VERSION, YINZ_SOCK_DIR,
+};
 use yinz_runtime::errors::prelude::*;
 use yinz_runtime::termios::WireTermios;
 use yinz_session::sessions::{resurrection_layout, session_status};
@@ -36,12 +38,13 @@ pub(crate) fn bootstrap(
     create: bool,
     client_version: &str,
     contract: usize,
+    bootstrap: usize,
     configuration_options: Option<&str>,
     client_termios: Option<&str>,
     terminal_window_size: Option<&str>,
     opts: &CliArgs,
 ) -> Result<()> {
-    check_versions(client_version, contract)?;
+    check_versions(client_version, contract, bootstrap)?;
     validate_name(name)?;
     let configuration_options = configuration_options
         .map(serde_json::from_str::<Options>)
@@ -92,6 +95,7 @@ pub(crate) fn bootstrap(
         socket,
         yinz_version: VERSION.to_owned(),
         contract_version: CLIENT_SERVER_CONTRACT_VERSION,
+        bootstrap_version: REMOTE_BOOTSTRAP_VERSION,
     };
     let json = serde_json::to_string(&endpoint).context("encode remote endpoint")?;
     anyhow::ensure!(
@@ -343,11 +347,12 @@ mod tests;
 struct SessionList {
     yinz_version: String,
     contract_version: usize,
+    bootstrap_version: usize,
     sessions: Vec<(SessionName, Duration, yinz_cli::sessions::SessionListing)>,
 }
 
-pub(crate) fn list(client_version: &str, contract: usize) -> Result<()> {
-    check_versions(client_version, contract)?;
+pub(crate) fn list(client_version: &str, contract: usize, bootstrap: usize) -> Result<()> {
+    check_versions(client_version, contract, bootstrap)?;
     let mut sessions = yinz_cli::sessions::collect_sessions(false)
         .map_err(std::io::Error::from)
         .context("collect remote sessions")?;
@@ -355,6 +360,7 @@ pub(crate) fn list(client_version: &str, contract: usize) -> Result<()> {
     let response = SessionList {
         yinz_version: VERSION.to_owned(),
         contract_version: CLIENT_SERVER_CONTRACT_VERSION,
+        bootstrap_version: REMOTE_BOOTSTRAP_VERSION,
         sessions,
     };
     println!(

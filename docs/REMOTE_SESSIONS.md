@@ -11,7 +11,9 @@ The session name is required. `--create` attaches to an existing session, restor
 
 ## Setup
 
-Install compatible Yinz versions, including the builtin plugins, on both machines. The Yinz version and client/server contract version must match. The remote installation must be available on the SSH command's `PATH`.
+Install compatible Yinz versions, including the builtin plugins, on both machines. The Yinz version, client/server contract version, and remote bootstrap version must match. The remote installation must be available on the SSH command's `PATH`.
+
+The remote bootstrap version covers the `yinz remote-session` and `yinz remote-sessions` commands that SSH runs, and their JSON replies. It changes independently of the client/server contract, which stays the same across additive IPC changes. A remote that predates bootstrap versioning rejects the `--bootstrap-version` flag before it starts anything. Yinz reports that rejection as a compatibility mismatch rather than a command-line error.
 
 Use OpenSSH on both machines. The SSH server must allow Unix-socket forwarding (`AllowStreamLocalForwarding yes`). macOS and Linux can serve either role. Windows is not supported.
 
@@ -44,6 +46,12 @@ Remote attach rejects `--index`, `--create-background`, `--force-run-commands`, 
 
 A named session switch stays on the same SSH host. The client creates or restores that named session if necessary. Unnamed switch/create requests and switch requests with layout or directory overrides fail with an error.
 
+## Local sessions from other builds
+
+Local sessions share one socket directory per client/server contract version (`…/yinz/cv1/`). Builds with the same contract version list, attach to, and warp panes between each other's sessions. A build that only adds messages keeps the contract version, and gates the new messages on a capability each peer advertises.
+
+Switching sessions across machines from the session palette needs a client that advertises session requests. A client from an older build can still open the palette. It lists the current server's running and saved sessions and switches between them in place. Reattach with a current Yinz build to see local and remote destinations.
+
 ## Disconnects and errors
 
 Detach normally to leave the remote session running. To reattach, run the same attach command again.
@@ -52,7 +60,7 @@ If the connection fails, Yinz restores the terminal and exits with an error. The
 
 | Error | Action |
 | --- | --- |
-| Compatibility mismatch | Install matching Yinz versions on both machines. The error reports both versions and contract versions. |
+| Compatibility mismatch | Install matching Yinz versions on both machines. The error reports this machine's Yinz, contract, and bootstrap versions, and the peer's when it can report them. An older peer without bootstrap versioning is named as such. |
 | Authentication or host-key failure | Verify `ssh HOST yinz --version` with the same account and SSH configuration. |
 | Remote Yinz missing | Add the remote Yinz installation to the noninteractive SSH command's `PATH`. |
 | Session missing | Check the name or add `--create`. |

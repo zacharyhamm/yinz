@@ -614,6 +614,12 @@ contains `destination`, nullable `name`, `status`, `current`, and `saved`.
 Destinations are `"CurrentServer"`, `"Local"`, or `(hash "Remote" host)`.
 Only current-server entries include saved sessions. A null name identifies a
 host status row. `GetSessionList` keeps its server-local behavior.
+When the acting client predates session requests, the reply arrives at once
+with `current_server_only` set to `#t`, `current_machine` set to
+`"CurrentServer"`, and only current-server entries. Switch to those entries with
+`SwitchSession`; `SwitchSessionDestination` preparation fails for such a client
+with a message asking the user to reattach with a current build, and
+cancellation succeeds.
 
 `SwitchSessionDestination` requires `ChangeApplicationState`. Send
 `(hash "Prepare" (hash "id" id "target" (hash "destination" destination

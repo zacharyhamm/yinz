@@ -479,6 +479,8 @@ impl Session {
             yinz_runtime::consts::VERSION,
             "--contract-version",
             &yinz_runtime::consts::CLIENT_SERVER_CONTRACT_VERSION.to_string(),
+            "--bootstrap-version",
+            &yinz_runtime::consts::REMOTE_BOOTSTRAP_VERSION.to_string(),
         ]);
         if create {
             command.arg("--create");
@@ -672,6 +674,8 @@ fn local_bootstrap_preserves_selected_paths_options_and_checkpoint_layout() {
                 yinz_runtime::consts::VERSION,
                 "--contract-version",
                 &yinz_runtime::consts::CLIENT_SERVER_CONTRACT_VERSION.to_string(),
+                "--bootstrap-version",
+                &yinz_runtime::consts::REMOTE_BOOTSTRAP_VERSION.to_string(),
                 "--configuration-options",
                 &serde_json::to_string(&yinz_types::input::options::Options {
                     scroll_buffer_size: Some(32),
@@ -841,6 +845,35 @@ fn remote_bootstrap_refuses_unresponsive_session_without_replacing_socket() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("unresponsive"));
     assert_eq!(inode, fs::metadata(session.socket()).unwrap().ino());
     fs::remove_file(session.socket()).unwrap();
+}
+
+#[test]
+fn bootstrap_from_a_client_without_bootstrap_versioning_cannot_create_a_session() {
+    let session = Session::new();
+    let mut command = session.command();
+    command.env("YINZ_CONFIG_FILE", session.0.path().join("config.kdl"));
+    command.env("YINZ_CONFIG_DIR", session.0.path().join("config"));
+    // The command line an older client sends: matching versions, no bootstrap version.
+    let out = command
+        .args([
+            "remote-session",
+            "--client-version",
+            yinz_runtime::consts::VERSION,
+            "--contract-version",
+            &yinz_runtime::consts::CLIENT_SERVER_CONTRACT_VERSION.to_string(),
+            "--create",
+            NAME,
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        error.contains("Yinz compatibility mismatch")
+            && error.contains("no remote bootstrap version"),
+        "{error}"
+    );
+    assert!(!session.socket().exists());
 }
 
 #[test]

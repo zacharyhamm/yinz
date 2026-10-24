@@ -1564,6 +1564,9 @@ pub struct CliAssets {
     pub cwd: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(map="string, string", tag="12")]
     pub host_terminal_env: ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
+    /// The client handles ServerToClientMsg.session_request_json. Older clients omit it.
+    #[prost(bool, tag="13")]
+    pub supports_session_requests: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

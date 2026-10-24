@@ -16,4 +16,8 @@ pub struct CliAssets {
     pub cwd: Option<PathBuf>,
     /// Host terminal variables captured by the client runtime.
     pub host_terminal_env: BTreeMap<String, String>,
+    /// The client handles `ServerToClientMsg::SessionRequest`. False for clients that predate
+    /// it, which share the same client/server contract version.
+    #[serde(default)]
+    pub supports_session_requests: bool,
 }

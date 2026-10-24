@@ -31,6 +31,7 @@ fn inventory_deduplicates_only_the_current_machine_and_keeps_saved_sessions_on_i
                     entry(Destination::Remote("host-a".into())),
                     entry(Destination::Remote("host-b".into())),
                 ],
+                current_server_only: false,
             },
         );
         assert_eq!(inventory.entries.len(), 4);
@@ -80,6 +81,7 @@ fn requests_use_the_acting_client_and_unique_reply_tokens() {
                 .send(Ok(ClientReply::Inventory(Inventory {
                     current_machine: Destination::Remote(format!("host-{expected}")),
                     entries: vec![],
+                    current_server_only: false,
                 })))
                 .unwrap();
         }
@@ -96,6 +98,7 @@ fn requests_use_the_acting_client_and_unique_reply_tokens() {
             ClientReply::Inventory(Inventory {
                 current_machine: Destination::Remote(format!("host-{client}")),
                 entries: vec![],
+                current_server_only: false,
             })
         );
     }
@@ -225,6 +228,64 @@ fn timed_out_preparation_is_still_cancelled_on_its_original_client() {
     assert_eq!(env.session_preparations.len(), 1);
     env.client_id = ClientId::new(3);
     cancel_preparations(&mut env);
+    assert!(env.session_preparations.is_empty());
+    worker.join().unwrap();
+}
+
+#[test]
+fn unsupported_client_falls_back_to_current_server_sessions() {
+    use yinz_runtime::channels::{self, SenderWithContext};
+    let (server, requests) =
+        channels::unbounded::<(ServerInstruction, yinz_types::diagnostics::ErrorContext)>();
+    let worker = std::thread::spawn(move || {
+        for _ in 0..3 {
+            let ServerInstruction::SessionRequest { reply, .. } = requests
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .0
+            else {
+                panic!("expected session request")
+            };
+            reply.send(Err(UNSUPPORTED_CLIENT.into())).unwrap();
+        }
+    });
+    let mut env = crate::test_env::test_env();
+    env.senders.to_server = Some(SenderWithContext::new(server));
+    let id = scoped_id(&env, "picker").unwrap();
+    assert_eq!(
+        client_inventory(&mut env, id).unwrap(),
+        Inventory {
+            current_machine: Destination::CurrentServer,
+            entries: vec![],
+            current_server_only: true,
+        }
+    );
+    let response = |env: &mut crate::plugin_map::PluginEnv| {
+        let bytes = env.response_sink.take().unwrap();
+        let json =
+            yinz_plugin_api::generated_api::api::plugin_command::SessionDestinationResponse::decode(
+                bytes.as_slice(),
+            )
+            .unwrap()
+            .json;
+        serde_json::from_str::<std::result::Result<serde_json::Value, String>>(&json).unwrap()
+    };
+    // There is nothing to cancel on a client that cannot prepare a switch.
+    switch(&mut env, SwitchRequest::Cancel("picker".into())).unwrap();
+    assert_eq!(response(&mut env), Ok(serde_json::json!("Complete")));
+    switch(
+        &mut env,
+        SwitchRequest::Prepare {
+            id: "picker".into(),
+            target: SwitchTarget {
+                destination: Destination::CurrentServer,
+                name: "target".into(),
+                saved: false,
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(response(&mut env), Err(UNSUPPORTED_CLIENT.to_owned()));
     assert!(env.session_preparations.is_empty());
     worker.join().unwrap();
 }

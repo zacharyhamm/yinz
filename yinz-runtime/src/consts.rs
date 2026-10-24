@@ -17,7 +17,24 @@ pub static DEBUG_MODE: OnceLock<bool> = OnceLock::new();
 pub const SYSTEM_DEFAULT_CONFIG_DIR: &str = "/etc/yinz";
 pub const SYSTEM_DEFAULT_DATA_DIR_PREFIX: &str = system_default_data_dir();
 
-pub const CLIENT_SERVER_CONTRACT_VERSION: usize = 2;
+/// The client/server wire contract. Local session sockets live under `cv<version>` in
+/// [`YINZ_SOCK_DIR`], so bumping this splits the socket directory: builds on either side of the
+/// bump can no longer list, attach to, or warp panes into each other's sessions.
+///
+/// Bump it only for changes an older peer cannot skip: framing, removed or renumbered protobuf
+/// tags, or a changed meaning for an existing message. Gate additive messages on a capability
+/// the peer advertises instead, as `CliAssets::supports_session_requests` does.
+pub const CLIENT_SERVER_CONTRACT_VERSION: usize = 1;
+
+/// Version of the SSH bootstrap: the `remote-session` and `remote-sessions` command lines and
+/// their JSON replies. It is separate from the client/server contract, which stays put across
+/// additive IPC changes and so cannot tell a remote whose bootstrap predates these flags from a
+/// current one.
+///
+/// Bump it whenever either side would misread the other's bootstrap: a new required flag, a
+/// changed reply, or changed startup semantics.
+pub const REMOTE_BOOTSTRAP_VERSION: usize = 1;
+
 /// Maximum protobuf frame length, excluding its four-byte length prefix. `yinz_ipc` re-exports
 /// it for the socket transport; the plugin compilation worker bounds its requests and responses
 /// with it without linking that transport.

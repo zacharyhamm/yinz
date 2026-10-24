@@ -89,6 +89,11 @@ pub(crate) fn cancel_preparations(env: &mut PluginEnv) {
     }
 }
 
+/// The server refused the request because the acting client cannot receive it.
+fn is_unsupported_client(error: &anyhow::Error) -> bool {
+    error.to_string() == UNSUPPORTED_CLIENT
+}
+
 fn respond(env: &mut PluginEnv, result: Result<serde_json::Value>) -> Result<()> {
     let response =
         yinz_plugin_api::generated_api::api::plugin_command::SessionDestinationResponse {
@@ -102,13 +107,24 @@ pub(crate) fn inventory(env: &mut PluginEnv, id: String) -> Result<()> {
     let result = (|| {
         let snapshot = session_list_snapshot(env)?;
         let id = scoped_id(env, &id)?;
-        let ClientReply::Inventory(inventory) = request(env, ClientRequest::Inventory(id))? else {
-            bail!("Client returned an invalid session inventory");
-        };
-        let inventory = merge(snapshot, inventory);
+        let inventory = merge(snapshot, client_inventory(env, id)?);
         serde_json::to_value(inventory).context("encode session inventory")
     })();
     respond(env, result)
+}
+
+fn client_inventory(env: &mut PluginEnv, id: String) -> Result<Inventory> {
+    match request(env, ClientRequest::Inventory(id)) {
+        Ok(ClientReply::Inventory(inventory)) => Ok(inventory),
+        Ok(_) => bail!("Client returned an invalid session inventory"),
+        // An older client can still switch between this server's sessions the server's way.
+        Err(error) if is_unsupported_client(&error) => Ok(Inventory {
+            current_machine: Destination::CurrentServer,
+            entries: Vec::new(),
+            current_server_only: true,
+        }),
+        Err(error) => Err(error),
+    }
 }
 
 fn merge(snapshot: yinz_types::data::SessionListSnapshot, mut inventory: Inventory) -> Inventory {
@@ -167,8 +183,13 @@ pub(crate) fn switch(env: &mut PluginEnv, mut operation: SwitchRequest) -> Resul
             SwitchRequest::Status(id) | SwitchRequest::Commit(id) | SwitchRequest::Cancel(id) => id,
         };
         *id = scoped_id(env, id)?;
-        serde_json::to_value(request(env, ClientRequest::Switch(operation))?)
-            .context("encode session switch result")
+        let cancel = matches!(operation, SwitchRequest::Cancel(_));
+        let reply = match request(env, ClientRequest::Switch(operation)) {
+            // A client that cannot prepare a switch has none to cancel.
+            Err(error) if cancel && is_unsupported_client(&error) => ClientReply::Complete,
+            reply => reply?,
+        };
+        serde_json::to_value(reply).context("encode session switch result")
     })();
     respond(env, result)
 }
