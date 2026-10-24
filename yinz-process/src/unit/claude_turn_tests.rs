@@ -171,6 +171,119 @@ fn observation(path: &std::path::Path, marker: Option<PathBuf>) -> Observation {
 }
 
 #[test]
+fn conversation_markers_are_removed_on_session_end_without_a_prompt_id() {
+    for kind in ["agy", "claude"] {
+        for event in ["UserPromptSubmit", "SessionStart"] {
+            let dir = tempfile::tempdir().unwrap();
+            let marker = dir.path().join("observations/marker");
+            let session = "conversation:with\"quotes\nand:colons";
+            let hook = HookEvent {
+                hook_event_name: event.into(),
+                session_id: session.into(),
+                prompt_id: (event == "UserPromptSubmit").then(|| format!("{session}:1")),
+                ..Default::default()
+            };
+            update_conversation_marker(&marker, kind, &hook).unwrap();
+            let contents = std::fs::read_to_string(&marker).unwrap();
+            if kind == "agy" {
+                assert_eq!(
+                    serde_json::from_str::<(String, Option<String>)>(&contents).unwrap(),
+                    (hook.session_id.clone(), hook.prompt_id.clone())
+                );
+            } else {
+                assert_eq!(contents, session);
+            }
+            let end = HookEvent {
+                hook_event_name: "SessionEnd".into(),
+                prompt_id: None,
+                ..hook
+            };
+            update_conversation_marker(&marker, kind, &end).unwrap();
+            assert!(!marker.exists());
+            update_conversation_marker(&marker, kind, &end).unwrap();
+            assert!(!marker.exists());
+        }
+    }
+}
+
+#[test]
+fn session_end_preserves_other_sessions_including_shared_prefixes() {
+    for kind in ["agy", "claude"] {
+        for (current, ended) in [
+            ("other", "conversation"),
+            ("conversation:branch", "conversation"),
+            ("conversation", "conversation:branch"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let marker = dir.path().join("marker");
+            let hook = HookEvent {
+                hook_event_name: "UserPromptSubmit".into(),
+                session_id: current.into(),
+                prompt_id: Some(format!("{current}:1")),
+                ..Default::default()
+            };
+            update_conversation_marker(&marker, kind, &hook).unwrap();
+            let contents = std::fs::read_to_string(&marker).unwrap();
+            update_conversation_marker(
+                &marker,
+                kind,
+                &HookEvent {
+                    hook_event_name: "SessionEnd".into(),
+                    session_id: ended.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(std::fs::read_to_string(&marker).unwrap(), contents);
+        }
+    }
+}
+
+#[test]
+fn agy_session_end_only_removes_exact_legacy_session_markers() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("marker");
+    let end = HookEvent {
+        hook_event_name: "SessionEnd".into(),
+        session_id: "conversation".into(),
+        ..Default::default()
+    };
+    for (contents, removed) in [
+        ("conversation:", true),
+        ("conversation:conversation:1", true),
+        ("conversation:conversation:123", true),
+        ("other:", false),
+        ("other:other:1", false),
+        ("conversation:branch:", false),
+        ("conversation:branch:conversation:branch:1", false),
+        ("conversation:conversation:", false),
+        ("conversation:conversation:step", false),
+        ("conversation:conversation:1:extra", false),
+    ] {
+        std::fs::write(&marker, contents).unwrap();
+        update_conversation_marker(&marker, "agy", &end).unwrap();
+        assert_eq!(!marker.exists(), removed, "{contents}");
+        update_conversation_marker(&marker, "agy", &end).unwrap();
+        if !removed {
+            assert_eq!(std::fs::read_to_string(&marker).unwrap(), contents);
+        }
+    }
+    for event in ["SessionStart", "UserPromptSubmit"] {
+        std::fs::write(&marker, "conversation:conversation:1").unwrap();
+        let hook = HookEvent {
+            hook_event_name: event.into(),
+            prompt_id: (event == "UserPromptSubmit").then(|| "conversation:2".into()),
+            ..end.clone()
+        };
+        update_conversation_marker(&marker, "agy", &hook).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&std::fs::read_to_string(&marker).unwrap()).unwrap(),
+            json!([hook.session_id, hook.prompt_id])
+        );
+    }
+}
+
+#[test]
 fn an_observer_waits_for_initial_creation_and_complete_records() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("turn.jsonl");
@@ -558,21 +671,49 @@ fn agy_unavailable_api_and_invalid_responses_fail_closed() {
 }
 
 #[test]
-fn agy_missing_identity_process_exit_and_replacement_are_unavailable() {
+fn agy_missing_identity_process_exit_replacement_and_session_end_are_unavailable() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("transcript.jsonl");
     let marker = dir.path().join("marker");
     std::fs::write(&path, "").unwrap();
     let mut observation = observation(&path, Some(marker.clone()));
     observation.kind = "agy".into();
+    observation.hook.hook_event_name = "UserPromptSubmit".into();
     observation.hook.prompt_id = Some("conversation:1".into());
     observation.hook.turn_id = Some("1".into());
-    let identity = conversation_marker("agy", &observation.hook);
-    for replacement in ["other:other:1", "conversation:conversation:3"] {
-        std::fs::write(&marker, replacement).unwrap();
-        assert!(follow_with_api(&observation, None).is_err());
+    for (session, prompt) in [("other", "other:1"), ("conversation", "conversation:3")] {
+        let replacement = HookEvent {
+            session_id: session.into(),
+            prompt_id: Some(prompt.into()),
+            ..observation.hook.clone()
+        };
+        update_conversation_marker(&marker, "agy", &replacement).unwrap();
+        assert_eq!(
+            follow_with_api(&observation, None)
+                .err()
+                .unwrap()
+                .to_string(),
+            "agy conversation replaced"
+        );
     }
-    std::fs::write(&marker, &identity).unwrap();
+    update_conversation_marker(&marker, "agy", &observation.hook).unwrap();
+    update_conversation_marker(
+        &marker,
+        "agy",
+        &HookEvent {
+            hook_event_name: "SessionEnd".into(),
+            prompt_id: None,
+            ..observation.hook.clone()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        follow_with_api(&observation, None)
+            .err()
+            .unwrap()
+            .to_string(),
+        "agy conversation ended"
+    );
     let mut missing = observation.hook.clone();
     missing.prompt_id = None;
     let original = std::mem::replace(&mut observation.hook, missing);
