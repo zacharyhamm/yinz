@@ -1265,6 +1265,15 @@ fn a_pane_with_no_command_runs_the_remote_users_login_shell() {
         Some("/home/test"),
         "with no cwd asked for, a pane should land where ssh lands"
     );
+    let entries = hosts
+        .list_panes(HOST)
+        .expect("list the resolved login shell");
+    let entry = entries
+        .iter()
+        .find(|entry| entry.pane_token == pane.conn.pane_token())
+        .unwrap();
+    assert_eq!(entry.command, "/bin/bash");
+    assert_eq!(entry.argv, Some(vec!["/bin/bash".to_owned()]));
 
     pane.close();
 }
@@ -1831,7 +1840,33 @@ fn a_stranded_pane_can_be_found_and_adopted_by_listing_the_host() {
     let second_server = Arc::new(RemoteHosts::new());
 
     let marker = marker("stranded");
-    let pane = open_pane(&first_server, &idle_marked(&marker));
+    let cmd = RunCommand {
+        command: PathBuf::from("/bin/sh"),
+        args: vec![
+            "-c".to_owned(),
+            idle_marked(&marker),
+            "stranded".to_owned(),
+            "".to_owned(),
+            "one two\tthree\nfour".to_owned(),
+            "'single' \"double\"".to_owned(),
+            r"a\b $HOME; $(id) * | & >".to_owned(),
+        ],
+        target: PaneTarget::Ssh {
+            host: HOST.to_owned(),
+        },
+        ..Default::default()
+    };
+    let (conn, socket) = first_server
+        .open_pane_with_env(
+            HOST,
+            &cmd,
+            None,
+            yinz_types::internal_ids::TerminalId::new(0),
+            vec![],
+        )
+        .expect("open the pane with exact arguments");
+    let reader = RemoteReader::new(conn.clone(), socket).expect("create the remote reader");
+    let pane = pump(conn, reader);
     pane.wait_for_output(&format!("{marker}-started"));
     let (token, _) = release_for_warp(pane);
 
@@ -1852,6 +1887,19 @@ fn a_stranded_pane_can_be_found_and_adopted_by_listing_the_host() {
         "a listing has to say enough to recognise a pane by: {:?}",
         stranded.command
     );
+    let argv: Vec<_> = std::iter::once("/bin/sh".to_owned())
+        .chain(cmd.args.iter().cloned())
+        .collect();
+    assert_eq!(stranded.argv.as_ref(), Some(&argv));
+    assert_eq!(stranded.command, argv.join(" "));
+    let recovered = yinz_process::pty_host::cli::remote_adopt_payload(HOST, &token)
+        .expect("recover the command from the listing")
+        .remote
+        .unwrap()
+        .cmd;
+    assert_eq!(recovered.command, cmd.command);
+    assert_eq!(recovered.args, cmd.args);
+    assert_eq!(recovered.target, cmd.target);
 
     // Recovering from zero, as `pty-host adopt --host` does: this side has taken
     // delivery of nothing, so the broker replays everything it still holds.

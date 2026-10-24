@@ -496,13 +496,12 @@ fn start_pane(
     // default-shell pane still carries the flag that makes `Display` answer
     // "login shell on <host>", and the whole point of listing panes on a host is
     // to say which shell that turned out to be.
-    let command = std::iter::once(cmd.command.to_string_lossy().into_owned())
+    let argv = std::iter::once(cmd.command.to_string_lossy().into_owned())
         .chain(cmd.args.iter().cloned())
-        .collect::<Vec<_>>()
-        .join(" ");
+        .collect();
     let session = Arc::new(PaneSession::new(
         token.clone(),
-        command,
+        argv,
         spawned.handle,
         spawned.master,
         spawned.child_pid,

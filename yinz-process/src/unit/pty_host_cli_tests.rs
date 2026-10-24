@@ -337,6 +337,7 @@ fn remote_entry(command: &str, attached: bool) -> RemotePaneEntry {
     RemotePaneEntry {
         pane_token: "d6a7b8c9e0f1".to_owned(),
         command: command.to_owned(),
+        argv: None,
         attached,
         unattached_secs: if attached { None } else { Some(90) },
     }
@@ -403,21 +404,62 @@ fn a_stranded_pane_is_addressed_by_its_broker_and_nothing_local() {
 }
 
 #[test]
-fn a_recovered_panes_command_is_reconstructed_by_splitting_on_spaces() {
-    // Pinned as a known limitation rather than as a good outcome. The session
-    // that knew the real `RunCommand` is the one that is gone, and the broker
-    // reports a command already flattened to a string, so a quoted argument
-    // cannot be put back together. The host survives, which is the part a later
-    // re-run depends on.
-    let pane = warped_pane_from_entry("build-box", remote_entry("sh -c 'echo one two'", false))
+fn a_legacy_brokers_display_command_keeps_space_splitting() {
+    let pane = warped_pane_from_entry("build-box", remote_entry("sh  -c 'echo one\ttwo' ", false))
         .expect("TEST");
     let cmd = pane.remote.expect("TEST").cmd;
     assert_eq!(
         cmd.args,
-        vec!["-c", "'echo", "one", "two'"],
+        vec!["", "-c", "'echo", "one\ttwo'", ""],
         "a quoted argument comes back split, which is what flattening it lost",
     );
     assert_eq!(cmd.target.ssh_host(), Some("build-box"));
+}
+
+#[test]
+fn recovery_prefers_exact_argv_over_display_text() {
+    let executable = "/opt/my tools/shell";
+    for args in [
+        vec![],
+        vec![
+            "",
+            "one two",
+            "tab\tnewline\n",
+            "'single' \"double\"",
+            r"a\b",
+            "$HOME; $(id) * | & >",
+        ],
+    ] {
+        let mut entry = remote_entry("display text is not a command", false);
+        entry.argv = Some(
+            std::iter::once(executable)
+                .chain(args.iter().copied())
+                .map(str::to_owned)
+                .collect(),
+        );
+        let pane = warped_pane_from_entry("requested-host", entry).expect("TEST");
+        assert_eq!(
+            pane.caption.as_deref(),
+            Some("display text is not a command")
+        );
+        let remote = pane.remote.expect("TEST");
+        assert_eq!(remote.host, "requested-host");
+        assert_eq!(remote.cmd.command, PathBuf::from(executable));
+        assert_eq!(remote.cmd.args, args);
+        assert_eq!(remote.cmd.target.ssh_host(), Some("requested-host"));
+    }
+}
+
+#[test]
+fn recovery_rejects_present_but_empty_argv() {
+    let mut entry = remote_entry("/bin/sh", false);
+    entry.argv = Some(vec![]);
+    let error = warped_pane_from_entry("build-box", entry)
+        .expect_err("empty argv is malformed")
+        .to_string();
+    assert!(error.contains("empty argument vector"), "{error}");
+    assert!(error.contains("build-box"), "{error}");
+    assert!(error.contains("d6a7b8c9e0f1"), "{error}");
 }
 
 fn sweep_target(

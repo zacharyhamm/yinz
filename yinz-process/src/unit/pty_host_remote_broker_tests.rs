@@ -430,7 +430,7 @@ fn pump_over_session(
 
     let session = Arc::new(PaneSession::new(
         "token".to_owned(),
-        "/bin/sh".to_owned(),
+        vec!["/bin/sh".to_owned()],
         PtyHostHandle::for_test(control),
         pty.master,
         ProcessId::new(std::process::id()),
@@ -473,7 +473,7 @@ fn termination_is_acknowledged_only_after_output_is_drained() {
     let wire: Wire = Arc::new(Mutex::new(theirs));
     let session = Arc::new(PaneSession::new(
         "token".to_owned(),
-        "/bin/sh".to_owned(),
+        vec!["/bin/sh".to_owned()],
         PtyHostHandle::for_test(control),
         pty.master,
         ProcessId::new(std::process::id()),
@@ -526,7 +526,7 @@ fn a_termination_after_the_pump_reported_the_exit_does_not_report_it_again() {
     let wire: Wire = Arc::new(Mutex::new(theirs));
     let session = Arc::new(PaneSession::new(
         "token".to_owned(),
-        "/bin/sh".to_owned(),
+        vec!["/bin/sh".to_owned()],
         PtyHostHandle::for_test(control),
         pty.master,
         ProcessId::new(std::process::id()),
@@ -563,7 +563,7 @@ fn a_drain_timeout_still_finishes_and_reports_the_termination() {
     let wire: Wire = Arc::new(Mutex::new(theirs));
     let session = Arc::new(PaneSession::new(
         "token".to_owned(),
-        "/bin/sh".to_owned(),
+        vec!["/bin/sh".to_owned()],
         PtyHostHandle::for_test(control),
         pty.master,
         ProcessId::new(std::process::id()),
@@ -606,7 +606,7 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
     let wire: Wire = Arc::new(Mutex::new(theirs));
     let session = Arc::new(PaneSession::new(
         "token".to_owned(),
-        "/bin/sh".to_owned(),
+        vec!["/bin/sh".to_owned()],
         PtyHostHandle::for_test(control),
         pty.master,
         ProcessId::new(std::process::id()),
@@ -887,7 +887,7 @@ fn an_overrun_during_catch_up_reports_the_gap_before_the_surviving_output() {
     let wire: Wire = Arc::new(Mutex::new(theirs));
     let session = Arc::new(PaneSession::new(
         "token".to_owned(),
-        "/bin/sh".to_owned(),
+        vec!["/bin/sh".to_owned()],
         PtyHostHandle::for_test(control),
         pty.master,
         ProcessId::new(std::process::id()),
@@ -1091,6 +1091,7 @@ fn listing_panes_says_which_have_no_server() {
         "a pane with this connection speaking for it must not read as stranded"
     );
     assert_eq!(attached[0].command, "/bin/sh");
+    assert_eq!(attached[0].argv, Some(vec!["/bin/sh".to_owned()]));
 
     write_control(&mut ours, &ServerToBrokerMsg::Release).expect("write failed");
     let _ = read_reply(&mut ours);
