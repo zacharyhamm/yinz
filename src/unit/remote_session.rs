@@ -25,6 +25,7 @@ fn endpoint() -> Endpoint {
         socket: "/remote/run/cv1/remote work".into(),
         yinz_version: VERSION.to_owned(),
         contract_version: CLIENT_SERVER_CONTRACT_VERSION,
+        bootstrap_version: REMOTE_BOOTSTRAP_VERSION,
     }
 }
 
@@ -40,6 +41,9 @@ fn remote_endpoint_requires_bounded_matching_identity_and_versions() {
     e.contract_version += 1;
     assert!(parse(&e).is_err());
     e = endpoint();
+    e.bootstrap_version += 1;
+    assert!(parse(&e).is_err());
+    e = endpoint();
     e.session_name = "another session".into();
     assert!(parse(&e).is_err());
     for path in ["relative.sock", "/tmp/bad\npath", "/tmp/bad\0path"] {
@@ -49,6 +53,102 @@ fn remote_endpoint_requires_bounded_matching_identity_and_versions() {
     }
     assert!(parse_endpoint(&vec![b' '; ENDPOINT_LIMIT + 1], "remote work").is_err());
     assert!(parse_endpoint(b"login banner\n{}", "remote work").is_err());
+}
+
+#[test]
+fn endpoint_from_a_remote_without_bootstrap_versioning_is_a_mismatch() {
+    // A contract-1 remote from before bootstrap versioning: same fields, no bootstrap version.
+    let older = serde_json::json!({
+        "session_name": "remote work",
+        "socket": "/remote/run/cv1/remote work",
+        "yinz_version": VERSION,
+        "contract_version": CLIENT_SERVER_CONTRACT_VERSION,
+    });
+    let error = parse_endpoint(&serde_json::to_vec(&older).unwrap(), "remote work")
+        .unwrap_err()
+        .to_string();
+    assert!(error.starts_with("Yinz compatibility mismatch"), "{error}");
+    assert!(
+        error.contains(&format!("remote bootstrap {REMOTE_BOOTSTRAP_VERSION}"))
+            && error.contains("no remote bootstrap version"),
+        "{error}"
+    );
+}
+
+#[test]
+fn remote_command_line_rejections_are_compatibility_mismatches() {
+    use yinz_client::remote_sessions::bootstrap_failure;
+    let rendered = |args: &[&str]| {
+        let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        // The derived CLI builder needs the same stack as the existing CLI tests.
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(move || {
+                CliArgs::try_parse_from(args)
+                    .unwrap_err()
+                    .render()
+                    .to_string()
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    };
+    // What clap prints for a flag or subcommand a remote does not know, as an older remote
+    // does for --bootstrap-version or remote-session.
+    let unknown_flag = rendered(&[
+        "yinz",
+        "remote-session",
+        "--client-version",
+        VERSION,
+        "--contract-version",
+        "1",
+        "--from-a-newer-client",
+        "1",
+        "--",
+        "work",
+    ]);
+    let unknown_subcommand =
+        "error: unrecognized subcommand 'remote-session'\n\nUsage: yinz [OPTIONS] [COMMAND]\n";
+    for stderr in [unknown_flag.as_str(), unknown_subcommand] {
+        let error = bootstrap_failure("user@host", format!("Warning: banner\n{stderr}").as_bytes())
+            .unwrap_or_else(|| panic!("not mapped: {stderr}"))
+            .to_string();
+        assert!(error.starts_with("Yinz compatibility mismatch"), "{error}");
+        assert!(
+            error.contains(&format!(
+                "Yinz {VERSION}, client/server contract {CLIENT_SERVER_CONTRACT_VERSION}, remote bootstrap {REMOTE_BOOTSTRAP_VERSION}"
+            )) && error.contains("older Yinz on user@host with no remote bootstrap version"),
+            "{error}"
+        );
+    }
+    // A remote that understood the flags reports its own mismatch; keep it, naming the host.
+    let reported = bootstrap_failure(
+        "host",
+        b"Error: Yinz compatibility mismatch: this machine has Yinz 9; peer has Yinz 1.\n",
+    )
+    .unwrap()
+    .to_string();
+    assert_eq!(
+        reported,
+        "host reported: Yinz compatibility mismatch: this machine has Yinz 9; peer has Yinz 1."
+    );
+    assert!(bootstrap_failure("host", b"Permission denied (publickey).\n").is_none());
+}
+
+#[test]
+fn bootstrap_rejects_clients_without_a_matching_bootstrap_version() {
+    for bootstrap in [0, REMOTE_BOOTSTRAP_VERSION + 1] {
+        let error = check_versions(VERSION, CLIENT_SERVER_CONTRACT_VERSION, bootstrap)
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("Yinz compatibility mismatch"), "{error}");
+    }
+    check_versions(
+        VERSION,
+        CLIENT_SERVER_CONTRACT_VERSION,
+        REMOTE_BOOTSTRAP_VERSION,
+    )
+    .unwrap();
 }
 
 #[test]
@@ -220,6 +320,7 @@ fn discovery_checks_versions_names_and_keeps_unavailable_but_not_exited_sessions
     let mut response = SessionList {
         yinz_version: VERSION.into(),
         contract_version: CLIENT_SERVER_CONTRACT_VERSION,
+        bootstrap_version: REMOTE_BOOTSTRAP_VERSION,
         sessions: vec![
             (
                 "work".into(),
@@ -242,6 +343,12 @@ fn discovery_checks_versions_names_and_keeps_unavailable_but_not_exited_sessions
     response.contract_version += 1;
     assert!(parse(&response).is_err());
     response.contract_version -= 1;
+    response.bootstrap_version = 0;
+    assert!(parse(&response)
+        .unwrap_err()
+        .to_string()
+        .contains("Yinz compatibility mismatch"));
+    response.bootstrap_version = REMOTE_BOOTSTRAP_VERSION;
     response.sessions[0].0 = "bad\x1bname".into();
     assert!(parse(&response).is_err());
     assert!(parse_sessions("host", b"banner\n{}").is_err());

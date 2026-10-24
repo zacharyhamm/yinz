@@ -554,6 +554,8 @@ fn remote_client_remembers_host_and_picker_discovers_and_attaches() {
         yinz_runtime::consts::VERSION,
         "--contract-version",
         &yinz_runtime::consts::CLIENT_SERVER_CONTRACT_VERSION.to_string(),
+        "--bootstrap-version",
+        &yinz_runtime::consts::REMOTE_BOOTSTRAP_VERSION.to_string(),
     ]);
     let response: serde_json::Value = serde_json::from_str(&response).unwrap();
     assert!(response["sessions"]

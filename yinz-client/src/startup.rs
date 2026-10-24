@@ -118,6 +118,7 @@ impl<'a> StartupContext<'a> {
             force_run_layout_commands,
             cwd,
             host_terminal_env: host_terminal_env(),
+            supports_session_requests: true,
         }
     }
 
@@ -150,6 +151,7 @@ impl<'a> StartupContext<'a> {
                         cli_assets: CliAssets {
                             terminal_window_size: self.terminal_window_size,
                             host_terminal_env: host_terminal_env(),
+                            supports_session_requests: true,
                             ..Default::default()
                         },
                         tab_number_to_focus: focus.tab_number,

@@ -226,6 +226,7 @@ fn test_client_messages() {
                 current: false,
                 saved: false,
             }],
+            current_server_only: false,
         })),
     ] {
         test_client_roundtrip!(ClientToServerMsg::SessionReply(Reply {
@@ -735,6 +736,7 @@ fn test_client_messages() {
             host_terminal_env: [("TERM".to_owned(), "xterm-kitty".to_owned())]
                 .into_iter()
                 .collect(),
+            supports_session_requests: true,
         },
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
@@ -753,6 +755,7 @@ fn test_client_messages() {
             host_terminal_env: [("TERM".to_owned(), "xterm-kitty".to_owned())]
                 .into_iter()
                 .collect(),
+            supports_session_requests: true,
         },
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
@@ -839,6 +842,7 @@ fn test_client_messages() {
             host_terminal_env: [("TERM".to_owned(), "xterm-kitty".to_owned())]
                 .into_iter()
                 .collect(),
+            supports_session_requests: true,
         },
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
@@ -5801,4 +5805,63 @@ fn legacy_completion_request_does_not_opt_into_progress() {
             report_progress: false
         }
     );
+}
+
+#[test]
+fn attach_without_session_request_capability_decodes_as_unsupported() {
+    use crate::client_server_contract::client_server_contract::CliAssets as WireCliAssets;
+    use crate::ipc::ProtoClientToServerMsg;
+    let attach = |supports_session_requests| ClientToServerMsg::AttachClient {
+        cli_assets: CliAssets {
+            terminal_window_size: Size { rows: 24, cols: 80 },
+            supports_session_requests,
+            ..Default::default()
+        },
+        tab_number_to_focus: None,
+        pane_to_focus: None,
+    };
+    for supports in [false, true] {
+        let proto: ProtoClientToServerMsg = attach(supports).try_into().unwrap();
+        let bytes = proto.encode_to_vec();
+        let decoded = ProtoClientToServerMsg::decode(bytes.as_slice()).unwrap();
+        assert_eq!(
+            ClientToServerMsg::try_from(decoded).unwrap(),
+            attach(supports)
+        );
+    }
+    // Clients built before tag 13 never write it; proto3 encodes `false` the same way.
+    let older = WireCliAssets {
+        terminal_window_size: Some(Size { rows: 24, cols: 80 }.into()),
+        ..Default::default()
+    };
+    let decoded = WireCliAssets::decode(older.encode_to_vec().as_slice()).unwrap();
+    assert!(
+        !CliAssets::try_from(decoded)
+            .unwrap()
+            .supports_session_requests
+    );
+    let first = ProtoClientToServerMsg::try_from(ClientToServerMsg::FirstClientConnected {
+        cli_assets: CliAssets {
+            supports_session_requests: true,
+            ..Default::default()
+        },
+    })
+    .unwrap();
+    let ClientToServerMsg::FirstClientConnected { cli_assets } =
+        ProtoClientToServerMsg::decode(first.encode_to_vec().as_slice())
+            .unwrap()
+            .try_into()
+            .unwrap()
+    else {
+        panic!("expected first client message");
+    };
+    assert!(cli_assets.supports_session_requests);
+    let json: CliAssets = serde_json::from_str(
+        r#"{"config_file_path":null,"config_dir":null,"should_ignore_config":false,
+        "configuration_options":null,"layout":null,"terminal_window_size":{"rows":24,"cols":80},
+        "data_dir":null,"is_debug":false,"max_panes":null,"force_run_layout_commands":false,
+        "cwd":null,"host_terminal_env":{}}"#,
+    )
+    .unwrap();
+    assert!(!json.supports_session_requests);
 }

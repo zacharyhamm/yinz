@@ -482,12 +482,14 @@ fn blocked_ssh(root: &std::path::Path, phase: &str) -> std::fs::File {
         socket: "/remote/socket".into(),
         yinz_version: yinz_runtime::consts::VERSION.into(),
         contract_version: yinz_runtime::consts::CLIENT_SERVER_CONTRACT_VERSION,
+        bootstrap_version: yinz_runtime::consts::REMOTE_BOOTSTRAP_VERSION,
     })
     .unwrap();
     yinz_test_support::write_warm_script(
         &root.join("ssh"),
         &format!(
             r#"
+# Only the forward passes -L; it runs a remote command rather than -N.
 case " $* " in
     *" -L "*) ;;
     *) if [ "$YINZ_TEST_PREPARATION_PHASE" = forward ]; then
@@ -1538,6 +1540,7 @@ fn legacy_remote_bootstrap_signals_restore_the_terminal_and_clean_up_children() 
             &dir.path().join("ssh"),
             &format!(
                 r#"
+# Only the forward passes -L; it runs a remote command rather than -N.
 case " $* " in
     *" -L "*) export {PHASE}=forward; exec "$YINZ_TEST_RECONNECT_EXE" --exact {TEST} --nocapture ;;
 esac

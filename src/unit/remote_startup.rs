@@ -461,6 +461,7 @@ fn interrupted_startup(stage: &str, signal: Signal) {
                 "socket": "/remote/session",
                 "yinz_version": yinz_runtime::consts::VERSION,
                 "contract_version": yinz_runtime::consts::CLIENT_SERVER_CONTRACT_VERSION,
+                "bootstrap_version": yinz_runtime::consts::REMOTE_BOOTSTRAP_VERSION,
             })
             .to_string(),
         )

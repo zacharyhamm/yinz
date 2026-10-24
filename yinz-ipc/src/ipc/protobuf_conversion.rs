@@ -982,6 +982,7 @@ impl From<yinz_types::input::cli_assets::CliAssets>
             force_run_layout_commands: cli_assets.force_run_layout_commands,
             cwd: cli_assets.cwd.map(|p| p.to_string_lossy().to_string()),
             host_terminal_env: cli_assets.host_terminal_env.into_iter().collect(),
+            supports_session_requests: cli_assets.supports_session_requests,
         }
     }
 }
@@ -1012,6 +1013,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::CliAssets>
             force_run_layout_commands: cli_assets.force_run_layout_commands,
             cwd: cli_assets.cwd.map(PathBuf::from),
             host_terminal_env: cli_assets.host_terminal_env.into_iter().collect(),
+            supports_session_requests: cli_assets.supports_session_requests,
         })
     }
 }

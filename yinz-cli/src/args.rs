@@ -433,6 +433,9 @@ pub enum Command {
         client_version: String,
         #[clap(long)]
         contract_version: usize,
+        /// Clients that predate bootstrap versioning omit it, and get a mismatch error.
+        #[clap(long, default_value_t = 0)]
+        bootstrap_version: usize,
     },
     /// Internal SSH session bootstrap.
     #[clap(hide = true)]
@@ -441,6 +444,9 @@ pub enum Command {
         client_version: String,
         #[clap(long)]
         contract_version: usize,
+        /// Clients that predate bootstrap versioning omit it, and get a mismatch error.
+        #[clap(long, default_value_t = 0)]
+        bootstrap_version: usize,
         #[clap(long)]
         create: bool,
         #[clap(long, hide = true)]
@@ -2701,7 +2707,7 @@ mod tests {
             ]);
             let size = r#"{"rows":60,"cols":120}"#;
             if explicit {
-                args.extend(["--terminal-window-size", size]);
+                args.extend(["--terminal-window-size", size, "--bootstrap-version", "1"]);
             }
             args.extend(["--", "saved session"]);
             let cli = try_parse_cli(args).unwrap();
@@ -2709,6 +2715,7 @@ mod tests {
             assert_eq!(cli.debug, explicit);
             let Some(Command::RemoteSession {
                 terminal_window_size,
+                bootstrap_version,
                 session_name,
                 ..
             }) = cli.command
@@ -2716,6 +2723,8 @@ mod tests {
                 panic!("expected remote session bootstrap");
             };
             assert_eq!(terminal_window_size.as_deref(), explicit.then_some(size));
+            // Older clients omit it; 0 then fails the version check with a mismatch error.
+            assert_eq!(bootstrap_version, usize::from(explicit));
             assert_eq!(session_name, "saved session");
         }
     }

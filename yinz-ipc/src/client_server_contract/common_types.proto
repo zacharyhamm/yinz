@@ -933,6 +933,8 @@ message CliAssets {
   bool force_run_layout_commands = 10;
   optional string cwd = 11;
   map<string, string> host_terminal_env = 12;
+  // The client handles ServerToClientMsg.session_request_json. Older clients omit it.
+  bool supports_session_requests = 13;
 }
 
 message LayoutInfo {

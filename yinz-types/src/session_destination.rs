@@ -1,6 +1,11 @@
 //! Client-relative session destinations. Session names alone are not machine identities.
 use serde::{Deserialize, Serialize};
 
+/// The server's reply to a session request for a client that did not advertise
+/// `CliAssets::supports_session_requests`. Such a client would discard the request unread.
+pub const UNSUPPORTED_CLIENT: &str = "This Yinz client cannot switch sessions across machines. \
+     Reattach with a current Yinz build to use the session switcher";
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Destination {
     CurrentServer,
@@ -31,6 +36,10 @@ pub struct Entry {
 pub struct Inventory {
     pub current_machine: Destination,
     pub entries: Vec<Entry>,
+    /// The acting client predates session requests: only current-server sessions are listed,
+    /// and switching to one uses the server's own session switch.
+    #[serde(default)]
+    pub current_server_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

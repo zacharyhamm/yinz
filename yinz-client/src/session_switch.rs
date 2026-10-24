@@ -239,6 +239,7 @@ impl<'a> Sessions<'a> {
         Ok(ClientReply::Inventory(Inventory {
             current_machine: self.machine.clone(),
             entries,
+            current_server_only: false,
         }))
     }
 
@@ -318,6 +319,7 @@ impl<'a> Sessions<'a> {
                 };
                 assets.terminal_window_size = os.get_terminal_size();
                 assets.host_terminal_env = yinz_runtime::host_terminal_env::host_terminal_env();
+                assets.supports_session_requests = true;
                 let config = self.cli_args.config.clone();
                 let termios = os.original_termios();
                 let (sender, receiver) = mpsc::channel();
@@ -506,6 +508,8 @@ fn resurrection_command(
         yinz_runtime::consts::VERSION,
         "--contract-version",
         &yinz_runtime::consts::CLIENT_SERVER_CONTRACT_VERSION.to_string(),
+        "--bootstrap-version",
+        &yinz_runtime::consts::REMOTE_BOOTSTRAP_VERSION.to_string(),
     ]);
     if let Some(options) = &assets.configuration_options {
         command

@@ -1185,6 +1185,13 @@ macro_rules! remove_client {
     };
 }
 
+type SessionReplySender =
+    std::sync::mpsc::Sender<Result<yinz_types::session_destination::ClientReply, String>>;
+/// Plugin session requests awaiting their client's reply, by client and request token.
+type PendingSessionRequests = HashMap<(ClientId, String), (SessionReplySender, std::time::Instant)>;
+/// How long an unanswered session request is remembered. The plugin stops waiting sooner.
+const SESSION_REQUEST_RETENTION: Duration = Duration::from_secs(5);
+
 macro_rules! send_to_client {
     ($client_id:expr_2021, $os_input:expr_2021, $msg:expr_2021, $session_state:expr_2021, $session_data:expr_2021) => {
         let send_to_client_res = $os_input.send_to_client($client_id, $msg);
@@ -1207,6 +1214,46 @@ macro_rules! send_to_client {
             remove_client!($client_id, $os_input, $session_state, $session_data);
         }
     };
+}
+
+/// Forward a plugin's session request to its acting client. A client that has left, or that
+/// predates session requests and would discard one unread, is never sent it: the plugin gets
+/// the reason at once instead of waiting out its timeout.
+fn route_session_request(
+    client: ClientId,
+    request: yinz_types::session_destination::Request,
+    reply: SessionReplySender,
+    pending: &mut PendingSessionRequests,
+    mut os_input: &mut Box<dyn ServerOsApi>,
+    session_state: &Arc<RwLock<SessionState>>,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+) {
+    pending.retain(|_, (_, at)| at.elapsed() < SESSION_REQUEST_RETENTION);
+    let refusal = match session_state.read() {
+        Ok(state) if !state.is_interactive(&client) => {
+            Some("The requesting client is no longer attached")
+        },
+        Ok(state) if !state.supports_session_requests(&client) => {
+            Some(yinz_types::session_destination::UNSUPPORTED_CLIENT)
+        },
+        Ok(_) => None,
+        Err(_) => Some("Cannot read which clients are attached"),
+    };
+    if let Some(refusal) = refusal {
+        let _ = reply.send(Err(refusal.to_owned()));
+        return;
+    }
+    pending.insert(
+        (client, request.token.clone()),
+        (reply, std::time::Instant::now()),
+    );
+    send_to_client!(
+        client,
+        os_input,
+        ServerToClientMsg::SessionRequest(request),
+        session_state,
+        session_data
+    );
 }
 
 fn flush_pending_mouse_updates(
@@ -1262,6 +1309,9 @@ pub(crate) struct SessionState {
     /// empty synthetic reply so `Screen`'s `forward_in_flight` slot
     /// releases and the queued forwards keep moving.
     forwards_in_flight: HashMap<u32, ClientId>,
+    /// Attached clients that advertised `CliAssets::supports_session_requests`. Older clients
+    /// share the contract version but cannot decode `ServerToClientMsg::SessionRequest`.
+    session_request_clients: HashSet<ClientId>,
 }
 
 impl SessionState {
@@ -1274,6 +1324,7 @@ impl SessionState {
             watchers: HashSet::new(),
             last_active_client: None,
             forwards_in_flight: HashMap::new(),
+            session_request_clients: HashSet::new(),
         }
     }
     /// Number a new connection, from 1 up. `None` once every id has been used: handing one out
@@ -1297,6 +1348,7 @@ impl SessionState {
     pub fn remove_client(&mut self, client_id: ClientId) -> Vec<u32> {
         self.clients.remove(&client_id);
         self.interactive_clients.remove(&client_id);
+        self.session_request_clients.remove(&client_id);
         self.pipes.retain(|_p_id, c_id| c_id != &client_id);
         self.clear_last_active_client(client_id);
         let stuck: Vec<u32> = self
@@ -1343,6 +1395,7 @@ impl SessionState {
     pub fn convert_client_to_watcher(&mut self, client_id: ClientId) {
         self.clients.remove(&client_id);
         self.interactive_clients.remove(&client_id);
+        self.session_request_clients.remove(&client_id);
         self.watchers.insert(client_id);
     }
     pub fn is_watcher(&self, client_id: &ClientId) -> bool {
@@ -1381,6 +1434,18 @@ impl SessionState {
     }
     pub fn clear_forward_in_flight(&mut self, token: u32) {
         self.forwards_in_flight.remove(&token);
+    }
+    /// Mark `client_id` attached, recording whether it can answer session requests.
+    fn attach_interactive(&mut self, client_id: ClientId, supports_session_requests: bool) {
+        self.interactive_clients.insert(client_id);
+        if supports_session_requests {
+            self.session_request_clients.insert(client_id);
+        } else {
+            self.session_request_clients.remove(&client_id);
+        }
+    }
+    fn supports_session_requests(&self, client_id: &ClientId) -> bool {
+        self.session_request_clients.contains(client_id)
     }
     /// Route host queries to the last-active interactive client, falling back to the
     /// lowest interactive client ID. CLI, pipe, subscription and watcher clients are excluded.
@@ -1607,7 +1672,7 @@ pub fn start_server_impl(
     // from "the session was closed" after the fact.
     let exit_reason: &str;
     let mut kill_session = false;
-    let mut session_requests = std::collections::HashMap::new();
+    let mut session_requests = PendingSessionRequests::new();
     let mut kill_completion_client = None;
     let mut kill_progress_client = None;
     // Until a first client has initialised the session, the wait is bounded by
@@ -1662,6 +1727,7 @@ pub fn start_server_impl(
                     "startup trace: server received FirstClientConnected client_id={client_id}"
                 );
                 let host_terminal_env = cli_assets.host_terminal_env.clone();
+                let supports_session_requests = cli_assets.supports_session_requests;
                 let (config, layout) = match startup_stage("server.config_and_layout", || {
                     yinz_config::cli_assets::load_config_and_layout(&cli_assets)
                 }) {
@@ -1763,8 +1829,7 @@ pub fn start_server_impl(
                 session_state
                     .write()
                     .unwrap()
-                    .interactive_clients
-                    .insert(client_id);
+                    .attach_interactive(client_id, supports_session_requests);
 
                 *session_data.write().unwrap() = Some(session);
                 with_session(&session_data, |session| {
@@ -1906,6 +1971,7 @@ pub fn start_server_impl(
                 };
                 let config = session_data.session_configuration.saved_config.clone();
                 let host_terminal_env = cli_assets.host_terminal_env.clone();
+                let supports_session_requests = cli_assets.supports_session_requests;
                 let runtime_config_options = match cli_assets.configuration_options {
                     Some(configuration_options) => config.options.merge(configuration_options),
                     None => config.options.clone(),
@@ -1950,8 +2016,7 @@ pub fn start_server_impl(
                 session_state
                     .write()
                     .unwrap()
-                    .interactive_clients
-                    .insert(client_id);
+                    .attach_interactive(client_id, supports_session_requests);
 
                 log::info!(
                     "attach trace: server main client_id={client_id} waiting for session_state write lock"
@@ -2375,30 +2440,15 @@ pub fn start_server_impl(
                 request,
                 reply,
             } => {
-                session_requests.retain(
-                    |_,
-                     (_, at): &mut (
-                        std::sync::mpsc::Sender<
-                            Result<yinz_types::session_destination::ClientReply, String>,
-                        >,
-                        std::time::Instant,
-                    )| at.elapsed() < std::time::Duration::from_secs(5),
+                route_session_request(
+                    client,
+                    request,
+                    reply,
+                    &mut session_requests,
+                    &mut os_input,
+                    &session_state,
+                    &session_data,
                 );
-                if is_attached(client, &session_state).unwrap_or(false) {
-                    session_requests.insert(
-                        (client, request.token.clone()),
-                        (reply, std::time::Instant::now()),
-                    );
-                    send_to_client!(
-                        client,
-                        os_input,
-                        ServerToClientMsg::SessionRequest(request),
-                        session_state,
-                        session_data
-                    );
-                } else {
-                    let _ = reply.send(Err("The requesting client is no longer attached".into()));
-                }
             },
             ServerInstruction::SessionReply(client, reply) => {
                 if let Some((sender, _)) = session_requests.remove(&(client, reply.token)) {
@@ -2453,7 +2503,12 @@ pub fn start_server_impl(
                 .non_fatal();
             },
             ServerInstruction::SetCommandPaletteOpen(client_id, open) => {
-                if !open {
+                if !open
+                    && session_state
+                        .read()
+                        .unwrap()
+                        .supports_session_requests(&client_id)
+                {
                     send_to_client!(
                         client_id,
                         os_input,
@@ -3472,6 +3527,10 @@ mod session_start_cwd_tests;
 #[cfg(test)]
 #[path = "unit/client_selection_tests.rs"]
 mod client_selection_tests;
+
+#[cfg(test)]
+#[path = "unit/session_request_tests.rs"]
+mod session_request_tests;
 
 #[cfg(test)]
 mod session_state_tests {

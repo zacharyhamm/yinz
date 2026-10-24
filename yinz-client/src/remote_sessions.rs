@@ -14,7 +14,7 @@ use std::{
 use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
 use yinz_process::ssh::{self, HostForward, SshOptions};
 use yinz_runtime::{
-    consts::{CLIENT_SERVER_CONTRACT_VERSION, VERSION, YINZ_SOCK_DIR},
+    consts::{CLIENT_SERVER_CONTRACT_VERSION, REMOTE_BOOTSTRAP_VERSION, VERSION, YINZ_SOCK_DIR},
     errors::prelude::*,
 };
 use yinz_session::sessions::validate_session_name;
@@ -59,12 +59,57 @@ pub struct Endpoint {
     pub socket: PathBuf,
     pub yinz_version: String,
     pub contract_version: usize,
+    /// Absent, and so 0, from remotes that predate bootstrap versioning.
+    #[serde(default)]
+    pub bootstrap_version: usize,
 }
 
-pub fn check_versions(version: &str, contract: usize) -> Result<()> {
-    anyhow::ensure!(version == VERSION && contract == CLIENT_SERVER_CONTRACT_VERSION,
-        "Yinz compatibility mismatch: this machine has Yinz {VERSION}, client/server contract {CLIENT_SERVER_CONTRACT_VERSION}; peer has Yinz {version}, client/server contract {contract}. Install matching Yinz versions on both machines.");
-    Ok(())
+fn versions(version: &str, contract: usize, bootstrap: usize) -> String {
+    let bootstrap = match bootstrap {
+        0 => "no remote bootstrap version".to_owned(),
+        bootstrap => format!("remote bootstrap {bootstrap}"),
+    };
+    format!("Yinz {version}, client/server contract {contract}, {bootstrap}")
+}
+
+fn mismatch(peer: &str) -> anyhow::Error {
+    anyhow!(
+        "Yinz compatibility mismatch: this machine has {}; peer has {peer}. Install matching Yinz versions on both machines.",
+        versions(VERSION, CLIENT_SERVER_CONTRACT_VERSION, REMOTE_BOOTSTRAP_VERSION)
+    )
+}
+
+pub fn check_versions(version: &str, contract: usize, bootstrap: usize) -> Result<()> {
+    if version == VERSION
+        && contract == CLIENT_SERVER_CONTRACT_VERSION
+        && bootstrap == REMOTE_BOOTSTRAP_VERSION
+    {
+        return Ok(());
+    }
+    Err(mismatch(&versions(version, contract, bootstrap)))
+}
+
+/// Explain a failed remote bootstrap or discovery from its stderr. A remote that rejects the
+/// command line predates [`REMOTE_BOOTSTRAP_VERSION`]; one that parsed it but disagrees says so.
+pub fn bootstrap_failure(host: &str, stderr: &[u8]) -> Option<anyhow::Error> {
+    let stderr = String::from_utf8_lossy(stderr);
+    let mut lines = stderr.lines().map(str::trim);
+    if let Some(reported) = lines
+        .clone()
+        .find(|line| line.contains("Yinz compatibility mismatch"))
+    {
+        return Some(anyhow!(
+            "{host} reported: {}",
+            reported.trim_start_matches("Error: ")
+        ));
+    }
+    let rejected = lines.find(|line| {
+        line.contains("unexpected argument") || line.contains("unrecognized subcommand")
+    })?;
+    Some(mismatch(&format!(
+        "an older Yinz on {host} with no remote bootstrap version (it reported: {})",
+        rejected.trim_start_matches("error: ")
+    )))
 }
 
 pub fn validate_name(name: &str) -> Result<()> {
@@ -84,7 +129,11 @@ pub fn parse_endpoint(bytes: &[u8], name: &str) -> Result<Endpoint> {
     let endpoint: Endpoint = serde_json::from_slice(bytes).context(
         "invalid remote endpoint response; the SSH command must print only Yinz's JSON response",
     )?;
-    check_versions(&endpoint.yinz_version, endpoint.contract_version)?;
+    check_versions(
+        &endpoint.yinz_version,
+        endpoint.contract_version,
+        endpoint.bootstrap_version,
+    )?;
     anyhow::ensure!(
         endpoint.session_name == name,
         "remote endpoint returned a different session name"
@@ -134,6 +183,8 @@ pub fn connect(
         VERSION.to_owned(),
         "--contract-version".to_owned(),
         CLIENT_SERVER_CONTRACT_VERSION.to_string(),
+        "--bootstrap-version".to_owned(),
+        REMOTE_BOOTSTRAP_VERSION.to_string(),
     ];
     if create {
         args.push("--create".to_owned());
@@ -153,6 +204,11 @@ pub fn connect(
         Some(cancelled),
     )
     .with_context(|| format!("run remote session bootstrap on {host}"))?;
+    if !output.status.success()
+        && let Some(error) = bootstrap_failure(host, &output.stderr)
+    {
+        return Err(error);
+    }
     anyhow::ensure!(output.status.success(), "SSH bootstrap on {host} failed ({}). Check key/agent authentication and that compatible Yinz is on the remote PATH: {}", output.status, String::from_utf8_lossy(&output.stderr).trim());
     let endpoint = parse_endpoint(&output.stdout, name)
         .with_context(|| format!("read endpoint from {host}"))?;
@@ -198,6 +254,8 @@ pub fn client_socket(session_directory: &Path) -> Result<PathBuf> {
 struct SessionList {
     pub yinz_version: String,
     pub contract_version: usize,
+    #[serde(default)]
+    pub bootstrap_version: usize,
     sessions: Vec<(SessionName, Duration, yinz_cli::sessions::SessionListing)>,
 }
 
@@ -213,6 +271,8 @@ pub fn discover(
         VERSION,
         "--contract-version",
         &CLIENT_SERVER_CONTRACT_VERSION.to_string(),
+        "--bootstrap-version",
+        &REMOTE_BOOTSTRAP_VERSION.to_string(),
     ];
     let command = args
         .iter()
@@ -227,6 +287,11 @@ pub fn discover(
         Some(cancelled),
     )
     .with_context(|| format!("discover sessions on {host}"))?;
+    if !output.status.success()
+        && let Some(error) = bootstrap_failure(host, &output.stderr)
+    {
+        return Err(error);
+    }
     anyhow::ensure!(
         output.status.success(),
         "SSH discovery failed ({})",
@@ -241,7 +306,11 @@ pub fn parse_sessions(
 ) -> Result<Vec<yinz_cli::session_picker::PickerRow>> {
     use yinz_cli::session_picker::{Destination, PickerRow};
     let response: SessionList = serde_json::from_slice(bytes).context("decode remote sessions")?;
-    check_versions(&response.yinz_version, response.contract_version)?;
+    check_versions(
+        &response.yinz_version,
+        response.contract_version,
+        response.bootstrap_version,
+    )?;
     response
         .sessions
         .into_iter()

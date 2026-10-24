@@ -119,9 +119,12 @@ fn main() {
     if let Some(Command::RemoteSessions {
         client_version,
         contract_version,
+        bootstrap_version,
     }) = &opts.command
     {
-        if let Err(error) = remote_session::list(client_version, *contract_version) {
+        if let Err(error) =
+            remote_session::list(client_version, *contract_version, *bootstrap_version)
+        {
             eprintln!("Error: {error:#}");
             std::process::exit(1);
         }
@@ -130,6 +133,7 @@ fn main() {
     if let Some(Command::RemoteSession {
         client_version,
         contract_version,
+        bootstrap_version,
         create,
         configuration_options,
         client_termios,
@@ -142,6 +146,7 @@ fn main() {
             *create,
             client_version,
             *contract_version,
+            *bootstrap_version,
             configuration_options.as_deref(),
             client_termios.as_deref(),
             terminal_window_size.as_deref(),

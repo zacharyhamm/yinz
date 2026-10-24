@@ -49,3 +49,11 @@ fn socket_root_precedence_ignores_tmpdir() {
         }
     }
 }
+
+/// Builds share one local socket directory per contract; `cv1` is where sessions from builds
+/// before and after the session-switch capability meet.
+#[test]
+fn socket_dir_is_contract_one() {
+    assert_eq!(&*CLIENT_SERVER_CONTRACT_DIR, "cv1");
+    assert!(YINZ_SOCK_DIR.ends_with("cv1"));
+}
