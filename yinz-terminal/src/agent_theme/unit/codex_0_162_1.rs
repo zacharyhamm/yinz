@@ -189,6 +189,7 @@ fn nightfox_selected_secondary_uses_selection_colors_in_both_color_modes() {
     style.colors.text_selected.base = PaletteColor::Rgb((205, 206, 207));
     style.colors.text_selected.background = PaletteColor::Rgb((41, 57, 79));
     let mapping = Mapping::new(&snapshot, style);
+    let (compiled, _) = snapshot.compile();
     for (foreground, background) in [
         (
             AnsiCode::RgbCode((57, 59, 62)),
@@ -196,6 +197,17 @@ fn nightfox_selected_secondary_uses_selection_colors_in_both_color_modes() {
         ),
         (AnsiCode::ColorIndex(237), AnsiCode::ColorIndex(75)),
     ] {
+        // Any foreground on the fill falls back to the selection foreground, so check
+        // that the provider's own pair still names this one.
+        let source = crate::agent_theme::source(Some(foreground)).unwrap();
+        assert_eq!(
+            compiled[&yinz_types::agent::theme::MatchKey {
+                channel: Channel::Foreground,
+                color: source,
+                pair: Some(source).zip(crate::agent_theme::source(Some(background))),
+            }],
+            Some(Role::SelectionForeground.into())
+        );
         let mapped = mapping.apply(CharacterStyles {
             foreground: Some(foreground),
             background: Some(background),
@@ -204,6 +216,52 @@ fn nightfox_selected_secondary_uses_selection_colors_in_both_color_modes() {
         assert_eq!(mapped.foreground, Some(AnsiCode::RgbCode((205, 206, 207))));
         assert_eq!(mapped.background, Some(AnsiCode::RgbCode((41, 57, 79))));
         assert!(ratio((205, 206, 207), (41, 57, 79)) >= 4.5);
+    }
+}
+
+#[test]
+fn accents_corrected_for_the_selection_fill_keep_their_role_on_the_selection() {
+    use crate::agent_theme::Mapping;
+    use crate::panes::terminal_character::{AnsiCode, CharacterStyles};
+    use yinz_types::{colors::PaletteColor, style::Style};
+
+    let mut snapshot = snapshot();
+    observe(&mut snapshot, 10, (205, 206, 207));
+    observe(&mut snapshot, 11, (25, 35, 48));
+    let mut style = Style::default();
+    style.colors.text_unselected.emphasis_1 = PaletteColor::Rgb((1, 2, 3));
+    style.colors.text_selected.base = PaletteColor::Rgb((205, 206, 207));
+    style.colors.text_selected.background = PaletteColor::Rgb((41, 57, 79));
+    let mapping = Mapping::new(&snapshot, style);
+    let ansi = |color| match color {
+        SourceColor::Rgb(r, g, b) => AnsiCode::RgbCode((r, g, b)),
+        SourceColor::Index(index) => AnsiCode::ColorIndex(index),
+        SourceColor::Default => AnsiCode::Reset,
+    };
+    let fills: Vec<_> = snapshot
+        .definitions
+        .iter()
+        .filter(|d| d.token == "codex.terminal.selection.background")
+        .map(|d| d.color)
+        .collect();
+    let accents: Vec<_> = snapshot
+        .definitions
+        .iter()
+        .filter(|d| d.token == "codex.terminal.surface-accent")
+        .filter_map(|d| d.pair.filter(|(_, background)| fills.contains(background)))
+        .collect();
+    // One per color mode.
+    assert_eq!(accents.len(), 2);
+    for (accent, fill) in accents {
+        // Codex contrast-corrects this accent against its own fill; the explicit pair
+        // outranks the selection foreground that unpaired text on the fill takes.
+        let mapped = mapping.apply(CharacterStyles {
+            foreground: Some(ansi(accent)),
+            background: Some(ansi(fill)),
+            ..crate::panes::terminal_character::DEFAULT_STYLES
+        });
+        assert_eq!(mapped.foreground, Some(AnsiCode::RgbCode((1, 2, 3))));
+        assert_eq!(mapped.background, Some(AnsiCode::RgbCode((41, 57, 79))));
     }
 }
 
