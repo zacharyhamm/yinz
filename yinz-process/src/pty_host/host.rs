@@ -349,7 +349,6 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
         terminal_id,
         session_name,
         cmd,
-        failover_cmd,
         termios,
         initial_size,
         arg0,
@@ -390,7 +389,6 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
     env.push(("YINZ_AGENT_THEME_REF".into(), ctx.host_id.to_string()));
     match start_session(
         &ctx.cmd,
-        failover_cmd.as_ref(),
         TerminalId::new(terminal_id),
         termios.as_ref(),
         initial_size.as_ref(),
@@ -1220,7 +1218,6 @@ struct ChildEnv<'a> {
 #[allow(clippy::too_many_arguments)]
 fn start_session(
     cmd: &RunCommand,
-    failover_cmd: Option<&RunCommand>,
     terminal_id: TerminalId,
     termios: Option<&WireTermios>,
     initial_size: Option<&WireWinsize>,
@@ -1261,34 +1258,7 @@ fn start_session(
         ws_ypixel: s.height_in_pixels,
     });
 
-    let pty = match openpty(winsize.as_ref(), &termios) {
-        Ok(pty) => pty,
-        Err(e) => {
-            // Match the in-process backend's single retry of PTY allocation.
-            // The editor fallback only drops +line; an editor rejecting that
-            // argument has already exec'd, so retrying exec errors would not help.
-            if let Some(failover_cmd) = failover_cmd {
-                return start_session(
-                    failover_cmd,
-                    None,
-                    terminal_id,
-                    None,
-                    initial_size,
-                    // The failover is a different command; the argv[0] chosen
-                    // for the one that could not get a pty does not describe it.
-                    None,
-                    // The environment, unlike argv[0], is not command-specific:
-                    // it describes the machine and the terminal, both of which
-                    // the failover runs on just the same.
-                    child_env,
-                    job_control,
-                    event_tx,
-                    wake_tx,
-                );
-            }
-            return Err(e).with_context(err_context);
-        },
-    };
+    let pty = openpty(winsize.as_ref(), &termios).with_context(err_context)?;
 
     let master = pty.master;
     let slave = pty.slave;

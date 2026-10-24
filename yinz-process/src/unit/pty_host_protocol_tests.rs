@@ -35,7 +35,6 @@ fn framed_messages_round_trip() {
             terminal_id: 7,
             session_name: Some("warp-test".to_owned().into()),
             cmd: sample_run_command(),
-            failover_cmd: None,
             termios: None,
             initial_size: Some(WireWinsize {
                 cols: 80,
@@ -72,6 +71,50 @@ fn framed_messages_round_trip() {
     }
     let trailing: Option<ServerToHostMsg> = read_msg(&mut cursor).expect("read failed");
     assert!(trailing.is_none(), "expected clean EOF after last message");
+}
+
+#[test]
+fn spawn_json_is_compatible_with_legacy_editor_fallback() {
+    // The removed field was optional without an explicit serde default.
+    #[derive(serde::Deserialize)]
+    enum LegacyMessage {
+        Spawn {
+            cmd: RunCommand,
+            failover_cmd: Option<RunCommand>,
+        },
+    }
+
+    let message = ServerToHostMsg::Spawn {
+        terminal_id: 7,
+        session_name: None,
+        cmd: sample_run_command(),
+        termios: None,
+        initial_size: None,
+        arg0: None,
+        env: vec![],
+        login_session: false,
+        job_control: true,
+    };
+    let json = serde_json::to_value(&message).unwrap();
+    assert!(json["Spawn"].get("failover_cmd").is_none());
+    let LegacyMessage::Spawn { cmd, failover_cmd } = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(cmd, sample_run_command());
+    assert!(failover_cmd.is_none());
+
+    for fallback in [
+        None,
+        Some(serde_json::Value::Null),
+        Some(serde_json::to_value(sample_run_command()).unwrap()),
+    ] {
+        let mut incoming = json.clone();
+        if let Some(fallback) = fallback {
+            incoming["Spawn"]["failover_cmd"] = fallback;
+        }
+        let mut frame = Vec::new();
+        write_msg(&mut frame, &incoming).unwrap();
+        let decoded: ServerToHostMsg = read_msg(&mut Cursor::new(frame)).unwrap().unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), json);
+    }
 }
 
 /// A truncated stream must report EOF, not hang or mis-parse. This is the case
@@ -291,7 +334,6 @@ fn server_to_host_msgs(tc: &hegel::TestCase) -> ServerToHostMsg {
                 .draw(generators::optional(generators::text()))
                 .map(Into::into),
             cmd: tc.draw(run_commands()),
-            failover_cmd: tc.draw(generators::optional(run_commands())),
             termios: tc.draw(generators::optional(wire_termioses())),
             initial_size: tc.draw(generators::optional(wire_winsizes())),
             arg0: tc.draw(generators::optional(generators::text())),
@@ -541,7 +583,6 @@ fn write_msg_refuses_a_body_over_the_frame_limit() {
         terminal_id: 0,
         session_name: None,
         cmd,
-        failover_cmd: None,
         termios: None,
         initial_size: None,
         arg0: None,

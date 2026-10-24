@@ -68,16 +68,8 @@ fn separate_command_arguments(command: &mut PathBuf, args: &mut Vec<String>) {
 /// file open.
 /// If [`TerminalAction::RunCommand(RunCommand)`] is given, the command will be started
 /// in the new terminal.
-/// If None is given, the shell specified by environment variable `SHELL` will
-/// be started in the new terminal.
-///
-/// Returns (cmd, failover_cmd).
-fn build_command(
-    terminal_action: TerminalAction,
-    default_editor: Option<PathBuf>,
-) -> (RunCommand, Option<RunCommand>) {
-    let mut failover_cmd_args = None;
-    let cmd = match terminal_action {
+fn build_command(terminal_action: TerminalAction, default_editor: Option<PathBuf>) -> RunCommand {
+    match terminal_action {
         TerminalAction::OpenFile(mut payload) => {
             if payload.path.is_relative()
                 && let Some(cwd) = payload.cwd.as_ref()
@@ -108,7 +100,6 @@ fn build_command(
                     || command.ends_with("nano")
                     || command.ends_with("kak")
                 {
-                    failover_cmd_args = Some(vec![file_to_open.clone()]);
                     args.push(format!("+{}", line_number));
                     args.push(file_to_open);
                 } else if command.ends_with("hx") || command.ends_with("helix") {
@@ -132,15 +123,7 @@ fn build_command(
             }
         },
         TerminalAction::RunCommand(command) => command,
-    };
-    let failover_cmd = if let Some(failover_cmd_args) = failover_cmd_args {
-        let mut failover = cmd.clone();
-        failover.args = failover_cmd_args;
-        Some(failover)
-    } else {
-        None
-    };
-    (cmd, failover_cmd)
+    }
 }
 
 // How many ordered messages a client's send queue holds before the server
@@ -799,7 +782,7 @@ impl ServerOsInputOutput {
         default_editor: Option<PathBuf>,
         report_progress: &mut dyn FnMut(&str),
     ) -> Result<ResolvedSpawn> {
-        let (command, _) = build_command(terminal_action, default_editor);
+        let command = build_command(terminal_action, default_editor);
         let target = command.target.clone();
         let (command, rerun_command, endpoint) = self
             .resolve_target(command, Some(report_progress))
@@ -819,7 +802,7 @@ impl ServerOsInputOutput {
     ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         let terminal_id = resolved.terminal_id;
         if resolved.endpoint.is_none() {
-            let (reader, child_pid) = self.spawn_resolved_here(resolved, None, quit_cb)?;
+            let (reader, child_pid) = self.spawn_resolved_here(resolved, quit_cb)?;
             return Ok((terminal_id, reader, Some(child_pid)));
         }
         let reader = self.open_remote(resolved, quit_cb)?;
@@ -837,7 +820,6 @@ impl ServerOsInputOutput {
     fn spawn_resolved_here(
         &self,
         resolved: ResolvedSpawn,
-        failover_command: Option<RunCommand>,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, ProcessId)> {
         let ResolvedSpawn {
@@ -853,7 +835,7 @@ impl ServerOsInputOutput {
             quit_cb
         };
         self.pty_backend
-            .spawn_terminal(command, failover_command, quit_cb, terminal_id)
+            .spawn_terminal(command, quit_cb, terminal_id)
             .context("failed to spawn terminal")
     }
 
@@ -910,7 +892,7 @@ impl ServerOsInputOutput {
         // id has to be reserved again once cleared, or the next spawn takes it.
         self.clear_terminal_id(resolved.terminal_id).non_fatal();
         if resolved.endpoint.is_none() {
-            let (reader, child_pid) = self.spawn_resolved_here(resolved, None, quit_cb)?;
+            let (reader, child_pid) = self.spawn_resolved_here(resolved, quit_cb)?;
             return Ok((reader, Some(child_pid)));
         }
         self.pty_backend.reserve_terminal_id(resolved.terminal_id);
@@ -1113,7 +1095,7 @@ impl ServerOsApi for ServerOsInputOutput {
 
         self.pty_backend.reserve_terminal_id(terminal_id);
 
-        let (cmd, failover_cmd) = build_command(terminal_action, default_editor);
+        let cmd = build_command(terminal_action, default_editor);
         let target = cmd.target.clone();
         let (cmd, rerun_cmd, endpoint) = self
             .resolve_target(cmd, None)
@@ -1140,7 +1122,6 @@ impl ServerOsApi for ServerOsInputOutput {
                     rerun_command: rerun_cmd,
                     endpoint,
                 },
-                failover_cmd,
                 quit_cb,
             )
             .with_context(err_context)?;
@@ -1461,7 +1442,6 @@ impl ServerOsApi for ServerOsInputOutput {
                 rerun_command,
                 endpoint,
             },
-            None,
             quit_cb,
         )?;
         Ok((async_reader, Some(child_pid)))

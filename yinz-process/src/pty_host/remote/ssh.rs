@@ -712,7 +712,6 @@ fn handshake_and_spawn(
         &mut write_half,
         &ServerToBrokerMsg::Spawn {
             cmd: cmd.clone(),
-            failover_cmd: None,
             initial_size,
             env: env.to_vec(),
             terminal_id: terminal_id.get(),

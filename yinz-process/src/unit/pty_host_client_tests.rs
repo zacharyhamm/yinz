@@ -88,7 +88,6 @@ fn params<'a>(host_bin: &'a Path, cmd: &RunCommand) -> SpawnParams<'a> {
         terminal_id: TerminalId::new(7),
         session_name: Some("client-tests".to_owned().into()),
         cmd: cmd.clone(),
-        failover_cmd: None,
         termios: None,
         initial_size: Some(WireWinsize {
             cols: 100,
@@ -974,7 +973,6 @@ fn spawn_real_host_via(wrapper: &Path, session_name: &str, cmd: RunCommand) -> R
         terminal_id: TerminalId::new(7),
         session_name: Some(session_name.to_owned().into()),
         cmd,
-        failover_cmd: None,
         termios: None,
         initial_size: Some(WireWinsize {
             cols: 80,

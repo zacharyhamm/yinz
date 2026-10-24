@@ -47,7 +47,6 @@ pub enum ServerToHostMsg {
         terminal_id: u32,
         session_name: Option<SessionName>,
         cmd: RunCommand,
-        failover_cmd: Option<RunCommand>,
         termios: Option<WireTermios>,
         initial_size: Option<WireWinsize>,
         /// What to pass as `argv[0]`, if not the command itself.
