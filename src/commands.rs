@@ -388,44 +388,19 @@ pub(crate) fn send_action_to_session(
     requested_session_name: Option<String>,
     config: Option<Config>,
 ) {
-    let (requested_session_name, caller) = command_target(requested_session_name);
-    fill_caller_pane(&mut cli_action, caller);
-    if let Some(session_name) = requested_session_name {
-        wait_for_command_session(&session_name);
-        attach_with_cli_client(cli_action, &session_name, config, caller);
-        return;
-    }
     let named_store_action = matches!(
         cli_action,
         yinz_cli::args::CliAction::Projects(_)
             | yinz_cli::args::CliAction::Operations(_)
             | yinz_cli::args::CliAction::Wait(_)
     );
-    match get_active_session() {
-        ActiveSession::None => {
-            eprintln!("{}", no_active_session_message());
-            std::process::exit(1);
-        },
-        ActiveSession::One(session_name) => {
-            attach_with_cli_client(cli_action, &session_name, config, caller);
-        },
-        ActiveSession::Many => {
-            let existing_sessions: Vec<SessionName> = get_sessions()
-                .unwrap_or_default()
-                .iter()
-                .map(|s| s.0.clone())
-                .collect();
-            eprintln!("Please specify the session name to send actions to. The following sessions are active:");
-            if named_store_action {
-                for name in &existing_sessions {
-                    eprintln!("{name}");
-                }
-            } else {
-                list_sessions(false, false, true, false);
-            }
-            std::process::exit(1);
-        },
-    };
+    let (session_name, caller) = resolve_command_session(
+        requested_session_name,
+        "send actions to",
+        named_store_action,
+    );
+    fill_caller_pane(&mut cli_action, caller);
+    attach_with_cli_client(cli_action, &session_name, config, caller);
 }
 
 pub(crate) fn command_target(
@@ -470,6 +445,14 @@ pub(crate) fn resolve_session_for_command(
     requested_session_name: Option<String>,
     purpose: &str,
 ) -> (SessionName, Option<TerminalId>) {
+    resolve_command_session(requested_session_name, purpose, false)
+}
+
+fn resolve_command_session(
+    requested_session_name: Option<String>,
+    purpose: &str,
+    names_only: bool,
+) -> (SessionName, Option<TerminalId>) {
     let (requested_session_name, caller) = command_target(requested_session_name);
     if let Some(session_name) = requested_session_name {
         wait_for_command_session(&session_name);
@@ -485,9 +468,15 @@ pub(crate) fn resolve_session_for_command(
             eprintln!(
                 "Please specify the session name to {purpose}. The following sessions are active:"
             );
-            match yinz_cli::sessions::collect_sessions(false) {
-                Ok(sessions) => print_sessions(sessions, false, false, true, None),
-                Err(error) => eprintln!("Error occurred: {error:?}"),
+            if names_only {
+                for (name, _) in get_sessions().unwrap_or_default() {
+                    eprintln!("{name}");
+                }
+            } else {
+                match yinz_cli::sessions::collect_sessions(false) {
+                    Ok(sessions) => print_sessions(sessions, false, false, true, None),
+                    Err(error) => eprintln!("Error occurred: {error:?}"),
+                }
             }
             std::process::exit(1);
         },

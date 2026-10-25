@@ -16,7 +16,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use yinz_runtime::agent::registry;
-use yinz_runtime::agent::report::ROUTE_ENV;
+use yinz_runtime::agent::report::route_env_from_process;
 use yinz_runtime::errors::prelude::*;
 
 fn directory() -> PathBuf {
@@ -267,14 +267,7 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
             .map(exit_code)
             .context("run Muse");
     }
-    let env: HashMap<String, String> = ROUTE_ENV
-        .iter()
-        .filter_map(|name| {
-            std::env::var(name)
-                .ok()
-                .map(|value| ((*name).into(), value))
-        })
-        .collect();
+    let env = route_env_from_process();
     let registration = Registration::new(&directory(), env, std::process::id())?;
     let mut child = Command::new(program)
         .args(args)

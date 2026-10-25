@@ -17,9 +17,17 @@ pub const ROUTE_ENV: &[&str] = &[
     "YINZ_PANE_REF",
     "YINZ_PANE_ID",
     crate::envs::SESSION_NAME_ENV_KEY,
-    "YINZ_REMOTE_PANE_TOKEN",
+    super::pi::PANE_TOKEN_ENV,
     crate::envs::SOCKET_DIR_ENV_KEY,
 ];
+
+/// The routing variables this process inherited from its pane.
+pub fn route_env_from_process() -> std::collections::HashMap<String, String> {
+    ROUTE_ENV
+        .iter()
+        .filter_map(|key| std::env::var(key).ok().map(|value| ((*key).into(), value)))
+        .collect()
+}
 
 /// Route only through the bound pane's environment, never the reporter's inherited pane.
 pub fn forwarding_command(
@@ -32,7 +40,7 @@ pub fn forwarding_command(
         command.env_remove(key);
     }
     if env
-        .get("YINZ_REMOTE_PANE_TOKEN")
+        .get(super::pi::PANE_TOKEN_ENV)
         .is_some_and(|token| !token.is_empty())
     {
         command.args(["--pty-broker", "report", kind]);
@@ -95,6 +103,7 @@ pub struct ReportTrace {
     stage_started: Instant,
     stage: &'static str,
     completed: Vec<(&'static str, Duration)>,
+    finished: bool,
 }
 
 impl ReportTrace {
@@ -112,7 +121,14 @@ impl ReportTrace {
             stage_started: started,
             stage: "startup",
             completed: vec![],
+            finished: false,
         }
+    }
+
+    /// Reserve the report's single final outcome. The reporter and the deadline observer race
+    /// to finish; only the first claim may record totals.
+    pub fn claim_finish(&mut self) -> bool {
+        !std::mem::replace(&mut self.finished, true)
     }
 
     pub fn enter(&mut self, stage: &'static str) {
@@ -197,7 +213,9 @@ pub fn traced_report(
     }
     reporting_watchdog(trace.clone()).context("arm the hook report deadline")?;
     let result = report(&trace);
-    if let Ok(trace) = trace.lock() {
+    if let Ok(mut trace) = trace.lock()
+        && trace.claim_finish()
+    {
         trace.finish(result.is_ok());
     }
     result
@@ -238,7 +256,10 @@ pub fn reporting_watchdog(trace: Arc<Mutex<ReportTrace>>) -> Result<()> {
             std::thread::sleep(
                 (deadline - Duration::from_millis(10)).saturating_duration_since(Instant::now()),
             );
-            let snapshot = trace.try_lock().ok().map(|t| t.clone());
+            let snapshot = trace
+                .try_lock()
+                .ok()
+                .and_then(|mut t| t.claim_finish().then(|| t.clone()));
             if let Some(t) = snapshot {
                 t.record(t.stage, t.stage_started.elapsed(), "timeout");
                 t.finish(false);
