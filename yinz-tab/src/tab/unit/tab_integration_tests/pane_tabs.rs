@@ -22,6 +22,112 @@ fn layout() -> PaneTabsLayout {
 }
 
 #[test]
+fn reloading_a_blank_pane_tab_restores_its_original_slot_while_a_sibling_loads() {
+    let (mut tab, receiver) =
+        create_new_tab_with_plugin_receiver(Size { cols: 80, rows: 24 }, ModeInfo::default());
+    let client = ClientId::new(1);
+    let plugin = PluginId::new(100);
+    let pane = PaneId::Plugin(plugin);
+    tab.new_pane(
+        pane,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client),
+        None,
+    )
+    .unwrap();
+    let info = tab.mount_pane_tabs(pane, layout(), 0, client).unwrap();
+    assert!(tab.detach_pane_tab_plugin(plugin));
+    tab.select_pane_tab(info.id, 1, client).unwrap();
+    let generation = receiver
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            PluginInstruction::LoadPaneTab { generation, .. } => Some(generation),
+            _ => None,
+        })
+        .unwrap();
+    assert!(tab.restore_pane_tab_plugin(plugin).unwrap());
+    let restored = tab.pane_tabs_info(info.id).unwrap();
+    assert_eq!(restored.active, 1);
+    assert_eq!(restored.tabs[0].plugin_id, Some(plugin));
+    assert_eq!(restored.tabs[1].plugin_id, None);
+    let sibling = PluginId::new(101);
+    let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "yinz:fixture-plugin-for-tests",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
+    tab.pane_tab_loaded(info.id, 1, generation, Ok((sibling, run)))
+        .unwrap();
+    assert_eq!(
+        tab.pane_tabs_info(info.id).unwrap().pane_id,
+        PaneId::Plugin(sibling)
+    );
+    assert!(tab.get_pane_info(pane).unwrap().is_suppressed);
+    assert!(tab.detach_pane_tab_plugin(plugin));
+    assert!(
+        !tab.restore_pane_tab_plugin(plugin).unwrap(),
+        "no blank slot remains after selecting the sibling"
+    );
+}
+
+#[test]
+fn a_replaced_blank_pane_tab_cannot_be_reclaimed_while_another_slot_loads() {
+    let (mut tab, receiver) =
+        create_new_tab_with_plugin_receiver(Size { cols: 80, rows: 24 }, ModeInfo::default());
+    let client = ClientId::new(1);
+    let original = PluginId::new(100);
+    let pane = PaneId::Plugin(original);
+    tab.new_pane(
+        pane,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client),
+        None,
+    )
+    .unwrap();
+    let info = tab.mount_pane_tabs(pane, layout(), 0, client).unwrap();
+    assert!(tab.detach_pane_tab_plugin(original));
+    tab.select_pane_tab(info.id, 0, client).unwrap();
+    tab.select_pane_tab(info.id, 1, client).unwrap();
+    let generation = receiver
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            PluginInstruction::LoadPaneTab {
+                index: 0,
+                generation,
+                ..
+            } => Some(generation),
+            _ => None,
+        })
+        .unwrap();
+    let replacement = PluginId::new(101);
+    let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "yinz:fixture-plugin-for-tests",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
+    tab.pane_tab_loaded(info.id, 0, generation, Ok((replacement, run)))
+        .unwrap();
+    assert!(!tab.restore_pane_tab_plugin(original).unwrap());
+    let replaced = tab.pane_tabs_info(info.id).unwrap();
+    assert_eq!(replaced.active, 1);
+    assert_eq!(replaced.pane_id, PaneId::Plugin(replacement));
+    assert_eq!(replaced.tabs[0].plugin_id, Some(replacement));
+    assert!(!tab.has_pane_with_pid(&pane));
+}
+
+#[test]
 fn pane_tabs_retain_children_share_selection_and_isolate_input() {
     for placement in [
         NewPanePlacement::Floating(None),

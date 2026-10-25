@@ -510,6 +510,49 @@ fn a_reload_flips_between_a_pane_and_headless_both_ways() {
 }
 
 #[test]
+fn start_or_reload_headless_plugin_restores_its_requested_tab_without_a_client_id() {
+    let dir = plugin_dir();
+    let (path, url) = write_recipient(dir.path(), "v1", false);
+    let mut yinz = bare_session("", "layout { pane; }");
+    let destination = panes(&yinz)[0].tab_id;
+    assert_eq!(
+        yinz.run_cli_action(CliAction::StartOrReloadPlugin {
+            url: url.clone(),
+            configuration: None,
+            configuration_json: None,
+        }),
+        0
+    );
+    let (id, version) = pipe(&yinz, &url, "headless");
+    assert_eq!(version, "v1");
+    assert_no_plugin_pane(&yinz, "after start-or-reload starts a headless plugin");
+
+    std::fs::write(&path, recipient_source("v2", true)).unwrap();
+    assert_eq!(
+        yinz.run_cli_action(CliAction::StartOrReloadPlugin {
+            url: url.clone(),
+            configuration: None,
+            configuration_json: None,
+        }),
+        0
+    );
+    let panes = wait_for_panes(&yinz, "a pane in the requested tab", |panes| {
+        panes
+            .iter()
+            .any(|pane| pane.pane_info.id == yinz_types::pane_id::PaneId::from_legacy(id, true))
+    });
+    let restored: Vec<_> = panes
+        .iter()
+        .filter(|pane| pane.pane_info.is_plugin())
+        .collect();
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].tab_id, destination);
+    assert!(restored[0].pane_info.is_floating);
+    assert_eq!(pipe(&yinz, &url, "restored"), (id, "v2".into()));
+    yinz.quit();
+}
+
+#[test]
 fn plugins_list_reports_each_instances_pane_declaration() {
     let dir = plugin_dir();
     let declared_dir = dir.path().join("d");

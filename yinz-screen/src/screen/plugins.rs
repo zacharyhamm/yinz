@@ -372,13 +372,30 @@ impl Screen {
         // pane it hears them as any plugin pane does, and the reloaded instance registers anew
         // only if it still has no tab. A registration left behind would keep a plugin in a tab
         // hearing every other tab's events too.
-        if self.paneless_plugins.remove(&plugin_id).is_some() {
+        let was_headless = self.paneless_plugins.remove(&plugin_id).is_some();
+        if was_headless {
             self.background_plugin_subscriptions
                 .retain(|(subscriber, _), _| *subscriber != plugin_id);
         }
         self.failed_paneless_plugins.remove(&plugin_id);
         self.resolving_plugins.remove(&plugin_id);
         self.destroyed_panes.remove(&PaneId::Plugin(plugin_id));
+        if was_headless
+            && let Some(tab) = self.tab_containing_pane_mut(PaneId::Plugin(plugin_id))
+            && tab
+                .restore_pane_tab_plugin(plugin_id)
+                .context("failed to restore the plugin's pane tab")?
+        {
+            // The surviving pane tab takes precedence over the reload's floating placement.
+            let pane_id = PaneId::Plugin(plugin_id);
+            if let Some(completion) = completion_tx.as_mut() {
+                completion.set_affected_pane_id(pane_id);
+            }
+            if let Some(events) = pending.waiting_for_pane.remove(&pane_id) {
+                replay_pending_plugin_events(self, events)?;
+            }
+            return Ok(true);
+        }
         let mut new_pane_placement = NewPanePlacement::default();
         let maybe_should_float = should_float;
         let should_float = maybe_should_float.unwrap_or(false);

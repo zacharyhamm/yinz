@@ -242,6 +242,7 @@ enum Origin {
         run: RunPluginOrAlias,
         cwd: Option<PathBuf>,
         client_id: Option<ClientId>,
+        tab: Option<TabId>,
     },
     Placed {
         run: RunPluginOrAlias,
@@ -264,6 +265,7 @@ impl Origin {
                 run: show.run.clone(),
                 cwd: show.cwd.clone(),
                 client_id: show.client_id,
+                tab: show.tab,
             },
             PaneRequest::Placed { run } => Origin::Placed { run: run.clone() },
         }
@@ -697,8 +699,9 @@ impl PaneLedger {
                     run,
                     cwd,
                     client_id,
-                } => Self::floating(run.clone(), cwd.clone(), *client_id, plugin_id),
-                Origin::Placed { run } => Self::floating(run.clone(), None, None, plugin_id),
+                    tab,
+                } => Self::floating(run.clone(), cwd.clone(), *client_id, *tab, plugin_id),
+                Origin::Placed { run } => Self::floating(run.clone(), None, None, None, plugin_id),
             }),
         };
         if let Some(entry) = self.entries.get_mut(&plugin_id) {
@@ -976,6 +979,7 @@ impl PaneLedger {
         run: RunPluginOrAlias,
         cwd: Option<PathBuf>,
         client_id: Option<ClientId>,
+        tab: Option<TabId>,
         plugin_id: PluginId,
     ) -> ScreenInstruction {
         ShowPane {
@@ -984,7 +988,7 @@ impl PaneLedger {
             replaced: ReplacedPane::Suppress,
             run,
             title: None,
-            tab: None,
+            tab,
             pane_id_to_replace: None,
             cwd,
             coordinates: None,

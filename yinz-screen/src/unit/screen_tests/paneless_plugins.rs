@@ -1144,6 +1144,89 @@ fn a_blank_pane_tab_slot_keeps_its_id_for_the_container_after_the_plugin_goes_he
     assert_eq!(harness.screen.headless_plugin_error(PLUGIN), None);
 }
 
+#[test]
+fn a_reload_reclaims_its_blank_tiled_pane_tab_without_creating_a_duplicate() {
+    let mut harness = Harness::new();
+    harness.land_layout_with(PLUGIN);
+    let pane = PaneId::Plugin(PLUGIN);
+    let sibling = PluginId::new(8);
+    let descriptor = |label: &str| PaneTabDescriptor {
+        label: label.into(),
+        location: "file:/path/to/headless/plugin".into(),
+        initial_cwd: None,
+        configuration: BTreeMap::new(),
+    };
+    let mounted = harness
+        .screen
+        .pane_tabs_command(
+            PaneTabsCommand::Mount {
+                pane_id: pane,
+                layout: PaneTabsLayout {
+                    active: 0,
+                    tabs: vec![descriptor("Plugin"), descriptor("Sibling")],
+                },
+                existing: 0,
+            },
+            CLIENT,
+        )
+        .unwrap()
+        .unwrap();
+    harness
+        .screen
+        .pane_tab_loaded(mounted.id, 1, 0, Ok((sibling, headless_run())))
+        .unwrap();
+    let tab = harness.screen.tabs.get_mut(&LAYOUT_TAB).unwrap();
+    tab.focus_pane_with_id(pane, false, false, CLIENT).unwrap();
+    let geometry = tab.get_pane_with_id(pane).unwrap().current_geom();
+    let original = tab.pane_tabs_info(mounted.id).unwrap();
+    harness.paneless(PLUGIN);
+
+    // The ledger asks for a floating pane in the launch tab; the surviving slot wins.
+    let (placed, rx) = harness.add_plugin(PLUGIN);
+    assert!(placed);
+    assert_eq!(answer(rx).error_message, None);
+    assert_eq!(
+        harness
+            .screen
+            .tabs
+            .values()
+            .flat_map(|tab| tab.get_all_pane_ids())
+            .filter(|id| *id == pane)
+            .count(),
+        1
+    );
+    let tab = harness.screen.tabs.get_mut(&LAYOUT_TAB).unwrap();
+    let restored = tab.pane_tabs_info(mounted.id).unwrap();
+    assert_eq!(restored.pane_id, pane);
+    assert_eq!(restored.active, original.active);
+    assert_eq!(restored.tabs[0].plugin_id, Some(PLUGIN));
+    assert_eq!(restored.tabs[0].state, PaneTabLoadState::Loading);
+    assert_eq!(restored.tabs[1], original.tabs[1]);
+    assert_eq!(tab.get_pane_with_id(pane).unwrap().current_geom(), geometry);
+    assert_eq!(tab.get_active_pane_id(CLIENT), Some(pane));
+    assert!(tab.get_tiled_panes().any(|(id, _)| *id == pane));
+    tab.pane_tab_load_state(PLUGIN, PaneTabLoadState::Ready)
+        .unwrap();
+    assert_eq!(
+        tab.pane_tabs_info(mounted.id).unwrap().tabs[0].state,
+        PaneTabLoadState::Ready
+    );
+    tab.close_pane_tab_child(mounted.id, 0).unwrap();
+    let closed = tab.pane_tabs_info(mounted.id).unwrap();
+    assert_eq!(closed.tabs[0].plugin_id, None);
+    assert_eq!(closed.tabs[1], original.tabs[1]);
+    assert!(tab.has_pane_with_pid(&PaneId::Plugin(sibling)));
+    let unloaded: Vec<_> = harness
+        .plugin
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::Unload(id) => Some(id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(unloaded, [PLUGIN]);
+}
+
 /// A reload that declares a pane again takes the plugin out of the background registry: with a
 /// pane in a tab it hears pane and tab events as any plugin pane does, and a registration left
 /// behind would keep it hearing every other tab's too.

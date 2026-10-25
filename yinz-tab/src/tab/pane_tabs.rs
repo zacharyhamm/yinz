@@ -12,6 +12,7 @@ pub(super) struct PaneTabs {
     generations: Vec<u64>,
     visibility: HashMap<PluginId, bool>,
     last_geometry: Option<(PaneGeom, Offset, bool)>,
+    blank_slot: Option<usize>,
 }
 
 /// What `extract_pane` leaves on a pane with pane tabs, inside the pane layer's opaque
@@ -168,6 +169,7 @@ impl Tab {
             PaneTabs {
                 views: HashMap::new(),
                 last_geometry: None,
+                blank_slot: None,
                 visibility: HashMap::new(),
                 generations: vec![0; info.tabs.len()],
                 info,
@@ -303,7 +305,7 @@ impl Tab {
                     .get_mut(&id)
                     .context("pane tabs disappeared")?;
                 tabs.info.tabs[index].plugin_id = Some(plugin_id);
-                if tabs.info.active == index {
+                if tabs.info.active == index || tabs.blank_slot == Some(index) {
                     self.reveal_pane_tab(id, PaneId::Plugin(plugin_id))?;
                 }
             },
@@ -374,11 +376,12 @@ impl Tab {
         {
             self.park_pane(previous);
         }
-        self.pane_tabs
+        let tabs = self
+            .pane_tabs
             .get_mut(&id)
-            .context("pane tabs disappeared")?
-            .info
-            .pane_id = target;
+            .context("pane tabs disappeared")?;
+        tabs.info.pane_id = target;
+        tabs.blank_slot = None;
         self.set_force_render();
         Ok(())
     }
@@ -427,6 +430,26 @@ impl Tab {
         true
     }
 
+    /// Reclaim the displayed slot left behind when this plugin became headless.
+    pub fn restore_pane_tab_plugin(&mut self, plugin: PluginId) -> Result<bool> {
+        let Some((id, tabs)) = self.pane_tabs.iter_mut().find(|(_, tabs)| {
+            tabs.info.pane_id == PaneId::Plugin(plugin) && tabs.blank_slot.is_some()
+        }) else {
+            return Ok(false);
+        };
+        let id = *id;
+        let index = tabs
+            .blank_slot
+            .take()
+            .context("blank pane tab disappeared")?;
+        tabs.generations[index] += 1;
+        tabs.info.tabs[index].plugin_id = Some(plugin);
+        tabs.info.tabs[index].state = PaneTabLoadState::Loading;
+        self.refresh_pane_tabs(id)
+            .context("failed to refresh the restored plugin pane tab")?;
+        Ok(true)
+    }
+
     /// Empties pane tab `index`, unloading the plugin it showed when `unload` says so.
     fn release_pane_tab_child(&mut self, id: PaneTabsId, index: usize, unload: bool) -> Result<()> {
         let tabs = self.pane_tabs.get_mut(&id).context("unknown pane tabs")?;
@@ -444,6 +467,8 @@ impl Tab {
             // Keep the displayed pane as a blank slot until retry replaces it. It owns no guest.
             if PaneId::Plugin(plugin) != tabs.info.pane_id {
                 self.suppressed_panes.remove(&PaneId::Plugin(plugin));
+            } else {
+                tabs.blank_slot = Some(index);
             }
             if unload {
                 self.senders
