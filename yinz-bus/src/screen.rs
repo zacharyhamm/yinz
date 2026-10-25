@@ -561,6 +561,8 @@ pub enum ScreenInstruction {
     /// The plugin's load failed, or it crashed, and it has no pane to show the failure in: it is
     /// not running, though it can be reloaded. A launch of the same plugin starts another.
     PluginFailed(PluginId),
+    /// Client attachment restored an available instance; forget its previous failure.
+    PluginRecovered(PluginId),
     /// The plugin was unloaded; forget everything the screen keeps for it.
     PluginUnloaded(PluginId),
     /// A pane held for a plugin that will not have one there (a multipane child that declares no

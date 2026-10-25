@@ -2361,6 +2361,9 @@ pub fn screen_thread_main(
                 ScreenInstruction::PluginFailed(plugin_id) => {
                     screen.plugin_failed(plugin_id);
                 },
+                ScreenInstruction::PluginRecovered(plugin_id) => {
+                    screen.failed_paneless_plugins.remove(&plugin_id);
+                },
                 // Here rather than in `Screen`: the key intercepts are this loop's.
                 ScreenInstruction::PluginUnloaded(plugin_id) => {
                     screen.plugin_unloaded(plugin_id, &mut keybind_intercepts, &mut pending)?;
