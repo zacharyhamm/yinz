@@ -1307,79 +1307,95 @@ fn a_paneless_report_after_the_unload_is_ignored() {
     assert_eq!(answer(rx).error_message, None);
 }
 
-/// Closing the shown plugin tab of a pane tabs container keeps its pane as a blank slot that
-/// owns no guest, and unloads the plugin. The unload report that follows must leave that blank
-/// slot alone: it is the container's pane now, not the plugin's.
+/// Unloading the shown plugin must preserve the container, whether it follows a stop request
+/// or closing the pane tab. The blank slot belongs to the container, not the plugin.
 #[test]
-fn an_unload_after_closing_the_shown_pane_tab_keeps_the_blank_slot() {
-    let mut harness = Harness::new();
-    let descriptor = |label: &str| PaneTabDescriptor {
-        label: label.into(),
-        location: "file:/path/to/headless/plugin".into(),
-        initial_cwd: None,
-        configuration: BTreeMap::new(),
-    };
-    let info = harness
-        .screen
-        .pane_tabs_command(
-            PaneTabsCommand::Mount {
-                pane_id: PaneId::Terminal(TerminalId::new(1)),
-                layout: PaneTabsLayout {
-                    active: 1,
-                    tabs: vec![descriptor("Terminal"), descriptor("Plugin")],
+fn an_unload_of_the_shown_pane_tab_keeps_the_container_usable() {
+    for close_before_unload in [false, true] {
+        let mut harness = Harness::new();
+        let descriptor = |label: &str| PaneTabDescriptor {
+            label: label.into(),
+            location: "file:/path/to/headless/plugin".into(),
+            initial_cwd: None,
+            configuration: BTreeMap::new(),
+        };
+        let info = harness
+            .screen
+            .pane_tabs_command(
+                PaneTabsCommand::Mount {
+                    pane_id: PaneId::Terminal(TerminalId::new(1)),
+                    layout: PaneTabsLayout {
+                        active: 1,
+                        tabs: vec![descriptor("Terminal"), descriptor("Plugin")],
+                    },
+                    existing: 0,
                 },
-                existing: 0,
-            },
-            CLIENT,
-        )
-        .unwrap()
-        .unwrap();
-    let generation = harness
-        .plugin
-        .try_iter()
-        .find_map(|(instruction, _)| match instruction {
-            PluginInstruction::LoadPaneTab {
-                id,
-                index: 1,
-                generation,
-                ..
-            } if id == info.id => Some(generation),
-            _ => None,
-        })
-        .expect("selecting the unloaded slot loads it");
-    harness
-        .screen
-        .pane_tab_loaded(info.id, 1, generation, Ok((PLUGIN, headless_run())))
-        .unwrap();
-    let shown = |harness: &Harness| {
+                CLIENT,
+            )
+            .unwrap()
+            .unwrap();
+        let generation = harness
+            .plugin
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PluginInstruction::LoadPaneTab {
+                    id,
+                    index: 1,
+                    generation,
+                    ..
+                } if id == info.id => Some(generation),
+                _ => None,
+            })
+            .expect("selecting the unloaded slot loads it");
         harness
             .screen
-            .tabs
-            .get(&TabId::new(0))
-            .and_then(|tab| tab.pane_tabs_info(info.id))
-            .map(|info| info.pane_id)
-    };
-    assert_eq!(shown(&harness), Some(PaneId::Plugin(PLUGIN)));
-    harness
-        .screen
-        .tabs
-        .get_mut(&TabId::new(0))
-        .unwrap()
-        .close_pane_tab_child(info.id, 1)
-        .unwrap();
-    assert!(harness.has_pane(PLUGIN), "the blank slot keeps the pane");
+            .pane_tab_loaded(info.id, 1, generation, Ok((PLUGIN, headless_run())))
+            .unwrap();
+        let shown = |harness: &Harness| {
+            harness
+                .screen
+                .tabs
+                .get(&TabId::new(0))
+                .and_then(|tab| tab.pane_tabs_info(info.id))
+                .map(|info| info.pane_id)
+        };
+        assert_eq!(shown(&harness), Some(PaneId::Plugin(PLUGIN)));
+        if close_before_unload {
+            harness
+                .screen
+                .tabs
+                .get_mut(&TabId::new(0))
+                .unwrap()
+                .close_pane_tab_child(info.id, 1)
+                .unwrap();
+            assert!(harness.has_pane(PLUGIN), "the blank slot keeps the pane");
+        }
 
-    harness.unloaded(PLUGIN, &mut HashMap::new());
+        harness.unloaded(PLUGIN, &mut HashMap::new());
 
-    assert_eq!(
-        shown(&harness),
-        Some(PaneId::Plugin(PLUGIN)),
-        "the container must survive"
-    );
-    assert!(
-        harness.has_pane(PLUGIN),
-        "the container's blank slot must not be removed"
-    );
+        assert_eq!(
+            shown(&harness),
+            Some(PaneId::Plugin(PLUGIN)),
+            "the container must survive"
+        );
+        assert!(
+            harness.has_pane(PLUGIN),
+            "the container's blank slot must not be removed"
+        );
+        let selected = harness
+            .screen
+            .pane_tabs_command(
+                PaneTabsCommand::Select {
+                    id: info.id,
+                    index: 0,
+                },
+                CLIENT,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.active, 0);
+        assert_eq!(selected.pane_id, PaneId::Terminal(TerminalId::new(1)));
+    }
 }
 
 fn unloads_of(harness: &Harness, plugin: PluginId) -> usize {

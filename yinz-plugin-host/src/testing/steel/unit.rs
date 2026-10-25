@@ -128,7 +128,11 @@ fn scheme_installed_tests_check_the_pane_declaration_as_the_host_does() {
         (
             "pane.scm",
             r#"(yinz-declare-pane-unless "duplicate" "true")
-               (define (load config) #t) (define (update event) (yinz-command "HideSelf") #t)"#,
+               (define (load config)
+                 (unless (and (hash-contains? config "duplicate")
+                              (equal? (hash-ref config "duplicate") "true"))
+                   (yinz-command "HideSelf")))
+               (define (update event) (yinz-command "HideSelf") #t)"#,
         ),
         (
             "hidden.scm",

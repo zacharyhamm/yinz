@@ -212,15 +212,7 @@ impl PluginBridge {
     }
 
     fn stop_plugin(&mut self, id: PluginId) -> Result<()> {
-        self.unload_plugin(id)?;
-        self.senders
-            .send_to_screen(ScreenInstruction::ClosePane(
-                PaneId::Plugin(id),
-                None,
-                None,
-                None,
-            ))
-            .context("remove stopped plugin pane")
+        self.unload_plugin(id)
     }
 
     fn plugin_status(&self, id: PluginId, run: &RunPlugin) -> PluginStatus {
