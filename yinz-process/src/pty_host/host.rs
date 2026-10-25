@@ -37,7 +37,7 @@ use std::io::{Read, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use yinz_types::internal_ids::ProcessId;
@@ -50,7 +50,7 @@ use nix::{
     errno::Errno,
     fcntl::{fcntl, FcntlArg, OFlag},
     poll::{poll, PollFd, PollFlags, PollTimeout},
-    pty::{openpty, Winsize},
+    pty::Winsize,
     sys::signal::{kill, Signal},
     unistd::Pid,
 };
@@ -58,7 +58,7 @@ use yinz_runtime::errors::prelude::*;
 use yinz_runtime::shared::ensure_secure_dir;
 use {yinz_runtime::consts::VERSION, yinz_types::input::command::RunCommand};
 
-use super::fdpass::{self, send_fd};
+use super::fdpass::send_fd;
 use super::protocol::{
     self, read_msg, write_msg, AttachRefusal, HostStatus, HostToServerMsg, ServerToHostMsg,
     SpawnFailureKind, WireTermios, WireWinsize, PROTOCOL_VERSION,
@@ -1258,36 +1258,17 @@ fn start_session(
         ws_ypixel: s.height_in_pixels,
     });
 
-    let pty = openpty(winsize.as_ref(), &termios).with_context(err_context)?;
-
+    let pty =
+        super::terminal::open(winsize.as_ref(), termios.as_ref()).with_context(err_context)?;
     let master = pty.master;
     let slave = pty.slave;
-    // `libc::openpty` leaves both fds inheritable. Anything we exec later — and
-    // in particular the next pane's supervisor, if a descriptor ever leaked into
-    // the server — must not inherit them: a leaked *slave* would keep a pane's
-    // pty open after its shell exits and suppress the EOF that closes it.
-    fdpass::set_cloexec(master.as_raw_fd()).with_context(err_context)?;
-    fdpass::set_cloexec(slave.as_raw_fd()).with_context(err_context)?;
-
     let slave_raw = slave.as_raw_fd();
-    let (program, args) = crate::command::exec_program_and_args(cmd).with_context(err_context)?;
-    let mut command = Command::new(program);
+    let mut command = crate::command::prepare_command(cmd).with_context(err_context)?;
     if let Some(arg0) = arg0 {
         // The whole of what makes a shell a *login* shell. Local panes pass
         // `None` and exec exactly as they always have.
         command.arg0(arg0);
     }
-    if let Some(current_dir) = cmd.cwd.as_ref() {
-        if current_dir.exists() && current_dir.is_dir() {
-            command.current_dir(current_dir);
-        } else {
-            log::error!(
-                "Failed to set CWD for new pane. '{}' does not exist or is not a folder",
-                current_dir.display()
-            );
-        }
-    }
-    command.args(args);
     if child_env.login_session {
         // Whatever ssh session started this machine's broker left its own
         // `SSH_*` in the environment every pane inherits. They describe a
@@ -1353,36 +1334,7 @@ fn start_session(
                     return Err(std::io::Error::last_os_error());
                 }
             }
-            if job_control {
-                // A process group of our own, inside the supervisor's session.
-                if libc::setpgid(0, 0) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                // Claim the terminal. SIGTTOU has to stay ignored across this:
-                // we are still a background group until the call returns, and
-                // the default action would stop us before we ever exec.
-                if libc::tcsetpgrp(slave_raw, libc::getpid()) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                // Only now put the job-control signals back, so `^Z` reaches
-                // the pane's command with its default meaning.
-                for signal in [libc::SIGTSTP, libc::SIGTTIN, libc::SIGTTOU] {
-                    if libc::signal(signal, libc::SIG_DFL) == libc::SIG_ERR {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                }
-                for target in [0, 1, 2] {
-                    if libc::dup2(slave_raw, target) != target {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                }
-            } else if libc::login_tty(slave_raw) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            // Keep std's exec-error pipe open until exec succeeds, while ensuring
-            // the shell inherits no master, control socket, listener or wake fd.
-            close_fds::set_fds_cloexec(3, &[]);
-            Ok(())
+            super::terminal::prepare_child(slave_raw, job_control)
         });
     }
 

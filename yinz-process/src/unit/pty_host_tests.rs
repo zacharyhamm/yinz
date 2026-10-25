@@ -3,9 +3,11 @@ use yinz_types::internal_ids::ProcessId;
 use yinz_types::internal_ids::SupervisorId;
 
 use crate::pty_host::fdpass::recv_fd;
+use nix::pty::openpty;
 use nix::sys::termios;
 use std::os::fd::{FromRawFd, IntoRawFd};
 use std::path::PathBuf;
+use std::process::Command;
 use std::thread::JoinHandle;
 use std::time::Instant;
 

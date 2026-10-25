@@ -5,6 +5,8 @@ pub mod hooks;
 pub mod launch;
 pub mod paths;
 pub mod pi;
+#[cfg(unix)]
+pub mod registry;
 pub mod report;
 mod restart;
 pub use restart::{restart_args, restart_with_prompt};

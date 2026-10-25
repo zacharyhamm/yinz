@@ -1,4 +1,5 @@
 use super::*;
+use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
 
 fn registration(root: &Path, pane: &str, launcher_pid: u32) -> Registration {
@@ -49,7 +50,8 @@ fn sessions_bind_by_ancestry_and_route_by_session() {
     assert!(binding_for(root.path(), "ses-c").unwrap().is_none());
     assert!(binding_for(root.path(), "missing").unwrap().is_none());
     // A dead launcher cannot own a session, even after an unclean exit.
-    first._lease.unlock().unwrap();
+    std::fs::rename(first.registry.dir.path(), root.path().join("dead")).unwrap();
+    drop(first);
     assert!(binding_for(root.path(), "ses-a").unwrap().is_none());
     assert!(!bind_session(root.path(), &ancestors_of(1001), "ses-d", Some("startup")).unwrap());
     drop(second);

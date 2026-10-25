@@ -105,7 +105,7 @@ fn active_pane_replies(screen: &mut Screen, bytes: &[u8]) -> Vec<Vec<u8>> {
         .get_active_pane_mut(client_id)
         .unwrap();
     pane.handle_pty_bytes(bytes.to_vec());
-    pane.drain_messages_to_pty()
+    pane.terminal_io_mut().unwrap().drain_messages_to_pty()
 }
 
 /// The forcing function: a field added to `ScreenConfig` has to be destructured here and

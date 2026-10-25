@@ -1,5 +1,9 @@
 use super::*;
-use crate::os_input_output::{AsyncReader, ServerOsApi};
+use crate::os_input_output::AsyncReader;
+use crate::os_input_output::{
+    ClientTransport, RemotePanes, ServerEnvironment, TerminalIo, TerminalProcesses,
+    TerminalSupervision,
+};
 use crate::thread_bus::Bus;
 use crate::PaneId;
 use interprocess::local_socket::Stream as LocalSocketStream;
@@ -73,7 +77,17 @@ impl MockServerOsApi {
     }
 }
 
-impl ServerOsApi for MockServerOsApi {
+#[test]
+fn unsupported_terminal_reservation_returns_an_error() {
+    let os = MockServerOsApi::new();
+    let processes: &dyn TerminalProcesses = &os;
+    assert_eq!(
+        processes.reserve_terminal_id().unwrap_err().to_string(),
+        "this backend does not support reserving terminal IDs"
+    );
+}
+
+impl TerminalIo for MockServerOsApi {
     fn set_terminal_size_using_terminal_id(
         &self,
         id: TerminalId,
@@ -104,14 +118,6 @@ impl ServerOsApi for MockServerOsApi {
             .collect();
         self.applied_resizes.lock().unwrap().extend(&resizes);
         resizes
-    }
-    fn spawn_terminal(
-        &self,
-        _terminal_action: yinz_types::input::command::TerminalAction,
-        _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-        _default_editor: Option<PathBuf>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
-        unimplemented!()
     }
     fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize> {
         let behavior = self
@@ -158,6 +164,17 @@ impl ServerOsApi for MockServerOsApi {
     fn tcdrain(&self, _id: TerminalId) -> Result<()> {
         Ok(())
     }
+}
+
+impl TerminalProcesses for MockServerOsApi {
+    fn spawn_terminal(
+        &self,
+        _terminal_action: yinz_types::input::command::TerminalAction,
+        _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+        _default_editor: Option<PathBuf>,
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
+        unimplemented!()
+    }
     fn kill(&self, _pid: ProcessId) -> Result<()> {
         Ok(())
     }
@@ -170,9 +187,24 @@ impl ServerOsApi for MockServerOsApi {
     fn send_sigcont(&self, _pid: ProcessId) -> Result<()> {
         Ok(())
     }
-    fn box_clone(&self) -> Box<dyn ServerOsApi> {
-        Box::new((*self).clone())
+    fn re_run_command_in_terminal(
+        &self,
+        _terminal_id: TerminalId,
+        _run_command: RunCommand,
+        _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
+        unimplemented!()
     }
+    fn clear_terminal_id(&self, _terminal_id: TerminalId) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl TerminalSupervision for MockServerOsApi {}
+
+impl RemotePanes for MockServerOsApi {}
+
+impl ClientTransport for MockServerOsApi {
     fn send_to_client(&self, _client_id: ClientId, _msg: ServerToClientMsg) -> Result<()> {
         Ok(())
     }
@@ -186,6 +218,9 @@ impl ServerOsApi for MockServerOsApi {
     fn remove_client(&mut self, _client_id: ClientId) -> Result<()> {
         Ok(())
     }
+}
+
+impl ServerEnvironment for MockServerOsApi {
     fn load_palette(&self) -> Palette {
         Palette::default()
     }
@@ -193,17 +228,6 @@ impl ServerOsApi for MockServerOsApi {
         None
     }
     fn write_to_file(&mut self, _buf: String, _file: Option<String>) -> Result<()> {
-        Ok(())
-    }
-    fn re_run_command_in_terminal(
-        &self,
-        _terminal_id: TerminalId,
-        _run_command: RunCommand,
-        _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
-        unimplemented!()
-    }
-    fn clear_terminal_id(&self, _terminal_id: TerminalId) -> Result<()> {
         Ok(())
     }
 }

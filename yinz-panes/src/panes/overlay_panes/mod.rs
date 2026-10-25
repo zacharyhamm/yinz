@@ -16,8 +16,11 @@ use yinz_types::{
     pane_size::{Offset, PaneGeom, Size, SizeInPixels, Viewport},
 };
 use {
-    yinz_types::data::ModeInfo, yinz_types::data::OverlayKind, yinz_types::data::OverlayPlacement,
-    yinz_types::data::PaneInfo, yinz_types::input::layout::RunPluginOrAlias,
+    yinz_types::data::ModeInfo,
+    yinz_types::data::OverlayKind,
+    yinz_types::data::OverlayPlacement,
+    yinz_types::data::PaneInfo,
+    yinz_types::input::layout::{Run, RunPluginOrAlias},
 };
 
 use crate::pane::{pane_info_for_pane, Pane};
@@ -1809,8 +1812,12 @@ impl OverlayPanes {
             if overlay.carry.opening_awaits_placement {
                 continue;
             }
-            let eligible = enabled && overlay.framed()
-                && overlay.children.as_slice().iter().any(|(_, pane)| pane.invoked_with().as_ref().and_then(|run| run.get_run_plugin()).is_some_and(|plugin| matches!(plugin.location, yinz_types::input::layout::RunPluginLocation::Yinz(tag) if matches!(tag.to_string().as_str(), "agents"))));
+            let eligible = enabled
+                && overlay.framed()
+                && overlay.children.as_slice().iter().any(|(_, pane)| {
+                    matches!(pane.invoked_with(), Some(Run::Plugin(plugin))
+                        if plugin.presentation().opening_ripple)
+                });
             if !eligible {
                 overlay.carry.opening_started = None;
             } else if !overlay.carry.opening_seen {

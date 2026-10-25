@@ -584,9 +584,28 @@ fn client_os_input_output_can_be_constructed() {
 #[test]
 fn cli_client_os_input_can_be_constructed() {
     let os_input = get_cli_client_os_input().expect("should construct CLI ClientOsInputOutput");
-    let size = os_input.get_terminal_size();
-    assert!(size.rows > 0, "rows should be positive");
-    assert!(size.cols > 0, "cols should be positive");
+    let cli: &dyn CliClientOs = &os_input;
+    assert!(matches!(cli.recv_from_server(), IpcRecv::Eof));
+}
+
+#[test]
+fn receiving_without_a_server_connection_returns_eof() {
+    let os_input = get_client_os_input().unwrap();
+    assert!(matches!(os_input.recv_from_server(), IpcRecv::Eof));
+    assert!(matches!(os_input.recv_from_server(), IpcRecv::Eof));
+}
+
+#[test]
+fn receiving_with_a_poisoned_connection_returns_eof() {
+    let os_input = get_client_os_input().unwrap();
+    let receiver = os_input.receive_instructions_from_server.clone();
+    assert!(std::thread::spawn(move || {
+        let _receiver = receiver.lock().unwrap();
+        panic!("poison the receiver lock");
+    })
+    .join()
+    .is_err());
+    assert!(matches!(os_input.recv_from_server(), IpcRecv::Eof));
 }
 
 #[test]

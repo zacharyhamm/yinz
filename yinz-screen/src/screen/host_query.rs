@@ -257,6 +257,7 @@ impl Screen {
                     if let Some(pane) = self
                         .tab_containing_pane_mut(pane_id)
                         .and_then(|tab| tab.get_pane_with_id_mut(pane_id))
+                        .and_then(|pane| pane.terminal_io_mut())
                     {
                         pane.record_terminal_color_reply(&query, &payload);
                     }

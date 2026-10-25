@@ -338,7 +338,9 @@ impl Screen {
         for tab in self.tabs.values_mut() {
             for pane_id in tab.get_all_pane_ids() {
                 if let PaneId::Terminal(terminal_id) = pane_id
-                    && let Some(pane) = tab.get_pane_with_id_mut(pane_id)
+                    && let Some(pane) = tab
+                        .get_pane_with_id_mut(pane_id)
+                        .and_then(|pane| pane.terminal_io_mut())
                 {
                     pane.push_color_palette_dsr(mode);
                     for bytes in pane.drain_messages_to_pty() {

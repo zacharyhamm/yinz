@@ -30,10 +30,10 @@ threads-required = 4
 fail-fast = false
 slow-timeout = { period = "15s", terminate-after = 4 }
 
-# This subprocess arms the production one-second hook deadline while pruning a large prompt.
-# Competing tests can exhaust that deadline before the debug build finishes the payload.
+# These subprocesses exercise the production one-second hook deadline.
+# Competing tests can exhaust it during reporting or delay parent wall-clock observations.
 [[profile.unit.overrides]]
-filter = 'package(yinz-muse) & test(=tests::reports_reach_the_bound_pane_and_nothing_else)'
+filter = '(package(yinz-muse) & test(=tests::reports_reach_the_bound_pane_and_nothing_else)) | (package(yinz-codex) & (test(=tests::routed_hook_traces_finish_for_success_unbound_and_errors) | test(=tests::routed_native_hooks_preserve_small_payloads_and_bound_large_ones))) | (binary(agent_report) & (test(=reporter_requires_its_exact_acceptance_and_bounds_stalled_peers) | test(=reporter_bounds_unclosed_stdin_even_when_diagnostics_cannot_be_written) | test(=codex_router_bounds_unclosed_stdin_without_configuration_or_logging) | test(=installed_scripts_keep_neutral_output_after_reporter_failure)))'
 threads-required = "num-test-threads"
 
 # These parity tests replay 8,784 and 8,976 terminal renders, respectively.

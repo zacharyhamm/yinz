@@ -1,11 +1,15 @@
 //! The OS API the route-thread tests hand to `route_thread_main`.
 
-use crate::os_input_output::{AsyncReader, ServerOsApi};
+use crate::os_input_output::AsyncReader;
 use crate::panes::PaneId;
 use crate::ClientId;
 use interprocess::local_socket::Stream as LocalSocketStream;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use yinz_bus::os_input_output::{
+    ClientTransport, RemotePanes, ServerEnvironment, TerminalIo, TerminalProcesses,
+    TerminalSupervision,
+};
 use yinz_ipc::ipc::{ClientToServerMsg, IpcReceiverWithContext, ServerToClientMsg};
 use yinz_runtime::errors::prelude::*;
 use yinz_test_support::Watched;
@@ -26,7 +30,7 @@ pub(crate) struct CapturingOs {
     pub(crate) fail_client: Option<ClientId>,
 }
 
-impl ServerOsApi for CapturingOs {
+impl TerminalIo for CapturingOs {
     fn set_terminal_size_using_terminal_id(
         &self,
         _: TerminalId,
@@ -37,18 +41,21 @@ impl ServerOsApi for CapturingOs {
     ) -> Result<()> {
         unimplemented!()
     }
+    fn write_to_tty_stdin(&self, _: TerminalId, _: &[u8]) -> Result<usize> {
+        unimplemented!()
+    }
+    fn tcdrain(&self, _: TerminalId) -> Result<()> {
+        unimplemented!()
+    }
+}
+
+impl TerminalProcesses for CapturingOs {
     fn spawn_terminal(
         &self,
         _: TerminalAction,
         _: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _: Option<PathBuf>,
     ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
-        unimplemented!()
-    }
-    fn write_to_tty_stdin(&self, _: TerminalId, _: &[u8]) -> Result<usize> {
-        unimplemented!()
-    }
-    fn tcdrain(&self, _: TerminalId) -> Result<()> {
         unimplemented!()
     }
     fn kill(&self, _: ProcessId) -> Result<()> {
@@ -63,9 +70,24 @@ impl ServerOsApi for CapturingOs {
     fn send_sigcont(&self, _: ProcessId) -> Result<()> {
         unimplemented!()
     }
-    fn box_clone(&self) -> Box<dyn ServerOsApi> {
-        Box::new(self.clone())
+    fn re_run_command_in_terminal(
+        &self,
+        _: TerminalId,
+        _: RunCommand,
+        _: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
+        unimplemented!()
     }
+    fn clear_terminal_id(&self, _: TerminalId) -> Result<()> {
+        unimplemented!()
+    }
+}
+
+impl TerminalSupervision for CapturingOs {}
+
+impl RemotePanes for CapturingOs {}
+
+impl ClientTransport for CapturingOs {
     fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()> {
         if self.fail_client == Some(client_id) {
             return Err(anyhow!("client disconnected"));
@@ -87,6 +109,9 @@ impl ServerOsApi for CapturingOs {
     fn remove_client(&mut self, _: ClientId) -> Result<()> {
         Ok(())
     }
+}
+
+impl ServerEnvironment for CapturingOs {
     fn load_palette(&self) -> Palette {
         unimplemented!()
     }
@@ -94,17 +119,6 @@ impl ServerOsApi for CapturingOs {
         unimplemented!()
     }
     fn write_to_file(&mut self, _: String, _: Option<String>) -> Result<()> {
-        unimplemented!()
-    }
-    fn re_run_command_in_terminal(
-        &self,
-        _: TerminalId,
-        _: RunCommand,
-        _: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
-        unimplemented!()
-    }
-    fn clear_terminal_id(&self, _: TerminalId) -> Result<()> {
         unimplemented!()
     }
 }

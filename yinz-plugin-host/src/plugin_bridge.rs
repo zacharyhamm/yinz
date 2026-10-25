@@ -992,12 +992,6 @@ impl PluginBridge {
                 .senders
                 .send_to_screen(ScreenInstruction::ClearAllPluginHighlights(plugin_id));
 
-            // Drop its data store watches. They are keyed on a plugin id the server is free to
-            // reuse, so leaving them would send a later plugin someone else's rows.
-            self.data_access
-                .plugin_data()
-                .drop_watches_for_plugin(plugin_id);
-
             let cleanup =
                 move |senders: ThreadSenders,
                       _plugin_map: Arc<Mutex<PluginMap>>,

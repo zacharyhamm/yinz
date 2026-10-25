@@ -830,7 +830,9 @@ fn osc99_base64_and_read_boundaries_arrive_as_one_complete_notification() {
                 .get_active_pane_mut(ClientId::new(1))
                 .unwrap();
             pane.handle_pty_bytes(read.to_vec());
-            pane.drain_desktop_notifications()
+            pane.terminal_io_mut()
+                .unwrap()
+                .drain_desktop_notifications()
         };
         screen
             .receive_desktop_notifications(notifications, TerminalId::new(1))

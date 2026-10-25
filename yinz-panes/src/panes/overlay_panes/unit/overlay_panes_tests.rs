@@ -1,5 +1,5 @@
 use super::*;
-use crate::os_input_output::{AsyncReader, ServerOsApi};
+use crate::os_input_output::AsyncReader;
 use crate::pane::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::sixel::SixelImageStore;
@@ -7,6 +7,10 @@ use crate::panes::{LinkHandler, PaneId, TerminalPane};
 use crate::PtyWriteInstruction;
 use interprocess::local_socket::Stream as LocalSocketStream;
 use std::path::PathBuf;
+use yinz_bus::os_input_output::{
+    ClientTransport, RemotePanes, ServerEnvironment, TerminalIo, TerminalProcesses,
+    TerminalSupervision,
+};
 use yinz_runtime::channels::{unbounded, Receiver, SenderWithContext};
 use yinz_types::diagnostics::ErrorContext;
 use yinz_types::geometry::{Direction, Resize};
@@ -22,7 +26,7 @@ use {yinz_types::input::command::RunCommand, yinz_types::input::command::Termina
 #[derive(Clone)]
 struct FakeInputOutput {}
 
-impl ServerOsApi for FakeInputOutput {
+impl TerminalIo for FakeInputOutput {
     fn set_terminal_size_using_terminal_id(
         &self,
         _id: TerminalId,
@@ -33,6 +37,15 @@ impl ServerOsApi for FakeInputOutput {
     ) -> Result<()> {
         Ok(())
     }
+    fn write_to_tty_stdin(&self, _id: TerminalId, _buf: &[u8]) -> Result<usize> {
+        unimplemented!()
+    }
+    fn tcdrain(&self, _id: TerminalId) -> Result<()> {
+        unimplemented!()
+    }
+}
+
+impl TerminalProcesses for FakeInputOutput {
     fn spawn_terminal(
         &self,
         _file_to_open: TerminalAction,
@@ -41,41 +54,10 @@ impl ServerOsApi for FakeInputOutput {
     ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         unimplemented!()
     }
-    fn write_to_tty_stdin(&self, _id: TerminalId, _buf: &[u8]) -> Result<usize> {
-        unimplemented!()
-    }
-    fn tcdrain(&self, _id: TerminalId) -> Result<()> {
-        unimplemented!()
-    }
     fn kill(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
     fn force_kill(&self, _pid: ProcessId) -> Result<()> {
-        unimplemented!()
-    }
-    fn box_clone(&self) -> Box<dyn ServerOsApi> {
-        Box::new((*self).clone())
-    }
-    fn send_to_client(&self, _client_id: ClientId, _msg: ServerToClientMsg) -> Result<()> {
-        unimplemented!()
-    }
-    fn new_client(
-        &mut self,
-        _client_id: ClientId,
-        _stream: LocalSocketStream,
-    ) -> Result<IpcReceiverWithContext<ClientToServerMsg>> {
-        unimplemented!()
-    }
-    fn remove_client(&mut self, _client_id: ClientId) -> Result<()> {
-        unimplemented!()
-    }
-    fn load_palette(&self) -> Palette {
-        unimplemented!()
-    }
-    fn get_cwd(&self, _pid: ProcessId) -> Option<PathBuf> {
-        unimplemented!()
-    }
-    fn write_to_file(&mut self, _buf: String, _name: Option<String>) -> Result<()> {
         unimplemented!()
     }
     fn re_run_command_in_terminal(
@@ -93,6 +75,38 @@ impl ServerOsApi for FakeInputOutput {
         unimplemented!()
     }
     fn send_sigcont(&self, _pid: ProcessId) -> Result<()> {
+        unimplemented!()
+    }
+}
+
+impl TerminalSupervision for FakeInputOutput {}
+
+impl RemotePanes for FakeInputOutput {}
+
+impl ClientTransport for FakeInputOutput {
+    fn send_to_client(&self, _client_id: ClientId, _msg: ServerToClientMsg) -> Result<()> {
+        unimplemented!()
+    }
+    fn new_client(
+        &mut self,
+        _client_id: ClientId,
+        _stream: LocalSocketStream,
+    ) -> Result<IpcReceiverWithContext<ClientToServerMsg>> {
+        unimplemented!()
+    }
+    fn remove_client(&mut self, _client_id: ClientId) -> Result<()> {
+        unimplemented!()
+    }
+}
+
+impl ServerEnvironment for FakeInputOutput {
+    fn load_palette(&self) -> Palette {
+        unimplemented!()
+    }
+    fn get_cwd(&self, _pid: ProcessId) -> Option<PathBuf> {
+        unimplemented!()
+    }
+    fn write_to_file(&mut self, _buf: String, _name: Option<String>) -> Result<()> {
         unimplemented!()
     }
 }

@@ -1,5 +1,5 @@
 use super::super::TerminalPane;
-use crate::pane::Pane;
+use crate::pane::{Pane, TerminalPaneIo};
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::sixel::SixelImageStore;
 use crate::panes::LinkHandler;
@@ -1412,6 +1412,23 @@ fn make_pane_for_ingest() -> TerminalPane {
         width: 8,
         height: 21,
     }))))
+}
+
+#[test]
+fn terminal_io_capability_drains_replies_without_plugin_controls() {
+    let mut terminal = make_pane_for_ingest();
+    let pane: &mut dyn Pane = &mut terminal;
+    assert!(pane.plugin_control_mut().is_none());
+    pane.handle_pty_bytes(b"\x1b[5n".to_vec());
+    assert_eq!(
+        pane.terminal_io_mut().unwrap().drain_messages_to_pty(),
+        vec![b"\x1b[0n".to_vec()]
+    );
+    assert!(pane
+        .terminal_io_mut()
+        .unwrap()
+        .drain_messages_to_pty()
+        .is_empty());
 }
 
 fn make_pane_for_ingest_with_cell_size(

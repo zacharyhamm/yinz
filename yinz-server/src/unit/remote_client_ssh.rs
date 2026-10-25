@@ -5,6 +5,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, ExitStatus};
 use std::sync::atomic::AtomicBool;
+use yinz_panes::pane::TerminalPaneIo;
 use yinz_test_support::Watched;
 
 #[derive(Default)]

@@ -2,7 +2,7 @@
 use std::time::Duration;
 use tokio::sync::oneshot;
 use yinz_bus::global_async_runtime::get_tokio_runtime;
-use yinz_bus::os_input_output::ServerOsApi;
+use yinz_bus::os_input_output::ClientTransport;
 use yinz_bus::route::ActionCompletionResult;
 use yinz_bus::ClientId;
 use yinz_ipc::ipc::{ExitReason, ServerToClientMsg};
@@ -71,7 +71,7 @@ pub(super) fn report_action_completion(
     creates_pane: bool,
     creates_group: bool,
     cli_client_id: Option<ClientId>,
-    os_input: Option<&dyn ServerOsApi>,
+    os_input: Option<&dyn ClientTransport>,
 ) {
     if creates_pane && result.affected_pane_id.is_none() && result.error_message.is_none() {
         result.error_message = Some(format!("Action {action_name} completed without a pane ID"));
@@ -114,7 +114,7 @@ pub(super) fn report_action_completion(
 
 pub(super) fn send_error_to_client(
     cli_client_id: Option<ClientId>,
-    os_input: Option<&dyn ServerOsApi>,
+    os_input: Option<&dyn ClientTransport>,
     error_message: &str,
 ) {
     if let Some(cli_client_id) = cli_client_id
@@ -131,7 +131,7 @@ pub(super) fn send_error_to_client(
 
 pub(super) fn send_output_to_client(
     cli_client_id: Option<ClientId>,
-    os_input: Option<&dyn ServerOsApi>,
+    os_input: Option<&dyn ClientTransport>,
     output_lines: Vec<String>,
 ) {
     if let Some(cli_client_id) = cli_client_id

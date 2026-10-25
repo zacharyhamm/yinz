@@ -97,7 +97,10 @@ fn encoded_notification_text_cannot_inject_a_host_clipboard_command() {
         .unwrap();
     // Decodes to "done", BEL, an OSC 52 clipboard write, and BEL.
     pane.handle_pty_bytes(b"\x1b]99;e=1;ZG9uZQcbXTUyO2M7WVdKagc=\x07".to_vec());
-    let notifications = pane.drain_desktop_notifications();
+    let notifications = pane
+        .terminal_io_mut()
+        .unwrap()
+        .drain_desktop_notifications();
     assert_eq!(notifications.len(), 1);
     screen.forward_desktop_notifications(notifications, TerminalId::new(1));
 
@@ -445,7 +448,10 @@ fn codex_plan_notifications_preserve_metadata_and_report_once() {
             .unwrap();
         assert_eq!(pane.pid(), pane_id);
         pane.handle_pty_bytes(bytes.into_bytes());
-        let notifications = pane.drain_desktop_notifications();
+        let notifications = pane
+            .terminal_io_mut()
+            .unwrap()
+            .drain_desktop_notifications();
         assert!(!notifications.is_empty());
         // Repeated prompts still forward, but only the first changes Idle to Waiting.
         screen.forward_desktop_notifications(notifications.clone(), terminal);

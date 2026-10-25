@@ -13,6 +13,39 @@ use yinz_types::pane_id::PaneId;
 pub const REPORT_DEADLINE: Duration = Duration::from_secs(1);
 pub const SLOW_REPORT: Duration = Duration::from_millis(100);
 
+pub const ROUTE_ENV: &[&str] = &[
+    "YINZ_PANE_REF",
+    "YINZ_PANE_ID",
+    crate::envs::SESSION_NAME_ENV_KEY,
+    "YINZ_REMOTE_PANE_TOKEN",
+    crate::envs::SOCKET_DIR_ENV_KEY,
+];
+
+/// Route only through the bound pane's environment, never the reporter's inherited pane.
+pub fn forwarding_command(
+    yinz: &std::path::Path,
+    kind: &str,
+    env: &std::collections::HashMap<String, String>,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(yinz);
+    for key in ROUTE_ENV {
+        command.env_remove(key);
+    }
+    if env
+        .get("YINZ_REMOTE_PANE_TOKEN")
+        .is_some_and(|token| !token.is_empty())
+    {
+        command.args(["--pty-broker", "report", kind]);
+    } else {
+        command.args(["action", "agent-report", "--hook-json", "--kind", kind]);
+    }
+    command
+        .envs(env)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null());
+    command
+}
+
 pub fn validate_report(report: &AgentReport) -> Result<()> {
     if uuid::Uuid::parse_str(&report.report_id).is_err() {
         return Err(anyhow!("invalid report id"));
@@ -150,6 +183,26 @@ fn append_diagnostic(line: &str) {
     }
 }
 
+/// Run one routed hook report under the process deadline and record its outcome once.
+///
+/// Process-only, like [`reporting_watchdog`]: never call this in a server or an in-process test.
+#[cfg(unix)]
+pub fn traced_report(
+    kind: &str,
+    report: impl FnOnce(&Mutex<ReportTrace>) -> Result<()>,
+) -> Result<()> {
+    let trace = Arc::new(Mutex::new(ReportTrace::new(Instant::now())));
+    if let Ok(mut trace) = trace.lock() {
+        trace.kind = kind.to_owned();
+    }
+    reporting_watchdog(trace.clone()).context("arm the hook report deadline")?;
+    let result = report(&trace);
+    if let Ok(trace) = trace.lock() {
+        trace.finish(result.is_ok());
+    }
+    result
+}
+
 /// Process-only guard: never arm this in a server or an in-process test. The hard-exit thread
 /// does no logging and takes no locks, so even a stuck diagnostic write cannot hold the hook.
 #[cfg(unix)]
@@ -195,3 +248,7 @@ pub fn reporting_watchdog(trace: Arc<Mutex<ReportTrace>>) -> Result<()> {
         .context("start hook observer")?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../unit/agent_report_tests.rs"]
+mod tests;

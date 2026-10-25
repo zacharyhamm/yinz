@@ -1801,6 +1801,9 @@ impl PluginTag {
     pub fn new(url: impl Into<String>) -> Self {
         PluginTag(url.into())
     }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl From<PluginTag> for String {

@@ -13,7 +13,7 @@ use yinz_bus::route::{ActionCompletionResult, NotificationEnd};
 use uuid::Uuid;
 use yinz_bus::thread_bus::ThreadSenders;
 use yinz_bus::{
-    os_input_output::ServerOsApi, plugins::PluginInstruction, pty::PtyInstruction,
+    os_input_output::ClientTransport, plugins::PluginInstruction, pty::PtyInstruction,
     screen::ScreenInstruction, PaneId, ServerInstruction,
 };
 use yinz_runtime::{envs, errors::prelude::*};
@@ -66,7 +66,7 @@ pub fn route_action(
     default_shell: Option<TerminalAction>,
     mut seen_cli_pipes: Option<&mut HashSet<String>>,
     default_mode: InputMode,
-    os_input: Option<Box<dyn ServerOsApi>>,
+    os_input: Option<Box<dyn ClientTransport>>,
     leaves_clipboard_message: bool,
     is_client_input: bool,
 ) -> Result<(bool, Option<ActionCompletionResult>)> {

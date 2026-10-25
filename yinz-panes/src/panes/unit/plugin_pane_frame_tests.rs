@@ -5,6 +5,23 @@ use yinz_types::internal_ids::ClientId;
 use yinz_types::pane_size::Offset;
 
 #[test]
+fn plugin_control_capability_reports_loading_errors_without_terminal_io() {
+    let mut plugin = test_plugin_pane(5, 60, Offset::default());
+    let pane: &mut dyn Pane = &mut plugin;
+    let client = ClientId::new(1);
+    pane.add_client(client);
+    assert!(pane.terminal_io_mut().is_none());
+    let mut loading = crate::ui::loading_indication::LoadingIndication::default();
+    loading.indicate_loading_error("capability loading error".into());
+    pane.plugin_control_mut()
+        .unwrap()
+        .update_loading_indication(loading);
+    assert!(pane
+        .dump_screen(false, Some(client))
+        .contains("capability loading error"));
+}
+
+#[test]
 fn removing_a_client_only_clears_its_own_frame_override() {
     let client = ClientId::new(1);
     let other = ClientId::new(2);

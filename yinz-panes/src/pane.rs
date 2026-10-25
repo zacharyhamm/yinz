@@ -88,7 +88,44 @@ pub type RenderedPane = (
     Vec<KittyImageChunk>,
 );
 
+/// Terminal replies, host queries, and output side effects.
+pub trait TerminalPaneIo {
+    fn drain_messages_to_pty(&mut self) -> Vec<Vec<u8>>;
+    /// Learned source palettes to retain in the pane's supervisor.
+    fn drain_agent_theme_updates(&mut self) -> Vec<yinz_types::agent::theme::AgentThemeEvent>;
+    /// Whitelisted terminal queries to forward to the host terminal.
+    fn drain_forwarded_queries(&mut self) -> Vec<crate::host_query::HostQuery>;
+    fn record_terminal_color_reply(&mut self, query: &crate::host_query::HostQuery, reply: &[u8]);
+    fn drain_nested_session_messages(&mut self) -> Vec<NestedSessionMessage>;
+    /// Buffer PTY input until the host reply reaches the pane's stdin, preserving stream order.
+    fn arm_forward_pause(&mut self);
+    /// Resume parsing, returning whether the pane was previously paused.
+    fn clear_forward_pause(&mut self) -> bool;
+    /// Drain buffered input for Tab to re-feed after delivering the host reply.
+    fn drain_pending_pty_input(&mut self) -> Vec<u8>;
+    fn is_forward_paused(&self) -> bool;
+    /// Queue a CSI ?997 theme notification only when the application opted in with CSI ?2031 h.
+    fn push_color_palette_dsr(&mut self, mode: yinz_types::style::HostTerminalThemeMode);
+    fn drain_clipboard_update(&mut self) -> Option<String>;
+    fn drain_desktop_notifications(&mut self) -> Vec<PendingNotification>;
+    fn drain_osc7_cwd(&mut self) -> Option<std::path::PathBuf>;
+}
+
+/// Plugin loading and location updates.
+pub trait PluginPaneControl {
+    fn update_plugin_location(&mut self, location: RunPluginLocation);
+    fn update_loading_indication(&mut self, loading_indication: LoadingIndication);
+    fn start_loading_indication(&mut self, loading_indication: LoadingIndication);
+    fn progress_animation_offset(&mut self);
+}
+
 pub trait Pane {
+    fn terminal_io_mut(&mut self) -> Option<&mut dyn TerminalPaneIo> {
+        None
+    }
+    fn plugin_control_mut(&mut self) -> Option<&mut dyn PluginPaneControl> {
+        None
+    }
     fn x(&self) -> usize {
         self.current_geom().x
     }
@@ -430,28 +467,6 @@ pub trait Pane {
     fn min_height(&self) -> usize {
         MIN_TERMINAL_HEIGHT
     }
-    /// Drain terminal replies through the shared pane interface; plugins have none.
-    fn drain_messages_to_pty(&mut self) -> Vec<Vec<u8>> {
-        vec![]
-    }
-    /// Learned source palettes to retain in the pane's supervisor.
-    fn drain_agent_theme_updates(&mut self) -> Vec<yinz_types::agent::theme::AgentThemeEvent> {
-        vec![]
-    }
-    fn drain_forwarded_queries(&mut self) -> Vec<crate::host_query::HostQuery> {
-        // Only terminal panes forward whitelisted queries to the host;
-        // plugin panes have no such concept.
-        vec![]
-    }
-    fn record_terminal_color_reply(
-        &mut self,
-        _query: &crate::host_query::HostQuery,
-        _reply: &[u8],
-    ) {
-    }
-    fn drain_nested_session_messages(&mut self) -> Vec<NestedSessionMessage> {
-        vec![]
-    }
     fn is_nested_guest(&self) -> bool {
         false
     }
@@ -482,42 +497,6 @@ pub trait Pane {
     fn set_guest_modal_shortcuts(&mut self, _shortcuts: GuestModalShortcuts) {}
     fn guest_modal_shortcuts(&self) -> GuestModalShortcuts {
         GuestModalShortcuts::default()
-    }
-    /// Mark this pane as awaiting a host-terminal reply for a forward
-    /// it just dispatched. While paused, vte byte feeding is buffered
-    /// so that the eventual host reply lands on the pane's stdin in
-    /// the same stream position the original query occupied. Default
-    /// no-op for non-terminal panes (plugins do not forward queries).
-    fn arm_forward_pause(&mut self) {}
-    /// Clear the forward-pause flag set by `arm_forward_pause`, returning
-    /// `true` if the pane was previously paused. Default no-op.
-    fn clear_forward_pause(&mut self) -> bool {
-        false
-    }
-    /// Drain and return any PTY bytes that arrived while the pane was
-    /// forward-paused. Tab calls this on resume and re-feeds the bytes
-    /// through `handle_pty_bytes`. Default empty for non-terminal panes.
-    fn drain_pending_pty_input(&mut self) -> Vec<u8> {
-        vec![]
-    }
-    /// Whether this pane is currently waiting for a host-forward reply.
-    fn is_forward_paused(&self) -> bool {
-        false
-    }
-    /// Push a CSI ?997 DSR notification (host color-palette theme mode)
-    /// onto this pane's pending pty-write queue, but only if the pane's
-    /// underlying app opted in via `CSI ? 2031 h`.
-    /// Only relevant to terminal panes, plugin panes receive this through
-    /// `Event::HostTerminalThemeChanged`
-    fn push_color_palette_dsr(&mut self, _mode: yinz_types::style::HostTerminalThemeMode) {}
-    fn drain_clipboard_update(&mut self) -> Option<String> {
-        None
-    }
-    fn drain_desktop_notifications(&mut self) -> Vec<PendingNotification> {
-        vec![]
-    }
-    fn drain_osc7_cwd(&mut self) -> Option<std::path::PathBuf> {
-        None
     }
     fn render_full_viewport(&mut self) {}
     fn relative_position(&self, position_on_screen: &Position) -> Position {
@@ -716,15 +695,10 @@ pub trait Pane {
     fn invoked_with(&self) -> &Option<Run>;
     fn is_builtin_tab_bar(&self) -> bool {
         matches!(self.invoked_with(), Some(Run::Plugin(plugin))
-            if plugin.get_run_plugin().is_some_and(|plugin|
-                matches!(plugin.location, RunPluginLocation::Yinz(tag) if tag.to_string() == "tab-bar")))
+            if plugin.presentation().tab_bar)
     }
-    fn update_plugin_location(&mut self, _location: RunPluginLocation) {}
     fn set_notification_end(&mut self, _notification_end: Option<NotificationEnd>) {}
     fn set_title(&mut self, title: String);
-    fn update_loading_indication(&mut self, _loading_indication: LoadingIndication) {} // only relevant for plugins
-    fn start_loading_indication(&mut self, _loading_indication: LoadingIndication) {} // only relevant for plugins
-    fn progress_animation_offset(&mut self) {} // only relevant for plugins
     fn current_title(&self) -> String;
     fn set_remote_host(&mut self, _host: Option<String>) {} // only relevant for terminal panes
     /// A decoration to compose in front of the title, whatever the title is.

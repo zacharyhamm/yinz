@@ -6,7 +6,8 @@ use std::time::Duration;
 use interprocess::local_socket::Stream as LocalSocketStream;
 use yinz_runtime::errors::prelude::*;
 use yinz_server::os_input_output::{
-    AdoptedTerminal, AsyncReader, RemoteEndpoint, ResolvedSpawn, ServerOsApi,
+    AdoptedTerminal, AsyncReader, ClientTransport, RemoteEndpoint, RemotePanes, ResolvedSpawn,
+    ServerEnvironment, TerminalIo, TerminalProcesses, TerminalSupervision,
 };
 use yinz_server::panes::PaneId;
 use yinz_server::pty_host::client::{ReleasedPane, ReleasedPtyHost, ReleasedRemotePane};
@@ -107,12 +108,7 @@ impl FakeServerOsApi {
     }
 }
 
-impl ServerOsApi for FakeServerOsApi {
-    #[cfg(test)]
-    fn set_agent_report_callback(&self, callback: yinz_server::pty_host::client::AgentReportCb) {
-        *self.agent_report.lock().unwrap() = Some(callback);
-    }
-
+impl TerminalIo for FakeServerOsApi {
     fn set_terminal_size_using_terminal_id(
         &self,
         id: TerminalId,
@@ -147,6 +143,19 @@ impl ServerOsApi for FakeServerOsApi {
             .map(|(terminal_id, (cols, rows))| (terminal_id, cols, rows))
             .collect()
     }
+    fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize> {
+        if self.shared_ptys.append_stdin(terminal_id, buf) {
+            Ok(buf.len())
+        } else {
+            Err(anyhow!("no fake pty for terminal id {terminal_id}"))
+        }
+    }
+    fn tcdrain(&self, _terminal_id: TerminalId) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl TerminalProcesses for FakeServerOsApi {
     fn spawn_terminal(
         &self,
         terminal_action: TerminalAction,
@@ -219,16 +228,6 @@ impl ServerOsApi for FakeServerOsApi {
         let _ = self.shared_ptys.register(terminal_id, None, None);
         Ok(terminal_id)
     }
-    fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize> {
-        if self.shared_ptys.append_stdin(terminal_id, buf) {
-            Ok(buf.len())
-        } else {
-            Err(anyhow!("no fake pty for terminal id {terminal_id}"))
-        }
-    }
-    fn tcdrain(&self, _terminal_id: TerminalId) -> Result<()> {
-        Ok(())
-    }
     fn kill(&self, pid: ProcessId) -> Result<()> {
         self.shared_ptys.exit_terminal(
             TerminalId::new(pid.get().saturating_sub(FAKE_PID_BASE)),
@@ -254,110 +253,6 @@ impl ServerOsApi for FakeServerOsApi {
     fn send_sigcont(&self, _pid: ProcessId) -> Result<()> {
         Ok(())
     }
-    fn box_clone(&self) -> Box<dyn ServerOsApi> {
-        Box::new(self.clone())
-    }
-    fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()> {
-        if let Some(non_blocking_client_sender) = self
-            .non_blocking_client_senders
-            .lock()
-            .unwrap()
-            .get(&client_id)
-        {
-            non_blocking_client_sender
-                .buffer_tx
-                .try_send(msg)
-                .with_context(|| format!("failed to buffer message for client {client_id}"))?;
-        }
-        Ok(())
-    }
-    fn new_client(
-        &mut self,
-        client_id: ClientId,
-        stream: LocalSocketStream,
-    ) -> Result<IpcReceiverWithContext<ClientToServerMsg>> {
-        let ipc_receiver = IpcReceiverWithContext::new(stream);
-        let non_blocking_client_sender = NonBlockingClientSender::new(
-            ipc_receiver
-                .get_sender()
-                .context("failed to clone server socket")?,
-        );
-        self.non_blocking_client_senders
-            .lock()
-            .unwrap()
-            .insert(client_id, non_blocking_client_sender);
-        Ok(ipc_receiver)
-    }
-    fn remove_client(&mut self, client_id: ClientId) -> Result<()> {
-        self.non_blocking_client_senders
-            .lock()
-            .unwrap()
-            .remove(&client_id);
-        Ok(())
-    }
-    fn load_palette(&self) -> Palette {
-        default_palette()
-    }
-    fn get_cwd(&self, pid: ProcessId) -> Option<PathBuf> {
-        self.cwds.lock().unwrap().get(&pid).cloned()
-    }
-    fn get_cwds(
-        &self,
-        pids: Vec<ProcessId>,
-    ) -> (HashMap<ProcessId, PathBuf>, HashMap<ProcessId, Vec<String>>) {
-        let barrier = self.metadata_barrier.lock().unwrap().take();
-        if let Some(barrier) = barrier {
-            barrier.entered.send(()).unwrap();
-            barrier
-                .release
-                .recv_timeout(std::time::Duration::from_secs(10))
-                .unwrap();
-        }
-        // A fake pane runs no process of its own, so both halves are answered from
-        // what it was spawned with rather than from the OS. The command half used
-        // to be left empty, which left every pane looking like it ran nothing —
-        // and agent detection reads exactly that.
-        let process_commands = self.shared_ptys.process_commands();
-        let cwds = self.cwds.lock().unwrap();
-        let mut found_cwds = HashMap::new();
-        let mut found_cmds = HashMap::new();
-        for pid in pids {
-            if let Some(cwd) = cwds.get(&pid) {
-                found_cwds.insert(pid, cwd.clone());
-            }
-            if let Some(command) = pid
-                .get()
-                .checked_sub(FAKE_PID_BASE)
-                .and_then(|terminal_id| process_commands.get(&TerminalId::new(terminal_id)))
-            {
-                found_cmds.insert(pid, command.clone());
-            }
-        }
-        (found_cwds, found_cmds)
-    }
-
-    /// What holds each pane's tty foreground. Keyed by terminal id, as the real
-    /// one is — it reaches the foreground process group through `tcgetpgrp`, not
-    /// through the pane's own pid.
-    fn get_foreground_cmds(
-        &self,
-        panes: &[(TerminalId, ProcessId)],
-        _post_hook: &Option<String>,
-    ) -> HashMap<TerminalId, Vec<String>> {
-        let foreground_commands = self.shared_ptys.foreground_commands();
-        panes
-            .iter()
-            .filter_map(|(terminal_id, _shell_pid)| {
-                Some((*terminal_id, foreground_commands.get(terminal_id)?.clone()))
-            })
-            .collect()
-    }
-    fn write_to_file(&mut self, buf: String, file: Option<String>) -> Result<()> {
-        if let Some(file) = file {
-            self.fake_filesystem.lock().unwrap().insert(file, buf);
-        }
-        Ok(())
-    }
     fn re_run_command_in_terminal(
         &self,
         terminal_id: TerminalId,
@@ -373,6 +268,13 @@ impl ServerOsApi for FakeServerOsApi {
     fn clear_terminal_id(&self, terminal_id: TerminalId) -> Result<()> {
         self.shared_ptys.remove(terminal_id);
         Ok(())
+    }
+}
+
+impl TerminalSupervision for FakeServerOsApi {
+    #[cfg(test)]
+    fn set_agent_report_callback(&self, callback: yinz_server::pty_host::client::AgentReportCb) {
+        *self.agent_report.lock().unwrap() = Some(callback);
     }
     fn terminate_orphaned_pty_hosts(
         &self,
@@ -494,6 +396,114 @@ impl ServerOsApi for FakeServerOsApi {
             buffered: Vec::new(),
             child_exit_status: adopted.child_exit_status,
         })
+    }
+}
+
+impl RemotePanes for FakeServerOsApi {}
+
+impl ClientTransport for FakeServerOsApi {
+    fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()> {
+        if let Some(non_blocking_client_sender) = self
+            .non_blocking_client_senders
+            .lock()
+            .unwrap()
+            .get(&client_id)
+        {
+            non_blocking_client_sender
+                .buffer_tx
+                .try_send(msg)
+                .with_context(|| format!("failed to buffer message for client {client_id}"))?;
+        }
+        Ok(())
+    }
+    fn new_client(
+        &mut self,
+        client_id: ClientId,
+        stream: LocalSocketStream,
+    ) -> Result<IpcReceiverWithContext<ClientToServerMsg>> {
+        let ipc_receiver = IpcReceiverWithContext::new(stream);
+        let non_blocking_client_sender = NonBlockingClientSender::new(
+            ipc_receiver
+                .get_sender()
+                .context("failed to clone server socket")?,
+        );
+        self.non_blocking_client_senders
+            .lock()
+            .unwrap()
+            .insert(client_id, non_blocking_client_sender);
+        Ok(ipc_receiver)
+    }
+    fn remove_client(&mut self, client_id: ClientId) -> Result<()> {
+        self.non_blocking_client_senders
+            .lock()
+            .unwrap()
+            .remove(&client_id);
+        Ok(())
+    }
+}
+
+impl ServerEnvironment for FakeServerOsApi {
+    fn load_palette(&self) -> Palette {
+        default_palette()
+    }
+    fn get_cwd(&self, pid: ProcessId) -> Option<PathBuf> {
+        self.cwds.lock().unwrap().get(&pid).cloned()
+    }
+    fn get_cwds(
+        &self,
+        pids: Vec<ProcessId>,
+    ) -> (HashMap<ProcessId, PathBuf>, HashMap<ProcessId, Vec<String>>) {
+        let barrier = self.metadata_barrier.lock().unwrap().take();
+        if let Some(barrier) = barrier {
+            barrier.entered.send(()).unwrap();
+            barrier
+                .release
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+        }
+        // A fake pane runs no process of its own, so both halves are answered from
+        // what it was spawned with rather than from the OS. The command half used
+        // to be left empty, which left every pane looking like it ran nothing —
+        // and agent detection reads exactly that.
+        let process_commands = self.shared_ptys.process_commands();
+        let cwds = self.cwds.lock().unwrap();
+        let mut found_cwds = HashMap::new();
+        let mut found_cmds = HashMap::new();
+        for pid in pids {
+            if let Some(cwd) = cwds.get(&pid) {
+                found_cwds.insert(pid, cwd.clone());
+            }
+            if let Some(command) = pid
+                .get()
+                .checked_sub(FAKE_PID_BASE)
+                .and_then(|terminal_id| process_commands.get(&TerminalId::new(terminal_id)))
+            {
+                found_cmds.insert(pid, command.clone());
+            }
+        }
+        (found_cwds, found_cmds)
+    }
+    /// What holds each pane's tty foreground. Keyed by terminal id, as the real
+    /// one is — it reaches the foreground process group through `tcgetpgrp`, not
+    /// through the pane's own pid.
+    fn get_foreground_cmds(
+        &self,
+        panes: &[(TerminalId, ProcessId)],
+        _post_hook: &Option<String>,
+    ) -> HashMap<TerminalId, Vec<String>> {
+        let foreground_commands = self.shared_ptys.foreground_commands();
+        panes
+            .iter()
+            .filter_map(|(terminal_id, _shell_pid)| {
+                Some((*terminal_id, foreground_commands.get(terminal_id)?.clone()))
+            })
+            .collect()
+    }
+    fn write_to_file(&mut self, buf: String, file: Option<String>) -> Result<()> {
+        if let Some(file) = file {
+            self.fake_filesystem.lock().unwrap().insert(file, buf);
+        }
+        Ok(())
     }
 }
 

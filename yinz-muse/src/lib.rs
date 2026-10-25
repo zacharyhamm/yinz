@@ -11,21 +11,13 @@
 //! pane's record.
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+use yinz_runtime::agent::registry;
+use yinz_runtime::agent::report::ROUTE_ENV;
 use yinz_runtime::errors::prelude::*;
-
-const ROUTE_ENV: &[&str] = &[
-    "YINZ_PANE_REF",
-    "YINZ_PANE_ID",
-    "YINZ_SESSION_NAME",
-    "YINZ_REMOTE_PANE_TOKEN",
-    "YINZ_SOCKET_DIR",
-];
 
 fn directory() -> PathBuf {
     // Fixed at /tmp like the Codex registry: hooks inherit a filtered environment,
@@ -43,48 +35,23 @@ struct Binding {
 }
 
 struct Registration {
-    _dir: tempfile::TempDir,
-    _lease: File,
-    env: HashMap<String, String>,
+    registry: registry::Registration,
 }
 
 impl Registration {
-    fn new(root: &Path, mut env: HashMap<String, String>, launcher_pid: u32) -> Result<Self> {
-        let sockets = std::path::absolute(&*yinz_runtime::consts::YINZ_SOCK_DIR)
-            .context("resolve Muse pane socket directory")?;
-        // YINZ_SOCKET_DIR takes the base; YINZ_SOCK_DIR appends the contract version.
-        env.insert(
-            "YINZ_SOCKET_DIR".into(),
-            sockets
-                .parent()
-                .and_then(Path::to_str)
-                .context("encode Muse pane socket directory")?
-                .into(),
-        );
-        std::fs::create_dir_all(root).context("create Muse pane registry")?;
-        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))
-            .context("protect Muse pane registry")?;
-        let dir = tempfile::Builder::new()
-            .prefix("session-")
-            .tempdir_in(root)
-            .context("create Muse session registration")?;
-        let lease = File::create(dir.path().join("lease")).context("create Muse session lease")?;
-        lease.lock().context("hold Muse session lease")?;
+    fn new(root: &Path, env: HashMap<String, String>, launcher_pid: u32) -> Result<Self> {
+        let registry =
+            registry::Registration::new(root, "session-", env).context("register Muse session")?;
         // The reporting process binds the session, and it never sees this memory.
-        let mut file =
-            tempfile::NamedTempFile::new_in(dir.path()).context("prepare Muse pane environment")?;
-        serde_json::to_writer(&mut file, &env).context("write Muse pane environment")?;
-        file.persist(dir.path().join("env.json"))
+        registry::write_json(&registry.dir.path().join("env.json"), &registry.env)
             .context("publish Muse pane environment")?;
-        // The launcher stays in the hooks' ancestry while waiting for Muse. Publish
-        // it before spawning so even the first hook can find its registration.
-        std::fs::write(dir.path().join("launcher.pid"), launcher_pid.to_string())
-            .context("record Muse launcher process")?;
-        Ok(Self {
-            _dir: dir,
-            _lease: lease,
-            env,
-        })
+        // Publish before spawning so the first hook can find its launcher in its ancestry.
+        std::fs::write(
+            registry.dir.path().join("launcher.pid"),
+            launcher_pid.to_string(),
+        )
+        .context("record Muse launcher process")?;
+        Ok(Self { registry })
     }
 
     /// Announce the pane's startup before its agent can speak for itself.
@@ -116,7 +83,7 @@ impl Registration {
         if let Ok(cwd) = std::env::current_dir() {
             hook["cwd"] = cwd.to_string_lossy().into_owned().into();
         }
-        forward(yinz, &self.env, &hook.to_string())
+        forward(yinz, &self.registry.env, &hook.to_string())
             .context("announce Muse pane startup")
             .non_fatal();
     }
@@ -199,68 +166,8 @@ fn verify_hooks(script: &Path, settings: &Path) -> Result<()> {
 /// to read are skipped rather than failing the report. A dead launcher cannot own a
 /// session, even after an unclean exit, so only leases still held count.
 fn binding_for(root: &Path, session_id: &str) -> Result<Option<Binding>> {
-    let entries = match std::fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e).context("read Muse pane registry"),
-    };
-    // ponytail: scan the open sessions; index by session if thousands of panes make this hot.
-    let mut latest = None;
-    for entry in entries {
-        let entry = entry.context("read Muse session registration")?;
-        let read = || -> Result<Option<_>> {
-            if !lease_held(&entry.path())? {
-                return Ok(None);
-            }
-            let Some((binding, modified)) = read_binding(&entry.path())? else {
-                return Ok(None);
-            };
-            if binding.session_id != session_id {
-                return Ok(None);
-            }
-            Ok(Some((modified, binding)))
-        };
-        // Registrations are created and removed concurrently with hooks.
-        if let Ok(Some(candidate)) = read()
-            && latest.as_ref().is_none_or(|(time, _)| candidate.0 > *time)
-        {
-            latest = Some(candidate);
-        }
-    }
-    Ok(latest.map(|(_, binding)| binding))
-}
-
-fn lease_held(dir: &Path) -> Result<bool> {
-    let lease = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(dir.join("lease"))
-        .context("open Muse session lease")?;
-    match lease.try_lock() {
-        Ok(()) => Ok(false),
-        Err(TryLockError::WouldBlock) => Ok(true),
-        Err(TryLockError::Error(e)) => Err(e).context("check Muse session lease"),
-    }
-}
-
-fn read_binding(dir: &Path) -> Result<Option<(Binding, std::time::SystemTime)>> {
-    let file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(dir.join("binding.json"))
-    {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e).context("open Muse pane binding"),
-    };
-    let metadata = file.metadata().context("inspect Muse pane binding")?;
-    if !metadata.is_file() || metadata.len() > 16 * 1024 {
-        return Ok(None);
-    }
-    let binding: Binding =
-        serde_json::from_reader(file.take(16 * 1024)).context("read Muse pane binding")?;
-    let modified = metadata.modified().context("read Muse pane binding time")?;
-    Ok(Some((binding, modified)))
+    registry::latest_binding(root, |binding: &Binding| binding.session_id == session_id)
+        .context("read Muse pane registry")
 }
 
 /// Bind `session_id` to the live registration `ancestors` passes through.
@@ -286,7 +193,7 @@ fn bind_session(
         let entry = entry.context("read Muse session registration")?;
         let dir = entry.path();
         let matched = (|| -> Result<bool> {
-            if !lease_held(&dir)? {
+            if !registry::lease_held(&dir).context("check Muse session lease")? {
                 return Ok(false);
             }
             let launcher: u32 = std::fs::read_to_string(dir.join("launcher.pid"))
@@ -296,7 +203,9 @@ fn bind_session(
             if launcher == 0 || !ancestors.contains(&launcher) {
                 return Ok(false);
             }
-            if let Some((binding, _)) = read_binding(&dir)? {
+            if let Some((binding, _)) =
+                registry::read_binding::<Binding>(&dir).context("read Muse pane binding")?
+            {
                 if binding.session_id == session_id {
                     return Ok(true);
                 }
@@ -313,10 +222,7 @@ fn bind_session(
                 session_id: session_id.into(),
                 env,
             };
-            let mut file =
-                tempfile::NamedTempFile::new_in(&dir).context("prepare Muse pane binding")?;
-            serde_json::to_writer(&mut file, &binding).context("write Muse pane binding")?;
-            file.persist(dir.join("binding.json"))
+            registry::write_json(&dir.join("binding.json"), &binding)
                 .context("publish Muse pane binding")?;
             Ok(true)
         })();
@@ -394,15 +300,7 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
 /// one to tell, and a hook that fails its agent's run is worse than a report that
 /// never lands.
 pub fn report(yinz: &Path) -> Result<()> {
-    let started = std::time::Instant::now();
-    let trace = std::sync::Arc::new(std::sync::Mutex::new(
-        yinz_runtime::agent::report::ReportTrace::new(started),
-    ));
-    if let Ok(mut trace) = trace.lock() {
-        trace.kind = "muse".to_owned();
-    }
-    yinz_runtime::agent::report::reporting_watchdog(trace.clone())?;
-    let result = (|| {
+    yinz_runtime::agent::report::traced_report("muse", |trace| {
         // Unbounded like the Codex router's: the broadcast cap bounds the
         // normalized event, not the provider's own payload, and a prompt `agent
         // prompt` accepted arrives here whole inside `UserPromptSubmit`.
@@ -439,16 +337,12 @@ pub fn report(yinz: &Path) -> Result<()> {
         let binding = binding_for(&directory(), session_id)?;
         let Some(binding) = binding else {
             if let Ok(trace) = trace.lock() {
-                trace.record("muse_route", started.elapsed(), "unbound");
+                trace.record("muse_route", trace.started.elapsed(), "unbound");
             }
             return Ok(());
         };
         forward(yinz, &binding.env, &prune_for_forward(raw)?)
-    })();
-    if let Ok(trace) = trace.lock() {
-        trace.finish(result.is_ok());
-    }
-    result
+    })
 }
 
 /// The hook as it travels on: whole up to the broadcast cap, pruned above it.
@@ -460,12 +354,7 @@ pub fn report(yinz: &Path) -> Result<()> {
 /// acknowledgement is matched by and the turn identity the completion needs,
 /// and what it forwards still fits the remote report's intake.
 fn prune_for_forward(raw: String) -> Result<String> {
-    if raw.len() <= yinz_types::agent::HOOK_BROADCAST_MAX_BYTES {
-        return Ok(raw);
-    }
-    let (event, json) = yinz_runtime::agent::hooks::parse_hook_event("muse", raw)
-        .context("invalid Muse hook JSON")?;
-    Ok(event.broadcast_json(json))
+    yinz_runtime::agent::hooks::prune_for_forward("muse", raw).context("invalid Muse hook JSON")
 }
 
 /// Hand the hook to the session the binding names, wherever it lives.
@@ -474,22 +363,7 @@ fn prune_for_forward(raw: String) -> Result<String> {
 /// trusted because it came over the transport rather than out of the pane's bytes;
 /// anything else is a local session's socket directory and goes to `action`.
 fn forward(yinz: &Path, env: &HashMap<String, String>, raw: &str) -> Result<()> {
-    let mut report = Command::new(yinz);
-    for key in ROUTE_ENV {
-        report.env_remove(key);
-    }
-    if env
-        .get("YINZ_REMOTE_PANE_TOKEN")
-        .is_some_and(|token| !token.is_empty())
-    {
-        report.args(["--pty-broker", "report", "muse"]);
-    } else {
-        report.args(["action", "agent-report", "--hook-json", "--kind", "muse"]);
-    }
-    let mut child = report
-        .envs(env)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+    let mut child = yinz_runtime::agent::report::forwarding_command(yinz, "muse", env)
         .spawn()
         .context("deliver Muse hook")?;
     child

@@ -4793,7 +4793,6 @@ name = "yinz-muse"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "libc",
  "nix",
  "serde",
  "serde_json",
@@ -5112,7 +5111,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "close_fds",
  "hegeltest",
  "interprocess",
  "libc",

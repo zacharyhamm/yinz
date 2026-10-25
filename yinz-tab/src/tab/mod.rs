@@ -3208,7 +3208,10 @@ impl Tab {
             // Failed initialization may never send geometry; show the diagnostic anyway.
             self.overlay_panes.finish_placement(PaneId::Plugin(pid));
         }
-        if let Some(plugin_pane) = self.get_pane_with_id_mut(PaneId::Plugin(pid)) {
+        if let Some(plugin_pane) = self
+            .get_pane_with_id_mut(PaneId::Plugin(pid))
+            .and_then(|pane| pane.plugin_control_mut())
+        {
             plugin_pane.update_loading_indication(loading_indication);
         }
     }
@@ -3227,12 +3230,18 @@ impl Tab {
         pid: PluginId,
         loading_indication: LoadingIndication,
     ) {
-        if let Some(plugin_pane) = self.get_pane_with_id_mut(PaneId::Plugin(pid)) {
+        if let Some(plugin_pane) = self
+            .get_pane_with_id_mut(PaneId::Plugin(pid))
+            .and_then(|pane| pane.plugin_control_mut())
+        {
             plugin_pane.start_loading_indication(loading_indication);
         }
     }
     pub fn progress_plugin_loading_offset(&mut self, pid: PluginId) {
-        if let Some(plugin_pane) = self.get_pane_with_id_mut(PaneId::Plugin(pid)) {
+        if let Some(plugin_pane) = self
+            .get_pane_with_id_mut(PaneId::Plugin(pid))
+            .and_then(|pane| pane.plugin_control_mut())
+        {
             plugin_pane.progress_animation_offset();
         }
     }

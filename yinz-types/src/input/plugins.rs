@@ -1,7 +1,42 @@
-use super::layout::RunPlugin;
+use super::layout::{RunPlugin, RunPluginLocation, RunPluginOrAlias};
 pub use crate::data::PluginTag;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+/// Presentation policy for a resolved plugin, independent of its launch alias.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PluginPresentation {
+    pub tab_bar: bool,
+    pub opening_ripple: bool,
+}
+
+impl RunPluginOrAlias {
+    pub fn presentation(&self) -> PluginPresentation {
+        let plugin = match self {
+            Self::RunPlugin(plugin) => Some(plugin),
+            Self::Alias(alias) => alias.run_plugin.as_ref(),
+        };
+        let Some(RunPlugin {
+            location: RunPluginLocation::Yinz(tag),
+            ..
+        }) = plugin
+        else {
+            return PluginPresentation::default();
+        };
+        match tag.as_str() {
+            "tab-bar" => PluginPresentation {
+                tab_bar: true,
+                ..Default::default()
+            },
+            "agents" => PluginPresentation {
+                opening_ripple: true,
+                ..Default::default()
+            },
+            _ => PluginPresentation::default(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 pub struct PluginAliases {
     pub aliases: BTreeMap<String, RunPlugin>,
@@ -38,3 +73,7 @@ pub enum PluginsConfigError {
     #[error("Lua plugins are no longer supported ({0}); migrate to Steel Scheme")]
     UnsupportedLuaPlugin(String),
 }
+
+#[cfg(test)]
+#[path = "unit/plugins.rs"]
+mod tests;

@@ -811,7 +811,7 @@ fn codex_palette_observes_and_retains_local_forwarded_and_cached_color_replies()
                     .get_pane_with_id_mut(pane_id)
                     .unwrap();
                 pane.handle_pty_bytes(query_bytes.to_vec());
-                let queries = pane.drain_forwarded_queries();
+                let queries = pane.terminal_io_mut().unwrap().drain_forwarded_queries();
                 assert_eq!(queries.len(), 1);
                 let token = screen.forward_host_query(pane_id, queries[0].clone());
                 screen
@@ -861,6 +861,10 @@ fn codex_palette_observes_and_retains_local_forwarded_and_cached_color_replies()
             .collect();
         assert_eq!(updates.len(), 2);
         assert_eq!(updates[1].snapshot.as_ref(), Some(snapshot));
-        assert!(pane.drain_agent_theme_updates().is_empty());
+        assert!(pane
+            .terminal_io_mut()
+            .unwrap()
+            .drain_agent_theme_updates()
+            .is_empty());
     }
 }

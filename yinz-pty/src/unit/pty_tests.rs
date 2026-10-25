@@ -8,6 +8,10 @@ use super::warp::READER_SHUTDOWN_TIMEOUT;
 use crate::pty_host::client::ReleasedPane;
 use crate::ServerInstruction;
 use std::time::Duration;
+use yinz_bus::os_input_output::{
+    ClientTransport, RemotePanes, ServerEnvironment, TerminalIo, TerminalProcesses,
+    TerminalSupervision,
+};
 use yinz_types::data::GetPaneCwdResponse;
 use yinz_types::data::GetPaneGitProbeResponse;
 use yinz_types::data::GetPanePidResponse;
@@ -29,7 +33,6 @@ const TERMINAL_41: yinz_types::internal_ids::TerminalId =
     yinz_types::internal_ids::TerminalId::new(41);
 
 use super::*;
-use crate::os_input_output::ServerOsApi;
 use crate::plugins::PluginInstruction;
 use crate::pty_host::remote::conn::RemoteGitProbe;
 use crate::pty_host::remote::RemoteStatus;
@@ -225,7 +228,7 @@ impl MockOsApi {
     }
 }
 
-impl ServerOsApi for MockOsApi {
+impl TerminalIo for MockOsApi {
     fn set_terminal_size_using_terminal_id(
         &self,
         _: TerminalId,
@@ -236,6 +239,15 @@ impl ServerOsApi for MockOsApi {
     ) -> anyhow::Result<()> {
         Ok(())
     }
+    fn write_to_tty_stdin(&self, _: TerminalId, buf: &[u8]) -> anyhow::Result<usize> {
+        Ok(buf.len())
+    }
+    fn tcdrain(&self, _: TerminalId) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+impl TerminalProcesses for MockOsApi {
     fn spawn_terminal(
         &self,
         _: TerminalAction,
@@ -339,12 +351,6 @@ impl ServerOsApi for MockOsApi {
             .push(resolved.terminal_id);
         Ok((Box::new(crate::os_input_output::NullAsyncReader), None))
     }
-    fn write_to_tty_stdin(&self, _: TerminalId, buf: &[u8]) -> anyhow::Result<usize> {
-        Ok(buf.len())
-    }
-    fn tcdrain(&self, _: TerminalId) -> anyhow::Result<()> {
-        Ok(())
-    }
     fn kill(&self, pid: ProcessId) -> anyhow::Result<()> {
         self.local_signals.lock().unwrap().push((pid, "SIGHUP"));
         Ok(())
@@ -361,6 +367,87 @@ impl ServerOsApi for MockOsApi {
         self.local_signals.lock().unwrap().push((pid, "SIGCONT"));
         Ok(())
     }
+    fn re_run_command_in_terminal(
+        &self,
+        terminal_id: TerminalId,
+        run_command: RunCommand,
+        _: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> anyhow::Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
+        let next_host = run_command.target.display();
+        self.rerun_commands.lock().unwrap().push(run_command);
+        if self.rerun_failures.lock().unwrap().contains(&terminal_id) {
+            self.remote_panes.lock().unwrap().remove(&terminal_id);
+            self.remote_hosts.lock().unwrap().remove(&terminal_id);
+            return Err(anyhow::anyhow!("replacement failed"));
+        }
+        match next_host {
+            Some(host) => {
+                self.remote_panes.lock().unwrap().insert(terminal_id);
+                self.remote_hosts.lock().unwrap().insert(terminal_id, host);
+            },
+            None => {
+                self.remote_panes.lock().unwrap().remove(&terminal_id);
+                self.remote_hosts.lock().unwrap().remove(&terminal_id);
+            },
+        }
+        Ok((Box::new(crate::os_input_output::NullAsyncReader), None))
+    }
+    fn clear_terminal_id(&self, terminal_id: TerminalId) -> anyhow::Result<()> {
+        self.cleared_terminal_ids.lock().unwrap().push(terminal_id);
+        (!self.clear_failures.lock().unwrap().contains(&terminal_id))
+            .then_some(())
+            .context("injected clear failure")
+    }
+}
+
+impl TerminalSupervision for MockOsApi {
+    fn adopt_terminal(
+        &self,
+        _: &std::path::Path,
+        _: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<crate::os_input_output::AdoptedTerminal> {
+        Ok(crate::os_input_output::AdoptedTerminal {
+            terminal_id: TerminalId::new(7),
+            reader: Box::new(crate::os_input_output::NullAsyncReader),
+            child_pid: Some(ProcessId::new(4242)),
+            cmd: self.adopted_command.lock().unwrap().take().unwrap(),
+            buffered: vec![],
+            child_exit_status: None,
+        })
+    }
+    fn check_terminal_can_be_warped(&self, terminal_id: TerminalId) -> anyhow::Result<()> {
+        match self.warp_refusals.lock().unwrap().get(&terminal_id) {
+            Some(why) => Err(anyhow::anyhow!("{why}")),
+            None => Ok(()),
+        }
+    }
+    fn release_terminal_for_warp(
+        &self,
+        terminal_id: TerminalId,
+        budget: std::time::Duration,
+    ) -> anyhow::Result<ReleasedPane> {
+        self.release_attempts.lock().unwrap().push(terminal_id);
+        self.release_budgets.lock().unwrap().push(budget);
+        let delay = *self.release_delay.lock().unwrap();
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
+        if self.unreleasable.lock().unwrap().contains(&terminal_id) {
+            return Err(anyhow::anyhow!(
+                "the supervisor did not confirm the handoff"
+            ));
+        }
+        Ok(ReleasedPane::Local(
+            crate::pty_host::client::ReleasedPtyHost {
+                host_id: SupervisorId::new(format!("host-{terminal_id}")),
+                host_pid: ProcessId::new(1),
+                control_socket: Some(PathBuf::from("/tmp/warp-test.sock")),
+            },
+        ))
+    }
+}
+
+impl RemotePanes for MockOsApi {
     fn is_remote_pane(&self, terminal_id: TerminalId) -> bool {
         self.remote_panes.lock().unwrap().contains(&terminal_id)
     }
@@ -402,9 +489,9 @@ impl ServerOsApi for MockOsApi {
             .map(|probe| Some(probe).filter(|probe| probe.cwd == cwd))
             .ok_or_else(|| "pane is not remote".into())
     }
-    fn box_clone(&self) -> Box<dyn ServerOsApi> {
-        Box::new((*self).clone())
-    }
+}
+
+impl ClientTransport for MockOsApi {
     fn send_to_client(&self, _: ClientId, _: ServerToClientMsg) -> anyhow::Result<()> {
         Ok(())
     }
@@ -418,6 +505,9 @@ impl ServerOsApi for MockOsApi {
     fn remove_client(&mut self, _: ClientId) -> anyhow::Result<()> {
         Ok(())
     }
+}
+
+impl ServerEnvironment for MockOsApi {
     fn load_palette(&self) -> Palette {
         Palette::default()
     }
@@ -460,82 +550,6 @@ impl ServerOsApi for MockOsApi {
     }
     fn write_to_file(&mut self, _: String, _: Option<String>) -> anyhow::Result<()> {
         Ok(())
-    }
-    fn re_run_command_in_terminal(
-        &self,
-        terminal_id: TerminalId,
-        run_command: RunCommand,
-        _: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> anyhow::Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
-        let next_host = run_command.target.display();
-        self.rerun_commands.lock().unwrap().push(run_command);
-        if self.rerun_failures.lock().unwrap().contains(&terminal_id) {
-            self.remote_panes.lock().unwrap().remove(&terminal_id);
-            self.remote_hosts.lock().unwrap().remove(&terminal_id);
-            return Err(anyhow::anyhow!("replacement failed"));
-        }
-        match next_host {
-            Some(host) => {
-                self.remote_panes.lock().unwrap().insert(terminal_id);
-                self.remote_hosts.lock().unwrap().insert(terminal_id, host);
-            },
-            None => {
-                self.remote_panes.lock().unwrap().remove(&terminal_id);
-                self.remote_hosts.lock().unwrap().remove(&terminal_id);
-            },
-        }
-        Ok((Box::new(crate::os_input_output::NullAsyncReader), None))
-    }
-    fn adopt_terminal(
-        &self,
-        _: &std::path::Path,
-        _: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<crate::os_input_output::AdoptedTerminal> {
-        Ok(crate::os_input_output::AdoptedTerminal {
-            terminal_id: TerminalId::new(7),
-            reader: Box::new(crate::os_input_output::NullAsyncReader),
-            child_pid: Some(ProcessId::new(4242)),
-            cmd: self.adopted_command.lock().unwrap().take().unwrap(),
-            buffered: vec![],
-            child_exit_status: None,
-        })
-    }
-
-    fn clear_terminal_id(&self, terminal_id: TerminalId) -> anyhow::Result<()> {
-        self.cleared_terminal_ids.lock().unwrap().push(terminal_id);
-        (!self.clear_failures.lock().unwrap().contains(&terminal_id))
-            .then_some(())
-            .context("injected clear failure")
-    }
-    fn check_terminal_can_be_warped(&self, terminal_id: TerminalId) -> anyhow::Result<()> {
-        match self.warp_refusals.lock().unwrap().get(&terminal_id) {
-            Some(why) => Err(anyhow::anyhow!("{why}")),
-            None => Ok(()),
-        }
-    }
-    fn release_terminal_for_warp(
-        &self,
-        terminal_id: TerminalId,
-        budget: std::time::Duration,
-    ) -> anyhow::Result<ReleasedPane> {
-        self.release_attempts.lock().unwrap().push(terminal_id);
-        self.release_budgets.lock().unwrap().push(budget);
-        let delay = *self.release_delay.lock().unwrap();
-        if !delay.is_zero() {
-            std::thread::sleep(delay);
-        }
-        if self.unreleasable.lock().unwrap().contains(&terminal_id) {
-            return Err(anyhow::anyhow!(
-                "the supervisor did not confirm the handoff"
-            ));
-        }
-        Ok(ReleasedPane::Local(
-            crate::pty_host::client::ReleasedPtyHost {
-                host_id: SupervisorId::new(format!("host-{terminal_id}")),
-                host_pid: ProcessId::new(1),
-                control_socket: Some(PathBuf::from("/tmp/warp-test.sock")),
-            },
-        ))
     }
 }
 

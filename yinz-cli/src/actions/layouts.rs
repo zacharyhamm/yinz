@@ -1,10 +1,10 @@
 //! Layout loading and validation for tab creation and session switching.
-use miette::Report;
+use super::parse_pane_id;
+use miette::{NamedSource, Report};
 use std::path::PathBuf;
-use std::str::FromStr;
 use yinz_config::config::{Config, ConfigError};
 use yinz_runtime::home::{find_default_config_dir, get_layout_dir};
-use yinz_types::data::{CommandOrPlugin, LayoutInfo, PaneId, UnblockCondition};
+use yinz_types::data::{CommandOrPlugin, LayoutInfo, UnblockCondition};
 use yinz_types::input::actions::Action;
 use yinz_types::input::command::RunCommandAction;
 use yinz_types::input::layout::{PluginAlias, RunPlugin, RunPluginOrAlias, TabLayoutInfo};
@@ -97,13 +97,14 @@ pub(super) fn new_tab(
         let (path_to_raw_layout, raw_layout, swap_layouts) =
             yinz_config::layout::stringified_from_path_or_default(Some(&layout_path), layout_dir)
                 .map_err(|e| format!("Failed to load layout: {}", e))?;
+        let parsed_as = path_to_raw_layout.clone();
         yinz_config::layout::from_str(
             &raw_layout,
             path_to_raw_layout,
             swap_layouts.as_ref().map(|(f, p)| (f.as_str(), p.as_str())),
             cwd,
         )
-        .map_err(|e| layout_error_report(e, Some((layout_source_name, raw_layout))))?
+        .map_err(|e| layout_error_report(e, Some((&parsed_as, layout_source_name))))?
     } else {
         let should_change_focus_to_new_tab = !no_focus;
         return Ok(vec![Action::NewTab {
@@ -179,15 +180,20 @@ pub(super) fn new_tab(
 /// A layout that failed to parse, as the CLI prints it.
 ///
 /// `from_kdl` has already turned KDL deserialization errors into `KdlError`s that carry the
-/// layout's source and the hints for the usual mistakes; `source` only renames that source to
-/// what the user typed.
-fn layout_error_report(error: ConfigError, source: Option<(String, String)>) -> String {
+/// failing file's source and the hints for the usual mistakes. `rename` maps the name the base
+/// layout was parsed as to what the user typed; a swap layout's error keeps its own file.
+fn layout_error_report(error: ConfigError, rename: Option<(&str, String)>) -> String {
     match error {
-        ConfigError::KdlError(kdl_error) => {
-            let kdl_error = match source {
-                Some((name, raw_layout)) => kdl_error.add_src(name, raw_layout),
-                None => kdl_error,
-            };
+        ConfigError::KdlError(mut kdl_error) => {
+            if let Some((parsed_as, typed)) = rename
+                && let Some(src) = kdl_error.src.take()
+            {
+                kdl_error.src = Some(if src.name() == parsed_as {
+                    NamedSource::new(typed, src.inner().clone())
+                } else {
+                    src
+                });
+            }
             let report: Report = kdl_error.into();
             format!("{:?}", report)
         },
@@ -227,13 +233,14 @@ pub(super) fn override_layout(
     };
 
     // Parse KDL layout
+    let parsed_as = path_to_raw_layout.clone();
     let layout = yinz_config::layout::from_str(
         &raw_layout,
         path_to_raw_layout,
         swap_layouts.as_ref().map(|(f, p)| (f.as_str(), p.as_str())),
         None, // cwd
     )
-    .map_err(|e| layout_error_report(e, Some((layout_source_name, raw_layout))))?;
+    .map_err(|e| layout_error_report(e, Some((&parsed_as, layout_source_name))))?;
 
     // Convert all tabs to Vec<TabLayoutInfo>
     let tabs: Vec<TabLayoutInfo> = layout
@@ -284,18 +291,7 @@ pub(super) fn switch_session(
     get_current_dir: &dyn Fn() -> PathBuf,
     config: Option<Config>,
 ) -> Result<Vec<Action>, String> {
-    let pane_id = match pane_id {
-        Some(stringified_pane_id) => match PaneId::from_str(&stringified_pane_id) {
-            Ok(pane_id) => Some(pane_id),
-            Err(_e) => {
-                return Err(format!(
-                        "Malformed pane id: {}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)",
-                        stringified_pane_id
-                    ));
-            },
-        },
-        None => None,
-    };
+    let pane_id = pane_id.as_deref().map(parse_pane_id).transpose()?;
 
     let cwd = cwd.map(|cwd| {
         let current_dir = get_current_dir();

@@ -1,5 +1,5 @@
 use crate::global_async_runtime::get_tokio_runtime as async_runtime;
-use crate::os_input_output::{AsyncReader, NullAsyncReader, ServerOsApi};
+use crate::os_input_output::{AsyncReader, NullAsyncReader, TerminalProcesses};
 use crate::plugins::{PluginId, PluginInstruction};
 use crate::pty_host::client::ChildRunState;
 use crate::pty_host::remote::protocol::ChildSignal;
@@ -322,7 +322,7 @@ fn send_remote_status(
 
 /// Resolve where one command runs and start it there, off the pty thread.
 fn spawn_remote_terminal(
-    os_input: &dyn ServerOsApi,
+    os_input: &dyn TerminalProcesses,
     senders: &ThreadSenders,
     pending: &PendingRemoteSpawn,
     default_editor: Option<PathBuf>,
@@ -362,7 +362,7 @@ fn spawn_remote_terminal(
 /// Do a spawn job's off-thread work. Returns what to hand back and the ids of
 /// every terminal the job reserved, so a handback that fails can close them.
 fn run_spawn_job(
-    os_input: &dyn ServerOsApi,
+    os_input: &dyn TerminalProcesses,
     senders: &ThreadSenders,
     job: SpawnJob,
     default_editor: Option<PathBuf>,

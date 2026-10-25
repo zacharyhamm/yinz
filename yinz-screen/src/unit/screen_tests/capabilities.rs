@@ -59,7 +59,10 @@ fn kitty_query_replies_ok_when_capable_client_connected() {
         .unwrap();
     active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec());
     assert_eq!(
-        active_pane.drain_messages_to_pty(),
+        active_pane
+            .terminal_io_mut()
+            .unwrap()
+            .drain_messages_to_pty(),
         vec![b"\x1b_Gi=31;OK\x1b\\".to_vec()]
     );
 }
@@ -85,7 +88,10 @@ fn kitty_query_replies_enotsupported_when_no_capable_client() {
         .get_active_pane_mut(crate::ClientId::new(1))
         .unwrap();
     active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec());
-    let replies = active_pane.drain_messages_to_pty();
+    let replies = active_pane
+        .terminal_io_mut()
+        .unwrap()
+        .drain_messages_to_pty();
     assert_eq!(replies.len(), 1);
     let reply = String::from_utf8(replies[0].clone()).unwrap();
     assert!(reply.starts_with("\x1b_Gi=31;ENOTSUPPORTED"));
@@ -115,7 +121,11 @@ fn kitty_query_is_ignored_when_the_protocol_is_disabled_in_the_config() {
         .unwrap();
     active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec());
     assert!(
-        active_pane.drain_messages_to_pty().is_empty(),
+        active_pane
+            .terminal_io_mut()
+            .unwrap()
+            .drain_messages_to_pty()
+            .is_empty(),
         "a disabled protocol must not reply to queries at all"
     );
 }
@@ -137,7 +147,10 @@ fn kitty_support_recomputed_on_client_detach() {
         .get_active_pane_mut(crate::ClientId::new(1))
         .unwrap();
     active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec());
-    let replies = active_pane.drain_messages_to_pty();
+    let replies = active_pane
+        .terminal_io_mut()
+        .unwrap()
+        .drain_messages_to_pty();
     assert_eq!(replies.len(), 1);
     let reply = String::from_utf8(replies[0].clone()).unwrap();
     assert!(reply.starts_with("\x1b_Gi=31;ENOTSUPPORTED"));
@@ -242,7 +255,10 @@ fn a_capability_reply_for_a_departed_client_is_ignored() {
         .get_active_pane_mut(crate::ClientId::new(1))
         .unwrap();
     active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec());
-    let replies = active_pane.drain_messages_to_pty();
+    let replies = active_pane
+        .terminal_io_mut()
+        .unwrap()
+        .drain_messages_to_pty();
     assert_eq!(replies.len(), 1);
     let reply = String::from_utf8(replies[0].clone()).unwrap();
     assert!(reply.starts_with("\x1b_Gi=31;ENOTSUPPORTED"), "{reply:?}");
@@ -316,7 +332,10 @@ fn primary_da_advertises_sixel_when_capable_client_connected() {
         .unwrap();
     active_pane.handle_pty_bytes(b"\x1b[c".to_vec());
     assert_eq!(
-        active_pane.drain_messages_to_pty(),
+        active_pane
+            .terminal_io_mut()
+            .unwrap()
+            .drain_messages_to_pty(),
         vec![b"\x1b[?62;4;52c".to_vec()]
     );
 }
@@ -343,7 +362,10 @@ fn primary_da_omits_sixel_when_no_capable_client() {
         .unwrap();
     active_pane.handle_pty_bytes(b"\x1b[c".to_vec());
     assert_eq!(
-        active_pane.drain_messages_to_pty(),
+        active_pane
+            .terminal_io_mut()
+            .unwrap()
+            .drain_messages_to_pty(),
         vec![b"\x1b[?62;52c".to_vec()]
     );
 }
@@ -366,7 +388,10 @@ fn sixel_support_recomputed_on_client_detach() {
         .unwrap();
     active_pane.handle_pty_bytes(b"\x1b[c".to_vec());
     assert_eq!(
-        active_pane.drain_messages_to_pty(),
+        active_pane
+            .terminal_io_mut()
+            .unwrap()
+            .drain_messages_to_pty(),
         vec![b"\x1b[?62;52c".to_vec()]
     );
 }

@@ -866,7 +866,76 @@ fn test_new_tab_with_invalid_layout_string() {
     };
     let result =
         crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-    assert!(result.is_err());
+    let error = result.unwrap_err();
+    assert!(error.contains("layout-string"), "{error}");
+    assert!(error.contains("invalid { kdl"), "{error}");
+}
+
+#[test]
+fn layout_errors_are_reported_against_the_file_that_failed() {
+    let root = tempfile::tempdir().unwrap();
+    let layout = root.path().join("broken.kdl");
+    let new_tab = || CliAction::NewTab {
+        name: None,
+        layout: Some(layout.clone()),
+        layout_string: None,
+        layout_dir: None,
+        cwd: None,
+        initial_command: vec![],
+        initial_plugin: None,
+        close_on_exit: Default::default(),
+        start_suspended: Default::default(),
+        block_until_exit: false,
+        block_until_exit_success: false,
+        block_until_exit_failure: false,
+        no_focus: false,
+    };
+    let override_layout = || CliAction::OverrideLayout {
+        layout: Some(layout.clone()),
+        layout_string: None,
+        layout_dir: None,
+        retain_existing_terminal_panes: false,
+        retain_existing_plugin_panes: false,
+        apply_only_to_active_tab: false,
+    };
+    let switch_session = || CliAction::SwitchSession {
+        name: "target".into(),
+        tab_position: None,
+        pane_id: None,
+        layout: Some(layout.clone()),
+        layout_string: None,
+        layout_dir: None,
+        cwd: None,
+    };
+    let report = |action| {
+        crate::actions::actions_from_cli(action, Box::new(|| PathBuf::from("/tmp")), None)
+            .unwrap_err()
+    };
+    std::fs::write(&layout, "layout {\n    pane\n}\n").unwrap();
+    std::fs::write(
+        root.path().join("broken.swap.kdl"),
+        "swap_tiled_layout {\n    invalid_swap { kdl\n",
+    )
+    .unwrap();
+    for error in [
+        report(new_tab()),
+        report(override_layout()),
+        report(switch_session()),
+    ] {
+        assert!(error.contains("broken.swap.kdl"), "{error}");
+        assert!(error.contains("invalid_swap { kdl"), "{error}");
+    }
+    std::fs::write(&layout, "layout {\n    invalid_base { kdl\n").unwrap();
+    std::fs::remove_file(root.path().join("broken.swap.kdl")).unwrap();
+    for error in [
+        report(new_tab()),
+        report(override_layout()),
+        report(switch_session()),
+    ] {
+        assert!(error.contains("broken.kdl"), "{error}");
+        assert!(!error.contains("broken.swap.kdl"), "{error}");
+        assert!(error.contains("invalid_base { kdl"), "{error}");
+    }
 }
 
 #[test]
@@ -890,6 +959,25 @@ fn test_override_layout_with_layout_string() {
         },
         _ => panic!("Expected OverrideLayout action"),
     }
+}
+
+#[test]
+fn test_override_layout_with_invalid_layout_string() {
+    let error = crate::actions::actions_from_cli(
+        CliAction::OverrideLayout {
+            layout: None,
+            layout_string: Some("invalid { kdl".into()),
+            layout_dir: None,
+            retain_existing_terminal_panes: false,
+            retain_existing_plugin_panes: false,
+            apply_only_to_active_tab: false,
+        },
+        Box::new(|| PathBuf::from("/tmp")),
+        None,
+    )
+    .unwrap_err();
+    assert!(error.contains("layout-string"), "{error}");
+    assert!(error.contains("invalid { kdl"), "{error}");
 }
 
 #[test]
@@ -932,7 +1020,9 @@ fn test_switch_session_with_invalid_layout_string() {
     };
     let result =
         crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
-    assert!(result.is_err());
+    let error = result.unwrap_err();
+    assert!(error.contains("layout-string"), "{error}");
+    assert!(error.contains("invalid { kdl"), "{error}");
 }
 
 /// A remote pane asked for with no command is the far machine's login
@@ -2007,11 +2097,6 @@ fn test_new_pane_plugin_floating_with_tab_id() {
     }
 }
 
-// 35 with_pane_id/without_pane_id example tests were removed here. Each
-// asserted only which Action variant came out and which pane id it
-// carried - both now checked for all 26 swept variants on every run by
-// props::each_cli_action_maps_to_its_expected_action_variant.
-
 mod props {
     use super::*;
     use hegel::generators;
@@ -2021,28 +2106,13 @@ mod props {
         Box::new(|| PathBuf::from("/tmp"))
     }
 
-    /// Every `CliAction` carrying an optional `--pane-id`. All the other
+    /// Every `CliAction` carrying a single pane id. All the other
     /// fields are pinned, so the pane id is the only thing that varies
     /// between two calls with different `which` held constant.
-    ///
-    /// Six of the `CliAction`s that mention a pane id are deliberately
-    /// absent, and keep their own example tests:
-    ///
-    /// * `FocusPaneId`, `ChangeFloatingPaneCoordinates`,
-    ///   `TogglePaneBorderless` and `SetPaneBorderless` take a required
-    ///   `String`, so they have no "without pane id" form to compare to.
-    /// * `NewPane`'s `pane_id` is the pane to *replace* and is only legal
-    ///   alongside `in_place`, so it is not the same parameter at all.
-    /// * `SwitchSession`'s names a pane in the session being switched to.
-    const PANE_ID_ACTIONS: usize = 26;
+    const PANE_ID_ACTIONS: usize = 34;
 
-    /// The prefix of `cli_action_with_pane_id` whose no-`--pane-id` form is
-    /// actually pane-id-free. `SetPaneColor` - the last index, and the only
-    /// one outside this prefix - requires the caller pane to be resolved
-    /// before parsing instead of acting on the focused pane. Everything that
-    /// builds `pane_id: None` stops here; the with-a-pane-id sweeps still
-    /// run to `PANE_ID_ACTIONS`.
-    const PANE_ID_OPTIONAL_ACTIONS: usize = PANE_ID_ACTIONS - 1;
+    /// The prefix whose no-`--pane-id` form is valid without a resolved caller pane.
+    const PANE_ID_OPTIONAL_ACTIONS: usize = 28;
 
     fn cli_action_with_pane_id(which: usize, pane_id: Option<String>) -> CliAction {
         match which {
@@ -2101,11 +2171,70 @@ mod props {
             },
             23 => CliAction::UndoRenamePane { pane_id },
             24 => CliAction::TogglePanePinned { pane_id },
-            25 => CliAction::SetPaneColor {
+            25 => {
+                let mut action = remote_new_pane(vec![], None);
+                if let CliAction::NewPane {
+                    remote_host,
+                    in_place,
+                    pane_id: target,
+                    ..
+                } = &mut action
+                {
+                    *remote_host = None;
+                    *in_place = true;
+                    *target = pane_id;
+                }
+                action
+            },
+            26 => CliAction::SwitchSession {
+                name: "target".into(),
+                tab_position: None,
+                pane_id,
+                layout: None,
+                layout_string: None,
+                layout_dir: None,
+                cwd: None,
+            },
+            27 => CliAction::WarpPane {
+                to_session: "target".into(),
+                pane_id,
+                focused_tab: true,
+                floating: false,
+            },
+            28 => CliAction::SetPaneColor {
                 pane_id,
                 fg: Some("red".to_owned()),
                 bg: Some("blue".to_owned()),
                 reset: false,
+            },
+            29 => CliAction::AgentReport {
+                pane_id,
+                kind: None,
+                state: None,
+                detail: None,
+                cwd: None,
+                hook_json: false,
+                clear: true,
+                run_id: None,
+            },
+            30 => CliAction::FocusPaneId {
+                pane_id: pane_id.unwrap(),
+            },
+            31 => CliAction::ChangeFloatingPaneCoordinates {
+                pane_id: pane_id.unwrap(),
+                x: Some("10".into()),
+                y: None,
+                width: None,
+                height: None,
+                pinned: None,
+                borderless: None,
+            },
+            32 => CliAction::TogglePaneBorderless {
+                pane_id: pane_id.unwrap(),
+            },
+            33 => CliAction::SetPaneBorderless {
+                pane_id: pane_id.unwrap(),
+                borderless: true,
             },
             other => unreachable!("no CliAction at index {}", other),
         }
@@ -2113,8 +2242,7 @@ mod props {
 
     /// The `Action` each indexed `CliAction` must produce, as
     /// `(with a pane id, without one)`. The second element is unused past
-    /// `PANE_ID_OPTIONAL_ACTIONS` - `SetPaneColor` has no pane-id-free
-    /// form - and is left empty there.
+    /// `PANE_ID_OPTIONAL_ACTIONS` and is left empty there.
     ///
     /// The relational properties below pin that the pane id reaches the
     /// action; this pins *which* action, which is the other half of what
@@ -2153,7 +2281,15 @@ mod props {
         ("RenamePaneByPaneId", "RenamePaneByPaneId"),
         ("UndoRenamePaneByPaneId", "UndoRenamePane"),
         ("TogglePanePinnedByPaneId", "TogglePanePinned"),
+        ("NewInPlacePane", "NewInPlacePane"),
+        ("SwitchSession", "SwitchSession"),
+        ("WarpPane", "WarpPane"),
         ("SetPaneColor", ""),
+        ("SetPaneAgent", ""),
+        ("FocusPaneByPaneId", ""),
+        ("ChangeFloatingPaneCoordinates", ""),
+        ("TogglePaneBorderless", ""),
+        ("SetPaneBorderless", ""),
     ];
 
     /// The variant name at the head of an `Action`'s `Debug` rendering.
@@ -2351,26 +2487,193 @@ mod props {
 
     /// Anything `PaneId::from_str` rejects must come back as an `Err` from
     /// every one of these variants - never a panic, and never a silently
-    /// accepted action. The "Malformed pane id" branch is written out ~15
-    /// times in `actions_from_cli`; this is what checks they all fire.
+    /// accepted action. Every caller must return the same diagnostic.
     #[hegel::test]
     fn a_malformed_pane_id_is_always_an_error(tc: hegel::TestCase) {
         let spelling = tc.draw(generators::text());
         tc.assume(PaneId::from_str(&spelling).is_err());
+        assert_pane_id_error(&spelling);
+    }
 
+    fn assert_pane_id_error(spelling: &str) {
+        let expected = format!(
+            "Malformed pane id: {spelling}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
+        );
         for which in 0..PANE_ID_ACTIONS {
             let result = crate::actions::actions_from_cli(
-                cli_action_with_pane_id(which, Some(spelling.clone())),
+                cli_action_with_pane_id(which, Some(spelling.to_owned())),
                 cwd(),
                 None,
             );
-            assert!(
-                result.is_err(),
-                "action {} accepted malformed pane id {:?} as {:?}",
-                which,
-                spelling,
-                result
+            assert_eq!(
+                result.unwrap_err(),
+                expected,
+                "action {which} with pane id {spelling:?}"
             );
         }
+    }
+
+    #[test]
+    fn malformed_and_overflowing_pane_ids_have_consistent_errors() {
+        for spelling in [
+            "",
+            "-1",
+            " 1",
+            "1 ",
+            "1 2",
+            "terminal_",
+            "plugin_a",
+            "Terminal_1",
+            "4294967296",
+            "terminal_4294967296",
+            "plugin_4294967296",
+        ] {
+            assert_pane_id_error(spelling);
+        }
+    }
+
+    #[test]
+    fn pane_id_boundaries_and_numeric_spellings_are_preserved() {
+        for (prefix, plugin) in [("", false), ("terminal_", false), ("plugin_", true)] {
+            for (number, id) in [("0", 0), ("+001", 1), ("4294967295", u32::MAX)] {
+                let spelling = format!("{prefix}{number}");
+                let expected = if plugin {
+                    PaneId::Plugin(yinz_types::internal_ids::PluginId::new(id))
+                } else {
+                    PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(id))
+                };
+                assert_eq!(parse_pane_id(&spelling).unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn send_keys_preserves_key_and_pane_validation_order() {
+        let send = |keys: &[&str], pane_id: Option<&str>| {
+            actions_from_cli(
+                CliAction::SendKeys {
+                    keys: keys.iter().map(|key| (*key).to_owned()).collect(),
+                    pane_id: pane_id.map(str::to_owned),
+                },
+                cwd(),
+                None,
+            )
+        };
+        let key_error = send(&["Ctrl-a"], None).unwrap_err();
+        assert!(key_error.starts_with("Invalid key at position 1:"));
+        assert_eq!(send(&["Ctrl-a"], Some("bad")).unwrap_err(), key_error);
+        assert_eq!(
+            send(&["Enter", "Ctrl-a"], Some("bad")).unwrap_err(),
+            parse_pane_id("bad").unwrap_err(),
+        );
+        assert_eq!(send(&[], Some("bad")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn pane_validation_precedence_is_preserved() {
+        let report = |action| {
+            actions_from_cli(action, Box::new(|| panic!("cwd must not be read")), None).unwrap_err()
+        };
+        let pane_error = parse_pane_id("bad").unwrap_err();
+        let mut coordinates = cli_action_with_pane_id(31, Some("bad".into()));
+        if let CliAction::ChangeFloatingPaneCoordinates { x, .. } = &mut coordinates {
+            *x = Some("invalid".into());
+        }
+        assert_eq!(
+            report(coordinates),
+            "Failed to parse floating pane coordinates"
+        );
+
+        let mut new_pane = cli_action_with_pane_id(25, Some("bad".into()));
+        if let CliAction::NewPane {
+            configuration,
+            configuration_json,
+            remote_host,
+            ..
+        } = &mut new_pane
+        {
+            *configuration = Some(Default::default());
+            *configuration_json = Some(Default::default());
+            *remote_host = Some(" ".into());
+        }
+        assert_eq!(
+            report(new_pane.clone()),
+            "legacy configuration and --configuration-json are mutually exclusive"
+        );
+        if let CliAction::NewPane {
+            configuration_json, ..
+        } = &mut new_pane
+        {
+            *configuration_json = None;
+        }
+        assert_eq!(report(new_pane.clone()), "remote_host must not be empty");
+        if let CliAction::NewPane { remote_host, .. } = &mut new_pane {
+            *remote_host = None;
+        }
+        assert_eq!(report(new_pane), pane_error);
+
+        let mut switch = cli_action_with_pane_id(26, Some("bad".into()));
+        if let CliAction::SwitchSession {
+            layout_string, cwd, ..
+        } = &mut switch
+        {
+            *layout_string = Some("invalid { kdl".into());
+            *cwd = Some("relative".into());
+        }
+        assert_eq!(report(switch), pane_error);
+
+        let mut warp = cli_action_with_pane_id(27, Some("bad".into()));
+        if let CliAction::WarpPane { to_session, .. } = &mut warp {
+            *to_session = " ".into();
+        }
+        assert_eq!(report(warp), pane_error);
+
+        for state in [None, Some("unknown".to_owned())] {
+            let mut agent = cli_action_with_pane_id(29, Some("bad".into()));
+            if let CliAction::AgentReport {
+                state: target,
+                clear,
+                ..
+            } = &mut agent
+            {
+                *target = state;
+                *clear = false;
+            }
+            assert_eq!(report(agent), pane_error);
+        }
+        for which in [28, 29] {
+            assert_eq!(
+                report(cli_action_with_pane_id(which, None)),
+                "No --pane-id provided and no resolved caller pane"
+            );
+        }
+    }
+
+    #[test]
+    fn stack_panes_preserves_order_and_reports_all_invalid_ids() {
+        let stack = |ids: &[&str]| {
+            actions_from_cli(
+                CliAction::StackPanes {
+                    pane_ids: ids.iter().map(|id| (*id).to_owned()).collect(),
+                },
+                cwd(),
+                None,
+            )
+        };
+        assert_eq!(
+            stack(&["7", "plugin_9", "terminal_8", "7"]).unwrap(),
+            vec![Action::StackPanes {
+                pane_ids: vec![
+                    PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7)),
+                    PaneId::Plugin(yinz_types::internal_ids::PluginId::new(9)),
+                    PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(8)),
+                    PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7)),
+                ],
+            }],
+        );
+        assert_eq!(
+            stack(&["bad", "7", "plugin_4294967296", "bad"]).unwrap_err(),
+            "Malformed pane ids: bad, plugin_4294967296, bad, expecting a space separated list of either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)",
+        );
     }
 }

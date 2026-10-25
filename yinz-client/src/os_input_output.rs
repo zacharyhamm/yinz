@@ -519,12 +519,14 @@ impl ServerConnection for ClientOsInputOutput {
         }
     }
     fn recv_from_server(&self) -> IpcRecv<ServerToClientMsg> {
-        self.receive_instructions_from_server
-            .lock()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .recv_server_msg()
+        let Ok(mut receiver) = self.receive_instructions_from_server.lock() else {
+            log::error!("client receiver lock poisoned");
+            return IpcRecv::Eof;
+        };
+        match receiver.as_mut() {
+            Some(receiver) => receiver.recv_server_msg(),
+            None => IpcRecv::Eof,
+        }
     }
     fn install_session_connection(
         &self,
