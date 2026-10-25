@@ -17,6 +17,14 @@ pub use yinz_types::input::command::{OpenFilePayload, RunCommandAction};
 use yinz_types::input::layout::PluginUserConfiguration;
 use yinz_types::internal_ids::TabId;
 
+fn parse_pane_id(pane_id: &str) -> Result<PaneId, String> {
+    PaneId::from_str(pane_id).map_err(|_| {
+        format!(
+            "Malformed pane id: {pane_id}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
+        )
+    })
+}
+
 pub fn actions_from_cli(
     cli_action: CliAction,
     get_current_dir: Box<dyn Fn() -> PathBuf>,
@@ -25,21 +33,11 @@ pub fn actions_from_cli(
     match cli_action {
         CliAction::Write { bytes, pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let parsed_pane_id = PaneId::from_str(&pane_id_str);
-                match parsed_pane_id {
-                            Ok(parsed_pane_id) => {
-                                Ok(vec![Action::WriteToPaneId {
-                                    bytes,
-                                    pane_id: parsed_pane_id,
-                                }])
-                            },
-                            Err(_e) => {
-                                Err(format!(
-                                    "Malformed pane id: {}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)",
-                                    pane_id_str
-                                ))
-                            }
-                        }
+                let parsed_pane_id = parse_pane_id(&pane_id_str)?;
+                Ok(vec![Action::WriteToPaneId {
+                    bytes,
+                    pane_id: parsed_pane_id,
+                }])
             },
             None => Ok(vec![Action::Write {
                 key_with_modifier: None,
@@ -49,41 +47,21 @@ pub fn actions_from_cli(
         },
         CliAction::WriteChars { chars, pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let parsed_pane_id = PaneId::from_str(&pane_id_str);
-                match parsed_pane_id {
-                            Ok(parsed_pane_id) => {
-                                Ok(vec![Action::WriteCharsToPaneId {
-                                    chars,
-                                    pane_id: parsed_pane_id,
-                                }])
-                            },
-                            Err(_e) => {
-                                Err(format!(
-                                    "Malformed pane id: {}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)",
-                                    pane_id_str
-                                ))
-                            }
-                        }
+                let parsed_pane_id = parse_pane_id(&pane_id_str)?;
+                Ok(vec![Action::WriteCharsToPaneId {
+                    chars,
+                    pane_id: parsed_pane_id,
+                }])
             },
             None => Ok(vec![Action::WriteChars { chars }]),
         },
         CliAction::Paste { chars, pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let parsed_pane_id = PaneId::from_str(&pane_id_str);
-                match parsed_pane_id {
-                        Ok(parsed_pane_id) => {
-                            Ok(vec![Action::Paste {
-                                chars,
-                                pane_id: Some(parsed_pane_id),
-                            }])
-                        },
-                        Err(_e) => {
-                            Err(format!(
-                                "Malformed pane id: {}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)",
-                                pane_id_str
-                            ))
-                        }
-                    }
+                let parsed_pane_id = parse_pane_id(&pane_id_str)?;
+                Ok(vec![Action::Paste {
+                    chars,
+                    pane_id: Some(parsed_pane_id),
+                }])
             },
             None => Ok(vec![Action::Paste {
                 chars,
@@ -97,10 +75,7 @@ pub fn actions_from_cli(
             pane_id,
         } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::ResizeByPaneId {
                     pane_id,
                     resize,
@@ -112,10 +87,7 @@ pub fn actions_from_cli(
         CliAction::FocusNextPane => Ok(vec![Action::FocusNextPane]),
         CliAction::FocusPreviousPane => Ok(vec![Action::FocusPreviousPane]),
         CliAction::FocusPaneId { pane_id } => {
-            let pane_id = PaneId::from_str(&pane_id)
-                    .map_err(|_| format!(
-                        "Malformed pane id: {pane_id}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                    ))?;
+            let pane_id = parse_pane_id(&pane_id)?;
             Ok(vec![Action::FocusPaneByPaneId { pane_id }])
         },
         CliAction::WarpPane {
@@ -124,13 +96,7 @@ pub fn actions_from_cli(
             focused_tab,
             floating,
         } => {
-            let pane_id = pane_id
-                    .map(|pane_id| {
-                        PaneId::from_str(&pane_id).map_err(|_| format!(
-                            "Malformed pane id: {pane_id}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))
-                    })
-                    .transpose()?;
+            let pane_id = pane_id.as_deref().map(parse_pane_id).transpose()?;
             if to_session.trim().is_empty() {
                 return Err("--to-session cannot be empty".to_owned());
             }
@@ -177,20 +143,14 @@ pub fn actions_from_cli(
         CliAction::MoveFocusOrTab { direction } => Ok(vec![Action::MoveFocusOrTab { direction }]),
         CliAction::MovePane { direction, pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::MovePaneByPaneId { pane_id, direction }])
             },
             None => Ok(vec![Action::MovePane { direction }]),
         },
         CliAction::MovePaneBackwards { pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::MovePaneBackwardsByPaneId { pane_id }])
             },
             None => Ok(vec![Action::MovePaneBackwards]),
@@ -201,10 +161,7 @@ pub fn actions_from_cli(
         },
         CliAction::Clear { pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::ClearScreenByPaneId { pane_id }])
             },
             None => Ok(vec![Action::ClearScreen]),
@@ -216,23 +173,13 @@ pub fn actions_from_cli(
             ansi,
         } => match pane_id {
             Some(pane_id_str) => {
-                let parsed_pane_id = PaneId::from_str(&pane_id_str);
-                match parsed_pane_id {
-                        Ok(parsed_pane_id) => {
-                            Ok(vec![Action::DumpScreen {
-                                file_path: path.map(|p| p.as_os_str().to_string_lossy().into()),
-                                include_scrollback: full,
-                                pane_id: Some(parsed_pane_id),
-                                ansi,
-                            }])
-                        },
-                        Err(_e) => {
-                            Err(format!(
-                                "Malformed pane id: {}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)",
-                                pane_id_str
-                            ))
-                        }
-                    }
+                let parsed_pane_id = parse_pane_id(&pane_id_str)?;
+                Ok(vec![Action::DumpScreen {
+                    file_path: path.map(|p| p.as_os_str().to_string_lossy().into()),
+                    include_scrollback: full,
+                    pane_id: Some(parsed_pane_id),
+                    ansi,
+                }])
             },
             None => Ok(vec![Action::DumpScreen {
                 file_path: path.map(|p| p.as_os_str().to_string_lossy().into()),
@@ -245,110 +192,77 @@ pub fn actions_from_cli(
         CliAction::SaveSession => Ok(vec![Action::SaveSession]),
         CliAction::EditScrollback { pane_id, ansi } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::EditScrollbackByPaneId { pane_id, ansi }])
             },
             None => Ok(vec![Action::EditScrollback { ansi }]),
         },
         CliAction::ScrollUp { pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::ScrollUpByPaneId { pane_id }])
             },
             None => Ok(vec![Action::ScrollUp]),
         },
         CliAction::ScrollDown { pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::ScrollDownByPaneId { pane_id }])
             },
             None => Ok(vec![Action::ScrollDown]),
         },
         CliAction::ScrollToBottom { pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::ScrollToBottomByPaneId { pane_id }])
             },
             None => Ok(vec![Action::ScrollToBottom]),
         },
         CliAction::ScrollToTop { pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::ScrollToTopByPaneId { pane_id }])
             },
             None => Ok(vec![Action::ScrollToTop]),
         },
         CliAction::PageScrollUp { pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::PageScrollUpByPaneId { pane_id }])
             },
             None => Ok(vec![Action::PageScrollUp]),
         },
         CliAction::PageScrollDown { pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::PageScrollDownByPaneId { pane_id }])
             },
             None => Ok(vec![Action::PageScrollDown]),
         },
         CliAction::HalfPageScrollUp { pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::HalfPageScrollUpByPaneId { pane_id }])
             },
             None => Ok(vec![Action::HalfPageScrollUp]),
         },
         CliAction::HalfPageScrollDown { pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::HalfPageScrollDownByPaneId { pane_id }])
             },
             None => Ok(vec![Action::HalfPageScrollDown]),
         },
         CliAction::ToggleFullscreen { pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::ToggleFocusFullscreenByPaneId { pane_id }])
             },
             None => Ok(vec![Action::ToggleFocusFullscreen]),
         },
         CliAction::ToggleNoUiFullscreen { pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::ToggleFocusNoUiFullscreenByPaneId { pane_id }])
             },
             None => Ok(vec![Action::ToggleFocusNoUiFullscreen]),
@@ -475,10 +389,7 @@ pub fn actions_from_cli(
         CliAction::SwitchMode { input_mode } => Ok(vec![Action::SwitchToMode { input_mode }]),
         CliAction::TogglePaneEmbedOrFloating { pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::TogglePaneEmbedOrFloatingByPaneId { pane_id }])
             },
             None => Ok(vec![Action::TogglePaneEmbedOrFloating]),
@@ -494,23 +405,13 @@ pub fn actions_from_cli(
         },
         CliAction::ClosePane { pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::CloseFocusByPaneId { pane_id }])
             },
             None => Ok(vec![Action::CloseFocus]),
         },
         CliAction::RenamePane { name, pane_id } => {
-            let pane_id = match pane_id {
-                    Some(pane_id_str) => Some(
-                        PaneId::from_str(&pane_id_str).map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?,
-                    ),
-                    None => None,
-                };
+            let pane_id = pane_id.as_deref().map(parse_pane_id).transpose()?;
             Ok(vec![Action::RenamePaneByPaneId {
                 pane_id,
                 name: name.as_bytes().to_vec(),
@@ -518,10 +419,7 @@ pub fn actions_from_cli(
         },
         CliAction::UndoRenamePane { pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::UndoRenamePaneByPaneId { pane_id }])
             },
             None => Ok(vec![Action::UndoRenamePane]),
@@ -819,10 +717,7 @@ pub fn actions_from_cli(
         CliAction::ArrangePanesByProject => Ok(vec![Action::ArrangePanesByProject]),
         CliAction::TogglePanePinned { pane_id } => match pane_id {
             Some(pane_id_str) => {
-                let pane_id = PaneId::from_str(&pane_id_str)
-                        .map_err(|_| format!(
-                            "Malformed pane id: {pane_id_str}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)"
-                        ))?;
+                let pane_id = parse_pane_id(&pane_id_str)?;
                 Ok(vec![Action::TogglePanePinnedByPaneId { pane_id }])
             },
             None => Ok(vec![Action::TogglePanePinned]),
@@ -866,57 +761,27 @@ pub fn actions_from_cli(
             else {
                 return Err("Failed to parse floating pane coordinates".to_string());
             };
-            let parsed_pane_id = PaneId::from_str(&pane_id);
-            match parsed_pane_id {
-                    Ok(parsed_pane_id) => {
-                        Ok(vec![Action::ChangeFloatingPaneCoordinates {
-                            pane_id: parsed_pane_id,
-                            coordinates,
-                        }])
-                    },
-                    Err(_e) => {
-                        Err(format!(
-                            "Malformed pane id: {}, expecting a space separated list of either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)",
-                            pane_id
-                        ))
-                    }
-                }
+            let parsed_pane_id = parse_pane_id(&pane_id)?;
+            Ok(vec![Action::ChangeFloatingPaneCoordinates {
+                pane_id: parsed_pane_id,
+                coordinates,
+            }])
         },
         CliAction::TogglePaneBorderless { pane_id } => {
-            let parsed_pane_id = PaneId::from_str(&pane_id);
-            match parsed_pane_id {
-                    Ok(parsed_pane_id) => {
-                        Ok(vec![Action::TogglePaneBorderless {
-                            pane_id: parsed_pane_id,
-                        }])
-                    },
-                    Err(_e) => {
-                        Err(format!(
-                            "Malformed pane id: {}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)",
-                            pane_id
-                        ))
-                    }
-                }
+            let parsed_pane_id = parse_pane_id(&pane_id)?;
+            Ok(vec![Action::TogglePaneBorderless {
+                pane_id: parsed_pane_id,
+            }])
         },
         CliAction::SetPaneBorderless {
             pane_id,
             borderless,
         } => {
-            let parsed_pane_id = PaneId::from_str(&pane_id);
-            match parsed_pane_id {
-                    Ok(parsed_pane_id) => {
-                        Ok(vec![Action::SetPaneBorderless {
-                            pane_id: parsed_pane_id,
-                            borderless,
-                        }])
-                    },
-                    Err(_e) => {
-                        Err(format!(
-                            "Malformed pane id: {}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)",
-                            pane_id
-                        ))
-                    }
-                }
+            let parsed_pane_id = parse_pane_id(&pane_id)?;
+            Ok(vec![Action::SetPaneBorderless {
+                pane_id: parsed_pane_id,
+                borderless,
+            }])
         },
         CliAction::AgentReport {
             pane_id,
@@ -938,25 +803,13 @@ pub fn actions_from_cli(
                 Some(id) => id,
                 None => return Err("No --pane-id provided and no resolved caller pane".to_string()),
             };
-            let parsed_pane_id = PaneId::from_str(&pane_id_str);
-            match parsed_pane_id {
-                    Ok(parsed_pane_id) => {
-                        let (fg, bg) = if reset {
-                            (None, None)
-                        } else {
-                            (fg, bg)
-                        };
-                        Ok(vec![Action::SetPaneColor {
-                            pane_id: parsed_pane_id,
-                            fg,
-                            bg,
-                        }])
-                    },
-                    Err(_e) => Err(format!(
-                        "Malformed pane id: {}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)",
-                        pane_id_str
-                    )),
-                }
+            let parsed_pane_id = parse_pane_id(&pane_id_str)?;
+            let (fg, bg) = if reset { (None, None) } else { (fg, bg) };
+            Ok(vec![Action::SetPaneColor {
+                pane_id: parsed_pane_id,
+                fg,
+                bg,
+            }])
         },
         CliAction::Detach => Ok(vec![Action::Detach]),
         CliAction::SetDarkTheme => Ok(vec![Action::SetDarkTheme]),

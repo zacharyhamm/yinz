@@ -2,6 +2,40 @@ use super::*;
 use std::os::unix::fs::{symlink, PermissionsExt};
 
 #[test]
+fn pane_command_preparation_preserves_arguments_and_only_uses_existing_directories() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("file");
+    std::fs::write(&file, "not a directory").unwrap();
+    for cwd in [
+        None,
+        Some(root.path().to_owned()),
+        Some(root.path().join("missing")),
+        Some(file),
+    ] {
+        let command = RunCommand {
+            command: "/usr/bin/true".into(),
+            args: vec!["argument with spaces".into(), "--literal=$value".into()],
+            cwd: cwd.clone(),
+            ..Default::default()
+        };
+        let prepared = prepare_command(&command).unwrap();
+        assert_eq!(prepared.get_program(), command.command.as_os_str());
+        assert_eq!(
+            prepared.get_args().collect::<Vec<_>>(),
+            command
+                .args
+                .iter()
+                .map(std::ffi::OsStr::new)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            prepared.get_current_dir(),
+            cwd.as_deref().filter(|path| path.is_dir())
+        );
+    }
+}
+
+#[test]
 fn agent_launchers_use_the_execution_hosts_binary_outside_path() {
     let root = tempfile::tempdir().unwrap();
     let host_bin = root.path().join("host yinz");

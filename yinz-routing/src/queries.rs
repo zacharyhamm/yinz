@@ -1,6 +1,6 @@
 //! Synchronous pane/tab metadata queries and CLI output formatting.
 use super::completion::{send_error_to_client, send_output_to_client};
-use yinz_bus::os_input_output::ServerOsApi;
+use yinz_bus::os_input_output::ClientTransport;
 use yinz_bus::pty::PtyInstruction;
 use yinz_bus::screen::ScreenInstruction;
 use yinz_bus::thread_bus::ThreadSenders;
@@ -17,7 +17,7 @@ pub(super) fn list_panes(
     output_json: bool,
     senders: &ThreadSenders,
     cli_client_id: Option<ClientId>,
-    os_input: Option<&dyn ServerOsApi>,
+    os_input: Option<&dyn ClientTransport>,
     client_id: ClientId,
 ) -> Result<()> {
     let err_context = || format!("failed to route action for client {client_id}");
@@ -57,7 +57,7 @@ pub(super) fn list_tabs(
     senders: &ThreadSenders,
     client_id: ClientId,
     cli_client_id: Option<ClientId>,
-    os_input: Option<&dyn ServerOsApi>,
+    os_input: Option<&dyn ClientTransport>,
 ) -> Result<()> {
     let err_context = || format!("failed to route action for client {client_id}");
     let maybe_tabs = request_tabs_from_screen(senders, client_id).with_context(err_context)?;
@@ -87,7 +87,7 @@ pub(super) fn current_tab_info(
     senders: &ThreadSenders,
     client_id: ClientId,
     cli_client_id: Option<ClientId>,
-    os_input: Option<&dyn ServerOsApi>,
+    os_input: Option<&dyn ClientTransport>,
 ) -> Result<()> {
     let err_context = || format!("failed to route action for client {client_id}");
     let maybe_tab_info =

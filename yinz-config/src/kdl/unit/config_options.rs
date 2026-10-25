@@ -1,6 +1,62 @@
 use super::*;
 
 #[test]
+fn every_option_preserves_its_value_and_serialization_order() {
+    for enabled in [false, true] {
+        let expected =
+            include_str!("fixtures/all_options.kdl").replace(" true\n", &format!(" {enabled}\n"));
+        let options = crate::kdl::options::from_string(&expected).unwrap();
+        let fields = serde_json::to_value(&options).unwrap();
+        for (name, value) in fields.as_object().unwrap() {
+            assert!(!value.is_null(), "fixture must populate {name}");
+        }
+
+        for add_comments in [false, true] {
+            let mut document = KdlDocument::new();
+            document
+                .nodes_mut()
+                .extend(crate::kdl::options::to_kdl(&options, add_comments));
+            assert_eq!(
+                crate::kdl::options::from_string(&document.to_string()).unwrap(),
+                options
+            );
+            for node in document.nodes_mut() {
+                let name = node.name().value();
+                let has_description = add_comments
+                    && !matches!(
+                        name,
+                        "host_id"
+                            | "agent_theme_mapping"
+                            | "agent_pane_min_columns"
+                            | "agent_pane_min_rows"
+                    );
+                assert_eq!(
+                    !node.leading().unwrap_or_default().is_empty(),
+                    has_description,
+                    "description for {name}"
+                );
+                node.set_leading("");
+            }
+            assert_eq!(document.to_string(), expected);
+        }
+    }
+}
+
+#[test]
+fn unset_option_examples_remain_comments_in_serialized_text() {
+    let options = Options::default();
+    assert!(crate::kdl::options::to_kdl(&options, false).is_empty());
+    let mut document = KdlDocument::new();
+    document
+        .nodes_mut()
+        .extend(crate::kdl::options::to_kdl(&options, true));
+    assert!(!document.nodes().is_empty());
+    let reparsed: KdlDocument = document.to_string().parse().unwrap();
+    assert!(reparsed.nodes().is_empty());
+    assert_eq!(crate::kdl::options::from_kdl(&reparsed).unwrap(), options);
+}
+
+#[test]
 fn disable_splash_screen_round_trips_and_requires_a_boolean() {
     for disabled in [None, Some(false), Some(true)] {
         let options = Options {

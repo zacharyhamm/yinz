@@ -6,7 +6,7 @@ use yinz_types::internal_ids::TerminalId;
 
 use nix::{
     fcntl::{fcntl, FcntlArg, OFlag},
-    pty::{openpty, OpenptyResult, Winsize},
+    pty::{OpenptyResult, Winsize},
     sys::{
         signal::{kill, Signal},
         termios,
@@ -25,7 +25,6 @@ use std::{
         process::CommandExt,
     },
     path::PathBuf,
-    process::Command,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Mutex,
@@ -128,28 +127,6 @@ impl AsyncReader for RawFdAsyncReader {
     }
 }
 
-nix::ioctl_write_ptr_bad!(tiocswinsz, libc::TIOCSWINSZ, Winsize);
-
-/// Set the window size on a pty, which is how its child learns its new size (and gets a
-/// SIGWINCH). A failure is returned rather than dropped: one used to leave the child
-/// and the grid disagreeing about the size until the next resize, silently.
-fn set_terminal_size_using_fd(
-    fd: RawFd,
-    columns: u16,
-    rows: u16,
-    width_in_pixels: Option<u16>,
-    height_in_pixels: Option<u16>,
-) -> nix::Result<()> {
-    let winsize = Winsize {
-        ws_col: columns,
-        ws_row: rows,
-        ws_xpixel: width_in_pixels.unwrap_or(0),
-        ws_ypixel: height_in_pixels.unwrap_or(0),
-    };
-    // SAFETY: `TIOCSWINSZ` reads one `Winsize` through the pointer, which outlives the call.
-    unsafe { tiocswinsz(fd, &winsize) }.map(|_| ())
-}
-
 /// Block until the child exits, reporting every stop and continue on the way.
 ///
 /// `nix`'s `waitpid` reaps, so the caller's `Child` must not be waited on again.
@@ -214,8 +191,6 @@ fn handle_openpty(
     // primary side of pty and child fd
     let master = open_pty_res.master;
     let slave = open_pty_res.slave;
-    crate::pty_host::fdpass::set_cloexec(master.as_raw_fd()).with_context(|| err_context(&cmd))?;
-    crate::pty_host::fdpass::set_cloexec(slave.as_raw_fd()).with_context(|| err_context(&cmd))?;
     let pid_secondary = slave.as_raw_fd();
 
     if !command_exists(&cmd) {
@@ -226,22 +201,10 @@ fn handle_openpty(
         .with_context(|| err_context(&cmd));
     }
 
-    let (program, args) =
-        yinz_process::command::exec_program_and_args(&cmd).with_context(|| err_context(&cmd))?;
+    let mut command =
+        yinz_process::command::prepare_command(&cmd).with_context(|| err_context(&cmd))?;
     let child = unsafe {
-        let command = &mut Command::new(program);
-        if let Some(current_dir) = &cmd.cwd {
-            if current_dir.exists() && current_dir.is_dir() {
-                command.current_dir(current_dir);
-            } else {
-                log::error!(
-                    "Failed to set CWD for new pane. '{}' does not exist or is not a folder",
-                    current_dir.display()
-                );
-            }
-        }
         command
-            .args(args)
             // The server may itself be running in a supervised pane. This
             // in-process fallback has no stable supervisor reference of its own,
             // and no broker token either: a server running inside a remote pane
@@ -252,14 +215,7 @@ fn handle_openpty(
             // Structured launches set this again through their env wrapper.
             .env_remove("YINZ_CLAUDE_INLINE_HOOKS")
             .env("YINZ_PANE_ID", format!("{}", terminal_id))
-            .pre_exec(move || -> io::Result<()> {
-                if libc::login_tty(pid_secondary) != 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                // Leave std's exec-error pipe usable until exec succeeds.
-                close_fds::set_fds_cloexec(3, &[]);
-                Ok(())
-            })
+            .pre_exec(move || crate::pty_host::terminal::prepare_child(pid_secondary, false))
             .spawn()
             .map_err(|err| YinzError::PaneStartFailed {
                 terminal_id,
@@ -290,7 +246,8 @@ fn handle_terminal(
     child_state_cb: Option<ChildStateCb>,
     terminal_id: TerminalId,
 ) -> Result<(OwnedFd, ProcessId)> {
-    let open_pty_res = openpty(None, &orig_termios)
+    let open_pty_res = crate::pty_host::terminal::open(None, orig_termios.as_ref())
+        .with_context(|| format!("failed to open PTY for command '{}'", cmd.command.display()))
         .context("failed to start pty")
         .context("failed to spawn child terminal")
         .to_log()?;
@@ -712,12 +669,14 @@ impl UnixPtyBackend {
         match transports.get(&terminal_id) {
             Some(PaneTransport::Local(fd)) => {
                 if cols > 0 && rows > 0 {
-                    set_terminal_size_using_fd(
+                    crate::pty_host::terminal::resize(
                         fd.as_raw_fd(),
-                        cols,
-                        rows,
-                        width_in_pixels,
-                        height_in_pixels,
+                        &Winsize {
+                            ws_col: cols,
+                            ws_row: rows,
+                            ws_xpixel: width_in_pixels.unwrap_or(0),
+                            ws_ypixel: height_in_pixels.unwrap_or(0),
+                        },
                     )
                     .with_context(err_context)?;
                 }
@@ -836,19 +795,11 @@ impl UnixPtyBackend {
     }
 
     pub fn force_kill(&self, pid: ProcessId) -> Result<()> {
-        let pid = crate::pty_host::process_pid(pid)?;
-        if kill(crate::pty_host::process_group(pid)?, Some(Signal::SIGKILL)).is_err() {
-            let _ = kill(pid, Some(Signal::SIGKILL));
-        }
-        Ok(())
+        crate::pty_host::terminal::signal_group_or_leader(pid, Signal::SIGKILL)
     }
 
     pub fn send_sigint(&self, pid: ProcessId) -> Result<()> {
-        let pid = crate::pty_host::process_pid(pid)?;
-        if kill(crate::pty_host::process_group(pid)?, Some(Signal::SIGINT)).is_err() {
-            let _ = kill(pid, Some(Signal::SIGINT));
-        }
-        Ok(())
+        crate::pty_host::terminal::signal_group_or_leader(pid, Signal::SIGINT)
     }
 
     /// Continue a stopped pane, the way a shell's `fg` does.
@@ -859,12 +810,7 @@ impl UnixPtyBackend {
     /// leave the rest of a pipeline asleep. The bare pid is a fallback for the
     /// case where the child never got a group of its own.
     pub fn send_sigcont(&self, pid: ProcessId) -> Result<()> {
-        let pid = crate::pty_host::process_pid(pid)?;
-        let group = crate::pty_host::process_group(pid)?;
-        if kill(group, Some(Signal::SIGCONT)).is_err() {
-            let _ = kill(pid, Some(Signal::SIGCONT));
-        }
-        Ok(())
+        crate::pty_host::terminal::signal_group_or_leader(pid, Signal::SIGCONT)
     }
 
     /// Adopt an already-connected remote pane: record its transport and hand
@@ -1256,45 +1202,11 @@ mod pty_descriptor_tests;
 mod tests {
     use super::*;
     use nix::fcntl::{fcntl, FcntlArg, OFlag};
+    use nix::pty::openpty;
     use nix::sys::termios;
     use std::fs::File;
     use std::io::Read;
     use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
-
-    nix::ioctl_read_bad!(tiocgwinsz, libc::TIOCGWINSZ, Winsize);
-
-    #[test]
-    fn a_winsize_set_on_the_pty_master_is_what_the_pty_reports() {
-        let pty = nix::pty::openpty(None, None).unwrap();
-
-        set_terminal_size_using_fd(pty.master.as_raw_fd(), 91, 37, Some(728), Some(666)).unwrap();
-
-        let mut reported = Winsize {
-            ws_row: 0,
-            ws_col: 0,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-        // SAFETY: `TIOCGWINSZ` writes one `Winsize` through the pointer.
-        unsafe { tiocgwinsz(pty.slave.as_raw_fd(), &mut reported) }.unwrap();
-        assert_eq!(
-            (
-                reported.ws_col,
-                reported.ws_row,
-                reported.ws_xpixel,
-                reported.ws_ypixel
-            ),
-            (91, 37, 728, 666)
-        );
-    }
-
-    #[test]
-    fn a_failed_winsize_ioctl_is_reported_rather_than_dropped() {
-        assert_eq!(
-            set_terminal_size_using_fd(-1, 80, 24, None, None),
-            Err(nix::errno::Errno::EBADF)
-        );
-    }
 
     #[test]
     fn failed_in_process_spawns_report_errors_and_close_the_pty() {
@@ -1315,7 +1227,7 @@ mod tests {
             (script, Some(libc::ENOENT)),
             (non_executable, None),
         ] {
-            let pty = openpty(None, None).unwrap();
+            let pty = crate::pty_host::terminal::open(None, None).unwrap();
             let mut master = File::from(pty.master.try_clone().unwrap());
             fcntl(&master, FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).unwrap();
             let result = handle_openpty(

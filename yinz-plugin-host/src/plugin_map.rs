@@ -910,7 +910,7 @@ impl PluginEnv {
                     .plugin_data()
                     .unregister_watch(self.plugin_id, *watch_id)
                 {
-                    // The bridge's plugin-wide unload may already have removed the watch.
+                    // Tolerate a watch that was already removed.
                     Ok(()) | Err(DataError::InvalidQuery(_)) => false,
                     Err(error) => {
                         Err::<(), _>(error)

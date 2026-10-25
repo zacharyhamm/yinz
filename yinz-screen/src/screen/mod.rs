@@ -3943,7 +3943,10 @@ impl Screen {
     }
     fn update_plugin_location(&mut self, plugin_id: PluginId, location: RunPluginLocation) {
         for tab in self.tabs.values_mut() {
-            if let Some(pane) = tab.get_pane_with_id_mut(PaneId::Plugin(plugin_id)) {
+            if let Some(pane) = tab
+                .get_pane_with_id_mut(PaneId::Plugin(plugin_id))
+                .and_then(|pane| pane.plugin_control_mut())
+            {
                 pane.update_plugin_location(location);
                 break;
             }

@@ -4,10 +4,13 @@ use crate::panes::{PaneFactory, PaneId};
 use crate::pty_host::client::{ReleasedPane, ReleasedPtyHost, ReleasedRemotePane};
 use crate::{
     channels::SenderWithContext,
-    os_input_output::ServerOsApi,
     route::{actions_leave_clipboard_message, route_action},
     thread_bus::Bus,
     ClientId, ServerInstruction, ThreadSenders,
+};
+use yinz_bus::os_input_output::{
+    ClientTransport, RemotePanes, ServerEnvironment, TerminalIo, TerminalProcesses,
+    TerminalSupervision,
 };
 use yinz_test_support::Watched;
 use yinz_types::internal_ids::NotificationId;
@@ -280,7 +283,7 @@ struct FakeInputOutput {
     render_ready: RenderReadyCallbacks,
 }
 
-impl ServerOsApi for FakeInputOutput {
+impl TerminalIo for FakeInputOutput {
     fn set_terminal_size_using_terminal_id(
         &self,
         _terminal_id: TerminalId,
@@ -291,14 +294,6 @@ impl ServerOsApi for FakeInputOutput {
     ) -> Result<()> {
         // noop
         Ok(())
-    }
-    fn spawn_terminal(
-        &self,
-        _file_to_open: TerminalAction,
-        _quit_db: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-        _default_editor: Option<PathBuf>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
-        Ok((crate::TerminalId::new(42), Box::new(NullAsyncReader), None))
     }
     fn write_to_tty_stdin(&self, id: TerminalId, buf: &[u8]) -> Result<usize> {
         self.tty_stdin_bytes
@@ -312,15 +307,47 @@ impl ServerOsApi for FakeInputOutput {
     fn tcdrain(&self, _id: TerminalId) -> Result<()> {
         unimplemented!()
     }
+}
+
+impl TerminalProcesses for FakeInputOutput {
+    fn spawn_terminal(
+        &self,
+        _file_to_open: TerminalAction,
+        _quit_db: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+        _default_editor: Option<PathBuf>,
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
+        Ok((crate::TerminalId::new(42), Box::new(NullAsyncReader), None))
+    }
     fn kill(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
     fn force_kill(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
-    fn box_clone(&self) -> Box<dyn ServerOsApi> {
-        Box::new((*self).clone())
+    fn re_run_command_in_terminal(
+        &self,
+        _terminal_id: TerminalId,
+        _run_command: RunCommand,
+        _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
+        unimplemented!()
     }
+    fn clear_terminal_id(&self, _terminal_id: TerminalId) -> Result<()> {
+        unimplemented!()
+    }
+    fn send_sigint(&self, _pid: ProcessId) -> Result<()> {
+        unimplemented!()
+    }
+    fn send_sigcont(&self, _pid: ProcessId) -> Result<()> {
+        unimplemented!()
+    }
+}
+
+impl TerminalSupervision for FakeInputOutput {}
+
+impl RemotePanes for FakeInputOutput {}
+
+impl ClientTransport for FakeInputOutput {
     fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()> {
         self.server_to_client_messages
             .lock()
@@ -338,38 +365,6 @@ impl ServerOsApi for FakeInputOutput {
         unimplemented!()
     }
     fn remove_client(&mut self, _client_id: ClientId) -> Result<()> {
-        unimplemented!()
-    }
-    fn load_palette(&self) -> Palette {
-        unimplemented!()
-    }
-    fn get_cwd(&self, _pid: ProcessId) -> Option<PathBuf> {
-        unimplemented!()
-    }
-    fn write_to_file(&mut self, contents: String, filename: Option<String>) -> Result<()> {
-        if let Some(filename) = filename {
-            self.fake_filesystem
-                .lock()
-                .unwrap()
-                .insert(filename, contents);
-        }
-        Ok(())
-    }
-    fn re_run_command_in_terminal(
-        &self,
-        _terminal_id: TerminalId,
-        _run_command: RunCommand,
-        _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
-        unimplemented!()
-    }
-    fn clear_terminal_id(&self, _terminal_id: TerminalId) -> Result<()> {
-        unimplemented!()
-    }
-    fn send_sigint(&self, _pid: ProcessId) -> Result<()> {
-        unimplemented!()
-    }
-    fn send_sigcont(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
     fn client_render_backlog_and_notify(
@@ -392,6 +387,24 @@ impl ServerOsApi for FakeInputOutput {
                 .insert(client_id, ready.clone());
         }
         backlog
+    }
+}
+
+impl ServerEnvironment for FakeInputOutput {
+    fn load_palette(&self) -> Palette {
+        unimplemented!()
+    }
+    fn get_cwd(&self, _pid: ProcessId) -> Option<PathBuf> {
+        unimplemented!()
+    }
+    fn write_to_file(&mut self, contents: String, filename: Option<String>) -> Result<()> {
+        if let Some(filename) = filename {
+            self.fake_filesystem
+                .lock()
+                .unwrap()
+                .insert(filename, contents);
+        }
+        Ok(())
     }
 }
 

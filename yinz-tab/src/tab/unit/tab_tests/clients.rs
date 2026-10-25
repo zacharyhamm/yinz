@@ -92,7 +92,9 @@ fn joining_clients_see_plugin_errors_without_plugin_bytes() {
         let mut loading = LoadingIndication::new("test".into());
         loading.indicate_loading_error("plugin failed to load".into());
         loading.ended = true;
-        pane.update_loading_indication(loading);
+        pane.plugin_control_mut()
+            .unwrap()
+            .update_loading_indication(loading);
 
         tab.add_client(joining, None).unwrap();
 

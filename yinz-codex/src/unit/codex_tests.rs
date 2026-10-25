@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::json;
+use std::fs::OpenOptions;
 
 #[test]
 fn writable_root_overrides_bypass_the_bridge_in_every_config_spelling() {
@@ -969,7 +970,7 @@ async fn reconnects_replace_only_after_handshake_and_cancel_owned_children() {
                 } else {
                     Some(stalled_report(&mut ui, &mut daemon, &peers).await)
                 };
-                let binding = std::fs::read(registration.dir.path().join("binding.json")).unwrap();
+                let binding = std::fs::read(registration.registry.dir.path().join("binding.json")).unwrap();
                 let (replacement, _) = tokio_tungstenite::client_async(
                     "ws://localhost",
                     tokio::net::UnixStream::connect(&socket).await.unwrap(),
@@ -984,7 +985,7 @@ async fn reconnects_replace_only_after_handshake_and_cancel_owned_children() {
                     assert_bridge_child_stopped(pid).await;
                 }
                 assert_eq!(
-                    std::fs::read(registration.dir.path().join("binding.json")).unwrap(),
+                    std::fs::read(registration.registry.dir.path().join("binding.json")).unwrap(),
                     binding,
                     "reconnect must retain the selected conversation"
                 );
@@ -1350,7 +1351,8 @@ fn daemon_conversations_follow_their_uis_not_the_daemons_pane() {
     assert!(binding_for(root.path(), "thread-a").unwrap().is_none());
     assert!(binding_for(root.path(), "selected").unwrap().is_some());
 
-    first._lease.unlock().unwrap();
+    std::fs::rename(first.registry.dir.path(), root.path().join("dead")).unwrap();
+    drop(first);
     assert!(
         binding_for(root.path(), "selected").unwrap().is_none(),
         "a crashed UI's files cannot route hooks"
@@ -2390,6 +2392,7 @@ async fn bridge_reports_only_failures_locally_and_remotely_without_changing_traf
         let mut registration = registration(root.path(), "aaaaaaaaaaaa");
         if remote {
             registration
+                .registry
                 .env
                 .insert("YINZ_REMOTE_PANE_TOKEN".into(), "remote-token".into());
         }
@@ -2691,4 +2694,98 @@ async fn bridge_relays_daemon_frames_larger_than_the_default_limit() {
     })
     .await
     .unwrap();
+}
+
+#[test]
+fn routed_hook_traces_finish_for_success_unbound_and_errors() {
+    const TEST: &str = "tests::routed_hook_traces_finish_for_success_unbound_and_errors";
+    const CASE_ENV: &str = "YINZ_TEST_CODEX_TRACE_CASE";
+    const REPORTER_ENV: &str = "YINZ_TEST_CODEX_TRACE_REPORTER";
+    if let Ok(case) = std::env::var(CASE_ENV) {
+        let result = report(Path::new(&std::env::var(REPORTER_ENV).unwrap()));
+        assert_eq!(
+            result.is_ok(),
+            matches!(case.as_str(), "success" | "unbound")
+        );
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let reporter = root.path().join("reporter");
+    yinz_test_support::write_warm_script(
+        &reporter,
+        "cat >/dev/null\n[ \"$YINZ_TEST_CODEX_TRACE_CASE\" != delivery_error ]",
+    );
+    let session = uuid::Uuid::new_v4().to_string();
+    let registration = Registration::new(
+        &directory(),
+        HashMap::from([("YINZ_REMOTE_PANE_TOKEN".into(), "private-token".into())]),
+    )
+    .unwrap();
+    registration.select(&session).unwrap();
+    for case in ["success", "unbound", "parse_error", "delivery_error"] {
+        let log_root = tempfile::tempdir().unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", TEST, "--nocapture"])
+            .env(CASE_ENV, case)
+            .env(REPORTER_ENV, &reporter)
+            .env("TMPDIR", log_root.path())
+            .env("YINZ_HOOK_TRACE", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for key in ROUTE_ENV {
+            command.env_remove(key);
+        }
+        let raw = if case == "parse_error" {
+            "private-payload-invalid-json".into()
+        } else {
+            json!({
+                "hook_event_name": "Stop",
+                "session_id": if case == "unbound" { "unbound-trace-test" } else { &session },
+                "private": "private-payload",
+            })
+            .to_string()
+        };
+        let mut child = command.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(raw.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{case}: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let log = std::fs::read_to_string(
+            log_root
+                .path()
+                .join(format!("yinz-{}", nix::unistd::Uid::current()))
+                .join("yinz-log/yinz.log"),
+        )
+        .unwrap();
+        let totals: Vec<_> = log
+            .lines()
+            .filter(|line| line.contains("stage=total "))
+            .collect();
+        assert_eq!(totals.len(), 1, "{case}: {log}");
+        let outcome = if matches!(case, "success" | "unbound") {
+            "ok"
+        } else {
+            "error"
+        };
+        assert!(
+            totals[0].ends_with(&format!("outcome={outcome}")),
+            "{case}: {log}"
+        );
+        assert!(
+            totals[0].contains(&format!("bytes={}", raw.len())),
+            "{case}: {log}"
+        );
+        assert!(!log.contains("private-payload") && !log.contains("private-token"));
+    }
 }

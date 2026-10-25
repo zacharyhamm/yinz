@@ -59,6 +59,25 @@ pub fn exec_program_and_args(cmd: &RunCommand) -> Result<(PathBuf, Vec<String>)>
     Ok((launcher.clone(), args))
 }
 
+/// Prepare the command common to both pane spawn paths, retaining the inherited cwd
+/// when a requested directory has disappeared.
+pub fn prepare_command(cmd: &RunCommand) -> Result<std::process::Command> {
+    let (program, args) = exec_program_and_args(cmd).context("failed to resolve pane command")?;
+    let mut command = std::process::Command::new(program);
+    command.args(args);
+    if let Some(current_dir) = &cmd.cwd {
+        if current_dir.exists() && current_dir.is_dir() {
+            command.current_dir(current_dir);
+        } else {
+            log::error!(
+                "Failed to set CWD for new pane. '{}' does not exist or is not a folder",
+                current_dir.display()
+            );
+        }
+    }
+    Ok(command)
+}
+
 /// Whether `cmd` can be exec'd, as far as this machine can tell before trying. A Bubblewrap
 /// command resolves on the sandbox's `PATH`, which the server checked when it resolved the
 /// spawn; here it only needs its launcher.

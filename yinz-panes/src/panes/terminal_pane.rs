@@ -1,5 +1,5 @@
 use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
-use crate::pane::{AdjustedInput, GuestChoiceIndicator, Pane, TextAroundPosition};
+use crate::pane::{AdjustedInput, GuestChoiceIndicator, Pane, TerminalPaneIo, TextAroundPosition};
 use crate::panes::kitty_graphics::{KittyApcInterceptor, KittyHostSupport, KittyImageStore, Piece};
 use crate::panes::selection::Selection;
 use crate::panes::sixel::SixelImageStore;
@@ -193,7 +193,54 @@ pub struct TerminalPane {
     kitty_interceptor: KittyApcInterceptor,
 }
 
+impl TerminalPaneIo for TerminalPane {
+    fn drain_messages_to_pty(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.grid.pending_messages_to_pty)
+    }
+    fn drain_agent_theme_updates(&mut self) -> Vec<yinz_types::agent::theme::AgentThemeEvent> {
+        std::mem::take(&mut self.grid.pending_agent_theme_updates)
+    }
+    fn drain_forwarded_queries(&mut self) -> Vec<crate::host_query::HostQuery> {
+        std::mem::take(&mut self.grid.pending_forwarded_queries)
+    }
+    fn record_terminal_color_reply(&mut self, query: &crate::host_query::HostQuery, reply: &[u8]) {
+        self.grid.record_terminal_color_reply(query, reply);
+    }
+    fn drain_nested_session_messages(&mut self) -> Vec<NestedSessionMessage> {
+        std::mem::take(&mut self.grid.pending_nested_session_messages)
+    }
+    fn arm_forward_pause(&mut self) {
+        self.forward_paused = true;
+    }
+    fn clear_forward_pause(&mut self) -> bool {
+        let was_paused = self.forward_paused;
+        self.forward_paused = false;
+        was_paused
+    }
+    fn drain_pending_pty_input(&mut self) -> Vec<u8> {
+        self.pending_pty_input.drain(..).collect()
+    }
+    fn is_forward_paused(&self) -> bool {
+        self.forward_paused
+    }
+    fn push_color_palette_dsr(&mut self, mode: yinz_types::style::HostTerminalThemeMode) {
+        self.grid.push_color_palette_dsr(mode);
+    }
+    fn drain_clipboard_update(&mut self) -> Option<String> {
+        self.grid.pending_clipboard_update.take()
+    }
+    fn drain_desktop_notifications(&mut self) -> Vec<PendingNotification> {
+        std::mem::take(&mut self.grid.pending_desktop_notifications)
+    }
+    fn drain_osc7_cwd(&mut self) -> Option<std::path::PathBuf> {
+        self.grid.pending_osc7_cwd.take()
+    }
+}
+
 impl Pane for TerminalPane {
+    fn terminal_io_mut(&mut self) -> Option<&mut dyn TerminalPaneIo> {
+        Some(self)
+    }
     fn reset_size_and_position_override(&mut self) {
         self.geom_override = None;
         self.reflow_lines();
@@ -863,23 +910,6 @@ impl Pane for TerminalPane {
     fn cursor_shape_csi(&self) -> String {
         self.grid.cursor_shape().get_csi_str().to_string()
     }
-    fn drain_messages_to_pty(&mut self) -> Vec<Vec<u8>> {
-        std::mem::take(&mut self.grid.pending_messages_to_pty)
-    }
-    fn drain_agent_theme_updates(&mut self) -> Vec<yinz_types::agent::theme::AgentThemeEvent> {
-        std::mem::take(&mut self.grid.pending_agent_theme_updates)
-    }
-
-    fn drain_forwarded_queries(&mut self) -> Vec<crate::host_query::HostQuery> {
-        std::mem::take(&mut self.grid.pending_forwarded_queries)
-    }
-    fn record_terminal_color_reply(&mut self, query: &crate::host_query::HostQuery, reply: &[u8]) {
-        self.grid.record_terminal_color_reply(query, reply);
-    }
-
-    fn drain_nested_session_messages(&mut self) -> Vec<NestedSessionMessage> {
-        std::mem::take(&mut self.grid.pending_nested_session_messages)
-    }
 
     fn is_nested_guest(&self) -> bool {
         self.nested_guest
@@ -964,40 +994,6 @@ impl Pane for TerminalPane {
 
     fn guest_modal_shortcuts(&self) -> GuestModalShortcuts {
         self.guest_modal_shortcuts.clone()
-    }
-
-    fn arm_forward_pause(&mut self) {
-        self.forward_paused = true;
-    }
-
-    fn clear_forward_pause(&mut self) -> bool {
-        let was_paused = self.forward_paused;
-        self.forward_paused = false;
-        was_paused
-    }
-
-    fn drain_pending_pty_input(&mut self) -> Vec<u8> {
-        self.pending_pty_input.drain(..).collect()
-    }
-
-    fn is_forward_paused(&self) -> bool {
-        self.forward_paused
-    }
-
-    fn push_color_palette_dsr(&mut self, mode: yinz_types::style::HostTerminalThemeMode) {
-        self.grid.push_color_palette_dsr(mode);
-    }
-
-    fn drain_clipboard_update(&mut self) -> Option<String> {
-        self.grid.pending_clipboard_update.take()
-    }
-
-    fn drain_desktop_notifications(&mut self) -> Vec<PendingNotification> {
-        std::mem::take(&mut self.grid.pending_desktop_notifications)
-    }
-
-    fn drain_osc7_cwd(&mut self) -> Option<std::path::PathBuf> {
-        self.grid.pending_osc7_cwd.take()
     }
 
     fn set_selection_options(&mut self, osc133_command_selection: bool, word_separators: &str) {

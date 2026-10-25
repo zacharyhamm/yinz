@@ -10,6 +10,15 @@ const METADATA_BYTES: u64 = 64 * 1024;
 const TAIL_BYTES: u64 = 4 * 1024 * 1024;
 const REVIEWER_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Preserve small hooks verbatim; bound larger hooks without losing turn or prompt identity.
+pub fn prune_for_forward(kind: &str, raw: String) -> serde_json::Result<String> {
+    if raw.len() <= yinz_types::agent::HOOK_BROADCAST_MAX_BYTES {
+        return Ok(raw);
+    }
+    let (event, json) = parse_hook_event(kind, raw)?;
+    Ok(event.broadcast_json(json))
+}
+
 /// Parse a hook on the machine running the agent. Preserve unknown JSON fields when adding
 /// Codex's reviewer and assistant messages. Unreadable transcripts leave reporting functional.
 pub fn parse_hook_event(kind: &str, json: String) -> serde_json::Result<(HookEvent, String)> {

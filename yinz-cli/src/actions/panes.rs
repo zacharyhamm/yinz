@@ -1,8 +1,7 @@
 //! Terminal and plugin pane construction from CLI options.
-use super::select_configuration;
+use super::{parse_pane_id, select_configuration};
 use std::path::PathBuf;
-use std::str::FromStr;
-use yinz_types::data::{NewPanePlacement, PaneId, UnblockCondition};
+use yinz_types::data::{NewPanePlacement, UnblockCondition};
 use yinz_types::geometry::Direction;
 use yinz_types::input::actions::Action;
 use yinz_types::input::command::RunCommandAction;
@@ -52,18 +51,7 @@ pub(super) fn new_pane(
         .map(yinz_types::command::PaneTarget::ssh)
         .transpose()?
         .unwrap_or_default();
-    let pane_id_to_replace = match pane_id {
-            Some(pane_id_str) => match PaneId::from_str(&pane_id_str) {
-                Ok(parsed_pane_id) => Some(parsed_pane_id),
-                Err(_e) => {
-                    return Err(format!(
-                        "Malformed pane id: {}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)",
-                        pane_id_str
-                    ))
-                },
-            },
-            None => None,
-        };
+    let pane_id_to_replace = pane_id.as_deref().map(parse_pane_id).transpose()?;
     let current_dir = get_current_dir();
     // cwd should only be specified in a plugin alias if it was explicitly given to us,
     // otherwise the current_dir might override a cwd defined in the alias itself

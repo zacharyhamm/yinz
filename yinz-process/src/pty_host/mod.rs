@@ -20,6 +20,7 @@ pub mod fdpass;
 pub mod host;
 pub mod protocol;
 pub mod remote;
+pub mod terminal;
 
 pub use host::{run_pty_host, serve, ServeConfig};
 use yinz_types::internal_ids::ProcessId;

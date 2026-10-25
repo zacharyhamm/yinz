@@ -1,0 +1,65 @@
+tab_groups true
+simplified_ui true
+disable_splash_screen true
+osc8_hyperlinks true
+theme "theme with \"quotes\""
+theme_dark "深色"
+theme_light "light theme"
+explicit_theme_hue "light"
+default_mode "locked"
+default_shell "/bin/sh"
+default_cwd "/tmp/目录"
+default_layout "layout with spaces"
+layout_dir "/tmp/layouts"
+theme_dir "/tmp/themes"
+user_plugin_dir "/tmp/plugins"
+detachable_panes true
+agent_double_escape true
+mouse_mode true
+pane_animations true
+pane_frames true
+pane_frame_style "none"
+notification_position "bottom-left"
+notification_timeout 17
+mirror_session true
+on_force_close "quit"
+max_agent_width 121
+scroll_buffer_size 4096
+locked_escape_timeout_ms 0
+copy_command "printf \"hello\\world\"\nnext-command"
+copy_clipboard "primary"
+copy_on_select true
+scrollback_editor "/tmp/editor with \"quotes\""
+session_name "test_session"
+attach_to_session true
+auto_layout true
+session_serialization true
+host_id "test-host_33"
+serialize_pane_viewport true
+scrollback_lines_to_serialize 201
+background_opacity "37%"
+styled_underlines true
+serialization_interval 3
+disable_session_metadata true
+support_kitty_keyboard_protocol true
+report_modifier_keys true
+support_kitty_graphics_protocol true
+stacked_resize true
+agent_pane_min_columns 99
+agent_pane_min_rows 0
+stacked_pane_list true
+advanced_mouse_actions true
+mouse_scroll_resize true
+mouse_hover_effects true
+visual_bell true
+focus_follows_mouse true
+mouse_click_through true
+context_menu_on_right_click true
+context_menu_override_agent_mouse true
+agent_theme_mapping "off"
+osc133_command_selection true
+word_separators " \t\n\\\"界"
+post_command_discovery_hook "printf \"✓\"\nnext-command"
+dangerously_enable_paste_buffer_read true
+nested_session_handling "never"
+host_notification_protocol "off"

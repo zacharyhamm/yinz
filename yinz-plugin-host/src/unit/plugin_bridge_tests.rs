@@ -275,6 +275,118 @@ fn pane_hook_lookup_tracks_loading_live_and_retiring_instances() {
 }
 
 #[test]
+fn unloading_a_plugin_does_not_block_pipe_completion_on_an_unrelated_data_operation() {
+    use yinz_storage::plugin_data_store::SqlitePluginDataBackend;
+    use yinz_types::plugin_data::{
+        AttrDef, DataError, DataValue, EntityDef, FetchRequest, Mutation, WatchMode,
+    };
+
+    let mut test = TestBridge::new();
+    let plugin = PluginId::new(1);
+    let client = ClientId::new(1);
+    let (entered, blocked) = channels::bounded(1);
+    let (release, wait) = channels::bounded(1);
+    let released_by_unload = Arc::new(AtomicBool::new(false));
+    let observed = released_by_unload.clone();
+    let backend = SqlitePluginDataBackend::with_clock(test._dirs[0].path(), move || {
+        entered.send(()).unwrap();
+        // Hold a real data operation until unload returns; the timeout breaks the old deadlock.
+        observed.store(
+            wait.recv_timeout(Duration::from_secs(10)).is_ok(),
+            Ordering::SeqCst,
+        );
+        1
+    });
+    test.bridge.data_access = Arc::new(DataAccess::from_backend(Arc::new(backend)));
+    let store = test.bridge.data_access.plugin_data().clone();
+    store
+        .define_entity(
+            "shared:test",
+            "test",
+            &EntityDef::new("item", 1).attr(AttrDef::text("value")),
+            false,
+        )
+        .unwrap();
+    test.bridge.add_client(client).unwrap();
+    let context = test.context(1, 1, "(define (pipe message) #f)");
+    test.load(context).unwrap();
+    let generation = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(plugin, Some(client))
+        .unwrap()
+        .lock()
+        .unwrap()
+        .generation()
+        .unwrap();
+    let watch = store
+        .register_watch(
+            "shared:test",
+            plugin,
+            client,
+            FetchRequest::entity("item"),
+            WatchMode::Rows,
+        )
+        .unwrap();
+    test.bridge
+        .watch_generations
+        .lock()
+        .unwrap()
+        .insert(watch.watch_id, generation);
+    test.pipe(plugin, "completed-before-unload");
+    test.settle(plugin);
+
+    let writer_store = store.clone();
+    let writer = std::thread::spawn(move || {
+        writer_store
+            .apply(
+                "shared:test",
+                &[Mutation::Put {
+                    entity: "item".into(),
+                    uid: None,
+                    values: vec![("value".into(), DataValue::Text("ready".into()))],
+                    expect_rev: None,
+                }],
+            )
+            .unwrap();
+    });
+    blocked
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap();
+    test.bridge.unload_plugin(plugin).unwrap();
+    let acknowledgements = test.pipe_acknowledgements();
+    release.send(()).unwrap();
+    writer.join().unwrap();
+    assert!(
+        released_by_unload.load(Ordering::SeqCst),
+        "plugin unload waited for the unrelated data operation before draining pipe completion"
+    );
+    assert_eq!(acknowledgements, ["completed-before-unload"]);
+    loop {
+        let (instruction, _) = test
+            .receiver::<PluginInstruction>()
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap();
+        if matches!(instruction, PluginInstruction::ReleasePluginInstancePipes(id, _) if id == plugin)
+        {
+            break;
+        }
+    }
+    assert!(matches!(
+        store.unregister_watch(plugin, watch.watch_id),
+        Err(DataError::InvalidQuery(_))
+    ));
+    assert!(!test
+        .bridge
+        .watch_generations
+        .lock()
+        .unwrap()
+        .contains_key(&watch.watch_id));
+}
+
+#[test]
 fn unload_watchdog_does_not_keep_disposed_instances_alive() {
     let mut test = TestBridge::new();
     let plugin = PluginId::new(1);

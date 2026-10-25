@@ -73,7 +73,9 @@ impl Tab {
         if let Some(plugin_pane) = self.get_pane_with_id_mut(PaneId::Plugin(pid)) {
             let mut loading = LoadingIndication::default();
             loading.ended = true;
-            plugin_pane.update_loading_indication(loading);
+            if let Some(control) = plugin_pane.plugin_control_mut() {
+                control.update_loading_indication(loading);
+            }
             plugin_pane.handle_plugin_bytes(client_id, bytes);
         }
         Ok(())
@@ -107,7 +109,8 @@ impl Tab {
         // output. Retain that observation before letting the app use the reply.
         let updates = self
             .get_pane_with_id_mut(PaneId::Terminal(pid))
-            .map(|pane| pane.drain_agent_theme_updates())
+            .and_then(|pane| pane.terminal_io_mut())
+            .map(|terminal| terminal.drain_agent_theme_updates())
             .unwrap_or_default();
         for event in updates {
             self.senders
@@ -124,14 +127,16 @@ impl Tab {
         }
         // Clear the pause and pull out any bytes that were buffered
         // while it waited for the host reply.
-        let buffered =
-            if let Some(terminal_output) = self.get_pane_with_id_mut(PaneId::Terminal(pid)) {
-                terminal_output.clear_forward_pause();
-                terminal_output.drain_pending_pty_input()
-            } else {
-                // Pane closed between forward dispatch and reply arrival.
-                return Ok(());
-            };
+        let buffered = if let Some(terminal_output) = self
+            .get_pane_with_id_mut(PaneId::Terminal(pid))
+            .and_then(|pane| pane.terminal_io_mut())
+        {
+            terminal_output.clear_forward_pause();
+            terminal_output.drain_pending_pty_input()
+        } else {
+            // Pane closed between forward dispatch and reply arrival.
+            return Ok(());
+        };
         if !buffered.is_empty() {
             self.process_pty_bytes(pid, buffered)
                 .with_context(err_context)?;
@@ -164,6 +169,9 @@ impl Tab {
                 .with_context(err_context)?;
             }
             terminal_output.handle_pty_bytes(bytes);
+            let Some(terminal_output) = terminal_output.terminal_io_mut() else {
+                return Ok(());
+            };
             let messages_to_pty = terminal_output.drain_messages_to_pty();
             let agent_theme_updates = terminal_output.drain_agent_theme_updates();
             let forwarded_queries = terminal_output.drain_forwarded_queries();

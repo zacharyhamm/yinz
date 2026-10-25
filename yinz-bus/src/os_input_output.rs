@@ -30,7 +30,7 @@ use std::{
 pub use async_trait::async_trait;
 
 /// How far behind a client's writer is: what the screen consults before rendering
-/// another frame for it. See `ServerOsApi::client_render_backlog_and_notify`.
+/// another frame for it. See `ClientTransport::client_render_backlog_and_notify`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RenderBacklog {
     /// Full `Render` frames and coalesced pane snapshots queued behind the message
@@ -89,9 +89,8 @@ impl AsyncReader for NullAsyncReader {
     }
 }
 
-/// The `ServerOsApi` trait represents an abstract interface to the features of an operating system that
-/// Yinz server requires.
-pub trait ServerOsApi: Send + Sync {
+/// Reading, writing, and resizing an existing terminal.
+pub trait TerminalIo: Send + Sync {
     fn set_terminal_size_using_terminal_id(
         &self,
         id: TerminalId,
@@ -100,6 +99,27 @@ pub trait ServerOsApi: Send + Sync {
         width_in_pixels: Option<u16>,
         height_in_pixels: Option<u16>,
     ) -> Result<()>;
+    /// Write bytes to the standard input of the virtual terminal referred to by `terminal_id`.
+    fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize>;
+    /// Persist observations for the active launch; unsupervised backends have
+    /// no retained launch metadata to update.
+    fn retain_agent_theme(
+        &self,
+        _terminal_id: TerminalId,
+        _event: yinz_types::agent::theme::AgentThemeEvent,
+    ) -> Result<()> {
+        Ok(())
+    }
+    /// Wait until all output written to the terminal has been transmitted.
+    fn tcdrain(&self, terminal_id: TerminalId) -> Result<()>;
+    fn cache_resizes(&mut self) {}
+    fn apply_cached_resizes(&mut self) -> Vec<(TerminalId, u16, u16)> {
+        Vec::new()
+    }
+}
+
+/// Allocating terminals and controlling their child processes.
+pub trait TerminalProcesses: Send + Sync {
     /// Spawn a new terminal, with a terminal action. The returned tuple contains:
     /// - the terminal identity
     /// - an async reader for the PTY output
@@ -126,23 +146,12 @@ pub trait ServerOsApi: Send + Sync {
     ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         Err(anyhow!("this backend does not support remote panes"))
     }
-    // reserves a terminal id without actually opening a terminal
+    /// Reserve an identity without opening a terminal.
     fn reserve_terminal_id(&self) -> Result<TerminalId> {
-        unimplemented!()
+        Err(anyhow!(
+            "this backend does not support reserving terminal IDs"
+        ))
     }
-    /// Write bytes to the standard input of the virtual terminal referred to by `terminal_id`.
-    fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize>;
-    /// Persist observations for the active launch; unsupervised backends have
-    /// no retained launch metadata to update.
-    fn retain_agent_theme(
-        &self,
-        _terminal_id: TerminalId,
-        _event: yinz_types::agent::theme::AgentThemeEvent,
-    ) -> Result<()> {
-        Ok(())
-    }
-    /// Wait until all output written to the terminal has been transmitted.
-    fn tcdrain(&self, terminal_id: TerminalId) -> Result<()>;
     /// Terminate the process with process ID `pid`. (SIGHUP)
     fn kill(&self, pid: ProcessId) -> Result<()>;
     /// Terminate the process with process ID `pid`. (SIGKILL)
@@ -151,69 +160,6 @@ pub trait ServerOsApi: Send + Sync {
     fn send_sigint(&self, pid: ProcessId) -> Result<()>;
     /// Continue a stopped process group, the way a shell's `fg` does.
     fn send_sigcont(&self, pid: ProcessId) -> Result<()>;
-    /// Register the callback told whenever a pane's root process stops or
-    /// resumes.
-    ///
-    /// A default no-op rather than a required method: only the real Unix backend
-    /// can observe this, and no test fake has anything to say about it.
-    fn set_child_state_callback(&self, _cb: ChildStateCb) {}
-    /// Register the callback told whenever a coding agent's hook in a remote
-    /// pane reports an event. A default no-op for the same reason as
-    /// `set_child_state_callback`.
-    fn set_agent_report_callback(&self, _cb: AgentReportCb) {}
-    /// Returns a [`Box`] pointer to this [`ServerOsApi`] struct.
-    fn box_clone(&self) -> Box<dyn ServerOsApi>;
-    fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()>;
-    fn new_client(
-        &mut self,
-        client_id: ClientId,
-        stream: LocalSocketStream,
-    ) -> Result<IpcReceiverWithContext<ClientToServerMsg>>;
-    fn remove_client(&mut self, client_id: ClientId) -> Result<()>;
-    /// A connected client's render backlog. The screen skips a frame while every
-    /// client is behind, so dirty state accumulates into one later frame instead
-    /// of queueing diffs the clients cannot drain.
-    ///
-    /// Atomically inspect the queue and, if it is at or above `threshold`, arm `ready` to be
-    /// called once. Clone it only when arming: most clients are not behind. Invoke the callback
-    /// after draining below the threshold or closing, outside locks.
-    ///
-    /// A default of none: test fakes have no writers to fall behind. Implementations must also
-    /// return none after logging a failed backlog query; writer failure must not panic the screen.
-    fn client_render_backlog_and_notify(
-        &self,
-        _client_id: ClientId,
-        _threshold: usize,
-        _ready: &RenderReady,
-    ) -> Option<RenderBacklog> {
-        None
-    }
-    fn load_palette(&self) -> Palette;
-    /// Returns the current working directory for a given pid
-    fn get_cwd(&self, pid: ProcessId) -> Option<PathBuf>;
-    /// Returns the current working directory for multiple pids
-    fn get_cwds(
-        &self,
-        _pids: Vec<ProcessId>,
-    ) -> (HashMap<ProcessId, PathBuf>, HashMap<ProcessId, Vec<String>>) {
-        (HashMap::new(), HashMap::new())
-    }
-    /// Get a list of all running commands by their parent process id
-    fn get_all_cmds_by_ppid(&self, _post_hook: &Option<String>) -> HashMap<String, Vec<String>> {
-        HashMap::new()
-    }
-    /// For each `(terminal_id, shell_pid)` pane, return the foreground command running in its
-    /// controlling terminal, keyed by `terminal_id`.
-    fn get_foreground_cmds(
-        &self,
-        _panes: &[(TerminalId, ProcessId)],
-        _post_hook: &Option<String>,
-    ) -> HashMap<TerminalId, Vec<String>> {
-        HashMap::new()
-    }
-    /// Writes the given buffer to a string
-    fn write_to_file(&mut self, buf: String, file: Option<String>) -> Result<()>;
-
     fn re_run_command_in_terminal(
         &self,
         terminal_id: TerminalId,
@@ -236,6 +182,20 @@ pub trait ServerOsApi: Send + Sync {
         Err(anyhow!("this backend does not support remote panes"))
     }
     fn clear_terminal_id(&self, terminal_id: TerminalId) -> Result<()>;
+}
+
+/// Supervised terminal lifecycle, callbacks, and ownership transfers.
+pub trait TerminalSupervision: Send + Sync {
+    /// Register the callback told whenever a pane's root process stops or
+    /// resumes.
+    ///
+    /// A default no-op rather than a required method: only the real Unix backend
+    /// can observe this, and no test fake has anything to say about it.
+    fn set_child_state_callback(&self, _cb: ChildStateCb) {}
+    /// Register the callback told whenever a coding agent's hook in a remote
+    /// pane reports an event. A default no-op for the same reason as
+    /// `set_child_state_callback`.
+    fn set_agent_report_callback(&self, _cb: AgentReportCb) {}
     /// Whether new panes get a detachable pty-host supervisor. Config only
     /// arrives with the first client, long after the backend is built, so this is
     /// set once at session init. Defaulted so mock implementations are unaffected.
@@ -263,56 +223,6 @@ pub trait ServerOsApi: Send + Sync {
         _progress: &mut dyn FnMut(),
     ) -> Result<()> {
         Ok(())
-    }
-    /// Wait for queued client messages to reach their sockets, on the way out.
-    ///
-    /// `send_to_client` only queues; a per-client writer thread does the actual
-    /// write. Those threads are detached, so without this the process can exit
-    /// between "queued the `Exit`" and "wrote the `Exit`", and the client sees
-    /// a bare hangup instead of being told why the session ended.
-    fn flush_client_writers(&self, _deadline: Duration) {}
-    /// Whether this pane's process lives on another machine.
-    ///
-    /// The question every pid-shaped operation has to ask first. `id_to_child_pid`
-    /// holds nothing usable for a remote pane, and a pid from another machine is
-    /// worse than no pid: it will happily name an unrelated *local* process, so
-    /// a `kill` meant for a pane lands somewhere else entirely.
-    fn is_remote_pane(&self, _terminal_id: TerminalId) -> bool {
-        false
-    }
-    /// What the far side last reported about a remote pane: the cwd and
-    /// foreground command the local `sysinfo` and `tcgetpgrp` cannot see.
-    fn remote_pane_status(&self, _terminal_id: TerminalId) -> Option<RemoteStatus> {
-        None
-    }
-    /// Signal a remote pane's child, by name rather than by pid.
-    fn signal_remote_child(&self, _terminal_id: TerminalId, _signal: ChildSignal) -> Result<()> {
-        Err(anyhow!("this backend does not support remote panes"))
-    }
-    /// Every pane whose process lives on another machine.
-    ///
-    /// The backend's transport table is the one place that knows, so this is the
-    /// single source of truth rather than a second list kept in step by hand.
-    fn remote_pane_ids(&self) -> Vec<TerminalId> {
-        Vec::new()
-    }
-    /// What git last said about a remote pane's working directory, unparsed.
-    ///
-    /// Raw on purpose: `agent-service`'s `poll::repository` already turns exactly
-    /// this into a checkout identity, including the awkward part where a
-    /// repository with no commits writes its identity to stdout and *then* exits
-    /// 128. Parsing here would duplicate that and drift from it.
-    fn remote_pane_git_probe(
-        &self,
-        _terminal_id: TerminalId,
-        _cwd: &str,
-        _refresh_token: Option<&str>,
-    ) -> Result<Option<RemoteGitProbe>, String> {
-        Err("pane is not remote".into())
-    }
-    /// The machine a pane runs on, or `None` if it runs on this one.
-    fn remote_pane_host(&self, _terminal_id: TerminalId) -> Option<String> {
-        None
     }
     /// Hand a pane's supervisor over without killing it, so another session can
     /// take the running process. Defaulted to an error rather than a no-op: a
@@ -368,9 +278,147 @@ pub trait ServerOsApi: Send + Sync {
             "this backend does not support adopting remote panes from another session"
         ))
     }
-    fn cache_resizes(&mut self) {}
-    fn apply_cached_resizes(&mut self) -> Vec<(TerminalId, u16, u16)> {
+}
+
+/// Queries and signals for processes running on another machine.
+pub trait RemotePanes: Send + Sync {
+    /// Whether this pane's process lives on another machine.
+    ///
+    /// The question every pid-shaped operation has to ask first. `id_to_child_pid`
+    /// holds nothing usable for a remote pane, and a pid from another machine is
+    /// worse than no pid: it will happily name an unrelated *local* process, so
+    /// a `kill` meant for a pane lands somewhere else entirely.
+    fn is_remote_pane(&self, _terminal_id: TerminalId) -> bool {
+        false
+    }
+    /// What the far side last reported about a remote pane: the cwd and
+    /// foreground command the local `sysinfo` and `tcgetpgrp` cannot see.
+    fn remote_pane_status(&self, _terminal_id: TerminalId) -> Option<RemoteStatus> {
+        None
+    }
+    /// Signal a remote pane's child, by name rather than by pid.
+    fn signal_remote_child(&self, _terminal_id: TerminalId, _signal: ChildSignal) -> Result<()> {
+        Err(anyhow!("this backend does not support remote panes"))
+    }
+    /// Every pane whose process lives on another machine.
+    ///
+    /// The backend's transport table is the one place that knows, so this is the
+    /// single source of truth rather than a second list kept in step by hand.
+    fn remote_pane_ids(&self) -> Vec<TerminalId> {
         Vec::new()
+    }
+    /// What git last said about a remote pane's working directory, unparsed.
+    ///
+    /// Raw on purpose: `agent-service`'s `poll::repository` already turns exactly
+    /// this into a checkout identity, including the awkward part where a
+    /// repository with no commits writes its identity to stdout and *then* exits
+    /// 128. Parsing here would duplicate that and drift from it.
+    fn remote_pane_git_probe(
+        &self,
+        _terminal_id: TerminalId,
+        _cwd: &str,
+        _refresh_token: Option<&str>,
+    ) -> Result<Option<RemoteGitProbe>, String> {
+        Err("pane is not remote".into())
+    }
+    /// The machine a pane runs on, or `None` if it runs on this one.
+    fn remote_pane_host(&self, _terminal_id: TerminalId) -> Option<String> {
+        None
+    }
+}
+
+/// Server-side client connections and ordered output delivery.
+pub trait ClientTransport: Send + Sync {
+    fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()>;
+    fn new_client(
+        &mut self,
+        client_id: ClientId,
+        stream: LocalSocketStream,
+    ) -> Result<IpcReceiverWithContext<ClientToServerMsg>>;
+    fn remove_client(&mut self, client_id: ClientId) -> Result<()>;
+    /// A connected client's render backlog. The screen skips a frame while every
+    /// client is behind, so dirty state accumulates into one later frame instead
+    /// of queueing diffs the clients cannot drain.
+    ///
+    /// Atomically inspect the queue and, if it is at or above `threshold`, arm `ready` to be
+    /// called once. Clone it only when arming: most clients are not behind. Invoke the callback
+    /// after draining below the threshold or closing, outside locks.
+    ///
+    /// A default of none: test fakes have no writers to fall behind. Implementations must also
+    /// return none after logging a failed backlog query; writer failure must not panic the screen.
+    fn client_render_backlog_and_notify(
+        &self,
+        _client_id: ClientId,
+        _threshold: usize,
+        _ready: &RenderReady,
+    ) -> Option<RenderBacklog> {
+        None
+    }
+    /// Wait for queued client messages to reach their sockets, on the way out.
+    ///
+    /// `send_to_client` only queues; a per-client writer thread does the actual
+    /// write. Those threads are detached, so without this the process can exit
+    /// between "queued the `Exit`" and "wrote the `Exit`", and the client sees
+    /// a bare hangup instead of being told why the session ended.
+    fn flush_client_writers(&self, _deadline: Duration) {}
+}
+
+/// Process metadata, palette, and file access used by the server.
+pub trait ServerEnvironment: Send + Sync {
+    fn load_palette(&self) -> Palette;
+    /// Returns the current working directory for a given pid
+    fn get_cwd(&self, pid: ProcessId) -> Option<PathBuf>;
+    /// Returns the current working directory for multiple pids
+    fn get_cwds(
+        &self,
+        _pids: Vec<ProcessId>,
+    ) -> (HashMap<ProcessId, PathBuf>, HashMap<ProcessId, Vec<String>>) {
+        (HashMap::new(), HashMap::new())
+    }
+    /// Get a list of all running commands by their parent process id
+    fn get_all_cmds_by_ppid(&self, _post_hook: &Option<String>) -> HashMap<String, Vec<String>> {
+        HashMap::new()
+    }
+    /// For each `(terminal_id, shell_pid)` pane, return the foreground command running in its
+    /// controlling terminal, keyed by `terminal_id`.
+    fn get_foreground_cmds(
+        &self,
+        _panes: &[(TerminalId, ProcessId)],
+        _post_hook: &Option<String>,
+    ) -> HashMap<TerminalId, Vec<String>> {
+        HashMap::new()
+    }
+    /// Writes the given buffer to a string
+    fn write_to_file(&mut self, buf: String, file: Option<String>) -> Result<()>;
+}
+
+/// The complete server OS boundary. Consumers use a capability trait when they need only one part.
+pub trait ServerOsApi:
+    TerminalIo
+    + TerminalProcesses
+    + TerminalSupervision
+    + RemotePanes
+    + ClientTransport
+    + ServerEnvironment
+{
+    /// Returns a [`Box`] pointer to this [`ServerOsApi`] struct.
+    fn box_clone(&self) -> Box<dyn ServerOsApi>;
+}
+
+/// Every cloneable backend that provides each capability is the complete boundary.
+impl<T> ServerOsApi for T
+where
+    T: TerminalIo
+        + TerminalProcesses
+        + TerminalSupervision
+        + RemotePanes
+        + ClientTransport
+        + ServerEnvironment
+        + Clone
+        + 'static,
+{
+    fn box_clone(&self) -> Box<dyn ServerOsApi> {
+        Box::new(self.clone())
     }
 }
 

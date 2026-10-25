@@ -1,6 +1,6 @@
 //! Semantic checks across PTY ingestion, pane diffs, and host serialization.
 use super::TerminalPane;
-use crate::pane::Pane;
+use crate::pane::{Pane, TerminalPaneIo};
 use crate::panes::{KittyImageStore, LinkHandler, SixelImageStore};
 use hegel::generators;
 use std::{

@@ -1,8 +1,7 @@
 //! Translate native agent reports while retaining hook validation and input limits.
+use super::parse_pane_id;
 use std::path::PathBuf;
-use std::str::FromStr;
 use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
-use yinz_types::data::PaneId;
 use yinz_types::input::actions::{hook_report_actions, Action};
 
 pub(super) fn agent_report(
@@ -19,13 +18,7 @@ pub(super) fn agent_report(
         Some(id) => id,
         None => return Err("No --pane-id provided and no resolved caller pane".to_string()),
     };
-    let pane_id = PaneId::from_str(&pane_id_str).map_err(|_| {
-        format!(
-            "Malformed pane id: {}, expecting either a bare integer (eg. 1), a \
-                 terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)",
-            pane_id_str
-        )
-    })?;
+    let pane_id = parse_pane_id(&pane_id_str)?;
     let kind = kind
         .map(|kind| kind.trim().to_lowercase())
         .filter(|kind| !kind.is_empty())

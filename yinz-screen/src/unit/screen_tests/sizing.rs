@@ -1,4 +1,5 @@
 use super::*;
+use yinz_panes::pane::TerminalPaneIo;
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TabPosition;
 

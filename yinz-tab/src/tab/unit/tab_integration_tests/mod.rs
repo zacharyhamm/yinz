@@ -8,6 +8,10 @@ use crate::{
     plugins::PluginInstruction, thread_bus::ThreadSenders, ClientId,
 };
 use std::sync::Arc;
+use yinz_bus::os_input_output::{
+    ClientTransport, RemotePanes, ServerEnvironment, TerminalIo, TerminalProcesses,
+    TerminalSupervision,
+};
 use yinz_types::input::options::PaneFrameStyle;
 use yinz_types::internal_ids::ProcessId;
 use yinz_types::internal_ids::TabId;
@@ -58,7 +62,7 @@ struct FakeInputOutput {
     remote_panes: Arc<Mutex<HashSet<TerminalId>>>,
 }
 
-impl ServerOsApi for FakeInputOutput {
+impl TerminalIo for FakeInputOutput {
     fn set_terminal_size_using_terminal_id(
         &self,
         _id: TerminalId,
@@ -69,14 +73,6 @@ impl ServerOsApi for FakeInputOutput {
     ) -> Result<()> {
         // noop
         Ok(())
-    }
-    fn spawn_terminal(
-        &self,
-        _file_to_open: TerminalAction,
-        _quit_db: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-        _default_editor: Option<PathBuf>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
-        unimplemented!()
     }
     fn write_to_tty_stdin(&self, id: TerminalId, buf: &[u8]) -> Result<usize> {
         self.tty_stdin_bytes
@@ -90,44 +86,22 @@ impl ServerOsApi for FakeInputOutput {
     fn tcdrain(&self, _id: TerminalId) -> Result<()> {
         unimplemented!()
     }
-    fn is_remote_pane(&self, terminal_id: TerminalId) -> bool {
-        self.remote_panes.lock().unwrap().contains(&terminal_id)
+}
+
+impl TerminalProcesses for FakeInputOutput {
+    fn spawn_terminal(
+        &self,
+        _file_to_open: TerminalAction,
+        _quit_db: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+        _default_editor: Option<PathBuf>,
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
+        unimplemented!()
     }
     fn kill(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
     fn force_kill(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
-    }
-    fn box_clone(&self) -> Box<dyn ServerOsApi> {
-        Box::new((*self).clone())
-    }
-    fn send_to_client(&self, _client_id: ClientId, _msg: ServerToClientMsg) -> Result<()> {
-        unimplemented!()
-    }
-    fn new_client(
-        &mut self,
-        _client_id: ClientId,
-        _stream: LocalSocketStream,
-    ) -> Result<IpcReceiverWithContext<ClientToServerMsg>> {
-        unimplemented!()
-    }
-    fn remove_client(&mut self, _client_id: ClientId) -> Result<()> {
-        unimplemented!()
-    }
-    fn load_palette(&self) -> Palette {
-        unimplemented!()
-    }
-    fn get_cwd(&self, _pid: ProcessId) -> Option<PathBuf> {
-        unimplemented!()
-    }
-    fn write_to_file(&mut self, buf: String, name: Option<String>) -> Result<()> {
-        let f: String = match name {
-            Some(x) => x,
-            None => "tmp-name".to_owned(),
-        };
-        self.file_dumps.lock().to_anyhow()?.insert(f, buf);
-        Ok(())
     }
     fn re_run_command_in_terminal(
         &self,
@@ -145,6 +119,47 @@ impl ServerOsApi for FakeInputOutput {
     }
     fn send_sigcont(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
+    }
+}
+
+impl TerminalSupervision for FakeInputOutput {}
+
+impl RemotePanes for FakeInputOutput {
+    fn is_remote_pane(&self, terminal_id: TerminalId) -> bool {
+        self.remote_panes.lock().unwrap().contains(&terminal_id)
+    }
+}
+
+impl ClientTransport for FakeInputOutput {
+    fn send_to_client(&self, _client_id: ClientId, _msg: ServerToClientMsg) -> Result<()> {
+        unimplemented!()
+    }
+    fn new_client(
+        &mut self,
+        _client_id: ClientId,
+        _stream: LocalSocketStream,
+    ) -> Result<IpcReceiverWithContext<ClientToServerMsg>> {
+        unimplemented!()
+    }
+    fn remove_client(&mut self, _client_id: ClientId) -> Result<()> {
+        unimplemented!()
+    }
+}
+
+impl ServerEnvironment for FakeInputOutput {
+    fn load_palette(&self) -> Palette {
+        unimplemented!()
+    }
+    fn get_cwd(&self, _pid: ProcessId) -> Option<PathBuf> {
+        unimplemented!()
+    }
+    fn write_to_file(&mut self, buf: String, name: Option<String>) -> Result<()> {
+        let f: String = match name {
+            Some(x) => x,
+            None => "tmp-name".to_owned(),
+        };
+        self.file_dumps.lock().to_anyhow()?.insert(f, buf);
+        Ok(())
     }
 }
 

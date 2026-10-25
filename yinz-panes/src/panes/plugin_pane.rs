@@ -6,7 +6,7 @@ use yinz_types::internal_ids::PluginId;
 use yinz_types::mouse::{MouseEvent, MouseEventType};
 
 use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
-use crate::pane::{AdjustedInput, Pane};
+use crate::pane::{AdjustedInput, Pane, PluginPaneControl};
 use crate::panes::{
     grid::Grid,
     kitty_graphics::{KittyApcInterceptor, KittyHostSupport, KittyImageStore, Piece},
@@ -211,7 +211,63 @@ impl PluginPane {
     }
 }
 
+impl PluginPaneControl for PluginPane {
+    fn update_plugin_location(&mut self, location: RunPluginLocation) {
+        let plugin = match &mut self.invoked_with {
+            Some(Run::Plugin(RunPluginOrAlias::RunPlugin(plugin))) => Some(plugin),
+            Some(Run::Plugin(RunPluginOrAlias::Alias(alias))) => alias.run_plugin.as_mut(),
+            _ => None,
+        };
+        if let Some(plugin) = plugin {
+            plugin.location = location;
+        }
+    }
+    fn update_loading_indication(&mut self, loading_indication: LoadingIndication) {
+        if self.loading_indication.ended && !loading_indication.is_error() {
+            return;
+        }
+        self.loading_indication.merge(loading_indication);
+        self.handle_plugin_bytes_for_all_clients(
+            self.loading_indication.to_string().as_bytes().to_vec(),
+        );
+    }
+    fn start_loading_indication(&mut self, loading_indication: LoadingIndication) {
+        for grid in self.grids.values_mut() {
+            grid.reset_terminal_state();
+        }
+        self.vte_parsers.clear();
+        self.kitty_interceptors.clear();
+        self.loading_indication.merge(loading_indication);
+        self.handle_plugin_bytes_for_all_clients(
+            self.loading_indication.to_string().as_bytes().to_vec(),
+        );
+    }
+    fn progress_animation_offset(&mut self) {
+        if self.loading_indication.ended {
+            return;
+        }
+        // The shared clock ticks far faster than the indicator changes, so this is a no-op on most
+        // frames - without the comparison a 16ms clock would repaint the whole plugin grid sixty
+        // times a second to draw the same four characters.
+        //
+        // Compared on the rendered string rather than on the dot count, because the dot count is
+        // not the only thing that moves: the indicator draws nothing at all for its first 400ms
+        // (see `LoadingIndication::fmt`), and gating on the count alone would skip the frame where
+        // it first becomes visible and then sit on that decision until the next dot.
+        let rendered = self.loading_indication.to_string();
+        if self.last_loading_indication.as_deref() == Some(rendered.as_str()) {
+            return;
+        }
+        let bytes = rendered.as_bytes().to_vec();
+        self.last_loading_indication = Some(rendered);
+        self.handle_plugin_bytes_for_all_clients(bytes);
+    }
+}
+
 impl Pane for PluginPane {
+    fn plugin_control_mut(&mut self) -> Option<&mut dyn PluginPaneControl> {
+        Some(self)
+    }
     fn host_colors(&self) -> (PaletteColor, PaletteColor) {
         let palette = self.terminal_emulator_colors.borrow();
         (palette.fg, palette.bg)
@@ -1068,16 +1124,6 @@ impl Pane for PluginPane {
             .filter(|override_| override_.applies_to(client_id))
             .map_or(1.0, |override_| override_.strength(Instant::now()))
     }
-    fn update_plugin_location(&mut self, location: RunPluginLocation) {
-        let plugin = match &mut self.invoked_with {
-            Some(Run::Plugin(RunPluginOrAlias::RunPlugin(plugin))) => Some(plugin),
-            Some(Run::Plugin(RunPluginOrAlias::Alias(alias))) => alias.run_plugin.as_mut(),
-            _ => None,
-        };
-        if let Some(plugin) = plugin {
-            plugin.location = location;
-        }
-    }
     fn invoked_with(&self) -> &Option<Run> {
         &self.invoked_with
     }
@@ -1092,46 +1138,6 @@ impl Pane for PluginPane {
             self.pane_title = title;
             self.set_should_render(true);
         }
-    }
-    fn update_loading_indication(&mut self, loading_indication: LoadingIndication) {
-        if self.loading_indication.ended && !loading_indication.is_error() {
-            return;
-        }
-        self.loading_indication.merge(loading_indication);
-        self.handle_plugin_bytes_for_all_clients(
-            self.loading_indication.to_string().as_bytes().to_vec(),
-        );
-    }
-    fn start_loading_indication(&mut self, loading_indication: LoadingIndication) {
-        for grid in self.grids.values_mut() {
-            grid.reset_terminal_state();
-        }
-        self.vte_parsers.clear();
-        self.kitty_interceptors.clear();
-        self.loading_indication.merge(loading_indication);
-        self.handle_plugin_bytes_for_all_clients(
-            self.loading_indication.to_string().as_bytes().to_vec(),
-        );
-    }
-    fn progress_animation_offset(&mut self) {
-        if self.loading_indication.ended {
-            return;
-        }
-        // The shared clock ticks far faster than the indicator changes, so this is a no-op on most
-        // frames - without the comparison a 16ms clock would repaint the whole plugin grid sixty
-        // times a second to draw the same four characters.
-        //
-        // Compared on the rendered string rather than on the dot count, because the dot count is
-        // not the only thing that moves: the indicator draws nothing at all for its first 400ms
-        // (see `LoadingIndication::fmt`), and gating on the count alone would skip the frame where
-        // it first becomes visible and then sit on that decision until the next dot.
-        let rendered = self.loading_indication.to_string();
-        if self.last_loading_indication.as_deref() == Some(rendered.as_str()) {
-            return;
-        }
-        let bytes = rendered.as_bytes().to_vec();
-        self.last_loading_indication = Some(rendered);
-        self.handle_plugin_bytes_for_all_clients(bytes);
     }
     fn current_title(&self) -> String {
         if self.pane_name.is_empty() {

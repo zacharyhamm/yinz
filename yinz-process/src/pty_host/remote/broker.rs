@@ -967,7 +967,17 @@ fn pump_control(
                         width_in_pixels,
                         height_in_pixels,
                     }) => {
-                        set_winsize(master_fd, cols, rows, width_in_pixels, height_in_pixels);
+                        crate::pty_host::terminal::resize(
+                            master_fd,
+                            &nix::pty::Winsize {
+                                ws_col: cols,
+                                ws_row: rows,
+                                ws_xpixel: width_in_pixels,
+                                ws_ypixel: height_in_pixels,
+                            },
+                        )
+                        .context("failed to resize remote pane")
+                        .non_fatal();
                     },
                     ServerToBrokerMsg::GetGitProbe { cwd, refresh_token } => {
                         if cwd.is_empty() {
@@ -1002,23 +1012,12 @@ fn pump_control(
     }
 }
 
-fn set_winsize(fd: std::os::unix::io::RawFd, cols: u16, rows: u16, xpixel: u16, ypixel: u16) {
-    let winsize = nix::pty::Winsize {
-        ws_col: cols,
-        ws_row: rows,
-        ws_xpixel: xpixel,
-        ws_ypixel: ypixel,
-    };
-    unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &winsize) };
-}
-
 /// Resolve a symbolic signal against the child this broker owns.
 ///
 /// The pid never crosses the wire in either direction, which is the point: a pid
 /// from the server's machine would name an unrelated process here, and this
 /// child's pid would name an unrelated process there.
 fn signal_child(child_pid: ProcessId, signal: ChildSignal) {
-    let pid = super::super::kernel_pid(child_pid);
     let sig = match signal {
         ChildSignal::Hup => nix::sys::signal::Signal::SIGHUP,
         ChildSignal::Int => nix::sys::signal::Signal::SIGINT,
@@ -1028,11 +1027,9 @@ fn signal_child(child_pid: ProcessId, signal: ChildSignal) {
         // pane ever reports a suspend, so nothing asks for this.
         ChildSignal::Cont => nix::sys::signal::Signal::SIGCONT,
     };
-    let group_signalled = super::super::process_group(pid)
-        .is_ok_and(|group| nix::sys::signal::kill(group, Some(sig)).is_ok());
-    if !group_signalled {
-        let _ = nix::sys::signal::kill(pid, Some(sig));
-    }
+    crate::pty_host::terminal::signal_group_or_leader(child_pid, sig)
+        .context("failed to signal remote pane")
+        .non_fatal();
 }
 
 // --- daemon entry points ---

@@ -93,6 +93,7 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
             .clone()
             .context("no OS input API found")
             .with_context(err_context)?;
+        let os_input: &mut dyn crate::os_input_output::TerminalIo = os_input.as_mut();
 
         // Process the instruction if we received one
         if let Some((event, mut err_ctx)) = event {

@@ -546,6 +546,38 @@ fn compile_only_diagnostics_include_the_failing_source() {
 }
 
 #[test]
+fn agent_model_boundary_rejects_unknown_operations_and_invalid_arguments() {
+    let mut runtime = Runtime::new(|_| panic!("pure models must not call the host")).unwrap();
+    for (namespace, operation, args) in [
+        ("unknown", "FetchLimit", json!([])),
+        ("store", "unknown", json!([])),
+        ("agents", "NormalizePath", json!([42])),
+        ("agents", "NormalizePath", json!([])),
+        ("store", "OwnedBy", json!({"host_id": true})),
+        ("providers", "WithSnapshot", json!([])),
+    ] {
+        assert!(
+            runtime
+                .invoke(
+                    "yinz-agent-model",
+                    vec![json!(namespace), json!(operation), args],
+                )
+                .is_err(),
+            "{namespace}.{operation} accepted invalid input"
+        );
+    }
+    assert_eq!(
+        runtime
+            .invoke(
+                "yinz-agent-model",
+                vec![json!("store"), json!("FetchLimit"), json!([])],
+            )
+            .unwrap(),
+        json!(agent_proto::store::LIST_FETCH_LIMIT)
+    );
+}
+
+#[test]
 fn agent_models_use_explicit_provider_snapshots_without_cross_runtime_leaks() {
     use yinz_types::agent::provider::{self, AgentProvider};
     let provider = AgentProvider {

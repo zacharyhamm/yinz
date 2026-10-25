@@ -695,7 +695,7 @@ fn terminal_background_reply(screen: &mut Screen, tab: TabId, id: u32) -> Vec<Ve
         .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(id)))
         .unwrap();
     pane.handle_pty_bytes(b"\x1b]11;?\x07".to_vec());
-    pane.drain_messages_to_pty()
+    pane.terminal_io_mut().unwrap().drain_messages_to_pty()
 }
 
 #[test]

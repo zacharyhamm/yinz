@@ -3,9 +3,8 @@ use futures_util::{future::OptionFuture, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -13,15 +12,9 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use yinz_runtime::agent::codex::bridge_options;
+use yinz_runtime::agent::registry;
+use yinz_runtime::agent::report::ROUTE_ENV;
 use yinz_runtime::errors::prelude::*;
-
-const ROUTE_ENV: &[&str] = &[
-    "YINZ_PANE_REF",
-    "YINZ_PANE_ID",
-    "YINZ_SESSION_NAME",
-    "YINZ_REMOTE_PANE_TOKEN",
-    "YINZ_SOCKET_DIR",
-];
 
 // Both peers are trusted local Codex processes, and Codex's own UI accepts the daemon's
 // single-frame `plugin/list` reply, which outgrew tungstenite's 16 MiB frame default.
@@ -46,40 +39,16 @@ struct Binding {
 }
 
 struct Registration {
-    dir: tempfile::TempDir,
-    _lease: File,
-    env: HashMap<String, String>,
+    registry: registry::Registration,
     /// The yinz binary that announces selected conversations to the pane, if any.
     reporter: Option<PathBuf>,
     backend_socket: Option<PathBuf>,
 }
 
 impl Registration {
-    fn new(root: &Path, mut env: HashMap<String, String>) -> Result<Self> {
-        let sockets = std::path::absolute(&*yinz_runtime::consts::YINZ_SOCK_DIR)
-            .context("resolve Codex pane socket directory")?;
-        // YINZ_SOCKET_DIR takes the base; YINZ_SOCK_DIR appends the contract version.
-        env.insert(
-            "YINZ_SOCKET_DIR".into(),
-            sockets
-                .parent()
-                .and_then(Path::to_str)
-                .context("encode Codex pane socket directory")?
-                .into(),
-        );
-        std::fs::create_dir_all(root).context("create Codex pane registry")?;
-        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))
-            .context("protect Codex pane registry")?;
-        let dir = tempfile::Builder::new()
-            .prefix("ui-")
-            .tempdir_in(root)
-            .context("create Codex UI registration")?;
-        let lease = File::create(dir.path().join("lease")).context("create Codex UI lease")?;
-        lease.lock().context("hold Codex UI lease")?;
+    fn new(root: &Path, env: HashMap<String, String>) -> Result<Self> {
         Ok(Self {
-            dir,
-            _lease: lease,
-            env,
+            registry: registry::Registration::new(root, "ui-", env).context("register Codex UI")?,
             reporter: None,
             backend_socket: sandboxed().then(|| PathBuf::from(PRIVATE_BACKEND)),
         })
@@ -116,7 +85,7 @@ impl Registration {
             return;
         };
         // Finish reporting before the UI sees the selection or any later request is forwarded.
-        forward(yinz, &self.env, hook.to_string().as_bytes())
+        forward(yinz, &self.registry.env, hook.to_string().as_bytes())
             .await
             .context("report Codex lifecycle to its pane")
             .non_fatal();
@@ -128,63 +97,17 @@ impl Registration {
         }
         let binding = Binding {
             thread_id: thread_id.into(),
-            env: self.env.clone(),
+            env: self.registry.env.clone(),
         };
-        let mut file = tempfile::NamedTempFile::new_in(self.dir.path())
-            .context("prepare Codex pane binding")?;
-        serde_json::to_writer(&mut file, &binding).context("write Codex pane binding")?;
-        file.persist(self.dir.path().join("binding.json"))
+        registry::write_json(&self.registry.dir.path().join("binding.json"), &binding)
             .context("publish Codex pane binding")?;
         Ok(())
     }
 }
 
 fn binding_for(root: &Path, thread_id: &str) -> Result<Option<Binding>> {
-    let entries = match std::fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e).context("read Codex pane registry"),
-    };
-    // ponytail: scan the open UIs; index by conversation if thousands of panes make this hot.
-    let mut latest = None;
-    for entry in entries {
-        let entry = entry.context("read Codex UI registration")?;
-        let read = || -> Result<Option<_>> {
-            let lease = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                .open(entry.path().join("lease"))
-                .context("open Codex UI lease")?;
-            match lease.try_lock() {
-                // A dead launcher cannot own a conversation, even after an unclean exit.
-                Ok(()) => return Ok(None),
-                Err(TryLockError::WouldBlock) => {},
-                Err(TryLockError::Error(e)) => return Err(e).context("check Codex UI lease"),
-            }
-            let file = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                .open(entry.path().join("binding.json"))
-                .context("open Codex pane binding")?;
-            let metadata = file.metadata().context("inspect Codex pane binding")?;
-            if !metadata.is_file() || metadata.len() > 16 * 1024 {
-                return Ok(None);
-            }
-            let binding: Binding =
-                serde_json::from_reader(file.take(16 * 1024)).context("read Codex pane binding")?;
-            (binding.thread_id == thread_id)
-                .then(|| metadata.modified().map(|modified| (modified, binding)))
-                .transpose()
-                .context("read Codex pane binding time")
-        };
-        // Registrations are created and removed concurrently with hooks.
-        if let Ok(Some(candidate)) = read()
-            && latest.as_ref().is_none_or(|(time, _)| candidate.0 > *time)
-        {
-            latest = Some(candidate);
-        }
-    }
-    Ok(latest.map(|(_, binding)| binding))
+    registry::latest_binding(root, |binding: &Binding| binding.thread_id == thread_id)
+        .context("read Codex pane registry")
 }
 
 /// Give a selected conversation's tool commands the pane's routing environment.
@@ -669,7 +592,7 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin>(
                     Message::Text(text) => {
                         let mut value: Value = serde_json::from_str(&text).context("parse Codex UI message")?;
                         conversations.request(&value, registration)?;
-                        let text = if inject_pane_env(&mut value, &registration.env) {
+                        let text = if inject_pane_env(&mut value, &registration.registry.env) {
                             value.to_string().into()
                         } else {
                             text
@@ -795,11 +718,11 @@ fn launch_inner(program: &Path, args: &[String]) -> Result<std::process::ExitSta
     // Remote UIs read trust from the backend before their thread config overrides take effect.
     if !options.project_overrides.is_empty() && registration.backend_socket.is_none() {
         std::fs::set_permissions(
-            registration.dir.path(),
+            registration.registry.dir.path(),
             std::fs::Permissions::from_mode(0o700),
         )
         .context("protect private Codex backend directory")?;
-        registration.backend_socket = Some(registration.dir.path().join("backend.sock"));
+        registration.backend_socket = Some(registration.registry.dir.path().join("backend.sock"));
     }
     if registration.backend_socket.is_none() {
         let status = Command::new(program)
@@ -836,7 +759,7 @@ fn launch_inner(program: &Path, args: &[String]) -> Result<std::process::ExitSta
                     return Ok(std::process::ExitStatus::from_raw(1 << 8));
                 }
             }
-            let path = registration.dir.path().join("ui.sock");
+            let path = registration.registry.dir.path().join("ui.sock");
             yinz_process::pty_host::protocol::check_socket_path_length(&path, 0)?;
             let listener = tokio::net::UnixListener::bind(&path).context("listen for Codex UI")?;
             let mut command = Command::new(program);
@@ -1087,83 +1010,64 @@ async fn inherit_worktree_trust<S: AsyncRead + AsyncWrite + Unpin>(
 
 /// Dispatch a hook by its conversation, never by the shared daemon's inherited pane.
 pub fn report(yinz: &Path) -> Result<()> {
-    let trace = std::sync::Arc::new(std::sync::Mutex::new(
-        yinz_runtime::agent::report::ReportTrace::new(std::time::Instant::now()),
-    ));
-    yinz_runtime::agent::report::reporting_watchdog(trace.clone())?;
-    {
-        let mut trace = trace
-            .lock()
-            .map_err(|_| anyhow!("Codex hook trace poisoned"))?;
-        trace.kind = "codex".into();
-        trace.enter("codex_route");
-    }
-    let mut raw = String::new();
-    std::io::stdin()
-        .read_to_string(&mut raw)
-        .context("read Codex hook")?;
-    let event: Value = serde_json::from_str(&raw).context("parse Codex hook")?;
-    let thread = event["session_id"]
-        .as_str()
-        .context("Codex hook has no conversation id")?;
-    let binding = binding_for(&directory(), thread)?;
-    let env = match binding {
-        Some(binding) => binding.env,
-        None => {
-            // Standalone Codex still runs underneath its pane's original process. A daemon
-            // is detached from that ancestry, so an unregistered daemon hook must be ignored.
-            let env: HashMap<_, _> = ROUTE_ENV
-                .iter()
-                .filter_map(|key| std::env::var(key).ok().map(|value| ((*key).into(), value)))
-                .collect();
-            if !owned_by_ancestor(&env) {
-                if let Ok(trace) = trace.lock() {
-                    trace.record("codex_route", trace.started.elapsed(), "unbound");
+    yinz_runtime::agent::report::traced_report("codex", |trace| {
+        if let Ok(mut trace) = trace.lock() {
+            trace.enter("codex_route");
+        }
+        let mut raw = String::new();
+        std::io::stdin()
+            .read_to_string(&mut raw)
+            .context("read Codex hook")?;
+        if let Ok(mut trace) = trace.lock() {
+            trace.payload_bytes = raw.len();
+        }
+        let event: Value = serde_json::from_str(&raw).context("parse Codex hook")?;
+        if let Ok(mut trace) = trace.lock() {
+            trace.event = event["hook_event_name"].as_str().unwrap_or_default().into();
+        }
+        let thread = event["session_id"]
+            .as_str()
+            .context("Codex hook has no conversation id")?;
+        let binding = binding_for(&directory(), thread)?;
+        let env = match binding {
+            Some(binding) => binding.env,
+            None => {
+                // Standalone Codex still runs underneath its pane's original process. A daemon
+                // is detached from that ancestry, so an unregistered daemon hook must be ignored.
+                let env: HashMap<_, _> = ROUTE_ENV
+                    .iter()
+                    .filter_map(|key| std::env::var(key).ok().map(|value| ((*key).into(), value)))
+                    .collect();
+                if !owned_by_ancestor(&env) {
+                    if let Ok(trace) = trace.lock() {
+                        trace.record("codex_route", trace.started.elapsed(), "unbound");
+                    }
+                    return Ok(());
                 }
-                return Ok(());
-            }
-            env
-        },
-    };
-    let raw = prune_for_forward(raw)?;
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("start Codex hook forwarding")?
-        .block_on(forward(yinz, &env, raw.as_bytes()))
+                env
+            },
+        };
+        let raw = prune_for_forward(raw)?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("start Codex hook forwarding")?
+            .block_on(forward(yinz, &env, raw.as_bytes()))
+    })
 }
 
 fn prune_for_forward(raw: String) -> Result<String> {
-    if raw.len() <= yinz_types::agent::HOOK_BROADCAST_MAX_BYTES {
-        return Ok(raw);
-    }
-    // Keep prompt fingerprints and completion identity within the remote broker's intake cap.
-    let (event, json) = yinz_runtime::agent::hooks::parse_hook_event("codex", raw)
-        .context("invalid Codex hook JSON")?;
-    Ok(event.broadcast_json(json))
+    yinz_runtime::agent::hooks::prune_for_forward("codex", raw).context("invalid Codex hook JSON")
 }
 
 /// Deliver one raw Codex hook to the pane that `env` identifies.
 async fn forward(yinz: &Path, env: &HashMap<String, String>, raw: &[u8]) -> Result<()> {
-    let mut command = tokio::process::Command::new(yinz);
-    for key in ROUTE_ENV {
-        command.env_remove(key);
-    }
-    if env
-        .get("YINZ_REMOTE_PANE_TOKEN")
-        .is_some_and(|token| !token.is_empty())
-    {
-        command.args(["--pty-broker", "report", "codex"]);
-    } else {
-        command.args(["action", "agent-report", "--hook-json", "--kind", "codex"]);
-    }
-    let mut child = command
-        .envs(env)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .context("forward Codex hook to its pane")?;
+    let mut child = tokio::process::Command::from(yinz_runtime::agent::report::forwarding_command(
+        yinz, "codex", env,
+    ))
+    .kill_on_drop(true)
+    .spawn()
+    .context("forward Codex hook to its pane")?;
     let mut input = child.stdin.take().context("open Codex report input")?;
     input
         .write_all(raw)

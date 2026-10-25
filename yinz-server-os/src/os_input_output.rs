@@ -1,4 +1,8 @@
 use crate::{ClientId, PaneId, TerminalId};
+use yinz_bus::os_input_output::{
+    ClientTransport, RemotePanes, ServerEnvironment, TerminalIo, TerminalProcesses,
+    TerminalSupervision,
+};
 use yinz_types::internal_ids::{ProcessId, SessionName};
 use yinz_types::style::default_palette;
 
@@ -14,7 +18,6 @@ use crate::pty_host::remote::{
 };
 use yinz_bus::os_input_output::{
     AdoptedTerminal, AsyncReader, RemoteEndpoint, RenderBacklog, RenderReady, ResolvedSpawn,
-    ServerOsApi,
 };
 use yinz_types::command::PaneTarget;
 use yinz_types::data::RemotePaneHandoff;
@@ -1064,7 +1067,7 @@ fn check_bubblewrap_launch(_root: &Path, _cmd: &RunCommand) -> Result<()> {
     Err(anyhow!("Bubblewrap agent environments require Linux"))
 }
 
-impl ServerOsApi for ServerOsInputOutput {
+impl TerminalIo for ServerOsInputOutput {
     fn set_terminal_size_using_terminal_id(
         &self,
         id: TerminalId,
@@ -1080,6 +1083,52 @@ impl ServerOsApi for ServerOsInputOutput {
         self.pty_backend
             .set_terminal_size(id, cols, rows, width_in_pixels, height_in_pixels)
     }
+    fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize> {
+        self.pty_backend.write_to_tty_stdin(terminal_id, buf)
+    }
+    fn retain_agent_theme(
+        &self,
+        terminal_id: TerminalId,
+        event: yinz_types::agent::theme::AgentThemeEvent,
+    ) -> Result<()> {
+        self.pty_backend.retain_agent_theme(terminal_id, event)
+    }
+    fn tcdrain(&self, terminal_id: TerminalId) -> Result<()> {
+        self.pty_backend.tcdrain(terminal_id)
+    }
+    fn cache_resizes(&mut self) {
+        self.cached_resizes
+            .lock()
+            .unwrap()
+            .get_or_insert_with(BTreeMap::new);
+    }
+    fn apply_cached_resizes(&mut self) -> Vec<(TerminalId, u16, u16)> {
+        let mut applied = Vec::new();
+        let mut cached_resizes = self.cached_resizes.lock().unwrap().take();
+        if let Some(cached_resizes) = cached_resizes.as_mut() {
+            for (terminal_id, (cols, rows, width_in_pixels, height_in_pixels)) in
+                cached_resizes.iter()
+            {
+                // Report only the resizes that reached the pane.
+                match self.set_terminal_size_using_terminal_id(
+                    *terminal_id,
+                    *cols,
+                    *rows,
+                    *width_in_pixels,
+                    *height_in_pixels,
+                ) {
+                    Ok(()) => applied.push((*terminal_id, *cols, *rows)),
+                    Err(e) => Err::<(), _>(e)
+                        .context("failed to apply a cached resize")
+                        .non_fatal(),
+                }
+            }
+        }
+        applied
+    }
+}
+
+impl TerminalProcesses for ServerOsInputOutput {
     fn spawn_terminal(
         &self,
         terminal_action: TerminalAction,
@@ -1158,19 +1207,168 @@ impl ServerOsApi for ServerOsInputOutput {
         self.pty_backend.reserve_terminal_id(terminal_id);
         Ok(terminal_id)
     }
-    fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize> {
-        self.pty_backend.write_to_tty_stdin(terminal_id, buf)
+    fn kill(&self, pid: ProcessId) -> Result<()> {
+        self.pty_backend.kill(pid)
     }
-    fn retain_agent_theme(
+    fn force_kill(&self, pid: ProcessId) -> Result<()> {
+        self.pty_backend.force_kill(pid)
+    }
+    fn send_sigint(&self, pid: ProcessId) -> Result<()> {
+        self.pty_backend.send_sigint(pid)
+    }
+    fn send_sigcont(&self, pid: ProcessId) -> Result<()> {
+        self.pty_backend.send_sigcont(pid)
+    }
+    fn re_run_command_in_terminal(
         &self,
         terminal_id: TerminalId,
-        event: yinz_types::agent::theme::AgentThemeEvent,
+        run_command: RunCommand,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
+        // A held remote pane re-runs on the machine it was held on. Without this
+        // the command would quietly run *here* under the same pane, and the pane
+        // still open on the far machine would be left to the orphan timeout.
+        let target = run_command.target.clone();
+        let (run_command, rerun_command, endpoint) = self
+            .resolve_target(run_command, None)
+            .map_err(|e| resolve_failed(terminal_id, &target, e))?;
+        if endpoint.is_some() {
+            return self.rerun_resolved(
+                ResolvedSpawn {
+                    terminal_id,
+                    command: run_command,
+                    rerun_command,
+                    endpoint,
+                },
+                quit_cb,
+            );
+        }
+
+        self.clear_terminal_id(terminal_id).non_fatal();
+        let (async_reader, child_pid) = self.spawn_resolved_here(
+            ResolvedSpawn {
+                terminal_id,
+                command: run_command,
+                rerun_command,
+                endpoint,
+            },
+            quit_cb,
+        )?;
+        Ok((async_reader, Some(child_pid)))
+    }
+    fn resolve_rerun(
+        &self,
+        terminal_id: TerminalId,
+        run_command: RunCommand,
+        report_progress: &mut dyn FnMut(&str),
+    ) -> Result<ResolvedSpawn> {
+        ServerOsInputOutput::resolve_rerun(self, terminal_id, run_command, report_progress)
+    }
+    fn rerun_resolved(
+        &self,
+        resolved: ResolvedSpawn,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
+        ServerOsInputOutput::rerun_resolved(self, resolved, quit_cb)
+    }
+    fn clear_terminal_id(&self, terminal_id: TerminalId) -> Result<()> {
+        self.pty_backend.clear_terminal_id(terminal_id)
+    }
+}
+
+impl TerminalSupervision for ServerOsInputOutput {
+    fn set_child_state_callback(&self, cb: ChildStateCb) {
+        self.pty_backend.set_child_state_callback(cb)
+    }
+    fn set_agent_report_callback(&self, cb: AgentReportCb) {
+        self.pty_backend.set_agent_report_callback(cb)
+    }
+    #[cfg(not(windows))]
+    fn set_pty_host_enabled(&self, enabled: bool) {
+        self.pty_backend.set_pty_host_enabled(enabled);
+    }
+    #[cfg(not(windows))]
+    fn begin_confirmed_pty_host_shutdown(&self) -> Result<()> {
+        self.pty_backend.begin_confirmed_pty_host_shutdown()
+    }
+    fn confirm_pty_host_shutdown(&self) -> Result<()> {
+        self.pty_backend.confirm_pty_host_shutdown()
+    }
+    fn shutdown_pty_hosts(&self) {
+        self.pty_backend.shutdown_pty_hosts();
+        self.remote_hosts.shutdown();
+    }
+    #[cfg(not(windows))]
+    fn rename_pty_host_session(&self, old: &SessionName, new: &SessionName) -> Result<()> {
+        self.pty_backend.rename_pty_host_session(old, new)
+    }
+    #[cfg(not(windows))]
+    fn terminate_orphaned_pty_hosts(
+        &self,
+        session: &str,
+        progress: &mut dyn FnMut(),
     ) -> Result<()> {
-        self.pty_backend.retain_agent_theme(terminal_id, event)
+        crate::pty_host::cli::terminate_orphans_of_session_with_progress(session, progress)
+            .map(|_| ())
     }
-    fn tcdrain(&self, terminal_id: TerminalId) -> Result<()> {
-        self.pty_backend.tcdrain(terminal_id)
+    #[cfg(not(windows))]
+    fn release_terminal_for_warp(
+        &self,
+        terminal_id: TerminalId,
+        budget: Duration,
+    ) -> Result<ReleasedPane> {
+        self.pty_backend
+            .release_terminal_for_warp(terminal_id, budget)
     }
+    #[cfg(not(windows))]
+    fn check_terminal_can_be_warped(&self, terminal_id: TerminalId) -> Result<()> {
+        self.pty_backend.check_terminal_can_be_warped(terminal_id)
+    }
+    #[cfg(not(windows))]
+    fn adopt_terminal(
+        &self,
+        control_socket: &Path,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<AdoptedTerminal> {
+        self.pty_backend.adopt_terminal(control_socket, quit_cb)
+    }
+    /// The remote half of `adopt_terminal`, and structurally the same operation:
+    /// pick up a pane whose process someone else let go of.
+    ///
+    /// It lives here rather than on the backend because the reconnect belongs to
+    /// *this server's* `RemoteHosts` — the adopting session builds its own ssh
+    /// forward to the host rather than inheriting the releasing session's, which
+    /// is what makes the two sessions independent afterwards.
+    ///
+    /// `RemoteHosts::reconnect` is the same call the reader makes when a link
+    /// drops. From the broker's point of view a warp and an outage are the same
+    /// event, which is the reason this feature is small.
+    #[cfg(not(windows))]
+    fn adopt_remote_terminal(
+        &self,
+        handoff: &RemotePaneHandoff,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<AdoptedTerminal> {
+        let terminal_id = self
+            .pty_backend
+            .next_terminal_id()
+            .ok_or_else(|| anyhow!("failed to allocate a terminal id"))?;
+        self.pty_backend.reserve_terminal_id(terminal_id);
+        match self.resume_remote_pane(terminal_id, handoff, quit_cb) {
+            Ok(adopted) => Ok(adopted),
+            Err(e) => {
+                // Undo the reservation, but *not* through `clear_terminal_id` —
+                // there is no transport recorded to terminate, and a failed
+                // adoption must leave the pane running for the next caller, or
+                // the rollback has nothing to give back.
+                self.pty_backend.forget_reserved_terminal_id(terminal_id);
+                Err(e)
+            },
+        }
+    }
+}
+
+impl RemotePanes for ServerOsInputOutput {
     fn is_remote_pane(&self, terminal_id: TerminalId) -> bool {
         self.pty_backend.is_remote(terminal_id)
     }
@@ -1195,27 +1393,9 @@ impl ServerOsApi for ServerOsInputOutput {
     fn remote_pane_host(&self, terminal_id: TerminalId) -> Option<String> {
         self.pty_backend.remote_host(terminal_id)
     }
-    fn box_clone(&self) -> Box<dyn ServerOsApi> {
-        Box::new((*self).clone())
-    }
-    fn kill(&self, pid: ProcessId) -> Result<()> {
-        self.pty_backend.kill(pid)
-    }
-    fn force_kill(&self, pid: ProcessId) -> Result<()> {
-        self.pty_backend.force_kill(pid)
-    }
-    fn send_sigint(&self, pid: ProcessId) -> Result<()> {
-        self.pty_backend.send_sigint(pid)
-    }
-    fn send_sigcont(&self, pid: ProcessId) -> Result<()> {
-        self.pty_backend.send_sigcont(pid)
-    }
-    fn set_child_state_callback(&self, cb: ChildStateCb) {
-        self.pty_backend.set_child_state_callback(cb)
-    }
-    fn set_agent_report_callback(&self, cb: AgentReportCb) {
-        self.pty_backend.set_agent_report_callback(cb)
-    }
+}
+
+impl ClientTransport for ServerOsInputOutput {
     fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()> {
         let err_context = || format!("failed to send message to client {client_id}");
 
@@ -1230,7 +1410,6 @@ impl ServerOsApi for ServerOsInputOutput {
             None => Ok(()),
         }
     }
-
     fn new_client(
         &mut self,
         client_id: ClientId,
@@ -1260,7 +1439,6 @@ impl ServerOsApi for ServerOsInputOutput {
         drop(replaced);
         Ok(receiver)
     }
-
     fn remove_client(&mut self, client_id: ClientId) -> Result<()> {
         // Dropped after the registry is released: closing the queue runs any armed
         // render-ready callback.
@@ -1275,7 +1453,6 @@ impl ServerOsApi for ServerOsInputOutput {
         }
         Ok(())
     }
-
     fn client_render_backlog_and_notify(
         &self,
         client_id: ClientId,
@@ -1285,11 +1462,28 @@ impl ServerOsApi for ServerOsInputOutput {
         self.client_queue(client_id)
             .map(|queue| queue.render_backlog_and_notify(threshold, Some(ready)))
     }
+    fn flush_client_writers(&self, deadline: Duration) {
+        // Closing each queue is what lets a writer thread finish: `pop` returns
+        // `None` once the queue is closed and drained. Closed after the registry is
+        // released, since closing runs any armed render-ready callback.
+        let queues: Vec<_> = self
+            .lock_client_senders()
+            .values()
+            .map(|sender| sender.queue.clone())
+            .collect();
+        for queue in queues {
+            queue.close();
+        }
+        if !self.live_writers.wait_until_drained(deadline) {
+            log::warn!("timed out waiting for client writer threads to drain; some clients may not have been told why the session ended");
+        }
+    }
+}
 
+impl ServerEnvironment for ServerOsInputOutput {
     fn load_palette(&self) -> Palette {
         default_palette()
     }
-
     fn get_cwd(&self, pid: ProcessId) -> Option<PathBuf> {
         let mut system_info = System::new();
         let sysinfo_pid = sysinfo::Pid::from_u32(pid.get());
@@ -1307,7 +1501,6 @@ impl ServerOsApi for ServerOsInputOutput {
         }
         None
     }
-
     fn get_cwds(
         &self,
         pids: Vec<ProcessId>,
@@ -1398,7 +1591,6 @@ impl ServerOsApi for ServerOsInputOutput {
         }
         cmds
     }
-
     fn write_to_file(&mut self, buf: String, name: Option<String>) -> Result<()> {
         let err_context = || "failed to write to file".to_string();
 
@@ -1407,191 +1599,6 @@ impl ServerOsApi for ServerOsInputOutput {
             None => tempfile().with_context(err_context)?,
         };
         write!(f, "{}", buf).with_context(err_context)
-    }
-
-    fn re_run_command_in_terminal(
-        &self,
-        terminal_id: TerminalId,
-        run_command: RunCommand,
-        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
-        // A held remote pane re-runs on the machine it was held on. Without this
-        // the command would quietly run *here* under the same pane, and the pane
-        // still open on the far machine would be left to the orphan timeout.
-        let target = run_command.target.clone();
-        let (run_command, rerun_command, endpoint) = self
-            .resolve_target(run_command, None)
-            .map_err(|e| resolve_failed(terminal_id, &target, e))?;
-        if endpoint.is_some() {
-            return self.rerun_resolved(
-                ResolvedSpawn {
-                    terminal_id,
-                    command: run_command,
-                    rerun_command,
-                    endpoint,
-                },
-                quit_cb,
-            );
-        }
-
-        self.clear_terminal_id(terminal_id).non_fatal();
-        let (async_reader, child_pid) = self.spawn_resolved_here(
-            ResolvedSpawn {
-                terminal_id,
-                command: run_command,
-                rerun_command,
-                endpoint,
-            },
-            quit_cb,
-        )?;
-        Ok((async_reader, Some(child_pid)))
-    }
-    fn resolve_rerun(
-        &self,
-        terminal_id: TerminalId,
-        run_command: RunCommand,
-        report_progress: &mut dyn FnMut(&str),
-    ) -> Result<ResolvedSpawn> {
-        ServerOsInputOutput::resolve_rerun(self, terminal_id, run_command, report_progress)
-    }
-    fn rerun_resolved(
-        &self,
-        resolved: ResolvedSpawn,
-        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
-        ServerOsInputOutput::rerun_resolved(self, resolved, quit_cb)
-    }
-    fn clear_terminal_id(&self, terminal_id: TerminalId) -> Result<()> {
-        self.pty_backend.clear_terminal_id(terminal_id)
-    }
-    #[cfg(not(windows))]
-    fn set_pty_host_enabled(&self, enabled: bool) {
-        self.pty_backend.set_pty_host_enabled(enabled);
-    }
-    #[cfg(not(windows))]
-    fn begin_confirmed_pty_host_shutdown(&self) -> Result<()> {
-        self.pty_backend.begin_confirmed_pty_host_shutdown()
-    }
-    fn confirm_pty_host_shutdown(&self) -> Result<()> {
-        self.pty_backend.confirm_pty_host_shutdown()
-    }
-    fn shutdown_pty_hosts(&self) {
-        self.pty_backend.shutdown_pty_hosts();
-        self.remote_hosts.shutdown();
-    }
-    #[cfg(not(windows))]
-    fn rename_pty_host_session(&self, old: &SessionName, new: &SessionName) -> Result<()> {
-        self.pty_backend.rename_pty_host_session(old, new)
-    }
-    #[cfg(not(windows))]
-    fn terminate_orphaned_pty_hosts(
-        &self,
-        session: &str,
-        progress: &mut dyn FnMut(),
-    ) -> Result<()> {
-        crate::pty_host::cli::terminate_orphans_of_session_with_progress(session, progress)
-            .map(|_| ())
-    }
-
-    fn flush_client_writers(&self, deadline: Duration) {
-        // Closing each queue is what lets a writer thread finish: `pop` returns
-        // `None` once the queue is closed and drained. Closed after the registry is
-        // released, since closing runs any armed render-ready callback.
-        let queues: Vec<_> = self
-            .lock_client_senders()
-            .values()
-            .map(|sender| sender.queue.clone())
-            .collect();
-        for queue in queues {
-            queue.close();
-        }
-        if !self.live_writers.wait_until_drained(deadline) {
-            log::warn!("timed out waiting for client writer threads to drain; some clients may not have been told why the session ended");
-        }
-    }
-    #[cfg(not(windows))]
-    fn release_terminal_for_warp(
-        &self,
-        terminal_id: TerminalId,
-        budget: Duration,
-    ) -> Result<ReleasedPane> {
-        self.pty_backend
-            .release_terminal_for_warp(terminal_id, budget)
-    }
-    #[cfg(not(windows))]
-    fn check_terminal_can_be_warped(&self, terminal_id: TerminalId) -> Result<()> {
-        self.pty_backend.check_terminal_can_be_warped(terminal_id)
-    }
-    #[cfg(not(windows))]
-    fn adopt_terminal(
-        &self,
-        control_socket: &Path,
-        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<AdoptedTerminal> {
-        self.pty_backend.adopt_terminal(control_socket, quit_cb)
-    }
-    /// The remote half of `adopt_terminal`, and structurally the same operation:
-    /// pick up a pane whose process someone else let go of.
-    ///
-    /// It lives here rather than on the backend because the reconnect belongs to
-    /// *this server's* `RemoteHosts` — the adopting session builds its own ssh
-    /// forward to the host rather than inheriting the releasing session's, which
-    /// is what makes the two sessions independent afterwards.
-    ///
-    /// `RemoteHosts::reconnect` is the same call the reader makes when a link
-    /// drops. From the broker's point of view a warp and an outage are the same
-    /// event, which is the reason this feature is small.
-    #[cfg(not(windows))]
-    fn adopt_remote_terminal(
-        &self,
-        handoff: &RemotePaneHandoff,
-        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<AdoptedTerminal> {
-        let terminal_id = self
-            .pty_backend
-            .next_terminal_id()
-            .ok_or_else(|| anyhow!("failed to allocate a terminal id"))?;
-        self.pty_backend.reserve_terminal_id(terminal_id);
-        match self.resume_remote_pane(terminal_id, handoff, quit_cb) {
-            Ok(adopted) => Ok(adopted),
-            Err(e) => {
-                // Undo the reservation, but *not* through `clear_terminal_id` —
-                // there is no transport recorded to terminate, and a failed
-                // adoption must leave the pane running for the next caller, or
-                // the rollback has nothing to give back.
-                self.pty_backend.forget_reserved_terminal_id(terminal_id);
-                Err(e)
-            },
-        }
-    }
-    fn cache_resizes(&mut self) {
-        if self.cached_resizes.lock().unwrap().is_none() {
-            *self.cached_resizes.lock().unwrap() = Some(BTreeMap::new());
-        }
-    }
-    fn apply_cached_resizes(&mut self) -> Vec<(TerminalId, u16, u16)> {
-        let mut applied = Vec::new();
-        let mut cached_resizes = self.cached_resizes.lock().unwrap().take();
-        if let Some(cached_resizes) = cached_resizes.as_mut() {
-            for (terminal_id, (cols, rows, width_in_pixels, height_in_pixels)) in
-                cached_resizes.iter()
-            {
-                // Report only the resizes that reached the pane.
-                match self.set_terminal_size_using_terminal_id(
-                    *terminal_id,
-                    *cols,
-                    *rows,
-                    *width_in_pixels,
-                    *height_in_pixels,
-                ) {
-                    Ok(()) => applied.push((*terminal_id, *cols, *rows)),
-                    Err(e) => Err::<(), _>(e)
-                        .context("failed to apply a cached resize")
-                        .non_fatal(),
-                }
-            }
-        }
-        applied
     }
 }
 
