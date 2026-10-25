@@ -281,6 +281,69 @@ fn pane_tabs_overlay_moves_hidden_children_and_closes_during_loading() {
     assert!(receiver.try_iter().any(|(instruction, _)| matches!(instruction, PluginInstruction::Unload(id) if id == PluginId::new(101))));
 }
 
+/// Removing one multipane member is not for pane tabs: the container stays in its slot, and its
+/// shown child still closes through `close_pane` to a blank slot that keeps the container's place.
+#[test]
+fn pane_tabs_in_a_multipane_slot_are_not_removed_as_a_member() {
+    use yinz_types::multipane::*;
+    let client = ClientId::new(1);
+    let (mut tab, _receiver) =
+        create_new_tab_with_plugin_receiver(Size { cols: 80, rows: 24 }, ModeInfo::default());
+    let children = [
+        PaneId::Plugin(PluginId::new(100)),
+        PaneId::Plugin(PluginId::new(200)),
+    ];
+    for pane in children {
+        tab.new_pane(
+            pane,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+            Some(client),
+            None,
+        )
+        .unwrap();
+    }
+    let info = tab
+        .mount_pane_tabs(children[1], layout(), 0, client)
+        .unwrap();
+    tab.create_multipane(
+        children,
+        MultipaneSplit {
+            direction: MultipaneDirection::LeftRight,
+            ratio: 5000,
+        },
+        0,
+        OverlayPlacement::dismissible(None),
+    )
+    .unwrap();
+
+    assert!(!tab.remove_multipane_member(children[1]));
+    assert_eq!(
+        tab.multipane_info(children[0]).map(|info| info.children),
+        Some(children)
+    );
+    assert_eq!(
+        tab.pane_tabs_info(info.id).map(|info| info.pane_id),
+        Some(children[1])
+    );
+
+    tab.close_pane(children[1], false, None);
+
+    let tabs = tab.pane_tabs_info(info.id).unwrap();
+    assert!(tabs
+        .tabs
+        .iter()
+        .all(|slot| slot.pane_id() != Some(children[1])));
+    assert_eq!(
+        tab.multipane_info(children[0]).map(|info| info.children),
+        Some(children),
+        "the blank slot keeps the container's place"
+    );
+}
+
 #[test]
 fn pane_tabs_bar_keeps_active_label_reachable_at_every_width() {
     let info = PaneTabsInfo {

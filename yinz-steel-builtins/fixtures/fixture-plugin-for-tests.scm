@@ -1,5 +1,6 @@
 ;; Test-only fixture. This directory is deliberately outside the embedded builtin tree.
 ;; Commands pass through host permissions, including the explicit WriteFiles request.
+(yinz-declare-pane)
 (define received-events '())
 (define received-payload #f)
 (define configuration (hash))

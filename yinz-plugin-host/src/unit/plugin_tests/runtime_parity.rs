@@ -18,6 +18,8 @@ use yinz_plugin_api::{
 };
 use yinz_terminal::panes::{grid::Grid, terminal_character::TerminalCharacter};
 use yinz_types::data::{CommandType, Event, InputMode, ModeInfo, PipeMessage, PluginCommand};
+use yinz_types::internal_ids::PluginId;
+use yinz_types::own_pane::own_pane_command;
 
 pub(crate) type Responder = Arc<dyn Fn(&PluginCommand) -> Option<Vec<u8>> + Send + Sync>;
 type Commands = Arc<Mutex<Vec<Value>>>;
@@ -191,6 +193,38 @@ impl SteelReference {
         clock: Option<Arc<AtomicU64>>,
         worker: Option<&str>,
     ) -> Self {
+        let source = yinz_steel_builtins::fixture_source(name).unwrap();
+        Self::instance_of_source(name, &source, configuration, responder, clock, worker)
+    }
+    /// A builtin's runtime evaluating `source` in place of the shipped entry file, resolving its
+    /// imports as the shipped one does.
+    pub(crate) fn from_source(
+        name: &str,
+        source: &str,
+        configuration: BTreeMap<String, String>,
+        responder: Responder,
+    ) -> Self {
+        Self::instance_of_source(name, source, configuration, responder, None, None)
+    }
+    fn instance_of_source(
+        name: &str,
+        source: &str,
+        configuration: BTreeMap<String, String>,
+        responder: Responder,
+        clock: Option<Arc<AtomicU64>>,
+        worker: Option<&str>,
+    ) -> Self {
+        // As the host's gate does: a plugin that declares no pane for this configuration runs
+        // headless, and every command that needs its own pane is refused. The plugin's own id is
+        // the one its `GetPluginIds` reply gives it.
+        let headless = !yinz_steel::manifest::pane_declaration(source)
+            .unwrap()
+            .applies(&configuration);
+        let me = responder(&PluginCommand::GetPluginIds)
+            .and_then(|reply| ProtobufPluginIds::decode(reply.as_slice()).ok())
+            .and_then(|ids| u32::try_from(ids.plugin_id).ok())
+            .map_or(PluginId::new(u32::MAX), PluginId::new);
+        let plugin = name.to_owned();
         let commands = Commands::default();
         let recorded = commands.clone();
         let host = move |value: Value| {
@@ -199,6 +233,11 @@ impl SteelReference {
                 .map(|envelope| envelope["command"].clone())
                 .unwrap_or(value);
             let command = yinz_steel::binary::decode_command(value)?;
+            if headless && let Some(refused) = own_pane_command(&command, me) {
+                panic!(
+                    "{plugin} declares no pane, so the host refuses its '{refused}': {command:?}"
+                );
+            }
             record(&recorded, &command);
             let Some(response) = responder(&command) else {
                 return Ok(Value::Null);
@@ -228,12 +267,7 @@ impl SteelReference {
             None,
         )
         .unwrap();
-        runtime
-            .eval_with_source_root(
-                &yinz_steel_builtins::fixture_source(name).unwrap(),
-                &mut root,
-            )
-            .unwrap();
+        runtime.eval_with_source_root(source, &mut root).unwrap();
         if let Some(worker) = worker {
             runtime
                 .invoke("yinz-worker-bind", vec![Value::String(worker.into())])

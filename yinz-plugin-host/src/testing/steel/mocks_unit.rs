@@ -1,6 +1,7 @@
 use super::*;
 
 const PERMISSIONS_PLUGIN: &str = r#"
+(yinz-declare-pane)
 (define settled '())
 (define observed #f)
 (define (record name suffix) (set! settled (append settled (list (string-append name ":" suffix)))))

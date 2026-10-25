@@ -1,4 +1,5 @@
 (require "./bar/default-mode.scm" "./bar/keys.scm" "./bar/style.scm")
+(yinz-declare-pane)
 
 (define hostname "")
 (define mi (bar-default-mode))

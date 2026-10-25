@@ -1,4 +1,5 @@
 ;; The shared dialog keeps Cancel as the default and handles keyboard, pointer, and viewport state.
+(yinz-declare-pane)
 (define dialog #f)
 (define (get object key fallback)
   (if (hash-contains? object key) (hash-ref object key) fallback))

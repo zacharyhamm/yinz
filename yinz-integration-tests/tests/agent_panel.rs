@@ -142,7 +142,7 @@ fn companion_config() -> (tempfile::TempDir, String) {
     let path = directory.path().join("companion.scm");
     std::fs::write(
         &path,
-        r#"(define (render rows columns) "companion content")"#,
+        r#"(yinz-declare-pane) (define (render rows columns) "companion content")"#,
     )
     .unwrap();
     let config = format!(

@@ -32,6 +32,12 @@ Each replacement must match exactly once unless `replace_all` is explicit.
 The batch is checked and formatted before writing. Missing or ambiguous matches,
 compiler errors, and stale source during checking leave the original intact.
 
+A plugin has a pane only if its entry file has a literal top-level
+`(yinz-declare-pane)` or `(yinz-declare-pane-unless "KEY" "VALUE")`. Without one it
+runs headless: no pane, no `render`, and own-pane commands such as `HideSelf` or
+`SetSelectable` fail. `plugins check` prints `pane: always|unless KEY=VALUE|none`
+and warns about these mistakes. Running status reports `pane`.
+
 Use `plugins start TARGET` to load a background plugin. Use `plugins reload TARGET`
 to reload an existing identity in place, or `plugins stop TARGET` to unload it.
 Targets accept names, aliases, paths, URLs, and `plugin_N`. Select an exact

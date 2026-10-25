@@ -691,12 +691,20 @@ impl Screen {
             };
             let text = outcome.message();
             let now = Instant::now();
-            let show_toast = !outcome.suppressed
+            let wants_toast = !outcome.suppressed
                 && matches!(
                     outcome.delivery,
                     NotificationDelivery::Toast | NotificationDelivery::Both
-                )
-                && !self.connected_clients.borrow().is_empty();
+                );
+            // No client to show it to. Before the first one ever connects the toast waits for
+            // it; once the session has had a client, a detached session only records it.
+            let show_toast = wants_toast && !self.connected_clients.borrow().is_empty();
+            if wants_toast
+                && !show_toast
+                && let Some(held) = self.toasts_before_first_client.as_mut()
+            {
+                held.push(id);
+            }
             self.with_notification_stack_change(now, |screen| {
                 screen.notification_history.push(NotificationRecord {
                     info: NotificationInfo {
@@ -754,6 +762,56 @@ impl Screen {
         }
         if changed {
             self.render()?;
+        }
+        Ok(())
+    }
+}
+
+impl Screen {
+    /// A client has just been registered. If it is the session's first, it is shown the toasts
+    /// committed before it, unless something consumed them meanwhile, each with its full
+    /// timeout since nobody has seen it yet. Later clients find nothing held.
+    pub(super) fn show_toasts_held_for_the_first_client(&mut self) -> Result<()> {
+        let Some(held) = self.toasts_before_first_client.take() else {
+            return Ok(());
+        };
+        let toasts: Vec<Notification> = held
+            .iter()
+            .filter_map(|id| {
+                self.notification_history
+                    .iter()
+                    .find(|record| record.info.id == *id && record.pending)
+            })
+            .map(|record| {
+                Notification::new(
+                    record.info.id,
+                    record.info.message.clone(),
+                    record.pane_id,
+                    record.on_click.clone(),
+                    Instant::now(),
+                )
+            })
+            .collect();
+        if toasts.is_empty() {
+            return Ok(());
+        }
+        let now = Instant::now();
+        let ids: Vec<NotificationId> = toasts.iter().map(|toast| toast.id).collect();
+        self.with_notification_stack_change(now, |screen| {
+            // Newest first, as `commit_notifications` stacks them.
+            for toast in toasts {
+                screen.notifications.insert(0, toast);
+            }
+        });
+        self.sync_animation_clock(now)?;
+        for id in ids {
+            self.bus
+                .senders
+                .send_to_background_jobs(BackgroundJob::DismissNotification(
+                    id,
+                    self.notification_timeout_secs,
+                ))
+                .context("schedule notification dismissal")?;
         }
         Ok(())
     }

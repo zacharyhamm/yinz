@@ -43,6 +43,12 @@ Updates select a detached commit under `<data-dir>/plugin-repositories`. Aliases
 Yinz validates their configured entrypoints before selecting the new commit. A failed installation or update preserves the previous selection.
 Previous revisions remain on disk.
 
+The host reads the pane declaration once the repository resolves. A declared plugin's
+pane or layout animation appears then, and an undeclared plugin starts headless.
+A launch does not wait for the clone: it succeeds with the plugin's ID at once. Until the
+repository resolves the plugin has no pane, `LaunchOrFocusPlugin` finds it rather than
+starting a second clone, and closing it by ID unloads it and cancels the clone.
+
 Running plugins retain their loaded revision. This includes workers, delayed imports, and instances for newly attached clients.
 Reload the plugin explicitly to use the selected update. Configuration reload refreshes alias declarations for future launches.
 `plugins reload` resolves configured aliases first, then falls back to files in the authored plugin directory.

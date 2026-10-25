@@ -246,11 +246,16 @@ impl PluginBridge {
                         result: None,
                     },
                 );
-                self.plugin_roles.lock().unwrap().insert(finder, true);
                 let mut configuration = run.configuration.inner().clone();
                 configuration.insert("shared".into(), "true".into());
                 run.configuration = PluginUserConfiguration::new(configuration);
                 run.initial_cwd = Some(cwd.clone());
+                // The driver starts in the background: a parked record if it declares a pane.
+                let driver = PaneRequest::Parked {
+                    run: RunPluginOrAlias::RunPlugin(run.clone()),
+                    cwd: run.initial_cwd.clone(),
+                    client_id: client,
+                };
                 if let Err(error) = self.load_plugin(
                     &Some(run.clone()),
                     None,
@@ -258,19 +263,11 @@ impl PluginBridge {
                     Some(cwd),
                     false,
                     Some(client),
+                    driver,
                 ) {
                     self.picks.remove(&finder);
-                    self.plugin_roles.lock().unwrap().remove(&finder);
                     return Err(format!("failed to load picker: {error:#}"));
                 }
-                self.senders
-                    .send_to_screen(crate::add_suppressed_plugin_pane(
-                        RunPluginOrAlias::RunPlugin(run.clone()),
-                        finder,
-                        run.initial_cwd,
-                        client,
-                    ))
-                    .map_err(|error| format!("create picker driver: {error:#}"))?;
                 Ok(None)
             },
             PickCommand::Cancel {

@@ -21,6 +21,7 @@ pub use yinz_plugin_authoring as plugin_authoring;
 mod plugin_bridge;
 mod plugin_loader;
 mod plugin_map;
+mod plugin_panes;
 pub(crate) mod response;
 mod watch_filesystem;
 mod yinz_exports;
@@ -56,6 +57,7 @@ use {
 };
 
 use plugin_bridge::PluginBridge;
+use plugin_panes::{PaneRequest, ShowPane};
 mod cli_data;
 
 use yinz_runtime::errors::prelude::*;
@@ -223,6 +225,9 @@ pub fn plugin_thread_main(
                         cwd.clone(),
                         skip_cache,
                         Some(client_id),
+                        PaneRequest::Placed {
+                            run: plugin.clone(),
+                        },
                     )?;
                     bus.senders.send_to_pty(PtyInstruction::ReportPluginCwd(
                         plugin_id,
@@ -247,7 +252,7 @@ pub fn plugin_thread_main(
                 should_be_open_in_place,
                 close_replaced_pane,
                 pane_title,
-                mut run_plugin_or_alias,
+                run_plugin_or_alias,
                 tab_index,
                 pane_id_to_replace,
                 client_id,
@@ -259,54 +264,52 @@ pub fn plugin_thread_main(
                 floating_pane_coordinates,
                 completion_tx,
                 overlay_placement,
-            ) => {
-                run_plugin_or_alias.populate_run_plugin_if_needed(&plugin_aliases);
-                let cwd = run_plugin_or_alias.get_initial_cwd().or(cwd).or_else(|| {
-                    if let Some(plugin_id) = focused_plugin_id {
-                        plugin_bridge.get_plugin_cwd(plugin_id, client_id)
-                    } else {
-                        None
-                    }
-                });
-                let run_plugin = run_plugin_or_alias.get_run_plugin();
-                let start_suppressed = false;
-                match plugin_bridge.load_plugin(
-                    &run_plugin,
-                    tab_index,
+            ) => load_and_show(
+                ShowPane {
+                    should_float,
+                    in_place: should_be_open_in_place,
+                    replaced: ReplacedPane::closed_if(close_replaced_pane),
+                    run: run_plugin_or_alias,
+                    title: pane_title,
+                    tab: tab_index,
+                    pane_id_to_replace,
+                    cwd,
+                    coordinates: floating_pane_coordinates,
+                    should_focus: should_focus_plugin,
+                    client_id: Some(client_id),
+                    completion: completion_tx,
+                    overlay: overlay_placement,
+                    reserved_slot: None,
+                },
+                PaneLoad {
                     size,
-                    cwd.clone(),
+                    focused_plugin_id,
                     skip_cache,
-                    Some(client_id),
-                ) {
-                    Ok((plugin_id, client_id)) => {
-                        drop(bus.senders.send_to_screen(ScreenInstruction::AddPlugin(
-                            should_float,
-                            should_be_open_in_place,
-                            ReplacedPane::closed_if(close_replaced_pane),
-                            run_plugin_or_alias,
-                            pane_title,
-                            tab_index,
-                            plugin_id,
-                            pane_id_to_replace,
-                            cwd.clone(),
-                            start_suppressed,
-                            floating_pane_coordinates,
-                            should_focus_plugin,
-                            Some(client_id),
-                            completion_tx,
-                            overlay_placement,
-                        )));
-
-                        drop(bus.senders.send_to_pty(PtyInstruction::ReportPluginCwd(
-                            plugin_id,
-                            cwd.unwrap_or_else(|| yinz_cwd.clone()),
-                        )));
-                    },
-                    Err(e) => {
-                        log::error!("Failed to load plugin: {e}");
-                    },
-                }
-            },
+                },
+                client_id,
+                &mut plugin_bridge,
+                &bus,
+                &plugin_aliases,
+                &yinz_cwd,
+            ),
+            PluginInstruction::LoadIntoSlot {
+                run,
+                slot,
+                client_id,
+                cwd,
+            } => load_and_show(
+                ShowPane::into_slot(run, slot, client_id, cwd),
+                PaneLoad {
+                    size: Size { rows: 1, cols: 1 },
+                    focused_plugin_id: None,
+                    skip_cache: false,
+                },
+                client_id,
+                &mut plugin_bridge,
+                &bus,
+                &plugin_aliases,
+                &yinz_cwd,
+            ),
             PluginInstruction::RunHook {
                 point,
                 pane_id,
@@ -445,7 +448,22 @@ pub fn plugin_thread_main(
                             // we intentionally do not provide the client_id here because it belongs to
                             // the cli who spawned the command and is not an existing client_id
                             let skip_cache = true; // when reloading we always skip cache
-                            let start_suppressed = false;
+                            let pane = PaneRequest::Show(Box::new(ShowPane {
+                                should_float,
+                                in_place: false,
+                                replaced: ReplacedPane::Suppress,
+                                run: run_plugin_or_alias,
+                                title: pane_title,
+                                tab: Some(tab_index),
+                                pane_id_to_replace: None,
+                                cwd: None,
+                                coordinates: None,
+                                should_focus: None,
+                                client_id: None,
+                                completion: completion_tx.take(),
+                                overlay: None,
+                                reserved_slot: None,
+                            }));
                             match plugin_bridge.load_plugin(
                                 &Some(run_plugin),
                                 Some(tab_index),
@@ -453,28 +471,9 @@ pub fn plugin_thread_main(
                                 None,
                                 skip_cache,
                                 None,
+                                pane,
                             ) {
-                                Ok((plugin_id, _client_id)) => {
-                                    let should_be_open_in_place = false;
-                                    drop(bus.senders.send_to_screen(ScreenInstruction::AddPlugin(
-                                        should_float,
-                                        should_be_open_in_place,
-                                        ReplacedPane::Suppress,
-                                        run_plugin_or_alias,
-                                        pane_title,
-                                        Some(tab_index),
-                                        plugin_id,
-                                        None,
-                                        None,
-                                        start_suppressed,
-                                        None,
-                                        None,
-                                        None,
-                                        completion_tx.take(),
-                                        None,
-                                    )));
-                                    None
-                                },
+                                Ok(_) => None,
                                 Err(e) => Some(e.context(format!("failed to start {location}"))),
                             }
                         },
@@ -674,6 +673,9 @@ pub fn plugin_thread_main(
                             cwd,
                             skip_cache,
                             Some(client_id),
+                            PaneRequest::Placed {
+                                run: run_plugin_or_alias.clone(),
+                            },
                         ) {
                             Ok((plugin_id, _client_id)) => {
                                 log::info!("startup: tab={tab_id:?} client={client_id} loaded plugin={plugin_id} at {:?}", startup_started.elapsed());
@@ -767,6 +769,9 @@ pub fn plugin_thread_main(
                                 cwd,
                                 skip_cache,
                                 Some(client_id),
+                                PaneRequest::Placed {
+                                    run: run_plugin_or_alias.clone(),
+                                },
                             ) {
                                 Ok((plugin_id, _client_id)) => {
                                     plugin_ids
@@ -857,14 +862,14 @@ pub fn plugin_thread_main(
                 client_id,
                 events,
                 background_subscriptions,
+                instance,
             ) => {
                 if let Some(subscriptions) = background_subscriptions {
-                    let _ = bus.senders.send_to_screen(
-                        ScreenInstruction::UpdateBackgroundPluginSubscriptions(
-                            plugin_id,
-                            client_id,
-                            subscriptions,
-                        ),
+                    plugin_bridge.forward_background_subscriptions(
+                        plugin_id,
+                        client_id,
+                        subscriptions,
+                        instance,
                     );
                 }
                 if events.contains(&EventType::CellPixelSizeChanged) {
@@ -1616,8 +1621,9 @@ pub fn plugin_thread_main(
                 cwd,
                 tab_id,
                 client_id,
-                mut completion,
+                completion,
             } => {
+                let mut completion = Some(completion);
                 let loaded = load_plugin_in_place_of(
                     &mut plugin_bridge,
                     &plugin_aliases,
@@ -1626,31 +1632,31 @@ pub fn plugin_thread_main(
                     cwd,
                     tab_id,
                     client_id,
-                );
-                match loaded {
-                    Ok((run_plugin_or_alias, plugin_id, client_id, cwd)) => {
-                        drop(bus.senders.send_to_screen(ScreenInstruction::AddPlugin(
-                            Some(false),
-                            true, // should be opened in place
-                            ReplacedPane::Lend,
-                            run_plugin_or_alias,
-                            None, // pane title
-                            Some(tab_id),
-                            plugin_id,
-                            Some(pane_id),
+                    |run, cwd| {
+                        // Lent: closing the plugin's pane gives the slot back. A plugin that
+                        // declares no pane runs headless and leaves the target where it is.
+                        PaneRequest::Show(Box::new(ShowPane {
+                            should_float: Some(false),
+                            in_place: true,
+                            replaced: ReplacedPane::Lend,
+                            run,
+                            title: None,
+                            tab: Some(tab_id),
+                            pane_id_to_replace: Some(pane_id),
                             cwd,
-                            false, // start suppressed
-                            None,  // floating pane coordinates
-                            Some(false),
-                            Some(client_id),
-                            Some(completion),
-                            None, // overlay placement
-                        )));
+                            coordinates: None,
+                            should_focus: Some(false),
+                            client_id: Some(client_id),
+                            completion: completion.take(),
+                            overlay: None,
+                            reserved_slot: None,
+                        }))
                     },
-                    Err(error) => {
-                        completion.set_exit_status(1);
-                        completion.set_error_message(format!("{error:#}"));
-                    },
+                );
+                // Answered by the load when it got that far.
+                if let (Err(error), Some(mut completion)) = (loaded, completion) {
+                    completion.set_exit_status(1);
+                    completion.set_error_message(format!("{error:#}"));
                 }
             },
             PluginInstruction::GetPluginIdsForUrl {
@@ -2065,31 +2071,37 @@ fn run_hook(
     // and the payload wins where the two name the same key.
     let run_plugin = run_plugin.merge_configuration(&Some(payload));
     let skip_cache = false;
+    // The id that addresses the pane the user is looking at, which is the hook pane in front
+    // rather than the terminal suppressed behind it. A terminal frame leads with its own id
+    // (`TerminalPane::framed_title`) because that is how the pane is named from outside; a
+    // plugin frame does not label itself at all, so the id is written into the name here - and
+    // it is this plugin pane's, or it names something else.
+    let pane_title = agent_pane_title.map(|title| {
+        format!(
+            "[{}] {title}",
+            PaneId::Plugin(plugin_bridge.next_plugin_id())
+        )
+    });
+    // A hook plugin that declares no pane runs headless, leaving the agent's pane alone; its
+    // re-entries still reach it through `pane_hooks`.
+    let pane = PaneRequest::Show(Box::new(ShowPane::in_place_of_hooked_pane(
+        RunPluginOrAlias::RunPlugin(run_plugin.clone()),
+        pane_id,
+        pane_title,
+        cwd.clone(),
+        client_id,
+    )));
     match plugin_bridge.load_plugin(
-        &Some(run_plugin.clone()),
+        &Some(run_plugin),
         None,
         Size::default(),
-        cwd.clone(),
+        cwd,
         skip_cache,
         Some(client_id),
+        pane,
     ) {
-        Ok((plugin_id, client_id)) => {
+        Ok((plugin_id, _)) => {
             plugin_bridge.pane_hooks.insert((point, pane_id), plugin_id);
-            // The id that addresses the pane the user is looking at, which is the hook pane in
-            // front rather than the terminal suppressed behind it. A terminal frame leads with
-            // its own id (`TerminalPane::framed_title`) because that is how the pane is named
-            // from outside; a plugin frame does not label itself at all, so the id is written
-            // into the name here - and it is this plugin pane's, or it names something else.
-            let pane_title =
-                agent_pane_title.map(|title| format!("[{}] {title}", PaneId::Plugin(plugin_id)));
-            drop(bus.senders.send_to_screen(add_plugin_pane_in_place_of(
-                RunPluginOrAlias::RunPlugin(run_plugin),
-                plugin_id,
-                pane_id,
-                pane_title,
-                cwd,
-                client_id,
-            )));
         },
         Err(e) => {
             log::error!("hook '{point}' could not load its plugin: {e}");
@@ -2261,6 +2273,61 @@ fn deliver_to_headless_hook(
     true
 }
 
+/// How a plugin pane load runs, beside the pane it asks for.
+struct PaneLoad {
+    size: Size,
+    focused_plugin_id: Option<PluginId>,
+    skip_cache: bool,
+}
+
+/// Load the plugin a `Load` or `LoadIntoSlot` names, asking for `show`. Its run is resolved
+/// here, and its directory found, before the request is made.
+fn load_and_show(
+    mut show: ShowPane,
+    load: PaneLoad,
+    client_id: ClientId,
+    plugin_bridge: &mut PluginBridge,
+    bus: &Bus<PluginInstruction>,
+    plugin_aliases: &PluginAliases,
+    yinz_cwd: &std::path::Path,
+) {
+    let PaneLoad {
+        size,
+        focused_plugin_id,
+        skip_cache,
+    } = load;
+    show.run.populate_run_plugin_if_needed(plugin_aliases);
+    let cwd = show.run.get_initial_cwd().or(show.cwd).or_else(|| {
+        if let Some(plugin_id) = focused_plugin_id {
+            plugin_bridge.get_plugin_cwd(plugin_id, client_id)
+        } else {
+            None
+        }
+    });
+    show.cwd = cwd.clone();
+    let run_plugin = show.run.get_run_plugin();
+    let tab_index = show.tab;
+    match plugin_bridge.load_plugin(
+        &run_plugin,
+        tab_index,
+        size,
+        cwd.clone(),
+        skip_cache,
+        Some(client_id),
+        PaneRequest::Show(Box::new(show)),
+    ) {
+        Ok((plugin_id, _)) => {
+            drop(bus.senders.send_to_pty(PtyInstruction::ReportPluginCwd(
+                plugin_id,
+                cwd.unwrap_or_else(|| yinz_cwd.to_path_buf()),
+            )));
+        },
+        Err(e) => {
+            log::error!("Failed to load plugin: {e}");
+        },
+    }
+}
+
 fn load_background_plugin(
     run_plugin_or_alias: RunPluginOrAlias,
     plugin_bridge: &mut PluginBridge,
@@ -2277,6 +2344,9 @@ fn load_background_plugin(
 /// Load `plugin_url` for a pane that will open in place of another one, refusing a url and
 /// configuration that already has an instance: that instance has a pane of its own already,
 /// and loading it again is the silent no-op this exists to replace.
+///
+/// `pane` builds the request from the resolved plugin and its directory, and is called only
+/// once the load is going ahead.
 pub(crate) fn load_plugin_in_place_of(
     plugin_bridge: &mut PluginBridge,
     plugin_aliases: &PluginAliases,
@@ -2285,7 +2355,8 @@ pub(crate) fn load_plugin_in_place_of(
     cwd: PathBuf,
     tab_id: yinz_types::internal_ids::TabId,
     client_id: ClientId,
-) -> Result<(RunPluginOrAlias, PluginId, ClientId, Option<PathBuf>)> {
+    pane: impl FnOnce(RunPluginOrAlias, Option<PathBuf>) -> PaneRequest,
+) -> Result<PluginId> {
     let mut run_plugin_or_alias = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
         plugin_url,
         &Some(configuration),
@@ -2304,88 +2375,17 @@ pub(crate) fn load_plugin_in_place_of(
         );
     }
     let cwd = run_plugin_or_alias.get_initial_cwd().or(Some(cwd));
-    let (plugin_id, client_id) = plugin_bridge.load_plugin(
+    let pane = pane(run_plugin_or_alias, cwd.clone());
+    let (plugin_id, _) = plugin_bridge.load_plugin(
         &Some(run_plugin),
         Some(tab_id),
         Size::default(),
-        cwd.clone(),
+        cwd,
         false,
         Some(client_id),
+        pane,
     )?;
-    Ok((run_plugin_or_alias, plugin_id, client_id, cwd))
-}
-
-/// The screen-side half of a hook: a pane opened over `pane_id_to_replace`, which is
-/// suppressed behind it rather than closed.
-///
-/// Suppressed rather than closed so that the pane's scrollback survives and it can be re-run -
-/// which is exactly what the shipped `agent_exit` screen offers to do. `should_focus` is false:
-/// an agent exiting in a tab the user is not looking at must not pull them out of the pane they
-/// are working in. That was true of the banner this replaces, and is the reason a hook is a
-/// pane rather than a session-wide modal.
-pub(crate) fn add_plugin_pane_in_place_of(
-    run_plugin_or_alias: RunPluginOrAlias,
-    plugin_id: PluginId,
-    pane_id_to_replace: PaneId,
-    pane_title: Option<String>,
-    cwd: Option<PathBuf>,
-    client_id: ClientId,
-) -> ScreenInstruction {
-    let should_float = Some(false);
-    let should_be_open_in_place = true;
-    let start_suppressed = false;
-    let should_focus = Some(false);
-    ScreenInstruction::AddPlugin(
-        should_float,
-        should_be_open_in_place,
-        // Not lent: the hook screen and the pane it reports on are one thing, so the user
-        // closing the screen closes that pane too.
-        ReplacedPane::Suppress,
-        run_plugin_or_alias,
-        pane_title,
-        None, // tab_index
-        plugin_id,
-        Some(pane_id_to_replace),
-        cwd,
-        start_suppressed,
-        None, // floating_pane_coordinates
-        should_focus,
-        Some(client_id),
-        None, // completion_tx
-        None, // overlay placement
-    )
-}
-
-/// The screen-side half of a headless plugin: a suppressed pane that holds no place in any
-/// layout, so the plugin has a `PaneId` to be closed by but nothing on screen.
-pub(crate) fn add_suppressed_plugin_pane(
-    run_plugin_or_alias: RunPluginOrAlias,
-    plugin_id: PluginId,
-    cwd: Option<PathBuf>,
-    client_id: ClientId,
-) -> ScreenInstruction {
-    let should_float = None;
-    let should_be_open_in_place = false;
-    let pane_title = None;
-    let pane_id_to_replace = None;
-    let start_suppressed = true;
-    ScreenInstruction::AddPlugin(
-        should_float,
-        should_be_open_in_place,
-        ReplacedPane::Suppress,
-        run_plugin_or_alias,
-        pane_title,
-        None,
-        plugin_id,
-        pane_id_to_replace,
-        cwd,
-        start_suppressed,
-        None,
-        None,
-        Some(client_id),
-        None,
-        None,
-    )
+    Ok(plugin_id)
 }
 
 /// The plugin thread's whole budget for exiting: the wait for in-flight jobs and the unloads

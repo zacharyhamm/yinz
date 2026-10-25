@@ -1,5 +1,6 @@
 ;; The modal owns its form, project choice, probes, and launch lifecycle.
 ;; Shared pure planners interpret provider capabilities; all side effects use yinz-command.
+(yinz-declare-pane-unless "duplicate_focused" "true")
 (define (at object key fallback) (if (and (hash? object) (hash-contains? object key)) (hash-ref object key) fallback))
 (define (present value) (and value (not (json-null? value))))
 (define (sat a b) (max 0 (- a b)))
@@ -111,7 +112,7 @@
     [fork (put "note" "fork needs a focused agent pane")])
   (define stop #f)
   (if (get "duplicate")
-    (begin (yinz-command "HideSelf") (when (get "note") (notify (get "note")) (finish #f) (set! stop #t)))
+    (when (get "note") (notify (get "note")) (finish #f) (set! stop #t))
     (begin (load-projects) (fill-projects)
       (when (hash-contains? configuration "initial_prompt")
         (set-value "prompt" (hash-ref configuration "initial_prompt")) (yinz-ui-input-op dialog "prompt" "SetCursorPosition" 0))))
@@ -120,8 +121,10 @@
     (unless (equal? (get "job") "new") (message "agent_subscribe"))
     (yinz-command (hash "Subscribe" '("Key" "Mouse" "TabUpdate" "PastedText" "RunCommandResult" "Visible" "PaneUpdate")))
     (when (equal? (get "job") "new") (probe-git))
-    (yinz-command (hash "SetSelectable" (not (get "duplicate"))))
-    (yinz-command (hash "RenamePluginPane" (list (get "plugin-id") (if (equal? (get "job") "fork") "fork agent" "new agent"))))))
+    ;; Duplicate mode declares no pane and runs headless, so it has no pane to configure.
+    (unless (get "duplicate")
+      (yinz-command (hash "SetSelectable" #t))
+      (yinz-command (hash "RenamePluginPane" (list (get "plugin-id") (if (equal? (get "job") "fork") "fork agent" "new agent")))))))
 (define (changed id)
   (put "error" (and (equal? (get "job") "fork") (equal? (get "fork-source") "missing") "the focused pane is not an agent"))
   (when (equal? id "path") (put "path-edited" #t))

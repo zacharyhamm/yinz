@@ -45,7 +45,7 @@ fn scheme_installed_wait_for_awaits_predicates_and_bounds_pending_deferreds() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
         root.path().join("context.scm"),
-        r#"(define (load configuration) (yinz-log "wait diagnostic log"))
+        r#"(yinz-declare-pane) (define (load configuration) (yinz-log "wait diagnostic log"))
            (define (render rows columns) "wait diagnostic screen")"#,
     )
     .unwrap();

@@ -1,4 +1,5 @@
 (require "./bar/keys.scm" "./bar/default-mode.scm")
+(yinz-declare-pane)
 
 (define plugin-id 0)
 (define client-id "")

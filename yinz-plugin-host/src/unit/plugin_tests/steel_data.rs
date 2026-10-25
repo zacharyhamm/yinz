@@ -9,6 +9,7 @@ fn steel_data_values_conflict_rollback_watch_disposal_and_namespace_persistence(
     let source = format!(
         "{HELPERS}{}",
         r#"
+(yinz-declare-pane)
 (define state "starting")
 (define (load config)
   (define denied (with-handler (lambda (failure) (error-object-message failure))
@@ -102,6 +103,7 @@ fn steel_data_values_conflict_rollback_watch_disposal_and_namespace_persistence(
         format!(
             "{HELPERS}{}",
             r#"
+(yinz-declare-pane)
 (define state "reloading")
 (define (load config)
   (yinz-then (yinz-wait-for-permissions (list "PluginData"))
@@ -127,7 +129,7 @@ fn steel_data_values_conflict_rollback_watch_disposal_and_namespace_persistence(
             ""
         };
         let source = format!(
-            r#"{HELPERS}
+            r#"(yinz-declare-pane) {HELPERS}
 (define state "starting")
 (define (load config)
   (yinz-then (yinz-wait-for-permissions (list "PluginData" "SharedPluginData"))
@@ -151,6 +153,7 @@ fn steel_integer_commands_preserve_exact_values_and_revision_guards_in_sqlite() 
     let source = format!(
         "{HELPERS}{}",
         r#"
+(yinz-declare-pane)
 (define state "starting")
 (define (load config)
   (yinz-then (yinz-wait-for-permissions (list "PluginData"))
@@ -191,6 +194,7 @@ fn steel_reload_disposes_host_watches_and_rejects_their_queued_deliveries() {
     let source = format!(
         "{HELPERS}{}",
         r#"
+(yinz-declare-pane)
 (define label "old")
 (define changes 0)
 (define fences 0)

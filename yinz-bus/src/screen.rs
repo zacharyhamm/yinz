@@ -537,6 +537,37 @@ pub enum ScreenInstruction {
         // the plugin's own `overlay`/`modal` configuration
         Option<OverlayPlacement>,
     ),
+    /// The plugin runs without a pane: it declares none. Any pane record for it is removed
+    /// without unloading it.
+    PluginPaneless {
+        plugin_id: PluginId,
+        run: Box<RunPluginOrAlias>,
+        /// The launch that started it, already filled in: the screen answers it once it records
+        /// the plugin as headless, so whatever the launcher does next finds it running. This
+        /// instruction comes from the plugin thread and the launcher's next one from a client,
+        /// on another channel, so only the screen can order the two.
+        completion: Option<NotificationEnd>,
+    },
+    /// The plugin's declaration waits for its repository to resolve (a git plugin), which can
+    /// take a while. Until `AddPlugin`, `PluginPaneless`, `PluginFailed` or `PluginUnloaded`
+    /// says more, the screen knows it as loading: a launch of the same plugin finds this one
+    /// instead of loading another, and closing it unloads it. The screen answers `completion`,
+    /// the launch that started it, once it records the plugin.
+    PluginResolving {
+        plugin_id: PluginId,
+        run: Box<RunPluginOrAlias>,
+        completion: Option<NotificationEnd>,
+    },
+    /// The plugin's load failed, or it crashed, and it has no pane to show the failure in: it is
+    /// not running, though it can be reloaded. A launch of the same plugin starts another.
+    PluginFailed(PluginId),
+    /// The plugin was unloaded; forget everything the screen keeps for it.
+    PluginUnloaded(PluginId),
+    /// A pane held for a plugin that will not have one there (a multipane child that declares no
+    /// pane or fails to load) is given up. A multipane member leaves its container, which keeps
+    /// the sibling; any other pane closes as `ClosePane` closes it. Either way the pty frees what
+    /// the slot held.
+    GiveUpSlot(PaneId),
     UpdatePluginLocation(PluginId, yinz_types::input::layout::RunPluginLocation),
     UpdatePluginLoadingStage(PluginId, LoadingIndication), // u32 - plugin_id
     StartPluginLoadingIndication(PluginId, LoadingIndication), // u32 - plugin_id

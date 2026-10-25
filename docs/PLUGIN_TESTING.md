@@ -93,6 +93,7 @@ cursor control, and `Pick`, which default to a null reply.
 | `(render-text text [rows columns])` | Render supplied terminal text through the same grid |
 | `(test-renders)` | Return captured visible renders |
 | `(test-logs)` | Return captured plugin and test logs |
+| `(test-pane-declared?)` | Whether the loaded plugin declares a pane for its test configuration |
 
 Mock replies can also be procedures, either in the load options' `"replies"` hash
 or in `test-stub`. A procedure receives the command's payload and returns its
@@ -113,6 +114,11 @@ time and does not deliver an event. To resolve a permission request,
 deliver `(hash "PermissionRequestResult" "Granted")` or `"Denied"` through
 `test-event`. Requests retain their original client and execute in queue order.
 
+Loading checks the [pane declaration](PLUGIN_SDK.md#pane-declaration) as the host
+does. A declaration that is not a literal top-level form fails the load. A plugin
+that declares no pane fails commands that need its own pane, such as `HideSelf`
+and `SetSelectable`, with the production error.
+
 Use the JSON wire shapes from the plugin SDK: string-keyed hashes for objects,
 lists for arrays, and `json-null` for null. Unit replies can be partial fixtures,
 but commands emitted by the plugin must remain valid.
@@ -130,6 +136,10 @@ attach to an existing session or use your normal configuration and data.
   (test-session "key" "a")
   (test-wait-for-text "Counter: 1")))
 ```
+
+`"load"` launches the plugin like `LaunchPlugin`. It gets a pane only if it declares
+one; otherwise it runs headless and its render text never appears. Wait for logs,
+data, or pipe output instead.
 
 Use `test-wait-for-text` for rendered content. Use `test-wait-for` for other
 observable conditions. Both poll the session and default to a ten-second wait.
@@ -153,7 +163,7 @@ propagates rejection, and applies its deadline while the deferred is pending.
 |---|---|
 | `"fixture"` | `{"files": {...}, "commands": {...}}`; create files and executable shell stubs before startup, return the fixture home path |
 | `"start"` | Optional `"rows"`, `"columns"`, `"hooks"`, `"backgroundPlugins"`, and `"autoGrantPermissions"` |
-| `"load"` | `"path"`, optional string-valued `"configuration"`, `"headless"`, and `"autoGrantPermissions"` |
+| `"load"` | `"path"`, optional string-valued `"configuration"`, `"headless"`, and `"autoGrantPermissions"`; `"headless" #t` starts the plugin in the background |
 | `"reload"`, `"stop"`, `"status"` | Plugin `"path"` and optional `"configuration"`; return lifecycle results |
 | `"key"` | A key string such as `"Enter"`, `"Esc"`, or `"Ctrl Alt p"` |
 | `"text"` | Text to type |

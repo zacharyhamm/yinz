@@ -19,6 +19,7 @@ fn steel_disconnect_interrupts_attached_clients_infinite_callback() {
 
 fn disconnect_attached_runaway(during_load: bool) {
     let source = r#"
+(yinz-declare-pane)
 (define keys 0)
 (define (runaway)
   (when (= (hash-ref (yinz-command "GetPluginIds") "client_id") 2)
@@ -100,6 +101,7 @@ fn disconnect_shared_runaway(another_client: bool) {
         let harness = Harness::new(
             "scm",
             r#"
+(yinz-declare-pane)
 (define (load configuration) (yinz-command (hash "SetSelectable" #f)) (let loop () (loop)))
 "#,
             PermissionStatus::Granted,
@@ -154,6 +156,7 @@ fn steel_shared_instance_survives_its_owners_disconnect() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define keys 0) (define chunks 0)
 (define (load configuration)
   (yinz-command (hash "Subscribe" '("Key" "PaneOutput")))
@@ -235,6 +238,7 @@ fn steel_shared_instance_survives_its_owners_disconnect() {
 #[serial(plugin_tests)]
 fn steel_disconnect_during_pending_async_load_discards_its_continuation() {
     let source = r#"
+(yinz-declare-pane)
 (define label "original")
 (define state (string-append label " load pending"))
 (define (load configuration)
@@ -302,6 +306,7 @@ fn cancel_load_after_timer(cancellation: PluginInstruction) {
         let harness = Harness::with_event_sender(
             "scm",
             r#"
+(yinz-declare-pane)
 (define (load configuration) (yinz-command (hash "SetTimeout" 0.0)) (let loop () (loop)))
 (define (render rows columns) "runaway load completed")
 "#,
@@ -347,7 +352,7 @@ fn cancel_load_after_timer(cancellation: PluginInstruction) {
             let survivor = harness.directory.path().join("survivor.scm");
             std::fs::write(
                 &survivor,
-                "(define (render rows columns) \"survived timer cancellation\")",
+                "(yinz-declare-pane) (define (render rows columns) \"survived timer cancellation\")",
             )
             .unwrap();
             load(&harness.sender, run_plugin(&survivor));
@@ -373,6 +378,7 @@ fn steel_disconnect_interrupts_initial_load_before_the_instance_is_published() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define (load configuration) (yinz-command (hash "SetSelectable" #f)) (let loop () (loop)))
 (define (render rows columns) "disconnected initialization was published")
 "#,
@@ -392,7 +398,7 @@ fn steel_disconnect_interrupts_initial_load_before_the_instance_is_published() {
     // be safe, while the original isolate remains inside the already-running loop.
     std::fs::write(
         &harness.path,
-        "(define (render rows columns) \"replacement after interrupted initialization\")",
+        "(yinz-declare-pane) (define (render rows columns) \"replacement after interrupted initialization\")",
     )
     .unwrap();
     harness
@@ -408,7 +414,7 @@ fn steel_disconnect_interrupts_initial_load_before_the_instance_is_published() {
     let survivor = harness.directory.path().join("survivor.scm");
     std::fs::write(
         &survivor,
-        "(define (render rows columns) \"client survived pending initialization\")",
+        "(yinz-declare-pane) (define (render rows columns) \"client survived pending initialization\")",
     )
     .unwrap();
     load(&harness.sender, run_plugin(&survivor));
@@ -425,6 +431,7 @@ fn steel_shutdown_delivers_before_close_to_an_idle_plugin_once() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define (load configuration) (yinz-command (hash "Subscribe" '("BeforeClose"))))
 (define (update event)
   (when (equal? event "BeforeClose") (yinz-command (hash "SetSelectable" #f))) #f)
@@ -469,6 +476,7 @@ fn steel_unload_disposes_pending_load_and_render_awaits() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define (release) (yinz-wait-for-event "CustomMessage" (lambda (payload) (equal? (car payload) "acceptance-release"))))
 (define (load configuration) (yinz-then (release) (lambda (_) (yinz-command (hash "SetSelectable" #f)))))
 (define (render rows columns)
@@ -495,6 +503,7 @@ fn steel_unload_disposes_pending_load_and_render_awaits() {
     std::fs::write(
         &survivor,
         r#"
+(yinz-declare-pane)
 (define state "survivor awaiting input")
 (define (load configuration)
   (yinz-then (yinz-wait-for-event "CustomMessage" (lambda (payload) (equal? (car payload) "acceptance-release")))
@@ -533,6 +542,7 @@ fn steel_rejected_promise_reports_the_original_scheme_dependency_line() {
         "scm",
         r#"
 (require "./failure.scm")
+(yinz-declare-pane)
 (define state "ready to reject")
 (define (load configuration) (yinz-command (hash "Subscribe" '("Key"))))
 (define (update event)
@@ -611,7 +621,7 @@ fn unload_runaway(source: &str, start_with_key: bool) {
     let survivor = harness.directory.path().join("survivor.scm");
     std::fs::write(
         &survivor,
-        "(define (render rows columns) \"survivor is alive\")",
+        "(yinz-declare-pane) (define (render rows columns) \"survivor is alive\")",
     )
     .unwrap();
     load(&harness.sender, run_plugin(&survivor));
@@ -627,6 +637,7 @@ fn steel_reload_by_url_interrupts_an_infinite_update_and_runs_the_replacement() 
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define (load configuration) (yinz-command (hash "Subscribe" '("Key" "BeforeClose"))))
 (define (update event)
   (yinz-command (hash "SetSelectable" #f))
@@ -650,6 +661,7 @@ fn steel_reload_by_url_interrupts_an_infinite_update_and_runs_the_replacement() 
     std::fs::write(
         &harness.path,
         r#"
+(yinz-declare-pane)
 (define keys 0)
 (define (load configuration) (yinz-command (hash "Subscribe" '("Key"))) (yinz-command (hash "SetSelectable" #t)))
 (define (update event) (set! keys (+ keys 1)) #t)
@@ -699,6 +711,7 @@ fn steel_failed_reload_disposes_every_client_and_recovers_in_the_same_pane() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define (load configuration) (yinz-command (hash "Subscribe" '("BeforeClose" "CustomMessage"))))
 (define (update event)
   (when (equal? event "BeforeClose") (yinz-command (hash "SetSelectable" #f)))
@@ -729,7 +742,7 @@ fn steel_failed_reload_disposes_every_client_and_recovers_in_the_same_pane() {
             });
     };
     wait_for_both("old guest ready");
-    std::fs::write(&harness.path, "(define (broken syntax").unwrap();
+    std::fs::write(&harness.path, "(yinz-declare-pane) (define (broken syntax").unwrap();
     harness.reload();
     harness.log.wait_until("replacement compilation failed", default_timeout(), |log| {
         log.iter().any(|i| matches!(i, ScreenInstruction::UpdatePluginLoadingStage(id, stage) if *id == PLUGIN && stage.is_error())).then_some(())
@@ -744,7 +757,7 @@ fn steel_failed_reload_disposes_every_client_and_recovers_in_the_same_pane() {
         .unwrap();
     std::fs::write(
         &harness.path,
-        "(define (render rows columns) \"recovered guest\")",
+        "(yinz-declare-pane) (define (render rows columns) \"recovered guest\")",
     )
     .unwrap();
     harness.reload();
@@ -779,6 +792,7 @@ fn steel_reload_by_url_waits_out_a_short_update_before_delivering_before_close()
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define (load configuration) (yinz-command (hash "Subscribe" '("BeforeClose" "Key"))))
 (define (update event)
   (if (equal? event "BeforeClose") (yinz-command (hash "SetSelectable" #f))
@@ -802,7 +816,7 @@ fn steel_reload_by_url_waits_out_a_short_update_before_delivering_before_close()
     );
     std::fs::write(
         &harness.path,
-        r#"(define (render rows columns) "replacement after a short update")"#,
+        r#"(yinz-declare-pane) (define (render rows columns) "replacement after a short update")"#,
     )
     .unwrap();
     harness
@@ -835,6 +849,7 @@ fn steel_reload_gives_before_close_its_own_grace_after_a_completed_call() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define (load configuration) (yinz-command (hash "Subscribe" '("BeforeClose" "Key"))))
 (define (update event)
   (define key? (and (hash? event) (hash-contains? event "Key")))
@@ -859,6 +874,7 @@ fn steel_reload_gives_before_close_its_own_grace_after_a_completed_call() {
     std::fs::write(
         &harness.path,
         r#"
+(yinz-declare-pane)
 (define (load configuration) (yinz-command (hash "SetSelectable" #t)))
 (define (render rows columns) "replacement after timed cleanup")
 "#,
@@ -892,6 +908,7 @@ fn steel_reload_by_url_delivers_idle_before_close_before_loading_the_replacement
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define (load configuration) (yinz-command (hash "Subscribe" '("BeforeClose"))))
 (define (update event) (when (equal? event "BeforeClose") (yinz-command (hash "SetSelectable" #f))) #f)
 (define (render rows columns) "idle original ready for reload")
@@ -903,6 +920,7 @@ fn steel_reload_by_url_delivers_idle_before_close_before_loading_the_replacement
     std::fs::write(
         &harness.path,
         r#"
+(yinz-declare-pane)
 (define (load configuration) (yinz-command (hash "SetSelectable" #t)))
 (define (render rows columns) "idle replacement loaded")
 "#,
@@ -947,6 +965,7 @@ fn steel_reload_at_a_host_call_boundary_cleans_up_once_with_queued_work() {
         let harness = Harness::new(
             "scm",
             r#"
+(yinz-declare-pane)
 (define ready #f)
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("ReadApplicationState"))
@@ -975,6 +994,7 @@ fn steel_reload_at_a_host_call_boundary_cleans_up_once_with_queued_work() {
         std::fs::write(
             &harness.path,
             r#"
+(yinz-declare-pane)
 (define (load configuration) (yinz-command (hash "SetSelectable" #t)))
 (define (render rows columns) "boundary replacement ready")
 "#,
@@ -1033,6 +1053,7 @@ fn steel_unload_during_reload_cleanup_does_not_load_the_replacement() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define ready #f)
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("ReadApplicationState"))
@@ -1048,7 +1069,7 @@ fn steel_unload_during_reload_cleanup_does_not_load_the_replacement() {
     harness.rendered("ready for cleanup unload");
     std::fs::write(
         &harness.path,
-        "(define (load configuration) (yinz-command (hash \"SetSelectable\" #t)))",
+        "(yinz-declare-pane) (define (load configuration) (yinz-command (hash \"SetSelectable\" #t)))",
     )
     .unwrap();
     harness
@@ -1112,6 +1133,7 @@ fn steel_unload_during_reload_cleanup_does_not_load_the_replacement() {
 fn steel_unload_interrupts_an_infinite_update_without_host_calls() {
     unload_runaway(
         r#"
+(yinz-declare-pane)
 (define (load configuration) (yinz-command (hash "Subscribe" '("Key"))))
 (define (update event) (yinz-command (hash "SetSelectable" #f)) (let loop () (loop)))
 (define (render rows columns) "ready to loop")
@@ -1125,6 +1147,7 @@ fn steel_unload_interrupts_an_infinite_update_without_host_calls() {
 fn steel_unload_interrupts_an_infinite_load_without_host_calls() {
     unload_runaway(
         r#"
+(yinz-declare-pane)
 (define (load configuration) (yinz-command (hash "SetSelectable" #f)) (let loop () (loop)))
 "#,
         false,

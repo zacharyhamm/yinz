@@ -1,3 +1,4 @@
+(yinz-declare-pane)
 (define (load config) (yinz-command (hash "Subscribe" '("Key"))))
 (define (update event)
   (when (and (hash? event) (hash-contains? event "Key"))

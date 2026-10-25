@@ -8,6 +8,7 @@ use yinz_cli::args::CliAction;
 use yinz_integration_tests::{default_timeout, LayoutInfo, TestRunner, TERMINAL_SIZE};
 
 const HARNESS: &str = r#"
+(yinz-declare-pane)
 (define permissions '("RunCommands" "ReadApplicationState" "WriteToStdin"))
 (define (load configuration)
   (yinz-command (hash "RequestPluginPermissions" permissions))

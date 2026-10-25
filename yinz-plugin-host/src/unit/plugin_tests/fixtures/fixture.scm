@@ -1,3 +1,4 @@
+(yinz-declare-pane)
 (define greeting "hello")
 (define payload "nil")
 (define presses 0)

@@ -10,6 +10,17 @@ pub struct Analysis {
     pub definitions: Vec<(usize, String)>,
     pub imports: Vec<(usize, String)>,
     pub commands: Vec<Command>,
+    /// Every executable, unshadowed `yinz-declare-pane` or `yinz-declare-pane-unless` call.
+    pub pane_declarations: Vec<PaneDeclarationCall>,
+    /// Whether the entry file binds `render` at its top level.
+    pub defines_render: bool,
+}
+
+#[derive(Debug)]
+pub struct PaneDeclarationCall {
+    pub line: usize,
+    /// A literal form of the entry file itself, rather than one nested in another form.
+    pub top_level: bool,
 }
 
 #[derive(Debug)]
@@ -33,10 +44,17 @@ pub fn analyze(source: &str) -> Result<Analysis> {
             .collect(),
         result: Analysis::default(),
         mutated: HashSet::new(),
+        top_level: expressions
+            .iter()
+            .map(|expression| expression.span().start as usize)
+            .collect(),
     };
     for expression in &expressions {
         mutations(expression, &mut analysis.mutated);
     }
+    let mut top_bindings = HashSet::new();
+    bindings(&expressions, &mut top_bindings);
+    analysis.result.defines_render = top_bindings.contains("render");
     analysis.sequence(&expressions, &HashSet::new(), false);
     Ok(analysis.result)
 }
@@ -173,6 +191,8 @@ struct Visitor {
     newlines: Vec<usize>,
     result: Analysis,
     mutated: HashSet<String>,
+    /// Where each form of the entry file starts.
+    top_level: HashSet<usize>,
 }
 
 impl Visitor {
@@ -336,6 +356,14 @@ impl Visitor {
                     self.visit(argument, bound, during_load && !deferred_callback);
                 }
                 return;
+            },
+            "yinz-declare-pane" | "yinz-declare-pane-unless"
+                if !bound.contains(&head) && !self.mutated.contains(&head) =>
+            {
+                let top_level = self.top_level.contains(&(expression.span().start as usize));
+                self.result
+                    .pane_declarations
+                    .push(PaneDeclarationCall { line, top_level });
             },
             "yinz-wait-for-permissions"
                 if !bound.contains(&head)

@@ -663,9 +663,12 @@ fn create_plugin_thread_with_services(
     plugin_aliases
         .aliases
         .insert("modal_fixture_plugin_for_tests".to_owned(), modal_fixture);
+    // The bridge is built on the plugin thread, so the calling test's executor size goes with it.
+    let executor_threads = crate::plugin_bridge::TEST_EXECUTOR_THREADS.with(std::cell::Cell::get);
     let plugin_thread = std::thread::Builder::new()
         .name("plugin_thread".to_string())
         .spawn(move || {
+            crate::plugin_bridge::TEST_EXECUTOR_THREADS.with(|fixed| fixed.set(executor_threads));
             plugin_thread_main(
                 plugin_bus,
                 data_dir,
@@ -1033,6 +1036,7 @@ mod break_panes_commands;
 mod cli_events;
 mod config_events;
 mod focused_pane_commands;
+mod headless;
 mod highlights;
 mod host_theme;
 mod keybinds;

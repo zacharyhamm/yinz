@@ -14,6 +14,21 @@ impl SteelPlugin {
         }
         Ok(names)
     }
+
+    /// The evaluated module's pane declaration for this load configuration. Seals it.
+    pub(crate) fn pane_declared(
+        &mut self,
+        configuration: &BTreeMap<String, String>,
+    ) -> Result<bool> {
+        let configuration =
+            serde_json::to_value(configuration).context("encoding pane configuration")?;
+        self.with_runtime(false, |runtime| {
+            serde_json::from_value::<bool>(
+                runtime.invoke("yinz-pane-declared?", vec![configuration])?,
+            )
+            .context("reading the Steel pane declaration")
+        })
+    }
 }
 
 pub(crate) fn run(

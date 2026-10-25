@@ -5,6 +5,7 @@ use std::{
 
 use serde_json::{json, Value};
 use yinz_steel::Runtime;
+use yinz_types::{internal_ids::PluginId, own_pane::own_pane_command};
 
 use crate::fixture_source;
 
@@ -67,14 +68,38 @@ pub(super) fn plugin_with_source(
     replies: BTreeMap<String, Value>,
     prelude: &str,
 ) -> (Runtime, Arc<Mutex<Host>>) {
+    // The host decides on the configuration it passes, which holds string values only.
+    let settings = configuration
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_owned())))
+        .collect();
+    let headless = !yinz_steel::manifest::pane_declaration(source)
+        .unwrap()
+        .applies(&settings);
     let host = Arc::new(Mutex::new(Host {
         replies,
         ..Host::default()
     }));
     let captured = host.clone();
+    let name = tag.to_owned();
     let mut runtime = Runtime::new(move |command: Value| {
         let typed = yinz_steel::binary::decode_command(command.clone())
             .unwrap_or_else(|error| panic!("invalid host command {command}: {error}"));
+        if headless {
+            let me = captured
+                .lock()
+                .unwrap()
+                .replies
+                .get("GetPluginIds")
+                .and_then(|ids| ids["plugin_id"].as_u64())
+                .unwrap_or(42);
+            let me = PluginId::new(u32::try_from(me).unwrap());
+            if let Some(refused) = own_pane_command(&typed, me) {
+                panic!("{name} declares no pane, so the host refuses its '{refused}': {command}");
+            }
+        }
         let command = if command.pointer("/FsWrite/contents/$yinz-bytes").is_some()
             || command.pointer("/WebRequest/3/$yinz-bytes").is_some()
         {
@@ -133,6 +158,24 @@ fn source() -> Value {
 
 fn key(name: Value, modifiers: &[&str]) -> Value {
     json!({"Key": {"bare_key": name, "key_modifiers": modifiers}})
+}
+
+#[test]
+fn the_test_host_refuses_own_pane_commands_only_from_plugins_without_a_pane() {
+    let load = |declaration: &str, configuration: Value| {
+        let source = format!(
+            "{declaration}\n(define (load configuration) (yinz-command (hash \"RenamePluginPane\" (list 42 \"x\"))) (yinz-command \"HideSelf\"))"
+        );
+        std::panic::catch_unwind(|| {
+            plugin_with_source("repl", &source, configuration, BTreeMap::new(), "")
+        })
+        .map(|(_, host)| host.lock().unwrap().commands.len())
+    };
+    assert_eq!(load("(yinz-declare-pane)", json!({})).unwrap(), 2);
+    let unless = r#"(yinz-declare-pane-unless "duplicate_focused" "true")"#;
+    assert_eq!(load(unless, json!({})).unwrap(), 2);
+    assert!(load(unless, json!({"duplicate_focused": "true"})).is_err());
+    assert!(load("", json!({})).is_err());
 }
 
 #[test]

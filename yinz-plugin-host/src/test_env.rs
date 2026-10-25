@@ -12,7 +12,8 @@ pub(crate) fn test_env() -> PluginEnv {
     PluginEnv {
         yinz_data_dir: Default::default(),
         background: false,
-        plugin_roles: Default::default(),
+        panes: Default::default(),
+        surface: crate::plugin_panes::Surface::Pane,
         pick_request: None,
         pick_cancelled: None,
         pick_opening: None,

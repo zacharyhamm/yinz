@@ -42,10 +42,15 @@
 (define (plugin session id)
   (or (get (hash-ref session "plugins") id #f) (error "Plugin no longer exists")))
 (define (plugin-label id info) (string-append "[plugin_" id "] " (hash-ref info "location")))
+(define (plugin-pane-in? session id position)
+  (find (lambda (pane) (and (hash-ref pane "is_plugin") (= (hash-ref pane "id") (string->number id))))
+    (get (hash-ref (hash-ref session "panes") "panes") position '())))
+;; A plugin that declares no pane runs headless and has nothing to focus.
+(define (plugin-pane? session id)
+  (and (find (lambda (position) (plugin-pane-in? session id position))
+      (hash-keys->list (hash-ref (hash-ref session "panes") "panes"))) #t))
 (define (plugin-tab session id)
-  (define tab (find (lambda (tab)
-        (find (lambda (pane) (and (hash-ref pane "is_plugin") (= (hash-ref pane "id") (string->number id))))
-          (get (hash-ref (hash-ref session "panes") "panes") (number->string (hash-ref tab "position")) '())))
+  (define tab (find (lambda (tab) (plugin-pane-in? session id (number->string (hash-ref tab "position"))))
       (hash-ref session "tabs")))
   (if tab (string-append "Tab: " (hash-ref tab "name")) "Background / no tab"))
 (define (plugin-details id)
@@ -57,7 +62,10 @@
           (if (null? (hash-keys->list config)) '("(none)")
             (map (lambda (key) (string-append key ": " (hash-ref config key))) (sort (hash-keys->list config) string<?)))) "  \n"))))
 (define (operate id kind)
-  (define info (plugin (current-session) id))
+  (define session (current-session))
+  (define info (plugin session id))
+  (when (and (equal? kind "focus") (not (plugin-pane? session id)))
+    (error "This plugin runs headless: it has no pane to focus"))
   (cond
     ((equal? kind "details") (plugin-details id))
     ((equal? kind "close")
@@ -72,19 +80,24 @@
         (if (equal? kind "focus") (list (string->number id) #t #f) (string->number id)))
       (complete (if (equal? kind "focus") "Plugin focus requested" "Plugin reload requested")))))
 (define (plugin-actions id)
-  (define info (plugin (current-session) id))
+  (define session (current-session)) (define info (plugin session id))
   (hash "type" "actions" "title" (yinz-markdown-escape (clip (clean (plugin-label id info)) 180))
     "actions" (map (lambda (pair) (action (car pair) (cadr pair) (defer (lambda () (operate id (car pair))))))
-      '(("focus" "Focus plugin") ("reload" "Reload plugin") ("close" "Close plugin…") ("details" "Plugin details…")))))
+      (append (if (plugin-pane? session id) '(("focus" "Focus plugin")) '())
+        '(("reload" "Reload plugin") ("close" "Close plugin…") ("details" "Plugin details…"))))))
 (define (inventory kind title)
   (list-results title
     (lambda ()
       (define session (current-session)) (define plugins (hash-ref session "plugins"))
+      ;; Only a plugin with a pane can be focused; most running plugins are headless.
+      (define listed (if (equal? kind "focus")
+          (filter (lambda (id) (plugin-pane? session id)) (hash-keys->list plugins))
+          (hash-keys->list plugins)))
       (map (lambda (id)
           (describe (action id (plugin-label id (hash-ref plugins id))
               (defer (lambda () (if (equal? kind "plugins") (plugin-actions id) (operate id kind)))))
             (plugin-tab session id)))
-        (sort (hash-keys->list plugins) (lambda (a b) (< (string->number a) (string->number b)))))) 0 ""))
+        (sort listed (lambda (a b) (< (string->number a) (string->number b)))))) 0 ""))
 
 (define (config-form draft old-key)
   (define config (vector-ref draft 0))
@@ -120,6 +133,8 @@
               ((equal? character #\?) "%3F") (else (string character)))) (string->list path))))))
 (define (load-form from-file? initial draft)
   (hash "type" "form" "title" (if from-file? "Load plugin from file" "Load plugin") "submitLabel" "Load plugin"
+    ;; Choice fields carry no help line, so the placement note is the form's description.
+    "description" "Foreground opens a pane only for plugins that declare one."
     "fields" (list (hash "type" (if from-file? "file" "text") "id" "location"
         "label" (if from-file? "Plugin file" "Plugin URL or alias") "initialValue" (get initial "location" ""))
       (hash "type" "choice" "id" "placement" "label" "Placement" "options" '("Foreground" "Background")

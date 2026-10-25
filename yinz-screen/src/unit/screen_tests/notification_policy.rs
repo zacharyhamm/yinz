@@ -1229,3 +1229,51 @@ fn suppressed_or_informational_desktop_entries_preserve_the_older_toasts_hint() 
         assert_eq!(layouts[0].footer.as_deref(), Some("Alt+a to dismiss"));
     }
 }
+
+/// The session's first layout can raise a toast while its first client is still being
+/// registered (an undeclared plugin's slot, say). That client is shown it, once: a later
+/// reattach replays neither it nor what arrived while the session was detached.
+#[test]
+fn a_toast_raised_before_the_first_client_is_shown_to_that_client_only() {
+    let (mut screen, _, _server) = create_new_screen_with_capture(
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        true,
+        true,
+        true,
+        true,
+    );
+    let (tx, _plugin_receiver) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    assert!(screen.connected_clients.borrow().is_empty());
+    screen
+        .receive_toast("before anyone".into(), None, None, None, None)
+        .unwrap();
+    assert_eq!(screen.notification_history.len(), 1);
+    assert!(screen.notifications.is_empty(), "nobody to show it to yet");
+
+    // `apply_layout` registers the session's first client.
+    new_tab(&mut screen, 1, TabId::new(0));
+    let shown = |screen: &Screen| -> Vec<String> {
+        screen
+            .notifications
+            .iter()
+            .map(|toast| toast.text.clone())
+            .collect()
+    };
+    assert_eq!(shown(&screen), vec!["before anyone".to_owned()]);
+
+    screen.remove_client(ClientId::new(1)).unwrap();
+    screen
+        .receive_toast("while detached".into(), None, None, None, None)
+        .unwrap();
+    screen.add_client(ClientId::new(1)).unwrap();
+    assert_eq!(screen.notification_history.len(), 2);
+    assert!(
+        shown(&screen).len() <= 1 && !shown(&screen).contains(&"while detached".to_owned()),
+        "a reattach must not replay toasts: {:?}",
+        shown(&screen)
+    );
+}

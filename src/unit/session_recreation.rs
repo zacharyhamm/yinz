@@ -274,7 +274,7 @@ fn recreation(delete: bool, kill_first: bool) {
     let plugin = session.0.path().join(format!("{MARKER}.scm"));
     fs::write(
         &plugin,
-        "(define (render rows columns) \"floating-plugin-marker\")\n",
+        "(yinz-declare-pane) (define (render rows columns) \"floating-plugin-marker\")\n",
     )
     .unwrap();
     let layout = session.0.path().join("layout.kdl");
@@ -344,6 +344,114 @@ fn force_delete_recreate_does_not_restore_floating_plugin() {
 #[test]
 fn kill_without_delete_resurrects_floating_plugin() {
     recreation(false, true);
+}
+
+/// A serialized session names a floating plugin that has since dropped its pane declaration.
+/// Resurrection restores the rest of the session but not that pane: the plugin's slot is
+/// removed, the plugin is not left running, and the next save no longer records it.
+#[test]
+fn resurrecting_an_undeclared_floating_plugin_removes_its_pane() {
+    const TERMINAL_NAME: &str = "resurrected-terminal";
+    let session = Session::new();
+    let plugin = session.0.path().join(format!("{MARKER}.scm"));
+    fs::write(
+        &plugin,
+        "(yinz-declare-pane) (define (render rows columns) \"floating-plugin-marker\")\n",
+    )
+    .unwrap();
+    let layout = session.0.path().join("layout.kdl");
+    fs::write(&layout, format!("layout {{\n pane name=\"{TERMINAL_NAME}\"\n floating_panes {{\n pane name=\"{MARKER}\" {{ plugin location=\"file:{}\"; }}\n }}\n}}\n", plugin.display())).unwrap();
+    session.success(&[
+        "--layout",
+        layout.to_str().unwrap(),
+        "attach",
+        "--create-background",
+        NAME,
+    ]);
+    session.wait_for_panes(true);
+    session.success(&["--session", NAME, "action", "save-session"]);
+    let saved = session.checkpoint();
+    assert!(saved.contains(MARKER) && saved.contains(TERMINAL_NAME));
+    session.success(&["kill-session", NAME]);
+    assert!(session.checkpoint().contains(MARKER));
+
+    // The plugin no longer declares a pane; the session comes back from its checkpoint.
+    fs::write(
+        &plugin,
+        "(define (load configuration) #t)\n(define (pipe message) #f)\n",
+    )
+    .unwrap();
+    fs::write(&layout, "layout { pane; }\n").unwrap();
+    session.success(&[
+        "--layout",
+        layout.to_str().unwrap(),
+        "attach",
+        "--create-background",
+        NAME,
+    ]);
+    // The named terminal shows the checkpoint, not the fresh layout, was restored.
+    let state = yinz_test_support::Watched::new(serde_json::Value::Null);
+    let timeout = Duration::from_secs(30);
+    let restored_without_plugin = |panes: &serde_json::Value| {
+        panes.as_array().is_some_and(|panes| {
+            panes
+                .iter()
+                .any(|pane| pane["is_plugin"] == false && pane.to_string().contains(TERMINAL_NAME))
+                && !panes.iter().any(|pane| pane.to_string().contains(MARKER))
+        })
+    };
+    std::thread::scope(|scope| {
+        let state = &state;
+        let restored_without_plugin = &restored_without_plugin;
+        let session = &session;
+        scope.spawn(move || {
+            let deadline = std::time::Instant::now() + timeout;
+            while std::time::Instant::now() < deadline {
+                let out = session
+                    .command()
+                    .args(["--session", NAME, "action", "list-panes", "--json"])
+                    .output()
+                    .unwrap();
+                if let Ok(panes) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                    let done = restored_without_plugin(&panes);
+                    *state.lock() = panes;
+                    if done {
+                        return;
+                    }
+                }
+            }
+        });
+        state.wait_until(
+            "the checkpoint to be restored without the undeclared plugin's pane",
+            timeout,
+            |panes| restored_without_plugin(panes).then_some(()),
+        );
+    });
+    let panes = session.success(&["--session", NAME, "action", "list-panes", "--json"]);
+    let panes: serde_json::Value = serde_json::from_slice(&panes.stdout).unwrap();
+    assert!(
+        panes
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|pane| pane["is_plugin"] == false),
+        "{panes}"
+    );
+    let plugins = session.success(&["--session", NAME, "plugins", "list", "--running", "--json"]);
+    assert!(
+        !String::from_utf8_lossy(&plugins.stdout).contains(MARKER),
+        "the aborted plugin must not be running"
+    );
+    session.success(&["--session", NAME, "action", "save-session"]);
+    let saved = session.checkpoint();
+    // The tabs record live panes. `new_tab_template` is the layout new tabs are made from, kept
+    // from the session's first layout; a tab made from it drops the slot the same way.
+    let tabs = saved.split("new_tab_template").next().unwrap();
+    assert!(
+        tabs.contains(TERMINAL_NAME) && !tabs.contains(MARKER),
+        "{saved}"
+    );
+    session.success(&["kill-session", NAME]);
 }
 
 #[test]

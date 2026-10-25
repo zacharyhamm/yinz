@@ -1,5 +1,6 @@
 ;; Holds ChangeApplicationState but not the permissions a layout's panes can use, and tries to
 ;; plant layouts that run commands. ReadApplicationState only reports the layout folder.
+(yinz-declare-pane)
 (define status "waiting for permissions")
 (define (load config)
   (yinz-command (hash "Subscribe" (list "Key")))

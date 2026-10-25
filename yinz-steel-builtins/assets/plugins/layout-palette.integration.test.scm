@@ -15,12 +15,16 @@
     (test-wait-for-text "Layout saved")
     (open-layout-actions) (s-text "Edit layout") (test-wait-for-text "› Edit layout in editor") (s-key "Enter")
     (test-wait-for-text "LAYOUT EDITOR:")
-    ;; Check the title: once the "Layout editor opened" toast settles, it covers the path on screen.
-    (define layout-path (string-append (substring home 0 (- (string-length home) 5)) "/config/layouts/palette-layout.kdl"))
+    ;; The path is read from the pane's title: the completion toast can cover it on screen.
+    (define layout-path
+      (string-append (substring home 0 (- (string-length home) 5)) "/config/layouts/palette-layout.kdl"))
     (test-wait-for "focused tiled editor" (lambda ()
         (t-find (lambda (pane) (and (s-terminal? pane) (hash-ref pane "is_focused")
               (string-contains? (hash-ref pane "title") layout-path)
               (not (hash-ref pane "is_floating")) (not (hash-ref pane "is_suppressed")))) (s-panes))))
+    ;; The palette closes as the action completes, which can trail the editor opening. Until it
+    ;; has, typed text goes to the palette and Ctrl Alt p closes it rather than opening it.
+    (test-wait-for-text "Layout editor opened")
     (s-text "still-visible") (s-key "Enter") (test-wait-for-text "EDITOR INPUT: still-visible")
     (s-action "CloseFocus;")
     (test-wait-for "editor closes and original terminal remains" (lambda ()
@@ -29,5 +33,8 @@
     (open-layout-actions) (s-text "Apply layout") (test-wait-for-text "› Apply layout…") (s-key "Enter") (test-wait-for-text "Retain existing panes:")
     (s-key "Enter") (s-key "Enter") (s-key "Down") (s-key "Enter")
     (test-wait-for "saved layout restores one terminal pane" (lambda () (= 1 (length (filter s-terminal? (s-panes))))))
+    ;; The layout lands before the plugin's reply closes the palette; a Ctrl Alt p before that
+    ;; would close it instead of opening a new one.
+    (test-wait-for-text "Layout application requested")
     (open-layout-actions) (s-text "Delete layout") (test-wait-for-text "› Delete layout…") (s-key "Enter") (test-wait-for-text "Permanently removes this saved layout file")
     (s-key "Down") (s-key "Enter") (test-wait-for-text "Layout deleted")))

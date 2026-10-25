@@ -35,7 +35,7 @@ fn wait_for_plugin_state(
     plugin: &std::path::Path,
     state: yinz_types::cli::PluginState,
 ) -> yinz_types::cli::PluginStatus {
-    let deadline = std::time::Instant::now() + yinz_test_support::default_timeout();
+    let deadline = std::time::Instant::now() + yinz_integration_tests::default_timeout();
     loop {
         // Each correlated IPC reply observes the plugin thread after its preceding work.
         let response = lifecycle(
@@ -89,6 +89,7 @@ fn launch_or_focus_retains_the_pane_after_symlink_reload_by_id_and_url() {
         fs::write(
             &first,
             r#"
+(yinz-declare-pane)
 (define ready #f)
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("ChangeApplicationState")) (lambda (_)
@@ -103,6 +104,7 @@ fn launch_or_focus_retains_the_pane_after_symlink_reload_by_id_and_url() {
         fs::write(
             &second,
             r#"
+(yinz-declare-pane)
 (define state "symlink version two ready")
 (define (load configuration) (yinz-command (hash "Subscribe" '("Key"))))
 (define (update event)
@@ -227,7 +229,7 @@ fn launch_or_focus_retains_plugin_directory_fallback_after_reload() {
     let plugin = directory.path().join("probe.scm");
     fs::write(
         &plugin,
-        r#"(define (render rows columns) "fallback version one")"#,
+        r#"(yinz-declare-pane) (define (render rows columns) "fallback version one")"#,
     )
     .unwrap();
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
@@ -264,7 +266,7 @@ fn launch_or_focus_retains_plugin_directory_fallback_after_reload() {
     });
     fs::write(
         &plugin,
-        r#"(define (render rows columns) "fallback version two")"#,
+        r#"(yinz-declare-pane) (define (render rows columns) "fallback version two")"#,
     )
     .unwrap();
     let (code, output) = yinz.run_cli_action_reporting(CliAction::StartOrReloadPlugin {
@@ -426,11 +428,13 @@ fn background_palette_permission_lifecycle() {
             1,
             "{output}"
         );
+        // The plugin declares no pane, so it runs headless and has no pane record at all.
         assert!(
-            panes
-                .iter()
-                .filter(|pane| pane["is_plugin"] == true)
-                .all(|pane| pane["is_suppressed"] == true),
+            !panes.iter().any(|pane| pane["is_plugin"] == true
+                && (pane["id"] == id.get()
+                    || pane["plugin_url"]
+                        .as_str()
+                        .is_some_and(|url| url.ends_with("background.scm")))),
             "{output}"
         );
         // Source removal must not make the loaded identity unaddressable.
@@ -538,6 +542,7 @@ fn optional_providers_do_not_block_startup_and_can_register_later() {
     fs::write(&failed, r#"(error "optional provider failed")"#).unwrap();
     fs::write(&unregistered, "(void)").unwrap();
     fs::write(&late, r#"
+(yinz-declare-pane)
 (define state "waiting for permission")
 (define (has-provider? providers)
   (not (null? (filter (lambda (provider) (equal? (hash-ref provider "kind") "late-fixture")) providers))))
@@ -589,6 +594,7 @@ fn steel_background_workers_await_real_commands_and_preserve_state() {
     let directory = tempfile::tempdir().unwrap();
     let plugin = directory.path().join("workers.scm");
     fs::write(&plugin, r#"
+(yinz-declare-pane)
 (define count 0) (define state "starting") (define results '())
 (yinz-register-workers (hash "command" (lambda (name payload)
   (yinz-then (yinz-run-command
@@ -634,6 +640,7 @@ fn steel_worker_pane_sequences_and_reruns_complete_before_the_next_job() {
     let directory = tempfile::tempdir().unwrap();
     let plugin = directory.path().join("worker-panes.scm");
     fs::write(&plugin, r#"
+(yinz-declare-pane)
 (define state "starting") (define replies 0)
 (define events '("CommandPaneOpened" "CommandPaneReRun" "CommandPaneExited"))
 (define (observe)
@@ -736,6 +743,7 @@ fn steel_observes_real_buffered_http_and_ordered_stream_bytes() {
     let directory = tempfile::tempdir().unwrap();
     let plugin = directory.path().join("http.scm");
     fs::write(&plugin, format!(r#"
+(yinz-declare-pane)
 (define state "starting")
 (define (run-http)
   (yinz-then (yinz-wait-for-permissions '("WebAccess")) (lambda (_)
@@ -790,6 +798,7 @@ fn steel_observes_real_buffered_http_and_ordered_stream_bytes() {
 
 const SCHEME: &str = r#"
 (require "./dependency.scm")
+(yinz-declare-pane)
 (define state "starting")
 (define (load configuration)
   (yinz-command (hash "Subscribe" '("PermissionRequestResult" "Key")))
@@ -825,6 +834,7 @@ fn steel_and_builtins_share_a_session_through_permissions_events_reload_and_clos
     fs::write(
         plugins.join("companion.scm"),
         r#"
+(yinz-declare-pane)
 (define (render rows columns) "Scheme companion is alive")
 "#,
     )
@@ -920,6 +930,7 @@ fn steel_host_queries_configuration_layouts_and_cross_session_warp() {
     let directory = tempfile::tempdir().unwrap();
     let plugin = directory.path().join("surfaces.scm");
     fs::write(&plugin, format!(r#"
+(yinz-declare-pane)
 (define state "starting")
 (define (assert value message) (unless value (error message)))
 (define (load configuration)
@@ -983,6 +994,7 @@ fn steel_layout_query_reports_a_held_pty_and_recovers_during_plugin_loading() {
     let directory = tempfile::tempdir().unwrap();
     let plugin = directory.path().join("layout-query.scm");
     fs::write(&plugin, r#"
+(yinz-declare-pane)
 (define state "starting") (define query 0) (define compatible 0)
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("ReadApplicationState")) (lambda (_)
@@ -1101,10 +1113,11 @@ fn steel_reload_before_close_can_query_layout_with_another_plugin() {
     let companion = directory.path().join("companion.scm");
     fs::write(
         &companion,
-        r#"(define (render rows columns) "companion ready")"#,
+        r#"(yinz-declare-pane) (define (render rows columns) "companion ready")"#,
     )
     .unwrap();
     fs::write(&plugin, r#"
+(yinz-declare-pane)
 (define state "starting")
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("ReadApplicationState" "ReadFiles" "WriteFiles")) (lambda (_)
@@ -1137,6 +1150,7 @@ fn steel_reload_before_close_can_query_layout_with_another_plugin() {
     fs::write(
         &plugin,
         r#"
+(yinz-declare-pane)
 (define state "starting")
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("ReadFiles")) (lambda (_)
@@ -1182,6 +1196,7 @@ fn steel_reload_reuses_stream_id_without_delivering_or_cancelling_the_old_genera
     let plugin = directory.path().join("replace-stream.scm");
     let source = format!(
         r#"
+(yinz-declare-pane)
 (define label "old") (define state "starting") (define contents "")
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("WebAccess")) (lambda (_)
@@ -1241,7 +1256,7 @@ fn steel_forms_and_markdown_render_beside_builtins() {
     .unwrap();
     fs::write(
         directory.path().join("companion.scm"),
-        r#"(define (render rows columns) "Scheme companion")"#,
+        r#"(yinz-declare-pane) (define (render rows columns) "Scheme companion")"#,
     )
     .unwrap();
     for size in [
@@ -1293,6 +1308,7 @@ fn configured_overlay_tabs_launch_from_plugins_and_keep_permission_failures_in_t
     fs::write(
         &launcher,
         r#"
+(yinz-declare-pane)
 (define ready #f)
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("ReadApplicationState" "OpenTerminalsOrPlugins"))
@@ -1307,12 +1323,13 @@ fn configured_overlay_tabs_launch_from_plugins_and_keep_permission_failures_in_t
     .unwrap();
     fs::write(
         &content,
-        r#"(define (render rows columns) "OVERLAY CONTENT READY")"#,
+        r#"(yinz-declare-pane) (define (render rows columns) "OVERLAY CONTENT READY")"#,
     )
     .unwrap();
     fs::write(
         &denied,
         r#"
+(yinz-declare-pane)
 (define state "waiting")
 (define (load configuration)
   (yinz-catch (yinz-then (yinz-wait-for-permissions '("ReadApplicationState"))

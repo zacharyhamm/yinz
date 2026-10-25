@@ -43,11 +43,10 @@
     "\"
         }
         bind \"d\" {
-            LaunchOrFocusPlugin \"duplicate-agent\" {
+            LaunchPlugin \"duplicate-agent\" {
                 floating true
                 overlay true
                 modal true
-                move_to_focused_tab true
             };
             SwitchToMode \""
     exit-mode

@@ -63,6 +63,26 @@ fn formatting_backs_up_source_permissions() {
 }
 
 #[test]
+fn formatting_does_not_stop_at_a_malformed_pane_declaration() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("twice.scm");
+    std::fs::write(&path, "  (yinz-declare-pane)\n(yinz-declare-pane)").unwrap();
+
+    let warnings = format_file(&path, false).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "(yinz-declare-pane)\n(yinz-declare-pane)\n"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains("line 2: the pane is declared more than once")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
 fn plugin_replacement_preserves_hard_linked_sources_and_backups() {
     let dir = tempfile::tempdir().unwrap();
     let original = "(define before #t)\n";

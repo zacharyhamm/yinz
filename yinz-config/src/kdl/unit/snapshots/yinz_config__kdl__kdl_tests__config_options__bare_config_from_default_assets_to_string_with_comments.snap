@@ -135,9 +135,8 @@ keybinds clear-defaults=true {
             SwitchToMode "normal"
         }
         bind "d" {
-            LaunchOrFocusPlugin "duplicate-agent" {
+            LaunchPlugin "duplicate-agent" {
                 floating true
-                move_to_focused_tab true
                 modal true
                 overlay true
             }

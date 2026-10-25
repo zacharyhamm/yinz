@@ -1,4 +1,5 @@
 ;; Demonstrates permissions, command replies, and persistent render state.
+(yinz-declare-pane)
 (define output "Waiting for permission")
 (define (load configuration)
   (yinz-catch

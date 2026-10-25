@@ -736,6 +736,7 @@ fn a_shared_scheme_notification_policy_and_independent_observer_survive_detach()
   #f)
 "#).unwrap();
     std::fs::write(&observer, r#"
+(yinz-declare-pane)
 (define state "starting observer")
 (define arrivals (hash))
 (define results '())

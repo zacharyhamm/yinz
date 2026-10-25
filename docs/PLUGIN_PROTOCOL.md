@@ -671,7 +671,8 @@ type PluginCheckMode = 'Syntax' | 'Semantic' | 'Format' | 'Prepare';
 
 interface OutlineEntry {line: Integer; kind: 'Require' | 'Permission' | 'Function' | 'Handler' | 'Define'; text: string}
 
-interface PluginCheckReport {diagnostics: string[]; outline: OutlineEntry[]; permissions: Permission[]; warnings: string[]; formatted_source?: string}
+/** pane: "always", "unless KEY=VALUE", or "none"; omitted when the check fails. */
+interface PluginCheckReport {diagnostics: string[]; outline: OutlineEntry[]; permissions: Permission[]; warnings: string[]; formatted_source?: string; pane?: string}
 
 interface PluginTestOptions {kind?: "unit" | "integration" | "all"; filter?: string; timeout_ms?: number}
 
@@ -698,7 +699,8 @@ interface AgentInput {
 
 interface AgentHookArtifact {base?: "config" | "home"; path: string; content: string; marker: string; executable?: boolean;}
 
-interface PluginInfo { pluginId: number; background: boolean; }
+/** pane: null while the declaration is unknown, such as during a clone. */
+interface PluginInfo { pluginId: number; background: boolean; pane: boolean | null; }
 
 interface PickOptions {
   kind: "directory" | "file";
@@ -733,6 +735,17 @@ plugin's default working directory in either placement. An explicitly configured
 alias directory takes precedence. If `cwd` is omitted or null, relative file URLs
 and foreground plugins use the calling plugin's directory; background plugins
 keep the session's default directory unless the alias specifies one.
+
+## Headless plugins
+
+A plugin without a [pane declaration](PLUGIN_SDK.md#pane-declaration) has no pane.
+Commands that need the calling plugin's own pane are refused with a Scheme error:
+`'<command>' needs the plugin's own pane, but <plugin> declares no pane; add
+(yinz-declare-pane) at the top level of its entry file`. The SDK reference lists them.
+Commands that open a headless plugin succeed with `{"Plugin": id}`. That ID addresses
+the plugin for `MessageToPlugin`. Focusing it has no effect, and closing it unloads
+the plugin. `plugins list --running --json` reports `pane` with the same meaning as
+`PluginInfo.pane`.
 
 ## Pane slots
 
@@ -778,7 +791,8 @@ target holds no slot, before anything loads. It is also refused when an instance
 with that URL and configuration is running or loading. In that case, focus or close
 the existing instance, or use a distinct configuration. The reply is the new
 plugin pane's id after the pane is placed. `context` is reserved; plugin panes do
-not echo it.
+not echo it. A plugin that declares no pane runs headless: the target keeps its
+slot, and the reply is the plugin's id.
 
 ## Data watch delivery
 

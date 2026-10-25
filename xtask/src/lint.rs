@@ -12,6 +12,7 @@ pub fn lint(sh: &Shell, flags: flags::Lint) -> anyhow::Result<()> {
         .and_then(|_| crate::cargo())
         .context(err_context)?;
     check_file_level_allows().context(err_context)?;
+    check_add_plugin_owners().context(err_context)?;
 
     println!();
     let msg = ">> Linting the workspace";
@@ -420,6 +421,250 @@ fn check_file_level_allows() -> anyhow::Result<()> {
         }
     }
     Err(anyhow!(msg))
+}
+
+/// The only files outside tests that may construct `ScreenInstruction::AddPlugin`: the plugin
+/// host's pane ledger, which decides whether a plugin gets a pane at all (an undeclared plugin
+/// must never get one), and the screen's re-park of one that waits for a client.
+const ADD_PLUGIN_OWNERS: &[&str] = &[
+    "yinz-plugin-host/src/plugin_panes.rs",
+    "yinz-screen/src/screen/plugins.rs",
+];
+
+/// Fails when code outside [`ADD_PLUGIN_OWNERS`] and outside tests constructs
+/// `ScreenInstruction::AddPlugin`, by whatever path, or imports the variant.
+fn check_add_plugin_owners() -> anyhow::Result<()> {
+    let offenders = add_plugin_offenders(&crate::project_root())?;
+    if offenders.is_empty() {
+        return Ok(());
+    }
+    let mut msg = String::from(
+        "`ScreenInstruction::AddPlugin` is constructed only by the pane ledger \
+         (yinz-plugin-host/src/plugin_panes.rs): ask it for a pane with a `PaneRequest`\n",
+    );
+    for offender in &offenders {
+        msg.push_str("  ");
+        msg.push_str(offender);
+        msg.push('\n');
+    }
+    Err(anyhow!(msg))
+}
+
+/// Each source file under `root`, outside the owners and tests, that constructs or imports
+/// `ScreenInstruction::AddPlugin`, with how many times. A file that cannot be read is an error:
+/// the check cannot vouch for what it did not see.
+fn add_plugin_offenders(root: &Path) -> anyhow::Result<Vec<String>> {
+    let mut files = Vec::new();
+    rust_sources(root, root, &mut files)
+        .with_context(|| format!("failed to read {}", root.display()))?;
+    let mut offenders = Vec::new();
+    for path in files {
+        let shown = path.to_string_lossy().into_owned();
+        let in_tests = path
+            .components()
+            .any(|component| matches!(component.as_os_str().to_str(), Some("unit" | "tests")));
+        if in_tests || ADD_PLUGIN_OWNERS.contains(&shown.as_str()) {
+            continue;
+        }
+        let source = std::fs::read_to_string(root.join(&path)).with_context(|| {
+            format!("failed to read {shown} to check who constructs `ScreenInstruction::AddPlugin`")
+        })?;
+        let constructed = add_plugin_constructions(&source);
+        if constructed > 0 {
+            offenders.push(format!("{shown}: {constructed}"));
+        }
+    }
+    Ok(offenders)
+}
+
+const ADD_PLUGIN: &str = "AddPlugin";
+
+/// How many times `source` constructs `ScreenInstruction::AddPlugin` or imports it, outside
+/// comments, literals and inline `#[cfg(test)]` modules. Any path to the variant counts: an
+/// alias of the enum (`I::AddPlugin(..)`), `Self::AddPlugin(..)`, a bare `AddPlugin(..)` after
+/// an import, spaces around `::`, and the variant passed as a function. A pattern that matches
+/// one (followed by `=>`, `|`, `if` or `=`, or the last argument of `matches!`) is not a
+/// construction, nor is the variant's declaration in `enum ScreenInstruction` or the unit
+/// variant `ScreenContext::AddPlugin`. A glob import of the enum's variants
+/// (`use ScreenInstruction::*`) counts too, since the bare name it brings in can be used in
+/// ways no text match can tell from another `AddPlugin`.
+fn add_plugin_constructions(source: &str) -> usize {
+    let code = without_inline_test_modules(&code_only(source));
+    let declarations = item_bodies(&code, "enum ScreenInstruction");
+    let imports = use_items(&code);
+    let mut count = imports
+        .iter()
+        .filter(|item| globs_screen_instruction_variants(&code[(*item).clone()]))
+        .count();
+    for (start, _) in code.match_indices(ADD_PLUGIN) {
+        let end = start + ADD_PLUGIN.len();
+        let identifier_char = |c: char| c.is_alphanumeric() || c == '_';
+        if code[..start].ends_with(identifier_char) || code[end..].starts_with(identifier_char) {
+            continue;
+        }
+        if declarations.iter().any(|body| body.contains(&start)) {
+            continue;
+        }
+        if imports.iter().any(|item| item.contains(&start)) {
+            count += 1;
+            continue;
+        }
+        let (path, qualifier) = path_before(&code, start);
+        if qualifier == Some("ScreenContext") {
+            continue;
+        }
+        let after = code[end..].trim_start();
+        if !after.starts_with('(') {
+            // Named without arguments: the variant as a constructor function, as in
+            // `.map(ScreenInstruction::AddPlugin)`.
+            count += usize::from(qualifier.is_some());
+            continue;
+        }
+        let open = code.len() - after.len();
+        let Some(close) = matching(&code, open, b'(', b')') else {
+            count += 1;
+            continue;
+        };
+        let after = code[close + 1..].trim_start();
+        let before = code[..path].trim_end();
+        let pattern = after.starts_with("=>")
+            || after.starts_with('|')
+            || after.starts_with("if ")
+            || (after.starts_with('=') && !after.starts_with("=="))
+            || (before.ends_with(',') && after.starts_with(')') && in_matches(&code, path));
+        if !pattern {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Where the path ending in the segment at `at` starts (`a::b::` before it, spaces allowed),
+/// and the segment just before that one, if any.
+fn path_before(code: &str, at: usize) -> (usize, Option<&str>) {
+    let mut start = at;
+    let mut qualifier = None;
+    while let Some(rest) = code[..start].trim_end().strip_suffix("::") {
+        let rest = rest.trim_end();
+        let segment = rest.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_');
+        start = segment.len();
+        if qualifier.is_none() {
+            qualifier = Some(&rest[segment.len()..]);
+        }
+        if segment.len() == rest.len() {
+            // A leading `::`.
+            break;
+        }
+    }
+    (start, qualifier.filter(|segment| !segment.is_empty()))
+}
+
+/// Whether the `use` item `item` imports every variant of `ScreenInstruction`, directly
+/// (`ScreenInstruction::*`) or in a group (`ScreenInstruction::{self, *}`).
+fn globs_screen_instruction_variants(item: &str) -> bool {
+    let item: String = item.chars().filter(|c| !c.is_whitespace()).collect();
+    item.match_indices("ScreenInstruction::").any(|(at, name)| {
+        let identifier_char = |c: char| c.is_alphanumeric() || c == '_';
+        if item[..at].ends_with(identifier_char) {
+            return false;
+        }
+        let rest = &item[at + name.len()..];
+        if rest.starts_with('*') {
+            return true;
+        }
+        rest.starts_with('{')
+            && matching(rest, 0, b'{', b'}').is_some_and(|close| rest[..close].contains('*'))
+    })
+}
+
+/// The byte ranges of the `use` items in `code`, keyword to semicolon.
+fn use_items(code: &str) -> Vec<std::ops::Range<usize>> {
+    code.match_indices("use")
+        .filter(|(at, _)| {
+            let before = code[..*at].chars().next_back();
+            let after = code[at + 3..].chars().next();
+            !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
+                && after.is_some_and(char::is_whitespace)
+        })
+        .map(|(at, _)| at..code[at..].find(';').map_or(code.len(), |end| at + end))
+        .collect()
+}
+
+/// The byte ranges of the braced bodies of the items `header` introduces, such as
+/// `enum ScreenInstruction`.
+fn item_bodies(code: &str, header: &str) -> Vec<std::ops::Range<usize>> {
+    code.match_indices(header)
+        .filter(|(at, _)| {
+            !code[at + header.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
+        })
+        .filter_map(|(at, _)| {
+            let open = at + code[at..].find('{')?;
+            let close = matching(code, open, b'{', b'}')?;
+            Some(open..close)
+        })
+        .collect()
+}
+
+/// Whether `at` is inside the arguments of a `matches!`: a pattern there is not a
+/// construction, while the last argument of any other call is.
+fn in_matches(code: &str, at: usize) -> bool {
+    let mut depth = 0usize;
+    for (index, byte) in code[..at].bytes().enumerate().rev() {
+        match byte {
+            b')' => depth += 1,
+            b'(' if depth == 0 => return code[..index].trim_end().ends_with("matches!"),
+            b'(' => depth -= 1,
+            _ => {},
+        }
+    }
+    false
+}
+
+/// `code` without the bodies of `#[cfg(test)] mod name { .. }` modules.
+fn without_inline_test_modules(code: &str) -> String {
+    let mut code = code.to_owned();
+    let mut from = 0;
+    while let Some(found) = code[from..].find("#[cfg(test)]") {
+        let start = from + found;
+        from = start + 1;
+        let mut rest = code[start + "#[cfg(test)]".len()..].trim_start();
+        // Other attributes may sit between the gate and the module.
+        while rest.starts_with("#[") {
+            let at = code.len() - rest.len() + 1;
+            let Some(close) = matching(&code, at, b'[', b']') else {
+                break;
+            };
+            rest = code[close + 1..].trim_start();
+        }
+        let Some(item) = rest.strip_prefix("mod ") else {
+            continue;
+        };
+        let header = &item[..item.find(['{', ';']).unwrap_or(item.len())];
+        if !item[header.len()..].starts_with('{') {
+            continue;
+        }
+        let open = code.len() - item.len() + header.len();
+        let end = matching(&code, open, b'{', b'}').map_or(code.len(), |close| close + 1);
+        code.replace_range(start..end, "");
+        from = start;
+    }
+    code
+}
+
+/// The index of the bracket closing the one at `open`.
+fn matching(code: &str, open: usize, opening: u8, closing: u8) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, byte) in code.bytes().enumerate().skip(open) {
+        if byte == opening {
+            depth += 1;
+        } else if byte == closing {
+            depth -= 1;
+            if depth == 0 {
+                return Some(index);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

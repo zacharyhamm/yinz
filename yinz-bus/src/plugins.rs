@@ -130,6 +130,14 @@ pub enum PluginInstruction {
         Option<OverlayPlacement>,
     ),
     LoadBackgroundPlugin(RunPluginOrAlias, ClientId),
+    /// Load a plugin into a pane slot the screen already holds for it, such as a multipane
+    /// child. The plugin opens in place of `slot`, which is closed when it takes the pane.
+    LoadIntoSlot {
+        run: RunPluginOrAlias,
+        slot: PaneId,
+        client_id: ClientId,
+        cwd: PathBuf,
+    },
     /// A hook point was reached. What happens to the plugin bound to it - if any - is the
     /// point's [`HookShape`]: a `ReplacePane` point opens it in place of `pane_id`, which the
     /// screen has already put in a state it can be replaced from; a `Headless` point hands the
@@ -246,12 +254,15 @@ pub enum PluginInstruction {
         message: String,
         payload: String,
     },
-    /// Newly requested events and, for background plugins, their complete current subscriptions.
+    /// Newly requested events and, for background plugins, their complete current subscriptions,
+    /// from the instance named last. The plugin thread drops the background subscriptions of an
+    /// instance that has since been retired, as a reload retires the one it replaces.
     PluginSubscribedToEvents(
         PluginId,
         ClientId,
         HashSet<EventType>,
         Option<HashSet<EventType>>,
+        PluginInstanceId,
     ),
     /// A `yinz events` client asking for the session's state events, by name.
     ResolveAgentEventProjects {

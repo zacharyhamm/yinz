@@ -50,6 +50,16 @@ no fallback to another data directory. Loading, checking, and
 provider inspection must use the same source resolver. Preserve source filenames
 and line numbers through deferred failures.
 
+One exception: the plugin bridge scans an entrypoint in-process for its pane
+declaration (`yinz_steel::manifest::pane_declaration`) before scheduling the
+load. The scan has its own reader and never uses Steel's: Steel's lexer interns
+every literal into process-global tables that are never freed, and is
+superlinear on some literals. Keep the scan linear, non-interning and free of
+`steel` imports outside its tests. Source it cannot read reports no declaration
+error, so that evaluation reports the real error; it declares only what the
+complete forms before the bad text declare. A caller that compares declarations
+uses `readable_pane_declaration` and skips the comparison for such source.
+
 Module initialization has no host-command authority. Provider inspection runs in
 a bounded compilation worker, reads the `agent-provider` descriptor, validates
 it, and never calls `load`.
@@ -83,7 +93,14 @@ deferred job to finish before starting the next job. One rejected job is logged
 without dropping later jobs. Parent disposal cancels and joins every worker before
 replacement. Worker replies and timers carry the worker's generation.
 
-Initial load must schedule a render even when permission prompts cache a resize.
+A plugin's pane follows its declaration. The prepare step scans the entry source
+and records the result in the pane ledger (`plugin_panes.rs`) before the executor
+job is queued, so `AddPlugin` precedes anything `load` sends. After evaluation,
+`SteelPlugin::pane_declared` must agree with the scan or the load fails.
+`plugin_panes.rs` is the only host owner of `ScreenInstruction::AddPlugin`;
+`cargo x lint` enforces it. A headless plugin has no pane record and never renders.
+
+Initial load of a plugin with a pane must schedule a render even when permission prompts cache a resize.
 Keep this host behavior separate from the standalone runtime's lifecycle return
 values. Batch delivery must retain event order and render once at the end of the
 batch when requested.

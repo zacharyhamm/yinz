@@ -158,11 +158,12 @@ keybinds {
             SwitchToMode "Normal"
         }
         bind "d" {
-            LaunchOrFocusPlugin "duplicate-agent" {
+            // A new instance per press: the duplicate runs headless and closes itself, so a
+            // second press must not be taken for the first one while it is still closing.
+            LaunchPlugin "duplicate-agent" {
                 floating true
                 overlay true
                 modal true
-                move_to_focused_tab true
             };
             SwitchToMode "Normal"
         }

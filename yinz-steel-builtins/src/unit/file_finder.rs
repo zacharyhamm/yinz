@@ -225,15 +225,26 @@ fn finder_plugin_destinations_keep_raw_paths_and_urls_distinct() {
 }
 
 #[test]
-fn finder_configuration_refresh_reader_reuse_and_focus_bounce_preserve_the_actor() {
+fn finder_configuration_refresh_and_reader_reuse_preserve_the_headless_actor() {
     let (mut runtime, host) = plugin(json!({"open_pdf":"old"}));
+    {
+        let host = host.lock().unwrap();
+        let subscribed: Vec<_> = host
+            .commands
+            .iter()
+            .filter_map(|command| command.get("Subscribe"))
+            .collect();
+        assert!(!subscribed.is_empty());
+        assert!(!subscribed
+            .iter()
+            .any(|events| events.as_array().unwrap().contains(&json!("PaneUpdate"))));
+        assert!(!host.commands.contains(&json!("HideSelf")));
+    }
     mount(&mut runtime);
-    host.lock().unwrap().replies.insert(
-        "GetFocusedPaneInfo".into(),
-        json!({"pane_id":{"Plugin":42}}),
-    );
+    // The driver runs headless and can never be focused, so a pane update bounces nothing.
+    let before = host.lock().unwrap().commands.len();
     runtime.update(json!({"PaneUpdate":{}})).unwrap();
-    assert_eq!(last(&host, "FocusTerminalPane"), json!([10, true, false]));
+    assert_eq!(host.lock().unwrap().commands.len(), before);
     runtime.update(json!({"PluginConfigurationChanged":{"openers_json":"{\"pdf\":{\"plugin\":\"reader\",\"args\":{\"path\":\"{}\"}}}"}})).unwrap();
     host.lock()
         .unwrap()
@@ -259,6 +270,43 @@ fn finder_configuration_refresh_reader_reuse_and_focus_bounce_preserve_the_actor
         .position(|c| c.get("FocusPluginPane").is_some())
         .unwrap();
     assert!(close < focus);
+}
+
+/// The driver has no pane, so a second Alt e (`LaunchOrFocusPlugin`) finds nothing to focus; the
+/// host sends it a private `launch_or_focus` pipe message instead. It brings back what it shows:
+/// the finder, then the editor that replaced it. With nothing open it does nothing.
+#[test]
+fn a_second_launch_brings_back_the_finder_or_its_editor() {
+    let relaunch = |runtime: &mut Runtime, name: &str, private: bool| {
+        runtime
+            .pipe(json!({"source":"Keybind","name":name,"payload":null,"args":{},"is_private":private}))
+            .unwrap()
+    };
+    let focuses = |host: &Arc<Mutex<Host>>| {
+        host.lock()
+            .unwrap()
+            .commands
+            .iter()
+            .filter_map(|command| command.get("FocusTerminalPane").cloned())
+            .collect::<Vec<_>>()
+    };
+    let (mut runtime, host) = plugin(json!({}));
+    relaunch(&mut runtime, "launch_or_focus", true);
+    assert!(focuses(&host).is_empty(), "nothing is open yet");
+    mount(&mut runtime);
+    relaunch(&mut runtime, "launch_or_focus", false);
+    relaunch(&mut runtime, "something_else", true);
+    assert!(focuses(&host).is_empty());
+    relaunch(&mut runtime, "launch_or_focus", true);
+    assert_eq!(focuses(&host), [json!([10, true, false])]);
+    selected(&mut runtime, &host, "/work/project/src/main.rs\n");
+    assert_eq!(last(&host, "FocusTerminalPane"), json!([11, true, false]));
+    relaunch(&mut runtime, "launch_or_focus", true);
+    assert_eq!(last(&host, "FocusTerminalPane"), json!([11, true, false]));
+    assert_eq!(focuses(&host).len(), 3);
+    runtime.update(json!({"EditPaneExited":[11,0,{}]})).unwrap();
+    relaunch(&mut runtime, "launch_or_focus", true);
+    assert_eq!(focuses(&host).len(), 3, "the editor is gone");
 }
 
 #[test]

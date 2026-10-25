@@ -31,11 +31,44 @@ pub use yinz_types::pane_size::Size;
 
 use std::time::Duration;
 
+/// The older name of [`yinz_test_support::TIMEOUT_ENV_VAR`], still honoured when the shared name
+/// is unset.
+const LEGACY_TIMEOUT_ENV_VAR: &str = "YINZ_TEST_TIMEOUT_MS";
+
+/// How long one harness wait lasts by default.
+///
+/// Startup includes database fsyncs that can exceed ten seconds under parallel load, so this stays
+/// generous. It must also stay under the default nextest profile's `terminate-after` (60 s in
+/// `.config/nextest.toml`): a wait as long as that cut-off loses the race, nextest kills the test,
+/// and it reports a bare TIMEOUT instead of the wait's panic with the grid and the log tail.
+const DEFAULT_WAIT: Duration = yinz_test_support::DEFAULT_WAIT;
+
+/// The deadline of every harness wait: grid, raw output, pty spawn, CLI client, server join.
+///
+/// Set `YINZ_TEST_WAIT_TIMEOUT_MS` (the same variable as `yinz_test_support::default_timeout`) to
+/// shorten it, for example while debugging a wait that fails.
 pub fn default_timeout() -> Duration {
-    std::env::var("YINZ_TEST_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .map(Duration::from_millis)
-        // Startup includes database fsyncs that can exceed ten seconds under parallel load.
-        .unwrap_or(Duration::from_secs(60))
+    timeout_from(
+        std::env::var(yinz_test_support::TIMEOUT_ENV_VAR).ok(),
+        std::env::var(LEGACY_TIMEOUT_ENV_VAR).ok(),
+    )
 }
+
+fn timeout_from(shared: Option<String>, legacy: Option<String>) -> Duration {
+    for (name, raw) in [
+        (yinz_test_support::TIMEOUT_ENV_VAR, shared),
+        (LEGACY_TIMEOUT_ENV_VAR, legacy),
+    ] {
+        if let Some(raw) = raw {
+            let ms = raw.parse::<u64>().unwrap_or_else(|_| {
+                panic!("{name} must be a whole number of milliseconds, got {raw:?}")
+            });
+            return Duration::from_millis(ms);
+        }
+    }
+    DEFAULT_WAIT
+}
+
+#[cfg(test)]
+#[path = "unit/default_timeout.rs"]
+mod default_timeout_tests;

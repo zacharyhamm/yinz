@@ -1399,13 +1399,14 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
         } else if let Ok(response) = &result {
             for plugin in &response.plugins {
                 println!(
-                    "plugin_{} {} {} {}",
+                    "plugin_{} {} {} {} pane: {}",
                     plugin.id,
                     serde_json::to_value(plugin.state)?
                         .as_str()
                         .unwrap_or_default(),
                     plugin.location,
-                    serde_json::to_string(&plugin.configuration)?
+                    serde_json::to_string(&plugin.configuration)?,
+                    plugin_pane_column(plugin.pane)
                 );
             }
         }
@@ -1616,6 +1617,7 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
                 }
                 if !json {
                     println!("{} checks successfully", installed.entrypoint.display());
+                    print_plugin_pane(&report);
                     print_plugin_findings(&report.warnings);
                 }
                 return Ok(());
@@ -1670,6 +1672,7 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
             }
             let report = yinz_server::plugin_authoring::check_plugin_report(&path)?;
             println!("{} checks successfully", path.display());
+            print_plugin_pane(&report);
             print_plugin_findings(&report.warnings);
             Ok(())
         },
@@ -1682,8 +1685,9 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
                 },
                 (None, None) => anyhow::bail!("give a plugin name, or --file"),
             };
-            yinz_server::plugin_authoring::format_file(&path, check)?;
+            let warnings = yinz_server::plugin_authoring::format_file(&path, check)?;
             println!("{} is formatted", path.display());
+            print_plugin_findings(&warnings);
             Ok(())
         },
         PluginsCli::Start { .. } | PluginsCli::Reload { .. } | PluginsCli::Stop { .. } => {
@@ -1741,12 +1745,13 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
                     .iter()
                     .map(|plugin| {
                         format!(
-                            "plugin_{}: {}",
+                            "plugin_{}: {} (pane: {})",
                             plugin.id,
                             serde_json::to_value(plugin.state)
                                 .unwrap_or_default()
                                 .as_str()
-                                .unwrap_or_default()
+                                .unwrap_or_default(),
+                            plugin_pane_column(plugin.pane)
                         )
                     })
                     .collect::<Vec<_>>()
@@ -1873,6 +1878,22 @@ fn plugin_lifecycle_request(
         candidates,
         caller,
     })
+}
+
+/// Whether a running instance has a pane; `None` while its declaration is still being read.
+fn plugin_pane_column(pane: Option<bool>) -> &'static str {
+    match pane {
+        Some(true) => "yes",
+        Some(false) => "no (headless)",
+        None => "pending",
+    }
+}
+
+/// The entry file's pane declaration, as the check read it.
+fn print_plugin_pane(report: &yinz_types::authoring::PluginCheckReport) {
+    if let Some(pane) = &report.pane {
+        println!("pane: {pane}");
+    }
 }
 
 /// What the source is going to do wrong at run time, on stderr, under whatever the command

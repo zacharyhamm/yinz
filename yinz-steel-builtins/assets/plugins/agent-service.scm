@@ -105,4 +105,3 @@
       (when (and (hash? source) (hash-contains? source "Plugin") (not (member (hash-ref source "Plugin") (as-get "subscribers"))))
         (as-set! "subscribers" (append (as-get "subscribers") (list (hash-ref source "Plugin")))))
       (as-publish! #t))) #f)
-(define (render rows cols) "")

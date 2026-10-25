@@ -61,8 +61,8 @@ fn completion() -> (
     (Some(NotificationEnd::new(tx)), rx)
 }
 
-/// The agent exits and its hook opens over it, as `add_plugin_pane_in_place_of` asks; then the
-/// hook runs its gate in its own place, as `OpenCommandPaneInPlaceOfPlugin` asks.
+/// The agent exits and its hook opens over it, as `ShowPane::in_place_of_hooked_pane` asks;
+/// then the hook runs its gate in its own place, as `OpenCommandPaneInPlaceOfPlugin` asks.
 fn merge_queue_stack(screen: &mut Screen) {
     let tab = screen.tabs.get_mut(&TAB).unwrap();
     tab.hold_pane(AGENT, Some(0), false, RunCommand::default());

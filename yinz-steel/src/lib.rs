@@ -6,6 +6,7 @@ pub mod binary;
 mod bridge;
 mod callback;
 pub mod format;
+pub mod manifest;
 pub mod modules;
 pub mod repl;
 mod sandbox;
@@ -51,6 +52,13 @@ impl InterruptHandle {
 }
 
 pub const MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
+
+/// The most tokens, comments included, a Steel source may hold.
+pub(crate) const MAX_SOURCE_TOKENS: usize = 500_000;
+
+/// How deep a Steel source may nest lists and prefixes: each open list counts one more than the
+/// prefixes in front of it, and prefixes not yet followed by their datum count too.
+pub(crate) const MAX_SOURCE_NESTING: usize = 128;
 const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_RENDER_BYTES: usize = 16 * 1024 * 1024;
 const MAX_EVAL_BYTES: usize = 16 * 1024 * 1024;
@@ -727,7 +735,10 @@ fn validate_source(source: &str) -> Result<()> {
     let mut prefixes = 0;
     let mut depth = 0;
     for (count, token) in TokenStream::new(source, false, None).enumerate() {
-        anyhow::ensure!(count < 500_000, "Steel source exceeds token limit");
+        anyhow::ensure!(
+            count < MAX_SOURCE_TOKENS,
+            "Steel source exceeds token limit"
+        );
         let Ok(token) = token else { continue };
         match token.ty {
             TokenType::Comment => {},
@@ -751,7 +762,10 @@ fn validate_source(source: &str) -> Result<()> {
             | TokenType::DatumComment => prefixes += 1,
             _ => prefixes = 0,
         }
-        anyhow::ensure!(depth + prefixes <= 128, "Steel source nesting exceeds 128");
+        anyhow::ensure!(
+            depth + prefixes <= MAX_SOURCE_NESTING,
+            "Steel source nesting exceeds {MAX_SOURCE_NESTING}"
+        );
     }
     Ok(())
 }

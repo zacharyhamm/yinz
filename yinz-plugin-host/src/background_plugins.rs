@@ -126,35 +126,24 @@ impl PluginBridge {
         let (id, owner) = if let Some((id, _)) = existing {
             (id, self.get_first_client_id().unwrap_or(client))
         } else {
-            // Record provenance before the executor can enter guest initialization.
-            let pending_id = PluginId::new(self.next_plugin_id);
-            self.plugin_roles.lock().unwrap().insert(pending_id, true);
-            let loaded = self.load_plugin(
+            // A background start: a plugin that declares a pane gets a parked record, which the
+            // ledger records before the executor can enter guest initialization.
+            let (id, owner) = self.load_plugin(
                 &Some(run.clone()),
                 None,
                 Size::default(),
                 run.initial_cwd.clone(),
                 false,
                 Some(client),
-            );
-            let (id, owner) = match loaded {
-                Ok(loaded) => loaded,
-                Err(error) => {
-                    self.plugin_roles.lock().unwrap().remove(&pending_id);
-                    return Err(error);
+                PaneRequest::Parked {
+                    run: RunPluginOrAlias::RunPlugin(run.clone()),
+                    cwd: run.initial_cwd.clone(),
+                    client_id: client,
                 },
-            };
+            )?;
             if !independent {
                 self.independent_plugin_ids.remove(&id);
             }
-            self.senders
-                .send_to_screen(crate::add_suppressed_plugin_pane(
-                    RunPluginOrAlias::RunPlugin(run.clone()),
-                    id,
-                    run.initial_cwd,
-                    owner,
-                ))
-                .context("create background plugin record")?;
             (id, owner)
         };
         if independent {
@@ -251,6 +240,10 @@ impl PluginBridge {
         } else {
             PluginState::Running
         };
+        let (background, pane) = {
+            let panes = self.panes.lock().unwrap();
+            (panes.background(id), panes.presence(id))
+        };
         PluginStatus {
             id,
             location: match &self.loaded_plugin_identity(id, run.clone()).location {
@@ -260,13 +253,7 @@ impl PluginBridge {
                 location => location.display(),
             },
             configuration: run.configuration.without_caller_context(),
-            background: self
-                .plugin_roles
-                .lock()
-                .unwrap()
-                .get(&id)
-                .copied()
-                .unwrap_or(false),
+            background,
             shared: self.plugin_is_shared(&id),
             clients,
             state,
@@ -277,6 +264,7 @@ impl PluginBridge {
                 .flat_map(|pending| pending.permissions.iter().copied())
                 .collect(),
             latest_error,
+            pane,
         }
     }
 

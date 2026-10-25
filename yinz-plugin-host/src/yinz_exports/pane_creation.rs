@@ -375,6 +375,8 @@ pub(super) fn run_action(env: &PluginEnv, mut action: Action, context: BTreeMap<
     let generation = env.generation;
     let client_id = env.client_id;
     let plugin_id = env.plugin_id;
+    // A headless plugin has no pane to place things near: they go by the client.
+    let source_pane = env.own_pane();
     let senders = env.senders.clone();
     let default_shell = env.default_shell.clone();
     let default_mode = env.default_mode;
@@ -386,7 +388,7 @@ pub(super) fn run_action(env: &PluginEnv, mut action: Action, context: BTreeMap<
             action,
             client_id,
             None,
-            Some(PaneId::Plugin(plugin_id)),
+            source_pane,
             senders.clone(),
             default_shell,
             None,

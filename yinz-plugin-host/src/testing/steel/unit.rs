@@ -11,6 +11,7 @@ fn scheme_installed_tests_load_modules_mock_commands_and_advance_deferred_callba
     std::fs::write(
         root.path().join("plugin.scm"),
         r#"
+        (yinz-declare-pane)
         (define text "waiting")
         (define (load config)
           (displayln "plugin loaded")
@@ -71,6 +72,7 @@ fn scheme_test_wall_clock_steps_leave_monotonic_time_and_events_unchanged() {
     std::fs::write(
         root.path().join("plugin.scm"),
         r#"
+        (yinz-declare-pane)
         (define events 0)
         (define (update event) (set! events (+ events 1)) #t)
         (define (render rows cols)
@@ -116,11 +118,68 @@ fn scheme_test_wall_clock_steps_leave_monotonic_time_and_events_unchanged() {
 }
 
 #[test]
+fn scheme_installed_tests_check_the_pane_declaration_as_the_host_does() {
+    let root = tempfile::tempdir().unwrap();
+    for (name, source) in [
+        (
+            "headless.scm",
+            r#"(define (load config) #t) (define (update event) (yinz-command "HideSelf") #t)"#,
+        ),
+        (
+            "pane.scm",
+            r#"(yinz-declare-pane-unless "duplicate" "true")
+               (define (load config) #t) (define (update event) (yinz-command "HideSelf") #t)"#,
+        ),
+        (
+            "hidden.scm",
+            "(begin (yinz-declare-pane)) (define (load config) #t)",
+        ),
+    ] {
+        std::fs::write(root.path().join(name), source).unwrap();
+    }
+    let path = root.path().join("plugin.test.scm");
+    std::fs::write(
+        &path,
+        r#"
+        (test "a headless plugin cannot use its own pane" (lambda ()
+          (test-load-plugin "./headless.scm")
+          (assert-equal (test-pane-declared?) #f)
+          (assert-throws (lambda () (test-event "InputReceived"))
+            "'HideSelf' needs the plugin's own pane")))
+        (test "a declared pane follows the configuration" (lambda ()
+          (test-load-plugin "./pane.scm" (hash "replies" (hash "HideSelf" json-null)))
+          (assert-equal (test-pane-declared?) #t)
+          (test-event "InputReceived")))
+        (test "the declaration is undone by its configuration" (lambda ()
+          (test-load-plugin "./pane.scm" (hash "configuration" (hash "duplicate" "true")))
+          (assert-equal (test-pane-declared?) #f)))
+        (test "a configuration value is read as the host spells it" (lambda ()
+          (test-load-plugin "./pane.scm" (hash "configuration" (hash "duplicate" #t)))
+          (assert-equal (test-pane-declared?) #f)))
+        (test "a declaration the scan cannot see fails the load" (lambda ()
+          (assert-throws (lambda () (test-load-plugin "./hidden.scm"))
+            "(yinz-declare-pane) must appear literally at the top level of the entry file")))
+    "#,
+    )
+    .unwrap();
+    let report = run(
+        super::super::fixture_data().path(),
+        &path,
+        &PluginTestOptions::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(report.passed(), "{report:#?}");
+    assert_eq!(report.tests.len(), 5);
+}
+
+#[test]
 fn scheme_installed_integration_tests_use_the_disposable_session() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
         root.path().join("plugin.scm"),
-        r#"(define (render rows columns) "scheme integration ready")"#,
+        r#"(yinz-declare-pane) (define (render rows columns) "scheme integration ready")"#,
     )
     .unwrap();
     let path = root.path().join("plugin.integration.test.scm");
@@ -159,6 +218,7 @@ fn scheme_installed_locations_work_before_load_and_copy_dependencies() {
         root.path().join("reader 日本.scm"),
         r#"
         (require "./lib/text.scm")
+        (yinz-declare-pane)
         (define own-location (yinz-plugin-location))
         (define helper (yinz-plugin-resolve "./lib/text.scm"))
         (define (render rows cols)
@@ -230,6 +290,7 @@ fn scheme_installed_locations_keep_parent_imports_through_reload_workers_and_ali
         root.path().join("src/main.scm"),
         r#"
         (require "../shared.scm")
+        (yinz-declare-pane)
         (define own-location (yinz-plugin-location))
         (define sibling-location (yinz-plugin-resolve "../shared.scm"))
         (define phase "unloaded")
@@ -310,6 +371,7 @@ fn scheme_installed_rpc_uses_authenticated_plugins_and_releases_errors_and_timeo
     std::fs::write(
         root.path().join("rpc-target.scm"),
         r#"
+      (yinz-declare-pane)
       (define ready #f)
       (define calls 0)
       (define (load configuration)

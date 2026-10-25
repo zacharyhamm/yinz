@@ -3550,4 +3550,7 @@ pub struct ProjectPaneGroup {
 pub struct PluginInstanceInfo {
     pub plugin_id: crate::internal_ids::PluginId,
     pub background: bool,
+    /// Whether the instance has a pane; `None` while its declaration is not yet known.
+    #[serde(default)]
+    pub pane: Option<bool>,
 }

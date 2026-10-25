@@ -3,6 +3,28 @@
 //! was left for a loader that will run, or for one that already gave up.
 
 use super::*;
+use crate::plugin_panes::ShowPane;
+
+/// A pane load as `PluginInstruction::Load` asks for one: a declared plugin floats, an
+/// undeclared one runs headless.
+fn shown() -> PaneRequest {
+    PaneRequest::Show(Box::new(ShowPane {
+        should_float: Some(true),
+        in_place: false,
+        replaced: yinz_bus::pty::ReplacedPane::Suppress,
+        run: RunPluginOrAlias::RunPlugin(RunPlugin::default()),
+        title: None,
+        tab: None,
+        pane_id_to_replace: None,
+        cwd: None,
+        coordinates: None,
+        should_focus: None,
+        client_id: None,
+        completion: None,
+        overlay: None,
+        reserved_slot: None,
+    }))
+}
 
 use notify_debouncer_full::notify::RecommendedWatcher;
 use std::collections::BTreeMap;
@@ -689,6 +711,7 @@ fn resolution_failure_reports_each_cached_request_without_acknowledging() {
                 None,
                 false,
                 Some(ClientId::new(2)),
+                shown(),
             )
             .unwrap();
         assert_eq!(client, ui_client);
@@ -899,6 +922,7 @@ fn loading_failure_notifications_wait_for_the_current_load_identity() {
     for superseded in [false, true] {
         let mut test = TestBridge::new();
         let plugin = PluginId::new(1);
+        test.owns_pane(plugin);
         let load = test.bridge.begin_plugin_load(plugin);
         handle_plugin_loading_failure(
             &test.bridge.senders,
@@ -1050,6 +1074,7 @@ fn detached_cached_cli_pipe(loading: bool, unload: bool) {
                     None,
                     false,
                     Some(owner),
+                    shown(),
                 )
                 .unwrap(),
             (id, owner)
@@ -1195,6 +1220,7 @@ fn duplicate_agent_has_one_instance_across_client_attachments() {
             None,
             false,
             Some(first),
+            shown(),
         )
         .unwrap();
     test.finish_reload(id);
@@ -1235,6 +1261,7 @@ fn cached_cli_pipe_after_instance_removal_completes_without_unloading() {
             None,
             false,
             Some(first),
+            shown(),
         )
         .unwrap();
     // Keep the initial loader metadata and cached events until permissions arrive.
@@ -1313,7 +1340,7 @@ fn background_subscription_updates_preserve_other_events_and_remove_unsubscribed
         .receiver::<PluginInstruction>()
         .try_iter()
         .filter_map(|(instruction, _)| match instruction {
-            PluginInstruction::PluginSubscribedToEvents(_, _, requested, Some(current)) => {
+            PluginInstruction::PluginSubscribedToEvents(_, _, requested, Some(current), _) => {
                 Some((requested, current))
             },
             _ => None,
@@ -1360,7 +1387,7 @@ fn shared_background_subscriptions_follow_the_client_after_detach() {
             receiver
                 .try_iter()
                 .filter_map(|(instruction, _)| match instruction {
-                    PluginInstruction::PluginSubscribedToEvents(id, client, _, Some(events))
+                    PluginInstruction::PluginSubscribedToEvents(id, client, _, Some(events), _)
                         if id == plugin =>
                     {
                         Some((client, events))
@@ -1414,6 +1441,7 @@ fn cached_shared_cli_pipe_after_rekey_uses_only_the_current_owner() {
             None,
             false,
             Some(owner),
+            shown(),
         )
         .unwrap();
     // Initial permissions keep the loader's owner metadata and event cache alive.
@@ -1717,6 +1745,7 @@ fn steel_host_folder_changes_report_only_the_active_parent_cwd() {
     let id = PluginId::new(1);
     let client = ClientId::new(1);
     let source = r#"
+(yinz-declare-pane)
 (define replies 0)
 (define fences 0)
 (yinz-register-workers (hash "probe" (lambda (name payload) (yinz-command (hash "SetTimeout" 0)))))
@@ -1899,7 +1928,15 @@ fn attaching_during_startup_keeps_the_queued_plugin_instance() {
         ..Default::default()
     };
     test.bridge
-        .load_plugin(&Some(run), None, Size::default(), None, false, Some(client))
+        .load_plugin(
+            &Some(run),
+            None,
+            Size::default(),
+            None,
+            false,
+            Some(client),
+            shown(),
+        )
         .unwrap();
     let (loaded, original) = std::sync::mpsc::channel();
     test.bridge
@@ -1937,6 +1974,7 @@ fn steel_startup_instance_is_cancelled_and_recreated_on_reattach() {
     std::fs::write(
         &path,
         r#"
+(yinz-declare-pane)
 (define keys 0)
 (define (load config) (yinz-command (hash "Subscribe" (list "Key"))))
 (define (update event) (when (and (hash? event) (hash-contains? event "Key")) (set! keys (+ keys 1))) #t)
@@ -1958,6 +1996,7 @@ fn steel_startup_instance_is_cancelled_and_recreated_on_reattach() {
             None,
             false,
             Some(client),
+            shown(),
         )
         .unwrap();
     test.settle(id);
@@ -2060,6 +2099,7 @@ fn steel_pane_events_reach_cli_subscribers_once_even_after_reload() {
             None,
             false,
             Some(client),
+            shown(),
         )
         .unwrap();
     test.wait_for_executor(plugin);
@@ -2186,6 +2226,7 @@ fn steel_tagged_output_batch_renders_once_per_client_and_replays_cached_identiti
     std::fs::write(
         &path,
         r#"
+(yinz-declare-pane)
 (define chunks '())
 (define (load config) (yinz-command (hash "Subscribe" (list "RunCommandOutput"))))
 (define (update event)
@@ -2212,6 +2253,7 @@ fn steel_tagged_output_batch_renders_once_per_client_and_replays_cached_identiti
             None,
             false,
             Some(first),
+            shown(),
         )
         .unwrap();
     let instructions = test.receiver::<PluginInstruction>();
@@ -2360,6 +2402,7 @@ fn cli_pipe_after_queued_rekey(outcome: &str, cached: bool) {
     std::fs::write(
         &path,
         r#"
+(yinz-declare-pane)
 (define (pipe message)
   (unless (= (hash-ref (yinz-command "GetPluginIds") "client_id") 3) (error "wrong acting client"))
   (when (equal? (hash-ref message "name") "error") (error "pipe callback failed"))
@@ -2381,6 +2424,7 @@ fn cli_pipe_after_queued_rekey(outcome: &str, cached: bool) {
             None,
             false,
             Some(owner),
+            shown(),
         )
         .unwrap();
     test.settle(id);
@@ -2569,7 +2613,8 @@ fn unloading_pending_plugin_stops_animation_before_executor_retirement() {
 fn steel_repl_disconnect_unloads_only_its_active_pipe_owner() {
     let mut test = TestBridge::new();
     let plugin = PluginId::new(41);
-    let mut context = test.context(41, 1, RECOVERABLE_SCHEME);
+    // The REPL builtin declares no pane, like the source the ledger is told about here.
+    let mut context = test.context(41, 1, "(void)");
     context.plugin_config = PluginConfig::from_run_plugin(&RunPlugin {
         location: RunPluginLocation::Yinz(PluginTag::new("repl")),
         ..Default::default()
@@ -2844,6 +2889,13 @@ const SCRATCH_PLUGIN: &str = r#"
 "#;
 
 impl TestBridge {
+    /// Record `plugin` as owning a pane, as the prepare step does for a declared plugin.
+    fn owns_pane(&self, plugin: PluginId) {
+        let mut panes = self.bridge.panes.lock().unwrap();
+        panes.request(plugin, 0, shown());
+        let _ = panes.declare(plugin, 0, true);
+    }
+
     fn context(&mut self, id: u32, client: u32, source: &str) -> LoadingContext {
         let plugin_id = PluginId::new(id);
         let client_id = ClientId::new(client);
@@ -2856,6 +2908,14 @@ impl TestBridge {
             ..Default::default()
         })
         .unwrap();
+        // The declaration the prepare step would have recorded; these loads skip that step.
+        let declared = yinz_steel::manifest::pane_declaration(source)
+            .is_ok_and(|declaration| declaration.applies(&BTreeMap::new()));
+        {
+            let mut panes = self.bridge.panes.lock().unwrap();
+            panes.request(plugin_id, 0, shown());
+            let _ = panes.declare(plugin_id, 0, declared);
+        }
         let mut context = LoadingContext::new(
             &self.bridge,
             None,
@@ -2997,7 +3057,9 @@ fn overlapping_reloads_retain_data_until_success_failure_or_unload() {
         let id = PluginId::new(1);
         let client = ClientId::new(1);
         test.bridge.add_client(client).unwrap();
-        let source = SCRATCH_PLUGIN.replace(
+        // Declared, so the failed replacement paints into the plugin's pane.
+        let declared = format!("(yinz-declare-pane){SCRATCH_PLUGIN}");
+        let source = declared.replace(
             "(write-file \"/data/closed\"",
             "(yinz-command (hash \"PaneTabs\" (hash \"Close\" (hash \"id\" 1))))\n    (write-file \"/data/closed\"",
         );
@@ -3028,7 +3090,7 @@ fn overlapping_reloads_retain_data_until_success_failure_or_unload() {
                 .insert(PermissionType::ChangeApplicationState);
         }
         // Only the original instance blocks in BeforeClose; replacements use the normal hook.
-        std::fs::write(&script, SCRATCH_PLUGIN).unwrap();
+        std::fs::write(&script, &declared).unwrap();
         test.bridge.reload_plugin_with_id(id).unwrap();
         let response = loop {
             if let ScreenInstruction::PaneTabs { response, .. } = test
@@ -3040,15 +3102,18 @@ fn overlapping_reloads_retain_data_until_success_failure_or_unload() {
                 break response;
             }
         };
-        test.bridge.reload_plugin_with_id(id).unwrap();
-        match outcome {
-            "failure" => std::fs::write(
+        // The prepare step reads the source the replacement evaluates, so a failing one is
+        // written before the second reload.
+        if outcome == "failure" {
+            std::fs::write(
                 &script,
-                "(define (load config) (error \"replacement failed\"))",
+                "(yinz-declare-pane) (define (load config) (error \"replacement failed\"))",
             )
-            .unwrap(),
-            "unload" => test.bridge.unload_plugin(id).unwrap(),
-            _ => {},
+            .unwrap();
+        }
+        test.bridge.reload_plugin_with_id(id).unwrap();
+        if outcome == "unload" {
+            test.bridge.unload_plugin(id).unwrap();
         }
         // Queue the barrier while the executor is still registered, including the unload case.
         let finished = yinz_test_support::Watched::new(false);
@@ -3130,6 +3195,7 @@ fn overlapping_reloads_retain_data_until_success_failure_or_unload() {
 }
 
 const RECOVERABLE_SCHEME: &str = r#"
+(yinz-declare-pane)
 (define (load config) (void))
 (define (update event) #f)
 (define (pipe message) #f)
@@ -3183,7 +3249,7 @@ fn assert_reload_recovers(absolute: bool, by_url: bool) {
     let id = PluginId::new(1);
     let owner = ClientId::new(7);
     let good = RECOVERABLE_SCHEME;
-    let bad = "(define (load config) (error \"load failed\"))".to_owned();
+    let bad = "(yinz-declare-pane) (define (load config) (error \"load failed\"))".to_owned();
     let mut context = test.context(1, 1, good);
     let source = context.plugin_config.path.with_extension("scm");
     std::fs::write(&source, good).unwrap();
@@ -3342,7 +3408,7 @@ fn deferred_url_reload_recovers_after_load_failure() {
         let source = context.plugin_config.path.clone();
         test.load(context).unwrap();
         let run = test.bridge.run_plugin_of_plugin_id(id).unwrap();
-        let bad = "(define (load config) (error \"load failed\"))".to_owned();
+        let bad = "(yinz-declare-pane) (define (load config) (error \"load failed\"))".to_owned();
         std::fs::write(&source, bad).unwrap();
         test.bridge.reload_plugin_with_id(id).unwrap();
         test.wait_for_executor(id);
@@ -3580,6 +3646,48 @@ fn reload_whose_data_cannot_be_prepared_fails_the_load_and_can_be_retried() {
     assert!(test.bridge.loading_plugins.is_empty());
     assert!(!test.bridge.latest_plugin_errors.contains_key(&plugin));
     assert_ne!(test.instance_id(plugin, client), original);
+}
+
+#[test]
+fn first_load_whose_data_cannot_be_prepared_is_not_left_loading() {
+    let mut test = TestBridge::new();
+    let client = ClientId::new(1);
+    test.connect(&[client]);
+    let path = test._dirs[0].path().join("unprepared.scm");
+    std::fs::write(
+        &path,
+        "(yinz-declare-pane)\n(define (render rows cols) \"\")",
+    )
+    .unwrap();
+    let run = RunPlugin {
+        location: RunPluginLocation::File(path),
+        ..Default::default()
+    };
+    let plugin = test.bridge.next_plugin_id();
+
+    let _hidden = HiddenTemporaryRoot::new(&test);
+    let error = test
+        .bridge
+        .load_plugin(
+            &Some(run),
+            None,
+            Size::default(),
+            None,
+            false,
+            Some(client),
+            shown(),
+        )
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("failed to create plugin /data"),
+        "{error:#}"
+    );
+    // A pipe or a reload by URL must not find a load that will never run.
+    assert_failed_to_prepare(&test, plugin);
+    assert!(!test
+        .bridge
+        .cached_events_for_pending_plugins
+        .contains_key(&plugin));
 }
 
 #[test]
@@ -4187,6 +4295,7 @@ fn callback_and_render_output_precede_success_without_processing_screen_messages
         1,
         1,
         r#"
+(yinz-declare-pane)
 (define stream #f)
 (define (pipe message)
   (set! stream (hash-ref (hash-ref message "source") "Cli"))
@@ -4354,7 +4463,7 @@ fn a_plugin_that_draws_its_size(test: &mut TestBridge) -> PluginId {
     let context = test.context(
         1,
         1,
-        "(define (pipe message) #t) (define (render rows columns) (string-append \"size \" (number->string rows) \"x\" (number->string columns) \";\"))",
+        "(yinz-declare-pane) (define (pipe message) #t) (define (render rows columns) (string-append \"size \" (number->string rows) \"x\" (number->string columns) \";\"))",
     );
     test.load(context).unwrap();
     test.settle(plugin);
@@ -4459,7 +4568,7 @@ fn a_shared_plugin_that_draws_its_size(
     let path = test._dirs[0].path().join("shared.scm");
     std::fs::write(
         &path,
-        "(define (render rows columns) (string-append \"size \" (number->string rows) \"x\" (number->string columns) \";\"))",
+        "(yinz-declare-pane) (define (render rows columns) (string-append \"size \" (number->string rows) \"x\" (number->string columns) \";\"))",
     )
     .unwrap();
     let mut run =
@@ -4475,6 +4584,7 @@ fn a_shared_plugin_that_draws_its_size(
             None,
             false,
             Some(owner),
+            shown(),
         )
         .unwrap();
     test.settle(plugin);
@@ -4736,6 +4846,7 @@ fn queued_steel_reply_survives_map_removal_and_cannot_reach_replacement() {
             1,
             1,
             r#"
+(yinz-declare-pane)
 (define pending #f)
 (define (load config) (set! pending (yinz-sleep 0)))
 (define (unload) (yinz-then pending (lambda (ignored) (yinz-command (hash "SetSelectable" #f)))))
@@ -4831,13 +4942,20 @@ fn queued_steel_reply_survives_map_removal_and_cannot_reach_replacement() {
 
 #[test]
 fn pipe_launch_focus_preserves_ui_ownership() {
-    for focus in [false, true] {
+    // A cold pipe floats a recipient that declares a pane; one that does not receives the
+    // message headless, with no pane record at all.
+    for (focus, declared) in [(false, true), (true, true), (false, false), (true, false)] {
         let mut test = TestBridge::new();
         let ui = ClientId::new(1);
         let cli = ClientId::new(2);
         test.bridge.add_client(ui).unwrap();
         let path = test._dirs[0].path().join("pipe-focus.scm");
-        std::fs::write(&path, "(define (render rows cols) \"ready\")").unwrap();
+        let declaration = if declared { "(yinz-declare-pane)" } else { "" };
+        std::fs::write(
+            &path,
+            format!("{declaration}\n(define (render rows cols) \"ready\")"),
+        )
+        .unwrap();
         let run = RunPluginOrAlias::RunPlugin(RunPlugin {
             location: RunPluginLocation::File(path),
             ..Default::default()
@@ -4861,11 +4979,11 @@ fn pipe_launch_focus_preserves_ui_ownership() {
             .unwrap();
         let (id, owner) = recipients[0];
         assert_eq!(owner, Some(ui));
-        let added: Vec<_> = test
-            .receiver::<ScreenInstruction>()
-            .try_iter()
-            .filter_map(|(instruction, _)| {
-                if let ScreenInstruction::AddPlugin(
+        let mut added = vec![];
+        let mut paneless = vec![];
+        for (instruction, _) in test.receiver::<ScreenInstruction>().try_iter() {
+            match instruction {
+                ScreenInstruction::AddPlugin(
                     floating,
                     _,
                     _,
@@ -4881,15 +4999,22 @@ fn pipe_launch_focus_preserves_ui_ownership() {
                     client,
                     _,
                     _,
-                ) = instruction
-                {
-                    Some((floating, plugin, suppressed, focused, client))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        assert_eq!(added, vec![(Some(true), id, false, Some(focus), Some(ui))]);
+                ) => added.push((floating, plugin, suppressed, focused, client)),
+                ScreenInstruction::PluginPaneless { plugin_id, .. } => paneless.push(plugin_id),
+                _ => {},
+            }
+        }
+        if declared {
+            assert_eq!(added, vec![(Some(true), id, false, Some(focus), Some(ui))]);
+            assert!(paneless.is_empty());
+        } else {
+            assert!(added.is_empty(), "{added:?}");
+            assert_eq!(paneless, vec![id]);
+            assert_eq!(
+                test.bridge.panes.lock().unwrap().surface(id),
+                Some(Surface::Headless)
+            );
+        }
         // The loading entry is retained until the plugin thread handles completion.
         assert_eq!(
             test.bridge
@@ -5749,6 +5874,7 @@ fn permission_callbacks_wait_for_cache_persistence() {
         1,
         1,
         r#"
+(yinz-declare-pane)
 (define (update event) #t)
 (define (render rows columns) "size permission callback;")
 "#,
@@ -5810,6 +5936,7 @@ fn background_storage_preserves_initial_owner_on_reload() {
         let dir = tempfile::tempdir_in(&cwd).unwrap();
         let source = dir.path().join("storage.scm");
         std::fs::write(&source, r#"
+(yinz-declare-pane)
 (define value "waiting")
 (define (update event)
   (if (and (hash? event) (hash-contains? event "PermissionRequestResult"))
@@ -5869,6 +5996,7 @@ fn background_storage_preserves_initial_owner_on_reload() {
                 None,
                 false,
                 Some(client),
+                shown(),
             )
             .unwrap();
         let (shutdown, _) = tokio::sync::mpsc::channel(1);
@@ -5925,7 +6053,7 @@ fn background_storage_preserves_initial_owner_on_reload() {
                     if case == "url-retry" {
                         std::fs::write(
                             &reloaded_source,
-                            "(define (load config) (error \"retry\"))",
+                            "(yinz-declare-pane) (define (load config) (error \"retry\"))",
                         )
                         .unwrap();
                         test.bridge.reload_plugin_with_id(id).unwrap();
@@ -5973,6 +6101,7 @@ fn background_permissions_preserve_each_requesting_client_including_cached_grant
         1,
         1,
         r#"
+(yinz-declare-pane)
 (define clients '())
 (define (update event)
   (when (and (hash? event) (hash-contains? event "PermissionRequestResult"))
@@ -6055,6 +6184,7 @@ fn background_permission_cancellation_replays_in_order_and_rechecks_pending_requ
                 1,
                 client,
                 r#"
+(yinz-declare-pane)
 (define events '())
 (define (update event)
   (when (and (hash? event) (hash-contains? event "CustomMessage"))
@@ -6160,7 +6290,7 @@ fn background_permission_callback_and_render_failures_retire_exact_instances() {
         let id = PluginId::new(1);
         let client = ClientId::new(1);
         let source = if render_failure {
-            "(define answered #f) (define (update event) (set! answered #t) #t) (define (render rows cols) (when answered (error \"permission render failed\")) \"\")"
+            "(yinz-declare-pane) (define answered #f) (define (update event) (set! answered #t) #t) (define (render rows cols) (when answered (error \"permission render failed\")) \"\")"
         } else {
             "(define (update event) (error \"permission callback failed\"))"
         };
@@ -6271,7 +6401,7 @@ fn background_reload_tracks_repointed_source_per_plugin() {
         for (path, name) in [(&a, "a"), (&b, "b")] {
             std::fs::write(
                 path,
-                format!(r#"(define (render rows cols) "size {name};")"#),
+                format!(r#"(yinz-declare-pane) (define (render rows cols) "size {name};")"#),
             )
             .unwrap();
         }
@@ -6653,10 +6783,7 @@ fn picker_ownership_busy_clients_and_startup_cancellation() {
             start("one"),
         )
         .unwrap();
-    assert_eq!(
-        test.bridge.plugin_roles.lock().unwrap().get(&finder),
-        Some(&true)
-    );
+    assert!(test.bridge.panes.lock().unwrap().background(finder));
     assert!(test
         .bridge
         .pick_command(
@@ -7037,12 +7164,7 @@ fn picker_lifecycle_retires_owned_panes_before_replying_to_surviving_callers() {
             .loading_plugins
             .iter()
             .any(|(id, _)| *id == finder));
-        assert!(!test
-            .bridge
-            .plugin_roles
-            .lock()
-            .unwrap()
-            .contains_key(&finder));
+        assert!(!test.bridge.panes.lock().unwrap().contains(finder));
         release.send(()).unwrap();
     }
 }
@@ -7109,6 +7231,7 @@ fn shared_cell_pixel_size_events_keep_the_reporting_client_and_need_no_permissio
         1,
         1,
         r#"
+(yinz-declare-pane)
 (define received "none")
 (define (update event)
   (when (and (hash? event) (hash-contains? event "CellPixelSizeChanged"))
@@ -7466,6 +7589,7 @@ fn a_plugin_opened_in_place_of_a_pane_refuses_an_existing_instance() {
         PathBuf::from("/"),
         yinz_types::internal_ids::TabId::new(0),
         ClientId::new(1),
+        |_, _| shown(),
     )
     .unwrap_err();
     assert!(
@@ -7481,6 +7605,7 @@ fn a_plugin_opened_in_place_of_a_pane_refuses_an_existing_instance() {
         PathBuf::from("/"),
         yinz_types::internal_ids::TabId::new(0),
         ClientId::new(1),
+        |_, _| shown(),
     )
     .unwrap_err();
     assert!(
@@ -7490,4 +7615,404 @@ fn a_plugin_opened_in_place_of_a_pane_refuses_an_existing_instance() {
     assert_eq!(test.bridge.next_plugin_id, 0);
     assert!(test.receiver::<ScreenInstruction>().is_empty());
     test.bridge.loading_plugins.clear();
+}
+
+#[test]
+fn a_load_that_cannot_be_prepared_still_uses_up_its_plugin_id() {
+    use std::os::unix::fs::PermissionsExt;
+    if nix::unistd::Uid::effective().is_root() {
+        return; // Root writes into a read-only directory, so the load would not fail.
+    }
+    /// Gives the host its temporary root back, however the test ends.
+    struct Writable(PathBuf);
+    impl Drop for Writable {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    let mut test = TestBridge::new();
+    let client = ClientId::new(1);
+    test.connect(&[client]);
+    let path = test._dirs[0].path().join("plain.scm");
+    std::fs::write(
+        &path,
+        "(yinz-declare-pane)\n(define (render rows cols) \"\")",
+    )
+    .unwrap();
+    let run = Some(RunPlugin {
+        location: RunPluginLocation::File(path),
+        ..Default::default()
+    });
+    let load = |test: &mut TestBridge| {
+        test.bridge.load_plugin(
+            &run,
+            None,
+            Size::default(),
+            None,
+            false,
+            Some(client),
+            shown(),
+        )
+    };
+    // A root the host cannot write has no room for the plugin's /data, so the load fails
+    // before it is prepared.
+    let root = Writable(test.bridge.temporary_root.path().to_owned());
+    std::fs::set_permissions(&root.0, std::fs::Permissions::from_mode(0o500)).unwrap();
+    assert!(load(&mut test).is_err());
+    drop(root);
+    // The failed load's id is not handed out again: the screen keeps unloaded ids to drop late
+    // pane records for them.
+    let (plugin_id, _) = load(&mut test).unwrap();
+    assert_eq!(plugin_id, PluginId::new(1));
+    test.settle(plugin_id);
+}
+
+#[test]
+fn a_client_attaching_before_the_declaration_is_read_gets_the_declared_surface() {
+    let mut test = TestBridge::new();
+    let (first, second) = (ClientId::new(1), ClientId::new(2));
+    test.connect(&[first]);
+    let plugin_id = PluginId::new(1);
+    test.bridge.cancel_token(plugin_id);
+    test.bridge.plugin_executor.register_plugin(plugin_id);
+    let path = test._dirs[0].path().join("pending.scm");
+    std::fs::write(
+        &path,
+        "(yinz-declare-pane)\n(define (render rows cols) \"pane\")",
+    )
+    .unwrap();
+    let config = PluginConfig::from_run_plugin(&RunPlugin {
+        location: RunPluginLocation::File(path),
+        ..Default::default()
+    })
+    .unwrap();
+    // The first load has not read the declaration yet, as a git plugin's has not while its
+    // repository resolves; the plugin is known, so a client attaching now finds it.
+    test.bridge
+        .panes
+        .lock()
+        .unwrap()
+        .request(plugin_id, 1, shown());
+    let mut context = LoadingContext::new(
+        &test.bridge,
+        None,
+        config,
+        plugin_id,
+        first,
+        None,
+        Size { rows: 5, cols: 20 },
+    )
+    .unwrap();
+    context.plugin_own_cache_dir = test._dirs[0].path().join("cache-pending");
+    test.bridge.add_client(second).unwrap();
+    test.wait_for_executor(plugin_id);
+    // The declaration is read, and the first load runs, for every connected client.
+    drop(
+        test.bridge
+            .panes
+            .lock()
+            .unwrap()
+            .declare(plugin_id, 1, true),
+    );
+    let done = yinz_test_support::Watched::new(None);
+    let observed = done.clone();
+    test.bridge.plugin_executor.execute_for_plugin_tagged(
+        plugin_id,
+        "first load",
+        false,
+        move |senders, plugin_map, connected_clients| {
+            let result =
+                PluginLoader::new(context, senders, plugin_map, connected_clients).start_plugin();
+            *observed.lock() = Some(result.is_ok());
+        },
+    );
+    let loaded = done.wait_until("the first load", Duration::from_secs(30), |done| *done);
+    assert!(loaded, "the first load succeeds");
+    let map = test.bridge.plugin_map.lock().unwrap();
+    for client in [first, second] {
+        let (plugin, _) = map
+            .get_running_plugin_and_subscriptions(plugin_id, client)
+            .unwrap_or_else(|| panic!("no instance for {client}"));
+        assert_eq!(
+            plugin.lock().unwrap().env().surface,
+            Surface::Pane,
+            "the instance of {client} follows the declaration"
+        );
+    }
+}
+
+/// The picker's driver is the builtin file-finder, which declares no pane: started for a pick, it
+/// runs headless with no pane record at all, parked or otherwise.
+#[test]
+fn the_picker_driver_starts_headless_with_no_pane_record() {
+    use yinz_types::pick::{PickCommand as Pick, PickKind, PickOptions};
+    let mut test = TestBridge::new();
+    let client = ClientId::new(1);
+    test.connect(&[client]);
+    let caller = PluginId::new(99);
+    let context = test.context(99, 1, "(void)");
+    test.load(context).unwrap();
+    let caller_instance = test.instance_id(caller, client);
+    let screen = test.receiver::<ScreenInstruction>();
+    screen.try_iter().for_each(drop);
+    let finder = test.bridge.next_plugin_id();
+    test.bridge.plugin_executor.register_plugin(finder);
+    let release = test.hold_executor(finder);
+    test.bridge
+        .pick_command(
+            caller,
+            caller_instance,
+            Some(1),
+            client,
+            PathBuf::from("/tmp"),
+            Pick::Start {
+                request_id: "one".into(),
+                options: PickOptions {
+                    kind: PickKind::File,
+                    roots: Some(vec!["/tmp".into()]),
+                    extensions: None,
+                    hidden: None,
+                    recursive: None,
+                    timeout_ms: None,
+                },
+            },
+        )
+        .unwrap();
+    // The declaration is read before the load is queued, so this is all the screen hears.
+    let sent: Vec<_> = screen
+        .try_iter()
+        .map(|(instruction, _)| instruction)
+        .collect();
+    assert!(
+        !sent.iter().any(|i| matches!(i, ScreenInstruction::AddPlugin(.., id, _, _, _, _, _, _, _, _) if *id == finder)),
+        "{sent:?}"
+    );
+    assert!(
+        sent.iter().any(|i| matches!(i, ScreenInstruction::PluginPaneless { plugin_id, .. } if *plugin_id == finder)),
+        "{sent:?}"
+    );
+    {
+        let panes = test.bridge.panes.lock().unwrap();
+        assert_eq!(panes.surface(finder), Some(Surface::Headless));
+        assert!(panes.background(finder));
+    }
+    test.bridge
+        .pick_command(
+            caller,
+            caller_instance,
+            Some(1),
+            client,
+            PathBuf::new(),
+            Pick::Cancel {
+                request_id: "one".into(),
+                timeout: false,
+            },
+        )
+        .unwrap();
+    release.send(()).unwrap();
+    test.settle(finder);
+}
+
+/// A reload retires the old instance at once, but a handler that instance was still running can
+/// subscribe afterwards. Its background registration must not reach the screen: after a reload
+/// that declares a pane, it would put back the registry entry the screen dropped.
+#[test]
+fn a_retired_instances_late_background_subscription_is_not_forwarded() {
+    let mut test = TestBridge::new();
+    let plugin = PluginId::new(1);
+    let client = ClientId::new(1);
+    test.connect(&[client]);
+    let context = test.context(
+        1,
+        1,
+        "(define (load config) (yinz-command (hash \"Subscribe\" (list \"PaneUpdate\"))))",
+    );
+    test.load(context).unwrap();
+    // The registration exactly as the headless instance sent it.
+    let (subscriptions, instance) = test
+        .receiver::<PluginInstruction>()
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            PluginInstruction::PluginSubscribedToEvents(id, _, _, Some(events), instance)
+                if id == plugin =>
+            {
+                Some((events, instance))
+            },
+            _ => None,
+        })
+        .expect("a headless plugin registers its background subscriptions");
+    let screen = test.receiver::<ScreenInstruction>();
+    let forwarded = || {
+        screen
+            .try_iter()
+            .filter(|(instruction, _)| {
+                matches!(instruction,
+                    ScreenInstruction::UpdateBackgroundPluginSubscriptions(id, ..) if *id == plugin)
+            })
+            .count()
+    };
+    let _ = forwarded();
+
+    test.bridge
+        .forward_background_subscriptions(plugin, client, subscriptions.clone(), instance);
+    assert_eq!(
+        forwarded(),
+        1,
+        "the live instance's registration is forwarded"
+    );
+
+    test.bridge.reload_plugin_with_id(plugin).unwrap();
+    test.bridge
+        .forward_background_subscriptions(plugin, client, subscriptions.clone(), instance);
+    assert_eq!(
+        forwarded(),
+        0,
+        "the retired instance's late registration must not reach the screen"
+    );
+
+    // The replacement is a new instance, and its own registrations still go through.
+    test.finish_reload(plugin);
+    let replacement = test.instance_id(plugin, client);
+    assert_ne!(replacement, instance);
+    test.bridge
+        .forward_background_subscriptions(plugin, client, subscriptions, replacement);
+    assert_eq!(forwarded(), 1);
+    test.bridge.unload_plugin(plugin).unwrap();
+}
+
+/// A client attaching while a reload is in flight adds its instance to that reload's load: it
+/// must not supersede it, or the reload's failure arrives stale and is dropped unreported.
+#[test]
+fn a_client_attaching_during_a_reload_leaves_the_reloads_failure_current() {
+    let mut test = TestBridge::new();
+    let id = PluginId::new(1);
+    test.bridge.add_client(ClientId::new(1)).unwrap();
+    let context = test.context(
+        1,
+        1,
+        "(yinz-declare-pane) (define (load config) #t) (define (render rows cols) \"up\")",
+    );
+    let script = context.plugin_config.path.clone();
+    test.load(context).unwrap();
+    // The prepare step reads the source the replacement evaluates.
+    std::fs::write(
+        &script,
+        "(yinz-declare-pane) (define (load config) (error \"replacement failed\"))",
+    )
+    .unwrap();
+    // The executor is held, so the reload is still in flight when the client attaches.
+    let release = test.hold_executor(id);
+    test.bridge.reload_plugin_with_id(id).unwrap();
+    test.bridge.add_client(ClientId::new(2)).unwrap();
+    release.send(()).unwrap();
+
+    let plugins = test.receiver::<PluginInstruction>();
+    let deadline = std::time::Instant::now() + yinz_test_support::default_timeout();
+    let (load_id, generation, instance_id, error) = loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match plugins
+            .recv_timeout(remaining)
+            .map(|(instruction, _)| instruction)
+        {
+            Ok(PluginInstruction::PluginFailed {
+                plugin_id,
+                load_id,
+                generation,
+                instance_id,
+                error,
+                failed_to_load: true,
+                ..
+            }) if plugin_id == id => break (load_id, generation, instance_id, error),
+            Ok(_) => {},
+            Err(error) => panic!("the reload's failure never arrived: {error}"),
+        }
+    };
+    assert!(error.contains("replacement failed"), "{error}");
+    assert!(
+        test.bridge.load_is_current(id, load_id.unwrap()),
+        "the attach superseded the reload, so its failure is dropped as stale"
+    );
+    let screen = test.receiver::<ScreenInstruction>();
+    let _ = screen.try_iter().count();
+    test.bridge
+        .plugin_failed(id, load_id, generation, instance_id, error, true)
+        .unwrap();
+    assert!(
+        screen
+            .try_iter()
+            .any(|(instruction, _)| matches!(instruction,
+            ScreenInstruction::UpdatePluginLoadingStage(_, indication) if indication.is_error())),
+        "the reload's failure is shown in the plugin's pane"
+    );
+    test.bridge.unload_plugin(id).unwrap();
+}
+
+#[test]
+fn pane_preparation_publishes_before_a_newer_reload_or_retirement() {
+    for retire in [false, true] {
+        let mut test = TestBridge::new();
+        let plugin = PluginId::new(7);
+        let mut older = test.context(7, 1, "(define headless #t)");
+        let mut newer = older.clone();
+        older.plugin_config.path = test._dirs[0].path().join("declared.scm");
+        std::fs::write(&older.plugin_config.path, "(yinz-declare-pane)").unwrap();
+        older.pane_ticket = Some(PaneTicket {
+            load_id: 1,
+            reload: true,
+        });
+        newer.pane_ticket = Some(PaneTicket {
+            load_id: 2,
+            reload: true,
+        });
+        let panes = test.bridge.panes.clone();
+        panes.lock().unwrap().reload(plugin, 1);
+        let (to_screen, screen) = channels::bounded(0);
+        let senders = ThreadSenders {
+            to_screen: Some(SenderWithContext::new(to_screen)),
+            ..test.bridge.senders.clone()
+        };
+        let older_senders = senders.clone();
+        let first =
+            std::thread::spawn(move || older.declare_pane(&older_senders, 1, LoadFailure::Plugin));
+        // A rendezvous send parks the older preparation at publication, without taking its message.
+        let mut select = channels::Select::new();
+        select.recv(&screen);
+        select.ready_timeout(Duration::from_secs(10)).unwrap();
+        drop(select);
+        let publication_holds_ledger = panes.try_lock().is_err();
+        let newer_panes = panes.clone();
+        let second = std::thread::spawn(move || {
+            if retire {
+                let mut ledger = newer_panes.lock().unwrap();
+                let effects = ledger.retire(plugin, false);
+                send_effects(&senders, effects);
+            } else {
+                newer_panes.lock().unwrap().reload(plugin, 2);
+                assert!(newer.declare_pane(&senders, 2, LoadFailure::Plugin));
+            }
+        });
+        let added = screen.recv_timeout(Duration::from_secs(10)).unwrap().0;
+        let removed = screen.recv_timeout(Duration::from_secs(10)).unwrap().0;
+        assert!(first.join().unwrap());
+        second.join().unwrap();
+        assert!(
+            publication_holds_ledger,
+            "another transition could overtake the parked publication"
+        );
+        assert!(
+            matches!(added, ScreenInstruction::AddPlugin(_, _, _, _, _, _, id, ..) if id == plugin)
+        );
+        if retire {
+            assert!(matches!(removed, ScreenInstruction::PluginUnloaded(id) if id == plugin));
+            assert!(!panes.lock().unwrap().contains(plugin));
+        } else {
+            assert!(
+                matches!(removed, ScreenInstruction::PluginPaneless { plugin_id, .. } if plugin_id == plugin)
+            );
+            assert_eq!(
+                panes.lock().unwrap().surface(plugin),
+                Some(Surface::Headless)
+            );
+        }
+    }
 }

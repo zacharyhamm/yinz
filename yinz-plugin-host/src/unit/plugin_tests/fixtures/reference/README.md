@@ -39,6 +39,17 @@ root-move mutations. The legacy project import fixture adjusts marker IDs for th
 removed todo imports. Original source fingerprints and unrelated observations remain
 intact; these edits were derived from the recorded calls, not captured from Steel.
 
+Plugins now run headless unless they declare a pane. The headless-plugin change drops
+`HideSelf`, file-finder's `PaneUpdate` subscription, and new-agent's duplicate-mode
+`SetSelectable` and `RenamePluginPane` in replay. This touches all 20 file-finder fixtures and
+5 new-agent fixtures. None of these calls had a reply. Recorded calls and source fingerprints
+are unchanged; the fixture files are not edited.
+
+The shipped config's Agent-mode `d` now duplicates with `LaunchPlugin "duplicate-agent"`
+rather than `LaunchOrFocusPlugin`, so that every press starts its own headless instance.
+Replay compares keymap inputs, and configuration presets the configuration plugin writes,
+in the recorded `LaunchOrFocusPlugin` spelling. The fixture files are not edited.
+
 Each fixture records its original source SHA-256, engine, plugin, configuration, and ordered lifecycle steps.
 The Wasm fingerprint covers the original artifact bytes.
 The Deno fingerprint covers the embedded source tree and SDK.

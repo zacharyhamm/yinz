@@ -545,6 +545,120 @@ fn explicit_close_of_any_multipane_replacement_destroys_both_chains() {
     }
 }
 
+/// Giving up one multipane child leaves the sibling as the container's only pane and tells the
+/// subscribers it closed, but asks the pty for nothing: the caller decides what the removed
+/// pane's process or plugin is owed. A member that stands in for a suppressed pane is left to
+/// `close_pane`, which restores what it hides.
+#[test]
+fn removing_a_multipane_member_keeps_its_sibling_and_sends_nothing_to_the_pty() {
+    use yinz_types::multipane::*;
+    let mut tab = create_new_tab(
+        Size {
+            cols: 120,
+            rows: 40,
+        },
+        true,
+    );
+    let client = ClientId::new(1);
+    let (plugin_sender, plugin_receiver) = unbounded();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(plugin_sender));
+    let (pty_sender, pty_receiver) = unbounded();
+    tab.senders
+        .replace_to_pty(SenderWithContext::new(pty_sender));
+    let (screen_sender, screen_receiver) = unbounded();
+    tab.senders.to_screen = Some(SenderWithContext::new(screen_sender));
+    let owner = PaneId::Plugin(crate::PluginId::new(4));
+    let slot = PaneId::Terminal(TerminalId::new(5));
+    let placement = OverlayPlacement::dismissible(None);
+    for pane in [owner, slot] {
+        tab.new_pane(
+            pane,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Overlay(placement.clone()),
+            Some(client),
+            None,
+        )
+        .unwrap();
+    }
+    tab.create_multipane(
+        [owner, slot],
+        MultipaneSplit {
+            direction: MultipaneDirection::LeftRight,
+            ratio: 5000,
+        },
+        0,
+        placement,
+    )
+    .unwrap();
+    tab.focus_pane_with_id(slot, false, false, client).unwrap();
+
+    assert!(tab.remove_multipane_member(slot));
+
+    assert!(!tab.has_pane_with_pid(&slot));
+    assert!(tab.pane_is_overlay(owner));
+    assert_eq!(tab.multipane_info(owner), None);
+    assert_eq!(tab.get_active_pane_id(client), Some(owner));
+    assert!(
+        !tab.remove_multipane_member(owner),
+        "the owner alone is no multipane member"
+    );
+    assert!(tab.has_pane_with_pid(&owner));
+    assert!(pty_receiver
+        .try_iter()
+        .all(|(instruction, _)| !matches!(instruction, PtyInstruction::ClosePane(..))));
+    assert!(plugin_receiver.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        PluginInstruction::Update(events)
+            if events.iter().any(|(_, _, event)| matches!(event, Event::PaneClosed(id) if *id == slot))
+    )));
+    assert!(screen_receiver.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        ScreenInstruction::NotifyPaneClosedToSubscribers { pane_id } if pane_id == slot
+    )));
+    tab.assert_invariants();
+
+    // A member that holds the place of a suppressed pane is not given up here.
+    let second = PaneId::Terminal(TerminalId::new(6));
+    let stand_in = PaneId::Terminal(TerminalId::new(7));
+    let placement = OverlayPlacement::dismissible(None);
+    tab.new_pane(
+        second,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Overlay(placement.clone()),
+        Some(client),
+        None,
+    )
+    .unwrap();
+    tab.create_multipane(
+        [owner, second],
+        MultipaneSplit {
+            direction: MultipaneDirection::LeftRight,
+            ratio: 5000,
+        },
+        0,
+        placement,
+    )
+    .unwrap();
+    tab.suppress_pane_and_replace_with_pid(
+        second,
+        stand_in,
+        ReplacedPane::Suppress,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(!tab.remove_multipane_member(stand_in));
+    assert!(tab.multipane_info(stand_in).is_some());
+}
+
 #[test]
 fn pane_replacement_keeps_the_original_suppressed_until_explicit_restart() {
     for restart in [false, true] {

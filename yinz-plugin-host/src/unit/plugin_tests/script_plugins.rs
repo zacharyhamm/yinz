@@ -158,6 +158,7 @@ pub fn a_script_plugin_is_found_in_the_user_plugin_dir_by_name() {
     std::fs::write(
         user_plugin_dir.path().join("probe.scm"),
         r#"
+        (yinz-declare-pane)
         (define (render rows cols) "found by name")
         "#,
     )
@@ -224,6 +225,7 @@ pub fn a_reload_by_absolute_path_reloads_a_plugin_started_by_name() {
     let source = |version: &str| {
         format!(
             r#"
+            (yinz-declare-pane)
             (define (render rows cols) "{version}")
             "#
         )
@@ -1098,6 +1100,7 @@ fn agent_exit_reentry(wait_for_load: bool, disconnect_origin: bool, shared: bool
     std::fs::write(
         &source,
         r#"
+        (yinz-declare-pane)
         (define text "loaded")
         (define count 0)
         (define (load config)
@@ -1465,7 +1468,8 @@ pub fn the_agent_exit_hook_closes_the_pane_on_escape() {
 /// and delivered the moment it completes, while the grant round-trips through the screen. So the
 /// plugin queues until `permission_request_result` and then speaks; the second firing, after the
 /// grant, speaks at once. Either way the count is exact.
-const HEADLESS_HOOK_SCM: &str = r#"
+pub(super) const HEADLESS_HOOK_SCM: &str = r#"
+(yinz-declare-pane)
 (define ready (yinz-deferred))
 (define (say event)
   (define point (hash-ref event "point"))

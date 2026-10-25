@@ -35,6 +35,7 @@ fn receiver(root: &Path) -> String {
     std::fs::write(
         &path,
         r#"
+(yinz-declare-pane)
 (define ready (yinz-deferred))
 (define payload "")
 (define source "")
@@ -97,12 +98,16 @@ fn plugin_handoff_survives_permissions_and_reuses_hidden_reader() {
     );
     let chosen = "/tmp/a '雪,\"#?%2C.pdf";
     let (finder, selection) = open_finder(&yinz);
-    let driver = panes(&yinz)
-        .into_iter()
-        .find(|p| p.pane_info.plugin_url.as_deref() == Some("file-finder"))
+    // The driver declares no pane and runs headless; its plugin id names its selection file.
+    assert!(!panes(&yinz)
+        .iter()
+        .any(|p| p.pane_info.plugin_url.as_deref() == Some("file-finder")));
+    let driver = selection
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .and_then(|stem| stem.rsplit('-').next())
         .unwrap()
-        .pane_info
-        .id;
+        .to_owned();
     choose(&finder, &selection, chosen);
     yinz.wait_until("reader asks for its own permissions", |g| {
         g.contains("Plugin permissions")
@@ -122,13 +127,9 @@ fn plugin_handoff_survives_permissions_and_reuses_hidden_reader() {
             && reader.pane_info.is_floating
             && !reader.pane_info.is_suppressed
     );
-    assert!(yinz.snapshot().contains(&format!(
-        "SOURCE {{\"Plugin\":{}}}",
-        match driver {
-            PaneId::Plugin(id) => id.to_string(),
-            _ => unreachable!(),
-        }
-    )));
+    assert!(yinz
+        .snapshot()
+        .contains(&format!("SOURCE {{\"Plugin\":{driver}}}")));
     assert_eq!(
         panes(&yinz)
             .iter()
@@ -281,9 +282,16 @@ fn reader_permission_denial_and_missing_source_leave_no_finder() {
     let (finder, selection) = open_finder(&yinz);
     choose(&finder, &selection, "/tmp/missing.pdf");
     assert_retired(&yinz, &finder, &selection);
+    // A reader whose source cannot be read gets no pane to paint its error into. The host
+    // reports the load failure and the finder its failed handoff, both as notifications.
     yinz.wait_until("missing reader load error is visible", |g| {
-        g.contains("ERROR") || g.contains("Error") || g.contains("Failed")
+        g.contains("failed to open reader") && g.contains("to find the plugin")
     });
+    assert!(!panes(&yinz).iter().any(|pane| pane
+        .pane_info
+        .plugin_url
+        .as_deref()
+        .is_some_and(|url| url.ends_with("missing.scm"))));
     yinz.quit();
 }
 
@@ -404,22 +412,18 @@ load_plugins clear-defaults=true {{ "reader"; }}
     yinz.wait_until("background reader initialized", |grid| {
         grid.contains("BACKGROUND READY")
     });
-    let before = panes(&yinz)
-        .into_iter()
-        .find(|pane| is_reader(pane, url.as_str()))
-        .unwrap();
+    // The reader declares no pane, so it runs headless with no pane record at all.
+    let no_reader_pane = |yinz: &TestSession| {
+        assert!(!panes(yinz).iter().any(|pane| is_reader(pane, url.as_str())));
+    };
+    no_reader_pane(&yinz);
     let (finder, selection) = open_finder(&yinz);
     choose(&finder, &selection, "/tmp/paper.pdf");
     yinz.wait_until("background reader receives path", |grid| {
         grid.contains("BACKGROUND DELIVERED")
     });
     assert_retired(&yinz, &finder, &selection);
-    let after = panes(&yinz)
-        .into_iter()
-        .find(|pane| is_reader(pane, url.as_str()))
-        .unwrap();
-    assert_eq!(before.pane_info.id, after.pane_info.id);
-    assert!(after.pane_info.is_suppressed);
+    no_reader_pane(&yinz);
     assert!(!String::from_utf8_lossy(&yinz.raw_bytes())
         .contains("BACKGROUND DESTINATION MUST NEVER APPEAR"));
     yinz.send_stdin(b"\x1b[112;7u");

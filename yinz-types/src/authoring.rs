@@ -18,6 +18,9 @@ pub struct PluginCheckReport {
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub formatted_source: Option<String>,
+    /// The entry file's pane declaration, as `PaneDeclaration::describe` words it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<String>,
 }
 
 /// What one entry of a source analysis is.

@@ -488,3 +488,35 @@ fn new_agent_actual_runtimes_duplicate_explicit_hidden_sandbox_source() {
     assert_eq!(open[0]["cwd"], "/sandbox/work");
     assert_eq!(open[0]["target"]["Bubblewrap"]["root"], "/sandbox");
 }
+
+/// The harness refuses what the host refuses: duplicate mode declares no pane, so a command
+/// that needs the plugin's own pane fails the harness there, and only there.
+#[test]
+fn new_agent_harness_refuses_own_pane_commands_only_in_duplicate_mode() {
+    let shipped = yinz_steel_builtins::fixture_source("new-agent").unwrap();
+    let load = "(define (load configuration)\n";
+    assert!(shipped.contains(load));
+    let hiding = shipped.replacen(load, &format!("{load}  (yinz-command \"HideSelf\")\n"), 1);
+    let start = |configuration: BTreeMap<String, String>| {
+        let source = hiding.clone();
+        std::panic::catch_unwind(move || {
+            drop(super::runtime_parity::SteelReference::from_source(
+                "new-agent",
+                &source,
+                configuration,
+                responder(),
+            ))
+        })
+    };
+    assert!(start(BTreeMap::new()).is_ok(), "the modal has its pane");
+    let duplicate = BTreeMap::from([
+        ("duplicate_focused".to_owned(), "true".to_owned()),
+        ("caller_terminal_pane_id".to_owned(), "7".to_owned()),
+    ]);
+    let refused = start(duplicate).expect_err("duplicate mode runs headless");
+    let message = refused
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_default();
+    assert!(message.contains("refuses its 'HideSelf'"), "{message}");
+}

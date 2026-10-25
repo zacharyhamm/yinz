@@ -689,7 +689,11 @@ fn checked_plugin_edits_and_installed_tests_work_without_chat() {
         cmd
     };
     let source = dir.path().join("source.scm");
-    std::fs::write(&source, r#"(define (render rows columns) "FIRST")"#).unwrap();
+    std::fs::write(
+        &source,
+        r#"(yinz-declare-pane) (define (render rows columns) "FIRST")"#,
+    )
+    .unwrap();
     let out = plugin_command()
         .args(["plugins", "write", "fixture.scm", "--file"])
         .arg(&source)
@@ -785,6 +789,7 @@ impl GitPlugins {
     }
     fn write(&self, version: &str) {
         std::fs::write(self.directory.path().join("main.scm"), format!(r#"
+(yinz-declare-pane)
 (define greeting "")
 (define (load config) (when (hash-contains? config "greeting") (set! greeting (hash-ref config "greeting"))))
 (define (render rows columns) (string-append "hello {version} " greeting))
@@ -796,6 +801,7 @@ impl GitPlugins {
         .unwrap();
         std::fs::write(self.directory.path().join("nested/main.scm"), r#"
 (require "../shared.scm")
+(yinz-declare-pane)
 (define greeting "")
 (define (load config) (when (hash-contains? config "greeting") (set! greeting (hash-ref config "greeting"))))
 (define (render rows columns) (string-append "nested " version " " greeting))
@@ -1297,7 +1303,11 @@ fn plugin_cli_targets_resolve_managed_names_and_explicit_paths() {
 fn plugin_reload_explicit_targets_preserve_instance() {
     let session = Session::with_setup(|dir| {
         let path = dir.join("space #?%23 name.scm");
-        std::fs::write(&path, r#"(define (render rows columns) "VERSION_0")"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"(yinz-declare-pane) (define (render rows columns) "VERSION_0")"#,
+        )
+        .unwrap();
         std::fs::write(dir.join("config.kdl"), format!("load_plugins clear-defaults=true {{}}\ndetachable_panes false\nplugins {{ selected location=\"{}\" {{ greeting \"CONFIGURED\"; }}; }}\n", url::Url::from_file_path(&path).unwrap())).unwrap();
         std::fs::write(
             dir.join("layout.kdl"),
@@ -1322,7 +1332,7 @@ fn plugin_reload_explicit_targets_preserve_instance() {
     ];
     for (index, target) in targets.iter().enumerate() {
         let content = format!("VERSION_{}", index + 1);
-        std::fs::write(&path, format!(r#"(define greeting "") (define (load config) (set! greeting (hash-ref config "greeting"))) (define (render rows columns) (string-append "{content} " greeting))"#)).unwrap();
+        std::fs::write(&path, format!(r#"(yinz-declare-pane) (define greeting "") (define (load config) (set! greeting (hash-ref config "greeting"))) (define (render rows columns) (string-append "{content} " greeting))"#)).unwrap();
         session.plugin_cli(&["plugins", "reload", target]);
         session.rendered(&pane, &format!("{content} CONFIGURED"));
         assert_eq!(session.plugin_pane("selected"), pane);
@@ -1498,19 +1508,21 @@ fn plugin_reload_headless_reserved_paths_preserve_instance() {
     let reply = success(session.run(&["plugins", "reload", target, "--headless", "--json"], None));
     assert_eq!(reply["plugins"][0]["id"], original["id"]);
     assert_eq!(loaded(&session, target, 101)["id"], original["id"]);
+    // The source declares no pane, so neither the start nor the reload adds a pane record.
     let panes = success(session.run(&["action", "list-panes", "--json"], None));
     assert_eq!(
         panes.as_array().unwrap().len(),
-        initial_panes.as_array().unwrap().len() + 1
+        initial_panes.as_array().unwrap().len(),
+        "headless plugin gained a pane: {panes}"
     );
     assert!(
-        panes
+        !panes
             .as_array()
             .unwrap()
             .iter()
-            .filter(|pane| pane["is_plugin"] == true)
-            .all(|pane| pane["is_suppressed"] == true),
-        "headless reload opened a visible pane: {panes}"
+            .any(|pane| pane["is_plugin"] == true
+                && (pane["id"] == original["id"] || pane["id"] == initial["id"])),
+        "headless reload opened a pane: {panes}"
     );
     let duplicate = success(session.run(
         &[

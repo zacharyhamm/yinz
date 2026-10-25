@@ -14,7 +14,7 @@ use crate::pty::{ClientTabIndexOrPaneId, PtyInstruction, ReplacedPane};
 use crate::route::NotificationEnd;
 use crate::tab::Tab;
 use crate::ClientId;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use yinz_types::data::{NewPanePlacement, OverlayPlacement};
 use yinz_types::geometry::FloatingPaneCoordinates;
@@ -245,7 +245,33 @@ impl Screen {
                 if found_plugin {
                     self.render()?;
                     self.log_and_report_session_state()?;
+                } else if let Some(plugin_id) = self.running_headless(&run_plugin) {
+                    // The instance runs without a pane: there is nothing to focus, and loading
+                    // another would run it twice. It hears it was asked for again instead.
+                    if let Some(completion) = completion_tx.as_mut() {
+                        completion.set_affected_pane_id(PaneId::Plugin(plugin_id));
+                        completion.set_stdout_message(format!(
+                            "{} is already running headless",
+                            run_plugin.location_string()
+                        ));
+                    }
+                    self.relaunch_headless_plugin(plugin_id, client_id);
+                } else if let Some(plugin_id) = self.resolving_plugin(&run_plugin) {
+                    // Still resolving its repository, so it may yet get a pane: loading another
+                    // would run it twice.
+                    if let Some(completion) = completion_tx.as_mut() {
+                        completion.set_affected_pane_id(PaneId::Plugin(plugin_id));
+                        completion.set_stdout_message(format!(
+                            "{} is still loading",
+                            run_plugin.location_string()
+                        ));
+                    }
                 } else {
+                    // A headless instance that failed or crashed runs no more: this launch
+                    // replaces it rather than leaving it behind.
+                    for plugin_id in self.failed_headless(&run_plugin) {
+                        self.unload_paneless_plugin(plugin_id);
+                    }
                     self.fill_plugin_cwd(
                         should_float,
                         should_open_in_place,
@@ -332,6 +358,27 @@ impl Screen {
         stated_overlay_placement: Option<OverlayPlacement>,
         pending: &mut PendingEvents,
     ) -> Result<bool> {
+        // Plugin ids are never reused, so this is a late answer to a load that is already gone
+        // (a git plugin can resolve after its unload).
+        if self.unloaded_plugins.contains(&plugin_id) {
+            if let Some(completion) = completion_tx.as_mut() {
+                completion.set_exit_status(1);
+                completion.set_error_message("plugin unloaded before its pane was placed".into());
+            }
+            return Ok(false);
+        }
+        // A reload that declares a pane again turns a headless plugin back into a pane. While it
+        // was headless it heard pane and tab events through the background registry; with a
+        // pane it hears them as any plugin pane does, and the reloaded instance registers anew
+        // only if it still has no tab. A registration left behind would keep a plugin in a tab
+        // hearing every other tab's events too.
+        if self.paneless_plugins.remove(&plugin_id).is_some() {
+            self.background_plugin_subscriptions
+                .retain(|(subscriber, _), _| *subscriber != plugin_id);
+        }
+        self.failed_paneless_plugins.remove(&plugin_id);
+        self.resolving_plugins.remove(&plugin_id);
+        self.destroyed_panes.remove(&PaneId::Plugin(plugin_id));
         let mut new_pane_placement = NewPanePlacement::default();
         let maybe_should_float = should_float;
         let should_float = maybe_should_float.unwrap_or(false);
@@ -807,4 +854,305 @@ impl Screen {
         self.log_and_report_session_state()?;
         Ok(true)
     }
+}
+
+/// Plugins without a pane: those that declare none and run headless, and those the plugin thread
+/// has unloaded. Neither may hold a pane record, so each loses whatever record it has without a
+/// `PtyInstruction::ClosePane`: that would unload a headless plugin, or unload a gone one again.
+impl Screen {
+    /// Whether `plugin_id` can no longer get a pane: it runs headless or it is gone.
+    pub(super) fn plugin_has_no_pane(&self, plugin_id: PluginId) -> bool {
+        self.paneless_plugins.contains_key(&plugin_id) || self.unloaded_plugins.contains(&plugin_id)
+    }
+
+    /// The running headless instance of `run_plugin`, matched the way `Tab::find_plugin`
+    /// matches a pane's plugin. The lowest id wins, so the answer does not depend on hash order.
+    fn running_headless(&self, run_plugin: &RunPluginOrAlias) -> Option<PluginId> {
+        instances_of(&self.paneless_plugins, run_plugin)
+            .filter(|plugin_id| !self.failed_paneless_plugins.contains(plugin_id))
+            .min()
+    }
+
+    /// The headless instances of `run_plugin` that failed or crashed.
+    fn failed_headless(&self, run_plugin: &RunPluginOrAlias) -> Vec<PluginId> {
+        instances_of(&self.paneless_plugins, run_plugin)
+            .filter(|plugin_id| self.failed_paneless_plugins.contains(plugin_id))
+            .collect()
+    }
+
+    /// An instance of `run_plugin` still resolving its repository, matched as
+    /// `running_headless` matches.
+    fn resolving_plugin(&self, run_plugin: &RunPluginOrAlias) -> Option<PluginId> {
+        instances_of(&self.resolving_plugins, run_plugin).min()
+    }
+
+    /// A launch-or-focus found `plugin_id` running headless, with nothing to focus: it hears so
+    /// through a private pipe message named [`RELAUNCH_PIPE`], from `client_id`, and may answer
+    /// by bringing back whatever it shows (the file finder refocuses its finder or editor).
+    fn relaunch_headless_plugin(&self, plugin_id: PluginId, client_id: ClientId) {
+        self.bus
+            .senders
+            .send_to_plugin(PluginInstruction::KeybindPipe {
+                name: RELAUNCH_PIPE.to_owned(),
+                payload: None,
+                plugin: None,
+                args: None,
+                configuration: None,
+                floating: None,
+                should_open_in_place: false,
+                pane_id_to_replace: None,
+                pane_title: None,
+                cwd: None,
+                skip_cache: false,
+                cli_client_id: client_id,
+                plugin_and_client_id: Some((plugin_id, client_id)),
+                notification_end: None,
+            })
+            .context("failed to tell a headless plugin it was launched again")
+            .non_fatal();
+    }
+
+    /// Removes the plugin's pane record, if it has one, and forgets the per-pane state kept for
+    /// it. Unless a record stays, the pane ends up marked destroyed, so whatever waits in
+    /// `PendingEvents::waiting_for_pane` for it is dropped at the end of the instruction.
+    /// Returns whether a pane was removed; the caller reports and renders.
+    pub(super) fn remove_plugin_pane_quietly(&mut self, plugin_id: PluginId) -> bool {
+        let pane_id = PaneId::Plugin(plugin_id);
+        // Closing the shown plugin tab of a pane tabs container keeps its pane as a blank slot
+        // that owns no guest; it is the container's pane from then on, not the plugin's.
+        let blank_pane_tab = |tab: &Tab| {
+            tab.pane_tabs_infos().any(|info| {
+                info.pane_id == pane_id
+                    && info.tabs.iter().all(|slot| slot.pane_id() != Some(pane_id))
+            })
+        };
+        let blank = self
+            .tab_containing_pane(pane_id)
+            .is_some_and(blank_pane_tab);
+        if !blank {
+            self.repaint_tab_of_closing_overlay(pane_id);
+        }
+        let removed = match self.tab_containing_pane_mut(pane_id) {
+            Some(_) if blank => false,
+            Some(tab) => {
+                // A pane tab child leaves its pane tab as closing it would, but without the unload
+                // that comes with that: any plugin pane can be mounted into pane tabs, and one
+                // that reloads without its declaration keeps running headless. A multipane child
+                // leaves its container to the sibling: `close_pane` keeps a member in place.
+                if !tab.detach_pane_tab_plugin(plugin_id) && !tab.remove_multipane_member(pane_id) {
+                    tab.close_pane(pane_id, false, None);
+                }
+                let kept = tab.has_pane_with_pid(&pane_id);
+                if kept && !blank_pane_tab(tab) {
+                    log::warn!("plugin {plugin_id} has no pane but keeps its composed pane record");
+                }
+                !kept
+            },
+            None => false,
+        };
+        // An ordinary close already cleaned up before the plugin thread reported the unload,
+        // and a record that stays is still a pane.
+        if removed
+            || (!self.destroyed_panes.contains(&pane_id)
+                && self.tab_containing_pane(pane_id).is_none())
+        {
+            self.cleanup_closed_pane(pane_id);
+        }
+        self.render_blocker.remove_blocking_plugin(plugin_id);
+        self.animating_plugin_loads.remove(&plugin_id);
+        removed
+    }
+
+    /// `remove_plugin_pane_quietly`, then what a closed pane gets: pane groups, scroll modes, a
+    /// state report when a pane went, and a render.
+    pub(super) fn detach_plugin_pane(&mut self, plugin_id: PluginId) -> Result<()> {
+        if self.remove_plugin_pane_quietly(plugin_id) {
+            self.retain_only_existing_panes_in_pane_groups();
+            let clients: Vec<ClientId> = self.active_tab_ids.keys().copied().collect();
+            for client_id in clients {
+                self.sync_scroll_mode_on_focus(client_id)?;
+            }
+            self.log_and_report_session_state()?;
+        }
+        self.render()
+    }
+
+    /// The plugin thread found that `plugin_id` declares no pane: it runs headless from now on.
+    /// A record it already has (a layout slot, or the pane of a load that declared one before a
+    /// reload) is removed, and so is an `AddPlugin` still parked for a client. A close that
+    /// waited for its pane closes the plugin itself, which for a headless plugin means
+    /// unloading it.
+    ///
+    /// `completion` answers the launch that started it, once the plugin is recorded: whatever
+    /// the launcher does next finds it running headless.
+    pub(super) fn plugin_paneless(
+        &mut self,
+        plugin_id: PluginId,
+        run: RunPluginOrAlias,
+        completion: Option<NotificationEnd>,
+        pending: &mut PendingEvents,
+    ) -> Result<()> {
+        // A git plugin declares from its repository thread, so this can trail the unload. The
+        // unload already removed its record, and a gone plugin must not count as running.
+        if self.unloaded_plugins.contains(&plugin_id) {
+            if let Some(mut completion) = completion {
+                completion.set_exit_status(1);
+                completion.set_error_message(format!("plugin {plugin_id} was unloaded"));
+            }
+            return Ok(());
+        }
+        self.resolving_plugins.remove(&plugin_id);
+        self.failed_paneless_plugins.remove(&plugin_id);
+        // A reload that leaves the plugin headless: it runs again, and has no record to remove.
+        if let Some(recorded) = self.paneless_plugins.get_mut(&plugin_id) {
+            *recorded = run;
+            drop(completion);
+            return Ok(());
+        }
+        let pane_id = PaneId::Plugin(plugin_id);
+        for mut completion in take_parked_add_plugins(plugin_id, pending) {
+            completion.set_affected_pane_id(pane_id);
+            completion.set_stdout_message(format!(
+                "{} runs headless: it declares no pane",
+                run.location_string()
+            ));
+        }
+        let parked = pending
+            .waiting_for_pane
+            .remove(&pane_id)
+            .unwrap_or_default();
+        self.paneless_plugins.insert(plugin_id, run);
+        // Recorded, so the launch can be answered.
+        drop(completion);
+        let mut close_requested = false;
+        for event in parked {
+            if matches!(event, ScreenInstruction::ClosePane(..)) {
+                close_requested = true;
+            } else {
+                // What waited for the pane is answered now: a request that needs one is
+                // refused as for any headless plugin, and the plugin's own output is dropped.
+                drop(self.settle_headless_target(event));
+            }
+        }
+        if close_requested {
+            self.unload_paneless_plugin(plugin_id);
+        }
+        self.detach_plugin_pane(plugin_id)
+    }
+
+    /// The plugin thread has unloaded `plugin_id`: remove its pane record if one is left, and
+    /// everything the screen keeps on its behalf. What waited for its pane is dropped; a close
+    /// among it is done. An `AddPlugin` parked for a client is answered now rather than when
+    /// a client attaches.
+    pub(super) fn plugin_unloaded(
+        &mut self,
+        plugin_id: PluginId,
+        keybind_intercepts: &mut HashMap<ClientId, PluginId>,
+        pending: &mut PendingEvents,
+    ) -> Result<()> {
+        for mut completion in take_parked_add_plugins(plugin_id, pending) {
+            completion.set_exit_status(1);
+            completion.set_error_message("plugin unloaded before its pane was placed".into());
+        }
+        pending.waiting_for_pane.remove(&PaneId::Plugin(plugin_id));
+        self.paneless_plugins.remove(&plugin_id);
+        self.failed_paneless_plugins.remove(&plugin_id);
+        self.resolving_plugins.remove(&plugin_id);
+        self.unloaded_plugins.insert(plugin_id);
+        self.background_plugin_subscriptions
+            .retain(|(subscriber, _), _| *subscriber != plugin_id);
+        keybind_intercepts.retain(|_, interceptor| *interceptor != plugin_id);
+        self.detach_plugin_pane(plugin_id)
+    }
+
+    /// A headless plugin has no pane to close: closing it unloads it, which the pty thread's
+    /// `ClosePane` does for any plugin id. It stops counting as running at once, so a launch
+    /// sent before `PluginUnloaded` arrives starts a new instance instead of naming this one.
+    pub(super) fn unload_paneless_plugin(&mut self, plugin_id: PluginId) {
+        self.paneless_plugins.remove(&plugin_id);
+        self.failed_paneless_plugins.remove(&plugin_id);
+        self.resolving_plugins.remove(&plugin_id);
+        self.bus
+            .senders
+            .send_to_pty(PtyInstruction::ClosePane(PaneId::Plugin(plugin_id), None))
+            .context("failed to unload a headless plugin")
+            .non_fatal();
+    }
+
+    /// The plugin thread is resolving `plugin_id`'s repository before it can read its
+    /// declaration: record it as loading, and answer the launch that started it.
+    pub(super) fn plugin_resolving(
+        &mut self,
+        plugin_id: PluginId,
+        run: RunPluginOrAlias,
+        completion: Option<NotificationEnd>,
+    ) {
+        if self.unloaded_plugins.contains(&plugin_id) {
+            if let Some(mut completion) = completion {
+                completion.set_exit_status(1);
+                completion.set_error_message(format!("plugin {plugin_id} was unloaded"));
+            }
+            return;
+        }
+        self.resolving_plugins.insert(plugin_id, run);
+        drop(completion);
+    }
+
+    /// `plugin_id` failed to load or crashed, with no pane to show it: it runs no more. A
+    /// launch of it starts another instance, and one still loading is forgotten.
+    pub(super) fn plugin_failed(&mut self, plugin_id: PluginId) {
+        self.resolving_plugins.remove(&plugin_id);
+        if self.paneless_plugins.contains_key(&plugin_id) {
+            self.failed_paneless_plugins.insert(plugin_id);
+        }
+    }
+
+    /// Whether closing `plugin_id` means unloading it: it runs headless, or it is still
+    /// resolving its repository and has no pane yet.
+    pub(super) fn closes_by_unloading(&self, plugin_id: PluginId) -> bool {
+        self.paneless_plugins.contains_key(&plugin_id)
+            || self.resolving_plugins.contains_key(&plugin_id)
+    }
+
+    /// Why a request for `plugin_id`'s pane cannot be met, when the plugin runs headless.
+    pub(super) fn headless_plugin_error(&self, plugin_id: PluginId) -> Option<String> {
+        self.paneless_plugins
+            .contains_key(&plugin_id)
+            .then(|| format!("plugin {plugin_id} runs headless: it declares no pane"))
+    }
+}
+
+/// The private pipe message a headless plugin receives when a `LaunchOrFocusPlugin` finds it
+/// running, in place of the focus a plugin with a pane would get.
+pub(super) const RELAUNCH_PIPE: &str = "launch_or_focus";
+
+/// The plugins of `plugins` loaded from what `run_plugin` names, matched the way
+/// `Tab::find_plugin` matches a pane's plugin.
+fn instances_of<'a>(
+    plugins: &'a HashMap<PluginId, RunPluginOrAlias>,
+    run_plugin: &'a RunPluginOrAlias,
+) -> impl Iterator<Item = PluginId> + 'a {
+    plugins
+        .iter()
+        .filter(|(_, run)| run_plugin.is_equivalent_to_run(&Some(Run::Plugin((*run).clone()))))
+        .map(|(plugin_id, _)| *plugin_id)
+}
+
+/// Removes every `AddPlugin` for `plugin_id` still parked until a client attaches, and hands
+/// back their completions for the caller to answer.
+fn take_parked_add_plugins(
+    plugin_id: PluginId,
+    pending: &mut PendingEvents,
+) -> Vec<NotificationEnd> {
+    let mut parked = vec![];
+    pending.waiting_for_client.retain_mut(|event| match event {
+        ScreenInstruction::AddPlugin(.., id, _, _, _, _, _, _, completion, _)
+            if *id == plugin_id =>
+        {
+            parked.extend(completion.take());
+            false
+        },
+        _ => true,
+    });
+    parked
 }

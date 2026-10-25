@@ -33,6 +33,31 @@ impl Tab {
     pub fn multipane_info(&self, pane_id: PaneId) -> Option<yinz_types::multipane::MultipaneInfo> {
         self.overlay_panes.multipane_info(&pane_id)
     }
+    /// Remove one multipane child, leaving its sibling as the container's only pane. This is how a
+    /// slot held for a child that will not come is given up: `close_pane` keeps a member in
+    /// place (a command that exits there stays held), and closing the container would take the
+    /// sibling too. Nothing is sent to the pty: the caller decides what the removed pane's
+    /// process or plugin is owed. Returns whether `id` was removed; `false`, with nothing
+    /// changed, when it is no multipane member, holds the place of a suppressed pane, which
+    /// `close_pane` restores instead, or belongs to pane tabs, whose child `close_pane` closes
+    /// to a blank slot that keeps the container's place.
+    pub fn remove_multipane_member(&mut self, id: PaneId) -> bool {
+        if self.multipane_info(id).is_none()
+            || self.stands_in_for_a_pane(id).is_some()
+            || self.pane_tabs_of(id).is_some()
+        {
+            return false;
+        }
+        if self.overlay_panes.remove_multipane_member(id).is_none() {
+            return false;
+        }
+        self.pending_command_respawns.remove(&id);
+        self.set_force_render();
+        self.overlay_panes.set_force_render();
+        self.announce_pane_closed(id);
+        self.repair_focus_after_pane_removal();
+        true
+    }
     pub fn retain_tab_for_multipane(&mut self, child: PaneId) {
         if self.multipane_info(child).is_some() {
             self.overlay_panes.retain_tab_for(child);

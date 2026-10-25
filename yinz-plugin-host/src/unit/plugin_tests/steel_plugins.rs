@@ -7,6 +7,7 @@ fn steel_file_loads_dispatches_events_and_reloads() {
     let harness = Harness::new(
         "scm",
         r#"
+        (yinz-declare-pane)
         (define text "initial")
         (define (load configuration)
           (yinz-command (hash "Subscribe" (list "CustomMessage")))
@@ -27,7 +28,7 @@ fn steel_file_loads_dispatches_events_and_reloads() {
     harness.rendered("Steel event arrived");
     std::fs::write(
         &harness.path,
-        "(define (render rows columns) \"Steel replacement ready\")",
+        "(yinz-declare-pane) (define (render rows columns) \"Steel replacement ready\")",
     )
     .unwrap();
     harness.reload();
@@ -41,6 +42,7 @@ fn steel_reload_interrupts_a_loop_without_host_calls() {
     let harness = Harness::new(
         "scm",
         r#"
+        (yinz-declare-pane)
         (define (load configuration)
           (yinz-command (hash "Subscribe" (list "CustomMessage"))))
         (define (update event)
@@ -67,7 +69,7 @@ fn steel_reload_interrupts_a_loop_without_host_calls() {
     );
     std::fs::write(
         &harness.path,
-        "(define (render rows columns) \"Steel recovered from loop\")",
+        "(yinz-declare-pane) (define (render rows columns) \"Steel recovered from loop\")",
     )
     .unwrap();
     harness.reload();
@@ -87,6 +89,7 @@ fn steel_workers_keep_fifo_state_and_reload_their_confined_modules() {
         "scm",
         r#"
         (require "./label.scm")
+        (yinz-declare-pane)
         (define count 0)
         (define text "")
         (yinz-register-workers
@@ -128,6 +131,7 @@ fn steel_reload_interrupts_and_joins_a_looping_worker() {
     let harness = Harness::new(
         "scm",
         r#"
+        (yinz-declare-pane)
         (yinz-register-workers
           (hash "spin"
             (lambda (name payload)
@@ -154,7 +158,7 @@ fn steel_reload_interrupts_and_joins_a_looping_worker() {
         });
     std::fs::write(
         &harness.path,
-        "(define (render rows columns) \"Steel worker replacement ready\")",
+        "(yinz-declare-pane) (define (render rows columns) \"Steel worker replacement ready\")",
     )
     .unwrap();
     harness.reload();
@@ -241,6 +245,7 @@ fn steel_shared_deferred_callbacks_and_render_keep_their_acting_clients() {
     let harness = Harness::new(
         "scm",
         r#"
+      (yinz-declare-pane)
       (define loads 0)
       (define waiting '())
       (define completed '())
@@ -326,6 +331,7 @@ fn steel_deferred_permission_grant_resumes_the_load_hook() {
     let harness = Harness::new(
         "scm",
         r#"
+      (yinz-declare-pane)
       (define text "waiting")
       (define (load config)
         (yinz-then (yinz-wait-for-permissions (list "ChangeApplicationState"))

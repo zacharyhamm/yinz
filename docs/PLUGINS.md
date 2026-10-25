@@ -23,6 +23,8 @@ as `OpenPluginPaneFloating` use the same launch handling. Unloaded tabs load whe
 selected and use the normal permission checks. No separate overlay command is required.
 Explicit layout panes, explicit destination tabs, background loads, and pane
 replacements keep their requested placement. Plugins outside the list launch normally.
+A plugin that declares no pane runs headless wherever it is launched; see
+[Panes are declared](#panes-are-declared).
 
 The first launch merges explicit plugin configuration into the requested tab. Later
 launches select tabs without changing the group's configuration. Caller cwd and
@@ -42,6 +44,8 @@ unit tests and disposable-session tests.
 Save this source as `hello.scm`:
 
 ```scheme
+(yinz-declare-pane)
+
 (define (load configuration)
   (yinz-command (hash "SetSelectable" #f)))
 
@@ -58,6 +62,7 @@ bytevectors. JSON null uses the symbol `'json-null`.
 The optional callbacks are `load`, `update`, `render`, `pipe`, and `unload`.
 `update` and `pipe` return a boolean that requests a render.
 `render` receives the pane dimensions and returns text, or writes text with `display`.
+Only a plugin that declares a pane is rendered.
 The SDK supports Unicode regex search, common Scheme forms, immutable structs,
 and bounded string builders. See the SDK reference for signatures and limits.
 Use `yinz-plugin-location` and `yinz-plugin-resolve` for confined source identity.
@@ -95,6 +100,9 @@ the next message. Reload cancels pending operations from the old instance.
 Check Scheme source with `yinz plugins check ./hello.scm`. Checks compile the entrypoint and its
 confined imports without running plugin callbacks or module initializers. Literal permission
 requests appear in the report. Computed requests require a runtime permission answer.
+The report prints the pane declaration: `always`, `unless KEY=VALUE`, or `none`.
+It warns when an undeclared plugin defines `render` or sends a command that needs its own
+pane, and when a declaration is not a top-level form of the entrypoint.
 A successful check does not prove that every callback executes successfully.
 Run unit tests and disposable-session tests to exercise callback behavior.
 Use an explicit Scheme extension with `plugins write`. Checked writes keep a backup before
@@ -123,7 +131,7 @@ yinz --session work repl --eval '(yinz-command "GetPluginIds")'
 ```
 
 The REPL keeps its own Scheme definitions and uses the session's host command dispatcher.
-Each REPL has a separate plugin instance. Exiting with `:quit` or Ctrl-D closes that instance.
+Each REPL has a separate headless plugin instance. Exiting with `:quit` or Ctrl-D closes that instance.
 
 Put unit tests in an adjacent `hello.test.scm` file:
 
@@ -145,10 +153,62 @@ Use `test-stub` to set a reply, `test-event` or `test-pipe` to deliver input, an
 Name real session tests `hello.integration.test.scm`. `test-session` sends an operation
 and an optional argument to a disposable session. For example, call `(test-session "start")`,
 then `(test-session "load" (hash "path" "./hello.scm"))`, then
-`(test-wait-for-text "Hello from Steel")`. Declare required grants in the test's options:
+`(test-wait-for-text "Hello from Steel")`. The load follows the plugin's pane declaration.
+Declare required grants in the test's options:
 `(test "name" (hash "grants" '("RunCommands")) (lambda () ...))`.
 Each test has a fresh worker and a deadline. The runner closes its disposable session after
 the test, including when the test fails.
+
+## Panes are declared
+
+A plugin gets a pane only when its entrypoint declares one with a literal top-level form:
+
+```scheme
+(yinz-declare-pane)
+(yinz-declare-pane-unless "duplicate_focused" "true")
+```
+
+The second form declares a pane unless the load configuration maps the key to exactly that value.
+Use one form, once. See the [SDK reference](PLUGIN_SDK.md#pane-declaration) for the rules.
+
+A plugin without a declaration runs headless. It never has a pane record: it is absent
+from `ListPanes`, `PaneUpdate`, the floating layer, and saved layouts. It never receives
+`render`, `Resize`, or `PluginTick`. It still receives subscribed events, pipes, plugin
+requests, permission prompts, and hooks, but not the events tied to a pane: `Key`, `Mouse`,
+`PastedText`, and `Visible` never arrive, even when subscribed. `InterceptKeyPresses`
+delivers keys as `InterceptedKeyPress` instead. Commands that need its own pane fail.
+
+| Launch | Declared | Undeclared |
+|---|---|---|
+| `load_plugins`, `plugins start`, background `LoadNewPlugin`, headless hooks, pickers | Hidden pane record | No pane; events arrive by subscription |
+| `LaunchPlugin`, `yinz plugin --`, `New*PluginPane`, foreground `LoadNewPlugin`, `start-or-reload-plugin` | Pane as requested | Headless; succeeds and prints `<location> runs headless: it declares no pane`, then `plugin_N` on the last line |
+| `LaunchOrFocusPlugin` | Focus or launch | Reuses a running headless instance and sends it a private `launch_or_focus` pipe message; replaces one that failed or crashed; else starts headless |
+| `yinz pipe --plugin`, keybind pipes, plugin messages to a missing destination | Floating, unfocused | Headless; the message is delivered |
+| `ReplacePane` hooks, in-place opens | In place | Headless; the target pane stays, even with `--close-replaced-pane` |
+| Layouts, new tabs, resurrection, pane tabs, multipane children | The layout slot | Slot removed, one notification per location, plugin unloaded |
+| `close-pane --pane-id plugin_N`, `ClosePluginPane` | Close, then unload | Unload |
+| `focus-pane-id plugin_N` | Focus | Error: the plugin runs headless |
+| Other actions and plugin commands naming `plugin_N` (rename, pin, float, move, resize, scroll, stack, break to a tab, hide, show) | Act on the pane | Error: the plugin runs headless. A plugin command with no reply logs it |
+
+A script that reads the ID a launch prints should take the last line: a headless launch
+prints its note first.
+
+A load failure before the declaration is known creates no pane. This covers unreadable
+source, an unresolved alias, a failed clone, and an invalid declaration. A foreground
+launch fails its command and notifies the acting client. A layout slot shows the error.
+A multipane child's slot is removed instead, as for an undeclared child: the other child
+stays in the container's place as its only pane, and the multipane ends.
+A background start records it in runtime status and the log. A declared plugin shows later
+failures in its pane. A headless plugin launched in the foreground notifies once per
+load; one started in the background reports only through runtime status and the log.
+
+Reload rereads the declaration. A plugin that drops it loses its pane quietly and keeps
+running headless; a layout slot is removed and the plugin unloaded instead. A plugin that
+gains a declaration gets a hidden record if it started in the background, otherwise an
+unfocused floating pane. The original in-place placement is not replayed. A foreground
+launch that failed before its declaration was known never placed anything, so a reload that
+finds a declaration opens its pane, unfocused, where the launch asked for it; one that asked
+to open in place of another pane opens floating instead.
 
 ## Manage a plugin
 
@@ -168,10 +228,11 @@ Plain `plugins list` lists source files in the plugin directory.
 `start` creates a background instance or returns the existing identity, including an instance that is loading or has failed.
 `reload` replaces an existing runtime and rereads its source. It preserves the plugin ID, configuration, sharing, and pane placement.
 A missing reload target fails with `not loaded; use plugins start`. `reload --headless` is a compatibility spelling for the same operation.
-`stop` removes all client copies, registrations, subscriptions, pending requests, and the hidden pane record.
+`stop` removes all client copies, registrations, subscriptions, pending requests, and any hidden pane record.
 
-Lifecycle commands never reveal an existing pane or change focus. Background plugins retain hidden pane records for `ShowSelf` compatibility.
-The explicit `action start-or-reload-plugin` command retains its pane behavior.
+Lifecycle commands never reveal an existing pane or change focus. Background plugins that declare a pane retain hidden pane records for `ShowSelf`.
+Undeclared plugins have no pane record.
+The explicit `action start-or-reload-plugin` command retains its pane behavior for declared plugins.
 
 ## Select an identity
 
@@ -192,7 +253,9 @@ Lifecycle operations apply to the selected identity across the session.
 
 ## Read runtime status
 
-Use `plugins list --running --json` to inspect locations, configurations, background placement, sharing, client copies, pending permissions, and errors.
+Use `plugins list --running --json` to inspect locations, configurations, background placement, panes, sharing, client copies, pending permissions, and errors.
+`pane` is `true`, `false` for a headless plugin, or `null` while the declaration is unknown, such as during a clone.
+Plain output prints it as `pane: yes`, `pane: no (headless)`, or `pane: pending`.
 States are `loading`, `awaiting_permission`, `running`, and `failed`. A stop response reports `stopped`.
 `running` means the runtime is available. Asynchronous initialization can still be in progress.
 
@@ -204,8 +267,8 @@ It distinguishes `not loaded` from a loaded plugin with no log lines. Without an
 
 ## Answer a permission request
 
-All plugin permission requests use a host-owned modal above the current tab.
-The modal does not reveal the plugin pane or change the underlying focus, geometry, or input mode.
+All plugin permission requests use a host-owned modal above the current tab, including requests from headless plugins.
+The modal does not reveal a plugin pane or change the underlying focus, geometry, or input mode.
 It closes an open command palette or context menu. Other clients remain usable.
 
 Deny is selected initially. Up selects Deny, and Down selects Allow, stopping at either end.
@@ -252,7 +315,8 @@ Source edits do not trigger reload automatically. Run `plugins reload TARGET` af
 ## Test a background plugin
 
 In an integration test, use `(test-session "load" (hash "path" "./palette.scm"
-"headless" #t))` to create a background plugin. The `"reload"`, `"stop"`, and
+"headless" #t))` to create a background plugin. `"headless"` selects a background
+start; whether the plugin has a pane follows its declaration. The `"reload"`, `"stop"`, and
 `"status"` operations manage its identity. Wait for lifecycle state, logs, or
 rendered content before asserting asynchronous behavior.
 
@@ -262,14 +326,16 @@ permission modal. A load can also set `"autoGrantPermissions"` to false.
 
 ## Inspect launch provenance
 
-`(yinz-command (hash "GetPluginInfo" json-null))` returns `{pluginId, background}` for the calling instance, including during `load()`.
+`(yinz-command (hash "GetPluginInfo" json-null))` returns `{pluginId, background, pane}` for the calling instance, including during `load()`.
+`pane` is `true` or `false`, or `null` while a repository plugin is still resolving.
 `(yinz-command (hash "GetPluginInfo" id))` returns the same information for another instance, or `null` if it no longer exists.
 Inspection of another instance requires `ReadApplicationState`.
 
 The background flag records how the host launched the plugin. Hide, show, reload, and client attachment do not change it.
 Finder openers deliver to an existing background destination without a focus command.
-Existing pane readers still receive focus, including suppressed readers. A missing reader opens as a floating pane.
-Explicit show and focus commands remain available to background plugins.
+Existing pane readers still receive focus, including suppressed readers. A missing reader opens as a
+floating pane only if it declares one; otherwise it receives the message headless.
+Explicit show and focus commands remain available to background plugins that declare a pane.
 
 ## Await a file or directory
 
@@ -353,8 +419,9 @@ The apply form selects the target tabs and which existing panes to retain.
 **Import layout…** accepts KDL and shows a preview before saving.
 
 Use **Plugins…** to inspect each plugin's location, tab, and configuration.
-You can focus, reload, or close a plugin from its actions or the corresponding root commands.
+You can reload or close a plugin from its actions or the corresponding root commands, and focus one that has a pane.
 **Load plugin…** accepts a URL, alias, or file and supports foreground or background placement.
+Foreground opens a pane only for plugins that declare one.
 Use **Edit configuration…** to add, change, or remove configuration entries before loading.
 
 SDK forms accept optional `actions`. Each action has `"id"`, `"label"`, and a `"run"` procedure taking `(values context)`.

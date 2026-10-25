@@ -1,4 +1,5 @@
 (require "./configuration/presets.scm" "./configuration/rebind.scm" "./configuration/render.scm" "./bar/keys.scm")
+(yinz-declare-pane)
 
 (define setup? #f)
 (define screen "rebind")

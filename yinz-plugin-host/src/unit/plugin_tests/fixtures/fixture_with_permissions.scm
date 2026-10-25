@@ -1,3 +1,4 @@
+(yinz-declare-pane)
 (define ready #f)
 (define (load config)
   (yinz-command (hash "Subscribe" (list "Key")))

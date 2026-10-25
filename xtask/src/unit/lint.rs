@@ -292,3 +292,102 @@ fn rust_sources_skips_vendored_dependencies() {
     rust_sources(root.path(), root.path(), &mut files).unwrap();
     assert_eq!(files, vec![PathBuf::from("src/vendor/adapter.rs")]);
 }
+
+#[test]
+fn add_plugin_constructions_are_counted_and_patterns_are_not() {
+    let source = r#"
+        fn send(senders: &Senders) {
+            // ScreenInstruction::AddPlugin(in a comment)
+            let text = "ScreenInstruction::AddPlugin(in a literal)";
+            senders.send(ScreenInstruction::AddPlugin(a, b, Some((c, d))));
+            match instruction {
+                ScreenInstruction::AddPlugin(.., id, _) => {},
+                ScreenInstruction::AddPlugin(..) | ScreenInstruction::Other => {},
+                ScreenInstruction::AddPlugin(x) if x => {},
+            }
+            if let ScreenInstruction::AddPlugin(..) = instruction {}
+            assert!(matches!(instruction, ScreenInstruction::AddPlugin(..)));
+            send(&senders, ScreenInstruction::AddPlugin(3));
+        }
+        #[cfg(test)]
+        #[allow(unused)]
+        mod tests {
+            fn built() { ScreenInstruction::AddPlugin(1); }
+        }
+        fn after() { let built = ScreenInstruction::AddPlugin(2); }
+    "#;
+    assert_eq!(add_plugin_constructions(source), 3);
+}
+
+#[test]
+fn add_plugin_constructions_through_any_path_are_counted() {
+    for (source, expected) in [
+        (
+            "use ScreenInstruction as I; fn f() { send(I::AddPlugin(1)); }",
+            1,
+        ),
+        (
+            "impl ScreenInstruction { fn park() -> Self { Self::AddPlugin(1) } }",
+            1,
+        ),
+        // The import, and the bare call it allows.
+        (
+            "use yinz_bus::screen::ScreenInstruction::AddPlugin; fn f() { send(AddPlugin(1)); }",
+            2,
+        ),
+        (
+            "use yinz_bus::screen::ScreenInstruction::AddPlugin as Park; fn f() { send(Park(1)); }",
+            1,
+        ),
+        (
+            "pub(crate) use yinz_bus::screen::ScreenInstruction::{self, AddPlugin};",
+            1,
+        ),
+        ("fn f() { send(ScreenInstruction :: AddPlugin (1)); }", 1),
+        (
+            "fn f() { send(yinz_bus::screen::ScreenInstruction::\n    AddPlugin(1)); }",
+            1,
+        ),
+        ("fn f() { items.map(ScreenInstruction::AddPlugin); }", 1),
+        // A glob import of the variants, which lets the bare name pass as a function.
+        (
+            "use yinz_bus::screen::ScreenInstruction::*; fn f() { items.map(AddPlugin); }",
+            1,
+        ),
+        (
+            "use yinz_bus::screen::{ScreenInstruction :: { self, * }, Other};",
+            1,
+        ),
+        ("use yinz_bus::screen::*; use MyScreenInstruction::*;", 0),
+        ("fn f() { match i { I::AddPlugin(..) => {}, _ => {} } }", 0),
+        ("fn f() -> bool { matches!(i, Self::AddPlugin(..)) }", 0),
+        ("fn f() -> bool { matches!(i, I :: AddPlugin(..)) }", 0),
+        ("pub enum ScreenInstruction { AddPlugin(u32), Other }", 0),
+        (
+            "pub enum ScreenContext { AddPlugin, Other } fn f() { ScreenContext::AddPlugin }",
+            0,
+        ),
+        ("fn f() { send(MyAddPlugin(1)); AddPluginLater(2); }", 0),
+        (
+            "// I::AddPlugin(1)\nfn f() { let s = \"Self::AddPlugin(1)\"; }",
+            0,
+        ),
+    ] {
+        assert_eq!(add_plugin_constructions(source), expected, "{source}");
+    }
+}
+
+#[test]
+fn add_plugin_owners_check_fails_on_a_source_it_cannot_read() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("aliased.rs");
+    std::fs::write(&file, [0xff, 0xfe, b'(']).unwrap();
+    let error = add_plugin_offenders(root.path()).unwrap_err();
+    assert!(format!("{error:#}").contains("aliased.rs"), "{error:#}");
+
+    std::fs::write(&file, "fn f() { send(I::AddPlugin(1)); }").unwrap();
+    assert_eq!(
+        add_plugin_offenders(root.path()).unwrap(),
+        ["aliased.rs: 1"]
+    );
+}

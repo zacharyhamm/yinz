@@ -325,3 +325,179 @@ fn repository_checks_allow_sibling_modules_only_inside_the_repository() {
     );
     assert!(report.diagnostics.is_empty(), "{report:?}");
 }
+
+#[test]
+fn checks_report_the_pane_declaration_and_headless_mistakes() {
+    let path = Path::new("example.scm");
+    let report = check(
+        path,
+        "(yinz-declare-pane)\n(define (render rows columns) \"\")\n(define (load configuration) (yinz-command \"HideSelf\"))",
+        PluginCheckMode::Semantic,
+        None,
+    );
+    assert!(report.diagnostics.is_empty(), "{report:?}");
+    assert_eq!(report.pane.as_deref(), Some("always"));
+    assert!(report.warnings.is_empty(), "{report:?}");
+
+    let report = check(
+        path,
+        "(yinz-declare-pane-unless \"duplicate_focused\" \"true\")\n(define (load configuration) (yinz-command \"SetSelectable\"))",
+        PluginCheckMode::Syntax,
+        None,
+    );
+    assert_eq!(
+        report.pane.as_deref(),
+        Some("unless duplicate_focused=true")
+    );
+    assert!(report.warnings.is_empty(), "{report:?}");
+
+    let report = check(
+        path,
+        "(define (render rows columns) \"\")\n(define (load configuration)\n  (yinz-command \"HideSelf\")\n  (yinz-command (hash \"SetSelectable\" #f))\n  (yinz-declare-pane))",
+        PluginCheckMode::Semantic,
+        None,
+    );
+    assert!(report.diagnostics.is_empty(), "{report:?}");
+    assert_eq!(report.pane.as_deref(), Some("none"));
+    for finding in [
+        "render is never called",
+        "line 3: 'HideSelf' needs the plugin's own pane",
+        "line 4: 'SetSelectable' needs the plugin's own pane",
+        "line 5: yinz-declare-pane must be a top-level form",
+    ] {
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains(finding)),
+            "missing {finding}: {report:?}"
+        );
+    }
+
+    let report = check(
+        path,
+        "(yinz-declare-pane)\n(yinz-declare-pane)",
+        PluginCheckMode::Syntax,
+        None,
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|error| error.contains("declared more than once")),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn pane_warnings_name_each_extra_declaration_and_spare_correct_plugins() {
+    let path = Path::new("example.scm");
+    let report = check(
+        path,
+        "(yinz-declare-pane)\n(define (load configuration)\n  (yinz-declare-pane))",
+        PluginCheckMode::Syntax,
+        None,
+    );
+    assert_eq!(report.pane.as_deref(), Some("always"));
+    assert_eq!(
+        report.warnings,
+        ["line 3: yinz-declare-pane must be a top-level form of the entry file; this call fails the load"],
+        "a declared plugin still fails on a second, nested call: {report:?}"
+    );
+
+    for (source, pane) in [
+        (
+            "(yinz-declare-pane-unless \"mode\" \"quiet\")\n(define (render rows columns) \"\")",
+            "unless mode=quiet",
+        ),
+        (
+            "(define (load configuration) (yinz-command \"GetPluginIds\"))",
+            "none",
+        ),
+        (
+            "(define (load configuration) (define (render r c) \"\") (yinz-command \"Notify\"))",
+            "none",
+        ),
+    ] {
+        let report = check(path, source, PluginCheckMode::Syntax, None);
+        assert!(report.diagnostics.is_empty(), "{source}: {report:?}");
+        assert_eq!(report.pane.as_deref(), Some(pane), "{source}");
+        assert!(report.warnings.is_empty(), "{source}: {report:?}");
+    }
+}
+
+/// Formatting needs only a parse. A malformed pane declaration does not stop it; the report
+/// carries the mistake as a warning beside the formatted source. Every other mode still fails.
+#[test]
+fn formatting_reports_a_malformed_declaration_and_still_formats() {
+    let path = Path::new("example.scm");
+    for (source, mistake) in [
+        (
+            "(yinz-declare-pane)\n(yinz-declare-pane)\n",
+            "line 2: the pane is declared more than once",
+        ),
+        ("(yinz-declare-pane #t)\n", "takes no arguments"),
+        (
+            "(yinz-declare-pane-unless \"k\" 'v)\n",
+            "takes two string literals",
+        ),
+    ] {
+        let report = check(path, &format!("  {source}"), PluginCheckMode::Format, None);
+        assert!(report.diagnostics.is_empty(), "{report:?}");
+        assert_eq!(
+            report.formatted_source.as_deref(),
+            Some(source),
+            "{report:?}"
+        );
+        assert!(report.pane.is_none(), "{report:?}");
+        assert!(
+            report.warnings[0].contains("reading the pane declaration of example.scm")
+                && report.warnings[0].contains(mistake),
+            "{report:?}"
+        );
+        for mode in [
+            PluginCheckMode::Syntax,
+            PluginCheckMode::Semantic,
+            PluginCheckMode::Prepare,
+        ] {
+            let report = check(path, source, mode, None);
+            assert!(
+                report
+                    .diagnostics
+                    .iter()
+                    .any(|error| error.contains(mistake)),
+                "{mode:?}: {report:?}"
+            );
+        }
+    }
+}
+
+/// `plugins check` warns about each command that needs the plugin's own pane whatever its
+/// arguments, with the words the host refuses it with.
+#[test]
+fn headless_warnings_cover_every_unconditional_own_pane_command() {
+    let calls: String = yinz_types::own_pane::UNCONDITIONAL_OWN_PANE_COMMANDS
+        .iter()
+        .map(|name| format!("  (yinz-command \"{name}\")\n"))
+        .collect();
+    let report = check(
+        Path::new("example.scm"),
+        &format!("(define (load configuration)\n{calls})"),
+        PluginCheckMode::Syntax,
+        None,
+    );
+    for (line, name) in yinz_types::own_pane::UNCONDITIONAL_OWN_PANE_COMMANDS
+        .iter()
+        .enumerate()
+    {
+        let expected = format!(
+            "line {}: {}",
+            line + 2,
+            yinz_types::own_pane::own_pane_refusal(name, "the plugin")
+        );
+        assert!(
+            report.warnings.contains(&expected),
+            "{expected}: {report:?}"
+        );
+    }
+}

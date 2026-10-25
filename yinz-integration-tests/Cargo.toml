@@ -33,13 +33,14 @@ log = { workspace = true }
 regex = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 vte = { workspace = true }
+# Shared wait deadline (`TIMEOUT_ENV_VAR`) for the harness's own waits.
+yinz-test-support = { path = "../yinz-test-support" }
 
 [dev-dependencies]
 yinz-bus = { path = "../yinz-bus" }
 url = { workspace = true }
 agent-proto = { path = "../default-plugins/agent-proto" }
 yinz-storage = { workspace = true }
-yinz-test-support = { path = "../yinz-test-support" }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 tempfile = { workspace = true }
 serde_json = { workspace = true }

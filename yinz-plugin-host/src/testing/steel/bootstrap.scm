@@ -66,6 +66,7 @@
       (%test "stub" (hash name reply))))
 (define (test-stub-error name message) (%test "stub-error" (hash "name" name "message" message)))
 (define (test-commands) (%test "commands" json-null))
+(define (test-pane-declared?) (%test "pane-declared" json-null))
 (define (test-logs) (%test "logs" json-null))
 (define (test-renders) (%test "renders" json-null))
 (define (test-event event) (%test "event" event))
