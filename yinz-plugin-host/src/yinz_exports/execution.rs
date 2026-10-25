@@ -82,7 +82,7 @@ pub(super) fn exec_cmd(env: &PluginEnv, mut command_line: Vec<String>) {
     // Bail out if we're forbidden to run command
     if !env.plugin_config._allow_exec_host_cmd {
         warn!("This plugin isn't allow to run command in host side, skip running this command: '{cmd} {args}'.",
-        	cmd = command, args = command_line.join(" "));
+            cmd = command, args = command_line.join(" "));
         return;
     }
 
