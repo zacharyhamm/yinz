@@ -331,7 +331,7 @@ impl LoadingContext {
             &self.yinz_data_dir,
         )
         .and_then(|(path, source)| {
-            let declaration = yinz_steel::manifest::pane_declaration(&source)
+            let declaration = yinz_steel::manifest::readable_pane_declaration(&source)
                 .context("reading the plugin's pane declaration")?;
             Ok((path, source, declaration))
         });
@@ -341,6 +341,11 @@ impl LoadingContext {
                 self.plugin_config.path.display()
             )
         })?;
+        self.prefetched_source = Some((path, source.into()));
+        // Evaluation reports unreadable source in its existing slot without changing ownership.
+        let Some(declaration) = declaration else {
+            return Ok(true);
+        };
         let declared =
             declaration.applies(self.plugin_config.initial_userspace_configuration.inner());
         let prepared = {
@@ -357,7 +362,6 @@ impl LoadingContext {
             // The ledger's `Unload` effect retires the load.
             return Ok(false);
         }
-        self.prefetched_source = Some((path, source.into()));
         self.prefetched_declaration = Some(declared);
         Ok(true)
     }

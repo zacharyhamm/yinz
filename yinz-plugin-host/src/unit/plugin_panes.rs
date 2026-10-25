@@ -330,6 +330,34 @@ fn plugin_panes_failures_before_the_declaration_create_no_pane() {
     assert!(ledger.fail(p4, 1, "bad").is_empty());
 }
 
+#[test]
+fn plugin_panes_repeated_early_failures_update_the_preserved_slot() {
+    let mut ledger = PaneLedger::default();
+    ledger.request(P1, 1, placed(1));
+    for (load_id, error) in [(1, "first syntax error"), (2, "second syntax error")] {
+        if load_id > 1 {
+            ledger.reload(P1, load_id);
+            assert!(ledger.fail(P1, load_id - 1, "stale error").is_empty());
+        }
+        let effects = ledger.fail(P1, load_id, error);
+        assert_eq!(
+            kinds(&effects),
+            ["StopAnimation(1)", "UpdatePluginLoadingStage(1)"]
+        );
+        assert!(effects.iter().any(|effect| matches!(effect,
+            PaneEffect::Screen(ScreenInstruction::UpdatePluginLoadingStage(id, indication))
+                if *id == P1 && indication.is_error() && indication.to_string().contains(error))));
+        assert_eq!(ledger.declare(P1, load_id, true), (Prepared::Abort, vec![]));
+    }
+
+    ledger.reload(P1, 3);
+    assert!(ledger.fail(P1, 2, "stale error").is_empty());
+    let (prepared, effects) = ledger.redeclare(P1, 3, true);
+    assert_eq!(prepared, Prepared::Proceed(Surface::Pane));
+    assert_eq!(kinds(&effects), ["Animate(1)"]);
+    assert_eq!(ledger.presence(P1), Some(true));
+}
+
 /// A git plugin's declaration waits for its repository. The screen hears at once that it is
 /// loading, so a second launch finds it, and the launch is answered with its id at once rather
 /// than after the clone. What it then turns out to be reaches the screen without a completion,

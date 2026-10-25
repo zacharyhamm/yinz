@@ -383,6 +383,7 @@ impl Screen {
                 .context("failed to restore the plugin's pane tab")?,
             _ => false,
         };
+        let client_id = client_id.and_then(|client_id| self.client_to_act_for(client_id));
         // The launch tab may be gone, and a replay no longer has headless state to fall back on.
         let tab_index = if client_id.is_none() && (was_headless || tab_index.is_none()) {
             tab_index

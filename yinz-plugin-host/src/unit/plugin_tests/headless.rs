@@ -425,6 +425,80 @@ fn a_pane_tab_of_an_undeclared_plugin_is_given_up_before_it_is_placed() {
 
 #[test]
 #[serial(plugin_tests)]
+fn malformed_layout_and_pane_tab_plugins_report_syntax_errors_and_recover() {
+    for path in [Path::NewTabLayout, Path::LoadPaneTab] {
+        for (reload_existing, declaration_first) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let session = Session::new();
+            let file = session.directory.path().join("syntax-error.scm");
+            let plugin = PluginId::new(0);
+            if reload_existing {
+                std::fs::write(&file, DECLARED).unwrap();
+                assert!(path.start(&session, &file).is_none());
+                wait_for_render_containing(&session.log, "declared pane");
+            }
+            for (attempt, escape) in ['d', 'w'].into_iter().enumerate() {
+                session.log.lock().clear();
+                let pattern = format!("(define pattern \"\\{escape}\")");
+                let error = format!("invalid escape '{escape}'");
+                let source = if declaration_first {
+                    format!("(yinz-declare-pane)\n{pattern}")
+                } else {
+                    format!("{pattern}\n(yinz-declare-pane)")
+                };
+                std::fs::write(&file, source).unwrap();
+                if reload_existing || attempt > 0 {
+                    session
+                        .sender
+                        .send(PluginInstruction::ReloadPluginWithId(plugin))
+                        .unwrap();
+                } else {
+                    assert!(path.start(&session, &file).is_none());
+                }
+                session.wait_for("the malformed slot reports the current syntax error", |i| {
+                    unloaded(i, plugin)
+                        || matches!(i, ScreenInstruction::UpdatePluginLoadingStage(id, indication)
+                            if *id == plugin && indication.is_error()
+                                && indication.to_string().contains(&error))
+                });
+                let log = session.log.lock().clone();
+                assert!(
+                    log.iter().any(|i| matches!(i,
+                        ScreenInstruction::UpdatePluginLoadingStage(id, indication)
+                            if *id == plugin && indication.is_error()
+                                && indication.to_string().contains(&error)
+                                && indication.to_string().contains("syntax-error.scm"))),
+                    "{path:?}, reload_existing={reload_existing}, declaration_first={declaration_first}, attempt={attempt}: {:?}",
+                    session.logged()
+                );
+                assert!(!log.iter().any(|i| {
+                    paneless(i, plugin)
+                        || unloaded(i, plugin)
+                        || toast(i, plugin, "declares no pane")
+                }));
+            }
+
+            session.log.lock().clear();
+            std::fs::write(&file, DECLARED).unwrap();
+            session
+                .sender
+                .send(PluginInstruction::ReloadPluginWithId(plugin))
+                .unwrap();
+            wait_for_render_containing(&session.log, "declared pane");
+            let log = session.log.lock().clone();
+            assert!(added(&log, plugin).is_empty(), "the original slot survives");
+            assert!(log.iter().any(|i| matches!(i,
+                ScreenInstruction::SetSelectable(PaneId::Plugin(id), false) if *id == plugin)));
+            assert!(!log
+                .iter()
+                .any(|i| paneless(i, plugin) || unloaded(i, plugin)));
+        }
+    }
+}
+
+#[test]
+#[serial(plugin_tests)]
 fn a_reload_moves_a_plugin_between_its_pane_and_headless() {
     let session = Session::new();
     let run = session.write("flip.scm", DECLARED);
