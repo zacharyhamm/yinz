@@ -39,10 +39,6 @@ pub struct PluginMap {
     pending_configuration_clients: HashMap<ClientId, usize>,
     plugin_assets: HashMap<(PluginId, ClientId), PluginAssets>,
     instance_ids: HashMap<(PluginId, ClientId), PluginInstanceId>,
-    /// Instances that were retired, replaced or removed. Their worker can still be finishing a
-    /// call, and what it reports from then on describes an instance that is gone: see
-    /// `instance_is_retired`. Ids are never reused, so an entry never names a live instance.
-    retired_instance_ids: HashSet<PluginInstanceId>,
     instance_cwds: HashMap<(PluginId, ClientId), PathBuf>,
     availability: HashMap<(PluginId, ClientId), Arc<AtomicBool>>,
     /// Each instance's [`ResizeSlot`], held here too so a resize can be asked of an instance
@@ -292,20 +288,18 @@ impl PluginMap {
                 unavailable.store(true, Ordering::Release);
             }
         }
-        let retired = &mut self.retired_instance_ids;
-        self.instance_ids.retain(|(id, _), instance| {
-            if *id == plugin {
-                retired.insert(*instance);
-            }
-            *id != plugin
-        });
+        self.instance_ids.retain(|(id, _), _| *id != plugin);
     }
     /// Whether `instance` is no longer one of the map's instances. A reload retires the old
     /// instance before its replacement is loaded, so a late report from the old one (a
     /// background subscription made by a handler still running) is recognised as stale even
     /// before the replacement is registered.
+    ///
+    /// Read from the live instances rather than from a record of retired ones, which would grow
+    /// with every reload and detach for the life of the server: an instance is registered before
+    /// `load` runs, so none can report before it is one of the map's, and ids are never reused.
     pub(crate) fn instance_is_retired(&self, instance: PluginInstanceId) -> bool {
-        self.retired_instance_ids.contains(&instance)
+        !self.instance_ids.values().any(|live| *live == instance)
     }
     pub fn remove_plugins(&mut self, pid: PluginId) -> HashMap<(PluginId, ClientId), PluginAssets> {
         self.retire_instances(pid);
@@ -337,9 +331,7 @@ impl PluginMap {
         plugin_id: PluginId,
         client_id: ClientId,
     ) -> Option<PluginAssets> {
-        if let Some(instance) = self.instance_ids.remove(&(plugin_id, client_id)) {
-            self.retired_instance_ids.insert(instance);
-        }
+        self.instance_ids.remove(&(plugin_id, client_id));
         self.instance_cwds.remove(&(plugin_id, client_id));
         if let Some(unavailable) = self.availability.remove(&(plugin_id, client_id)) {
             unavailable.store(true, Ordering::Release);
@@ -600,13 +592,8 @@ impl PluginMap {
                 .unwrap_or_else(PoisonError::into_inner);
             self.availability
                 .insert((plugin_id, client_id), plugin.env().unavailable.clone());
-            if let Some(previous) = self
-                .instance_ids
-                .insert((plugin_id, client_id), plugin.instance_id)
-                .filter(|previous| *previous != plugin.instance_id)
-            {
-                self.retired_instance_ids.insert(previous);
-            }
+            self.instance_ids
+                .insert((plugin_id, client_id), plugin.instance_id);
             self.resize_slots
                 .insert((plugin_id, client_id), plugin.resize.clone());
             self.instance_cwds

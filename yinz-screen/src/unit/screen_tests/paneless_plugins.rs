@@ -1103,6 +1103,47 @@ fn a_mounted_plugin_pane_that_goes_paneless_leaves_its_pane_tab_and_keeps_runnin
         .all(|slot| slot.pane_id() != Some(PaneId::Plugin(PLUGIN))));
 }
 
+/// The pane tabs container that showed a plugin keeps its id as a blank slot after the plugin
+/// goes headless. That pane is the container's: an instruction naming the id acts on it, and
+/// closing it by id must not be taken for unloading the headless plugin.
+#[test]
+fn a_blank_pane_tab_slot_keeps_its_id_for_the_container_after_the_plugin_goes_headless() {
+    let mut harness = Harness::new();
+    let (placed, _answer) = harness.add_plugin(PLUGIN);
+    assert!(placed && harness.has_pane(PLUGIN));
+    let descriptor = |label: &str| PaneTabDescriptor {
+        label: label.into(),
+        location: "file:/path/to/headless/plugin".into(),
+        initial_cwd: None,
+        configuration: BTreeMap::new(),
+    };
+    harness
+        .screen
+        .pane_tabs_command(
+            PaneTabsCommand::Mount {
+                pane_id: PaneId::Plugin(PLUGIN),
+                layout: PaneTabsLayout {
+                    active: 0,
+                    tabs: vec![descriptor("Plugin"), descriptor("Other")],
+                },
+                existing: 0,
+            },
+            CLIENT,
+        )
+        .unwrap()
+        .unwrap();
+
+    harness.paneless(PLUGIN);
+
+    assert!(harness.screen.paneless_plugins.contains_key(&PLUGIN));
+    assert!(harness.has_pane(PLUGIN), "the container keeps the id");
+    assert!(
+        !harness.screen.closes_by_unloading(PLUGIN),
+        "closing the container's pane is not unloading the plugin"
+    );
+    assert_eq!(harness.screen.headless_plugin_error(PLUGIN), None);
+}
+
 /// A reload that declares a pane again takes the plugin out of the background registry: with a
 /// pane in a tab it hears pane and tab events as any plugin pane does, and a registration left
 /// behind would keep it hearing every other tab's too.

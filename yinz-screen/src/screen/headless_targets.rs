@@ -16,10 +16,14 @@ impl Screen {
             || matches!(pane_id, PaneId::Plugin(plugin_id) if self.unloaded_plugins.contains(&plugin_id))
     }
 
-    /// The headless plugin whose pane `pane_id` names, if it names one.
+    /// The headless plugin whose pane `pane_id` names, if it names one. An id a tab still holds
+    /// as a pane (a pane tabs container's blank slot) names that pane, not the plugin.
     fn headless_plugin(&self, pane_id: PaneId) -> Option<PluginId> {
         match pane_id {
-            PaneId::Plugin(plugin_id) if self.paneless_plugins.contains_key(&plugin_id) => {
+            PaneId::Plugin(plugin_id)
+                if self.paneless_plugins.contains_key(&plugin_id)
+                    && !self.holds_pane_record(plugin_id) =>
+            {
                 Some(plugin_id)
             },
             _ => None,

@@ -1110,15 +1110,23 @@ impl Screen {
     /// Whether closing `plugin_id` means unloading it: it runs headless, or it is still
     /// resolving its repository and has no pane yet.
     pub(super) fn closes_by_unloading(&self, plugin_id: PluginId) -> bool {
-        self.paneless_plugins.contains_key(&plugin_id)
-            || self.resolving_plugins.contains_key(&plugin_id)
+        (self.paneless_plugins.contains_key(&plugin_id)
+            || self.resolving_plugins.contains_key(&plugin_id))
+            && !self.holds_pane_record(plugin_id)
     }
 
     /// Why a request for `plugin_id`'s pane cannot be met, when the plugin runs headless.
     pub(super) fn headless_plugin_error(&self, plugin_id: PluginId) -> Option<String> {
-        self.paneless_plugins
-            .contains_key(&plugin_id)
+        (self.paneless_plugins.contains_key(&plugin_id) && !self.holds_pane_record(plugin_id))
             .then(|| format!("plugin {plugin_id} runs headless: it declares no pane"))
+    }
+
+    /// Whether a tab still holds a pane under `plugin_id`'s id. A headless plugin normally has
+    /// none, but a pane tabs container that showed it keeps its id as a blank slot: that pane is
+    /// the container's, and an instruction naming the id is for it rather than for the plugin.
+    pub(super) fn holds_pane_record(&self, plugin_id: PluginId) -> bool {
+        self.tab_containing_pane(PaneId::Plugin(plugin_id))
+            .is_some()
     }
 }
 

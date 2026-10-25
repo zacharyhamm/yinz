@@ -2405,6 +2405,13 @@ pub fn screen_thread_main(
                 // replay. The plugin stays registered and the next frame after its pane appears simply
                 // draws the right number of dots.
                 ScreenInstruction::StartPluginLoadingAnimation(pid) => {
+                    // A plugin that runs headless or is gone never shows a load, and may never
+                    // hear the matching stop: a reload that drops its declaration from a layout
+                    // slot is unloaded without finishing, and this start, relayed through the
+                    // background jobs thread, can land after the unload.
+                    if screen.plugin_has_no_pane(pid) {
+                        break 'instruction;
+                    }
                     screen.animating_plugin_loads.insert(pid);
                     screen.sync_animation_clock(Instant::now())?;
                     screen.render()?;
