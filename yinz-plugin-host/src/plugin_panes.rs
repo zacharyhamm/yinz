@@ -735,10 +735,10 @@ impl PaneLedger {
             return vec![];
         }
         let PaneState::Pending {
+            origin,
             request,
             retry,
             resolving,
-            ..
         } = &mut entry.state
         else {
             return self.failure_effects(
@@ -755,12 +755,11 @@ impl PaneLedger {
             ScreenInstruction::PluginFailed(plugin_id),
         ));
         let mut effects: Vec<PaneEffect> = stopped.into_iter().collect();
-        effects.extend(Self::failed_request(
-            plugin_id,
-            request.take(),
-            retry,
-            error,
-        ));
+        effects.extend(match (request.take(), origin) {
+            // A placed slot survives the request's failure and still needs reload errors.
+            (None, Origin::Placed { run }) => painted_failure(plugin_id, loading_name(run), error),
+            (request, _) => Self::failed_request(plugin_id, request, retry, error),
+        });
         effects
     }
 

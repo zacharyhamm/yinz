@@ -502,7 +502,7 @@ fn an_add_plugin_after_paneless_restores_the_pane() {
 
 #[test]
 fn a_headless_reload_without_a_client_falls_back_to_a_surviving_tab() {
-    for attached in [true, false] {
+    for (attached, client) in [(true, None), (false, None), (false, Some(CLIENT))] {
         for origin in [Some(TabId::new(0)), None] {
             let mut harness = Harness::new();
             harness.paneless(PLUGIN);
@@ -514,7 +514,7 @@ fn a_headless_reload_without_a_client_falls_back_to_a_surviving_tab() {
             }
             let focused = harness.screen.get_active_pane_id(&CLIENT);
 
-            let (placed, rx) = harness.add_plugin_at(PLUGIN, origin, None);
+            let (placed, rx) = harness.add_plugin_at(PLUGIN, origin, client);
 
             assert!(placed && harness.has_pane(PLUGIN));
             let tab = harness.screen.tabs.get(&TabId::new(1)).unwrap();
@@ -531,30 +531,41 @@ fn a_headless_reload_without_a_client_falls_back_to_a_surviving_tab() {
 
 #[test]
 fn a_headless_reload_without_a_client_keeps_a_live_original_tab() {
-    let mut harness = Harness::new();
-    new_tab(&mut harness.screen, 2, LAYOUT_TAB);
-    harness.paneless(PLUGIN);
+    for (attached, client) in [(true, None), (false, None), (false, Some(CLIENT))] {
+        let mut harness = Harness::new();
+        new_tab(&mut harness.screen, 2, LAYOUT_TAB);
+        harness.paneless(PLUGIN);
+        if !attached {
+            harness.screen.remove_client(CLIENT).unwrap();
+        }
 
-    let (placed, rx) = harness.add_plugin_at(PLUGIN, Some(LAYOUT_TAB), None);
+        let (placed, rx) = harness.add_plugin_at(PLUGIN, Some(LAYOUT_TAB), client);
 
-    assert!(placed && harness.has_pane(PLUGIN));
-    assert!(harness
-        .screen
-        .tabs
-        .get(&LAYOUT_TAB)
-        .unwrap()
-        .has_plugin(PLUGIN));
-    assert!(!harness
-        .screen
-        .tabs
-        .get(&TabId::new(0))
-        .unwrap()
-        .has_plugin(PLUGIN));
-    assert_eq!(answer(rx).affected_pane_id, Some(PaneId::Plugin(PLUGIN)));
+        assert!(placed && harness.has_pane(PLUGIN));
+        assert!(harness
+            .screen
+            .tabs
+            .get(&LAYOUT_TAB)
+            .unwrap()
+            .has_plugin(PLUGIN));
+        assert!(!harness
+            .screen
+            .tabs
+            .get(&TabId::new(0))
+            .unwrap()
+            .has_plugin(PLUGIN));
+        assert_eq!(answer(rx).affected_pane_id, Some(PaneId::Plugin(PLUGIN)));
+    }
 }
 
 #[test]
 fn a_headless_reload_without_a_client_waits_when_no_tab_survives() {
+    for client in [None, Some(CLIENT)] {
+        assert_reload_waits_when_no_tab_survives(client);
+    }
+}
+
+fn assert_reload_waits_when_no_tab_survives(client: Option<ClientId>) {
     let mut harness = Harness::new();
     harness.paneless(PLUGIN);
     harness.screen.remove_client(CLIENT).unwrap();
@@ -572,7 +583,7 @@ fn a_headless_reload_without_a_client_waits_when_no_tab_survives() {
         .background_plugin_subscriptions
         .insert((PLUGIN, CLIENT), HashSet::from([EventType::PaneUpdate]));
 
-    let (placed, mut rx) = harness.add_plugin_at(PLUGIN, Some(TabId::new(0)), None);
+    let (placed, mut rx) = harness.add_plugin_at(PLUGIN, Some(TabId::new(0)), client);
 
     assert!(!placed && !harness.has_pane(PLUGIN));
     assert!(!harness.screen.paneless_plugins.contains_key(&PLUGIN));
@@ -648,6 +659,19 @@ fn a_headless_reload_without_a_client_waits_when_no_tab_survives() {
 
 #[test]
 fn a_deferred_reload_preserves_initialization_and_errors_until_reattachment() {
+    for (launch_client, attached_client) in [
+        (None, CLIENT),
+        (Some(CLIENT), CLIENT),
+        (Some(CLIENT), ClientId::new(2)),
+    ] {
+        assert_deferred_reload_preserves_initialization_and_errors(launch_client, attached_client);
+    }
+}
+
+fn assert_deferred_reload_preserves_initialization_and_errors(
+    launch_client: Option<ClientId>,
+    attached_client: ClientId,
+) {
     use crate::ui::loading_indication::LoadingIndication;
 
     let mut mock = MockScreen::new(SIZE);
@@ -686,7 +710,7 @@ fn a_deferred_reload_preserves_initialization_and_errors_until_reattachment() {
                     .with_height_fixed(15),
             ),
             Some(false),
-            None,
+            launch_client,
             Some(completion),
             Some(OverlayPlacement::dismissible(None)),
         ),
@@ -718,15 +742,34 @@ fn a_deferred_reload_preserves_initialization_and_errors_until_reattachment() {
         Err(tokio::sync::oneshot::error::TryRecvError::Empty)
     ));
 
+    mock.main_client_id = attached_client;
     mock.new_tab(TiledPaneLayout::default());
     mock.to_screen
-        .send(ScreenInstruction::AddClient(CLIENT, SIZE, None, None))
+        .send(ScreenInstruction::AddClient(
+            attached_client,
+            SIZE,
+            None,
+            None,
+        ))
         .unwrap();
-    wait_for_settled_render(
-        &renders,
-        SIZE,
+    renders.wait_until(
         "the deferred reload's error after reattachment",
-        |frame| frame.contains("RELOAD FAILED BEFORE ATTACH"),
+        yinz_test_support::default_timeout(),
+        |events| {
+            let mut grid = grid_for_render_snapshot(SIZE);
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    ServerInstruction::Render(Some(output)) => output.get(&attached_client),
+                    _ => None,
+                })
+                .any(|output| {
+                    take_snapshot_and_cursor_coordinates(output, &mut grid)
+                        .1
+                        .contains("RELOAD FAILED BEFORE ATTACH")
+                })
+                .then_some(())
+        },
     );
     let (info_tx, info_rx) = crossbeam::channel::bounded(1);
     mock.to_screen
