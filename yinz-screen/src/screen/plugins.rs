@@ -367,25 +367,53 @@ impl Screen {
             }
             return Ok(false);
         }
-        // A reload that declares a pane again turns a headless plugin back into a pane. While it
-        // was headless it heard pane and tab events through the background registry; with a
-        // pane it hears them as any plugin pane does, and the reloaded instance registers anew
-        // only if it still has no tab. A registration left behind would keep a plugin in a tab
-        // hearing every other tab's events too.
+        // Clear headless state before parking so the reload's initialization can wait for its pane.
         let was_headless = self.paneless_plugins.remove(&plugin_id).is_some();
         if was_headless {
+            // A pane in a tab must no longer hear every other tab through the background registry.
             self.background_plugin_subscriptions
                 .retain(|(subscriber, _), _| *subscriber != plugin_id);
         }
         self.failed_paneless_plugins.remove(&plugin_id);
         self.resolving_plugins.remove(&plugin_id);
         self.destroyed_panes.remove(&PaneId::Plugin(plugin_id));
-        if was_headless
-            && let Some(tab) = self.tab_containing_pane_mut(PaneId::Plugin(plugin_id))
-            && tab
+        let restored_pane_tab = match self.tab_containing_pane_mut(PaneId::Plugin(plugin_id)) {
+            Some(tab) if was_headless => tab
                 .restore_pane_tab_plugin(plugin_id)
-                .context("failed to restore the plugin's pane tab")?
-        {
+                .context("failed to restore the plugin's pane tab")?,
+            _ => false,
+        };
+        // The launch tab may be gone, and a replay no longer has headless state to fall back on.
+        let tab_index = if client_id.is_none() && (was_headless || tab_index.is_none()) {
+            tab_index
+                .filter(|tab| self.tabs.contains_key(tab))
+                .or_else(|| self.tabs.keys().next().copied())
+        } else {
+            tab_index
+        };
+        if !restored_pane_tab && self.active_tab_ids.is_empty() && tab_index.is_none() {
+            pending
+                .waiting_for_client
+                .push(ScreenInstruction::AddPlugin(
+                    should_float,
+                    should_be_in_place,
+                    replaced,
+                    run_plugin_or_alias,
+                    pane_title,
+                    tab_index,
+                    plugin_id,
+                    pane_id_to_replace,
+                    cwd,
+                    start_suppressed,
+                    floating_pane_coordinates,
+                    should_focus_plugin,
+                    client_id,
+                    completion_tx,
+                    stated_overlay_placement,
+                ));
+            return Ok(false);
+        }
+        if restored_pane_tab {
             // The surviving pane tab takes precedence over the reload's floating placement.
             let pane_id = PaneId::Plugin(plugin_id);
             if let Some(completion) = completion_tx.as_mut() {
@@ -436,28 +464,6 @@ impl Screen {
         if should_be_in_place {
             new_pane_placement =
                 NewPanePlacement::with_pane_id_to_replace(pane_id_to_replace, replaced.closes());
-        }
-        if self.active_tab_ids.is_empty() && tab_index.is_none() {
-            pending
-                .waiting_for_client
-                .push(ScreenInstruction::AddPlugin(
-                    maybe_should_float,
-                    should_be_in_place,
-                    replaced,
-                    run_plugin_or_alias,
-                    pane_title,
-                    tab_index,
-                    plugin_id,
-                    pane_id_to_replace,
-                    cwd,
-                    start_suppressed,
-                    floating_pane_coordinates,
-                    should_focus_plugin,
-                    client_id,
-                    completion_tx,
-                    stated_overlay_placement,
-                ));
-            return Ok(false);
         }
         let pane_title = pane_title.unwrap_or_else(|| {
             format!(
@@ -1020,12 +1026,6 @@ impl Screen {
         }
         self.resolving_plugins.remove(&plugin_id);
         self.failed_paneless_plugins.remove(&plugin_id);
-        // A reload that leaves the plugin headless: it runs again, and has no record to remove.
-        if let Some(recorded) = self.paneless_plugins.get_mut(&plugin_id) {
-            *recorded = run;
-            drop(completion);
-            return Ok(());
-        }
         let pane_id = PaneId::Plugin(plugin_id);
         for mut completion in take_parked_add_plugins(plugin_id, pending) {
             completion.set_affected_pane_id(pane_id);
@@ -1033,6 +1033,12 @@ impl Screen {
                 "{} runs headless: it declares no pane",
                 run.location_string()
             ));
+        }
+        // A reload that leaves the plugin headless: it runs again, and has no record to remove.
+        if let Some(recorded) = self.paneless_plugins.get_mut(&plugin_id) {
+            *recorded = run;
+            drop(completion);
+            return Ok(());
         }
         let parked = pending
             .waiting_for_pane
