@@ -1,4 +1,5 @@
 ;; Each render and key event uses the host's acting client, including shared instances.
+(yinz-declare-pane)
 (define plugin-id 0)
 (define presses (hash))
 (define total 0)

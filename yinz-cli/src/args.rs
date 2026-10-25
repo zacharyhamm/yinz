@@ -1208,6 +1208,9 @@ pub enum Sessions {
     },
     /// Load a plugin
     /// Returns: Created pane ID (format: plugin_<id>)
+    ///
+    /// A plugin that declares no pane runs headless: a "runs headless" line comes first and the
+    /// ID, which then addresses the plugin, is the last line.
     #[clap(visible_alias = "p")]
     Plugin {
         /// Plugin URL, can either start with file: or yinz:
@@ -1381,7 +1384,8 @@ tail -f /tmp/my-live-logfile | yinz pipe --name logs --plugin file:/path/to/my-p
         args: Option<PluginUserConfiguration>,
         /// The plugin url (eg. file:/tmp/my-plugin.scm) to direct this pipe to, if not specified,
         /// will be sent to running plugins. If specified and not running, the plugin will be
-        /// launched floating by default, without changing focus or revealing a hidden floating layer.
+        /// launched floating by default if it declares a pane, without changing focus or
+        /// revealing a hidden floating layer; otherwise it runs headless.
         #[clap(short, long, value_parser, display_order(3))]
         plugin: Option<String>,
         /// The plugin configuration (note: the same plugin with different configuration is
@@ -2165,6 +2169,9 @@ pub enum CliAction {
         configuration_json: Option<PluginUserConfiguration>,
     },
     /// Returns: Plugin pane ID (format: plugin_<id>) when creating or focusing plugin
+    ///
+    /// A plugin that declares no pane runs headless: a "runs headless" line comes first and the
+    /// ID, which then addresses the plugin, is the last line.
     LaunchOrFocusPlugin {
         #[clap(short, long, value_parser)]
         floating: bool,
@@ -2191,6 +2198,9 @@ pub enum CliAction {
         tab_id: Option<TabId>,
     },
     /// Returns: Plugin pane ID (format: plugin_<id>)
+    ///
+    /// A plugin that declares no pane runs headless: a "runs headless" line comes first and the
+    /// ID, which then addresses the plugin, is the last line.
     LaunchPlugin {
         #[clap(short, long, value_parser)]
         floating: bool,
@@ -2290,7 +2300,8 @@ tail -f /tmp/my-live-logfile | yinz action pipe --name logs --plugin file:/path/
         args: Option<PluginUserConfiguration>,
         /// The plugin url (eg. file:/tmp/my-plugin.scm) to direct this pipe to, if not specified,
         /// will be sent to running plugins. If specified and not running, the plugin will be
-        /// launched floating by default, without changing focus or revealing a hidden floating layer.
+        /// launched floating by default if it declares a pane, without changing focus or
+        /// revealing a hidden floating layer; otherwise it runs headless.
         #[clap(short, long, value_parser, display_order(3))]
         plugin: Option<String>,
         /// The plugin configuration (note: the same plugin with different configuration is
@@ -2309,7 +2320,8 @@ tail -f /tmp/my-live-logfile | yinz action pipe --name logs --plugin file:/path/
         /// If launching a new plugin, skip cache and force-compile the plugin
         #[clap(short('s'), long, display_order(6))]
         skip_plugin_cache: bool,
-        /// If launching a plugin, should it be floating or not, defaults to floating
+        /// If launching a plugin that declares a pane, should it be floating or not, defaults
+        /// to floating
         #[clap(short('f'), long, value_parser, display_order(7))]
         floating_plugin: Option<bool>,
         /// If launching a plugin, launch it in-place (on top of the current pane)

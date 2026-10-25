@@ -417,7 +417,7 @@ impl Tab {
     ///
     /// Every path that takes a pane out of the tab owes them this; the ones that swap a pane out
     /// rather than shrinking the layout are the ones that used to forget.
-    fn announce_pane_closed(&self, id: PaneId) {
+    pub(super) fn announce_pane_closed(&self, id: PaneId) {
         let _ = self.senders.send_to_plugin(PluginInstruction::Update(vec![(
             None,
             None,

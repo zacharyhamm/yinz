@@ -7,6 +7,7 @@
 (require "./agents/input.scm")
 (require "./agents/render.scm")
 (require "./agents/history-worker.scm")
+(yinz-declare-pane)
 (yinz-register-workers (hash "history" a-history-worker))
 (define (unload) (a-end-visit!))
 (define (load configuration)

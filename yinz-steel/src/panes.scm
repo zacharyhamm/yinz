@@ -256,3 +256,25 @@
     "push" (lambda (step) (when (and (equal? status "running") (not ending)) (set! steps (append steps (list (%pane-step step))))) json-null)
     "cancel" (lambda () (%async-with-client origin (lambda () (escalate "cancelled"))) json-null)))
   (launch) handle)
+;; A plugin gets a pane only when its entry file declares one with a literal top-level form.
+;; The host scans the source for these forms before evaluation and checks the result here.
+(define %yinz-pane 'undeclared) ; 'undeclared | #t | (key . value)
+(define %yinz-pane-sealed #f)
+(define (%yinz-pane-set! spec)
+  (when %yinz-pane-sealed
+    (error "yinz-declare-pane must be a top-level form of the plugin's entry file"))
+  (unless (eq? %yinz-pane 'undeclared) (error "a plugin declares its pane once"))
+  (set! %yinz-pane spec)
+  json-null)
+(define (yinz-declare-pane) (%yinz-pane-set! #t))
+(define (yinz-declare-pane-unless key value)
+  (unless (and (string? key) (string? value))
+    (error "yinz-declare-pane-unless takes two string literals"))
+  (%yinz-pane-set! (cons key value)))
+;; Host-invoked once, after module evaluation and before load. Seals further declarations.
+(define (yinz-pane-declared? configuration)
+  (set! %yinz-pane-sealed #t)
+  (cond [(eq? %yinz-pane 'undeclared) #f]
+        [(eq? %yinz-pane #t) #t]
+        [else (not (and (hash-contains? configuration (car %yinz-pane))
+                        (equal? (hash-ref configuration (car %yinz-pane)) (cdr %yinz-pane))))]))

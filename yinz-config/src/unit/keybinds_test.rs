@@ -603,3 +603,47 @@ fn example_agent_mode_moves_the_panel() {
         "{actions:?}"
     );
 }
+
+/// Duplicating an agent runs `new-agent` headless, and the instance closes itself once it has
+/// duplicated. A launch-or-focus would find the first press's instance still closing and take a
+/// second press for it, so every press starts its own instance - in the shipped config, the
+/// example people copy, and a config saved from either.
+#[test]
+fn every_duplicate_agent_press_starts_its_own_instance() {
+    let shipped = Config::from_default_assets().unwrap();
+    let example = Config::from_kdl(include_str!("../../../example/default.kdl"), None)
+        .expect("example/default.kdl parses");
+    let saved = Config::from_kdl(&shipped.to_string(false).unwrap(), None).unwrap();
+    for (name, config) in [("shipped", shipped), ("example", example), ("saved", saved)] {
+        let actions = config
+            .keybinds
+            .get_actions_for_key_in_mode(
+                &InputMode::Agent,
+                &KeyWithModifier::new(BareKey::Char('d')),
+            )
+            .unwrap_or_else(|| panic!("{name}: Agent mode binds d"));
+        assert!(
+            matches!(
+                &actions[..],
+                [
+                    Action::LaunchPlugin {
+                        plugin,
+                        should_float: true,
+                        should_open_in_place: false,
+                        ..
+                    },
+                    Action::SwitchToMode {
+                        input_mode: InputMode::Normal
+                    },
+                ] if matches!(plugin, yinz_types::input::layout::RunPluginOrAlias::Alias(alias)
+                    if alias.name == "duplicate-agent"
+                        && alias.configuration.as_ref().is_some_and(|configuration| {
+                            let configuration = configuration.inner();
+                            configuration.get("overlay").map(String::as_str) == Some("true")
+                                && configuration.get("modal").map(String::as_str) == Some("true")
+                        }))
+            ),
+            "{name}: {actions:?}"
+        );
+    }
+}

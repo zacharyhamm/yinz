@@ -77,6 +77,7 @@ fn steel_plugin_images_reach_the_terminal_through_the_shared_render_path() {
         &plugin,
         format!(
             r#"
+(yinz-declare-pane)
 (define png (yinz-json-parse {:?}))
 (define transmitted '())
 (define supported #f)
@@ -135,6 +136,7 @@ fn one_shot_steel_image_reaches_host_without_a_recovery_redraw() {
             &plugin,
             format!(
                 r#"
+(yinz-declare-pane)
 (define png (yinz-json-parse {:?}))
 (define transmitted #f)
 (define (render rows columns)

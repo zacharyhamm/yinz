@@ -386,6 +386,28 @@ fn push_plugin_flag(children: &mut KdlDocument, name: &str, set: bool) {
     }
 }
 
+/// The plugin's configuration as the children a launch action reads it back from: an alias's own
+/// configuration, which is all an alias holds until it is resolved, else the plugin's.
+fn push_plugin_configuration(children: &mut KdlDocument, run_plugin_or_alias: &RunPluginOrAlias) {
+    let configuration = match run_plugin_or_alias {
+        RunPluginOrAlias::RunPlugin(plugin) => Some(&plugin.configuration),
+        RunPluginOrAlias::Alias(alias) => alias.configuration.as_ref(),
+    };
+    for (config_key, config_value) in configuration.into_iter().flat_map(|c| c.inner().iter()) {
+        let mut node = KdlNode::new(config_key.clone());
+        if matches!(
+            config_key.as_str(),
+            "overlay" | "modal" | "awaits_placement"
+        ) && config_value == "true"
+        {
+            node.push(KdlValue::Bool(true));
+        } else {
+            node.push(config_value.clone());
+        }
+        children.nodes_mut().push(node);
+    }
+}
+
 /// The reason `round_trips` gives. Named so that a test can tell the backstop's refusal from an
 /// arm's: a value refused for this reason is a shape nobody has described yet.
 pub const NOT_READ_BACK: &str = "its written form does not load back as the same action";
@@ -863,25 +885,7 @@ fn spell(value: &Action) -> Result<KdlNode, NotWritable> {
                     .nodes_mut()
                     .push(child("cwd", cwd.display().to_string()));
             }
-            let configuration = match run_plugin_or_alias {
-                RunPluginOrAlias::RunPlugin(plugin) => Some(&plugin.configuration),
-                RunPluginOrAlias::Alias(alias) => alias.configuration.as_ref(),
-            };
-            if let Some(configuration) = configuration {
-                for (config_key, config_value) in configuration.inner().iter() {
-                    let mut node = KdlNode::new(config_key.clone());
-                    if matches!(
-                        config_key.as_str(),
-                        "overlay" | "modal" | "awaits_placement"
-                    ) && config_value == "true"
-                    {
-                        node.push(KdlValue::Bool(true));
-                    } else {
-                        node.push(config_value.clone());
-                    }
-                    children.nodes_mut().push(node);
-                }
-            }
+            push_plugin_configuration(&mut children, run_plugin_or_alias);
             Ok(with_children(node, children))
         },
         Action::LaunchPlugin { cwd: Some(_), .. } => Err(shape(
@@ -917,13 +921,7 @@ fn spell(value: &Action) -> Result<KdlNode, NotWritable> {
             push_plugin_flag(&mut children, "in_place", *should_open_in_place);
             push_plugin_flag(&mut children, "close_replaced_pane", *close_replaced_pane);
             push_plugin_flag(&mut children, "skip_plugin_cache", *skip_plugin_cache);
-            if let Some(configuration) = run_plugin_or_alias.get_configuration() {
-                for (config_key, config_value) in configuration.inner().iter() {
-                    children
-                        .nodes_mut()
-                        .push(child(config_key, config_value.clone()));
-                }
-            }
+            push_plugin_configuration(&mut children, run_plugin_or_alias);
             Ok(with_children(node, children))
         },
         Action::Copy => Ok(KdlNode::new("Copy")),

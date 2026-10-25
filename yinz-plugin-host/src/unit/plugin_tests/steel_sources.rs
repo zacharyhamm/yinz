@@ -12,6 +12,7 @@ fn steel_change_host_folder_moves_the_host_root() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define state "starting")
 (define (load config)
   (yinz-command (hash "Subscribe" (list "CustomMessage" "HostFolderChanged" "FailedToChangeHostFolder")))
@@ -58,6 +59,7 @@ fn steel_change_host_folder_moves_the_host_root() {
 #[serial(plugin_tests)]
 fn steel_filesystem_watch_events_reach_the_plugin_and_its_reloaded_replacement() {
     let source = r#"
+(yinz-declare-pane)
 (define label "first")
 (define seen '())
 (define (load config)
@@ -102,6 +104,7 @@ fn steel_filesystem_watch_events_reach_the_plugin_and_its_reloaded_replacement()
 #[serial(plugin_tests)]
 fn steel_scan_host_folder_answers_the_requesting_generation() {
     let source = r#"
+(yinz-declare-pane)
 (define label "first")
 (define listing "unscanned")
 (define (load config)
@@ -138,6 +141,7 @@ fn steel_plugin_receives_its_configuration_unnormalized() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define state "loading")
 (define (load config)
   (set! state (string-join (map (lambda (key) (string-append key "=" (hash-ref config key)))
@@ -189,12 +193,14 @@ fn steel_git_plugin_first_load_failure_recovers_by_id_with_original_configuratio
             ..Default::default()
         }),
     );
+    // The repository fails before the entry's pane declaration is read, so no pane is made:
+    // the launching client is notified instead.
     harness.log.wait_until("repository preparation failed", default_timeout(), |log| {
-        log.iter().any(|i| matches!(i, ScreenInstruction::UpdatePluginLoadingStage(id, stage) if *id == PLUGIN && stage.is_error())).then_some(())
+        log.iter().any(|i| matches!(i, ScreenInstruction::PluginNotify { plugin_id, text, .. } if *plugin_id == PLUGIN && text.contains("failed to load"))).then_some(())
     });
     std::fs::write(
         path,
-        r#"(define greeting "") (define (load config) (set! greeting (hash-ref config "greeting"))) (define (render rows cols) (string-append greeting " " (number->string rows) " " (number->string cols)))"#,
+        r#"(yinz-declare-pane) (define greeting "") (define (load config) (set! greeting (hash-ref config "greeting"))) (define (render rows cols) (string-append greeting " " (number->string rows) " " (number->string cols)))"#,
     )
     .unwrap();
     harness
@@ -210,6 +216,8 @@ fn steel_git_plugin_first_load_failure_recovers_by_id_with_original_configuratio
             _ => None,
         })
         .collect::<Vec<_>>();
+    // Nothing was placed for the failed launch, so the recovered plugin's pane opens where it
+    // was asked for, once.
     assert_eq!(
         panes,
         [(PLUGIN, Some(TabId::new(1)))],
@@ -225,6 +233,7 @@ fn steel_git_plugin_aliases_refresh_on_config_reload_for_new_launches() {
     std::fs::write(
         harness.directory.path().join("src/main.scm"),
         r#"(require "../shared.scm")
+           (yinz-declare-pane)
            (define own-location (yinz-plugin-location))
            (define sibling-location (yinz-plugin-resolve "../shared.scm"))
            (define (render rows cols) (string-append value "\n" own-location "\n" sibling-location))"#,
@@ -330,6 +339,7 @@ fn steel_git_plugins_pin_imports_workers_and_attached_clients_until_reload() {
             r#"
 (require "../shared.scm")
 (require "../late.scm")
+(yinz-declare-pane)
 (define parent "idle")
 (define worker "idle")
 (define saved "pending")
@@ -580,7 +590,7 @@ fn steel_native_compilation_failure_allows_healthy_entrypoints_and_imports_after
             "(".repeat(10_000),
             ")".repeat(10_000)
         );
-        let entry = "(require \"./dep.scm\")";
+        let entry = "(require \"./dep.scm\") (yinz-declare-pane)";
         let harness = Harness::new(
             "scm",
             if imported { entry } else { &recursive },
@@ -591,10 +601,26 @@ fn steel_native_compilation_failure_allows_healthy_entrypoints_and_imports_after
             std::fs::write(&dep, &recursive).unwrap();
         }
         harness.load();
-        harness.log.wait_until("confined compilation failure is reported", Duration::from_secs(40), |log| {
-            log.iter().any(|instruction| matches!(instruction,
-                ScreenInstruction::UpdatePluginLoadingStage(id, stage) if *id == PLUGIN && stage.is_error())).then_some(())
-        });
+        // An entry too deep to scan fails before its pane declaration is known, so no pane is
+        // made: the failure is a notification. An import is compiled after the scan, into the
+        // pane the entry declares.
+        harness.log.wait_until(
+            "confined compilation failure is reported",
+            Duration::from_secs(40),
+            |log| {
+                log.iter()
+                    .any(|instruction| match instruction {
+                        ScreenInstruction::UpdatePluginLoadingStage(id, stage) => {
+                            imported && *id == PLUGIN && stage.is_error()
+                        },
+                        ScreenInstruction::PluginNotify {
+                            plugin_id, text, ..
+                        } => !imported && *plugin_id == PLUGIN && text.contains("failed to load"),
+                        _ => false,
+                    })
+                    .then_some(())
+            },
+        );
         std::fs::write(
             &dep,
             "(provide healthy) (define healthy \"healthy after compilation failure\")",
@@ -602,7 +628,7 @@ fn steel_native_compilation_failure_allows_healthy_entrypoints_and_imports_after
         .unwrap();
         std::fs::write(
             &harness.path,
-            "(require \"./dep.scm\") (define (render rows cols) healthy)",
+            "(require \"./dep.scm\") (yinz-declare-pane) (define (render rows cols) healthy)",
         )
         .unwrap();
         harness.reload();
@@ -617,6 +643,7 @@ fn steel_exhaustion_disposes_the_guest_and_reload_recovers_in_a_live_session() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define (load config) (yinz-command (hash "Subscribe" (list "CustomMessage" "BeforeClose"))))
 (define (update event)
   (when (and (hash? event) (hash-contains? event "CustomMessage"))
@@ -637,14 +664,14 @@ fn steel_exhaustion_disposes_the_guest_and_reload_recovers_in_a_live_session() {
     let survivor = harness.directory.path().join("survivor.scm");
     std::fs::write(
         &survivor,
-        "(define (render rows cols) \"other plugin survived quota\")",
+        "(yinz-declare-pane) (define (render rows cols) \"other plugin survived quota\")",
     )
     .unwrap();
     load(&harness.sender, run_plugin(&survivor));
     harness.rendered("other plugin survived quota");
     std::fs::write(
         &harness.path,
-        "(define (render rows cols) \"quota replacement healthy\")",
+        "(yinz-declare-pane) (define (render rows cols) \"quota replacement healthy\")",
     )
     .unwrap();
     harness.reload();

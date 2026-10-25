@@ -4,6 +4,7 @@ use super::permissions::has_permission;
 use super::write_response;
 use crate::plugin_bridge::handle_plugin_crash;
 use crate::plugin_map::PluginEnv;
+use crate::plugin_panes::Surface;
 use crate::{PaneId, PluginInstruction};
 use prost::Message;
 use std::collections::{BTreeMap, HashSet};
@@ -85,7 +86,8 @@ pub(super) fn subscribe(env: &PluginEnv, event_list: HashSet<EventType>) -> Resu
     let background_subscriptions = {
         let mut subscriptions = env.subscriptions.lock().to_anyhow()?;
         subscriptions.extend(event_list.clone());
-        env.tab_index.is_none().then(|| subscriptions.clone())
+        env.routes_events_by_registry()
+            .then(|| subscriptions.clone())
     };
     env.senders
         .send_to_plugin(PluginInstruction::PluginSubscribedToEvents(
@@ -95,6 +97,7 @@ pub(super) fn subscribe(env: &PluginEnv, event_list: HashSet<EventType>) -> Resu
             // The plugin thread must not lock this guest to inspect its metadata:
             // the guest may already be waiting for a synchronous reply from it.
             background_subscriptions,
+            env.instance_id,
         ))
 }
 
@@ -141,7 +144,8 @@ pub(super) fn unsubscribe(env: &PluginEnv, event_list: HashSet<EventType>) -> Re
     let background_subscriptions = {
         let mut subscriptions = env.subscriptions.lock().to_anyhow()?;
         subscriptions.retain(|k| !event_list.contains(k));
-        env.tab_index.is_none().then(|| subscriptions.clone())
+        env.routes_events_by_registry()
+            .then(|| subscriptions.clone())
     };
     if background_subscriptions.is_some() {
         env.senders
@@ -150,6 +154,7 @@ pub(super) fn unsubscribe(env: &PluginEnv, event_list: HashSet<EventType>) -> Re
                 env.client_id,
                 HashSet::new(),
                 background_subscriptions,
+                env.instance_id,
             ))?;
     }
     Ok(())
@@ -579,14 +584,18 @@ pub(super) fn start_or_reload_plugin(env: &PluginEnv, url: &str) -> Result<()> {
 
 pub(super) fn get_plugin_info(env: &mut PluginEnv, id: Option<PluginId>) -> Result<()> {
     let plugin_id = id.unwrap_or(env.plugin_id);
-    let background = if plugin_id == env.plugin_id {
-        Some(env.background)
+    let info = if plugin_id == env.plugin_id {
+        Some((env.background, Some(env.surface == Surface::Pane)))
     } else {
-        env.plugin_roles.lock().unwrap().get(&plugin_id).copied()
+        let panes = env.panes.lock().unwrap();
+        panes
+            .contains(plugin_id)
+            .then(|| (panes.background(plugin_id), panes.presence(plugin_id)))
     };
-    let info = background.map(|background| yinz_types::data::PluginInstanceInfo {
+    let info = info.map(|(background, pane)| yinz_types::data::PluginInstanceInfo {
         plugin_id,
         background,
+        pane,
     });
     let response = yinz_plugin_api::plugin_command::ProtobufGetPluginInfoResponse {
         json: serde_json::to_string(&info).context("encode plugin info")?,

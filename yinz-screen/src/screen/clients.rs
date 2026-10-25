@@ -161,6 +161,8 @@ impl Screen {
         self.last_notification_fill.remove(&client_id);
         self.client_kitty_host_state.borrow_mut().remove(&client_id);
         self.connected_clients.borrow_mut().insert(client_id);
+        self.show_toasts_held_for_the_first_client()
+            .with_context(|| err_context(tab_index))?;
         self.tab_history.insert(client_id, tab_history);
         let tab = self
             .tabs

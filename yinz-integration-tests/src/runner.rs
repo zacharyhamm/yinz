@@ -359,6 +359,42 @@ fn join_server_thread_with_timeout(join_handle: JoinHandle<()>) {
 
 const CLIENT_JOIN_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Join a CLI client within the harness deadline.
+///
+/// A CLI action whose completion never comes back would otherwise block the test in `join` until
+/// nextest kills it, which reports a bare TIMEOUT that names neither the action nor the state the
+/// session was in. This panics instead, with the client's message trail and the log tail.
+fn join_cli_client(
+    join_handle: JoinHandle<i32>,
+    what: &str,
+    client_screen: Option<&ClientScreen>,
+) -> i32 {
+    let (done_tx, done_rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("cli_client_join_watchdog".to_string())
+        .spawn(move || {
+            let _ = done_tx.send(join_handle.join());
+        })
+        .unwrap();
+    let timeout = crate::default_timeout();
+    match done_rx.recv_timeout(timeout) {
+        Ok(Ok(exit_code)) => exit_code,
+        Ok(Err(panic)) => std::panic::resume_unwind(panic),
+        Err(mpsc::RecvTimeoutError::Timeout) => panic!(
+            "timed out after {timeout:?} waiting for the cli client running {what} to exit\n{}{}\n=== yinz log tail ({}) ===\n{}",
+            client_screen
+                .map(ClientScreen::server_message_tail)
+                .unwrap_or_default(),
+            crate::test_env::panics_so_far(),
+            crate::test_env::log_file_path().display(),
+            crate::test_env::log_tail(40),
+        ),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("cli client join watchdog disconnected")
+        },
+    }
+}
+
 pub struct TestSession {
     session_name: String,
     size: Size,
@@ -438,7 +474,7 @@ impl EventsClientHandle {
 
 impl CliClientHandle {
     pub fn wait_for_exit(self) -> i32 {
-        self.thread.join().expect("cli client thread panicked")
+        join_cli_client(self.thread, "an asynchronous action", None)
     }
 
     /// Whether the client has already returned. A test that asserts a client is *still*
@@ -641,8 +677,9 @@ impl TestSession {
         cli_action: CliAction,
         stdin: Option<&str>,
     ) -> (i32, String) {
+        let what = format!("{cli_action:?}");
         let (handle, client_screen) = self.spawn_cli_client_with_stdin(cli_action, stdin);
-        let exit_code = handle.join().expect("cli client thread panicked");
+        let exit_code = join_cli_client(handle, &what, Some(&client_screen));
         let reported = client_screen
             .server_messages()
             .lock()
@@ -662,8 +699,9 @@ impl TestSession {
     /// inputs, for the one CLI action a test cannot drive through `CliAction`: `agent-report
     /// --hook-json` reads the event off stdin, which an in-process client has no way to fake.
     pub fn run_actions_reporting(&self, actions: Vec<Action>) -> (i32, String) {
+        let what = format!("{actions:?}");
         let (handle, client_screen) = self.spawn_cli_client_with_actions(actions, None);
-        let exit_code = handle.join().expect("cli client thread panicked");
+        let exit_code = join_cli_client(handle, &what, Some(&client_screen));
         let reported = client_screen
             .server_messages()
             .lock()

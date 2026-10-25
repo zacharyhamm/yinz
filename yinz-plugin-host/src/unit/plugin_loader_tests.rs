@@ -2,6 +2,7 @@ use super::*;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 
 const SOURCE: &str = r#"
+(yinz-declare-pane)
 (define state "ready")
 (define (load config) (yinz-command (hash "Subscribe" '("ConfigWasWrittenToDisk"))))
 (define (update event) (set! state "updated") #t)
@@ -252,6 +253,7 @@ fn stale_reload_cannot_dispose_a_newer_runtime() {
         1,
         1,
         r#"
+(yinz-declare-pane)
 (define state "ready")
 (define (load config) (yinz-command (hash "Subscribe" '("BeforeClose"))))
 (define (update event) (set! state "closed") #t)
@@ -664,7 +666,7 @@ fn peer_cloning_skips_clients_disconnected_after_its_snapshot() {
     assert_eq!(instances, [(id, owner), (id, remaining)]);
     let mut subscribed = Vec::new();
     for (instruction, _) in test.receiver::<PluginInstruction>().try_iter() {
-        if let PluginInstruction::PluginSubscribedToEvents(plugin, client, events, _) = instruction
+        if let PluginInstruction::PluginSubscribedToEvents(plugin, client, events, ..) = instruction
             && plugin == id
             && events.contains(&EventType::InitialKeybinds)
         {
@@ -714,6 +716,7 @@ fn reload_of_busy_plugin_keeps_the_changed_host_folder() {
     std::fs::write(original.path().join("marker"), "original").unwrap();
     std::fs::write(moved.path().join("marker"), "moved").unwrap();
     let source = r#"
+(yinz-declare-pane)
 (define state "ready")
 (define (load config) (yinz-command (hash "Subscribe" '("ConfigWasWrittenToDisk"))))
 (define (update event)
@@ -1063,4 +1066,75 @@ fn disposed_instances_keep_retry_metadata_without_retaining_configuration() {
     for id in [1, 2] {
         test.bridge.unload_plugin(PluginId::new(id)).unwrap();
     }
+}
+
+/// A client attaching to a running plugin gets an instance that reads the entry file again.
+/// When the file's declaration changed since the plugin was loaded, the plugin's surface no
+/// longer matches it, and the instance is refused with that cause rather than with the error for
+/// a declaration that is not written literally.
+#[test]
+fn an_attaching_instance_names_an_entry_declaration_changed_since_the_load() {
+    let mut test = TestBridge::new();
+    let id = PluginId::new(1);
+    let loaded = test.context(1, 1, SOURCE);
+    test.load(loaded).unwrap();
+    let path = test._dirs[0].path().join("1.scm");
+    let attach = |test: &TestBridge, client: u32| {
+        let config = PluginConfig::from_run_plugin(&RunPlugin {
+            location: RunPluginLocation::File(path.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        let mut context = LoadingContext::new(
+            &test.bridge,
+            None,
+            config,
+            id,
+            ClientId::new(client),
+            None,
+            Size { rows: 5, cols: 20 },
+        )
+        .unwrap();
+        context.plugin_own_cache_dir = test._dirs[0].path().join("cache-1");
+        context
+    };
+
+    // The author deletes the declaration and does not reload.
+    std::fs::write(&path, SOURCE.replace("(yinz-declare-pane)", "")).unwrap();
+    let error = test.load(attach(&test, 2)).unwrap_err();
+    assert!(
+        format!("{error:#}").contains(
+            "the entry file's pane declaration changed since the plugin was loaded (loaded with \
+             a pane, the file now declares no pane); reload the plugin to apply it"
+        ),
+        "{error:#}"
+    );
+
+    // A syntax error before the declaration: what the file declares is unknown, and the
+    // instance names the syntax error rather than a changed declaration.
+    std::fs::write(
+        &path,
+        SOURCE.replace(
+            "(yinz-declare-pane)",
+            "(define pattern \"\\d\")\n(yinz-declare-pane)",
+        ),
+    )
+    .unwrap();
+    let error = format!("{:#}", test.load(attach(&test, 2)).unwrap_err());
+    assert!(
+        !error.contains("pane declaration changed") && error.contains("invalid escape"),
+        "{error}"
+    );
+
+    // Other edits leave the declaration alone: the instance runs the file as it is now.
+    std::fs::write(&path, SOURCE.replace("\"ready\"", "\"edited\"")).unwrap();
+    test.load(attach(&test, 3)).unwrap();
+    test.settle(id);
+    initial_ticks(&test);
+    test.settle(id);
+    let rendered = frames_by_client(&mut test, id);
+    assert!(
+        rendered.contains(&(ClientId::new(3), "size edited".into())),
+        "{rendered:?}"
+    );
 }

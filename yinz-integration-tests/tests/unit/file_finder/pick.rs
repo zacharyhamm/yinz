@@ -128,6 +128,12 @@ load_plugins clear-defaults=true {{ "picker"; }}
         grid.contains("Find file")
     });
     let first = yinz.expect_pty_spawn();
+    // The finder's driver is unloaded once a pick is answered, so it is checked while it drives
+    // the first pick: neither it nor the picking plugin has a pane, not even a parked one.
+    assert_no_plugin_panes(&yinz, "while the first pick is open");
+    let driver = running_plugin(&yinz, "file-finder");
+    assert_eq!(driver.pane, Some(false), "{driver:#?}");
+    assert_eq!(running_plugin(&yinz, "picker.scm").pane, Some(false));
     let script = spawned_command(&first).1.remove(1);
     assert!(script.contains("--border"));
     assert!(!script.contains("exit 77"));
@@ -166,6 +172,10 @@ load_plugins clear-defaults=true {{ "picker"; }}
     assert!(
         !String::from_utf8_lossy(&yinz.raw_bytes()).contains("PICKER BACKGROUND MUST NEVER SHOW")
     );
+    // The picks were made by a plugin with no pane at all; it is still running, headless.
+    assert_no_plugin_panes(&yinz, "after the picks");
+    let picker = running_plugin(&yinz, "picker.scm");
+    assert_eq!(picker.pane, Some(false), "{picker:#?}");
     yinz.quit();
 }
 
@@ -174,6 +184,7 @@ fn focused_plugin_can_pick_then_query_plugin_ids_in_the_same_callback() {
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("focused-picker.scm");
     std::fs::write(&source, r#"
+(yinz-declare-pane)
 (define state "starting")
 (define (load config)
   (yinz-then (yinz-wait-for-permissions '("ReadApplicationState" "MessageAndLaunchOtherPlugins" "ChangeApplicationState"))
@@ -227,4 +238,50 @@ fn focused_plugin_can_pick_then_query_plugin_ids_in_the_same_callback() {
         grid.contains("PICK AND QUERY COMPLETE")
     });
     yinz.quit();
+}
+
+/// Every pane in the session, parked ones included, has to be a terminal.
+fn assert_no_plugin_panes(yinz: &TestSession, when: &str) {
+    let (code, json) = yinz.run_cli_action_reporting(yinz_cli::args::CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: true,
+        geometry: false,
+        all: true,
+        json: true,
+    });
+    assert_eq!(code, 0, "{json}");
+    let panes: Vec<yinz_types::data::PaneListEntry> = serde_json::from_str(&json).unwrap();
+    assert!(
+        panes.iter().all(|pane| !pane.pane_info.is_plugin()),
+        "{when}: a picking plugin or its driver has a pane: {panes:#?}"
+    );
+}
+
+/// The running instance whose location ends with `location`.
+fn running_plugin(yinz: &TestSession, location: &str) -> yinz_types::cli::PluginStatus {
+    let plugins = yinz_client::store_client::plugin_request(
+        &yinz.session_name().into(),
+        yinz_types::cli::PluginRequest {
+            operation: yinz_types::cli::PluginOperation::List,
+            target: None,
+            configuration: None,
+            fallback: None,
+            candidates: vec![],
+            caller: None,
+        },
+    )
+    .unwrap()
+    .plugins;
+    let status = plugins
+        .iter()
+        .find(|status| status.location.ends_with(location))
+        .unwrap_or_else(|| panic!("{location} is not running: {plugins:#?}"))
+        .clone();
+    assert_eq!(
+        status.state,
+        yinz_types::cli::PluginState::Running,
+        "{status:#?}"
+    );
+    status
 }

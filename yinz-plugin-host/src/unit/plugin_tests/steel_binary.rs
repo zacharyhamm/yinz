@@ -36,6 +36,7 @@ fn steel_large_png_survives_repeated_navigation_and_open_in_the_same_instance() 
     let harness = Harness::new(
         "scm",
         r#"
+        (yinz-declare-pane)
         (define image #f)
         (define instance (yinz-instance-id))
         (define page 0)
@@ -157,6 +158,7 @@ fn steel_file_ranges_read_large_files_without_weakening_whole_file_limits() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define state "starting")
 (define cap 8388608)
 (define (check condition) (unless condition (error "file range assertion")))
@@ -210,6 +212,7 @@ fn steel_streaming_output_arrives_as_bytevectors_and_a_64_kib_chunk_round_trips_
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define (fnv bytes)
   (foldl (lambda (byte hash) (modulo (* (bitwise-xor hash byte) 16777619) 4294967296)) 2166136261 (bytes->list bytes)))
 
@@ -294,6 +297,7 @@ fn steel_byte_replies_are_bytevectors_without_losing_byte_values() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define (fnv bytes)
   (foldl (lambda (byte hash) (modulo (* (bitwise-xor hash byte) 16777619) 4294967296)) 2166136261 (bytes->list bytes)))
 
@@ -333,6 +337,7 @@ fn steel_file_read_and_write_preserve_the_full_eight_mib_limit() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define state "starting")
 (define cap 8388608)
 (define (check condition) (unless condition (error "full file assertion")))
@@ -425,6 +430,7 @@ fn binary_job_harness(
 fn steel_command_helper_receives_eight_mib_in_each_output_stream() {
     let (harness, jobs, logger) = binary_job_harness(
         r#"
+(yinz-declare-pane)
 (define state "starting")
 (define (check condition) (unless condition (error "large command assertion")))
 (define (load config)
@@ -496,6 +502,7 @@ fn steel_command_helper_receives_eight_mib_in_each_output_stream() {
 fn steel_web_helper_receives_the_full_sixty_four_mib_buffered_body() {
     let (harness, jobs, logger) = binary_job_harness(
         r#"
+(yinz-declare-pane)
 (define state "starting")
 (define (check condition) (unless condition (error "full web body assertion")))
 (define (load config)
@@ -575,6 +582,7 @@ fn steel_data_blobs_preserve_eight_mib_through_apply_fetch_and_watch() {
     let source = [
         include_str!("fixtures/data_helpers.scm"),
         r#"
+(yinz-declare-pane)
 (define state "starting")
 (define expected (make-bytes 8388608 255))
 (bytes-set! expected 0 0)

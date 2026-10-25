@@ -76,11 +76,10 @@ agent_pane_min_rows 0
 keybinds {
   normal {
     bind "Ctrl d" {
-      LaunchOrFocusPlugin "duplicate-agent" {
+      LaunchPlugin "duplicate-agent" {
         floating true
         overlay true
         modal true
-        move_to_focused_tab true
       }
     }
   }
@@ -105,6 +104,10 @@ load_plugins clear-defaults=true { "agent-service"; }
     yinz.wait_until("the source pane is ready", |snapshot| {
         snapshot.contains("SOURCE READY")
     });
+    // The duplicate plugin unloads once it has duplicated, so a pane it had would be gone by the
+    // time the session is listed: every pane report it could have appeared in is kept instead.
+    let pane_reports = yinz.stream_events(&["pane_update"]);
+    pane_reports.wait_for_event("PaneUpdate");
     for attempt in 1..=if is_agent { 2 } else { 1 } {
         yinz.send_stdin(&keys::ctrl('d'));
         if is_agent {
@@ -151,7 +154,99 @@ load_plugins clear-defaults=true { "agent-service"; }
             !String::from_utf8_lossy(&yinz.raw_bytes()).contains("Create agent"),
             "the form must never flash during duplication"
         );
+        // Duplication runs headless: it adds the duplicate (or nothing, for a shell) and never a
+        // plugin pane, not even a hidden one.
+        let panes = list_panes(&yinz);
+        let plugin_panes: Vec<_> = panes
+            .iter()
+            .filter(|pane| pane.pane_info.is_plugin())
+            .collect();
+        assert!(
+            plugin_panes.is_empty(),
+            "duplication left a plugin pane: {plugin_panes:#?}"
+        );
+        let expected_terminals = if is_agent { 1 + attempt } else { 1 };
+        assert_eq!(panes.len(), expected_terminals, "{panes:#?}");
     }
+    // Renaming the source is reported after everything the duplications did, so once its report
+    // arrives the stream holds every report that could have listed the plugin.
+    let (code, output) = yinz.run_cli_action_reporting(yinz_cli::args::CliAction::RenamePane {
+        name: "DUPLICATION SETTLED".into(),
+        pane_id: Some("terminal_0".into()),
+    });
+    assert_eq!(code, 0, "{output}");
+    pane_reports.wait_for_event_matching("PaneUpdate", |json| json.contains("DUPLICATION SETTLED"));
+    let reported_plugins: Vec<_> = pane_reports
+        .streamed_events()
+        .into_iter()
+        .filter(|(event_type, _)| event_type == "PaneUpdate")
+        .flat_map(|(_, json)| reported_plugin_urls(&json))
+        .collect();
+    assert!(
+        reported_plugins.is_empty(),
+        "a pane report listed a plugin pane during duplication: {reported_plugins:?}"
+    );
+    yinz.quit();
+}
+
+/// The plugin URL of every plugin pane one `PaneUpdate` lists, suppressed ones included.
+fn reported_plugin_urls(json: &str) -> Vec<String> {
+    let event: serde_json::Value = serde_json::from_str(json).unwrap();
+    event["PaneUpdate"]["panes"]
+        .as_object()
+        .unwrap()
+        .values()
+        .flat_map(|panes| panes.as_array().unwrap().clone())
+        .filter(|pane| pane["is_plugin"] == true)
+        .map(|pane| pane["plugin_url"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+/// Every pane in the session, suppressed ones included.
+fn list_panes(yinz: &TestSession) -> Vec<yinz_types::data::PaneListEntry> {
+    let (code, json) = yinz.run_cli_action_reporting(yinz_cli::args::CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: true,
+        geometry: false,
+        all: true,
+        json: true,
+    });
+    assert_eq!(code, 0, "{json}");
+    serde_json::from_str(&json).unwrap()
+}
+
+/// The shipped `Agent n` binding still opens the modal: new-agent declares its pane unless it
+/// runs as the duplicate, which `n` does not ask for.
+#[test]
+fn agent_mode_n_opens_the_new_agent_modal_in_a_pane() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("mouse_mode true\nload_plugins clear-defaults=true {\n}\n")
+        .with_layout(LayoutInfo::Stringified(SHELL_ONLY.to_owned()))
+        .start();
+    let shell = yinz.expect_pty_spawn();
+    shell.output(b"AGENT MODE SOURCE READY\r\n");
+    yinz.wait_until("source pane is on screen", |grid| {
+        grid.contains("AGENT MODE SOURCE READY")
+    });
+    yinz.send_stdin(&keys::ctrl('e'));
+    yinz.send_stdin(&keys::key('n'));
+    yinz.wait_until("the new agent modal is up", |snapshot| {
+        snapshot.contains("New agent")
+            && snapshot.contains("Create and switch branch")
+            && snapshot.contains("<Enter> open")
+    });
+    let modal: Vec<_> = list_panes(&yinz)
+        .into_iter()
+        .filter(|pane| pane.pane_info.is_plugin())
+        .collect();
+    assert_eq!(modal.len(), 1, "{modal:#?}");
+    assert_eq!(
+        modal[0].pane_info.plugin_url.as_deref(),
+        Some("new-agent"),
+        "{modal:#?}"
+    );
+    assert!(modal[0].pane_info.is_focused && !modal[0].pane_info.is_suppressed);
     yinz.quit();
 }
 

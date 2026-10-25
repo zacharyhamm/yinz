@@ -55,6 +55,7 @@ fn run_in(
         .join("\n");
     let source = format!(
         r#"
+      (yinz-declare-pane)
       (define (render rows cols)
         (yinz-json-string
           (with-handler (lambda (failure) (hash "Err" (error-object-message failure)))
@@ -69,7 +70,7 @@ fn run_in(
     env.permissions = Arc::new(std::sync::Mutex::new(Some(grants)));
     let path = roots.host.path().join("filesystem.scm");
     let mut plugin = crate::steel::SteelPlugin::new(&source, &path, env, Arc::default()).unwrap();
-    plugin.load(&BTreeMap::new()).unwrap();
+    plugin.load(&BTreeMap::new(), true).unwrap();
     serde_json::from_slice(&plugin.render(1, 400).unwrap()).unwrap()
 }
 fn write(path: impl AsRef<str>, contents: &str, append: bool) -> Value {
@@ -787,6 +788,7 @@ fn steel_project_resolve_helper_delivers_deferred_membership_and_null() {
         )
         .unwrap();
     let source = r#"
+      (yinz-declare-pane)
       (define reply "pending")
       (define (load config)
         (define request (yinz-project-resolve "."))
@@ -800,10 +802,13 @@ fn steel_project_resolve_helper_delivers_deferred_membership_and_null() {
         crate::steel::SteelPlugin::new(source, &root.join("resolve.scm"), env, Arc::default())
             .unwrap();
     plugin
-        .load(&BTreeMap::from([(
-            "outside".into(),
-            roots.cache.path().to_str().unwrap().into(),
-        )]))
+        .load(
+            &BTreeMap::from([(
+                "outside".into(),
+                roots.cache.path().to_str().unwrap().into(),
+            )]),
+            true,
+        )
         .unwrap();
     plugin.tick().unwrap();
     let reply: Value = serde_json::from_slice(&plugin.render(1, 400).unwrap()).unwrap();

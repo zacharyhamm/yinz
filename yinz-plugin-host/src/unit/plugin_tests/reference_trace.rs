@@ -26,6 +26,12 @@ pub(super) fn legacy_preset(source: &str) -> String {
         .filter(|line| !line.contains("TabGroup"))
         .collect::<String>()
         .replace("GoToTabInGroup", "GoToTab");
+    // The recordings bound duplicate-agent with `LaunchOrFocusPlugin`; see
+    // `legacy_duplicate_binding`.
+    source = source.replace(
+        "LaunchPlugin \"duplicate-agent\" {\n                floating true\n                overlay true\n                modal true\n            };",
+        "LaunchOrFocusPlugin \"duplicate-agent\" {\n                floating true\n                overlay true\n                modal true\n                move_to_focused_tab true\n            };",
+    );
     for mode in ["Normal", "Locked"] {
         for (key, plugin) in [
             ("w", "session-manager"),
@@ -191,6 +197,7 @@ impl Trace {
         });
         let mut input = replace(input, &self.root, "<fixture-root>");
         legacy_project_fields(&mut input);
+        legacy_duplicate_binding(&mut input);
         assert!(
             input == step.input,
             "reference input at {} step {}: {}",
@@ -208,7 +215,15 @@ impl Trace {
                 assert_eq!(call.reply, json!({"absent":true}));
                 continue;
             }
-            let command_json = replace(call.command.clone(), "<fixture-root>", &self.root);
+            let recorded = match headless_adaptation(&self.transcript, &call.command) {
+                Adapt::Keep => call.command.clone(),
+                Adapt::Skip => {
+                    assert_eq!(call.reply, json!({"absent":true}));
+                    continue;
+                },
+                Adapt::Rewrite(command) => command,
+            };
+            let command_json = replace(recorded, "<fixture-root>", &self.root);
             let mut command: PluginCommand = serde_json::from_value(command_json.clone()).unwrap();
             if let PluginCommand::DataDefineEntity { def, .. } = &mut command
                 && def.name == "project"
@@ -236,6 +251,34 @@ impl Trace {
             replace(step.result.clone(), "<fixture-root>", &self.root),
             commands,
         )
+    }
+}
+enum Adapt {
+    Keep,
+    Skip,
+    Rewrite(Value),
+}
+/// Plugins that declare no pane run headless, so their ports dropped the calls that only
+/// managed that pane. None of these calls had a reply.
+fn headless_adaptation(transcript: &Transcript, command: &Value) -> Adapt {
+    let named = |name: &str| command.get(name).is_some() || command == &json!(name);
+    match transcript.plugin.as_str() {
+        "file-finder" if named("HideSelf") => Adapt::Skip,
+        "file-finder" if named("Subscribe") => {
+            let mut command = command.clone();
+            if let Some(events) = command.get_mut("Subscribe").and_then(Value::as_array_mut) {
+                events.retain(|event| event != "PaneUpdate");
+            }
+            Adapt::Rewrite(command)
+        },
+        "new-agent" if named("HideSelf") => Adapt::Skip,
+        "new-agent"
+            if transcript.configuration.get("duplicate_focused") == Some(&json!("true"))
+                && (named("SetSelectable") || named("RenamePluginPane")) =>
+        {
+            Adapt::Skip
+        },
+        _ => Adapt::Keep,
     }
 }
 fn first_difference(left: &Value, right: &Value, path: &str) -> String {
@@ -354,6 +397,81 @@ fn reference_trace_rejects_changed_inputs_and_unconsumed_steps() {
 }
 
 #[test]
+fn reference_trace_drops_only_the_pane_calls_of_headless_ports() {
+    let transcript = |plugin: &str, configuration: Value| Transcript {
+        version: 1,
+        engine: "wasm".into(),
+        plugin: plugin.into(),
+        configuration,
+        source_sha256: "a".repeat(64),
+        steps: vec![],
+    };
+    let finder = transcript("file-finder", json!({}));
+    assert!(matches!(
+        headless_adaptation(&finder, &json!("HideSelf")),
+        Adapt::Skip
+    ));
+    let Adapt::Rewrite(subscribe) = headless_adaptation(
+        &finder,
+        &json!({"Subscribe":["PaneClosed","PaneUpdate","PluginConfigurationChanged"]}),
+    ) else {
+        panic!("file-finder subscriptions are rewritten");
+    };
+    assert_eq!(
+        subscribe,
+        json!({"Subscribe":["PaneClosed","PluginConfigurationChanged"]})
+    );
+    let rename = json!({"RenamePluginPane":[1,"new agent"]});
+    let selectable = json!({"SetSelectable":false});
+    let duplicate = transcript("new-agent", json!({"duplicate_focused":"true"}));
+    for command in [json!("HideSelf"), selectable.clone(), rename.clone()] {
+        assert!(matches!(
+            headless_adaptation(&duplicate, &command),
+            Adapt::Skip
+        ));
+    }
+    let modal = transcript("new-agent", json!({}));
+    assert!(matches!(
+        headless_adaptation(&modal, &json!("HideSelf")),
+        Adapt::Skip
+    ));
+    for command in [selectable.clone(), rename] {
+        assert!(matches!(headless_adaptation(&modal, &command), Adapt::Keep));
+    }
+    for plugin in ["strider", "agent-service"] {
+        assert!(matches!(
+            headless_adaptation(&transcript(plugin, json!({})), &json!("HideSelf")),
+            Adapt::Keep
+        ));
+    }
+    // The checked fixtures this adaptation touches: every file-finder trace and five
+    // new-agent traces. A new or missing match means the adaptation drifted.
+    let directory =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/unit/plugin_tests/fixtures/reference/wasm");
+    let mut adapted = vec![];
+    for entry in std::fs::read_dir(&directory).unwrap() {
+        let path = entry.unwrap().path();
+        let transcript: Transcript =
+            serde_json::from_reader(GzDecoder::new(std::fs::File::open(&path).unwrap())).unwrap();
+        let changes = |command: &Value| match headless_adaptation(&transcript, command) {
+            Adapt::Keep => false,
+            Adapt::Skip => true,
+            Adapt::Rewrite(rewritten) => rewritten != *command,
+        };
+        if transcript
+            .steps
+            .iter()
+            .any(|step| step.calls.iter().any(|call| changes(&call.command)))
+        {
+            adapted.push(transcript.plugin);
+        }
+    }
+    assert_eq!(adapted.iter().filter(|p| *p == "file-finder").count(), 20);
+    assert_eq!(adapted.iter().filter(|p| *p == "new-agent").count(), 5);
+    assert_eq!(adapted.len(), 25);
+}
+
+#[test]
 fn reference_trace_compression_preserves_full_transcript_and_root_placeholder() {
     use flate2::{Compression, GzBuilder};
     let mut fixture = fixture_for_test();
@@ -389,6 +507,40 @@ fn reference_trace_compression_preserves_full_transcript_and_root_placeholder() 
         ),
         json!("/temporary/test-root/file 日本語")
     );
+}
+
+/// The recordings were made while the shipped config bound duplicate-agent with
+/// `LaunchOrFocusPlugin`. It is a `LaunchPlugin` now - every press duplicates, because the headless
+/// instance a press starts closes itself and must not be taken for the next press - so a keymap
+/// handed to a guest is compared in the recorded spelling. The bars find the key either way.
+pub(crate) fn legacy_duplicate_binding(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            let duplicate = object.get("LaunchPlugin").is_some_and(|launch| {
+                launch.pointer("/plugin/Alias/name") == Some(&json!("duplicate-agent"))
+            });
+            if duplicate && let Some(Value::Object(launch)) = object.remove("LaunchPlugin") {
+                let field = |name: &str| launch.get(name).cloned().unwrap_or(Value::Null);
+                object.insert(
+                    "LaunchOrFocusPlugin".into(),
+                    json!({
+                        "plugin": field("plugin"),
+                        "should_float": field("should_float"),
+                        "move_to_focused_tab": true,
+                        "should_open_in_place": field("should_open_in_place"),
+                        "close_replaced_pane": field("close_replaced_pane"),
+                        "skip_cache": field("skip_cache"),
+                        "tab_id": field("tab_id"),
+                    }),
+                );
+            }
+            for child in object.values_mut() {
+                legacy_duplicate_binding(child);
+            }
+        },
+        Value::Array(items) => items.iter_mut().for_each(legacy_duplicate_binding),
+        _ => {},
+    }
 }
 
 /// Original Git-only recordings predate the nullable provider column.

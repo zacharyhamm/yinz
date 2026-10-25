@@ -23,6 +23,7 @@ pub mod pane_id;
 pub mod mouse;
 pub mod multiplayer;
 pub mod notifications;
+pub mod own_pane;
 
 pub mod geometry;
 pub mod multipane;

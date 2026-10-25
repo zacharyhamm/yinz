@@ -41,9 +41,20 @@ pub struct PluginConfig {
 fn read_source_file(path: &Path) -> Result<Option<String>> {
     use std::io::Read;
     let read = || -> std::io::Result<String> {
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        // A FIFO must not block before we can validate the opened file.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK);
+        }
+        let file = options.open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(std::io::Error::other("plugin source is not a regular file"));
+        }
         let mut source = String::new();
-        fs::File::open(path)?
-            .take(MAX_PLUGIN_SOURCE_BYTES as u64 + 1)
+        file.take(MAX_PLUGIN_SOURCE_BYTES as u64 + 1)
             .read_to_string(&mut source)?;
         if source.len() > MAX_PLUGIN_SOURCE_BYTES {
             return Err(std::io::Error::other(
@@ -212,3 +223,7 @@ impl PluginConfig {
 #[cfg(test)]
 #[path = "unit/plugins_tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+#[path = "unit/plugin_sources.rs"]
+mod source_tests;

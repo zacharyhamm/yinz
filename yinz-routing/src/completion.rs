@@ -79,20 +79,30 @@ pub(super) fn report_action_completion(
     }
     if let Some(error_message) = &result.error_message {
         send_error_to_client(cli_client_id, os_input, error_message);
-    } else if let Some(stdout_message) = &result.stdout_message {
-        send_output_to_client(cli_client_id, os_input, vec![stdout_message.clone()]);
     }
     // A group's first tab also produces tab/pane IDs; group commands return only the group ID.
     if creates_group {
         result.affected_tab_id = None;
         result.affected_pane_id = None;
     }
+    // A CLI client stops at its first Log: include the headless plugin ID in that message.
+    let mut pane_id_sent = false;
+    if result.error_message.is_none()
+        && let Some(stdout_message) = &result.stdout_message
+    {
+        let mut lines = vec![stdout_message.clone()];
+        if let Some(pane_id) = result.affected_pane_id {
+            lines.push(pane_id.to_string());
+            pane_id_sent = true;
+        }
+        send_output_to_client(cli_client_id, os_input, lines);
+    }
     // Return tab ID to CLI clients as plain text
     if let Some(tab_id) = result.affected_tab_id {
         send_output_to_client(cli_client_id, os_input, vec![tab_id.to_string()]);
     }
     // Return pane ID to CLI clients as plain text
-    if let Some(pane_id) = result.affected_pane_id {
+    if !pane_id_sent && let Some(pane_id) = result.affected_pane_id {
         send_output_to_client(cli_client_id, os_input, vec![pane_id.to_string()]);
     }
     // A blocking pane's exit status, last: the client stops reading at `Exit`, so the ids above

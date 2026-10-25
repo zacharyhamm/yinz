@@ -24,20 +24,31 @@ use std::time::{Duration, Instant};
 /// Environment variable overriding [`default_timeout`], in milliseconds.
 pub const TIMEOUT_ENV_VAR: &str = "YINZ_TEST_WAIT_TIMEOUT_MS";
 
+/// The wait [`default_timeout`] gives when [`TIMEOUT_ENV_VAR`] is unset.
+///
+/// Below the 60 s at which nextest's `default` and `unit` profiles (`.config/nextest.toml`) kill a
+/// test, with room to spare: a wait that fails must panic with its diagnostic, not lose the race
+/// to the kill and show up as a bare TIMEOUT. `src/unit/default_timeout.rs` keeps it there.
+pub const DEFAULT_WAIT: Duration = Duration::from_secs(45);
+
 /// How long [`Watched::wait_until`] waits before declaring a test stuck.
 ///
 /// Generous on purpose. These waits sit in front of real work — compiling and instantiating a wasm
 /// plugin, starting a screen thread — so the point is only to bound the wait, not to police it. A
 /// correct test returns as soon as its condition holds and never approaches this.
 pub fn default_timeout() -> Duration {
-    match std::env::var(TIMEOUT_ENV_VAR) {
-        Ok(raw) => match raw.parse::<u64>() {
+    timeout_from(std::env::var(TIMEOUT_ENV_VAR).ok())
+}
+
+fn timeout_from(raw: Option<String>) -> Duration {
+    match raw {
+        Some(raw) => match raw.parse::<u64>() {
             Ok(ms) => Duration::from_millis(ms),
             Err(_) => {
                 panic!("{TIMEOUT_ENV_VAR} must be a whole number of milliseconds, got {raw:?}")
             },
         },
-        Err(_) => Duration::from_secs(60),
+        None => DEFAULT_WAIT,
     }
 }
 
@@ -282,3 +293,7 @@ pub fn write_warm_script(path: &Path, body: &str) {
 #[cfg(test)]
 #[path = "unit/lib.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "unit/default_timeout.rs"]
+mod default_timeout_tests;

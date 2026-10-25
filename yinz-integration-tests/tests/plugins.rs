@@ -67,7 +67,7 @@ fn a_relatively_named_script_plugin_is_launched_from_the_user_plugin_dir() {
     let plugin_dir = tempfile::tempdir().expect("a temp dir");
     std::fs::write(
         plugin_dir.path().join("probe.scm"),
-        r#"(define (render rows columns) "probe is running")"#,
+        r#"(yinz-declare-pane) (define (render rows columns) "probe is running")"#,
     )
     .expect("the plugin is written");
 

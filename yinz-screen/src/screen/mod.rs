@@ -128,6 +128,7 @@ mod clients;
 mod command_palette;
 mod configuration;
 mod context_menu;
+mod headless_targets;
 mod hooks;
 mod host_query;
 mod input_modes;
@@ -728,6 +729,11 @@ pub(crate) struct Screen {
     /// add a configurable cap only if long-lived sessions show meaningful memory pressure.
     notification_history: Vec<NotificationRecord>,
     notification_policy: notification_policy::NotificationPolicy,
+    /// Toasts committed before any client was ever connected, in arrival order: the session's
+    /// first layout can raise one while its first client is still being registered. They are
+    /// shown to that first client. `None` from then on, so a later attach never replays a toast
+    /// committed while the session was detached; see `commit_notifications`.
+    toasts_before_first_client: Option<Vec<NotificationId>>,
     /// The open notification browser per client in `Notifications` mode. See
     /// `screen::notification_browser`.
     notification_browsers: HashMap<ClientId, notification_browser::NotificationBrowser>,
@@ -856,6 +862,20 @@ pub(crate) struct Screen {
     /// when no plugin asked for it. Set by the plugin thread, which keeps the subscribers.
     pub(super) cli_event_subscribers_present: bool,
     background_plugin_subscriptions: HashMap<(PluginId, ClientId), HashSet<EventType>>,
+    /// Running plugins that declare no pane, with what each was loaded from. They never get a
+    /// pane record; `launch_or_focus_plugin` matches against them so a second launch does not
+    /// start another instance.
+    pub(super) paneless_plugins: HashMap<PluginId, RunPluginOrAlias>,
+    /// Those of `paneless_plugins` whose load failed or that crashed: they run no more, so a
+    /// launch replaces one instead of finding it.
+    pub(super) failed_paneless_plugins: HashSet<PluginId>,
+    /// Plugins loading whose declaration waits for their repository (git plugins), with what
+    /// each was loaded from. They have no pane record yet; a launch finds one instead of
+    /// loading another.
+    pub(super) resolving_plugins: HashMap<PluginId, RunPluginOrAlias>,
+    /// Plugins the plugin thread has unloaded. Plugin ids are never reused, so an `AddPlugin`
+    /// that arrives for one of these is a late answer to a load that is already gone.
+    pub(super) unloaded_plugins: HashSet<PluginId>,
     next_forward_token: u32,
     pending_forwarded_queries: HashMap<u32, PendingForwardEntry>,
     forward_queue: VecDeque<PendingForward>,
@@ -1456,6 +1476,7 @@ impl Screen {
             context_menu,
             notification_history: vec![],
             notification_policy: Default::default(),
+            toasts_before_first_client: Some(vec![]),
             notification_browsers: HashMap::new(),
             next_notification_id: NotificationId::new(0),
             notification_position,
@@ -1526,6 +1547,10 @@ impl Screen {
             deferred_tab_closes: HashSet::new(),
             cli_event_subscribers_present: false,
             background_plugin_subscriptions: HashMap::new(),
+            paneless_plugins: HashMap::new(),
+            failed_paneless_plugins: HashSet::new(),
+            resolving_plugins: HashMap::new(),
+            unloaded_plugins: HashSet::new(),
             next_forward_token: 1, // 0 is reserved as the startup sentinel
             pending_forwarded_queries: HashMap::new(),
             forward_queue: VecDeque::new(),
@@ -2101,6 +2126,8 @@ impl Screen {
 
             if !client_departed && !self.active_tab_ids.contains_key(&client_id) {
                 self.connected_clients.borrow_mut().insert(client_id);
+                self.show_toasts_held_for_the_first_client()
+                    .with_context(err_context)?;
             }
 
             // apply the layout to the new tab
@@ -3942,6 +3969,15 @@ impl Screen {
         false
     }
     fn update_plugin_location(&mut self, plugin_id: PluginId, location: RunPluginLocation) {
+        if let Some(run) = self.paneless_plugins.get_mut(&plugin_id) {
+            let plugin = match run {
+                RunPluginOrAlias::RunPlugin(plugin) => Some(plugin),
+                RunPluginOrAlias::Alias(alias) => alias.run_plugin.as_mut(),
+            };
+            if let Some(plugin) = plugin {
+                plugin.location = location.clone();
+            }
+        }
         for tab in self.tabs.values_mut() {
             if let Some(pane) = tab
                 .get_pane_with_id_mut(PaneId::Plugin(plugin_id))

@@ -1,4 +1,5 @@
 ;; Host-folder navigation stays behind the normal permission-aware command bridge.
+(yinz-declare-pane)
 (define initial-cwd "")
 (define current-path "")
 (define path-is-dir #t)

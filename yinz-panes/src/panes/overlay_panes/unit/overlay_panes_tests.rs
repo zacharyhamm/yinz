@@ -3364,6 +3364,42 @@ fn multipane_transfer_and_replacement_keep_ownership_focus_and_placement() {
     );
 }
 
+/// Giving up one multipane slot leaves the other child as the container's only pane, in the same
+/// placement and layer, with the keyboard of whoever was on the slot.
+#[test]
+fn removing_a_multipane_member_leaves_its_sibling_alone_in_the_container() {
+    for removed in [0, 1] {
+        let (mut panes, children, _) = composed(MultipaneDirection::LeftRight);
+        let kept = children[1 - removed];
+        let clients = [ClientId::new(1), ClientId::new(2)];
+        panes.connected_clients.borrow_mut().extend(clients);
+        panes.focus_pane(children[removed], clients[0]);
+        panes.focus_pane(kept, clients[1]);
+        panes.start_seam_drag(children[0], children[1], Position::new(0, 0));
+        let outer = panes.outer_geom(kept).unwrap();
+        let z_index = panes.get_pane_z_index(kept);
+
+        let pane = panes.remove_multipane_member(children[removed]).unwrap();
+
+        assert_eq!(pane.pid(), children[removed]);
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes.layers().len(), 1);
+        assert!(!panes.panes_contain(&children[removed]));
+        assert_eq!(panes.multipane_info(&kept), None);
+        assert_eq!(panes.outer_geom(kept), Some(outer));
+        assert_eq!(panes.get_pane_z_index(kept), z_index);
+        for client in clients {
+            assert_eq!(panes.active_pane_id(client), Some(kept));
+        }
+        assert!(!panes.seam_is_being_dragged());
+        assert!(
+            panes.remove_multipane_member(kept).is_none(),
+            "a single pane is not a multipane member"
+        );
+        assert_eq!(panes.len(), 1);
+    }
+}
+
 /// A client that has already left the source tab does not take the keyboard back when the
 /// container lands: that is agent carrying its panel after a tab switch, and the tab the client
 /// went to keeps the keys. A client still on the source tab keeps its half.

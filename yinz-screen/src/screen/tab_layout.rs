@@ -90,6 +90,10 @@ impl Screen {
                 )
             })
             .collect();
+        let placed_plugins: Vec<PluginId> = tab_results
+            .iter()
+            .flat_map(|tab| tab.plugin_ids.values().flatten().copied())
+            .collect();
         for tab_result in tab_results {
             let spawned_panes: Vec<_> = tab_result
                 .new_terminal_pids
@@ -135,6 +139,16 @@ impl Screen {
             }
         }
         if result.is_ok() {
+            // As in `land_layout`: a slot for a plugin that declared no pane, or is gone, goes.
+            let mut removed_plugin_panes = false;
+            for plugin_id in placed_plugins {
+                if self.plugin_has_no_pane(plugin_id) {
+                    removed_plugin_panes |= self.remove_plugin_pane_quietly(plugin_id);
+                }
+            }
+            if removed_plugin_panes {
+                self.retain_only_existing_panes_in_pane_groups();
+            }
             for tab_id in tabs_to_close {
                 if self.tabs.contains_key(&tab_id) {
                     self.close_tab_by_id(tab_id)?;
@@ -432,8 +446,15 @@ impl Screen {
             }
         }
 
+        let mut removed_plugin_panes = false;
         for plugin_ids in new_plugin_ids.values() {
             for plugin_id in plugin_ids {
+                // The plugin declared no pane, or is gone, before its slot landed: the slot
+                // goes, and the first render must not wait for a plugin that never renders.
+                if self.plugin_has_no_pane(*plugin_id) {
+                    removed_plugin_panes |= self.remove_plugin_pane_quietly(*plugin_id);
+                    continue;
+                }
                 let pane_id = PaneId::Plugin(*plugin_id);
                 let plugin_exists = self.tabs.values().any(|tab| tab.has_plugin(*plugin_id));
                 if plugin_exists {
@@ -443,6 +464,10 @@ impl Screen {
                     }
                 }
             }
+        }
+        if removed_plugin_panes {
+            self.retain_only_existing_panes_in_pane_groups();
+            self.log_and_report_session_state()?;
         }
 
         self.replay_events_waiting_for_layout(pending);

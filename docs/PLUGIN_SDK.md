@@ -228,6 +228,9 @@ Shared plugins must keep geometry-dependent state per client and accept unknown 
 | `render` | row count, column count | text, output written with `display`, or deferred text |
 | `unload` | none | ignored, or deferred cleanup |
 
+Only a plugin that declares a pane receives `render`, `Resize`, `PluginTick`, and
+an initial render. See [Pane declaration](#pane-declaration).
+
 Rendered text has a 16 MiB limit, including printed and returned text together.
 Formatted evaluation results have a separate aggregate 16 MiB limit.
 Diagnostic output retains its 4 MiB limit. Worker and application transport limits remain separate.
@@ -259,6 +262,72 @@ Enable diagnostic tracing with `(yinz-trace)` or a `trace "true"` plugin
 configuration value. `(yinz-trace #f)` disables it. Traces record lifecycle,
 command names, acting clients, and asynchronous task outcomes. They omit command
 arguments, replies, and error payloads and never enter rendered output.
+
+## Pane declaration
+
+A plugin has a pane only when its entrypoint declares one. Without a declaration
+it runs headless: no pane record exists, and it never renders.
+
+| Form | Pane |
+|---|---|
+| `(yinz-declare-pane)` | Always |
+| `(yinz-declare-pane-unless key value)` | Unless the load configuration maps `key` to exactly `value` |
+
+```scheme
+(yinz-declare-pane-unless "duplicate_focused" "true")
+
+(define (load configuration) ...)
+```
+
+Write the form literally at the top level of the entrypoint, not inside `begin`,
+`when`, a function, a macro, or an imported module. The `-unless` arguments must be
+string literals. Declare once. The host reads the declaration from the source
+before it evaluates the plugin, then checks the evaluated module. A mismatch fails
+the load with `(yinz-declare-pane) must appear literally at the top level of the
+entry file`. A client that attaches to a running plugin gets an instance read
+from the file as it is then; if its declaration changed since the plugin loaded,
+that instance fails with `the entry file's pane declaration changed since the
+plugin was loaded`, and a reload applies the change. A file that does not parse
+declares nothing, and the load reports the parse error. `yinz plugins format`
+formats a file whose declaration is malformed and prints the mistake as a
+warning. The declaration is sealed before `load`; a later call raises an error.
+Workers evaluate the module too, and their declaration is ignored.
+
+A headless plugin still receives subscribed events, pipes, plugin requests,
+permission results, and hooks. Events tied to its own pane never arrive, even when
+subscribed: `Key`, `Mouse`, and `PastedText` go to a focused pane, and `Visible` to a
+pane that is shown or hidden. Use `InterceptKeyPresses` to receive keys as
+`InterceptedKeyPress`. It can open other panes and plugins. These commands need its
+own pane and fail with `'HideSelf' needs the plugin's own pane, but … declares no
+pane`:
+
+- `HideSelf`, `ShowSelf`, `SetSelectable`, `ShowCursor`, and `SetSelfMouseSelectionSupport`.
+- `OpenTerminalInPlaceOfPlugin`, `OpenFileInPlaceOfPlugin`, and `OpenCommandPaneInPlaceOfPlugin`.
+- `RenamePluginPane`, `FocusPluginPane`, `HidePaneWithId`, `ShowPaneWithId`,
+  `SetFloatingPanePinned`, `ChangeFloatingPanesCoordinates`, `ChangeOverlayCoordinates`,
+  `BreakPanesToNewTab`, `BreakPanesToTabWithIndex`, `BreakPanesToTabWithId`,
+  `SetPaneTitlePrefix`, `SetPaneSubtitle`, and `HighlightAndUnhighlightPanes`, when
+  they target the plugin's own ID.
+
+`CloseSelf`, `ClosePluginPane` with its own ID, `InterceptKeyPresses`, and
+notifications work headless. `CloseSelf` unloads the plugin.
+
+A `LaunchOrFocusPlugin` that finds a headless plugin running has nothing to focus. It
+sends the plugin a private pipe message named `launch_or_focus` from the launching
+client instead, so the plugin can bring back what it shows:
+
+```scheme
+(define (pipe message)
+  (when (and (hash-ref message "is_private") (equal? (hash-ref message "name") "launch_or_focus"))
+    (yinz-command (hash "FocusTerminalPane" (list my-terminal #t #f))))
+  #f)
+```
+
+A headless plugin whose load failed or that crashed is not reused: the next
+`LaunchOrFocusPlugin` unloads it and starts a new instance.
+`GetPluginInfo` reports `pane`. `yinz plugins check` prints the declaration, warns
+about `render` and own-pane commands in an undeclared plugin, and warns about nested
+declarations.
 
 ## Permissions and asynchronous work
 
@@ -373,7 +442,8 @@ The `"configuration"` option is a string hash passed to the new plugin, and
 It returns when the new pane closes, including through an explicit close by the user.
 The deferred result rejects when `pane` is suppressed or missing. It also rejects
 when an instance with the same URL and configuration exists. Nothing loads in
-either case.
+either case. A plugin that declares no pane runs headless instead: `pane` stays
+in place, and the result is the plugin's ID.
 
 ```scheme
 ;; A background coordinator reopens a merge-queue job's UI over its agent pane.

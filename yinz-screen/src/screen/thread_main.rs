@@ -223,6 +223,10 @@ pub fn screen_thread_main(
             event => event,
         };
         'instruction: {
+            // An instruction naming a headless plugin's pane is answered here: it has none.
+            let Some(event) = screen.settle_headless_target(event) else {
+                break 'instruction;
+            };
             match event {
                 ScreenInstruction::CloseSelf(..) => {
                     unreachable!("close_self is resolved before dispatch")
@@ -2340,6 +2344,30 @@ pub fn screen_thread_main(
                         screen.log_and_report_session_state()?;
                     }
                 },
+                ScreenInstruction::PluginPaneless {
+                    plugin_id,
+                    run,
+                    completion,
+                } => {
+                    screen.plugin_paneless(plugin_id, *run, completion, &mut pending)?;
+                },
+                ScreenInstruction::PluginResolving {
+                    plugin_id,
+                    run,
+                    completion,
+                } => {
+                    screen.plugin_resolving(plugin_id, *run, completion);
+                },
+                ScreenInstruction::PluginFailed(plugin_id) => {
+                    screen.plugin_failed(plugin_id);
+                },
+                // Here rather than in `Screen`: the key intercepts are this loop's.
+                ScreenInstruction::PluginUnloaded(plugin_id) => {
+                    screen.plugin_unloaded(plugin_id, &mut keybind_intercepts, &mut pending)?;
+                },
+                ScreenInstruction::GiveUpSlot(slot) => {
+                    screen.give_up_slot(slot, &mut pending)?;
+                },
                 ScreenInstruction::UpdatePluginLocation(pid, location) => {
                     screen.update_plugin_location(pid, location);
                     screen.log_and_report_session_state()?;
@@ -3987,7 +4015,7 @@ pub fn screen_thread_main(
                     }
                     screen.render()?;
                 },
-                ScreenInstruction::EditScrollbackWithPaneId(pane_id, ansi, completion_tx) => {
+                ScreenInstruction::EditScrollbackWithPaneId(pane_id, ansi, mut completion_tx) => {
                     if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
                         if ansi {
                             tab.edit_scrollback_raw_for_pane_with_id(pane_id, completion_tx)
@@ -3997,7 +4025,7 @@ pub fn screen_thread_main(
                                 .non_fatal();
                         }
                     } else {
-                        log::error!("Pane with id {:?} not found", pane_id);
+                        Screen::report_pane_not_found(pane_id, &mut completion_tx);
                     }
                     screen.render()?;
                 },
@@ -4039,8 +4067,14 @@ pub fn screen_thread_main(
                     screen.log_and_report_session_state()?;
                     screen.render()?;
                 },
-                ScreenInstruction::CloseFocusWithPaneId(pane_id, completion_tx) => {
-                    screen.close_pane_explicitly(pane_id, completion_tx);
+                ScreenInstruction::CloseFocusWithPaneId(pane_id, mut completion_tx) => {
+                    // A headless plugin was unloaded by `settle_headless_target`. A pane that is
+                    // already gone is closed; one that never existed is an error, not a success.
+                    if screen.tab_containing_pane(pane_id).is_some() {
+                        screen.close_pane_explicitly(pane_id, completion_tx);
+                    } else if !screen.pane_is_gone(pane_id) {
+                        Screen::report_pane_not_found(pane_id, &mut completion_tx);
+                    }
                     let client_ids: Vec<_> = screen.active_tab_ids.keys().copied().collect();
                     for client_id in client_ids {
                         screen.sync_scroll_mode_on_focus(client_id)?;

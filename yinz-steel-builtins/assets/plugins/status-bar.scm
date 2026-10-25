@@ -1,4 +1,5 @@
 (require "./bar/default-mode.scm" "./bar/keys.scm" "./bar/tips.scm" "./bar/status-render.scm")
+(yinz-declare-pane)
 
 (define state (hash "modeInfo" (bar-default-mode) "tabs" '() "classic" #f "tipName" "quicknav"
     "copied" #f "clipboardFailure" #f "counts" (hash "busy" 0 "waiting" 0 "idle" 0)

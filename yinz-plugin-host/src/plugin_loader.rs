@@ -1,5 +1,6 @@
 use crate::plugin_bridge::LoadingContext;
 use crate::plugin_map::{PluginEnv, PluginMap, ResponseSink, RunningPlugin, CANCELLED_BY_HOST};
+use crate::plugin_panes::Surface;
 use crate::{ClientId, PluginId};
 use std::{
     collections::{HashMap, HashSet},
@@ -40,7 +41,7 @@ fn create_plugin_fs_entries(plugin_own_data_dir: &PathBuf, plugin_own_cache_dir:
         .non_fatal();
 }
 
-fn script_source(
+pub(crate) fn script_source(
     plugin_config: &PluginConfig,
     user_plugin_dir: Option<&Path>,
     data_dir: &Path,
@@ -59,8 +60,44 @@ fn script_source(
     }
 }
 
+/// What a pane declaration amounts to, in the words of the errors below.
+fn describe_pane(declared: bool) -> &'static str {
+    if declared {
+        "a pane"
+    } else {
+        "no pane"
+    }
+}
+
+/// The load error for a module whose evaluated declaration differs from the scan of its source.
+pub(crate) fn pane_declaration_mismatch(scanned: bool, evaluated: bool) -> String {
+    format!(
+        "(yinz-declare-pane) must appear literally at the top level of the entry file (found {}, \
+         evaluated {})",
+        describe_pane(scanned),
+        describe_pane(evaluated)
+    )
+}
+
+/// The error for an instance whose entry file no longer declares what its plugin was loaded
+/// with.
+fn pane_declaration_changed(loaded: bool, declared: bool) -> String {
+    format!(
+        "the entry file's pane declaration changed since the plugin was loaded (loaded with {}, \
+         the file now declares {}); reload the plugin to apply it",
+        describe_pane(loaded),
+        describe_pane(declared)
+    )
+}
+
 pub struct PluginLoader {
-    plugin_roles: crate::plugin_map::PluginRoles,
+    panes: crate::plugin_panes::PluginPanes,
+    /// The entry source the prepare step read for the pane declaration, so the module
+    /// evaluated is the one that was scanned. Shared rather than copied: the load evaluates it
+    /// once for every connected client.
+    prefetched_source: Option<(Option<PathBuf>, Arc<str>)>,
+    /// The pane declaration the prepare step scanned in `prefetched_source`.
+    prefetched_declaration: Option<bool>,
     pick_request: Option<yinz_types::pick::PickRequest>,
     pick_cancelled: Option<Arc<AtomicBool>>,
     pick_opening: Option<Arc<AtomicBool>>,
@@ -115,7 +152,9 @@ impl PluginLoader {
         );
         Self {
             yinz_data_dir: loading_context.yinz_data_dir.clone(),
-            plugin_roles: loading_context.plugin_roles,
+            panes: loading_context.panes,
+            prefetched_source: loading_context.prefetched_source,
+            prefetched_declaration: loading_context.prefetched_declaration,
             pick_request: loading_context.pick_request,
             pick_cancelled: loading_context.pick_cancelled,
             pick_opening: loading_context.pick_opening,
@@ -218,12 +257,23 @@ impl PluginLoader {
             )
         };
         self.loading_indication.override_previous_error();
-        let (resolved_source_path, source) = script_source(
-            &self.plugin_config,
-            self.user_plugin_dir.as_deref(),
-            &self.yinz_data_dir,
-        )
-        .with_context(err_context)?;
+        // A load, and the instances it clones for the other clients, evaluate the source its
+        // declaration was scanned from. An instance for a client attaching to a running plugin
+        // reads the entry again, as it always has, so that it runs what is on disk.
+        let (resolved_source_path, source): (_, Arc<str>) = match &self.prefetched_source {
+            Some((path, source)) => (path.clone(), source.clone()),
+            None => {
+                let (path, source) = script_source(
+                    &self.plugin_config,
+                    self.user_plugin_dir.as_deref(),
+                    &self.yinz_data_dir,
+                )
+                .with_context(err_context)?;
+                self.check_declaration_unchanged(&source)
+                    .with_context(err_context)?;
+                (path, source.into())
+            },
+        };
 
         let mut plugin_env = self.create_plugin_env();
         plugin_env.resolved_source_path = resolved_source_path.clone();
@@ -255,6 +305,10 @@ impl PluginLoader {
                     },
                     Err(error) => return Err(error).with_context(err_context),
                 };
+            if let Err(error) = self.check_pane_declaration(&mut steel) {
+                steel.dispose_with_cleanup(false);
+                return Err(error).with_context(err_context);
+            }
             let workers_started = (|| -> Result<()> {
                 for name in steel.worker_names()? {
                     if let Some(workers) = &steel.env().workers {
@@ -337,6 +391,53 @@ impl PluginLoader {
         Ok(())
     }
 
+    /// An instance that read the entry again must find the declaration the plugin's pane was
+    /// decided on. The plugin has one surface for every client, so an entry whose declaration
+    /// changed since the plugin was loaded can only take effect through a reload. Keeping the
+    /// loaded entry instead would not do: the instance would pair it with the imports as they
+    /// are now, a version of the plugin that never existed on disk.
+    ///
+    /// An entry Steel cannot read is left to evaluation, which names its syntax error: what such
+    /// source declares is only a guess, and a mismatch of the guess would hide that error.
+    fn check_declaration_unchanged(&self, source: &str) -> Result<()> {
+        let Some(loaded) = self.panes.lock().unwrap().scanned(self.plugin_id) else {
+            return Ok(());
+        };
+        let Some(declaration) = yinz_steel::manifest::readable_pane_declaration(source)
+            .context("reading the plugin's pane declaration")?
+        else {
+            return Ok(());
+        };
+        let declared =
+            declaration.applies(self.plugin_config.initial_userspace_configuration.inner());
+        if declared != loaded {
+            bail!("{}", pane_declaration_changed(loaded, declared));
+        }
+        Ok(())
+    }
+
+    /// The evaluated module must declare what the prepare step's scan found: a declaration
+    /// inside `begin` or `when`, in an imported module or made by a macro is invisible to the
+    /// scan, and the plugin's pane was already decided without it.
+    ///
+    /// A load checks against the scan of the source it evaluates. Another client's instance,
+    /// which read the entry again and found the same declaration there, checks against the
+    /// plugin's.
+    fn check_pane_declaration(&self, steel: &mut super::steel::SteelPlugin) -> Result<()> {
+        let scanned = self
+            .prefetched_declaration
+            .or_else(|| self.panes.lock().unwrap().scanned(self.plugin_id));
+        let Some(scanned) = scanned else {
+            return Ok(());
+        };
+        let evaluated =
+            steel.pane_declared(self.plugin_config.initial_userspace_configuration.inner())?;
+        if evaluated != scanned {
+            bail!("{}", pane_declaration_mismatch(scanned, evaluated));
+        }
+        Ok(())
+    }
+
     fn script_client_disconnected(&self) -> bool {
         !self.plugin_config.is_shared() && self.client_cancel.load(Ordering::Acquire)
     }
@@ -351,17 +452,30 @@ impl PluginLoader {
         env
     }
 
+    /// Whether the plugin has a pane, decided by the prepare step before this load was queued.
+    fn surface(&self) -> Surface {
+        self.panes
+            .lock()
+            .unwrap()
+            .surface(self.plugin_id)
+            .unwrap_or_else(|| {
+                log::error!(
+                    "plugin {} is loading before its pane declaration was read; it runs headless",
+                    self.plugin_id
+                );
+                Surface::Headless
+            })
+    }
+
     fn create_plugin_env(&self) -> PluginEnv {
+        // Read before the literal: a guard taken inside it would be held to its end.
+        let background = self.panes.lock().unwrap().background(self.plugin_id);
+        let surface = self.surface();
         PluginEnv {
             yinz_data_dir: self.yinz_data_dir.clone(),
-            background: self
-                .plugin_roles
-                .lock()
-                .unwrap()
-                .get(&self.plugin_id)
-                .copied()
-                .unwrap_or(false),
-            plugin_roles: self.plugin_roles.clone(),
+            background,
+            surface,
+            panes: self.panes.clone(),
             pick_request: self.pick_request.clone(),
             pick_cancelled: self.pick_cancelled.clone(),
             pick_opening: self.pick_opening.clone(),

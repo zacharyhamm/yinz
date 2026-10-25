@@ -210,8 +210,9 @@ pub fn edit(
     write(dir, name, &source, true, false)
 }
 
-/// Format only the named file. Read-only verification never creates backups.
-pub fn format_file(path: &Path, check: bool) -> anyhow::Result<()> {
+/// Format only the named file. Read-only verification never creates backups. Returns the
+/// checker's warnings, such as a malformed pane declaration, which do not stop formatting.
+pub fn format_file(path: &Path, check: bool) -> anyhow::Result<Vec<String>> {
     if path.is_symlink() || path.parent().is_some_and(Path::is_symlink) {
         anyhow::bail!("refusing to format through a symlink");
     }
@@ -228,14 +229,14 @@ pub fn format_file(path: &Path, check: bool) -> anyhow::Result<()> {
         .formatted_source
         .ok_or_else(|| anyhow::anyhow!("formatter returned no source"))?;
     if source == formatted {
-        return Ok(());
+        return Ok(report.warnings);
     }
     if check {
         anyhow::bail!("{} needs formatting", path.display());
     }
     keep_backup(path, &formatted)?;
     publish_file(path, formatted.as_bytes(), true, None)?;
-    Ok(())
+    Ok(report.warnings)
 }
 
 fn publish_file(

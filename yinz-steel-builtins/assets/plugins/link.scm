@@ -115,5 +115,4 @@
     ((hash-contains? event "HighlightClicked")
       (define click (hash-ref event "HighlightClicked")) (clicked (hash-ref click "matched_string") (hash-ref click "context"))))
   #f)
-(define (render rows cols) "")
 (define path-pattern "(?:^|\\s)((?:(?:\\./|\\.\\./|/)[A-Za-z0-9_./\\-+@%,#=~!\\$\\{\\}\\[\\]]+|~/[A-Za-z0-9_./\\-+@%,#=~!\\$\\{\\}\\[\\]]+|\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?/[A-Za-z0-9_./\\-+@%,#=~!\\$\\{\\}\\[\\]]+)(?::\\d+(?::\\d+)?)?)(?::|\\s|$)")

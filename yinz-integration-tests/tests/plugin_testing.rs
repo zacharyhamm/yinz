@@ -150,6 +150,7 @@ fn installed_controller_routes_input_enforces_permissions_and_isolates_storage()
         .join("echo 日本 #?%23%2523.scm");
     let target = url::Url::from_file_path(&plugin).unwrap().to_string();
     std::fs::write(&plugin, r#"
+(yinz-declare-pane)
 (define target "TARGET_URL")
 (define text "ready")
 (define (load configuration)
@@ -239,6 +240,7 @@ fn installed_async_plugin_api_returns_results_and_cancels_while_input_continues(
     )
     .unwrap();
     std::fs::write(root.path().join("caller.scm"), r#"
+(yinz-declare-pane)
 (define status "starting") (define pending #f)
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("AuthorPlugins")) (lambda (_)
@@ -502,6 +504,10 @@ fn installed_headless_lifecycle_exercises_the_permission_modal() {
 (define (focused-terminals)
   (filter (lambda (pane) (and (not (hash-ref pane "is_plugin")) (hash-ref pane "is_focused"))) (test-session "panes")))
 (define (plugin-status path) (car (hash-ref (test-session "status" path) "plugins")))
+;; The plugin declares no pane, so the pane manifest never lists a plugin: not visible, not
+;; parked. The manifest is live, since it lists the focused terminal.
+(define (assert-no-plugin-panes)
+  (assert-equal (filter (lambda (pane) (hash-ref pane "is_plugin")) (test-session "panes")) '()))
 (test "headless start and stop" (hash "grants" '("ReadApplicationState")) (lambda ()
   (test-session "start" (hash "autoGrantPermissions" #f))
   (test-wait-for-text "yinz-test>")
@@ -515,11 +521,14 @@ fn installed_headless_lifecycle_exercises_the_permission_modal() {
   (test-session "key" "Tab") (test-session "key" "Enter")
   (test-wait-for "permission promise settles" (lambda () (string-contains? (test-session "logs") "HEADLESS_READY")))
   (assert-equal (hash-ref (plugin-status "./background.scm") "state") "running")
+  (assert-equal (hash-ref (plugin-status "./background.scm") "pane") #f)
+  (assert-no-plugin-panes)
   (define target (string-append "plugin_" (number->string id)))
   (assert-equal (hash-ref (car (hash-ref (test-session "reload" target) "plugins")) "id") id)
   (test-wait-for "replacement available" (lambda () (equal? (hash-ref (plugin-status target) "state") "running")))
   (assert-equal (hash-ref (car (focused-terminals)) "id") (hash-ref terminal "id"))
   (assert-equal (length (filter (lambda (pane) (not (hash-ref pane "is_plugin"))) (test-session "panes"))) 1)
+  (assert-no-plugin-panes)
   (assert-equal (hash-ref (car (hash-ref (test-session "stop" target) "plugins")) "state") "stopped")
   (assert-equal (hash-ref (test-session "status" "./background.scm") "plugins") '())
   (assert-throws (lambda () (test-session "reload" "./background.scm")) "not loaded; use plugins start")))

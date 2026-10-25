@@ -692,9 +692,9 @@ fn closing_a_tab_drops_the_guards_of_the_plugins_in_it() {
 // A hook pane standing in for the pane it replaced
 //
 // `agent_exit` opens its plugin in place of the exited agent pane, which is suppressed
-// behind it (`add_plugin_pane_in_place_of` -> `suppress_pane_and_replace_with_pid`). Closing
-// that hook pane with the close-pane binding is the gesture these pin: the tab it was the
-// last pane of has to go away, and the client has to land somewhere it can see and type.
+// behind it (`ShowPane::in_place_of_hooked_pane` -> `suppress_pane_and_replace_with_pid`).
+// Closing that hook pane with the close-pane binding is the gesture these pin: the tab it was
+// the last pane of has to go away, and the client has to land somewhere it can see and type.
 // ---------------------------------------------------------------------------
 
 /// A screen whose tabs can hold plugin panes: `Tab` clones the senders when it is built, so

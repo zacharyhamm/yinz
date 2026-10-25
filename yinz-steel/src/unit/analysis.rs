@@ -384,3 +384,59 @@ fn eager_arguments_and_callback_producers_keep_conservative_load_context() {
         }
     }
 }
+
+#[test]
+fn pane_declaration_calls_record_their_placement_and_respect_shadowing() {
+    let report = analyze(
+        r#"
+(yinz-declare-pane)
+'(yinz-declare-pane)
+(when #t (yinz-declare-pane-unless "mode" "quiet"))
+(define (load configuration)
+  (yinz-declare-pane))
+(define (shadow yinz-declare-pane) (yinz-declare-pane))
+(define (render rows columns) "")
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        report
+            .pane_declarations
+            .iter()
+            .map(|call| (call.line, call.top_level))
+            .collect::<Vec<_>>(),
+        [(2, true), (4, false), (6, false)],
+        "{report:?}"
+    );
+    assert!(report.defines_render);
+    for source in [
+        "(define yinz-declare-pane (lambda () 1)) (yinz-declare-pane)",
+        "(set! yinz-declare-pane-unless (lambda (k v) 1)) (yinz-declare-pane-unless \"a\" \"b\")",
+    ] {
+        assert!(
+            analyze(source).unwrap().pane_declarations.is_empty(),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn only_a_top_level_render_binding_counts() {
+    for (source, expected) in [
+        ("(define (render rows columns) \"\")", true),
+        ("(define render (lambda (rows columns) \"\"))", true),
+        ("(begin (define (render rows columns) \"\"))", true),
+        (
+            "(define (load configuration) (define (render r c) \"\") 1)",
+            false,
+        ),
+        ("'(define (render rows columns) \"\")", false),
+        ("(define (load configuration) 1)", false),
+    ] {
+        assert_eq!(
+            analyze(source).unwrap().defines_render,
+            expected,
+            "{source}"
+        );
+    }
+}

@@ -3,6 +3,7 @@
 use super::pane_creation::in_place_pane_id;
 use super::write_response;
 use crate::plugin_map::PluginEnv;
+use crate::plugin_panes::Surface;
 use crate::{PaneId, PluginInstruction};
 use prost::Message;
 use std::collections::BTreeMap;
@@ -97,10 +98,13 @@ pub(super) fn show_pane_with_id(
 }
 
 pub(super) fn close_self(env: &PluginEnv) {
-    env.senders
-        .send_to_screen(ScreenInstruction::CloseSelf(env.plugin_id, env.client_id))
-        .with_context(|| "failed to close self".to_string())
-        .non_fatal();
+    // A headless plugin has no pane to close: closing itself is unloading.
+    if env.surface == Surface::Pane {
+        env.senders
+            .send_to_screen(ScreenInstruction::CloseSelf(env.plugin_id, env.client_id))
+            .with_context(|| "failed to close self".to_string())
+            .non_fatal();
+    }
     env.senders
         .send_to_plugin(PluginInstruction::Unload(env.plugin_id))
         .with_context(|| "failed to close self".to_string())

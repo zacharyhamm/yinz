@@ -100,24 +100,14 @@ fn launch(env: &PluginEnv, slot: PaneId, child: MultipaneChild, reserved: bool) 
                 Some(env.plugin_cwd.clone()),
             )
             .map_err(|error| anyhow!(error))?;
-            env.senders.send_to_plugin(PluginInstruction::Load(
-                Some(true),
-                true,
-                true,
-                None,
-                plugin,
-                None,
-                Some(slot),
-                env.client_id,
-                yinz_types::pane_size::Size { rows: 1, cols: 1 },
-                Some(env.plugin_cwd.clone()),
-                None,
-                false,
-                Some(false),
-                None,
-                None,
-                None,
-            ))?;
+            // The slot is held for this child: one that declares no pane closes it.
+            env.senders
+                .send_to_plugin(PluginInstruction::LoadIntoSlot {
+                    run: plugin,
+                    slot,
+                    client_id: env.client_id,
+                    cwd: env.plugin_cwd.clone(),
+                })?;
             // Loading takes the plugin map and running-plugin locks. Return ownership now;
             // waiting here while holding the caller's lock would deadlock the loader.
         },

@@ -10,8 +10,8 @@
   (s-key "Enter"))
 (test "plugin palette resolves relative files and plugin cwd after the shell changes directory" (lambda ()
     (define home (s-fixture (hash
-          "plugin.scm" "(define (render rows cols) \"WRONG STARTUP SOURCE\")\n"
-          "b/plugin.scm" "(define text \"\")\n(define (load configuration) (set! text (string-append \"CURRENT SOURCE cwd=\" (hash-ref (yinz-command \"GetPluginIds\") \"initial_cwd\"))))\n(define (render rows cols) text)\n") (hash)))
+          "plugin.scm" "(yinz-declare-pane)\n(define (render rows cols) \"WRONG STARTUP SOURCE\")\n"
+          "b/plugin.scm" "(yinz-declare-pane)\n(define text \"\")\n(define (load configuration) (set! text (string-append \"CURRENT SOURCE cwd=\" (hash-ref (yinz-command \"GetPluginIds\") \"initial_cwd\"))))\n(define (render rows cols) text)\n") (hash)))
     (s-start (hash "columns" 160 "backgroundPlugins" (list (hash "path" "yinz:plugin-palette" "configuration" (hash "shared" "true")))))
     (test-wait-for-text "yinz-test>")
     (s-text "cd b && printf 'DIRECTORY-%s\\n' CHANGED") (s-key "Enter")
@@ -21,7 +21,7 @@
     (test-wait-for-text (string-append "CURRENT SOURCE cwd=" home "/b"))))
 (test "plugin palette loads, inspects, reloads and closes a plugin in a real session" (lambda ()
     (define home (s-fixture (hash "palette-fixture.scm"
-          "(define text \"PLUGIN READY\")\n(define (load configuration) (yinz-command (hash \"Subscribe\" '(\"Key\"))))\n(define (update event) (set! text \"PLUGIN MODIFIED\") #t)\n(define (render rows cols) text)\n") (hash)))
+          "(yinz-declare-pane)\n(define text \"PLUGIN READY\")\n(define (load configuration) (yinz-command (hash \"Subscribe\" '(\"Key\"))))\n(define (update event) (set! text \"PLUGIN MODIFIED\") #t)\n(define (render rows cols) text)\n") (hash)))
     (s-start (hash "columns" 160 "backgroundPlugins" (list (hash "path" "yinz:plugin-palette" "configuration" (hash "shared" "true")))))
     (test-wait-for-text "yinz-test>") (open-command "Load plugin") (test-wait-for-text "Plugin URL or alias:")
     (s-text (string-append "file:" home "/palette-fixture.scm")) (s-key "Enter") (s-key "Enter") (s-key "Enter")

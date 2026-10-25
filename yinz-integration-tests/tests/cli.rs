@@ -56,6 +56,7 @@ fn pipe_recipient_session() -> (yinz_integration_tests::TestSession, String) {
     std::fs::write(
         &path,
         r#"
+(yinz-declare-pane)
 (define payload "") (define keys 0)
 (define (load configuration)
   (yinz-command (hash "Subscribe" '("Key")))

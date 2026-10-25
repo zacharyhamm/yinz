@@ -79,6 +79,10 @@ struct Capture {
     completions: Vec<Completion>,
     events: Vec<Value>,
     callbacks: BTreeMap<String, yinz_steel::JsonCallback>,
+    /// The loaded plugin's pane declaration for its test configuration, once it is evaluated.
+    pane_declared: Option<bool>,
+    /// The loaded plugin's entry path, for errors that name it.
+    plugin_name: String,
 }
 impl Capture {
     fn log(&mut self, text: &str) -> Result<()> {
@@ -101,6 +105,7 @@ impl Capture {
         }
         let decoded: PluginCommand = yinz_steel::binary::decode_command(actual.clone())
             .context("invalid plugin command in test")?;
+        shared.lock().unwrap().refuse_own_pane_command(&decoded)?;
         if let Some(envelope) = envelope.filter(|value| value["permission_id"].is_string()) {
             let PluginCommand::RequestPluginPermissions(permissions) = decoded else {
                 bail!("permission callback requires RequestPluginPermissions");
@@ -129,6 +134,27 @@ impl Capture {
             shared.lock().unwrap().events.push(json!({"PickResult": {"request_id":request_id, "result":{"Err":if timeout {"TimeoutError"} else {"AbortError"}}}}));
         }
         Ok(reply)
+    }
+
+    /// As the host does: a plugin that declares no pane cannot run commands that need one. Its
+    /// own id is the one its `GetPluginIds` reply gives it, if the test supplied one.
+    fn refuse_own_pane_command(&self, command: &PluginCommand) -> Result<()> {
+        if self.pane_declared != Some(false) {
+            return Ok(());
+        }
+        let me = self
+            .replies
+            .get("GetPluginIds")
+            .and_then(|ids| ids["plugin_id"].as_u64())
+            .and_then(|id| u32::try_from(id).ok())
+            .map_or(crate::PluginId::new(u32::MAX), crate::PluginId::new);
+        if let Some(name) = yinz_types::own_pane::own_pane_command(command, me) {
+            bail!(
+                "{}",
+                yinz_types::own_pane::own_pane_refusal(name, &self.plugin_name)
+            );
+        }
+        Ok(())
     }
 
     fn reply(shared: &Arc<Mutex<Self>>, command: Value) -> Result<Value> {
@@ -363,13 +389,33 @@ impl State {
                 if !evaluated.output.is_empty() {
                     self.capture.lock().unwrap().log(&evaluated.output)?;
                 }
+                let configuration = argument["options"]
+                    .get("configuration")
+                    .cloned()
+                    .unwrap_or(json!({}));
+                // The host's check: the evaluated declaration must be the one the scan of the
+                // entry source finds.
+                // Both read the configuration as the host passes it: string values only.
+                let host_configuration = string_configuration(&configuration);
+                let scanned = yinz_steel::manifest::pane_declaration(&source)
+                    .context("reading the plugin's pane declaration")?
+                    .applies(&host_configuration);
+                let evaluated: bool = serde_json::from_value(
+                    plugin.invoke("yinz-pane-declared?", vec![json!(host_configuration)])?,
+                )
+                .context("reading the plugin's evaluated pane declaration")?;
+                anyhow::ensure!(
+                    scanned == evaluated,
+                    "{}",
+                    crate::plugin_loader::pane_declaration_mismatch(scanned, evaluated)
+                );
+                {
+                    let mut capture = self.capture.lock().unwrap();
+                    capture.pane_declared = Some(scanned);
+                    capture.plugin_name = path.display().to_string();
+                }
                 plugin.invoke("yinz-async-enter", vec![json!(1)])?;
-                plugin.load(
-                    argument["options"]
-                        .get("configuration")
-                        .cloned()
-                        .unwrap_or(json!({})),
-                )?;
+                plugin.load(configuration)?;
                 self.plugin = Some(plugin);
                 Ok(Value::Null)
             },
@@ -397,6 +443,12 @@ impl State {
                 Ok(Value::Null)
             },
             "commands" => Ok(json!(self.capture.lock().unwrap().commands)),
+            "pane-declared" => Ok(json!(self
+                .capture
+                .lock()
+                .unwrap()
+                .pane_declared
+                .context("load a plugin with test-load-plugin first")?)),
             "logs" => Ok(json!(self.capture.lock().unwrap().logs)),
             "renders" => Ok(json!(self.capture.lock().unwrap().renders)),
             "event" => {
@@ -570,6 +622,21 @@ impl State {
         }
         result
     }
+}
+
+/// A test configuration as the host passes one: string values, others in their JSON spelling.
+fn string_configuration(configuration: &Value) -> BTreeMap<String, String> {
+    configuration
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(key, value)| {
+            let value = value
+                .as_str()
+                .map_or_else(|| value.to_string(), str::to_owned);
+            (key.clone(), value)
+        })
+        .collect()
 }
 
 fn set_test_identity(runtime: &mut Runtime) -> Result<()> {

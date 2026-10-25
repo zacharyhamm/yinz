@@ -36,8 +36,17 @@ impl Screen {
         mut completion_tx: Option<NotificationEnd>,
         pending: &mut PendingEvents,
     ) -> Result<()> {
+        let headless = match pane_id {
+            PaneId::Plugin(plugin_id) => self.headless_plugin_error(plugin_id),
+            PaneId::Terminal(_) => None,
+        };
         let pane_exists = self.tab_containing_pane(pane_id).is_some();
-        if !pane_exists {
+        if let Some(error) = headless {
+            if let Some(c) = completion_tx.as_mut() {
+                c.set_exit_status(1);
+                c.set_error_message(error);
+            }
+        } else if !pane_exists {
             if let Some(c) = completion_tx.as_mut() {
                 c.set_exit_status(1);
                 c.set_error_message(format!("Pane with id {:?} not found", pane_id));
@@ -104,6 +113,30 @@ impl Screen {
                 .and_then(|tab| tab.pane_run_command(id))
         {
             self.fire_pane_exit_hook(id, exit_status, &run_command, false);
+        }
+        self.close_pane_without_exit_hook(id, client_id, completion_tx, exit_status, pending)
+    }
+
+    /// `close_pane_from_instruction` for a close that is no process's exit, so no `pane_exit`
+    /// hook's moment either, though it has neither a client nor a completion: a slot the plugin
+    /// thread gives up, whose held command never ran.
+    pub(super) fn close_pane_without_exit_hook(
+        &mut self,
+        id: PaneId,
+        client_id: Option<ClientId>,
+        completion_tx: Option<NotificationEnd>,
+        exit_status: Option<i32>,
+        pending: &mut PendingEvents,
+    ) -> Result<()> {
+        // A headless plugin has no pane to close, nor has one still resolving its repository:
+        // closing it unloads it. The plugin thread reports the unload with `PluginUnloaded`; the
+        // action is done once it is asked.
+        if let PaneId::Plugin(plugin_id) = id
+            && self.closes_by_unloading(plugin_id)
+        {
+            self.unload_paneless_plugin(plugin_id);
+            drop(completion_tx);
+            return Ok(());
         }
         if self.destroyed_panes.contains(&id) && self.tab_containing_pane(id).is_none() {
             drop(completion_tx);

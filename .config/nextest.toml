@@ -24,8 +24,9 @@ threads-required = 4
 #
 # Kept separate from `default` on purpose: the integration overrides above are keyed on binary
 # names that mean nothing here, and the unit suites want a different timeout. `terminate-after`
-# leaves room for the three 5s sleepers in `plugin_tests` on a loaded machine, while still
-# killing a genuinely hung test well inside the 60s `default_timeout()` those tests wait on.
+# leaves room for the three 5s sleepers in `plugin_tests` on a loaded machine. The 45s
+# `yinz_test_support::default_timeout()` those tests wait on ends before this 60s kill, so a
+# stuck wait panics with what it saw (`yinz-test-support/src/unit/default_timeout.rs`).
 [profile.unit]
 fail-fast = false
 slow-timeout = { period = "15s", terminate-after = 4 }

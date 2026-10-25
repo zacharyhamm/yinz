@@ -4,7 +4,7 @@ use super::pane_creation::{run_action, translate_plugin_path};
 use super::permissions::{ensure_plugin_permissions, LAYOUT_FILE_PERMISSIONS};
 use super::write_response;
 use crate::plugin_map::PluginEnv;
-use crate::PaneId;
+use crate::plugin_panes::Surface;
 use kdl::KdlDocument;
 use prost::Message;
 use std::collections::{BTreeMap, BTreeSet};
@@ -747,11 +747,11 @@ pub(super) fn try_edit_layout(
         .with_originating_plugin(env.originating_plugin(context)),
         direction: None,
         floating: false,
-        in_place: !env.background,
+        in_place: !env.background && env.surface == Surface::Pane,
         close_replaced_pane: false,
         start_suppressed: false,
         placement: NewPanePlacement::Floating(None),
-        near_current_pane: !env.background,
+        near_current_pane: !env.background && env.surface == Surface::Pane,
         no_focus: false,
         tab_id: None,
     };
@@ -760,7 +760,7 @@ pub(super) fn try_edit_layout(
         action,
         env.client_id,
         None,
-        Some(PaneId::Plugin(env.plugin_id)),
+        env.own_pane(),
         env.senders.clone(),
         env.default_shell.clone(),
         None,

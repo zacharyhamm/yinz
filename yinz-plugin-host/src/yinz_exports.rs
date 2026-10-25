@@ -6,7 +6,8 @@ macro_rules! apply_action {
             $action,
             $env.client_id,
             None,
-            Some(crate::PaneId::Plugin($env.plugin_id)),
+            // A headless plugin has no pane to place things near: they go by the client.
+            $env.own_pane(),
             $env.senders.clone(),
             $env.default_shell.clone(),
             None,
@@ -61,6 +62,7 @@ mod sessions;
 mod validation_tests;
 
 use crate::plugin_map::PluginEnv;
+use crate::plugin_panes::Surface;
 use crate::PluginInstruction;
 pub(crate) use agent_control::agent_event_projects;
 pub use agent_control::control_agent;
@@ -163,6 +165,7 @@ use yinz_plugin_api::plugin_command::{
 use yinz_runtime::errors::prelude::*;
 use yinz_types::data::{CommandType, Event, PermissionStatus, PluginCommand};
 use yinz_types::internal_ids::TabNumber;
+use yinz_types::own_pane::{own_pane_command, own_pane_refusal};
 
 /// The virtual root a plugin's own plugin folder is mounted at. Present only when the session
 /// has one configured or defaulted; a write under it needs `AuthorPlugins` on top of `WriteFiles`.
@@ -175,7 +178,14 @@ pub const PLUGINS_FS_ROOT: &str = "/plugins";
 pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result<()> {
     let plugin_command = env.name();
     let err_context = || format!("failed to run plugin command {}", plugin_command);
-    match check_command_permission(env, &command) {
+    let permission = check_command_permission(env, &command);
+    if permission.0 == PermissionStatus::Granted
+        && env.surface == Surface::Headless
+        && let Some(name) = own_pane_command(&command, env.plugin_id)
+    {
+        bail!("{}", own_pane_refusal(name, &env.name()));
+    }
+    match permission {
         (PermissionStatus::Granted, _) => match command {
             PluginCommand::CommandPalette(mut command) => {
                 let generation = env

@@ -12,6 +12,7 @@ fn steel_worker_permission_grant_retains_the_parents_run_commands_grant() {
     std::fs::write(
         &path,
         r#"
+(yinz-declare-pane)
 (define state "starting")
 (yinz-register-workers (hash "change" (lambda (name payload)
   (yinz-then (yinz-wait-for-permissions '("ChangeApplicationState")) (lambda (_)
@@ -96,6 +97,7 @@ fn steel_parent_and_two_workers_share_one_permission_fifo_and_keep_callback_clie
         let harness = Harness::with_event_sender(
             "scm",
             r#"
+(yinz-declare-pane)
 (define state "ready")
 (define (request name permission)
   (define result (yinz-wait-for-permissions (list permission)))
@@ -252,6 +254,7 @@ fn steel_reload_drops_a_pending_workers_permission_completion() {
     let (to_proxy, outgoing): ChannelWithContext<PluginInstruction> = channels::unbounded();
     let to_proxy = SenderWithContext::new(to_proxy);
     let source = r#"
+(yinz-declare-pane)
 (define label "original")
 (yinz-register-workers (hash "ask" (lambda (name payload)
   (define answer (yinz-wait-for-permissions '("RunCommands")))
@@ -346,6 +349,7 @@ fn steel_workers_keep_isolated_state_order_async_timers_and_shared_permissions()
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define calls 0)
 (define state "starting")
 (define results '())
@@ -397,6 +401,7 @@ fn steel_busy_workers_leave_the_ui_responsive_and_stop_with_the_owner() {
         let harness = Harness::new(
             "scm",
             r#"
+(yinz-declare-pane)
 (define state "starting")
 (yinz-register-workers (hash "spin" (lambda (name payload)
   (yinz-post-plugin "started" "") (let loop () (loop)))))
@@ -417,7 +422,7 @@ fn steel_busy_workers_leave_the_ui_responsive_and_stop_with_the_owner() {
         if cleanup == "reload" {
             std::fs::write(
                 &harness.path,
-                "(define (render rows columns) \"worker replacement loaded\")",
+                "(yinz-declare-pane) (define (render rows columns) \"worker replacement loaded\")",
             )
             .unwrap();
             harness.reload();
@@ -440,6 +445,7 @@ fn steel_busy_workers_leave_the_ui_responsive_and_stop_with_the_owner() {
 #[test]
 fn steel_worker_list_clients_replies_are_generation_scoped_and_release_its_fifo() {
     let source = r#"
+(yinz-declare-pane)
 (define label "original")
 (define state "starting")
 (define parent-replies 0)
@@ -530,6 +536,7 @@ fn list_clients_metadata() -> yinz_bus::session_layout_metadata::SessionLayoutMe
 #[test]
 fn steel_worker_pane_replies_cannot_reach_a_reloaded_parent_or_worker() {
     let source = r#"
+(yinz-declare-pane)
 (define label "original")
 (define state "starting")
 (define replies 0)
@@ -620,6 +627,7 @@ fn steel_workers_preserve_shared_clients_and_discard_replies_after_reload() {
     let harness = Harness::with_event_sender(
         "scm",
         r#"
+(yinz-declare-pane)
 (define state "worker ready")
 (yinz-register-workers (hash "echo" (lambda (name payload)
   (define before (hash-ref (yinz-command "GetPluginIds") "client_id"))
@@ -688,6 +696,7 @@ fn steel_workers_preserve_shared_clients_and_discard_replies_after_reload() {
     std::fs::write(
         &harness.path,
         r#"
+(yinz-declare-pane)
 (define replies 0) (define keys 0)
 (define (load config) (yinz-command (hash "Subscribe" '("CustomMessage" "Key"))))
 (define (update event)
@@ -715,6 +724,7 @@ fn steel_workers_preserve_shared_clients_and_discard_replies_after_reload() {
 #[test]
 fn steel_worker_host_folder_replies_release_fifo_and_stay_local_across_reload() {
     let source = r#"
+(yinz-declare-pane)
 (define label "original")
 (define state "")
 (define parent-replies 0)
@@ -938,6 +948,7 @@ fn steel_worker_binary_events_preserve_bytes_and_release_the_job_fifo() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define state "starting")
 (yinz-register-workers (hash "binary" (lambda (name payload)
   (if (equal? name "next")

@@ -9,6 +9,7 @@ fn steel_rpc_calls_peers_by_url_and_id() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define state "starting")
 (yinz-rpc-handle "back" (lambda (payload call)
   (hash "value" payload "from" (hash-ref (hash-ref call "source") "Plugin"))))
@@ -77,6 +78,7 @@ fn steel_rpc_rejects_calls_without_message_permission() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define state "starting")
 (define denied 0)
 (define (attempt)
@@ -102,6 +104,7 @@ fn steel_rpc_rejects_calls_without_message_permission() {
 #[test]
 fn steel_rpc_reload_ignores_old_replies_before_settling_the_new_call() {
     let source = r#"
+(yinz-declare-pane)
 (define label "old")
 (define result "waiting")
 (define fences 0)
@@ -189,6 +192,7 @@ fn steel_completion_real_dispatch_permissions_and_reload_isolation() {
         },
     );
     let source = r#"
+(yinz-declare-pane)
 (define label "old")
 (define state "starting")
 (define fences 0)
@@ -282,6 +286,7 @@ fn steel_completion_real_dispatch_permissions_and_reload_isolation() {
 fn steel_agent_events_use_real_permissions_and_reloaded_waits() {
     use yinz_types::agent::{AgentEvent, AgentState};
     let source = r#"
+(yinz-declare-pane)
 (define label "old")
 (define state "starting")
 (define heard 0)
@@ -328,6 +333,7 @@ fn steel_agent_events_use_real_permissions_and_reloaded_waits() {
 const CLIENT: ClientId = ClientId::new(1);
 const PLUGIN: PluginId = PluginId::new(0);
 const KEYBINDINGS_PLUGIN: &str = r#"
+(yinz-declare-pane)
 (define count 0)
 (define state "loading")
 (define (load config)
@@ -452,6 +458,7 @@ fn steel_default_keybindings_are_refused_without_the_reconfigure_grant() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define state "loading")
 (define (load config)
   (set! state (with-handler (lambda (failure) (error-object-message failure))

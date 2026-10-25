@@ -1,3 +1,4 @@
+(yinz-declare-pane)
 (define form
   (yinz-ui-form
     (list (yinz-ui-input "name" "Name" "日本語")

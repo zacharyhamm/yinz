@@ -6,6 +6,7 @@ fn scheme_installed_render_settles_callbacks_before_capturing_visible_text() {
     std::fs::write(
         root.path().join("render.scm"),
         r#"
+(yinz-declare-pane)
 (define text "before")
 (define (render rows columns)
   (define snapshot text)
@@ -42,6 +43,7 @@ fn scheme_installed_picker_harness_uses_results_cancellation_and_deadlines() {
     std::fs::write(
         root.path().join("picker.scm"),
         r#"
+(yinz-declare-pane)
 (define text "")
 (define pending #f)
 (define (load config) (void))

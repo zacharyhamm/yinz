@@ -35,7 +35,7 @@ fn wait_for_plugin_state(
     plugin: &std::path::Path,
     state: yinz_types::cli::PluginState,
 ) -> yinz_types::cli::PluginStatus {
-    let deadline = std::time::Instant::now() + yinz_test_support::default_timeout();
+    let deadline = std::time::Instant::now() + yinz_integration_tests::default_timeout();
     loop {
         // Each correlated IPC reply observes the plugin thread after its preceding work.
         let response = lifecycle(
@@ -118,6 +118,7 @@ fn steel_native_compilation_failure_keeps_the_session_alive() {
     fs::write(
         &plugin,
         r#"
+(yinz-declare-pane)
 (define state "checking")
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("AuthorPlugins" "ReadFiles"))
@@ -205,6 +206,7 @@ fn steel_pane_sequence_reuses_one_host_pane_and_cancels_its_child() {
     let directory = tempfile::tempdir().unwrap();
     let plugin = directory.path().join("sequence.scm");
     fs::write(&plugin, r#"
+(yinz-declare-pane)
 (define state "starting")
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("RunCommands" "ReadApplicationState" "ChangeApplicationState" "WriteToStdin"))
@@ -259,6 +261,7 @@ fn steel_pane_sequence_reload_does_not_advance_the_old_steps() {
     let directory = tempfile::tempdir().unwrap();
     let plugin = directory.path().join("reload-sequence.scm");
     fs::write(&plugin, r#"
+(yinz-declare-pane)
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("RunCommands" "ReadApplicationState" "WriteToStdin"))
     (lambda (_)
@@ -283,6 +286,7 @@ fn steel_pane_sequence_reload_does_not_advance_the_old_steps() {
         &plugin,
         format!(
             r#"
+(yinz-declare-pane)
 (define state "starting replacement")
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("RunCommands" "ReadApplicationState" "WriteToStdin"))
@@ -366,6 +370,7 @@ fn steel_pane_exit_observes_a_held_cli_pane() {
     assert_eq!(code, 0, "{output}");
     let pane = yinz.expect_pty_spawn();
     fs::write(&plugin, format!(r#"
+(yinz-declare-pane)
 (define state "starting observer")
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("ReadApplicationState"))
@@ -403,13 +408,14 @@ fn steel_pane_exit_observes_a_held_cli_pane() {
 }
 
 #[test]
-fn steel_multipane_reserves_launch_slots_and_keeps_exit_and_failed_plugin_in_place() {
+fn steel_multipane_reserves_launch_slots_keeps_exit_in_place_and_removes_a_failed_childs_slot() {
     let directory = tempfile::tempdir().unwrap();
     let plugin = directory.path().join("multipane.scm");
     let permission_child = directory.path().join("permission-child.scm");
     fs::write(
         &permission_child,
         r#"
+(yinz-declare-pane)
 (define state "CHILD LOADING")
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("WebAccess")) (lambda (_) (set! state "CHILD READY"))))
@@ -418,6 +424,7 @@ fn steel_multipane_reserves_launch_slots_and_keeps_exit_and_failed_plugin_in_pla
     )
     .unwrap();
     fs::write(&plugin, r#"
+(yinz-declare-pane)
 (define state "requesting composition") (define container #f)
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("ChangeApplicationState" "RunCommands" "OpenTerminalsOrPlugins" "ReadApplicationState"))
@@ -521,21 +528,9 @@ fn steel_multipane_reserves_launch_slots_and_keeps_exit_and_failed_plugin_in_pla
             grid.contains(message) && grid.contains("COMPOSITION OWNER")
         });
     }
-    yinz.send_stdin(b"r");
-    yinz.wait_until("failed child launch stays beside its sibling", |grid| {
-        grid.contains("SIBLING SURVIVED")
-            && (grid.contains("Failed") || grid.contains("failed") || grid.contains("ERROR"))
-    });
-    let members: Vec<_> = list()
-        .into_iter()
-        .filter(|pane| pane["multipane"]["id"] == info["id"])
-        .collect();
-    assert_eq!(members.len(), 2);
-    assert!(members.iter().all(|pane| pane["is_plugin"] == true));
-    assert_eq!(members[0]["multipane"], members[1]["multipane"]);
     yinz.send_stdin(b"p");
     yinz.wait_until("child permission prompt stays in its slot", |grid| {
-        grid.contains("SIBLING SURVIVED") && grid.contains("Plugin permissions")
+        grid.contains("COMPOSITION OWNER") && grid.contains("Plugin permissions")
     });
     assert_eq!(
         list()
@@ -548,15 +543,50 @@ fn steel_multipane_reserves_launch_slots_and_keeps_exit_and_failed_plugin_in_pla
         .into_iter()
         .find(|pane| pane["multipane"]["id"] == info["id"] && pane["id"] != owner["id"])
         .unwrap();
+    assert_eq!(child["is_plugin"], true);
     yinz.run_cli_action(CliAction::FocusPaneId {
         pane_id: format!("plugin_{}", child["id"]),
     });
     yinz.send_stdin(b"\t\r");
     yinz.wait_until("delayed child finishes in its slot", |grid| {
-        grid.contains("SIBLING SURVIVED") && grid.contains("CHILD READY")
+        grid.contains("COMPOSITION OWNER") && grid.contains("CHILD READY")
     });
     yinz.run_cli_action(CliAction::FocusPaneId {
         pane_id: format!("plugin_{}", owner["id"]),
+    });
+    // A child whose source cannot be read gets no pane: its launch gives up the slot it was
+    // given, here the running permission child's, and the failure is a notification. The slot
+    // leaves the container, whose owner stays as its one pane: no multipane is left, no held or
+    // exited terminal stands in for the slot, and the child that was in it is unloaded.
+    yinz.send_stdin(b"r");
+    yinz.wait_until("failed child launch is reported beside its owner", |grid| {
+        grid.contains("SIBLING SURVIVED") && grid.contains("failed")
+    });
+    yinz.wait_until("failed child's slot is removed", |_| {
+        let panes = list();
+        panes.iter().all(|pane| pane.get("multipane").is_none())
+            && !panes
+                .iter()
+                .any(|pane| pane["id"] == child["id"] && pane["is_plugin"] == true)
+    });
+    let panes = list();
+    assert!(
+        panes
+            .iter()
+            .any(|pane| pane["id"] == owner["id"] && pane["is_plugin"] == true),
+        "the owner stays: {panes:?}"
+    );
+    assert!(
+        !panes
+            .iter()
+            .any(|pane| pane["is_plugin"] == false && pane["exited"] == true),
+        "no exited terminal is left in the slot: {panes:?}"
+    );
+    assert!(!panes.iter().any(|pane| pane["plugin_url"]
+        .as_str()
+        .is_some_and(|url| url.contains("missing-multipane-child"))));
+    yinz.wait_until("the given-up child is drawn no more", |grid| {
+        grid.contains("SIBLING SURVIVED") && !grid.contains("CHILD READY")
     });
     yinz.send_stdin(b"q");
     yinz.wait_until("close_self closes the container", |grid| {
@@ -576,6 +606,7 @@ fn native_pane_tabs_mix_fixture_and_scheme_and_retain_hidden_state() {
     fs::write(
         &plugin,
         r#"
+(yinz-declare-pane)
 (define count 0) (define hides 0) (define hidden #f) (define updates 0) (define ready #f)
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("ReadApplicationState"))
@@ -664,7 +695,7 @@ layout {{
     );
     fs::write(
         &failing,
-        "(define (render rows columns) \"RETRY SUCCEEDED\")",
+        "(yinz-declare-pane) (define (render rows columns) \"RETRY SUCCEEDED\")",
     )
     .unwrap();
     yinz.send_stdin(b"r");
@@ -694,6 +725,7 @@ fn steel_palette_network_discovery_is_async_and_obsolete_replies_are_ignored() {
     let directory = tempfile::tempdir().unwrap();
     let plugin = directory.path().join("palette.scm");
     fs::write(&plugin, format!(r#"
+(yinz-declare-pane)
 (define state "starting") (define received 0)
 (define (result-view response)
   (list (hash "id" "result" "label" (bytes->string/utf8 (hash-ref response "body"))
@@ -819,6 +851,7 @@ fn steel_palette_shared_clients_reload_and_unload_keep_separate_views() {
     let directory = tempfile::tempdir().unwrap();
     let plugin = directory.path().join("shared-palette.scm");
     let source = r#"
+(yinz-declare-pane)
 (define version "original") (define state "starting")
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("ReadApplicationState")) (lambda (_)
@@ -912,6 +945,7 @@ fn steel_unload_awaits_commands_on_reload_close_self_pane_close_and_shutdown() {
         let plugin = directory.path().join("unload.scm");
         let marker = directory.path().join("unloaded");
         fs::write(&plugin, format!(r#"
+(yinz-declare-pane)
 (define ready #f)
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("RunCommands" "ReadApplicationState" "ChangeApplicationState"))
@@ -995,6 +1029,7 @@ fn steel_palette_static_aliases_nested_reregistration_and_shared_reload() {
     let directory = tempfile::tempdir().unwrap();
     let plugin = directory.path().join("static-palette.scm");
     let source = r#"
+(yinz-declare-pane)
 (define version "original") (define state "starting") (define unregister #f)
 (define (register)
   (set! unregister (yinz-palette-register "pdf" "PDF tools" (list
@@ -1138,6 +1173,7 @@ fn steel_palette_completion_notifies_above_its_result_view() {
     fs::write(
         &plugin,
         r#"
+(yinz-declare-pane)
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("ReadApplicationState")) (lambda (_)
     (yinz-palette-register "reports" "Reports" (list

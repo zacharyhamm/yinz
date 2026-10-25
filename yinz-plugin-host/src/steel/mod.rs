@@ -302,14 +302,23 @@ impl SteelPlugin {
         })
     }
 
-    pub fn load(&mut self, configuration: &BTreeMap<String, String>) -> Result<()> {
+    /// Call the plugin's `load`. `initial_render` arms its first render, for a plugin that has a
+    /// pane; a headless plugin never renders.
+    pub fn load(
+        &mut self,
+        configuration: &BTreeMap<String, String>,
+        initial_render: bool,
+    ) -> Result<()> {
         let configuration =
             serde_json::to_value(configuration).context("encoding Steel configuration")?;
         let started = Instant::now();
         let loaded = self.with_runtime(true, |runtime| {
             runtime.load(configuration)?;
-            // The load API has no boolean return slot, so re-arm its initial render for the host.
-            runtime.invoke("yinz-request-render", vec![])?;
+            if initial_render {
+                // The load API has no boolean return slot, so re-arm its initial render for the
+                // host.
+                runtime.invoke("yinz-request-render", vec![])?;
+            }
             Ok(())
         });
         log::info!(
@@ -323,6 +332,8 @@ impl SteelPlugin {
         );
         loaded?;
         // Permission prompts can hold resize events, so load's render request needs its own tick.
+        // A headless plugin gets it too: the tick also polls the deferred work `load` started,
+        // and it never renders an instance without a pane.
         self.env()
             .senders
             .send_to_plugin(PluginInstruction::PluginTick(

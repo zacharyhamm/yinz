@@ -21,6 +21,7 @@ fn scheduled_plugins() -> PluginResponse {
                 state,
                 pending_permissions: vec![],
                 latest_error: None,
+                pane: None,
             })
             .collect(),
     }

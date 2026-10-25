@@ -3,10 +3,13 @@ use crate::pipes::{
     apply_pipe_message_to_plugin, pipes_to_block_or_unblock, report_pipe_changes, PendingPipes,
     PipeOutcomes,
 };
-use crate::plugin_loader::PluginLoader;
+use crate::plugin_loader::{script_source, PluginLoader};
 use crate::plugin_map::{
     AtomicEvent, PluginConfiguration, PluginEnv, PluginMap, RunningPlugin, RunningPluginEntry,
     Subscriptions,
+};
+use crate::plugin_panes::{
+    send_effects, Failure, PaneEffect, PaneRequest, PluginPanes, Prepared, Surface,
 };
 use crate::{PipeStateChange, PluginRenderAsset};
 use yinz_bus::plugins::{PipeCompletion, PipeRequestId, PluginInstanceId};
@@ -102,7 +105,15 @@ impl EventOrPipeMessage {
 
 #[derive(Debug, Clone)]
 pub struct LoadingContext {
-    pub plugin_roles: crate::plugin_map::PluginRoles,
+    pub(crate) panes: PluginPanes,
+    /// Set for a load or a reload: its prepare step reads the plugin's pane declaration. `None`
+    /// for a new client's instance of a plugin already running, which keeps what it has.
+    pub(crate) pane_ticket: Option<PaneTicket>,
+    /// The entry source the prepare step read, which the loader evaluates, with the pane
+    /// declaration the step scanned in it: the loader checks the evaluated module against the
+    /// scan of the very source it evaluated.
+    pub(crate) prefetched_source: Option<(Option<PathBuf>, Arc<str>)>,
+    pub(crate) prefetched_declaration: Option<bool>,
     pub pick_request: Option<yinz_types::pick::PickRequest>,
     pub pick_cancelled: Option<Arc<AtomicBool>>,
     pub pick_opening: Option<Arc<AtomicBool>>,
@@ -133,6 +144,15 @@ pub struct LoadingContext {
     pub cancel: Arc<AtomicBool>,
     pub client_cancel: Arc<AtomicBool>,
     pub client_cancellations: Arc<Mutex<HashMap<ClientId, Arc<AtomicBool>>>>,
+}
+
+/// Which load of a plugin a prepare step reads the pane declaration for.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PaneTicket {
+    pub(crate) load_id: u64,
+    /// A reload: the plugin already has, or runs without, a pane, and the declaration may have
+    /// changed since.
+    pub(crate) reload: bool,
 }
 
 /// How a prepared load that cannot be queued is reported.
@@ -188,6 +208,19 @@ impl LoadingContext {
         }
         let needs_repository = matches!(self.plugin_config.location, RunPluginLocation::Git(_))
             && self.plugin_config.repository_root.is_none();
+        // The declaration waits for the repository, which can take a while: the screen learns of
+        // the load now, so that a second launch finds it, and the launch is answered with the
+        // plugin's id now rather than after the clone.
+        if needs_repository
+            && let Some(PaneTicket {
+                load_id: ticket,
+                reload: false,
+            }) = self.pane_ticket
+        {
+            let mut panes = self.panes.lock().unwrap();
+            let effects = panes.resolving(plugin_id, ticket);
+            send_effects(&senders, effects);
+        }
         let spawn_senders = senders.clone();
         let enqueue = move || {
             if let RunPluginLocation::Git(source) = &self.plugin_config.location
@@ -233,6 +266,9 @@ impl LoadingContext {
                     },
                 }
             }
+            if !self.declare_pane(&senders, load_id, failure) {
+                return true;
+            }
             let work = move |senders, map, clients| job(self, senders, map, clients);
             let accepted = executor.execute_for_plugin_tagged(plugin_id, "load", false, work);
             if !accepted {
@@ -263,6 +299,78 @@ impl LoadingContext {
         } else {
             enqueue()
         }
+    }
+
+    /// Read the entry's pane declaration and tell the ledger, before the load is queued: the
+    /// plugin's pane, if it gets one, then reaches the screen ahead of anything `load` sends,
+    /// and the decision never waits on the executor (a guest blocked opening another plugin's
+    /// pane must not wait for that plugin's load to be scheduled behind it).
+    ///
+    /// Answers whether to queue the load. A failure was reported as `failure` says.
+    fn declare_pane(
+        &mut self,
+        senders: &ThreadSenders,
+        load_id: u64,
+        failure: LoadFailure,
+    ) -> bool {
+        let Some(ticket) = self.pane_ticket else {
+            return true;
+        };
+        // A Lua entry is refused by the loader with its own message; it has nothing to scan.
+        if self
+            .plugin_config
+            .path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            == Some("lua")
+        {
+            return true;
+        }
+        let scanned = script_source(
+            &self.plugin_config,
+            self.user_plugin_dir.as_deref(),
+            &self.yinz_data_dir,
+        )
+        .and_then(|(path, source)| {
+            let declaration = yinz_steel::manifest::pane_declaration(&source)
+                .context("reading the plugin's pane declaration")?;
+            Ok((path, source, declaration))
+        });
+        let (path, source, declaration) = match scanned {
+            Ok(scanned) => scanned,
+            Err(error) => {
+                failure.report(
+                    senders,
+                    load_id,
+                    self.plugin_id,
+                    error.context(format!(
+                        "failed to start the script plugin at '{}'",
+                        self.plugin_config.path.display()
+                    )),
+                    Some(self.client_id),
+                );
+                return false;
+            },
+        };
+        let declared =
+            declaration.applies(self.plugin_config.initial_userspace_configuration.inner());
+        let prepared = {
+            let mut panes = self.panes.lock().unwrap();
+            let (prepared, effects) = if ticket.reload {
+                panes.redeclare(self.plugin_id, ticket.load_id, declared)
+            } else {
+                panes.declare(self.plugin_id, ticket.load_id, declared)
+            };
+            send_effects(senders, effects);
+            prepared
+        };
+        if prepared == Prepared::Abort {
+            // The ledger's `Unload` effect retires the load.
+            return false;
+        }
+        self.prefetched_source = Some((path, source.into()));
+        self.prefetched_declaration = Some(declared);
+        true
     }
 
     pub fn new(
@@ -328,7 +436,10 @@ impl LoadingContext {
         }
 
         Ok(LoadingContext {
-            plugin_roles: plugin_bridge.plugin_roles.clone(),
+            panes: plugin_bridge.panes.clone(),
+            pane_ticket: None,
+            prefetched_source: None,
+            prefetched_declaration: None,
             pick_opening: plugin_bridge
                 .picks
                 .get(&plugin_id)
@@ -390,7 +501,8 @@ pub struct PluginBridge {
     picks: HashMap<PluginId, picker::PendingPick>,
     permission_requests: BTreeMap<u64, permission_requests::PendingPermission>,
     next_permission_request: u64,
-    pub(crate) plugin_roles: crate::plugin_map::PluginRoles,
+    /// Whether each plugin has a pane; the only owner of `ScreenInstruction::AddPlugin`.
+    pub(crate) panes: PluginPanes,
     independent_plugin_ids: HashSet<PluginId>,
     configured_plugins: Vec<RunPlugin>,
     resolved_plugin_locations: HashMap<RunPluginLocation, RunPluginLocation>,
@@ -469,6 +581,29 @@ pub struct PluginBridge {
     pub plugin_aliases: Arc<Mutex<PluginAliases>>,
     #[cfg(test)]
     after_reconfigure_snapshot: Option<Box<dyn FnOnce() + Send>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's fixed size for the executors of the bridges built on its thread: one thread
+    /// proves that a guest waiting on another plugin's pane never waits for that plugin's load
+    /// to be scheduled. Per thread, so a test that sets it never changes the bridges of tests
+    /// running beside it in the same process (bare `cargo test`); the test harness hands it to
+    /// the plugin thread it spawns.
+    pub(crate) static TEST_EXECUTOR_THREADS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// How many pinned executor threads a bridge runs plugins on.
+pub(crate) fn executor_threads() -> usize {
+    #[cfg(test)]
+    {
+        let fixed = TEST_EXECUTOR_THREADS.with(std::cell::Cell::get);
+        if fixed > 0 {
+            return fixed;
+        }
+    }
+    num_cpus::get().clamp(4, 16)
 }
 
 fn close_plugin_instance(
@@ -574,6 +709,20 @@ impl PluginBridge {
         self.next_load_id
     }
 
+    /// The load a client attaching to a running plugin loads its instance under: the plugin's
+    /// current one. An attach adds an instance and replaces nothing, so it must not supersede a
+    /// load still in flight (a reload, or a git reload still resolving its repository): that
+    /// load's failure, cached pipes and cached events would all be dropped as stale.
+    fn join_plugin_load(&mut self, plugin_id: PluginId) -> u64 {
+        match self.load_ids.get(&plugin_id) {
+            Some(load_id) => {
+                self.latest_plugin_errors.remove(&plugin_id);
+                *load_id
+            },
+            None => self.begin_plugin_load(plugin_id),
+        }
+    }
+
     pub(crate) fn load_is_current(&self, plugin_id: PluginId, load_id: u64) -> bool {
         self.load_ids.get(&plugin_id) == Some(&load_id)
     }
@@ -604,7 +753,7 @@ impl PluginBridge {
         );
         let plugin_map = Arc::new(Mutex::new(PluginMap::default()));
         let connected_clients = plugin_map.lock().unwrap().connected_clients.clone();
-        let max_threads = num_cpus::get().clamp(4, 16);
+        let max_threads = executor_threads();
         let plugin_executor = Arc::new(PinnedExecutor::new(
             max_threads,
             &senders,
@@ -614,7 +763,7 @@ impl PluginBridge {
         Ok(PluginBridge {
             permission_requests: BTreeMap::new(),
             next_permission_request: 0,
-            plugin_roles: Default::default(),
+            panes: Default::default(),
             picks: HashMap::new(),
             independent_plugin_ids: HashSet::new(),
             configured_plugins: vec![],
@@ -669,6 +818,15 @@ impl PluginBridge {
             after_reconfigure_snapshot: None,
         })
     }
+    /// The id the next [`Self::load_plugin`] gives its plugin, for a launcher that names the
+    /// plugin's pane after it.
+    pub(crate) fn next_plugin_id(&self) -> PluginId {
+        PluginId::new(self.next_plugin_id)
+    }
+
+    /// Load `run` as a new plugin. `pane` says what its launcher asked for; the plugin's own
+    /// declaration decides, in the prepare step, whether it gets that pane or runs headless (see
+    /// `crate::plugin_panes`). Callers never place the pane themselves.
     pub fn load_plugin(
         &mut self,
         run: &Option<RunPlugin>,
@@ -677,6 +835,7 @@ impl PluginBridge {
         cwd: Option<PathBuf>,
         _skip_cache: bool,
         client_id: Option<ClientId>,
+        pane: PaneRequest,
     ) -> Result<(PluginId, ClientId)> {
         let _err_context = move || "failed to load plugin".to_string();
         let run = run.clone();
@@ -710,14 +869,28 @@ impl PluginBridge {
             // plugin anyway
             .with_context(|| {
                 "Plugins must have a client id, none was provided and none are connected"
-            })?;
+            });
+        let client_id = match client_id {
+            Ok(client_id) => client_id,
+            Err(error) => {
+                let location = run.as_ref().map_or_else(
+                    || "an unresolved plugin".to_owned(),
+                    |run| run.location.to_string(),
+                );
+                let error = error.context(format!("failed to start {location}"));
+                pane.reject(&format!("{error:#}"));
+                return Err(error);
+            },
+        };
+        let pane = pane.for_client(client_id);
 
         let plugin_id = PluginId::new(self.next_plugin_id);
-        self.plugin_roles
-            .lock()
-            .unwrap()
-            .entry(plugin_id)
-            .or_insert(false);
+        // Taken now, whatever becomes of this load: an id is never reused (the screen keeps
+        // unloaded ids to drop late pane records for them), including one whose load fails
+        // before it is queued.
+        self.next_plugin_id += 1;
+        // A load that fails before it is prepared is never declared; its id is unused.
+        let unprepared_load = 0;
         self.independent_plugin_ids.insert(plugin_id);
         self.cached_events_for_pending_plugins
             .insert(plugin_id, vec![]);
@@ -730,7 +903,10 @@ impl PluginBridge {
                 let plugin_config = match PluginConfig::from_run_plugin(&run) {
                     Some(plugin_config) => plugin_config,
                     None => {
-                        self.next_plugin_id += 1;
+                        self.panes
+                            .lock()
+                            .unwrap()
+                            .request(plugin_id, unprepared_load, pane);
                         handle_plugin_loading_failure(
                             &self.senders,
                             None,
@@ -757,7 +933,10 @@ impl PluginBridge {
                 let unloaded_while_loading = self.unloaded_while_loading.clone();
 
                 let load_id = self.begin_plugin_load(plugin_id);
-                let loading_context = LoadingContext::new(
+                // Recorded before the load is prepared, which is where the ledger learns the
+                // declaration and answers it.
+                self.panes.lock().unwrap().request(plugin_id, load_id, pane);
+                let mut loading_context = match LoadingContext::new(
                     self,
                     Some(yinz_cwd.clone()),
                     plugin_config,
@@ -765,10 +944,30 @@ impl PluginBridge {
                     client_id,
                     tab_index,
                     size,
-                )?;
-
-                let _ =
-                    senders.send_to_background_jobs(BackgroundJob::AnimatePluginLoading(plugin_id));
+                ) {
+                    Ok(loading_context) => loading_context,
+                    Err(error) => {
+                        // Failed as a rejected load is, as a reload whose preparation fails is:
+                        // the plugin leaves `loading_plugins` (or pipes and reloads by URL would
+                        // keep finding a load that never runs), its cached pipes are rejected,
+                        // its status shows why, and the ledger answers the request.
+                        self.plugin_failed(
+                            plugin_id,
+                            Some(load_id),
+                            None,
+                            None,
+                            format!("{error:#}"),
+                            true,
+                        )
+                        .with_context(|| format!("fail plugin {plugin_id}, which was not prepared"))
+                        .non_fatal();
+                        return Err(error);
+                    },
+                };
+                loading_context.pane_ticket = Some(PaneTicket {
+                    load_id,
+                    reload: false,
+                });
 
                 let accepted = loading_context.execute_prepared(
                     self.plugin_executor.clone(),
@@ -830,11 +1029,12 @@ impl PluginBridge {
                         None,
                     );
                 }
-
-                self.next_plugin_id += 1;
             },
             None => {
-                self.next_plugin_id += 1;
+                self.panes
+                    .lock()
+                    .unwrap()
+                    .request(plugin_id, unprepared_load, pane);
                 handle_plugin_loading_failure(
                     &self.senders,
                     None,
@@ -903,7 +1103,11 @@ impl PluginBridge {
             plugin_id: Some(pid),
         });
         self.cancel_permission_requests(pid, None);
-        self.plugin_roles.lock().unwrap().remove(&pid);
+        {
+            let mut panes = self.panes.lock().unwrap();
+            let effects = panes.retire(pid, shutting_down);
+            send_effects(&self.senders, effects);
+        }
         self.independent_plugin_ids.remove(&pid);
         self.latest_plugin_errors.remove(&pid);
         self.plugin_callers.remove(&pid);
@@ -1050,8 +1254,14 @@ impl PluginBridge {
             if instances.is_empty() && (instance_id.is_some() || generation.is_some()) {
                 return Ok(());
             }
+            // The failed instances were just marked unavailable; another client's may run on.
+            let stopped = !map.has_available_instance(plugin_id);
             drop(map);
-            show_plugin_crash(plugin_id, error.clone(), &self.senders);
+            let mut panes = self.panes.lock().unwrap();
+            let effects =
+                panes.failure_effects(plugin_id, &error, Failure::Crash { generation }, stopped);
+            send_effects(&self.senders, effects);
+            drop(panes);
             for (id, instance) in instances {
                 let accepted = self.plugin_executor.execute_for_plugin_tagged(
                     plugin_id,
@@ -1069,21 +1279,24 @@ impl PluginBridge {
                 .unwrap()
                 .reload_data_dirs
                 .remove(&plugin_id);
-            let name = self
-                .run_plugin_of_loading_plugin_id(plugin_id)
-                .map(|run| run.location.to_string())
-                .unwrap_or_else(|| plugin_id.to_string());
-            let mut loading_indication = LoadingIndication::new(name);
-            loading_indication.indicate_loading_error(error.clone());
-            let _ = self
-                .senders
-                .send_to_background_jobs(BackgroundJob::StopPluginLoadingAnimation(plugin_id));
-            let _ = self
-                .senders
-                .send_to_screen(ScreenInstruction::UpdatePluginLoadingStage(
-                    plugin_id,
-                    loading_indication,
-                ));
+            // A pane shows the failure; a headless plugin launched on request toasts once per
+            // load (each load has its own id), and one started in the background is reported
+            // only by its status and the log.
+            let mut panes = self.panes.lock().unwrap();
+            let effects = panes.failure_effects(plugin_id, &error, Failure::Load { load_id }, true);
+            // The ledger stops the animation where it paints the failure; any other load may
+            // have started one too.
+            let painted = effects
+                .iter()
+                .any(|effect| matches!(effect, PaneEffect::Background(_)));
+            send_effects(&self.senders, effects);
+            if !painted {
+                self.senders
+                    .send_to_background_jobs(BackgroundJob::StopPluginLoadingAnimation(plugin_id))
+                    .context("stop the loading animation of a plugin that failed to load")
+                    .non_fatal();
+            }
+            drop(panes);
             self.pending_pipes.reject_cached(plugin_id, load_id, &error);
         }
         self.cancel_plugin_picks(plugin_id);
@@ -1263,14 +1476,19 @@ impl PluginBridge {
         self.cached_resizes_for_pending_plugins
             .insert(plugin_id, (rows, columns));
 
-        let loading_indication = LoadingIndication::new(run_plugin.location.to_string());
-        self.start_plugin_loading_indication(&[plugin_id], &loading_indication);
+        // A headless plugin has no pane to show its reload in.
+        if self.panes.lock().unwrap().surface(plugin_id) != Some(Surface::Headless) {
+            let loading_indication = LoadingIndication::new(run_plugin.location.to_string());
+            self.start_plugin_loading_indication(&[plugin_id], &loading_indication);
+        }
         self.loading_plugins.insert((plugin_id, run_plugin.clone()));
 
         let plugin_executor = self.plugin_executor.clone();
 
         let load_id = self.begin_plugin_load(plugin_id);
-        let loading_context = match LoadingContext::new(
+        // Only this reload's declaration decides the plugin's pane from now on.
+        self.panes.lock().unwrap().reload(plugin_id, load_id);
+        let mut loading_context = match LoadingContext::new(
             self,
             cwd,
             plugin_config,
@@ -1291,6 +1509,11 @@ impl PluginBridge {
                 );
             },
         };
+        // The declaration is read again: the reload may have added or dropped it.
+        loading_context.pane_ticket = Some(PaneTicket {
+            load_id,
+            reload: true,
+        });
         self.plugin_map
             .lock()
             .unwrap()
@@ -1583,6 +1806,18 @@ impl PluginBridge {
                 log::error!("Failed to find plugin with id: {}", plugin_id);
                 continue;
             };
+            // A plugin whose declaration is not known yet (a git plugin still resolving its
+            // repository) has no surface for this client's instance to take. Its load has not
+            // been queued either, since the declaration is read first, so that load creates
+            // this client's instance with the others once it runs, with the pane or without
+            // it as the declaration says. One that failed before its declaration was known
+            // runs for nobody until it is reloaded, which then does the same.
+            if self.panes.lock().unwrap().pending(plugin_id) {
+                log::info!(
+                    "attach trace: PluginBridge::add_client client_id={client_id} plugin_id={plugin_id} left to its pending load"
+                );
+                continue;
+            }
 
             // Looked up before the plugin is marked as loading, so a plugin that cannot be
             // found is skipped without being left loading.
@@ -1615,8 +1850,11 @@ impl PluginBridge {
             self.cached_resizes_for_pending_plugins
                 .insert(plugin_id, (rows, columns));
 
-            let loading_indication = LoadingIndication::new(run_plugin.location.to_string());
-            self.start_plugin_loading_indication(&[plugin_id], &loading_indication);
+            // A headless plugin has no pane to show this client's instance loading in.
+            if self.panes.lock().unwrap().surface(plugin_id) != Some(Surface::Headless) {
+                let loading_indication = LoadingIndication::new(run_plugin.location.to_string());
+                self.start_plugin_loading_indication(&[plugin_id], &loading_indication);
+            }
             self.loading_plugins.insert((plugin_id, run_plugin.clone()));
 
             let plugin_executor = self.plugin_executor.clone();
@@ -1624,7 +1862,7 @@ impl PluginBridge {
             // So the context below shares the plugin's token rather than getting one nobody
             // sets; a no-op when the plugin is registered, as it normally is here.
             self.cancel_token(plugin_id);
-            let load_id = self.begin_plugin_load(plugin_id);
+            let load_id = self.join_plugin_load(plugin_id);
             let mut loading_context = match LoadingContext::new(
                 self,
                 cwd,
@@ -3254,7 +3492,11 @@ impl PluginBridge {
             self.replay_events(plugin_id, events, shutdown_sender.clone());
             self.finish_pipe_requests();
         }
-        if let Some((rows, columns)) = self.cached_resizes_for_pending_plugins.remove(&plugin_id) {
+        // A headless plugin has no pane to size.
+        let headless = self.panes.lock().unwrap().surface(plugin_id) == Some(Surface::Headless);
+        if let Some((rows, columns)) = self.cached_resizes_for_pending_plugins.remove(&plugin_id)
+            && !headless
+        {
             self.resize_plugin(plugin_id, columns, rows, shutdown_sender.clone())?;
         }
         self.apply_cached_worker_messages(plugin_id)?;
@@ -3630,6 +3872,36 @@ impl PluginBridge {
     pub fn plugin_is_shared(&self, plugin_id: &PluginId) -> bool {
         self.shared_plugin_ids.contains(plugin_id)
     }
+    /// Hand the screen the complete background subscriptions `instance` reported, unless the
+    /// instance has been retired since. A reload retires the old instance at once, but a handler
+    /// it was running can still subscribe: that registration would put back the registry entry
+    /// the screen dropped when the replacement declared a pane, and route the plugin's events
+    /// twice.
+    pub(crate) fn forward_background_subscriptions(
+        &self,
+        plugin_id: PluginId,
+        client_id: ClientId,
+        subscriptions: HashSet<EventType>,
+        instance: yinz_bus::plugins::PluginInstanceId,
+    ) {
+        let retired = self
+            .plugin_map
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .instance_is_retired(instance);
+        if retired {
+            log::debug!("dropped background subscriptions of a retired instance of {plugin_id}");
+            return;
+        }
+        self.senders
+            .send_to_screen(ScreenInstruction::UpdateBackgroundPluginSubscriptions(
+                plugin_id,
+                client_id,
+                subscriptions,
+            ))
+            .context("forward background plugin subscriptions")
+            .non_fatal();
+    }
     fn size_of_plugin_id(&self, plugin_id: PluginId) -> Option<(usize, usize)> {
         self.plugin_map
             .lock()
@@ -3833,35 +4105,35 @@ impl PluginBridge {
                     if !allow_load {
                         return Ok(vec![]);
                     }
+                    // A recipient that declares a pane floats as asked; one that does not
+                    // receives the message headless.
+                    let pane = PaneRequest::Show(Box::new(crate::plugin_panes::ShowPane {
+                        should_float: Some(should_float),
+                        in_place: should_be_open_in_place,
+                        replaced: yinz_bus::pty::ReplacedPane::Suppress,
+                        run: run_plugin_or_alias,
+                        title: pane_title,
+                        tab: None,
+                        pane_id_to_replace,
+                        cwd: cwd.clone(),
+                        coordinates: floating_pane_coordinates,
+                        should_focus: Some(should_focus),
+                        // Replaced by the client the load resolves to.
+                        client_id: Some(ClientId::NONE),
+                        completion: None,
+                        overlay: None,
+                        reserved_slot: None,
+                    }));
                     match self.load_plugin(
                         &Some(run_plugin),
                         None,
                         size,
-                        cwd.clone(),
+                        cwd,
                         skip_cache,
                         cli_client_id,
+                        pane,
                     ) {
-                        Ok((plugin_id, client_id)) => {
-                            let start_suppressed = false;
-                            drop(self.senders.send_to_screen(ScreenInstruction::AddPlugin(
-                                Some(should_float),
-                                should_be_open_in_place,
-                                yinz_bus::pty::ReplacedPane::Suppress,
-                                run_plugin_or_alias,
-                                pane_title,
-                                None,
-                                plugin_id,
-                                pane_id_to_replace,
-                                cwd,
-                                start_suppressed,
-                                floating_pane_coordinates,
-                                Some(should_focus),
-                                Some(client_id),
-                                None,
-                                None,
-                            )));
-                            Ok(vec![(plugin_id, Some(client_id))])
-                        },
+                        Ok((plugin_id, client_id)) => Ok(vec![(plugin_id, Some(client_id))]),
                         Err(error) => Err(error).context("Failed to load plugin"),
                     }
                 } else {
@@ -4261,7 +4533,8 @@ pub fn render_plugin_for_clients(
     running_plugin: &mut RunningPlugin,
     clients: &[ClientId],
 ) -> Result<Vec<PluginRenderAsset>> {
-    if running_plugin.is_disposed() {
+    // A headless plugin has no pane to render into.
+    if running_plugin.is_disposed() || running_plugin.env().surface == Surface::Headless {
         return Ok(vec![]);
     }
     let err_context = || format!("Failed to render plugin {plugin_id}");
@@ -4527,15 +4800,6 @@ pub fn handle_plugin_crash(
         error: message.clone(),
         failed_to_load: false,
     });
-}
-
-fn show_plugin_crash(plugin_id: PluginId, message: String, senders: &ThreadSenders) {
-    let mut loading_indication = LoadingIndication::new("Panic!".to_owned());
-    loading_indication.indicate_loading_error(message);
-    let _ = senders.send_to_screen(ScreenInstruction::UpdatePluginLoadingStage(
-        plugin_id,
-        loading_indication,
-    ));
 }
 
 pub fn apply_before_close_event_to_plugin(

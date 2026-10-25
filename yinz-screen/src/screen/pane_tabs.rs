@@ -131,6 +131,17 @@ impl Screen {
         generation: u64,
         result: std::result::Result<(PluginId, RunPluginOrAlias), String>,
     ) -> Result<()> {
+        // A plugin without a pane cannot fill the slot. The plugin thread unloads it, so the
+        // failure path needs no unload of its own.
+        let result = match result {
+            Ok((plugin_id, run)) if self.paneless_plugins.contains_key(&plugin_id) => {
+                Err(format!("{} declares no pane", run.location_string()))
+            },
+            Ok((plugin_id, _)) if self.unloaded_plugins.contains(&plugin_id) => Err(format!(
+                "plugin {plugin_id} was unloaded before its pane tab was placed"
+            )),
+            result => result,
+        };
         if self.pending_overlay_tab_loaded(id, &result)? {
             return Ok(());
         }

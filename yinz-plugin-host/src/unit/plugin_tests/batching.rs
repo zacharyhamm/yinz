@@ -39,6 +39,7 @@ fn logger_source(permissions: &[&str]) -> String {
         .join(" ");
     format!(
         r#"
+(yinz-declare-pane)
 (define lines '())
 (define (log text) (set! lines (append lines (list text))))
 (define (load config)
@@ -1052,6 +1053,7 @@ fn asynchronous_pipe_hold_releases_after_guest_render_output_without_screen_ackn
     let harness = Harness::new();
     harness.load_source(
         r#"
+(yinz-declare-pane)
 (define stream #f)
 (define ready #f)
 (define (load config)

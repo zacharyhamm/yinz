@@ -1,4 +1,4 @@
-;; Hidden driver for the fzf overlay. The host owns files, panes, focus, and picker replies.
+;; Headless driver for the fzf overlay. The host owns files, panes, focus, and picker replies.
 (require "./file-finder/common.scm" "./file-finder/opener.scm" "./file-finder/script.scm")
 
 (define config (hash))
@@ -29,15 +29,14 @@
       (when finder (close-terminal finder)) (finish))))
 
 (define (load configuration)
-  ;; A builtin is already granted these commands. Asking in the hidden pane would strand a prompt.
+  ;; Builtins are pre-granted; permission prompts are screen modals.
   (set! config configuration)
   (define ids (yinz-command "GetPluginIds"))
   (set! plugin-id (hash-ref ids "plugin_id"))
   (set! out-path (string-append "/tmp/yinz-file-finder-" (number->string (hash-ref ids "yinz_pid"))
       "-" (number->string plugin-id) ".sel"))
   (yinz-command (hash "Subscribe" '("HostFolderChanged" "FailedToChangeHostFolder" "CommandPaneExited"
-        "EditPaneExited" "PaneClosed" "PaneUpdate" "PluginConfigurationChanged")))
-  (yinz-command "HideSelf")
+        "EditPaneExited" "PaneClosed" "PluginConfigurationChanged")))
   (with-handler (lambda (failure) (displayln (string-append "file-finder: " (trim (error-object-message failure)))) (yinz-command "CloseSelf"))
     (define request (yinz-command (hash "Pick" "Request")))
     (if (ff-present? request)
@@ -130,6 +129,13 @@
                 (displayln (string-append "file-finder: failed to open " selection))
                 (close-terminal finder) (finish)))))])))
 
+;; The driver has no pane, so a second LaunchOrFocusPlugin (Alt e) finds nothing to focus. The
+;; host tells it with a private `launch_or_focus` pipe instead; bring back the finder or editor.
+(define (pipe message)
+  (when (and driving (ff-get message "is_private" #f) (equal? (ff-get message "name" #f) "launch_or_focus"))
+    (focus-terminal driving))
+  #f)
+
 (define (pane-exited pane)
   (when (and driving (= pane driving))
     (cond [(equal? stage "finding") (handle-selection pane)]
@@ -149,11 +155,6 @@
         (pane-exited pane))]
     [(ff-get event "EditPaneExited" #f) (pane-exited (car (hash-ref event "EditPaneExited")))]
     [(and driving (equal? (ff-get event "PaneClosed" #f) (hash "Terminal" driving))) (finish)]
-    [(and driving (hash? event) (hash-contains? event "PaneUpdate"))
-      (define focused (ff-safe (lambda () (yinz-command "GetFocusedPaneInfo")) json-null))
-      (when (equal? (ff-get focused "pane_id" #f) (hash "Plugin" plugin-id))
-        (yinz-command "HideSelf") (focus-terminal driving))]
     [(and (not picker) (ff-get event "PluginConfigurationChanged" #f))
       (set! config (hash-ref event "PluginConfigurationChanged"))])
   #f)
-(define (render rows columns) "")

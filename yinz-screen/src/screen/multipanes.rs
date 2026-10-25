@@ -1,4 +1,6 @@
+use super::thread_main::PendingEvents;
 use super::Screen;
+use yinz_bus::pty::PtyInstruction;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::{internal_ids::ClientId, multipane::*, pane_id::PaneId};
 
@@ -39,6 +41,49 @@ impl Screen {
             tab.validate_multipane_child(*id)?;
         }
         Ok(())
+    }
+    /// The plugin thread gives up `slot`, a pane it held for a plugin that will not have one
+    /// there: a multipane child that declares no pane, or that failed before its declaration
+    /// was known. A multipane member leaves its container, and the sibling stays as the
+    /// container's only pane, focused for whoever was on the slot. A pane that is no longer a
+    /// member (its container closed, or its sibling left first) closes as `ClosePane` closes
+    /// it, except that no `pane_exit` hook fires: the slot's held command never ran.
+    ///
+    /// The pty then frees what the slot held: a held or running terminal's process and
+    /// resources, or the plugin that was in it, which a `ReplacedPane::Close` replacement
+    /// would have unloaded too. The plugin the slot was held for is never named here; the
+    /// plugin thread unloads it, or keeps it running headless, on its own.
+    pub(super) fn give_up_slot(&mut self, slot: PaneId, pending: &mut PendingEvents) -> Result<()> {
+        let member = self
+            .tab_containing_pane(slot)
+            .is_some_and(|tab| tab.multipane_info(slot).is_some());
+        if !member {
+            self.close_pane_without_exit_hook(slot, None, None, None, pending)?;
+        } else {
+            self.repaint_tab_of_closing_overlay(slot);
+            let removed = self
+                .tab_containing_pane_mut(slot)
+                .is_some_and(|tab| tab.remove_multipane_member(slot));
+            if removed {
+                self.cleanup_closed_pane(slot);
+                self.bus
+                    .senders
+                    .send_to_pty(PtyInstruction::ClosePane(slot, None))
+                    .context("failed to free a given-up multipane slot")
+                    .non_fatal();
+                let clients: Vec<ClientId> = self.active_tab_ids.keys().copied().collect();
+                for client_id in clients {
+                    self.sync_scroll_mode_on_focus(client_id)?;
+                }
+            } else {
+                // It holds the place of a suppressed pane, which an ordinary close restores, or
+                // belongs to pane tabs, whose child an ordinary close blanks in place.
+                self.close_pane_without_exit_hook(slot, None, None, None, pending)?;
+            }
+        }
+        self.log_and_report_session_state().non_fatal();
+        self.retain_only_existing_panes_in_pane_groups();
+        self.render()
     }
     pub(crate) fn multipane_command(
         &mut self,

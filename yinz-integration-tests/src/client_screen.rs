@@ -51,7 +51,7 @@ impl ClientScreen {
         self.server_messages.clone()
     }
 
-    fn server_message_tail(&self) -> String {
+    pub(crate) fn server_message_tail(&self) -> String {
         const TAIL: usize = 30;
         let server_messages = match self.server_messages.lock() {
             Ok(server_messages) => server_messages,
@@ -97,7 +97,7 @@ impl ClientScreen {
             if now >= deadline {
                 let size = *self.size.lock().unwrap();
                 let grid_snapshot = render_bytes(&received_bytes.bytes, size);
-                panic!(
+                let message = format!(
                     "timed out waiting for: {}\nlast rendered grid:\n{}\n=== (received {} stdout bytes, generation {}) ===\n{}{}\n=== yinz log tail ({}) ===\n{}",
                     what,
                     grid_snapshot.text,
@@ -108,6 +108,10 @@ impl ClientScreen {
                     crate::test_env::log_file_path().display(),
                     crate::test_env::log_tail(40),
                 );
+                // Unlock first: panicking with the guard held poisons the mutex, and the client
+                // thread's next write then dies with a second, misleading panic.
+                drop(received_bytes);
+                panic!("{message}");
             }
             let last_generation = received_bytes.generation;
             let (guard, _) = self
@@ -142,7 +146,7 @@ impl ClientScreen {
             }
             let now = Instant::now();
             if now >= deadline {
-                panic!(
+                let message = format!(
                     "timed out waiting for: {}\ncursor: {:?}\nlast rendered grid:\n{}\n=== (received {} stdout bytes, generation {}) ===\n{}{}\n=== yinz log tail ({}) ===\n{}",
                     what,
                     grid_snapshot.cursor,
@@ -154,6 +158,10 @@ impl ClientScreen {
                     crate::test_env::log_file_path().display(),
                     crate::test_env::log_tail(40),
                 );
+                // Unlock first: panicking with the guard held poisons the mutex, and the client
+                // thread's next write then dies with a second, misleading panic.
+                drop(received_bytes);
+                panic!("{message}");
             }
             let last_generation = received_bytes.generation;
             let (guard, _) = self

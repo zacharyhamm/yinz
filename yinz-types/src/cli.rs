@@ -57,6 +57,9 @@ pub struct PluginStatus {
     pub state: PluginState,
     pub pending_permissions: Vec<crate::data::PermissionType>,
     pub latest_error: Option<String>,
+    /// Whether the instance has a pane; `None` while its declaration is not yet known.
+    #[serde(default)]
+    pub pane: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

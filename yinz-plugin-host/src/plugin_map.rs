@@ -1,5 +1,5 @@
 use crate::steel::SteelPlugin;
-use crate::PluginId;
+use crate::{PaneId, PluginId};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
@@ -39,6 +39,10 @@ pub struct PluginMap {
     pending_configuration_clients: HashMap<ClientId, usize>,
     plugin_assets: HashMap<(PluginId, ClientId), PluginAssets>,
     instance_ids: HashMap<(PluginId, ClientId), PluginInstanceId>,
+    /// Instances that were retired, replaced or removed. Their worker can still be finishing a
+    /// call, and what it reports from then on describes an instance that is gone: see
+    /// `instance_is_retired`. Ids are never reused, so an entry never names a live instance.
+    retired_instance_ids: HashSet<PluginInstanceId>,
     instance_cwds: HashMap<(PluginId, ClientId), PathBuf>,
     availability: HashMap<(PluginId, ClientId), Arc<AtomicBool>>,
     /// Each instance's [`ResizeSlot`], held here too so a resize can be asked of an instance
@@ -288,7 +292,20 @@ impl PluginMap {
                 unavailable.store(true, Ordering::Release);
             }
         }
-        self.instance_ids.retain(|(id, _), _| *id != plugin);
+        let retired = &mut self.retired_instance_ids;
+        self.instance_ids.retain(|(id, _), instance| {
+            if *id == plugin {
+                retired.insert(*instance);
+            }
+            *id != plugin
+        });
+    }
+    /// Whether `instance` is no longer one of the map's instances. A reload retires the old
+    /// instance before its replacement is loaded, so a late report from the old one (a
+    /// background subscription made by a handler still running) is recognised as stale even
+    /// before the replacement is registered.
+    pub(crate) fn instance_is_retired(&self, instance: PluginInstanceId) -> bool {
+        self.retired_instance_ids.contains(&instance)
     }
     pub fn remove_plugins(&mut self, pid: PluginId) -> HashMap<(PluginId, ClientId), PluginAssets> {
         self.retire_instances(pid);
@@ -320,7 +337,9 @@ impl PluginMap {
         plugin_id: PluginId,
         client_id: ClientId,
     ) -> Option<PluginAssets> {
-        self.instance_ids.remove(&(plugin_id, client_id));
+        if let Some(instance) = self.instance_ids.remove(&(plugin_id, client_id)) {
+            self.retired_instance_ids.insert(instance);
+        }
         self.instance_cwds.remove(&(plugin_id, client_id));
         if let Some(unavailable) = self.availability.remove(&(plugin_id, client_id)) {
             unavailable.store(true, Ordering::Release);
@@ -581,8 +600,13 @@ impl PluginMap {
                 .unwrap_or_else(PoisonError::into_inner);
             self.availability
                 .insert((plugin_id, client_id), plugin.env().unavailable.clone());
-            self.instance_ids
-                .insert((plugin_id, client_id), plugin.instance_id);
+            if let Some(previous) = self
+                .instance_ids
+                .insert((plugin_id, client_id), plugin.instance_id)
+                .filter(|previous| *previous != plugin.instance_id)
+            {
+                self.retired_instance_ids.insert(previous);
+            }
             self.resize_slots
                 .insert((plugin_id, client_id), plugin.resize.clone());
             self.instance_cwds
@@ -638,7 +662,7 @@ impl PluginMap {
                     let plugin_env = running_plugin.env_mut();
                     plugin_env.owner_client_id = to;
                     plugin_env.client_id = to;
-                    if plugin_env.tab_index.is_none() {
+                    if plugin_env.routes_events_by_registry() {
                         // The screen routes background pane/tab updates by owner too.
                         // Move that registration with the instance, or a reconnect leaves
                         // agent-service unaware of new panes and their checkout titles.
@@ -660,6 +684,7 @@ impl PluginMap {
                                     client_id,
                                     events.clone(),
                                     Some(events),
+                                    plugin_env.instance_id,
                                 ))
                                 .context("failed to move background plugin subscriptions")
                                 .non_fatal();
@@ -773,12 +798,13 @@ pub const CANCELLED_BY_HOST: &str = "plugin cancelled by the host";
 /// One registry per bridge/data provider; lock before registering, refreshing or removing watches.
 pub type WatchGenerations = Arc<Mutex<HashMap<yinz_types::internal_ids::DataWatchId, u64>>>;
 
-pub type PluginRoles = Arc<Mutex<HashMap<PluginId, bool>>>;
-
 pub struct PluginEnv {
     pub yinz_data_dir: PathBuf,
-    pub plugin_roles: PluginRoles,
+    /// Whether each plugin has a pane, shared with the bridge. See `crate::plugin_panes`.
+    pub(crate) panes: crate::plugin_panes::PluginPanes,
     pub background: bool,
+    /// Whether this plugin has a pane of its own, decided before it was loaded.
+    pub(crate) surface: crate::plugin_panes::Surface,
     pub pick_request: Option<yinz_types::pick::PickRequest>,
     pub pick_cancelled: Option<Arc<AtomicBool>>,
     pub pick_opening: Option<Arc<AtomicBool>>,
@@ -944,6 +970,18 @@ impl PluginEnv {
         )
     }
 
+    /// The plugin's own pane, `None` for a plugin that runs headless.
+    pub(crate) fn own_pane(&self) -> Option<PaneId> {
+        (self.surface == crate::plugin_panes::Surface::Pane)
+            .then_some(PaneId::Plugin(self.plugin_id))
+    }
+
+    /// Whether the plugin hears pane and tab events through the background subscription
+    /// registry rather than through a pane in a tab: it has no tab, or no pane to be in one.
+    pub(crate) fn routes_events_by_registry(&self) -> bool {
+        self.tab_index.is_none() || self.surface == crate::plugin_panes::Surface::Headless
+    }
+
     pub fn set_permissions(&mut self, permissions: HashSet<PermissionType>) {
         self.permissions.lock().unwrap().replace(permissions);
     }
@@ -979,6 +1017,8 @@ struct ResizeState {
     wanted: (usize, usize),
     render_owed: bool,
     first_resize_ran: bool,
+    /// The instance has no pane: nothing is ever drawn, so no resize is ever due.
+    headless: bool,
     /// A resize job is queued for this instance and has not begun.
     job_queued: bool,
 }
@@ -989,8 +1029,16 @@ impl ResizeSlot {
             wanted: (rows, columns),
             render_owed: false,
             first_resize_ran: false,
+            headless: false,
             job_queued: false,
         }))
+    }
+
+    /// The slot of an instance with no pane, which never owes a frame.
+    pub fn headless() -> Self {
+        let slot = Self::new(0, 0);
+        slot.state().headless = true;
+        slot
     }
 
     /// Ask for `rows` x `columns`; asking again for the size already asked owes nothing.
@@ -1058,7 +1106,7 @@ impl ResizeSlot {
 
 impl ResizeState {
     fn due(&self) -> bool {
-        self.render_owed || !self.first_resize_ran
+        !self.headless && (self.render_owed || !self.first_resize_ran)
     }
 }
 
@@ -1085,7 +1133,16 @@ pub struct RunningPlugin {
 }
 
 impl RunningPlugin {
+    /// A plugin with no pane (`surface` is `Headless`) gets no area: it is never resized or
+    /// rendered.
     pub fn new(steel: SteelPlugin, rows: usize, columns: usize) -> Self {
+        let headless = steel.env().surface == crate::plugin_panes::Surface::Headless;
+        let (rows, columns) = if headless { (0, 0) } else { (rows, columns) };
+        let resize = if headless {
+            ResizeSlot::headless()
+        } else {
+            ResizeSlot::new(rows, columns)
+        };
         Self {
             instance_id: steel.env().instance_id,
             current_configuration: steel
@@ -1101,7 +1158,7 @@ impl RunningPlugin {
             columns,
             next_event_ids: HashMap::new(),
             last_applied_event_ids: HashMap::new(),
-            resize: Arc::new(ResizeSlot::new(rows, columns)),
+            resize: Arc::new(resize),
             denied_events_logged: HashSet::new(),
         }
     }
@@ -1156,7 +1213,7 @@ impl RunningPlugin {
     /// into. A resize draws at any size, as it always has.
     pub fn has_area(&self) -> bool {
         let (rows, columns) = self.resize.wanted();
-        rows > 0 && columns > 0
+        self.env().surface == crate::plugin_panes::Surface::Pane && rows > 0 && columns > 0
     }
     /// Bring `rows` and `columns` up to the newest size asked of this instance, as a render is
     /// about to draw at them, and return them. That render pays off the frame the resize owed.
@@ -1185,7 +1242,8 @@ impl RunningPlugin {
     /// `PluginUserConfiguration::new` strips reserved keys, so rebuilding one here would quietly
     /// drop configuration the plugin was meant to receive.
     pub fn load(&mut self, configuration: &PluginUserConfiguration) -> Result<()> {
-        self.runtime.load(configuration.inner())
+        let initial_render = self.env().surface == crate::plugin_panes::Surface::Pane;
+        self.runtime.load(configuration.inner(), initial_render)
     }
 
     /// Call the plugin's `update` entrypoint, returning whether it asked to be re-rendered.

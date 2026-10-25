@@ -1,4 +1,5 @@
 ;; Keep exited panes restartable; delete only a visible, unchanged, clean, merged checkout.
+(yinz-declare-pane)
 (define busy #f)
 (define confirmation-visible #f)
 (define confirming #f)

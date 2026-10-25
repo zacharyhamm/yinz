@@ -2,8 +2,10 @@
 
 use std::path::Path;
 use yinz_runtime::errors::prelude::*;
+use yinz_steel::manifest::PaneDeclaration;
 use yinz_types::authoring::{OutlineEntry, OutlineKind, PluginCheckMode, PluginCheckReport};
 use yinz_types::data::PermissionType;
+use yinz_types::own_pane::{own_pane_refusal, UNCONDITIONAL_OWN_PANE_COMMANDS};
 use yinz_types::plugin_data::{validate_namespace, RESERVED_ATTR_NAMES, SHARED_NAMESPACE_PREFIX};
 
 pub(crate) fn check(
@@ -24,7 +26,19 @@ pub(crate) fn check(
         }
         let analysis = yinz_steel::analysis::analyze(source)
             .with_context(|| format!("checking {}", path.display()))?;
-        let mut report = describe(analysis);
+        let declaration = yinz_steel::manifest::pane_declaration(source)
+            .with_context(|| format!("reading the pane declaration of {}", path.display()));
+        // Formatting needs only a parse: a declaration mistake does not stop it, and is reported
+        // with the formatted source.
+        let (declaration, mistake) = match declaration {
+            Ok(declaration) => (Some(declaration), None),
+            Err(error) if matches!(mode, PluginCheckMode::Format) => (None, Some(error)),
+            Err(error) => return Err(error),
+        };
+        let mut report = describe(analysis, declaration.as_ref());
+        if let Some(mistake) = mistake {
+            report.warnings.insert(0, format!("{mistake:#}"));
+        }
         if matches!(mode, PluginCheckMode::Format | PluginCheckMode::Prepare) {
             report.formatted_source = Some(yinz_steel::format::format(source)?);
         }
@@ -39,8 +53,18 @@ pub(crate) fn check(
     }
 }
 
-fn describe(analysis: yinz_steel::analysis::Analysis) -> PluginCheckReport {
-    let mut report = PluginCheckReport::default();
+/// The report on `analysis`, given the entry's pane declaration when it could be read.
+fn describe(
+    analysis: yinz_steel::analysis::Analysis,
+    declaration: Option<&PaneDeclaration>,
+) -> PluginCheckReport {
+    let mut report = PluginCheckReport {
+        pane: declaration.map(PaneDeclaration::describe),
+        ..Default::default()
+    };
+    if let Some(declaration) = declaration {
+        pane_warnings(&analysis, declaration, &mut report);
+    }
     for (line, text) in analysis.definitions {
         report.outline.push(OutlineEntry {
             line,
@@ -145,6 +169,45 @@ fn describe(analysis: yinz_steel::analysis::Analysis) -> PluginCheckReport {
     }
     report.outline.sort_by_key(|entry| entry.line);
     report
+}
+
+fn pane_warnings(
+    analysis: &yinz_steel::analysis::Analysis,
+    declaration: &PaneDeclaration,
+    report: &mut PluginCheckReport,
+) {
+    if *declaration == PaneDeclaration::None {
+        if analysis.defines_render {
+            report.warnings.push("render is never called: the plugin declares no pane and runs headless; add (yinz-declare-pane)".into());
+        }
+        // Only the commands that need the pane whatever their arguments: the others need it
+        // only when they name the plugin's own pane, whose id is unknown offline.
+        for command in &analysis.commands {
+            if UNCONDITIONAL_OWN_PANE_COMMANDS.contains(&command.name.as_str()) {
+                report.warnings.push(format!(
+                    "line {}: {}",
+                    command.line,
+                    own_pane_refusal(&command.name, "the plugin")
+                ));
+            }
+        }
+    }
+    let scanned = usize::from(*declaration != PaneDeclaration::None);
+    if analysis.pane_declarations.len() > scanned {
+        let nested: Vec<_> = analysis
+            .pane_declarations
+            .iter()
+            .filter(|call| !call.top_level)
+            .map(|call| format!("line {}: ", call.line))
+            .collect();
+        let message = "yinz-declare-pane must be a top-level form of the entry file; this call fails the load";
+        if nested.is_empty() {
+            report.warnings.push(message.into());
+        }
+        for line in nested {
+            report.warnings.push(format!("{line}{message}"));
+        }
+    }
 }
 
 fn namespaces(value: &serde_json::Value, line: usize, report: &mut PluginCheckReport) {

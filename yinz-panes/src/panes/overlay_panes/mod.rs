@@ -512,6 +512,50 @@ impl OverlayPanes {
         }
         self.take_container(pane_id)?.into_panes().pop()
     }
+    /// Take one child out of its multipane and leave the other as the container's only pane, in
+    /// the same placement and layer. Clients on the removed child move to its sibling, which is
+    /// the one pane of the composition still there. `None`, with nothing changed, when
+    /// `pane_id` is not a multipane member.
+    ///
+    /// Only for a slot that was never the user's, such as one held for a child that will not
+    /// come: every structural move takes the whole container (`take_container`).
+    pub fn remove_multipane_member(&mut self, pane_id: PaneId) -> Option<Box<dyn Pane>> {
+        let (first, second) = self.multipane_children(&pane_id)?;
+        let kept = if first == pane_id { second } else { first };
+        self.move_clients_between_panes(pane_id, kept);
+        for back in self.modal_return.values_mut() {
+            if *back == Some(pane_id) {
+                *back = Some(kept);
+            }
+        }
+        self.release_seam_drag_of(pane_id);
+        if self
+            .pane_being_moved_with_mouse
+            .is_some_and(|(moved, ..)| moved == pane_id)
+        {
+            self.pane_being_moved_with_mouse = None;
+        }
+        let id = self.container_id(&pane_id)?;
+        let mut overlay = self.panes.remove(&id)?;
+        let [a, b] = match overlay.children {
+            Children::Multipane { children, .. } => children,
+            single @ Children::Single(_) => {
+                overlay.children = single;
+                self.panes.insert(id, overlay);
+                return None;
+            },
+        };
+        let ((_, mut removed), (kept_id, mut kept_pane)) =
+            if a.0 == pane_id { (a, b) } else { (b, a) };
+        removed.reset_size_and_position_override();
+        // The divider's share of the container is the kept pane's again.
+        kept_pane.reset_size_and_position_override();
+        overlay.children = Children::Single((kept_id, kept_pane));
+        self.panes.insert(id, overlay);
+        self.set_pane_frames().non_fatal();
+        self.set_force_render();
+        Some(removed)
+    }
     pub fn replace_pane(
         &mut self,
         pane_id: PaneId,

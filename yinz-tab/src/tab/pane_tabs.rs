@@ -404,6 +404,31 @@ impl Tab {
     }
 
     pub fn close_pane_tab_child(&mut self, id: PaneTabsId, index: usize) -> Result<()> {
+        self.release_pane_tab_child(id, index, true)
+    }
+
+    /// Takes `plugin` out of the pane tab that shows it, as closing that pane tab does, but
+    /// leaves the plugin running: it runs headless from now on. Answers whether a pane tab
+    /// held it.
+    pub fn detach_pane_tab_plugin(&mut self, plugin: PluginId) -> bool {
+        let pane_id = PaneId::Plugin(plugin);
+        let Some((id, index)) = self.pane_tabs.iter().find_map(|(id, tabs)| {
+            tabs.info
+                .tabs
+                .iter()
+                .position(|slot| slot.pane_id() == Some(pane_id))
+                .map(|index| (*id, index))
+        }) else {
+            return false;
+        };
+        self.release_pane_tab_child(id, index, false)
+            .context("failed to take a headless plugin out of its pane tab")
+            .non_fatal();
+        true
+    }
+
+    /// Empties pane tab `index`, unloading the plugin it showed when `unload` says so.
+    fn release_pane_tab_child(&mut self, id: PaneTabsId, index: usize, unload: bool) -> Result<()> {
         let tabs = self.pane_tabs.get_mut(&id).context("unknown pane tabs")?;
         let slot = tabs
             .info
@@ -420,9 +445,11 @@ impl Tab {
             if PaneId::Plugin(plugin) != tabs.info.pane_id {
                 self.suppressed_panes.remove(&PaneId::Plugin(plugin));
             }
-            self.senders
-                .send_to_plugin(PluginInstruction::Unload(plugin))
-                .context("failed to unload pane tab")?;
+            if unload {
+                self.senders
+                    .send_to_plugin(PluginInstruction::Unload(plugin))
+                    .context("failed to unload pane tab")?;
+            }
         }
         self.refresh_pane_tabs(id)
     }

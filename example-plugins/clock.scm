@@ -1,4 +1,6 @@
 ;; yinz plugin --floating -- file:$PWD/example-plugins/clock.scm
+;; The clock declares its pane; a plugin without (yinz-declare-pane) runs headless.
+(yinz-declare-pane)
 (define label "the UTC time is")
 (define (load configuration)
   (when (hash-contains? configuration "label")

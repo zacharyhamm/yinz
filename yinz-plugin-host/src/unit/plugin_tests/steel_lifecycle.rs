@@ -12,6 +12,7 @@ fn steel_scheme_awaits_an_event_and_timer_then_renders_asynchronously_after_resi
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define state "starting")
 (define (load config)
   (define key (yinz-wait-for-event "Key"))
@@ -43,6 +44,7 @@ fn steel_resize_discards_an_in_flight_async_render_with_the_old_dimensions() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define release #f)
 (define (load config) (yinz-command (hash "Subscribe" (list "Key"))))
 (define (update event)
@@ -90,6 +92,7 @@ fn steel_shared_promises_keep_their_origin_after_another_clients_event_and_timer
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define (origin) (hash-ref (yinz-command "GetPluginIds") "client_id"))
 (define waiting '())
 (define completed '())
@@ -180,6 +183,7 @@ fn steel_shared_permission_wait_survives_an_attach_and_replays_the_queued_event(
     let harness = Harness::with_permission_reply(
         "scm",
         r#"
+(yinz-declare-pane)
 (define loads 0)
 (define keys 0)
 (define state "starting")
@@ -267,6 +271,7 @@ fn steel_shared_permission_wait_survives_an_attach_and_replays_the_queued_event(
 #[serial(plugin_tests)]
 fn steel_reload_rejects_an_old_host_timer_completion_but_accepts_the_current_one() {
     let source = r#"
+(yinz-declare-pane)
 (define label "original")
 (define state "pending")
 (define timers 0)
@@ -371,6 +376,7 @@ fn steel_reload_rereads_imports_and_cancels_the_old_event_await() {
         "scm",
         r#"
 (require "./dependency.scm")
+(yinz-declare-pane)
 (define state "starting")
 (define (load config)
   (define event (yinz-wait-for-event "CustomMessage" (lambda (message) (equal? (car message) "acceptance-release"))))
@@ -424,7 +430,7 @@ fn repository_file_url_reload_follows_retargeted_symlink() {
         std::fs::create_dir(path).unwrap();
         std::fs::write(
             path.join("main.scm"),
-            format!(r#"(define (render rows cols) "repository {version}")"#),
+            format!(r#"(yinz-declare-pane) (define (render rows cols) "repository {version}")"#),
         )
         .unwrap();
     }
@@ -471,7 +477,7 @@ fn steel_reload_follows_retargeted_symlinks_by_id_and_url() {
     for by_id in [true, false] {
         let harness = Harness::new(
             "scm",
-            r#"(define (render rows cols) "version one")"#,
+            r#"(yinz-declare-pane) (define (render rows cols) "version one")"#,
             PermissionStatus::Granted,
         );
         let first = harness.directory.path().join("v1.scm");
@@ -488,7 +494,11 @@ fn steel_reload_follows_retargeted_symlinks_by_id_and_url() {
         harness.rendered("version one");
 
         let second = harness.directory.path().join("v2.scm");
-        std::fs::write(&second, r#"(define (render rows cols) "version two")"#).unwrap();
+        std::fs::write(
+            &second,
+            r#"(yinz-declare-pane) (define (render rows cols) "version two")"#,
+        )
+        .unwrap();
         std::fs::remove_file(&current).unwrap();
         std::os::unix::fs::symlink(&second, &current).unwrap();
         harness
@@ -507,7 +517,7 @@ fn steel_reload_follows_retargeted_symlinks_by_id_and_url() {
         // Updating the canonical identity must not discard the declared symlink for later reloads.
         std::fs::write(
             &harness.path,
-            r#"(define (render rows cols) "version three")"#,
+            r#"(yinz-declare-pane) (define (render rows cols) "version three")"#,
         )
         .unwrap();
         std::fs::remove_file(&current).unwrap();
@@ -563,7 +573,7 @@ fn steel_reload_follows_retargeted_symlinks_by_id_and_url() {
 fn steel_failed_symlink_reload_does_not_publish_a_replacement_identity() {
     let harness = Harness::new(
         "scm",
-        r#"(define (render rows cols) "original ready")"#,
+        r#"(yinz-declare-pane) (define (render rows cols) "original ready")"#,
         PermissionStatus::Granted,
     );
     let current = harness.directory.path().join("current.scm");
@@ -579,7 +589,7 @@ fn steel_failed_symlink_reload_does_not_publish_a_replacement_identity() {
     let replacement = harness.directory.path().join("broken.scm");
     std::fs::write(
         &replacement,
-        r#"(define (load config) (error "replacement failed"))"#,
+        r#"(yinz-declare-pane) (define (load config) (error "replacement failed"))"#,
     )
     .unwrap();
     std::fs::remove_file(&current).unwrap();
@@ -598,6 +608,7 @@ fn steel_failed_symlink_reload_does_not_publish_a_replacement_identity() {
 }
 
 const PERMISSIONS: &str = r#"
+(yinz-declare-pane)
 (define state "starting")
 (define (load config)
   (yinz-command (hash "Subscribe" (list "PermissionRequestResult")))
@@ -667,6 +678,7 @@ fn steel_deferred_commands_reject_without_permissions() {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define state "starting")
 (define (denied name operation)
   (yinz-catch
@@ -705,6 +717,7 @@ fn steel_permission_errors_distinguish_pending_missing_and_incomplete_grants() {
         };
         let source = format!(
             r#"
+(yinz-declare-pane)
 (define state "loading")
 (define (check-data)
   (set! state (string-append "checked: "
@@ -745,6 +758,7 @@ fn steel_command_helper_completes_and_reload_rejects_the_old_host_reply() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("command.scm");
     let source = r#"
+(yinz-declare-pane)
 (define label "original")
 (define state "pending")
 (define replies 0)
@@ -890,6 +904,7 @@ fn steel_command_helper_completes_and_reload_rejects_the_old_host_reply() {
 #[serial(plugin_tests)]
 fn steel_pane_output_subscriptions_reload_with_new_generations() {
     let source = r#"
+(yinz-declare-pane)
 (define label "old")
 (define chunks 0)
 (define fences 0)
@@ -993,6 +1008,7 @@ fn client_reattaches(immediate: bool) {
     let harness = Harness::new(
         "scm",
         r#"
+(yinz-declare-pane)
 (define keys 0)
 (define completed 0)
 (define (load config) (yinz-command (hash "Subscribe" (list "Key"))))

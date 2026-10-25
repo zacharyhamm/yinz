@@ -3,6 +3,7 @@
 (require "./bar/default-mode.scm")
 (require "./bar/compact-render.scm")
 (require "./bar/compact-tooltip.scm")
+(yinz-declare-pane)
 (define state (hash "hostname" "" "modeInfo" (bar-default-mode) "tabs" '() "toggleKey" #f "tooltipActive" #f))
 (define active-tab 0)
 (define display-rows 0)
