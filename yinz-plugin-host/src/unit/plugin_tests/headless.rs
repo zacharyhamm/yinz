@@ -715,6 +715,47 @@ fn headless_env() -> crate::plugin_map::PluginEnv {
 }
 
 #[test]
+fn plugin_quit_commands_are_immediate_with_or_without_a_pane() {
+    for surface in [Surface::Headless, Surface::Pane] {
+        for command in [
+            PluginCommand::QuitYinz,
+            PluginCommand::RunAction(Action::Quit, BTreeMap::new()),
+        ] {
+            let mut env = crate::test_env::test_env();
+            env.surface = surface;
+            env.set_permissions(std::collections::HashSet::from([
+                PermissionType::ChangeApplicationState,
+                PermissionType::RunActionsAsUser,
+            ]));
+            let client = env.client_id;
+            let (to_server, server) = channels::unbounded();
+            let (to_screen, screen) = channels::unbounded();
+            env.senders.to_server = Some(SenderWithContext::new(to_server));
+            env.senders.to_screen = Some(SenderWithContext::new(to_screen));
+            let exited = std::thread::spawn(move || {
+                crossbeam::select! {
+                    recv(server) -> instruction => {
+                        match instruction.unwrap().0 {
+                            ServerInstruction::ClientExit(routed_client, completion) => {
+                                assert_eq!(routed_client, client);
+                                assert!(completion.is_some());
+                            },
+                            other => panic!("unexpected server instruction: {other:?}"),
+                        }
+                    },
+                    recv(screen) -> instruction => {
+                        panic!("{surface:?} quit must not prompt: {instruction:?}");
+                    },
+                    default(default_timeout()) => panic!("{surface:?} plugin did not quit"),
+                }
+            });
+            crate::yinz_exports::run_plugin_command(&mut env, command).unwrap();
+            exited.join().unwrap();
+        }
+    }
+}
+
+#[test]
 fn own_pane_commands_are_refused_only_without_a_pane() {
     let mut env = headless_env();
     let error =

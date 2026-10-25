@@ -388,6 +388,41 @@ fn focusing_a_paneless_plugin_says_it_runs_headless() {
 }
 
 #[test]
+fn unloading_a_headless_plugin_clears_only_its_quit_notice() {
+    for other_guard in [false, true] {
+        let mut harness = Harness::new();
+        let other = PluginId::new(8);
+        for plugin in [PLUGIN, other] {
+            harness.paneless(plugin);
+        }
+        assert!(harness
+            .screen
+            .destroyed_panes
+            .contains(&PaneId::Plugin(PLUGIN)));
+        harness
+            .screen
+            .set_quit_notice(PLUGIN, Some("unloaded work".into()), true);
+        harness
+            .screen
+            .set_quit_notice(other, Some("remaining work".into()), other_guard);
+        assert!(harness.screen.quit_is_guarded());
+
+        for _ in 0..2 {
+            harness.unloaded(PLUGIN, &mut HashMap::new());
+            assert_eq!(harness.screen.quit_is_guarded(), other_guard);
+            assert_eq!(
+                harness.screen.quit_notice_text().as_deref(),
+                Some("remaining work")
+            );
+        }
+
+        harness.unloaded(other, &mut HashMap::new());
+        assert!(!harness.screen.quit_is_guarded());
+        assert_eq!(harness.screen.quit_notice_text(), None);
+    }
+}
+
+#[test]
 fn an_unloaded_plugin_loses_its_orphan_pane_subscriptions_and_intercepts() {
     let mut harness = Harness::new();
     let other = PluginId::new(8);

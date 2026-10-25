@@ -1079,6 +1079,8 @@ impl Screen {
         self.background_plugin_subscriptions
             .retain(|(subscriber, _), _| *subscriber != plugin_id);
         keybind_intercepts.retain(|_, interceptor| *interceptor != plugin_id);
+        // Headless plugins already detached their panes, so pane cleanup may not run again.
+        self.drop_quit_notice(plugin_id);
         self.detach_plugin_pane(plugin_id)
     }
 
