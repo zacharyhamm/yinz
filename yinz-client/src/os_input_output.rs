@@ -424,7 +424,12 @@ impl StdioAccess for ClientOsInputOutput {
             None => {
                 let stdin = std::io::stdin();
                 let mut stdin = stdin.lock();
-                let buffer = stdin.fill_buf().unwrap();
+                let buffer = stdin.fill_buf().map_err(|error| {
+                    Err::<(), _>(error)
+                        .context("read terminal stdin")
+                        .non_fatal();
+                    "Failed to read stdin"
+                })?;
                 let length = buffer.len();
                 let read_bytes = Vec::from(buffer);
                 stdin.consume(length);
@@ -738,6 +743,13 @@ fn wait_until_stdout_is_writable(stdout: &impl std::os::fd::AsFd) -> io::Result<
 fn wait_until_writable(fd: &impl std::os::fd::AsFd, timeout: time::Duration) -> io::Result<bool> {
     use nix::sys::select::{select, FdSet};
     use nix::sys::time::{TimeVal, TimeValLike};
+    use std::os::fd::AsRawFd;
+    if fd.as_fd().as_raw_fd() as usize >= nix::libc::FD_SETSIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "terminal descriptor exceeds select's FD_SETSIZE limit",
+        ));
+    }
     let mut writable = FdSet::new();
     writable.insert(fd.as_fd());
     let micros = i64::try_from(timeout.as_micros()).unwrap_or(i64::MAX);

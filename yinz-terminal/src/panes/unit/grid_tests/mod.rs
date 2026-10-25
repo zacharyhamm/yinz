@@ -8,7 +8,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_ENCODER;
 use base64::engine::Engine as _;
 use insta::assert_snapshot;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use vte;
 use yinz_runtime::consts::SCROLL_BUFFER_SIZE;
@@ -19,6 +19,49 @@ use yinz_types::style::{Palette, Style};
 use yinz_types::ui_components::UI_COMPONENT_DCS_PREFIX;
 
 use std::fmt::Write;
+
+#[test]
+fn bottom_canonical_row_and_wraps_drains_only_the_last_logical_line() {
+    for (canonical_rows, drain_start) in [
+        (vec![], 0),
+        (vec![true], 0),
+        (vec![true, true], 1),
+        (vec![true, false, true, false, false], 2),
+        (vec![true, false, false], 0),
+        (vec![false, false, false], 0),
+    ] {
+        let mut rows: VecDeque<_> = canonical_rows
+            .iter()
+            .enumerate()
+            .map(|(index, &is_canonical)| {
+                let mut row = Row::from_columns(
+                    index
+                        .to_string()
+                        .chars()
+                        .map(TerminalCharacter::new)
+                        .collect(),
+                );
+                row.is_canonical = is_canonical;
+                row
+            })
+            .collect();
+        let contents = |row: &Row| (row_text(row), row.is_canonical);
+        let original: Vec<_> = rows.iter().map(contents).collect();
+
+        let drained = super::get_bottom_canonical_row_and_wraps(&mut rows);
+
+        assert_eq!(
+            rows.iter().map(contents).collect::<Vec<_>>(),
+            original[..drain_start],
+            "remaining rows for {canonical_rows:?}"
+        );
+        assert_eq!(
+            drained.iter().map(contents).collect::<Vec<_>>(),
+            original[drain_start..],
+            "drained rows for {canonical_rows:?}"
+        );
+    }
+}
 
 fn read_fixture(fixture_name: &str) -> Vec<u8> {
     let mut path_to_file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

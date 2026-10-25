@@ -14,6 +14,44 @@ use crate::{
 };
 
 #[test]
+fn pane_responses_reject_unknown_wire_pane_types() {
+    use crate::plugin_command::{
+        spawn_agent_response, ProtobufOpenPaneInNewTabResponse, ProtobufOpenTerminalResponse,
+        ProtobufPaneId, ProtobufSpawnAgentResponse,
+    };
+    use yinz_types::data::{OpenPaneInNewTabResponse, OpenTerminalResponse, SpawnAgentResponse};
+
+    for pane_type in [-1, 2, i32::MAX] {
+        let pane_id = ProtobufPaneId { pane_type, id: 1 };
+        let wire = ProtobufOpenTerminalResponse {
+            pane_id: Some(pane_id.clone()),
+        };
+        let decoded =
+            ProtobufOpenTerminalResponse::decode(wire.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(
+            OpenTerminalResponse::try_from(decoded).unwrap_err(),
+            "Failed to convert PaneId"
+        );
+        assert_eq!(
+            OpenPaneInNewTabResponse::try_from(ProtobufOpenPaneInNewTabResponse {
+                pane_id: Some(pane_id.clone()),
+                tab_id: Some(1),
+            })
+            .unwrap_err(),
+            "Failed to convert PaneId"
+        );
+        assert_eq!(
+            SpawnAgentResponse::try_from(ProtobufSpawnAgentResponse {
+                result: Some(spawn_agent_response::Result::PaneId(pane_id)),
+                ..Default::default()
+            })
+            .unwrap_err(),
+            "Failed to convert PaneId"
+        );
+    }
+}
+
+#[test]
 fn session_name_byte_limit_round_trips_and_is_optional_for_older_hosts() {
     use crate::plugin_ids::ProtobufPluginIds;
     use yinz_types::data::PluginIds;

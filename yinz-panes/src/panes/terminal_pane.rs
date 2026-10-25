@@ -174,8 +174,6 @@ pub struct TerminalPane {
     pane_frame_color_override: Option<FrameColorOverride>,
     has_bell_notification: bool,
     invoked_with: Option<Run>,
-    #[allow(dead_code)]
-    arrow_fonts: bool,
     notification_end: Option<NotificationEnd>,
     /// `true` while a host-terminal forward initiated by this pane is
     /// outstanding. While set, processing of `pending_pty_input` is
@@ -1791,7 +1789,6 @@ impl Pane for TerminalPane {
         }
     }
     fn update_arrow_fonts(&mut self, should_support_arrow_fonts: bool) {
-        self.arrow_fonts = should_support_arrow_fonts;
         self.grid.update_arrow_fonts(should_support_arrow_fonts);
     }
     fn update_render_options(&mut self, styled_underlines: bool, osc8_hyperlinks: bool) {
@@ -2059,7 +2056,6 @@ impl TerminalPane {
             title
         }
     }
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         pid: TerminalId,
         position_and_size: PaneGeom,
@@ -2164,7 +2160,6 @@ impl TerminalPane {
             pane_frame_color_override: None,
             has_bell_notification: false,
             invoked_with,
-            arrow_fonts,
             notification_end,
             forward_paused: false,
             nested_guest: false,

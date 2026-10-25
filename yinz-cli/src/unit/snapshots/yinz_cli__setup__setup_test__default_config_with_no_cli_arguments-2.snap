@@ -1,0 +1,9 @@
+---
+source: yinz-cli/src/unit/setup_setup_test.rs
+expression: "format!(\"{:#?}\", layout_info)"
+---
+Some(
+    BuiltIn(
+        "default",
+    ),
+)

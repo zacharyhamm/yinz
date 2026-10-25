@@ -249,6 +249,115 @@ fn paused_session() -> (SessionMetaData, PausedThreads) {
 }
 
 #[test]
+fn closed_router_queues_are_logged_without_skipping_client_cleanup() {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use yinz_ipc::ipc::IpcSenderWithContext;
+
+    thread_local! {
+        static LOGS: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+    }
+    struct Logger;
+    impl log::Log for Logger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() == log::Level::Error
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if self.enabled(record.metadata()) {
+                LOGS.with(|logs| {
+                    if let Some(logs) = logs.borrow_mut().as_mut() {
+                        logs.push(record.args().to_string());
+                    }
+                });
+            }
+        }
+        fn flush(&self) {}
+    }
+    log::set_logger(&Logger).unwrap();
+    log::set_max_level(log::LevelFilter::Error);
+
+    for (shutting_down, poisoned) in [(false, false), (true, false), (false, true)] {
+        let (mut session, threads) = paused_session();
+        session.senders.should_silently_fail = false;
+        let (screen, screen_receiver) = channels::unbounded();
+        let (plugin, plugin_receiver) = channels::unbounded();
+        session.senders.to_screen = Some(session.shutdown.sender(screen));
+        session.senders.to_plugin = Some(session.shutdown.sender(plugin));
+        drop((screen_receiver, plugin_receiver));
+        if shutting_down {
+            session.shutdown.begin();
+        }
+        let session = Arc::new(RwLock::new(Some(session)));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("closed-queues.sock");
+        let listener = ListenerOptions::new()
+            .name(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
+            .create_sync()
+            .unwrap();
+        let client =
+            LocalSocketStream::connect(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
+                .unwrap();
+        let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(client);
+        if poisoned {
+            let poisoned_session = session.clone();
+            assert!(thread::spawn(move || {
+                let _guard = poisoned_session.write().unwrap();
+                panic!("poison session metadata before client disconnect");
+            })
+            .join()
+            .is_err());
+            drop(sender);
+        } else {
+            for message in [
+                ClientToServerMsg::HostTerminalFocusChanged { focused: true },
+                ClientToServerMsg::ModifiersHeld {
+                    modifiers: BTreeSet::new(),
+                },
+                ClientToServerMsg::ClientExited,
+            ] {
+                sender.send_client_msg(message).unwrap();
+            }
+        }
+        LOGS.with(|logs| *logs.borrow_mut() = Some(Vec::new()));
+        let result = route_thread_main(
+            session.clone(),
+            Arc::new(RwLock::new(SessionState::new())),
+            Box::new(CapturingOs::default()),
+            threads.to_server.clone(),
+            IpcReceiverWithContext::new(listener.accept().unwrap()),
+            CLIENT_1,
+            Duration::from_secs(5),
+        );
+        let logs = LOGS.with(|logs| logs.borrow_mut().take().unwrap());
+        result.unwrap();
+        if poisoned {
+            assert!(logs
+                .iter()
+                .any(|line| line.contains("cancelling disconnected escape")));
+        } else if shutting_down {
+            assert!(
+                logs.is_empty(),
+                "expected shutdown sends were logged: {logs:?}"
+            );
+        } else {
+            for target in ["screen", "plugin"] {
+                assert!(
+                    logs.iter().any(|line| {
+                        line.contains("failed to handle instruction for client 1")
+                            && line.contains(&format!("failed to send message to {target}"))
+                    }),
+                    "missing {target} send error: {logs:?}"
+                );
+            }
+        }
+        assert!(matches!(
+            threads.server_receiver.try_recv().unwrap().0,
+            ServerInstruction::RemoveClient(CLIENT_1)
+        ));
+        assert!(threads.server_receiver.is_empty());
+    }
+}
+
+#[test]
 fn legacy_lf_identity_follows_live_mode_and_keybindings() {
     let (mut session, _threads) = paused_session();
     let ctrl_j = KeyWithModifier::new(BareKey::Char('j')).with_ctrl_modifier();

@@ -145,53 +145,12 @@ fn expand_plugin_path(path: PathBuf) -> PathBuf {
 }
 
 #[cfg(test)]
-mod remote_plugin_tests {
-    use super::*;
-
-    #[test]
-    fn remote_plugin_urls_are_refused() {
-        for url in [
-            "https://example.com/plugin.wasm",
-            "http://example.com/plugin",
-            "https://example.com/plugin.ts?v=1",
-        ] {
-            let error = parse_plugin_location_with_relative(url, None).unwrap_err();
-            assert!(
-                matches!(error, PluginsConfigError::RemotePluginUnsupported(_)),
-                "{url}: {error:?}"
-            );
-            let message = error.to_string();
-            assert!(
-                message.contains("remote plugins are not supported") && message.contains(url),
-                "{message}"
-            );
-            // Not mistaken for an alias named after the url.
-            assert!(run_plugin_or_alias_from_url(url, &None, None, None).is_err());
-        }
-    }
-}
+#[path = "unit/lib_remote_plugin_tests.rs"]
+mod remote_plugin_tests;
 
 #[cfg(test)]
-mod retired_script_tests {
-    use super::*;
-    #[test]
-    fn lua_urls_fail_before_aliases() {
-        for url in [
-            "old.lua",
-            "/tmp/old.lua",
-            "file:old.lua",
-            "file:/tmp/old.lua",
-            "https://example.com/old.lua",
-            "https://example.com/old%2Elua",
-        ] {
-            assert!(parse_plugin_location(url, None)
-                .unwrap_err()
-                .to_string()
-                .contains("Lua plugins are no longer supported"));
-            assert!(run_plugin_or_alias_from_url(url, &None, None, None).is_err());
-        }
-    }
-}
+#[path = "unit/lib_retired_script_tests.rs"]
+mod retired_script_tests;
 
 /// Resolve a declaration's local repository against the active configuration directory.
 pub fn resolve_repository_path(

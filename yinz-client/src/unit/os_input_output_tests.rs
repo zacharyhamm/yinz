@@ -718,3 +718,74 @@ fn unix_resizes_only_reach_the_current_signal_listener() {
         }
     }
 }
+
+#[test]
+fn high_terminal_descriptors_report_an_error_without_panicking() {
+    use nix::fcntl::{fcntl, FcntlArg};
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    const CHILD: &str = "YINZ_TEST_HIGH_TERMINAL_FD";
+    const NAME: &str =
+        "os_input_output::tests::high_terminal_descriptors_report_an_error_without_panicking";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    let mut limit = nix::libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // The subprocess owns its descriptor limit; macOS commonly starts below FD_SETSIZE.
+    assert_eq!(
+        unsafe { nix::libc::getrlimit(nix::libc::RLIMIT_NOFILE, &mut limit) },
+        0
+    );
+    limit.rlim_cur = limit
+        .rlim_cur
+        .max(nix::libc::FD_SETSIZE as nix::libc::rlim_t + 1);
+    if limit.rlim_cur > limit.rlim_max {
+        eprintln!("skipping high-descriptor test: hard limit cannot accommodate FD_SETSIZE");
+        return;
+    }
+    assert_eq!(
+        unsafe { nix::libc::setrlimit(nix::libc::RLIMIT_NOFILE, &limit) },
+        0
+    );
+    let file = std::fs::File::open("/dev/null").unwrap();
+    let raw_fd = fcntl(
+        &file,
+        FcntlArg::F_DUPFD_CLOEXEC(nix::libc::FD_SETSIZE as i32),
+    )
+    .unwrap();
+    // fcntl returned a new owned descriptor, which this test must close.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+    let error = wait_until_writable(&fd, time::Duration::ZERO).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("FD_SETSIZE"));
+}
+
+#[test]
+fn stdin_read_errors_return_without_panicking() {
+    const CHILD: &str = "YINZ_TEST_STDIN_READ_ERROR";
+    const NAME: &str = "os_input_output::tests::stdin_read_errors_return_without_panicking";
+    if std::env::var_os(CHILD).is_some() {
+        let mut client = get_client_os_input().unwrap();
+        assert_eq!(client.read_from_stdin(), Err("Failed to read stdin"));
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", NAME])
+        .env(CHILD, "1")
+        .stdin(std::fs::File::open(directory.path()).unwrap())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+}
