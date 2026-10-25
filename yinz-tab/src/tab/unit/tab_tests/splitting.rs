@@ -1,6 +1,42 @@
 use super::*;
 
 #[test]
+fn splits_with_unknown_clients_or_targets_preserve_existing_panes() {
+    for direction in [SplitDirection::Horizontal, SplitDirection::Vertical] {
+        let mut tab = create_new_tab(
+            Size {
+                cols: 121,
+                rows: 20,
+            },
+            true,
+        );
+        let before = tiled_pane_geoms(&tab);
+        let new_pane = PaneId::Terminal(TerminalId::new(2));
+        let missing_client = ClientId::new(99);
+        let missing_pane = PaneId::Terminal(TerminalId::new(99));
+        match direction {
+            SplitDirection::Horizontal => {
+                tab.horizontal_split(new_pane, None, None, missing_client, None, None)
+                    .unwrap();
+                tab.horizontal_split_of_pane_id(new_pane, None, None, missing_pane, None, None)
+                    .unwrap();
+            },
+            SplitDirection::Vertical => {
+                tab.vertical_split(new_pane, None, None, missing_client, None, None)
+                    .unwrap();
+                tab.vertical_split_of_pane_id(new_pane, None, None, missing_pane, None, None)
+                    .unwrap();
+            },
+        }
+        assert_eq!(tiled_pane_geoms(&tab), before);
+        assert_eq!(
+            tab.tiled_panes.get_active_pane_id(ClientId::new(1)),
+            Some(PaneId::Terminal(TerminalId::new(1)))
+        );
+    }
+}
+
+#[test]
 fn write_to_suppressed_pane() {
     let size = Size {
         cols: 121,

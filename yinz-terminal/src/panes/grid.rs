@@ -234,7 +234,7 @@ fn get_top_non_canonical_rows(rows: &mut VecDeque<Row>) -> Vec<Row> {
     }
 }
 
-fn get_lines_above_bottom_canonical_row_and_wraps(rows: &mut VecDeque<Row>) -> Vec<Row> {
+fn get_bottom_canonical_row_and_wraps(rows: &mut VecDeque<Row>) -> Vec<Row> {
     let mut index_of_last_non_canonical_row = None;
     for (i, row) in rows.iter().enumerate().rev() {
         index_of_last_non_canonical_row = Some(i);
@@ -245,22 +245,6 @@ fn get_lines_above_bottom_canonical_row_and_wraps(rows: &mut VecDeque<Row>) -> V
     match index_of_last_non_canonical_row {
         Some(index_of_last_non_canonical_row) => {
             rows.drain(index_of_last_non_canonical_row..).collect()
-        },
-        None => vec![],
-    }
-}
-
-fn get_viewport_bottom_canonical_row_and_wraps(viewport: &mut VecDeque<Row>) -> Vec<Row> {
-    let mut index_of_last_non_canonical_row = None;
-    for (i, row) in viewport.iter().enumerate().rev() {
-        index_of_last_non_canonical_row = Some(i);
-        if row.is_canonical {
-            break;
-        }
-    }
-    match index_of_last_non_canonical_row {
-        Some(index_of_last_non_canonical_row) => {
-            viewport.drain(index_of_last_non_canonical_row..).collect()
         },
         None => vec![],
     }
@@ -364,7 +348,7 @@ fn transfer_rows_from_viewport_to_lines_above(
             calculate_row_display_height(next_line.width(), max_viewport_width) as isize;
         if !next_line.is_canonical {
             let mut bottom_canonical_row_and_wraps_in_dst =
-                get_lines_above_bottom_canonical_row_and_wraps(lines_above);
+                get_bottom_canonical_row_and_wraps(lines_above);
             kitty_grid.merge_rows_into_line_start(
                 lines_above.len(),
                 bottom_canonical_row_and_wraps_in_dst.len(),
@@ -400,7 +384,7 @@ fn transfer_rows_from_lines_below_to_viewport(
                 let mut top_non_canonical_rows_in_lines_below =
                     get_top_non_canonical_rows(lines_below);
                 if !top_non_canonical_rows_in_lines_below.is_empty() {
-                    let mut canonical_line = get_viewport_bottom_canonical_row_and_wraps(viewport);
+                    let mut canonical_line = get_bottom_canonical_row_and_wraps(viewport);
                     lines_pulled_from_viewport += canonical_line.len();
                     canonical_line.append(&mut top_non_canonical_rows_in_lines_below);
                     next_lines =

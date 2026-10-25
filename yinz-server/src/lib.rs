@@ -1,19 +1,3 @@
-// test comment line 1 - this is just harmless placeholder text for a test change
-// test comment line 2 - this is just harmless placeholder text for a test change
-// test comment line 3 - this is just harmless placeholder text for a test change
-// test comment line 4 - this is just harmless placeholder text for a test change
-// test comment line 5 - this is just harmless placeholder text for a test change
-// test comment line 6 - this is just harmless placeholder text for a test change
-// test comment line 7 - this is just harmless placeholder text for a test change
-// test comment line 8 - this is just harmless placeholder text for a test change
-// test comment line 9 - this is just harmless placeholder text for a test change
-// test comment line 10 - this is just harmless placeholder text for a test change
-// test comment 1
-// test comment 2
-// test comment 3
-// test comment 4
-// test comment 5
-
 #[cfg(target_os = "windows")]
 compile_error!("Yinz does not support Windows");
 
@@ -784,6 +768,19 @@ fn remove_client_and_flush_forwards(
     }
 }
 
+fn router_spawn_failed(
+    error: std::io::Error,
+    client_id: ClientId,
+    os_input: &mut Box<dyn ServerOsApi>,
+    session_state: &Arc<RwLock<SessionState>>,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+) {
+    Err::<(), _>(error)
+        .with_context(|| format!("start router for client {client_id}"))
+        .non_fatal();
+    remove_client_and_flush_forwards(client_id, os_input, session_state, session_data);
+}
+
 /// Whether `client_id` is an attached interactive client. A plugin keeps the id of the client
 /// that loaded it, and an instruction can be queued before its client leaves and handled after,
 /// so a per-client instruction can name a client that has gone. Handling it would leave state
@@ -1456,20 +1453,22 @@ impl SessionState {
     }
 }
 
-pub fn start_server(os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) {
+pub fn start_server(os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) -> Result<()> {
     use nix::sys::stat::{umask, Mode};
+    let working_directory = std::env::current_dir().context("read server startup directory")?;
     // preserve the current umask: read current value by setting to another mode, and then restoring it
     let current_umask = umask(Mode::all());
     umask(current_umask);
     yinz_runtime::logging::startup_stage("server.daemonize", || {
         daemonize::Daemonize::new()
-            .working_directory(std::env::current_dir().unwrap())
+            .working_directory(working_directory)
             .umask(current_umask.bits() as u32)
             .start()
     })
-    .expect("could not daemonize the server process");
+    .context("daemonize the server process")?;
 
     start_server_impl(os_input, socket_path, true);
+    Ok(())
 }
 
 pub fn start_server_impl(
@@ -1540,7 +1539,7 @@ pub fn start_server_impl(
         });
     }
 
-    let _ = thread::Builder::new()
+    let listener_thread = thread::Builder::new()
         .name("server_listener".to_string())
         .spawn({
             use interprocess::local_socket::prelude::*;
@@ -1625,27 +1624,37 @@ pub fn start_server_impl(
                                 accepted_at.elapsed()
                             );
 
-                            let session_data = session_data.clone();
-                            let session_state = session_state.clone();
+                            let router_session_data = session_data.clone();
+                            let router_session_state = session_state.clone();
+                            let router_os_input = os_input.clone();
                             let to_server = to_server.clone();
-                            thread::Builder::new()
+                            let router = thread::Builder::new()
                                 .name("server_router".to_string())
                                 .spawn(move || {
                                     // Held for the life of the router, released
                                     // however it ends.
                                     let _slot = slot;
                                     route_thread_main(
-                                        session_data,
-                                        session_state,
-                                        os_input,
+                                        router_session_data,
+                                        router_session_state,
+                                        router_os_input,
                                         to_server,
                                         receiver,
                                         client_id,
                                         FIRST_CLIENT_MESSAGE_TIMEOUT,
                                     )
                                     .fatal()
-                                })
-                                .unwrap();
+                                });
+                            if let Err(error) = router {
+                                router_spawn_failed(
+                                    error,
+                                    client_id,
+                                    &mut os_input,
+                                    &session_state,
+                                    &session_data,
+                                );
+                                continue;
+                            }
                             log::info!(
                                 "attach trace: server listener router spawned client_id={client_id} after {:?}",
                                 accepted_at.elapsed()
@@ -1665,6 +1674,12 @@ pub fn start_server_impl(
                 }
             }
         });
+    if let Err(error) = listener_thread {
+        Err::<(), _>(error)
+            .context("start server listener thread")
+            .non_fatal();
+        return;
+    }
 
     // Why the loop below stopped. Set at every break so that the reason a
     // session ended is written down: without it, a server shutdown leaves
@@ -3535,285 +3550,5 @@ mod client_selection_tests;
 mod session_request_tests;
 
 #[cfg(test)]
-mod session_state_tests {
-    use super::*;
-    use std::str::FromStr;
-
-    fn with_client(id: ClientId) -> SessionState {
-        let mut s = SessionState::new();
-        s.clients.insert(id);
-        s
-    }
-
-    #[test]
-    fn pick_forward_target_prefers_last_active_when_still_connected() {
-        let mut s = SessionState::new();
-        s.clients.insert(crate::ClientId::new(1));
-        s.clients.insert(crate::ClientId::new(2));
-        s.interactive_clients.extend(s.clients.iter().copied());
-        s.set_last_active_client(crate::ClientId::new(2));
-        assert_eq!(s.pick_forward_target(), Some(ClientId::new(2)));
-    }
-
-    #[test]
-    fn plugin_default_keybinds_fill_only_free_slots_and_return_after_unbind() {
-        let key = KeyWithModifier::from_str("Ctrl g").unwrap();
-        let mut base = Config::default();
-        base.keybinds
-            .0
-            .entry(InputMode::Normal)
-            .or_default()
-            .insert(key.clone(), vec![Action::Quit]);
-        let mut configuration = SessionConfiguration::default();
-        configuration.set_saved_configuration(base.clone());
-        configuration.set_client_runtime_configuration(crate::ClientId::new(1), base);
-
-        let mut defaults = Keybinds::default();
-        defaults.0.entry(InputMode::Normal).or_default().insert(
-            key.clone(),
-            vec![Action::NewPane {
-                direction: None,
-                pane_name: None,
-                start_suppressed: false,
-            }],
-        );
-        configuration.register_plugin_default_keybinds(crate::PluginId::new(2), defaults);
-        assert_eq!(
-            configuration
-                .get_client_keybinds(&ClientId::new(1))
-                .get_actions_for_key_in_mode(&InputMode::Normal, &key),
-            Some(&vec![Action::Quit])
-        );
-
-        let (_, changed) = configuration.rebind_keys(
-            &ClientId::new(1),
-            vec![],
-            vec![(InputMode::Normal, key.clone())],
-        );
-        assert!(changed);
-        assert_eq!(
-            configuration
-                .get_client_keybinds(&ClientId::new(1))
-                .get_actions_for_key_in_mode(&InputMode::Normal, &key),
-            Some(&vec![Action::NewPane {
-                direction: None,
-                pane_name: None,
-                start_suppressed: false,
-            }])
-        );
-    }
-
-    #[test]
-    fn lower_plugin_id_wins_default_keybind_conflicts_until_it_unloads() {
-        let key = KeyWithModifier::from_str("Alt x").unwrap();
-        let mut configuration = SessionConfiguration::default();
-        configuration.set_client_runtime_configuration(crate::ClientId::new(1), Config::default());
-        for (plugin_id, action) in [(9, Action::Quit), (3, Action::NoOp)] {
-            let mut defaults = Keybinds::default();
-            defaults
-                .0
-                .entry(InputMode::Normal)
-                .or_default()
-                .insert(key.clone(), vec![action]);
-            configuration
-                .register_plugin_default_keybinds(crate::PluginId::new(plugin_id), defaults);
-        }
-        assert_eq!(
-            configuration
-                .get_client_keybinds(&ClientId::new(1))
-                .get_actions_for_key_in_mode(&InputMode::Normal, &key),
-            Some(&vec![Action::NoOp])
-        );
-
-        configuration
-            .register_plugin_default_keybinds(crate::PluginId::new(3), Keybinds::default());
-        assert_eq!(
-            configuration
-                .get_client_keybinds(&ClientId::new(1))
-                .get_actions_for_key_in_mode(&InputMode::Normal, &key),
-            Some(&vec![Action::Quit])
-        );
-    }
-
-    #[test]
-    fn a_late_reply_detects_that_its_requester_stopped_waiting() {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        let completion = NotificationEnd::new(sender);
-        assert!(!completion.is_cancelled());
-        drop(receiver);
-        assert!(completion.is_cancelled());
-    }
-
-    #[test]
-    fn interactive_clients_exclude_cli_connections_watchers_and_departed_clients() {
-        let mut session = SessionState::new();
-        let cli = session.new_client().unwrap();
-        let interactive = session.new_client().unwrap();
-        let watcher = session.new_client().unwrap();
-        session.interactive_clients.insert(watcher);
-        session.convert_client_to_watcher(watcher);
-        session.interactive_clients.insert(interactive);
-        assert_eq!(session.interactive_client_ids(), vec![interactive]);
-        session.remove_client(interactive);
-        assert!(session.interactive_client_ids().is_empty());
-        let next = session.new_client().unwrap();
-        assert!(
-            next > interactive,
-            "{next} reuses or precedes {interactive}"
-        );
-        assert!(session.interactive_client_ids().is_empty());
-        assert!(session.client_ids().contains(&cli));
-    }
-
-    #[test]
-    fn client_ids_start_at_one_and_are_never_reused() {
-        let mut session = SessionState::new();
-        let first = session.new_client().unwrap();
-        assert_eq!(first, ClientId::new(1));
-        let watcher = session.new_client().unwrap();
-        session.convert_client_to_watcher(watcher);
-        session.remove_client(first);
-        session.remove_watcher(watcher);
-        assert!(session.client_ids().is_empty());
-        assert_eq!(session.new_client(), Some(ClientId::new(3)));
-    }
-
-    #[test]
-    fn a_session_that_has_used_every_client_id_refuses_more() {
-        let mut session = SessionState::new();
-        session.next_client_id = Some(u32::MAX - 1);
-        assert_eq!(session.new_client(), Some(ClientId::new(u32::MAX - 1)));
-        assert_eq!(session.new_client(), Some(ClientId::new(u32::MAX)));
-        assert_eq!(session.new_client(), None);
-        assert_eq!(session.new_client(), None);
-        let mut client_ids = session.client_ids();
-        client_ids.sort_unstable();
-        assert_eq!(
-            client_ids,
-            vec![ClientId::new(u32::MAX - 1), ClientId::new(u32::MAX)]
-        );
-    }
-
-    #[test]
-    fn a_cli_action_acts_for_an_attached_client_whenever_there_is_one() {
-        let mut state = SessionState::new();
-        let cli = state.new_client().unwrap();
-        assert_eq!(
-            state.cli_action_target(cli, None),
-            cli,
-            "nobody is attached"
-        );
-        let older = state.new_client().unwrap();
-        let newer = state.new_client().unwrap();
-        state.interactive_clients.extend([older, newer]);
-        assert_eq!(
-            state.cli_action_target(cli, None),
-            older,
-            "no key pressed yet: the longest-attached client"
-        );
-        assert_eq!(state.cli_action_target(cli, Some(newer)), newer);
-        state.set_last_active_client(newer);
-        assert_eq!(state.cli_action_target(cli, Some(older)), newer);
-        state.interactive_clients.remove(&newer);
-        assert_eq!(
-            state.cli_action_target(cli, None),
-            older,
-            "a last-active client that is no longer attached does not count"
-        );
-    }
-
-    #[test]
-    fn a_change_for_no_client_leaves_no_client_configuration() {
-        let mut configuration = SessionConfiguration::default();
-        let (config, changed) = configuration
-            .reconfigure_runtime_config(&ClientId::NONE, "mouse_mode false".to_owned(), None, None)
-            .unwrap();
-        assert!(changed);
-        assert_eq!(config.unwrap().options.mouse_mode, Some(false));
-        let (_, rebound) = configuration.rebind_keys(
-            &ClientId::NONE,
-            vec![(
-                InputMode::Normal,
-                "Ctrl g".parse::<KeyWithModifier>().unwrap(),
-                vec![Action::NoOp],
-            )],
-            vec![],
-        );
-        assert!(rebound);
-        assert!(configuration.runtime_config.is_empty());
-        assert!(configuration.editor_effective.is_empty());
-        assert!(configuration.effective_keybinds.is_empty());
-
-        let mut saved = Config::default();
-        saved.options.mouse_mode = Some(false);
-        let changes = configuration.change_saved_config(saved);
-        assert_eq!(
-            changes.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-            vec![ClientId::NONE]
-        );
-    }
-
-    #[test]
-    fn pick_forward_target_falls_back_when_last_active_disconnected() {
-        let mut s = SessionState::new();
-        s.clients.insert(crate::ClientId::new(1));
-        s.clients.insert(crate::ClientId::new(2));
-        s.interactive_clients.extend(s.clients.iter().copied());
-        // A stale last-active ID must fall back to the lowest interactive client ID.
-        s.last_active_client = Some(crate::ClientId::new(3));
-        assert_eq!(s.pick_forward_target(), Some(ClientId::new(1)));
-    }
-
-    #[test]
-    fn pick_forward_target_none_when_no_clients() {
-        let s = SessionState::new();
-        assert_eq!(s.pick_forward_target(), None);
-    }
-
-    #[test]
-    fn remove_client_returns_stuck_forward_tokens() {
-        let mut s = with_client(crate::ClientId::new(1));
-        s.mark_forward_in_flight(10, crate::ClientId::new(1));
-        s.mark_forward_in_flight(11, crate::ClientId::new(1));
-        // A forward dispatched to a *different* client — must not be
-        // returned when we remove client 1.
-        s.clients.insert(crate::ClientId::new(2));
-        s.mark_forward_in_flight(12, crate::ClientId::new(2));
-
-        let mut stuck = s.remove_client(crate::ClientId::new(1));
-        stuck.sort_unstable();
-        assert_eq!(stuck, vec![10, 11]);
-        assert_eq!(s.forwards_in_flight.get(&12), Some(&ClientId::new(2)));
-    }
-
-    #[test]
-    fn remove_client_returns_empty_when_no_forwards_in_flight() {
-        let mut s = with_client(crate::ClientId::new(1));
-        assert!(s.remove_client(crate::ClientId::new(1)).is_empty());
-    }
-
-    #[test]
-    fn clear_forward_in_flight_removes_entry() {
-        let mut s = with_client(crate::ClientId::new(1));
-        s.mark_forward_in_flight(42, crate::ClientId::new(1));
-        s.clear_forward_in_flight(42);
-        // After clear, removing the client yields no stuck tokens.
-        assert!(s.remove_client(crate::ClientId::new(1)).is_empty());
-    }
-    #[test]
-    fn disconnect_targets_exclude_origin_and_watchers_but_include_pipe_clients() {
-        let mut state = SessionState::new();
-        let origin = state.new_client().unwrap();
-        state.watchers.insert(ClientId::new(8));
-        assert!(state.disconnect_targets(origin).is_empty());
-        let other = state.new_client().unwrap();
-        let pipe = state.new_client().unwrap();
-        state.associate_pipe_with_client("pipe".into(), pipe);
-        assert_eq!(state.disconnect_targets(origin), vec![other, pipe]);
-        for id in state.disconnect_targets(origin) {
-            state.remove_client(id);
-        }
-        assert_eq!(state.client_ids(), vec![origin]);
-        assert_eq!(state.watcher_client_ids(), vec![ClientId::new(8)]);
-    }
-}
+#[path = "unit/session_state_tests.rs"]
+mod session_state_tests;

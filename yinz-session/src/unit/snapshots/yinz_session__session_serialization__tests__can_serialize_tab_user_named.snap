@@ -1,0 +1,8 @@
+---
+source: yinz-session/src/unit/session_serialization_tests.rs
+expression: kdl.0
+---
+layout {
+    tab name="notes" user_named=true {
+    }
+}

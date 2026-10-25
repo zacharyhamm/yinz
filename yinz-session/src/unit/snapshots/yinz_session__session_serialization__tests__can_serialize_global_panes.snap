@@ -1,0 +1,11 @@
+---
+source: yinz-session/src/unit/session_serialization_tests.rs
+expression: kdl.0
+---
+layout {
+    global_panes {
+        pane edge="left" size="25%" hidden=true {
+            plugin location="yinz:strider"
+        }
+    }
+}

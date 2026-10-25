@@ -482,7 +482,6 @@ fn run_awaits_placement(run: &Option<Run>) -> bool {
 }
 
 impl Tab {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: TabId,
         position: TabPosition,
@@ -4018,7 +4017,6 @@ impl Tab {
     pub fn get_client_input_mode(&self, client_id: ClientId) -> Option<InputMode> {
         self.mode_info.borrow().get(&client_id).map(|m| m.mode)
     }
-    #[allow(unused)] // this is used for tests
     pub fn query_mouse_hover_pane_id(&self) -> HashMap<ClientId, PaneId> {
         self.mouse_hover_pane_id.clone()
     }

@@ -338,6 +338,8 @@ pub(crate) fn route_thread_main(
                     let senders = session_data
                         .read()
                         .to_anyhow()
+                        .with_context(err_context)
+                        .to_log()
                         .ok()
                         .and_then(|r| r.as_ref().map(|r| r.senders.clone()));
 
@@ -367,15 +369,25 @@ pub(crate) fn route_thread_main(
                             _ => false,
                         };
                         if should_exit {
-                            let _ = os_input.send_to_client(
-                                client_id,
-                                ServerToClientMsg::Exit {
-                                    exit_reason: ExitReason::Normal,
-                                },
-                            );
-                            let _ = senders.as_ref().map(|s| {
-                                s.send_to_screen(ScreenInstruction::RemoveWatcherClient(client_id))
-                            });
+                            os_input
+                                .send_to_client(
+                                    client_id,
+                                    ServerToClientMsg::Exit {
+                                        exit_reason: ExitReason::Normal,
+                                    },
+                                )
+                                .with_context(err_context)
+                                .non_fatal();
+                            senders
+                                .as_ref()
+                                .map(|s| {
+                                    s.send_to_screen(ScreenInstruction::RemoveWatcherClient(
+                                        client_id,
+                                    ))
+                                })
+                                .transpose()
+                                .with_context(err_context)
+                                .non_fatal();
                             return Ok(true);
                         }
                         match &instruction {
@@ -524,7 +536,7 @@ pub(crate) fn route_thread_main(
                                     Instant::now(),
                                 )
                             {
-                                let _ = senders.as_ref().map(|senders| {
+                                senders.as_ref().map(|senders| {
                                     senders.send_to_plugin(PluginInstruction::Update(vec![(
                                         None,
                                         Some(client_id),
@@ -533,7 +545,7 @@ pub(crate) fn route_thread_main(
                                             is_live: false,
                                         },
                                     )]))
-                                });
+                                }).transpose().with_context(err_context).non_fatal();
                             }
 
                             // The read guard ends as a temporary in this expression so
@@ -604,10 +616,11 @@ pub(crate) fn route_thread_main(
                                         .as_deref()
                                             == Some("true");
                                     }
+                                    sent.with_context(err_context).non_fatal();
                                     if !overlay_handled_key && actions_dismiss_context_menu(&actions) {
-                                        let _ = senders.send_to_screen(
+                                        senders.send_to_screen(
                                             ScreenInstruction::CloseContextMenu(client_id),
-                                        );
+                                        ).with_context(err_context).non_fatal();
                                     }
                                 }
                                 if !overlay_handled_key {
@@ -615,13 +628,12 @@ pub(crate) fn route_thread_main(
                                         actions_leave_clipboard_message(&actions);
                                     for action in actions {
                                         // Send user input to plugin thread for logging
-                                        let _ =
-                                            senders.send_to_plugin(PluginInstruction::UserInput {
+                                        senders.send_to_plugin(PluginInstruction::UserInput {
                                                 client_id,
                                                 action: action.clone(),
                                                 terminal_id: None,
                                                 cli_client_id: None,
-                                            });
+                                            }).with_context(err_context).non_fatal();
 
                                         match route_action(
                                             action,
@@ -689,12 +701,12 @@ pub(crate) fn route_thread_main(
                                 session_data_assets
                             {
                                 for action in actions {
-                                    let _ = senders.send_to_plugin(PluginInstruction::UserInput {
+                                    senders.send_to_plugin(PluginInstruction::UserInput {
                                         client_id,
                                         action: action.clone(),
                                         terminal_id: maybe_pane_id,
                                         cli_client_id: is_cli_client.then_some(cli_client_id),
-                                    });
+                                    }).with_context(err_context).non_fatal();
                                     match route_action(
                                         action,
                                         client_id,
@@ -737,11 +749,11 @@ pub(crate) fn route_thread_main(
                                 // is recorded but does not reach the layout,
                                 // which only counts connected clients, so no
                                 // session-level gating is needed.
-                                let _ = senders.as_ref().map(|s| {
+                                senders.as_ref().map(|s| {
                                     s.send_to_screen(ScreenInstruction::RecomputeTabSize(
                                         client_id, new_size,
                                     ))
-                                });
+                                }).transpose().with_context(err_context).non_fatal();
                             }
                         },
                         ClientToServerMsg::TerminalPixelDimensions { pixel_dimensions } => {
@@ -885,15 +897,15 @@ pub(crate) fn route_thread_main(
                                 started_at.elapsed(),
                                 if result.is_ok() { "ok" } else { "error" }
                             );
+                            result.with_context(err_context).non_fatal();
                             should_break = true;
                         },
                         ClientToServerMsg::DetachSession { client_ids } => {
-                            let _ =
-                                to_server.send(ServerInstruction::DetachSession(client_ids, None));
+                            to_server.send(ServerInstruction::DetachSession(client_ids, None)).with_context(err_context).non_fatal();
                             should_break = true;
                         },
                         ClientToServerMsg::DesktopNotificationResponse { ref raw_bytes } => {
-                            let _ = send_to_screen_or_retry_queue!(
+                            send_to_screen_or_retry_queue!(
                                 senders,
                                 ScreenInstruction::DesktopNotificationResponse(
                                     raw_bytes.clone(),
@@ -901,7 +913,7 @@ pub(crate) fn route_thread_main(
                                 ),
                                 instruction,
                                 retry_queue
-                            );
+                            ).with_context(err_context).non_fatal();
                         },
                         ClientToServerMsg::ForwardedReplyFromHost {
                             token,
@@ -916,7 +928,7 @@ pub(crate) fn route_thread_main(
                                 .write()
                                 .unwrap()
                                 .clear_forward_in_flight(token);
-                            let _ = send_to_screen_or_retry_queue!(
+                            send_to_screen_or_retry_queue!(
                                 senders,
                                 ScreenInstruction::ForwardedReplyFromHost {
                                     token,
@@ -924,22 +936,22 @@ pub(crate) fn route_thread_main(
                                 },
                                 instruction,
                                 retry_queue
-                            );
+                            ).with_context(err_context).non_fatal();
                         },
                         ClientToServerMsg::HostTerminalThemeChanged { mode } => {
-                            let _ = send_to_screen_or_retry_queue!(
+                            send_to_screen_or_retry_queue!(
                                 senders,
                                 ScreenInstruction::HostTerminalThemeChanged(mode),
                                 instruction,
                                 retry_queue
-                            );
+                            ).with_context(err_context).non_fatal();
                         },
                         ClientToServerMsg::SubscribeToPaneRenders {
                             ref pane_ids,
                             ref scrollback,
                             ansi,
                         } => {
-                            let _ = send_to_screen_or_retry_queue!(
+                            send_to_screen_or_retry_queue!(
                                 senders,
                                 ScreenInstruction::SubscribeToPaneRenders {
                                     client_id,
@@ -949,7 +961,7 @@ pub(crate) fn route_thread_main(
                                 },
                                 instruction,
                                 retry_queue
-                            );
+                            ).with_context(err_context).non_fatal();
                         },
                         ClientToServerMsg::SubscribeToEvents { .. } => {
                             subscribe_to_events(senders.as_ref(), os_input.as_ref(), client_id, instruction, retry_queue.as_deref_mut())?;
@@ -957,52 +969,52 @@ pub(crate) fn route_thread_main(
                         ClientToServerMsg::NestedSessionFrameFromHost { ref payload_bytes } => {
                             match yinz_ipc::nested_session::decode_payload(payload_bytes) {
                                 Some(message @ yinz_ipc::nested_session::NestedSessionMessage::AnnounceAck { .. }) => {
-                                    let _ = send_to_screen_or_retry_queue!(
+                                    send_to_screen_or_retry_queue!(
                                         senders,
                                         ScreenInstruction::NestedSessionMessageFromHost { client_id, message },
                                         instruction,
                                         retry_queue
-                                    );
+                                    ).with_context(err_context).non_fatal();
                                 },
                                 Some(message @ yinz_ipc::nested_session::NestedSessionMessage::FocusGained { .. }) => {
-                                    let _ = send_to_screen_or_retry_queue!(
+                                    send_to_screen_or_retry_queue!(
                                         senders,
                                         ScreenInstruction::NestedSessionMessageFromHost { client_id, message },
                                         instruction,
                                         retry_queue
-                                    );
+                                    ).with_context(err_context).non_fatal();
                                 },
                                 Some(message @ yinz_ipc::nested_session::NestedSessionMessage::FocusLost) => {
-                                    let _ = send_to_screen_or_retry_queue!(
+                                    send_to_screen_or_retry_queue!(
                                         senders,
                                         ScreenInstruction::NestedSessionMessageFromHost { client_id, message },
                                         instruction,
                                         retry_queue
-                                    );
+                                    ).with_context(err_context).non_fatal();
                                 },
                                 Some(message @ yinz_ipc::nested_session::NestedSessionMessage::ShortcutUpdate { .. }) => {
-                                    let _ = send_to_screen_or_retry_queue!(
+                                    send_to_screen_or_retry_queue!(
                                         senders,
                                         ScreenInstruction::NestedSessionMessageFromHost { client_id, message },
                                         instruction,
                                         retry_queue
-                                    );
+                                    ).with_context(err_context).non_fatal();
                                 },
                                 Some(message @ yinz_ipc::nested_session::NestedSessionMessage::FullscreenState { .. }) => {
-                                    let _ = send_to_screen_or_retry_queue!(
+                                    send_to_screen_or_retry_queue!(
                                         senders,
                                         ScreenInstruction::NestedSessionMessageFromHost { client_id, message },
                                         instruction,
                                         retry_queue
-                                    );
+                                    ).with_context(err_context).non_fatal();
                                 },
                                 Some(message @ yinz_ipc::nested_session::NestedSessionMessage::AncestryUpdate { .. }) => {
-                                    let _ = send_to_screen_or_retry_queue!(
+                                    send_to_screen_or_retry_queue!(
                                         senders,
                                         ScreenInstruction::NestedSessionMessageFromHost { client_id, message },
                                         instruction,
                                         retry_queue
-                                    );
+                                    ).with_context(err_context).non_fatal();
                                 },
                                 Some(message) => {
                                     log::debug!(
@@ -1038,19 +1050,19 @@ pub(crate) fn route_thread_main(
                                             &available_layouts,
                                             &plugin_list,
                                         );
-                                    let _ = senders.send_to_screen(
+                                    senders.send_to_screen(
                                         ScreenInstruction::UpdateSessionInfos(
                                             live_sessions_map,
                                             resurrectable_sessions_map,
                                         ),
-                                    );
+                                    ).with_context(err_context).non_fatal();
                                 }
                         },
                         ClientToServerMsg::ModifiersHeld { modifiers } => {
                             // Straight to the plugins, with no `ScreenInstruction` hop: unlike
                             // the focus and theme signals this changes nothing about any pane,
                             // and the screen thread has no use for it.
-                            let _ = senders.as_ref().map(|senders| {
+                            senders.as_ref().map(|senders| {
                                 senders.send_to_plugin(PluginInstruction::Update(vec![(
                                     None,
                                     Some(client_id),
@@ -1059,15 +1071,15 @@ pub(crate) fn route_thread_main(
                                         is_live: true,
                                     },
                                 )]))
-                            });
+                            }).transpose().with_context(err_context).non_fatal();
                         },
                         ClientToServerMsg::HostTerminalFocusChanged { focused } => {
-                            let _ = send_to_screen_or_retry_queue!(
+                            send_to_screen_or_retry_queue!(
                                 senders,
                                 ScreenInstruction::HostTerminalFocusChanged(client_id, focused),
                                 instruction,
                                 retry_queue
-                            );
+                            ).with_context(err_context).non_fatal();
                         },
                     }
                     Ok(should_break)
@@ -1128,14 +1140,17 @@ pub(crate) fn route_thread_main(
                 }
                 if consecutive_malformed_messages_received >= MAX_CONSECUTIVE_MALFORMED_MESSAGES {
                     log::error!("Client sent over {MAX_CONSECUTIVE_MALFORMED_MESSAGES} consecutive unreadable messages, the connection has desynchronised - logging client out");
-                    let _ = os_input.send_to_client(
-                        client_id,
-                        ServerToClientMsg::Exit {
-                            exit_reason: ExitReason::Error(
-                                "The connection to this client desynchronised.".to_string(),
-                            ),
-                        },
-                    );
+                    os_input
+                        .send_to_client(
+                            client_id,
+                            ServerToClientMsg::Exit {
+                                exit_reason: ExitReason::Error(
+                                    "The connection to this client desynchronised.".to_string(),
+                                ),
+                            },
+                        )
+                        .with_context(err_context)
+                        .non_fatal();
                     break 'route_loop;
                 }
                 // Don't fall through to the unblock below: nothing was
@@ -1160,18 +1175,26 @@ pub(crate) fn route_thread_main(
         // signal to the client that the action has finished processing and it can either exit (if
         // it's a cli client) or allow the user to perform another action (if it's an actively
         // connected user)
-        let _ = os_input.send_to_client(client_id, ServerToClientMsg::UnblockInputThread);
+        os_input
+            .send_to_client(client_id, ServerToClientMsg::UnblockInputThread)
+            .with_context(err_context)
+            .non_fatal();
     }
     // One removal per route, queued after everything the route sent.
-    if let Some(session) = session_data
+    session_data
         .write()
         .to_anyhow()
-        .context("cancelling disconnected escape")?
-        .as_mut()
-    {
-        session.locked_escapes.remove(&client_id);
-    }
-    let _ = to_server.send(ServerInstruction::RemoveClient(client_id));
+        .map(|mut session| {
+            if let Some(session) = session.as_mut() {
+                session.locked_escapes.remove(&client_id);
+            }
+        })
+        .context("cancelling disconnected escape")
+        .non_fatal();
+    to_server
+        .send(ServerInstruction::RemoveClient(client_id))
+        .with_context(err_context)
+        .non_fatal();
     Ok(())
 }
 

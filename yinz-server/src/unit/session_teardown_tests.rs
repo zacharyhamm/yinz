@@ -940,3 +940,28 @@ fn removing_a_watcher_forgets_its_state() {
         PluginInstruction::RemoveClient(id) if id == watcher
     )));
 }
+
+#[test]
+fn router_spawn_failure_retires_the_registered_client() {
+    let state = Arc::new(RwLock::new(SessionState::new()));
+    let client_id = state.write().unwrap().new_client().unwrap();
+    let session = Arc::new(RwLock::new(None));
+    let capture = crate::capturing_os::CapturingOs::default();
+    let mut os: Box<dyn ServerOsApi> = Box::new(capture.clone());
+    let connections = Arc::new(AtomicUsize::new(1));
+    let slot = ConnectionSlot(connections.clone());
+    let unstarted_router = move || drop(slot);
+    // A failed Builder::spawn drops its closure before returning the error.
+    drop(unstarted_router);
+    router_spawn_failed(
+        std::io::Error::from_raw_os_error(nix::libc::EAGAIN),
+        client_id,
+        &mut os,
+        &state,
+        &session,
+    );
+    assert_eq!(&*capture.removed_clients.lock(), &[client_id]);
+    assert!(state.read().unwrap().client_ids().is_empty());
+    assert_eq!(connections.load(Ordering::SeqCst), 0);
+    assert_ne!(state.write().unwrap().new_client(), Some(client_id));
+}

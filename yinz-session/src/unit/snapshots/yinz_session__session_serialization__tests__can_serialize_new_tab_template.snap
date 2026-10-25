@@ -1,0 +1,20 @@
+---
+source: yinz-session/src/unit/session_serialization_tests.rs
+assertion_line: 2047
+expression: kdl.0
+---
+layout {
+    new_tab_template {
+        pane
+        pane
+        floating_panes {
+            pane {
+            }
+            pane {
+            }
+            pane {
+            }
+        }
+    }
+}
+

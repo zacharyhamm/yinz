@@ -1,0 +1,15 @@
+---
+source: yinz-session/src/unit/session_serialization_tests.rs
+assertion_line: 1973
+expression: kdl.0
+---
+layout {
+    tab name="Tab with \"stacked panes\"" {
+        pane stacked=true {
+            pane
+            pane expanded=true
+            pane
+        }
+    }
+}
+

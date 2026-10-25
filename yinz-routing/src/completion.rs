@@ -6,6 +6,7 @@ use yinz_bus::os_input_output::ClientTransport;
 use yinz_bus::route::ActionCompletionResult;
 use yinz_bus::ClientId;
 use yinz_ipc::ipc::{ExitReason, ServerToClientMsg};
+use yinz_runtime::errors::prelude::*;
 
 pub(super) const ACTION_COMPLETION_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -103,12 +104,15 @@ pub(super) fn report_action_completion(
         && let Some(cli_client_id) = cli_client_id
         && let Some(os_input) = os_input
     {
-        let _ = os_input.send_to_client(
-            cli_client_id,
-            ServerToClientMsg::Exit {
-                exit_reason: ExitReason::CustomExitStatus(exit_status),
-            },
-        );
+        os_input
+            .send_to_client(
+                cli_client_id,
+                ServerToClientMsg::Exit {
+                    exit_reason: ExitReason::CustomExitStatus(exit_status),
+                },
+            )
+            .with_context(|| format!("sending action exit status to client {cli_client_id}"))
+            .non_fatal();
     }
 }
 
@@ -120,12 +124,15 @@ pub(super) fn send_error_to_client(
     if let Some(cli_client_id) = cli_client_id
         && let Some(os_input) = os_input
     {
-        let _ = os_input.send_to_client(
-            cli_client_id,
-            ServerToClientMsg::LogError {
-                lines: vec![error_message.to_string()],
-            },
-        );
+        os_input
+            .send_to_client(
+                cli_client_id,
+                ServerToClientMsg::LogError {
+                    lines: vec![error_message.to_string()],
+                },
+            )
+            .with_context(|| format!("sending action error to client {cli_client_id}"))
+            .non_fatal();
     }
 }
 
@@ -137,11 +144,14 @@ pub(super) fn send_output_to_client(
     if let Some(cli_client_id) = cli_client_id
         && let Some(os_input) = os_input
     {
-        let _ = os_input.send_to_client(
-            cli_client_id,
-            ServerToClientMsg::Log {
-                lines: output_lines,
-            },
-        );
+        os_input
+            .send_to_client(
+                cli_client_id,
+                ServerToClientMsg::Log {
+                    lines: output_lines,
+                },
+            )
+            .with_context(|| format!("sending action output to client {cli_client_id}"))
+            .non_fatal();
     }
 }

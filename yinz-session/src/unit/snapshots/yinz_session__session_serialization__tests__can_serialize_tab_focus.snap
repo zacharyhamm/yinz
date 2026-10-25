@@ -1,0 +1,10 @@
+---
+source: yinz-session/src/unit/session_serialization_tests.rs
+assertion_line: 1654
+expression: kdl.0
+---
+layout {
+    tab name="Tab #1" focus=true {
+    }
+}
+

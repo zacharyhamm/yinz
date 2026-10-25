@@ -71,8 +71,11 @@ fn separate_command_arguments(command: &mut PathBuf, args: &mut Vec<String>) {
 /// file open.
 /// If [`TerminalAction::RunCommand(RunCommand)`] is given, the command will be started
 /// in the new terminal.
-fn build_command(terminal_action: TerminalAction, default_editor: Option<PathBuf>) -> RunCommand {
-    match terminal_action {
+fn build_command(
+    terminal_action: TerminalAction,
+    default_editor: Option<PathBuf>,
+) -> Result<RunCommand> {
+    Ok(match terminal_action {
         TerminalAction::OpenFile(mut payload) => {
             if payload.path.is_relative()
                 && let Some(cwd) = payload.cwd.as_ref()
@@ -95,7 +98,7 @@ fn build_command(terminal_action: TerminalAction, default_editor: Option<PathBuf
                 .path
                 .into_os_string()
                 .into_string()
-                .expect("Not valid Utf8 Encoding");
+                .map_err(|path| anyhow!("editor file path is not valid UTF-8: {path:?}"))?;
             if let Some(line_number) = payload.line_number {
                 if command.ends_with("vim")
                     || command.ends_with("nvim")
@@ -126,7 +129,7 @@ fn build_command(terminal_action: TerminalAction, default_editor: Option<PathBuf
             }
         },
         TerminalAction::RunCommand(command) => command,
-    }
+    })
 }
 
 // How many ordered messages a client's send queue holds before the server
@@ -785,7 +788,12 @@ impl ServerOsInputOutput {
         default_editor: Option<PathBuf>,
         report_progress: &mut dyn FnMut(&str),
     ) -> Result<ResolvedSpawn> {
-        let command = build_command(terminal_action, default_editor);
+        let command = build_command(terminal_action, default_editor)
+            .map_err(|error| YinzError::PaneStartFailed {
+                terminal_id,
+                message: format!("could not build terminal command: {error:#}"),
+            })
+            .context("build terminal command")?;
         let target = command.target.clone();
         let (command, rerun_command, endpoint) = self
             .resolve_target(command, Some(report_progress))
@@ -1144,7 +1152,12 @@ impl TerminalProcesses for ServerOsInputOutput {
 
         self.pty_backend.reserve_terminal_id(terminal_id);
 
-        let cmd = build_command(terminal_action, default_editor);
+        let cmd = build_command(terminal_action, default_editor)
+            .map_err(|error| YinzError::PaneStartFailed {
+                terminal_id,
+                message: format!("could not build terminal command: {error:#}"),
+            })
+            .context("build terminal command")?;
         let target = cmd.target.clone();
         let (cmd, rerun_cmd, endpoint) = self
             .resolve_target(cmd, None)

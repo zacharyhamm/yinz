@@ -142,7 +142,6 @@ pub struct TiledPanes {
 }
 
 impl TiledPanes {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         display_area: Rc<RefCell<Size>>,
         viewport: Rc<RefCell<Viewport>>,
@@ -999,46 +998,10 @@ impl TiledPanes {
     pub fn split_pane_id_horizontally(
         &mut self,
         pid: PaneId,
-        mut new_pane: Box<dyn Pane>,
+        new_pane: Box<dyn Pane>,
         active_pane_id: PaneId,
     ) {
-        let mut full_pane_size = self
-            .panes
-            .get(&active_pane_id)
-            .map(|p| p.position_and_size())
-            .unwrap();
-        if full_pane_size.is_stacked() {
-            match StackedPanes::new_from_btreemap(&mut self.panes, &self.panes_to_hide)
-                .position_and_size_of_stack(&active_pane_id)
-            {
-                Some(position_and_size_of_stack) => {
-                    full_pane_size = position_and_size_of_stack;
-                },
-                None => {
-                    log::error!("Failed to find position and size of stack");
-                },
-            }
-        }
-        let active_pane = self.panes.get_mut(&active_pane_id).unwrap();
-        if let Some((top_winsize, bottom_winsize)) =
-            split(SplitDirection::Horizontal, &full_pane_size)
-        {
-            if active_pane.position_and_size().is_stacked() {
-                match StackedPanes::new_from_btreemap(&mut self.panes, &self.panes_to_hide)
-                    .resize_panes_in_stack(&active_pane_id, top_winsize)
-                {
-                    Ok(_) => {},
-                    Err(e) => {
-                        log::error!("Failed to resize stack: {}", e);
-                    },
-                }
-            } else {
-                active_pane.set_geom(top_winsize);
-            }
-            new_pane.set_geom(bottom_winsize);
-            self.panes.insert(pid, new_pane);
-            self.relayout(SplitDirection::Vertical);
-        }
+        self.split_pane_id(pid, new_pane, active_pane_id, SplitDirection::Horizontal);
     }
     pub fn split_pane_vertically(
         &mut self,
@@ -1052,8 +1015,17 @@ impl TiledPanes {
     pub fn split_pane_id_vertically(
         &mut self,
         pid: PaneId,
+        new_pane: Box<dyn Pane>,
+        active_pane_id: PaneId,
+    ) {
+        self.split_pane_id(pid, new_pane, active_pane_id, SplitDirection::Vertical);
+    }
+    fn split_pane_id(
+        &mut self,
+        pid: PaneId,
         mut new_pane: Box<dyn Pane>,
         active_pane_id: PaneId,
+        split_direction: SplitDirection,
     ) {
         let mut full_pane_size = self
             .panes
@@ -1073,12 +1045,10 @@ impl TiledPanes {
             }
         }
         let active_pane = self.panes.get_mut(&active_pane_id).unwrap();
-        if let Some((left_winsize, right_winsize)) =
-            split(SplitDirection::Vertical, &full_pane_size)
-        {
+        if let Some((existing_geom, new_geom)) = split(split_direction, &full_pane_size) {
             if active_pane.position_and_size().is_stacked() {
                 match StackedPanes::new_from_btreemap(&mut self.panes, &self.panes_to_hide)
-                    .resize_panes_in_stack(&active_pane_id, left_winsize)
+                    .resize_panes_in_stack(&active_pane_id, existing_geom)
                 {
                     Ok(_) => {},
                     Err(e) => {
@@ -1086,11 +1056,11 @@ impl TiledPanes {
                     },
                 }
             } else {
-                active_pane.set_geom(left_winsize);
+                active_pane.set_geom(existing_geom);
             }
-            new_pane.set_geom(right_winsize);
+            new_pane.set_geom(new_geom);
             self.panes.insert(pid, new_pane);
-            self.relayout(SplitDirection::Horizontal);
+            self.relayout(!split_direction);
         }
     }
     pub fn focus_pane_for_all_clients(&mut self, pane_id: PaneId) {
@@ -1319,7 +1289,10 @@ impl TiledPanes {
     pub fn focused_pane_id(&self, client_id: ClientId) -> Option<PaneId> {
         self.active_panes.get(&client_id).copied()
     }
-    #[allow(clippy::borrowed_box)]
+    #[expect(
+        clippy::borrowed_box,
+        reason = "callers combine this lookup with other pane containers returning boxed references"
+    )]
     pub fn get_pane(&self, pane_id: PaneId) -> Option<&Box<dyn Pane>> {
         self.panes.get(&pane_id)
     }
@@ -1371,7 +1344,6 @@ impl TiledPanes {
     pub fn has_panes(&self) -> bool {
         !self.panes.is_empty()
     }
-    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         output: &mut Output,
@@ -3366,7 +3338,6 @@ fn apply_frame(ctx: &FrameContext, pane: &mut Box<dyn Pane>) {
 
     let reserved_rows = ctx.reserved_top_rows.get(&pane.pid()).copied().unwrap_or(0);
 
-    #[allow(clippy::if_same_then_else)]
     if reserved_rows > 0 {
         if ctx.draws_full_frames && !pane.borderless() {
             pane.set_content_offset(Offset {
@@ -3389,9 +3360,9 @@ fn apply_frame(ctx: &FrameContext, pane: &mut Box<dyn Pane>) {
         }
     } else if ctx.draws_full_frames && !pane.borderless() {
         pane.set_content_offset(Offset::frame(1));
-    } else if ctx.draws_full_frames && pane.borderless() {
-        pane.set_content_offset(Offset::default());
-    } else if !is_inside_viewport(&ctx.viewport, pane) {
+    } else if (ctx.draws_full_frames && pane.borderless())
+        || !is_inside_viewport(&ctx.viewport, pane)
+    {
         pane.set_content_offset(Offset::default());
     } else {
         let mut position_and_size = pane.current_geom();
@@ -3429,7 +3400,10 @@ fn apply_frame(ctx: &FrameContext, pane: &mut Box<dyn Pane>) {
     }
 }
 
-#[allow(clippy::borrowed_box)]
+#[expect(
+    clippy::borrowed_box,
+    reason = "pane containers pass their boxed entries directly to this shared geometry check"
+)]
 pub fn is_inside_viewport(viewport: &Viewport, pane: &Box<dyn Pane>) -> bool {
     let pane_position_and_size = pane.current_geom();
     pane_position_and_size.y >= viewport.y
@@ -3445,88 +3419,9 @@ pub fn pane_geom_is_inside_viewport(viewport: &Viewport, geom: &PaneGeom) -> boo
 }
 
 #[cfg(test)]
-mod content_offset_tests {
-    use super::pane_content_offset;
-    use yinz_types::pane_size::{Dimension, PaneGeom, Viewport};
-
-    fn geom(x: usize, cols: usize, y: usize, rows: usize) -> PaneGeom {
-        PaneGeom {
-            x,
-            y,
-            cols: Dimension::fixed(cols),
-            rows: Dimension::fixed(rows),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn offsets_are_reserved_relative_to_the_viewport_origin() {
-        // a viewport that does not start at the screen origin
-        let viewport = Viewport {
-            x: 20,
-            y: 0,
-            cols: 80,
-            rows: 40,
-        };
-
-        // a pane whose right edge lands mid-viewport still needs a boundary column, even though
-        // its absolute right edge (85) is past `viewport.cols` (80)
-        assert_eq!(pane_content_offset(&geom(20, 65, 0, 40), &viewport).0, 1);
-        // a pane flush with the viewport's right edge does not
-        assert_eq!(pane_content_offset(&geom(20, 80, 0, 40), &viewport).0, 0);
-    }
-
-    #[test]
-    fn offsets_are_unchanged_for_an_origin_viewport() {
-        let viewport = Viewport {
-            x: 0,
-            y: 0,
-            cols: 100,
-            rows: 40,
-        };
-        assert_eq!(pane_content_offset(&geom(0, 100, 0, 40), &viewport), (0, 0));
-        assert_eq!(pane_content_offset(&geom(0, 50, 0, 20), &viewport), (1, 1));
-    }
-}
+#[path = "unit/content_offset_tests.rs"]
+mod content_offset_tests;
 
 #[cfg(test)]
-mod viewport_resize_tests {
-    use super::resized_viewport_axis;
-
-    // the rows of a 20-row screen with a one-row tab bar on top and a two-row status bar below
-    const CHROME: (usize, usize, usize) = (1, 17, 20);
-
-    #[test]
-    fn a_screen_that_fits_the_insets_keeps_them() {
-        let (start, extent, total) = CHROME;
-        assert_eq!(resized_viewport_axis(start, extent, total, 10), (1, 7));
-        assert_eq!(resized_viewport_axis(start, extent, total, 40), (1, 37));
-        // no chrome at all: the viewport is the whole screen, before and after
-        assert_eq!(resized_viewport_axis(0, 20, 20, 2), (0, 2));
-    }
-
-    #[test]
-    fn a_resize_to_the_size_the_screen_already_is_is_the_identity() {
-        // `Tab::relayout_tiled_panes` and `LayoutApplier::adjust_viewport` both resize to the
-        // current display area, expecting only a pass through the constraint system
-        let (start, extent, total) = CHROME;
-        assert_eq!(resized_viewport_axis(start, extent, total, total), (1, 17));
-        assert_eq!(resized_viewport_axis(0, 80, 80, 80), (0, 80));
-    }
-
-    #[test]
-    fn a_screen_smaller_than_the_insets_empties_the_viewport() {
-        let (start, extent, total) = CHROME;
-        // this used to be `17 + (2 - 20)`, which wrapped around `usize`
-        assert_eq!(resized_viewport_axis(start, extent, total, 2), (1, 0));
-        // and here the screen is smaller than the leading inset on its own
-        assert_eq!(resized_viewport_axis(start, extent, total, 0), (0, 0));
-        for new_total in 0..25 {
-            let (new_start, new_extent) = resized_viewport_axis(start, extent, total, new_total);
-            assert!(
-                new_start + new_extent <= new_total,
-                "{new_start} + {new_extent} is outside a screen of {new_total}"
-            );
-        }
-    }
-}
+#[path = "unit/viewport_resize_tests.rs"]
+mod viewport_resize_tests;

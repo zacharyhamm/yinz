@@ -1,0 +1,733 @@
+---
+source: yinz-cli/src/unit/setup_setup_test.rs
+expression: "format!(\"{:#?}\", config)"
+---
+Config {
+    keybinds: {
+        Normal: {
+            KeyWithModifier {
+                bare_key: Char(
+                    'b',
+                ),
+                key_modifiers: {},
+            }: [
+                SwitchToMode {
+                    input_mode: Session,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'b',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                },
+            }: [
+                SwitchToMode {
+                    input_mode: Resize,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'c',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                },
+            }: [
+                SwitchToMode {
+                    input_mode: Resize,
+                },
+            ],
+        },
+        Resize: {
+            KeyWithModifier {
+                bare_key: Char(
+                    'b',
+                ),
+                key_modifiers: {},
+            }: [
+                SwitchToMode {
+                    input_mode: Locked,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'c',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                },
+            }: [
+                SwitchToMode {
+                    input_mode: Resize,
+                },
+            ],
+        },
+        Scroll: {
+            KeyWithModifier {
+                bare_key: Char(
+                    'b',
+                ),
+                key_modifiers: {},
+            }: [
+                SwitchToMode {
+                    input_mode: Locked,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'c',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                },
+            }: [
+                SwitchToMode {
+                    input_mode: Resize,
+                },
+            ],
+        },
+    },
+    options: Options {
+        tab_groups: None,
+        agent_theme_mapping: None,
+        simplified_ui: None,
+        disable_splash_screen: None,
+        theme: None,
+        theme_dark: None,
+        theme_light: None,
+        explicit_theme_hue: None,
+        default_mode: None,
+        default_shell: None,
+        default_cwd: None,
+        default_layout: None,
+        layout_dir: None,
+        theme_dir: None,
+        user_plugin_dir: None,
+        mouse_mode: None,
+        agent_double_escape: None,
+        detachable_panes: None,
+        pane_frames: None,
+        pane_animations: None,
+        background_opacity: Some(
+            85,
+        ),
+        pane_frame_style: None,
+        notification_position: None,
+        notification_timeout: None,
+        mirror_session: None,
+        on_force_close: None,
+        scroll_buffer_size: None,
+        max_agent_width: None,
+        copy_command: None,
+        copy_clipboard: None,
+        copy_on_select: None,
+        osc8_hyperlinks: None,
+        scrollback_editor: None,
+        session_name: None,
+        attach_to_session: None,
+        auto_layout: None,
+        session_serialization: None,
+        host_id: None,
+        serialize_pane_viewport: None,
+        scrollback_lines_to_serialize: None,
+        styled_underlines: None,
+        serialization_interval: None,
+        disable_session_metadata: None,
+        support_kitty_keyboard_protocol: None,
+        report_modifier_keys: None,
+        support_kitty_graphics_protocol: None,
+        stacked_resize: None,
+        agent_pane_min_columns: None,
+        agent_pane_min_rows: None,
+        stacked_pane_list: None,
+        advanced_mouse_actions: None,
+        mouse_scroll_resize: None,
+        mouse_hover_effects: None,
+        visual_bell: None,
+        focus_follows_mouse: None,
+        mouse_click_through: None,
+        context_menu_on_right_click: None,
+        context_menu_override_agent_mouse: None,
+        osc133_command_selection: None,
+        word_separators: None,
+        host_notification_protocol: None,
+        post_command_discovery_hook: None,
+        nested_session_handling: None,
+        dangerously_enable_paste_buffer_read: None,
+        locked_escape_timeout_ms: None,
+    },
+    themes: {},
+    plugins: PluginAliases {
+        aliases: {
+            "agent-exit": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "agent-exit",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+            "agent-policy": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "agent-policy",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+            "agent-service": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "agent-service",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "shared": "true",
+                    },
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+            "agents": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "agents",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "shared": "true",
+                    },
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+            "compact-bar": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "compact-bar",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+            "configuration": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "configuration",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+            "configuration-palette": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "configuration-palette",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "shared": "true",
+                    },
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+            "context-menu": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "context-menu",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+            "duplicate-agent": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "new-agent",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "duplicate_focused": "true",
+                    },
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+            "file-finder": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "file-finder",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+            "filepicker": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "strider",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: Some(
+                    "/",
+                ),
+                relative_path: None,
+                declared_path: None,
+            },
+            "fork-agent": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "new-agent",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "fork_focused": "true",
+                    },
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+            "layout-palette": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "layout-palette",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "shared": "true",
+                    },
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+            "new-agent": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "new-agent",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+            "plugin-palette": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "plugin-palette",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "shared": "true",
+                    },
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+            "project-store": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "project-store",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "shared": "true",
+                    },
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+            "session-palette": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "session-palette",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "shared": "true",
+                    },
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+            "status-bar": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "status-bar",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+            "strider": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "strider",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+            "tab-bar": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "tab-bar",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+        },
+    },
+    ui: UiConfig {
+        pane_frames: FrameConfig {
+            rounded_corners: false,
+            hide_session_name: false,
+        },
+    },
+    env: {},
+    background_plugins: {
+        RunPlugin(
+            RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "link",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
+        ),
+        Alias(
+            PluginAlias {
+                name: "agent-service",
+                configuration: Some(
+                    PluginUserConfiguration(
+                        {},
+                    ),
+                ),
+                initial_cwd: None,
+                run_plugin: None,
+            },
+        ),
+        Alias(
+            PluginAlias {
+                name: "configuration-palette",
+                configuration: Some(
+                    PluginUserConfiguration(
+                        {},
+                    ),
+                ),
+                initial_cwd: None,
+                run_plugin: None,
+            },
+        ),
+        Alias(
+            PluginAlias {
+                name: "layout-palette",
+                configuration: Some(
+                    PluginUserConfiguration(
+                        {},
+                    ),
+                ),
+                initial_cwd: None,
+                run_plugin: None,
+            },
+        ),
+        Alias(
+            PluginAlias {
+                name: "plugin-palette",
+                configuration: Some(
+                    PluginUserConfiguration(
+                        {},
+                    ),
+                ),
+                initial_cwd: None,
+                run_plugin: None,
+            },
+        ),
+        Alias(
+            PluginAlias {
+                name: "project-store",
+                configuration: Some(
+                    PluginUserConfiguration(
+                        {},
+                    ),
+                ),
+                initial_cwd: None,
+                run_plugin: None,
+            },
+        ),
+        Alias(
+            PluginAlias {
+                name: "session-palette",
+                configuration: Some(
+                    PluginUserConfiguration(
+                        {},
+                    ),
+                ),
+                initial_cwd: None,
+                run_plugin: None,
+            },
+        ),
+    },
+    background_plugins_cleared: false,
+    overlay_tab_plugins: None,
+    hooks: Hooks {
+        hooks: {
+            AgentExit: RunPlugin(
+                RunPlugin {
+                    _allow_exec_host_cmd: false,
+                    location: Yinz(
+                        PluginTag(
+                            "agent-exit",
+                        ),
+                    ),
+                    configuration: PluginUserConfiguration(
+                        {},
+                    ),
+                    initial_cwd: None,
+                    relative_path: None,
+                    declared_path: None,
+                },
+            ),
+            ContextMenu: RunPlugin(
+                RunPlugin {
+                    _allow_exec_host_cmd: false,
+                    location: Yinz(
+                        PluginTag(
+                            "context-menu",
+                        ),
+                    ),
+                    configuration: PluginUserConfiguration(
+                        {},
+                    ),
+                    initial_cwd: None,
+                    relative_path: None,
+                    declared_path: None,
+                },
+            ),
+        },
+    },
+    context_menu: ContextMenu {
+        items: [
+            ContextMenuItem {
+                id: Some(
+                    ContextMenuItemId(
+                        0,
+                    ),
+                ),
+                label: "Copy",
+                shortcut: None,
+                actions: [
+                    Copy,
+                ],
+                context: {},
+                disabled: false,
+                separator: false,
+            },
+            ContextMenuItem {
+                id: Some(
+                    ContextMenuItemId(
+                        1,
+                    ),
+                ),
+                label: "",
+                shortcut: None,
+                actions: [],
+                context: {},
+                disabled: false,
+                separator: true,
+            },
+            ContextMenuItem {
+                id: Some(
+                    ContextMenuItemId(
+                        2,
+                    ),
+                ),
+                label: "Split right",
+                shortcut: None,
+                actions: [
+                    NewPane {
+                        direction: Some(
+                            Right,
+                        ),
+                        pane_name: None,
+                        start_suppressed: false,
+                    },
+                ],
+                context: {},
+                disabled: false,
+                separator: false,
+            },
+            ContextMenuItem {
+                id: Some(
+                    ContextMenuItemId(
+                        3,
+                    ),
+                ),
+                label: "Split down",
+                shortcut: None,
+                actions: [
+                    NewPane {
+                        direction: Some(
+                            Down,
+                        ),
+                        pane_name: None,
+                        start_suppressed: false,
+                    },
+                ],
+                context: {},
+                disabled: false,
+                separator: false,
+            },
+            ContextMenuItem {
+                id: Some(
+                    ContextMenuItemId(
+                        4,
+                    ),
+                ),
+                label: "Fullscreen",
+                shortcut: None,
+                actions: [
+                    ToggleFocusFullscreen,
+                ],
+                context: {},
+                disabled: false,
+                separator: false,
+            },
+            ContextMenuItem {
+                id: Some(
+                    ContextMenuItemId(
+                        5,
+                    ),
+                ),
+                label: "",
+                shortcut: None,
+                actions: [],
+                context: {},
+                disabled: false,
+                separator: true,
+            },
+            ContextMenuItem {
+                id: Some(
+                    ContextMenuItemId(
+                        6,
+                    ),
+                ),
+                label: "Move to new tab",
+                shortcut: None,
+                actions: [
+                    BreakPane,
+                ],
+                context: {},
+                disabled: false,
+                separator: false,
+            },
+            ContextMenuItem {
+                id: Some(
+                    ContextMenuItemId(
+                        7,
+                    ),
+                ),
+                label: "Close pane",
+                shortcut: None,
+                actions: [
+                    CloseFocus,
+                ],
+                context: {},
+                disabled: false,
+                separator: false,
+            },
+        ],
+    },
+}

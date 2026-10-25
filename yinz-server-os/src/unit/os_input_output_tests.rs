@@ -2017,7 +2017,7 @@ fn quality_pass_editor_executable_path_preserves_spaces() {
     let file = directory.path().join("my note.md");
     let payload = yinz_types::input::command::OpenFilePayload::new(file.clone(), None, None);
 
-    let command = build_command(TerminalAction::OpenFile(payload), Some(editor.clone()));
+    let command = build_command(TerminalAction::OpenFile(payload), Some(editor.clone())).unwrap();
 
     assert_eq!(command.command, editor);
     assert_eq!(command.args, vec![file.to_str().unwrap()]);
@@ -2074,7 +2074,7 @@ fn note_file_editor_precedence_and_arguments_use_executable_stubs() {
     let payload =
         yinz_types::input::command::OpenFilePayload::new("/tmp/note.md".into(), None, None);
     let configured = (level == "configured").then(|| PathBuf::from("configured --configured-arg"));
-    let command = build_command(TerminalAction::OpenFile(payload), configured);
+    let command = build_command(TerminalAction::OpenFile(payload), configured).unwrap();
     assert_eq!(command.command, PathBuf::from(&level));
     assert_eq!(command.args.last().unwrap(), "/tmp/note.md");
     assert_eq!(command.args.len(), if level == "vi" { 1 } else { 2 });
@@ -2115,7 +2115,8 @@ fn editor_commands_preserve_configured_arguments_and_line_syntax() {
                     Some(directory.path().to_owned()),
                 )),
                 Some(format!("/usr/bin/{editor} --configured-arg another-arg").into()),
-            );
+            )
+            .unwrap();
             let mut expected = vec!["--configured-arg", "another-arg"];
             expected.extend(file_args);
             assert_eq!(command.command, PathBuf::from(format!("/usr/bin/{editor}")));
@@ -2185,4 +2186,60 @@ fn remote_codex_wrappers_keep_the_remote_executable() {
         assert_eq!(rerun, requested);
         assert_eq!(endpoint.unwrap().host, "build-box");
     }
+}
+
+#[test]
+fn opening_a_non_utf8_file_reports_an_error() {
+    use std::os::unix::ffi::OsStringExt;
+    use yinz_types::input::command::OpenFilePayload;
+
+    let path = PathBuf::from(std::ffi::OsString::from_vec(b"/tmp/note-\xff".to_vec()));
+    let payload = OpenFilePayload::new(path, None, None);
+    let error = build_command(
+        TerminalAction::OpenFile(payload),
+        Some("/usr/bin/vi".into()),
+    )
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("editor file path is not valid UTF-8"));
+}
+
+#[test]
+fn invalid_editor_paths_are_recoverable_pane_start_failures() {
+    use std::os::unix::ffi::OsStringExt;
+    use yinz_types::input::command::OpenFilePayload;
+
+    let server = make_server();
+    let action = TerminalAction::OpenFile(OpenFilePayload::new(
+        std::ffi::OsString::from_vec(b"/tmp/note-\xff".to_vec()).into(),
+        None,
+        None,
+    ));
+    let error = server
+        .spawn_terminal(
+            action.clone(),
+            Box::new(|_, _, _| panic!("invalid command must not start")),
+            Some("/usr/bin/vi".into()),
+        )
+        .err()
+        .unwrap();
+    let Some(YinzError::PaneStartFailed {
+        terminal_id,
+        message,
+    }) = error.downcast_ref()
+    else {
+        panic!("expected recoverable pane error, got {error:#}");
+    };
+    assert!(message.contains("not valid UTF-8"), "{message}");
+    server.clear_terminal_id(*terminal_id).unwrap();
+
+    let terminal_id = server.reserve_terminal_id().unwrap();
+    let error = server
+        .resolve_spawn(terminal_id, action, Some("/usr/bin/vi".into()), &mut |_| {})
+        .err()
+        .unwrap();
+    assert!(matches!(error.downcast_ref::<YinzError>(),
+        Some(YinzError::PaneStartFailed { terminal_id: failed, .. }) if *failed == terminal_id));
+    server.clear_terminal_id(terminal_id).unwrap();
 }

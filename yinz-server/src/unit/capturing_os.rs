@@ -28,6 +28,7 @@ type CapturedClientMessages = Watched<HashMap<ClientId, Vec<ServerToClientMsg>>>
 pub(crate) struct CapturingOs {
     pub(crate) server_to_client_messages: CapturedClientMessages,
     pub(crate) fail_client: Option<ClientId>,
+    pub(crate) removed_clients: Watched<Vec<ClientId>>,
 }
 
 impl TerminalIo for CapturingOs {
@@ -106,7 +107,8 @@ impl ClientTransport for CapturingOs {
     ) -> Result<IpcReceiverWithContext<ClientToServerMsg>> {
         unimplemented!()
     }
-    fn remove_client(&mut self, _: ClientId) -> Result<()> {
+    fn remove_client(&mut self, client_id: ClientId) -> Result<()> {
+        self.removed_clients.lock().push(client_id);
         Ok(())
     }
 }

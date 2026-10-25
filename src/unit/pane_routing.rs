@@ -623,3 +623,59 @@ fn named_actions_and_commands_wait_for_readiness_without_probing_other_sessions(
 #[cfg(target_os = "linux")]
 #[path = "bubblewrap_cli.rs"]
 mod bubblewrap_cli;
+
+#[test]
+fn bulk_session_commands_fail_cleanly_when_confirmation_has_no_terminal() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = Session::new(dir.path(), "one");
+    for (action, message) in [
+        ("kill-all-sessions", "Could not confirm session termination"),
+        ("delete-all-sessions", "Could not confirm session deletion"),
+    ] {
+        let output = outside_command(dir.path()).arg(action).output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(stderr.contains(message), "{stderr}");
+        assert!(!stderr.contains("panicked"), "{stderr}");
+        assert!(session.messages.try_recv().is_err());
+    }
+}
+
+#[test]
+fn attaching_to_the_current_session_reports_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let _supervisor = Supervisor::new(dir.path(), "old", 7);
+    let session = Session::new(dir.path(), "old");
+    let output = command(dir.path())
+        .args(["attach", "old"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        stderr.contains("does not support nesting a session in itself"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert!(session.messages.try_recv().is_err());
+}
+
+#[test]
+fn watching_a_session_reports_discovery_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let sockets = dir
+        .path()
+        .join(&*yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR);
+    std::fs::write(&sockets, b"not a directory").unwrap();
+    let output = outside_command(dir.path())
+        .args(["watch", "missing"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        stderr.contains("Failed to list existing Yinz sessions"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "{stderr}");
+}
