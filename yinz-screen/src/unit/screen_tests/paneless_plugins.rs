@@ -1115,6 +1115,96 @@ fn a_launch_replaces_a_failed_headless_instance() {
 }
 
 #[test]
+fn headless_recovery_preserves_only_a_registered_instance_on_launch() {
+    for state in ["failed", "unloaded", "unknown"] {
+        let mut mock = MockScreen::new(SIZE);
+        let ptys = mock.pty_receiver.take().unwrap();
+        let plugins = mock.plugin_receiver.take().unwrap();
+        let screen_thread = mock.run(None, vec![]);
+        if state != "unknown" {
+            mock.to_screen
+                .send(ScreenInstruction::PluginPaneless {
+                    plugin_id: PLUGIN,
+                    run: Box::new(headless_run()),
+                    completion: None,
+                })
+                .unwrap();
+            mock.to_screen
+                .send(ScreenInstruction::PluginFailed(PLUGIN))
+                .unwrap();
+        }
+        if state == "unloaded" {
+            mock.to_screen
+                .send(ScreenInstruction::PluginUnloaded(PLUGIN))
+                .unwrap();
+        }
+        let (completion, rx) = completion();
+        mock.to_screen
+            .send(ScreenInstruction::PluginRecovered(PLUGIN))
+            .unwrap();
+        mock.to_screen
+            .send(ScreenInstruction::LaunchOrFocusPlugin(
+                headless_run(),
+                true,
+                false,
+                false,
+                false,
+                None,
+                false,
+                CLIENT,
+                Some(completion),
+                None,
+            ))
+            .unwrap();
+        // The reply follows recovery and launch, so all their instructions are observable.
+        let (info_tx, info_rx) = crossbeam::channel::bounded(1);
+        mock.to_screen
+            .send(ScreenInstruction::GetPaneInfo {
+                pane_id: PaneId::Plugin(PLUGIN),
+                response_channel: info_tx,
+            })
+            .unwrap();
+        assert!(info_rx
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap()
+            .is_none());
+        let instructions: Vec<_> = ptys
+            .try_iter()
+            .map(|(instruction, _)| instruction)
+            .collect();
+        let relaunches: Vec<_> = plugins
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                PluginInstruction::KeybindPipe {
+                    name,
+                    plugin_and_client_id,
+                    ..
+                } if name == crate::screen::plugins::RELAUNCH_PIPE => plugin_and_client_id,
+                _ => None,
+            })
+            .collect();
+        let recovered = state == "failed";
+        assert_eq!(loads_another(&instructions), !recovered, "{state}");
+        assert!(!closes_pty_pane(&instructions, PLUGIN), "{state}");
+        assert_eq!(
+            relaunches,
+            if recovered {
+                vec![(PLUGIN, CLIENT)]
+            } else {
+                vec![]
+            },
+            "{state}"
+        );
+        if recovered {
+            let result = answer(rx);
+            assert_eq!(result.affected_pane_id, Some(PaneId::Plugin(PLUGIN)));
+            assert_eq!(result.error_message, None);
+        }
+        mock.teardown(vec![screen_thread]);
+    }
+}
+
+#[test]
 fn a_paneless_pane_tab_child_takes_the_failure_path() {
     let mut harness = Harness::new();
     let descriptor = |label: &str| PaneTabDescriptor {

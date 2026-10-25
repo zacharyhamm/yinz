@@ -1922,6 +1922,11 @@ impl PluginBridge {
                                 "attach trace: plugin executor client_id={client_id} plugin_id={plugin_id} plugin load complete after {:?}",
                                 load_started_at.elapsed()
                             );
+                            // Cancellation can succeed without publishing an instance.
+                            if plugin_map.lock().unwrap().has_available_instance(plugin_id) {
+                                let _ = senders
+                                    .send_to_screen(ScreenInstruction::PluginRecovered(plugin_id));
+                            }
                             let _ = senders
                                 .send_to_screen(ScreenInstruction::RequestStateUpdateForPlugins);
                             let _ = senders.send_to_background_jobs(

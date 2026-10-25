@@ -219,6 +219,7 @@ pub enum ScreenContext {
     PluginPaneless,
     PluginResolving,
     PluginFailed,
+    PluginRecovered,
     PluginUnloaded,
     GiveUpSlot,
     UpdatePluginLocation,

@@ -3724,6 +3724,98 @@ fn first_load_whose_data_cannot_be_prepared_is_not_left_loading() {
 }
 
 #[test]
+fn attachment_reports_headless_recovery_only_with_an_available_instance() {
+    for outcome in ["recovered", "failed", "cancelled"] {
+        let mut test = TestBridge::new();
+        let plugin = PluginId::new(1);
+        let first = ClientId::new(1);
+        let joining = ClientId::new(2);
+        test.bridge.add_client(first).unwrap();
+        let context = test.context(1, 1, "(define (pipe message) (error \"crashed\"))");
+        let source = context.plugin_config.path.clone();
+        test.load(context).unwrap();
+        assert!(!test.bridge.plugin_is_shared(&plugin));
+        assert_eq!(
+            test.bridge.panes.lock().unwrap().surface(plugin),
+            Some(Surface::Headless)
+        );
+        let instance = test.instance_id(plugin, first);
+        test.pipe(plugin, "crash");
+        test.settle(plugin);
+        assert_eq!(test.pipe_failures(), ["crash"]);
+        test.bridge
+            .plugin_failed(plugin, None, None, Some(instance), "crashed".into(), false)
+            .unwrap();
+        test.wait_for_executor(plugin);
+        let screen = test.receiver::<ScreenInstruction>();
+        assert!(screen.try_iter().any(|(instruction, _)| {
+            matches!(instruction, ScreenInstruction::PluginFailed(id) if id == plugin)
+        }));
+        assert!(!test
+            .bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .has_available_instance(plugin));
+        screen.try_iter().for_each(drop);
+
+        std::fs::write(
+            source,
+            if outcome == "failed" {
+                "(define (load config) (error \"attachment failed\"))"
+            } else {
+                "(define (pipe message) #f)"
+            },
+        )
+        .unwrap();
+        let release = test.hold_executor(plugin);
+        test.bridge.add_client(joining).unwrap();
+        if outcome == "cancelled" {
+            test.bridge.remove_client(joining);
+        }
+        release.send(()).unwrap();
+        test.wait_for_executor(plugin);
+
+        let recovered = outcome == "recovered";
+        let map = test.bridge.plugin_map.lock().unwrap();
+        assert_eq!(map.has_available_instance(plugin), recovered, "{outcome}");
+        assert_eq!(map.contains(plugin, joining), recovered, "{outcome}");
+        drop(map);
+        let instructions: Vec<_> = screen
+            .try_iter()
+            .map(|(instruction, _)| instruction)
+            .collect();
+        let recoveries: Vec<_> = instructions
+            .iter()
+            .filter_map(|instruction| match instruction {
+                ScreenInstruction::PluginRecovered(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            recoveries,
+            if recovered { vec![plugin] } else { vec![] },
+            "{outcome}"
+        );
+        let state_request = instructions.iter().position(|instruction| {
+            matches!(instruction, ScreenInstruction::RequestStateUpdateForPlugins)
+        });
+        // A cancelled attachment takes the success path without publishing an instance.
+        assert_eq!(state_request.is_some(), outcome != "failed", "{outcome}");
+        if recovered {
+            let recovery = instructions
+                .iter()
+                .position(|instruction| {
+                    matches!(instruction, ScreenInstruction::PluginRecovered(_))
+                })
+                .unwrap();
+            assert!(recovery < state_request.unwrap());
+        }
+        test.bridge.unload_plugin(plugin).unwrap();
+    }
+}
+
+#[test]
 fn attach_whose_plugin_data_cannot_be_prepared_still_attaches() {
     let mut test = TestBridge::new();
     test.connect(&[ClientId::new(1)]);
