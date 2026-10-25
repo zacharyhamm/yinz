@@ -3004,7 +3004,7 @@ impl Screen {
         }
     }
 
-    /// Forget what a plugin said about a quit, because its pane has gone.
+    /// Forget what a plugin said about a quit, because it unloaded or its pane has gone.
     ///
     /// Without this a plugin that crashed or was closed mid-reply would leave a guard behind
     /// that nothing could lift, and the session could never close its last pane again.

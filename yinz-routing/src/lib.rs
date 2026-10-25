@@ -1075,12 +1075,12 @@ pub fn route_action(
                 .send_to_screen(screen_instr)
                 .with_context(err_context)?;
         },
-        // A keybinding has neither an originating pane nor a CLI client. Direct CLI and plugin
-        // quits stay immediate, and the confirmation plugin's own quit cannot reopen itself.
+        // A keybinding is client input with neither an originating pane nor a CLI client.
+        // Plugin quits stay immediate even without a pane, including the confirmation plugin's.
         //
         // The modal itself is built on the screen thread rather than here: it carries whatever
         // the plugins asked to have said about a quit, and those notices live there.
-        Action::Quit if pane_id.is_none() && cli_client_id.is_none() => {
+        Action::Quit if is_client_input && pane_id.is_none() && cli_client_id.is_none() => {
             senders
                 .send_to_screen(ScreenInstruction::ConfirmQuit(
                     client_id,
@@ -2202,3 +2202,7 @@ mod notification_tests;
 #[cfg(test)]
 #[path = "unit/routing_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "unit/quit_tests.rs"]
+mod quit_tests;
