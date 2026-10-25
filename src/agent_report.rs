@@ -172,7 +172,9 @@ pub fn run(mut action: CliAction, session: Option<String>, started: Instant) -> 
             );
         Err(anyhow!("session did not acknowledge this report"))
     })();
-    if let Ok(t) = trace.lock() {
+    if let Ok(mut t) = trace.lock()
+        && t.claim_finish()
+    {
         t.finish(result.is_ok());
     }
     result

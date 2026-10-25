@@ -13,7 +13,7 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use yinz_runtime::agent::codex::bridge_options;
 use yinz_runtime::agent::registry;
-use yinz_runtime::agent::report::ROUTE_ENV;
+use yinz_runtime::agent::report::route_env_from_process;
 use yinz_runtime::errors::prelude::*;
 
 // Both peers are trusted local Codex processes, and Codex's own UI accepts the daemon's
@@ -692,10 +692,7 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
 }
 
 fn launch_inner(program: &Path, args: &[String]) -> Result<std::process::ExitStatus> {
-    let env: HashMap<_, _> = ROUTE_ENV
-        .iter()
-        .filter_map(|key| std::env::var(key).ok().map(|value| ((*key).into(), value)))
-        .collect();
+    let env = route_env_from_process();
     let options = bridge_options(args).filter(|_| {
         ["YINZ_PANE_REF", "YINZ_REMOTE_PANE_TOKEN"]
             .iter()
@@ -1034,10 +1031,7 @@ pub fn report(yinz: &Path) -> Result<()> {
             None => {
                 // Standalone Codex still runs underneath its pane's original process. A daemon
                 // is detached from that ancestry, so an unregistered daemon hook must be ignored.
-                let env: HashMap<_, _> = ROUTE_ENV
-                    .iter()
-                    .filter_map(|key| std::env::var(key).ok().map(|value| ((*key).into(), value)))
-                    .collect();
+                let env = route_env_from_process();
                 if !owned_by_ancestor(&env) {
                     if let Ok(trace) = trace.lock() {
                         trace.record("codex_route", trace.started.elapsed(), "unbound");

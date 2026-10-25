@@ -189,16 +189,165 @@ fn command(root: &Path) -> Command {
     command
 }
 
+fn outside_command(root: &Path) -> Command {
+    let mut command = command(root);
+    for key in ["YINZ", "YINZ_PANE_REF", "YINZ_PANE_ID", "YINZ_SESSION_NAME"] {
+        command.env_remove(key);
+    }
+    command
+}
+
+#[test]
+fn ordinary_actions_reject_ambiguous_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let one = Session::new(dir.path(), "one");
+    let two = Session::new(dir.path(), "two");
+    let output = outside_command(dir.path())
+        .args(["action", "write-chars", "hello"])
+        .output()
+        .unwrap();
+    assert!(one.messages.try_recv().is_err());
+    assert!(two.messages.try_recv().is_err());
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Please specify the session name to send actions to. The following sessions are active:\n"
+    );
+    let sessions = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        sessions.contains("one") && sessions.contains("two"),
+        "{sessions}"
+    );
+    assert!(sessions.contains("Created"), "{sessions}");
+}
+
+#[test]
+fn actions_and_streams_require_an_active_session() {
+    let dir = tempfile::tempdir().unwrap();
+    for args in [
+        vec!["action", "write-chars", "hello"],
+        vec!["action", "project-list"],
+        vec!["action", "context"],
+        vec!["action", "pane-wait", "1", "--closed"],
+        vec!["events"],
+        vec!["subscribe", "--pane-id", "1"],
+    ] {
+        let output = outside_command(dir.path()).args(&args).output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        assert!(output.stdout.is_empty(), "{args:?}: {output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "There is no active session!\n",
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn actions_and_streams_use_the_only_active_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = Session::new(dir.path(), "one");
+    for args in [
+        vec!["action", "write-chars", "hello"],
+        vec!["action", "project-list"],
+        vec!["action", "context"],
+        vec!["events"],
+        vec!["subscribe", "--pane-id", "1"],
+    ] {
+        let output = outside_command(dir.path()).args(&args).output().unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        match (args.as_slice(), session.receive()) {
+            (
+                ["action", "write-chars", "hello"],
+                ClientToServerMsg::Action {
+                    action: Action::WriteChars { chars, .. },
+                    terminal_id: None,
+                    ..
+                },
+            ) => assert_eq!(chars, "hello"),
+            (
+                ["action", "project-list" | "context"],
+                ClientToServerMsg::Action {
+                    action: Action::CliPipe { .. },
+                    terminal_id: None,
+                    ..
+                },
+            ) => assert_eq!(output.stdout, b"{}\n"),
+            (["events"], ClientToServerMsg::SubscribeToEvents { .. })
+            | (["subscribe", ..], ClientToServerMsg::SubscribeToPaneRenders { .. }) => {},
+            (_, message) => panic!("{args:?}: {message:?}"),
+        }
+        assert!(
+            session.messages.try_recv().is_err(),
+            "dispatched more than once"
+        );
+    }
+}
+
+#[test]
+fn store_and_stream_commands_report_ambiguity_on_the_expected_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let one = Session::new(dir.path(), "one");
+    let two = Session::new(dir.path(), "two");
+    for (args, purpose, names_only) in [
+        (vec!["action", "project-list"], "send actions to", true),
+        (vec!["action", "context"], "send actions to", true),
+        (
+            vec!["action", "pane-wait", "1", "--closed"],
+            "send actions to",
+            true,
+        ),
+        (vec!["events"], "stream events from", false),
+        (vec!["subscribe", "--pane-id", "1"], "subscribe to", false),
+    ] {
+        let output = outside_command(dir.path()).args(&args).output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        let diagnostic = format!(
+            "Please specify the session name to {purpose}. The following sessions are active:\n"
+        );
+        if names_only {
+            assert!(output.stdout.is_empty(), "{args:?}: {output:?}");
+            let mut names: Vec<_> = error.strip_prefix(&diagnostic).unwrap().lines().collect();
+            names.sort_unstable();
+            assert_eq!(names, ["one", "two"], "{args:?}");
+        } else {
+            assert_eq!(error, diagnostic, "{args:?}");
+            let sessions = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                sessions.contains("one") && sessions.contains("two"),
+                "{args:?}: {sessions}"
+            );
+            assert!(sessions.contains("Created"), "{args:?}: {sessions}");
+        }
+        assert!(one.messages.try_recv().is_err(), "{args:?}");
+        assert!(two.messages.try_recv().is_err(), "{args:?}");
+    }
+}
+
+#[test]
+fn listing_multiple_sessions_still_succeeds() {
+    let dir = tempfile::tempdir().unwrap();
+    let _one = Session::new(dir.path(), "one");
+    let _two = Session::new(dir.path(), "two");
+    let output = outside_command(dir.path())
+        .arg("list-sessions")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let sessions = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        sessions.contains("one") && sessions.contains("two"),
+        "{sessions}"
+    );
+    assert!(sessions.contains("Created"), "{sessions}");
+}
+
 #[test]
 fn repl_requires_an_unambiguous_running_session() {
     let dir = tempfile::tempdir().unwrap();
-    let outside = || {
-        let mut cmd = command(dir.path());
-        for key in ["YINZ", "YINZ_PANE_REF", "YINZ_PANE_ID", "YINZ_SESSION_NAME"] {
-            cmd.env_remove(key);
-        }
-        cmd
-    };
+    let outside = || outside_command(dir.path());
     for args in [vec!["repl"], vec!["repl", "--eval", "(+ 1 2)"]] {
         let output = outside().args(args).output().unwrap();
         assert!(!output.status.success());
@@ -345,11 +494,7 @@ fn invalid_or_missing_owner_never_reaches_the_only_available_session() {
         assert!(!output.status.success(), "{case}");
         assert!(fallback.messages.try_recv().is_err(), "{case}");
     }
-    let mut outside = command(dir.path());
-    for key in ["YINZ", "YINZ_PANE_REF", "YINZ_PANE_ID", "YINZ_SESSION_NAME"] {
-        outside.env_remove(key);
-    }
-    assert!(outside
+    assert!(outside_command(dir.path())
         .args(["action", "write-chars", "hello"])
         .output()
         .unwrap()
