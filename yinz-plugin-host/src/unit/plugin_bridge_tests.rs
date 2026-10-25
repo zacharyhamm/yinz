@@ -2975,6 +2975,38 @@ impl TestBridge {
         self.wait_for_executor(plugin_id);
     }
 
+    fn finish_failed_reload(&mut self, plugin: PluginId) {
+        let instructions = self.receiver::<PluginInstruction>();
+        let deadline = std::time::Instant::now() + yinz_test_support::default_timeout();
+        loop {
+            let (instruction, _) = instructions
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .unwrap();
+            if let PluginInstruction::PluginFailed {
+                plugin_id,
+                load_id,
+                generation,
+                instance_id,
+                error,
+                failed_to_load: true,
+                ..
+            } = instruction
+            {
+                assert_eq!(plugin_id, plugin);
+                self.bridge
+                    .plugin_failed(plugin_id, load_id, generation, instance_id, error, true)
+                    .unwrap();
+                break;
+            }
+        }
+        self.wait_for_executor(plugin);
+        assert!(self.bridge.loading_plugins.is_empty());
+        assert!(!self
+            .bridge
+            .cached_events_for_pending_plugins
+            .contains_key(&plugin));
+    }
+
     fn grant_files(&self, id: u32, client: u32) {
         let map = self.bridge.plugin_map.lock().unwrap();
         let (plugin, _) = map
@@ -3634,6 +3666,7 @@ fn reload_whose_data_cannot_be_prepared_fails_the_load_and_can_be_retried() {
 
     let hidden = HiddenTemporaryRoot::new(&test);
     test.bridge.reload_plugin_with_id(plugin).unwrap();
+    test.finish_failed_reload(plugin);
     assert_failed_to_prepare(&test, plugin);
     assert!(!test
         .bridge
@@ -3822,7 +3855,134 @@ fn deferred_reload_whose_data_cannot_be_prepared_does_not_fail_the_replay() {
         .apply_cached_events(vec![plugin], false, shutdown)
         .unwrap();
     assert!(test.bridge.pending_plugin_id_reloads.is_empty());
+    test.finish_failed_reload(plugin);
     assert_failed_to_prepare(&test, plugin);
+}
+
+#[test]
+fn failed_reload_preparation_cleans_up_instances_and_workers_before_recovery() {
+    for failure in ["unreadable", "declaration", "repository"] {
+        let mut test = TestBridge::new();
+        let plugin = PluginId::new(1);
+        let client = ClientId::new(1);
+        test.connect(&[client]);
+        let source = r#"
+(yinz-declare-pane)
+(yinz-register-workers (hash "probe" (lambda (name payload) (yinz-command (hash "SetTimeout" 0)))))
+(define (load config)
+  (yinz-command (hash "Subscribe" '("BeforeClose")))
+  (yinz-post-worker "probe" "ready" ""))
+(define (update event)
+  (when (equal? event "BeforeClose") (yinz-command (hash "SetSelectable" #f))) #f)
+(define (unload) (yinz-command (hash "SetSelectable" #t)))
+(define (render rows cols) "ready")
+"#;
+        let mut context = test.context(1, 1, source);
+        let path = context.plugin_config.path.clone();
+        if failure == "repository" {
+            context.plugin_config.location =
+                RunPluginLocation::Git(yinz_types::input::git_plugin::GitPlugin {
+                    repo: test._dirs[0].path().display().to_string(),
+                    entrypoint: "1.scm".into(),
+                    revision: None,
+                });
+            context.plugin_config.repository_root = Some(test._dirs[0].path().to_owned());
+        }
+        let scratch = context.plugin_own_data_dir.clone();
+        let events = FileEvents::new(scratch.parent().unwrap());
+        test.load(context).unwrap();
+        let instructions = test.receiver::<PluginInstruction>();
+        let worker_generation = loop {
+            let (instruction, _) = instructions
+                .recv_timeout(yinz_test_support::default_timeout())
+                .unwrap();
+            if let PluginInstruction::PluginReply(_, _, generation, Event::Timer(_), _) =
+                instruction
+            {
+                break generation;
+            }
+        };
+        let original = test
+            .bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .get_running_plugin(plugin, Some(client))
+            .unwrap();
+        let workers = {
+            let running = original.lock().unwrap();
+            *running.env().permissions.lock().unwrap() =
+                Some(HashSet::from([PermissionType::ChangeApplicationState]));
+            running.env().workers.clone().unwrap()
+        };
+        assert!(workers.contains(worker_generation));
+        if failure == "declaration" {
+            std::fs::write(&path, "(yinz-declare-pane 42)").unwrap();
+        } else {
+            std::fs::remove_file(&path).unwrap();
+        }
+        test.bridge.reload_plugin_with_id(plugin).unwrap();
+        test.finish_failed_reload(plugin);
+        assert!(original.lock().unwrap().is_disposed(), "{failure}");
+        assert!(!workers.contains(worker_generation), "{failure}");
+        assert!(test
+            .bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .get_running_plugin(plugin, None)
+            .is_none());
+        let cleanup: Vec<_> = test
+            .receiver::<ScreenInstruction>()
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                ScreenInstruction::SetSelectable(_, value) => Some(value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            cleanup,
+            [false, true],
+            "{failure}: BeforeClose and unload run once"
+        );
+        drop(original);
+        events.wait("failed reload releases runtime and worker data", || {
+            !scratch.exists()
+        });
+
+        std::fs::write(
+            &path,
+            "(yinz-declare-pane) (define (render rows cols) \"recovered\")",
+        )
+        .unwrap();
+        test.bridge.reload_plugin_with_id(plugin).unwrap();
+        // Repository preparation runs outside the executor, so wait for its completion message.
+        loop {
+            let (instruction, _) = instructions
+                .recv_timeout(yinz_test_support::default_timeout())
+                .unwrap();
+            if matches!(instruction, PluginInstruction::ApplyCachedEvents { load_id, .. } if test.bridge.load_is_current(plugin, load_id))
+            {
+                break;
+            }
+        }
+        test.finish_reload(plugin);
+        assert!(
+            !test.bridge.latest_plugin_errors.contains_key(&plugin),
+            "{failure}"
+        );
+        assert!(!test
+            .bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .get_running_plugin(plugin, None)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .is_disposed());
+        test.bridge.unload_plugin(plugin).unwrap();
+    }
 }
 
 #[test]
@@ -7972,8 +8132,7 @@ fn pane_preparation_publishes_before_a_newer_reload_or_retirement() {
             ..test.bridge.senders.clone()
         };
         let older_senders = senders.clone();
-        let first =
-            std::thread::spawn(move || older.declare_pane(&older_senders, 1, LoadFailure::Plugin));
+        let first = std::thread::spawn(move || older.declare_pane(&older_senders).unwrap());
         // A rendezvous send parks the older preparation at publication, without taking its message.
         let mut select = channels::Select::new();
         select.recv(&screen);
@@ -7988,7 +8147,7 @@ fn pane_preparation_publishes_before_a_newer_reload_or_retirement() {
                 send_effects(&senders, effects);
             } else {
                 newer_panes.lock().unwrap().reload(plugin, 2);
-                assert!(newer.declare_pane(&senders, 2, LoadFailure::Plugin));
+                assert!(newer.declare_pane(&senders).unwrap());
             }
         });
         let added = screen.recv_timeout(Duration::from_secs(10)).unwrap().0;

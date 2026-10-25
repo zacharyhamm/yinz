@@ -198,7 +198,7 @@ impl LoadingContext {
         job: F,
     ) -> bool
     where
-        F: FnOnce(Self, ThreadSenders, Arc<Mutex<PluginMap>>, Arc<Mutex<Vec<ClientId>>>)
+        F: FnOnce(Result<Self>, ThreadSenders, Arc<Mutex<PluginMap>>, Arc<Mutex<Vec<ClientId>>>)
             + Send
             + 'static,
     {
@@ -223,53 +223,57 @@ impl LoadingContext {
         }
         let spawn_senders = senders.clone();
         let enqueue = move || {
-            if let RunPluginLocation::Git(source) = &self.plugin_config.location
-                && self.plugin_config.repository_root.is_none()
-            {
-                let entries = self
-                    .plugin_aliases
-                    .lock()
-                    .unwrap()
-                    .aliases
-                    .values()
-                    .filter_map(|plugin| match &plugin.location {
-                        RunPluginLocation::Git(other)
-                            if other.repo == source.repo && other.revision == source.revision =>
-                        {
-                            Some(other.clone())
+            let prepared = (|| {
+                if let RunPluginLocation::Git(source) = &self.plugin_config.location
+                    && self.plugin_config.repository_root.is_none()
+                {
+                    let entries = self
+                        .plugin_aliases
+                        .lock()
+                        .unwrap()
+                        .aliases
+                        .values()
+                        .filter_map(|plugin| match &plugin.location {
+                            RunPluginLocation::Git(other)
+                                if other.repo == source.repo
+                                    && other.revision == source.revision =>
+                            {
+                                Some(other.clone())
+                            },
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    match yinz_plugin_authoring::git::resolve(
+                        &self.yinz_data_dir,
+                        source,
+                        &entries,
+                        &self.cancel,
+                    ) {
+                        Ok(installed) => {
+                            self.plugin_config.path = installed.entrypoint;
+                            self.plugin_config.repository_root = Some(installed.root);
+                            self.plugin_config.installed_commit = installed.commit;
                         },
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                match yinz_plugin_authoring::git::resolve(
-                    &self.yinz_data_dir,
-                    source,
-                    &entries,
-                    &self.cancel,
-                ) {
-                    Ok(installed) => {
-                        self.plugin_config.path = installed.entrypoint;
-                        self.plugin_config.repository_root = Some(installed.root);
-                        self.plugin_config.installed_commit = installed.commit;
-                    },
-                    Err(error) => {
-                        failure.report(
-                            &senders,
-                            load_id,
-                            plugin_id,
-                            error.context(
+                        Err(error) => {
+                            return Err(error.context(
                                 crate::plugin_authoring::LogIdentity::repository(source).marker(),
-                            ),
-                            Some(self.client_id),
-                        );
-                        return true;
-                    },
+                            ))
+                        },
+                    }
                 }
+                self.declare_pane(&senders)
+            })();
+            match prepared {
+                Ok(false) => return true,
+                Err(error) if !self.pane_ticket.is_some_and(|ticket| ticket.reload) => {
+                    failure.report(&senders, load_id, plugin_id, error, Some(self.client_id));
+                    return true;
+                },
+                _ => {},
             }
-            if !self.declare_pane(&senders, load_id, failure) {
-                return true;
-            }
-            let work = move |senders, map, clients| job(self, senders, map, clients);
+            // A failed preparation still owes the old instance its executor-bound cleanup.
+            let context = prepared.map(|_| self);
+            let work = move |senders, map, clients| job(context, senders, map, clients);
             let accepted = executor.execute_for_plugin_tagged(plugin_id, "load", false, work);
             if !accepted {
                 failure.report(
@@ -306,15 +310,10 @@ impl LoadingContext {
     /// and the decision never waits on the executor (a guest blocked opening another plugin's
     /// pane must not wait for that plugin's load to be scheduled behind it).
     ///
-    /// Answers whether to queue the load. A failure was reported as `failure` says.
-    fn declare_pane(
-        &mut self,
-        senders: &ThreadSenders,
-        load_id: u64,
-        failure: LoadFailure,
-    ) -> bool {
+    /// Answers whether to queue the load; the caller reports preparation failures.
+    fn declare_pane(&mut self, senders: &ThreadSenders) -> Result<bool> {
         let Some(ticket) = self.pane_ticket else {
-            return true;
+            return Ok(true);
         };
         // A Lua entry is refused by the loader with its own message; it has nothing to scan.
         if self
@@ -324,7 +323,7 @@ impl LoadingContext {
             .and_then(|ext| ext.to_str())
             == Some("lua")
         {
-            return true;
+            return Ok(true);
         }
         let scanned = script_source(
             &self.plugin_config,
@@ -336,22 +335,12 @@ impl LoadingContext {
                 .context("reading the plugin's pane declaration")?;
             Ok((path, source, declaration))
         });
-        let (path, source, declaration) = match scanned {
-            Ok(scanned) => scanned,
-            Err(error) => {
-                failure.report(
-                    senders,
-                    load_id,
-                    self.plugin_id,
-                    error.context(format!(
-                        "failed to start the script plugin at '{}'",
-                        self.plugin_config.path.display()
-                    )),
-                    Some(self.client_id),
-                );
-                return false;
-            },
-        };
+        let (path, source, declaration) = scanned.with_context(|| {
+            format!(
+                "failed to start the script plugin at '{}'",
+                self.plugin_config.path.display()
+            )
+        })?;
         let declared =
             declaration.applies(self.plugin_config.initial_userspace_configuration.inner());
         let prepared = {
@@ -366,11 +355,11 @@ impl LoadingContext {
         };
         if prepared == Prepared::Abort {
             // The ledger's `Unload` effect retires the load.
-            return false;
+            return Ok(false);
         }
         self.prefetched_source = Some((path, source.into()));
         self.prefetched_declaration = Some(declared);
-        true
+        Ok(true)
     }
 
     pub fn new(
@@ -984,13 +973,15 @@ impl PluginBridge {
                         ) {
                             return;
                         }
-                        let loaded = PluginLoader::new(
-                            loading_context,
-                            senders.clone(),
-                            plugin_map.clone(),
-                            connected_clients.clone(),
-                        )
-                        .start_plugin();
+                        let loaded = loading_context.and_then(|loading_context| {
+                            PluginLoader::new(
+                                loading_context,
+                                senders.clone(),
+                                plugin_map.clone(),
+                                connected_clients.clone(),
+                            )
+                            .start_plugin()
+                        });
                         if load_was_cancelled(
                             &unloaded_while_loading,
                             plugin_id,
@@ -1488,7 +1479,7 @@ impl PluginBridge {
         let load_id = self.begin_plugin_load(plugin_id);
         // Only this reload's declaration decides the plugin's pane from now on.
         self.panes.lock().unwrap().reload(plugin_id, load_id);
-        let mut loading_context = match LoadingContext::new(
+        let loading_context = LoadingContext::new(
             self,
             cwd,
             plugin_config,
@@ -1496,24 +1487,7 @@ impl PluginBridge {
             first_client_id,
             tab_index,
             size,
-        ) {
-            Ok(loading_context) => loading_context,
-            Err(error) => {
-                // The old instances are already retired: fail this load as a rejected one
-                // would, so the plugin leaves `loading_plugins` and shows why.
-                return self.fail_replacement(
-                    plugin_id,
-                    load_id,
-                    "Plugin replacement could not be prepared",
-                    format!("{error:#}"),
-                );
-            },
-        };
-        // The declaration is read again: the reload may have added or dropped it.
-        loading_context.pane_ticket = Some(PaneTicket {
-            load_id,
-            reload: true,
-        });
+        );
         self.plugin_map
             .lock()
             .unwrap()
@@ -1521,169 +1495,187 @@ impl PluginBridge {
             .entry(plugin_id)
             .or_default();
 
-        let accepted = loading_context.execute_prepared(
-            plugin_executor,
-            self.senders.clone(),
-            load_id,
-            false,
-            LoadFailure::Plugin,
-            move |mut loading_context,
-                  senders,
-                  plugin_map,
-                  connected_clients| {
-                let instances = {
-                    let mut map = plugin_map.lock().unwrap();
-                    // A failed instance retains its identity; explicit unload removes it.
-                    if !map.load_is_current(plugin_id, &loading_context.cancel)
-                        || map.run_plugin_of_plugin_id(plugin_id).is_none()
-                    {
-                        return;
-                    }
-                    if let Some(pending) = reload_pending {
-                        // The old call returned; its watchdog must not interrupt BeforeClose.
-                        *pending.lock().unwrap() = false;
-                    }
-                    map.running_plugins_and_subscriptions()
+        let cancel = self.cancel_token(plugin_id);
+        let reload = move |mut loading_context: Result<LoadingContext>,
+                           senders: ThreadSenders,
+                           plugin_map: Arc<Mutex<PluginMap>>,
+                           connected_clients: Arc<Mutex<Vec<ClientId>>>| {
+            let instances = {
+                let mut map = plugin_map.lock().unwrap();
+                // A failed instance retains its identity; explicit unload removes it.
+                if !map.load_is_current(plugin_id, &cancel)
+                    || map.run_plugin_of_plugin_id(plugin_id).is_none()
+                {
+                    return;
+                }
+                if let Some(pending) = reload_pending {
+                    // The old call returned; its watchdog must not interrupt BeforeClose.
+                    *pending.lock().unwrap() = false;
+                }
+                map.running_plugins_and_subscriptions()
+            };
+            // The instance about to be replaced gets the same last word an unloaded one
+            // does, so a plugin that persists in `BeforeClose` survives its own reload.
+            // Cleanup can synchronously query metadata through the plugin thread.
+            for (id, client_id, running_plugin, subscriptions) in instances {
+                if id != plugin_id {
+                    continue;
+                }
+                let wants_before_close = subscriptions
+                    .lock()
+                    .unwrap()
+                    .contains(&EventType::BeforeClose);
+                let old_instance = running_plugin.clone();
+                let mut running_plugin = running_plugin.lock().unwrap();
+                let cleanup_reason = if running_plugin.is_disposed() {
+                    "disposed"
+                } else if running_plugin.failed {
+                    "failed"
+                } else if !wants_before_close {
+                    "unsubscribed"
+                } else if running_plugin.env().cancel_tripped.load(Ordering::Acquire) {
+                    "interrupted"
+                } else {
+                    "deliver"
                 };
-                // The instance about to be replaced gets the same last word an unloaded one
-                // does, so a plugin that persists in `BeforeClose` survives its own reload.
-                // Cleanup can synchronously query metadata through the plugin thread.
-                for (id, client_id, running_plugin, subscriptions) in instances {
-                    if id != plugin_id {
-                        continue;
-                    }
-                    let wants_before_close = subscriptions
-                        .lock()
-                        .unwrap()
-                        .contains(&EventType::BeforeClose);
-                    let old_instance = running_plugin.clone();
-                    let mut running_plugin = running_plugin.lock().unwrap();
-                    let cleanup_reason = if running_plugin.is_disposed() {
-                        "disposed"
-                    } else if running_plugin.failed {
-                        "failed"
-                    } else if !wants_before_close {
-                        "unsubscribed"
-                    } else if running_plugin.env().cancel_tripped.load(Ordering::Acquire) {
-                        "interrupted"
-                    } else {
-                        "deliver"
-                    };
-                    log::info!(
+                log::info!(
                         "reload cleanup: pid={} plugin={plugin_id} client={client_id} generation={:?} subscribed={wants_before_close} disposed={} failed={} cancel={} tripped={} reason={cleanup_reason}",
                         std::process::id(), running_plugin.env().generation,
                         running_plugin.is_disposed(), running_plugin.failed,
                         running_plugin.env().cancel.load(Ordering::Acquire),
                         running_plugin.env().cancel_tripped.load(Ordering::Acquire),
                     );
-                    let retained_directory = if client_id == first_client_id
-                        || running_plugin.env().plugin_config.is_shared()
-                    {
-                        running_plugin.env().temporary_data_dir.clone()
-                    } else {
-                        None
-                    };
-                    if wants_before_close && !running_plugin.is_disposed() && !running_plugin.failed
-                    {
-                        // As in the unload job: holding the lock means the guest is not
-                        // running, and the new instance shares this token, so a set one
-                        // would trap `BeforeClose` here and the new `load()` after it.
-                        // And as there, an instance that was stopped mid-call is not
-                        // called again — see `PluginEnv::cancel_tripped`.
-                        let was_stopped_mid_call = running_plugin
-                            .env()
-                            .cancel_tripped
-                            .load(std::sync::atomic::Ordering::Relaxed);
-                        if was_stopped_mid_call {
-                            log::warn!(
-                                "plugin {plugin_id} was cancelled mid-call, so its BeforeClose \
+                let retained_directory = if client_id == first_client_id
+                    || running_plugin.env().plugin_config.is_shared()
+                {
+                    running_plugin.env().temporary_data_dir.clone()
+                } else {
+                    None
+                };
+                if wants_before_close && !running_plugin.is_disposed() && !running_plugin.failed {
+                    // As in the unload job: holding the lock means the guest is not
+                    // running, and the new instance shares this token, so a set one
+                    // would trap `BeforeClose` here and the new `load()` after it.
+                    // And as there, an instance that was stopped mid-call is not
+                    // called again — see `PluginEnv::cancel_tripped`.
+                    let was_stopped_mid_call = running_plugin
+                        .env()
+                        .cancel_tripped
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    if was_stopped_mid_call {
+                        log::warn!(
+                            "plugin {plugin_id} was cancelled mid-call, so its BeforeClose \
                                  is skipped before its reload"
-                            );
-                        } else {
-                            running_plugin.env().cancel.store(false, Ordering::Release);
-                            if running_plugin.env().generation.is_some() {
-                                arm_unload_watchdog(
-                                    plugin_id,
-                                    running_plugin.env().cancel.clone(),
-                                    vec![old_instance],
-                                );
-                            }
-                            if let Err(e) = apply_before_close_event_to_plugin(
+                        );
+                    } else {
+                        running_plugin.env().cancel.store(false, Ordering::Release);
+                        if running_plugin.env().generation.is_some() {
+                            arm_unload_watchdog(
                                 plugin_id,
-                                client_id,
-                                &mut running_plugin,
-                                senders.clone(),
-                            ) {
-                                log::error!("{:?}", e);
-                            }
+                                running_plugin.env().cancel.clone(),
+                                vec![old_instance],
+                            );
+                        }
+                        if let Err(e) = apply_before_close_event_to_plugin(
+                            plugin_id,
+                            client_id,
+                            &mut running_plugin,
+                            senders.clone(),
+                        ) {
+                            log::error!("{:?}", e);
                         }
                     }
-                    running_plugin.dispose();
-                    drop(running_plugin);
-                    let mut map = plugin_map.lock().unwrap();
-                    // A failed or unloaded replacement must not regain ownership after cleanup.
-                    if let (Some(retained), Some(directory)) = (
-                        map.reload_data_dirs.get_mut(&plugin_id), retained_directory,
-                    ) {
-                        *retained = Some(directory);
-                    }
-                    map.remove_instance(plugin_id, client_id);
                 }
+                running_plugin.dispose();
+                drop(running_plugin);
+                let mut map = plugin_map.lock().unwrap();
+                // A failed or unloaded replacement must not regain ownership after cleanup.
+                if let (Some(retained), Some(directory)) =
+                    (map.reload_data_dirs.get_mut(&plugin_id), retained_directory)
                 {
-                    let map = plugin_map.lock().unwrap();
-                    if !map.load_is_current(plugin_id, &loading_context.cancel) {
-                        return;
-                    }
-                    if let Some(Some(directory)) = map.reload_data_dirs.get(&plugin_id) {
-                        loading_context.plugin_own_data_dir = directory.path().to_path_buf();
-                        loading_context.temporary_data_dir = directory.clone();
-                    }
+                    *retained = Some(directory);
                 }
-                // A replacement must opt in again, including when BeforeClose resubscribed.
-                let _ = senders
-                    .send_to_screen(ScreenInstruction::UnsubscribePaneOutput(plugin_id, None));
-                let cancel = loading_context.cancel.clone();
-                let loaded = PluginLoader::new(
+                map.remove_instance(plugin_id, client_id);
+            }
+            {
+                let map = plugin_map.lock().unwrap();
+                if !map.load_is_current(plugin_id, &cancel) {
+                    return;
+                }
+                if let Ok(loading_context) = &mut loading_context
+                    && let Some(Some(directory)) = map.reload_data_dirs.get(&plugin_id)
+                {
+                    loading_context.plugin_own_data_dir = directory.path().to_path_buf();
+                    loading_context.temporary_data_dir = directory.clone();
+                }
+            }
+            // A replacement must opt in again, including when BeforeClose resubscribed.
+            let _ =
+                senders.send_to_screen(ScreenInstruction::UnsubscribePaneOutput(plugin_id, None));
+            let loaded = loading_context.and_then(|loading_context| {
+                PluginLoader::new(
                     loading_context,
                     senders.clone(),
                     plugin_map.clone(),
                     connected_clients.clone(),
                 )
-                .start_plugin();
-                let mut plugin_map = plugin_map.lock().unwrap();
-                if !plugin_map.load_is_current(plugin_id, &cancel) {
-                    return;
-                }
-                plugin_map.reload_data_dirs.remove(&plugin_id);
-                match loaded {
-                    Ok(_) => {
-                        if let Some(location) = plugin_map.update_reloaded_file_location(plugin_id)
-                        {
-                            senders
-                                .send_to_screen(ScreenInstruction::UpdatePluginLocation(
-                                    plugin_id, location,
-                                ))
-                                .context("update reloaded plugin pane identity")
-                                .non_fatal();
-                        }
-                        let plugin_list = plugin_map.list_plugins();
-                        handle_plugin_successful_loading(&senders, plugin_id, plugin_list);
-                    },
-                    Err(e) => handle_plugin_loading_failure(
-                        &senders,
-                        Some(load_id),
-                        plugin_id,
-                        e,
-                        Some(first_client_id),
-                    ),
-                }
-                let _ = senders.send_to_plugin(PluginInstruction::ApplyCachedEvents {
+                .start_plugin()
+            });
+            let mut plugin_map = plugin_map.lock().unwrap();
+            if !plugin_map.load_is_current(plugin_id, &cancel) {
+                return;
+            }
+            plugin_map.reload_data_dirs.remove(&plugin_id);
+            match loaded {
+                Ok(_) => {
+                    if let Some(location) = plugin_map.update_reloaded_file_location(plugin_id) {
+                        senders
+                            .send_to_screen(ScreenInstruction::UpdatePluginLocation(
+                                plugin_id, location,
+                            ))
+                            .context("update reloaded plugin pane identity")
+                            .non_fatal();
+                    }
+                    let plugin_list = plugin_map.list_plugins();
+                    handle_plugin_successful_loading(&senders, plugin_id, plugin_list);
+                },
+                Err(e) => handle_plugin_loading_failure(
+                    &senders,
+                    Some(load_id),
+                    plugin_id,
+                    e,
+                    Some(first_client_id),
+                ),
+            }
+            let _ = senders.send_to_plugin(PluginInstruction::ApplyCachedEvents {
+                load_id,
+                plugin_ids: vec![plugin_id],
+                done_receiving_permissions: false,
+            });
+        };
+        let accepted = match loading_context {
+            Ok(mut context) => {
+                // The declaration is read again: the reload may have added or dropped it.
+                context.pane_ticket = Some(PaneTicket {
                     load_id,
-                    plugin_ids: vec![plugin_id],
-                    done_receiving_permissions: false,
+                    reload: true,
                 });
+                context.execute_prepared(
+                    plugin_executor,
+                    self.senders.clone(),
+                    load_id,
+                    false,
+                    LoadFailure::Plugin,
+                    reload,
+                )
             },
-        );
+            Err(error) => plugin_executor.execute_for_plugin_tagged(
+                plugin_id,
+                "reload cleanup",
+                false,
+                move |senders, map, clients| reload(Err(error), senders, map, clients),
+            ),
+        };
         if !accepted {
             self.fail_replacement(
                 plugin_id,
@@ -1906,14 +1898,14 @@ impl PluginBridge {
                         "attach trace: plugin executor client_id={client_id} plugin_id={plugin_id} acquired plugin_map lock after {:?}; plugin load begin",
                         load_started_at.elapsed()
                     );
-                    match PluginLoader::new(
+                    match loading_context.and_then(|loading_context| PluginLoader::new(
                         loading_context,
                         senders.clone(),
                         plugin_map.clone(),
                         connected_clients.clone(),
                     )
                     .without_connected_clients()
-                    .start_plugin()
+                    .start_plugin())
                     {
                         Ok(_) => {
                             log::info!(
