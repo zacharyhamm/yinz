@@ -415,7 +415,7 @@ impl State {
                     capture.plugin_name = path.display().to_string();
                 }
                 plugin.invoke("yinz-async-enter", vec![json!(1)])?;
-                plugin.load(configuration)?;
+                plugin.load(json!(host_configuration))?;
                 self.plugin = Some(plugin);
                 Ok(Value::Null)
             },

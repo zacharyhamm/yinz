@@ -5375,6 +5375,48 @@ fn deferred_lifecycle_reload_keeps_empty_configuration_exact() {
 }
 
 #[test]
+fn stopping_a_plugin_leaves_pane_cleanup_to_the_unload_notification() {
+    use yinz_types::cli::{PluginOperation, PluginState};
+    let mut test = TestBridge::new();
+    let context = test.context(1, 1, "(yinz-declare-pane)");
+    let run = RunPlugin {
+        location: context.plugin_config.location.clone(),
+        ..Default::default()
+    };
+    test.load(context).unwrap();
+    let screen = test.receiver::<ScreenInstruction>();
+    let _ = screen.try_iter().count();
+
+    let response = test
+        .bridge
+        .plugin_request(
+            lifecycle_request(PluginOperation::Stop, &run),
+            ClientId::new(1),
+        )
+        .unwrap();
+
+    assert_eq!(response.plugins[0].state, PluginState::Stopped);
+    let sent: Vec<_> = screen
+        .try_iter()
+        .map(|(instruction, _)| instruction)
+        .collect();
+    assert_eq!(
+        sent.iter()
+            .filter(
+                |i| matches!(i, ScreenInstruction::PluginUnloaded(id) if *id == PluginId::new(1))
+            )
+            .count(),
+        1
+    );
+    assert!(
+        !sent
+            .iter()
+            .any(|i| matches!(i, ScreenInstruction::ClosePane(..))),
+        "a second close removes the pane-tabs container's blank slot: {sent:?}"
+    );
+}
+
+#[test]
 fn background_lifecycle_deduplicates_pending_and_selects_configuration_exactly() {
     use yinz_types::cli::{PluginOperation as Op, PluginState};
     let mut test = TestBridge::new();
