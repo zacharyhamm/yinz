@@ -720,10 +720,12 @@ fn a_guest_opening_a_plugin_pane_returns_with_one_executor_thread() {
     crate::plugin_bridge::TEST_EXECUTOR_THREADS.with(|fixed| fixed.set(1));
     // A target refused before its declaration is read (a Lua entry) fails the open, also
     // without the executor.
-    for (name, target, opened) in [
-        ("target.scm", DECLARED, "opened 1"),
-        ("target.scm", UNDECLARED, "opened 1"),
-        ("target.lua", "print('lua')", "returned"),
+    for (name, target, opened, malformed) in [
+        ("target.scm", DECLARED, "opened 1", false),
+        ("target.scm", UNDECLARED, "opened 1", false),
+        ("target.lua", "print('lua')", "returned", false),
+        ("target.scm", "(yinz-declare-pane)\n(", "opened 1", true),
+        ("target.scm", "(", "opened 1", true),
     ] {
         let session = Session::new();
         let target = session.write(name, target);
@@ -756,6 +758,28 @@ fn a_guest_opening_a_plugin_pane_returns_with_one_executor_thread() {
         );
         answer(session.launch(session.write("opener.scm", &opener)));
         wait_for_render_containing(&session.log, opened);
+        if malformed {
+            let plugin = PluginId::new(1);
+            let error = session.log.wait_until(
+                "the opened pane reports its syntax error",
+                default_timeout(),
+                |log| {
+                    log.iter().find_map(|i| match i {
+                        ScreenInstruction::UpdatePluginLoadingStage(id, indication)
+                            if *id == plugin && indication.is_error() =>
+                        {
+                            Some(indication.to_string())
+                        },
+                        _ => None,
+                    })
+                },
+            );
+            assert!(
+                error.contains("UnexpectedEOF") && error.contains(name),
+                "{error}"
+            );
+            assert_eq!(added(&session.log.lock(), plugin).len(), 1);
+        }
     }
 }
 

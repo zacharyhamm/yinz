@@ -342,8 +342,14 @@ impl LoadingContext {
             )
         })?;
         self.prefetched_source = Some((path, source.into()));
-        // Evaluation reports unreadable source in its existing slot without changing ownership.
+        // Preserve reload slots; answer new launches now so evaluation cannot block their opener.
         let Some(declaration) = declaration else {
+            if !ticket.reload {
+                let mut panes = self.panes.lock().unwrap();
+                let (prepared, effects) = panes.declare(self.plugin_id, ticket.load_id, true);
+                send_effects(senders, effects);
+                return Ok(prepared != Prepared::Abort);
+            }
             return Ok(true);
         };
         let declared =
