@@ -363,6 +363,8 @@ fn spawn_tab_flags_accept_stable_zero_and_optional_new_tab_name() {
         vec!["--tab", "-1"],
         vec!["--tab", "18446744073709551616"],
         vec!["--tab", "0", "--new-tab"],
+        vec!["--suppressed", "--new-tab"],
+        vec!["--suppressed", "--new-tab", "review"],
     ] {
         assert!(AgentCli::try_parse_from(["agent", "spawn"].into_iter().chain(args)).is_err());
     }
@@ -418,4 +420,34 @@ fn preserve_draft_is_accepted_only_as_a_hidden_compatibility_flag() {
         .render_long_help()
         .to_string();
     assert!(!help.contains("--preserve-draft"));
+}
+
+#[test]
+fn suppressed_launch_and_visibility_commands_parse() {
+    use clap::Parser;
+    for args in [vec!["--suppressed"], vec!["--suppressed", "--tab", "0"]] {
+        let command = AgentCli::try_parse_from(["agent", "spawn"].into_iter().chain(args))
+            .unwrap()
+            .command;
+        assert!(matches!(
+            command,
+            Agent::Spawn {
+                suppressed: true,
+                ..
+            }
+        ));
+    }
+    for verb in ["show", "hide"] {
+        assert!(AgentCli::try_parse_from(["agent", verb]).is_err());
+        assert!(AgentCli::try_parse_from(["agent", verb, "plugin_7"]).is_err());
+        let command =
+            AgentCli::try_parse_from(["agent", verb, "7", "--conversation", "thread", "--json"])
+                .unwrap()
+                .command;
+        assert!(command.json());
+        assert!(matches!(command,
+            Agent::Show { target, conversation: Some(ref conversation), json: true }
+            | Agent::Hide { target, conversation: Some(ref conversation), json: true }
+            if target.to_string() == "terminal_7" && conversation == "thread"));
+    }
 }

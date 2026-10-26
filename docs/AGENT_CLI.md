@@ -17,6 +17,9 @@ The separate `agent restart --session MODE` option selects `resume` or `fresh`.
 | `agent watch --json` | Normalized lifecycle events, with snapshot and resume cursors |
 | `agent status TARGET` | State, reporting source, readiness, conversation and run IDs |
 | `agent spawn --kind KIND` | Actual pane ID, working directory and branch |
+| `agent spawn --kind KIND --suppressed` | Running agent in a hidden pane |
+| `agent show TARGET` | Restore the agent as tiled without changing focus or switching tabs |
+| `agent hide TARGET` | Hide the agent without stopping its process |
 | `agent restart TARGET --session MODE [TEXT] [--file PATH]` | Restart an exited agent in the same held pane |
 | `agent prompt TARGET TEXT` | Acknowledgement that the agent accepted the prompt |
 | `agent prompt TARGET --file PATH --wait` | Outcome of the submitted turn |
@@ -182,6 +185,37 @@ Explicit standalone Codex launches retain their existing behavior.
 SSH launches use `--remote-host`, an absolute remote `--cwd`, and
 `--allow-outside-worktree`. They require an existing remote checkout and reject
 local project, branch, and worktree options.
+
+### Suppressed agents
+
+Use `--suppressed` to launch a hidden agent in the current tab.
+Add `--tab ID` to select an existing tab. Suppressed launches preserve focus and the visible layout.
+`--suppressed` cannot be combined with `--new-tab`.
+
+Launch JSON accepts `"suppressed": true`, optionally with `"tab": ID`.
+The default is false. Any CLI placement flag replaces all JSON placement fields.
+The running server must confirm suppression support before Yinz sends the launch request.
+
+```sh
+yinz agent spawn --kind claude --branch review --suppressed --json
+# Use the pane ID returned by spawn in subsequent commands.
+yinz agent wait terminal_7 --until idle --json
+yinz agent prompt terminal_7 "Review the current diff" --wait --json
+yinz agent read terminal_7 --lines 80
+yinz agent show terminal_7 --conversation CONVERSATION_ID --json
+yinz agent hide terminal_7 --conversation CONVERSATION_ID --json
+```
+
+`agent status` and `agent list` include `is_suppressed` in JSON and text output.
+Hidden agents use the existing prompt, wait, read, send-keys, recovery, restart, and lifecycle paths.
+Suppression changes visibility only. Checkout policy, provider behavior, and session lifetime remain the same.
+
+`show` restores the pane as tiled in its owning tab. It preserves focus and the active tab.
+If the tab has no room, `show` returns `rejected` and leaves the running pane suppressed.
+For a suppressed pane-tab member or hidden stack-list member, `show` returns `rejected` without changing the group or focus.
+Use pane-tab or stack navigation to select these agents.
+Repeated show or hide requests succeed when the pane is already in the requested state.
+Both commands also work for held agents after exit and accept `--conversation` and `--json`.
 
 ### Pi
 

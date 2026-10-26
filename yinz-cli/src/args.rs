@@ -563,6 +563,8 @@ impl Agent {
             | Agent::Register { json, .. }
             | Agent::List { json, .. }
             | Agent::Status { json, .. }
+            | Agent::Show { json, .. }
+            | Agent::Hide { json, .. }
             | Agent::Spawn { json, .. }
             | Agent::Restart { json, .. }
             | Agent::Prompt { json, .. }
@@ -705,6 +707,10 @@ pub enum Agent {
         /// --project selects the checkout; tab assignments still take precedence in project listings.
         #[clap(long, num_args = 0..=1, value_name = "NAME")]
         new_tab: Option<Option<String>>,
+        /// Keep the agent running hidden in the current tab, or in --tab ID.
+        #[clap(long, conflicts_with = "new_tab")]
+        #[serde(default)]
+        suppressed: bool,
         #[clap(long, help = format!("Agent kind (native: {}; loaded Scheme plugins add more). Overrides the JSON kind", yinz_types::agent::KINDS.join(", ")))]
         kind: Option<String>,
         /// Read a JSON launch object from a file, or '-' for stdin. Flags override JSON fields.
@@ -766,6 +772,24 @@ pub enum Agent {
         #[clap(long)]
         allow_yinz: bool,
         /// Print the launch outcome, actual pane, directory and branch as JSON.
+        #[clap(long)]
+        json: bool,
+    },
+    /// Restore an agent as tiled in its owning tab without changing focus.
+    Show {
+        #[clap(value_parser = parse_agent_target)]
+        target: yinz_types::pane_id::PaneId,
+        #[clap(long)]
+        conversation: Option<String>,
+        #[clap(long)]
+        json: bool,
+    },
+    /// Hide an agent's pane while its process continues to run.
+    Hide {
+        #[clap(value_parser = parse_agent_target)]
+        target: yinz_types::pane_id::PaneId,
+        #[clap(long)]
+        conversation: Option<String>,
         #[clap(long)]
         json: bool,
     },

@@ -4785,6 +4785,7 @@ fn test_server_messages() {
         prompt_supported: true,
         readiness: None,
         input_revision: None,
+        is_suppressed: true,
         clear_draft_supported: false,
         background_tasks: vec!["bj30txqod".into()],
     };
@@ -5687,6 +5688,8 @@ fn agent_spawn_placement_and_failure_resources_roundtrip() {
         AgentPlacement::Tab(TabId::new(7)),
         AgentPlacement::NewTab(None),
         AgentPlacement::NewTab(Some("review".into())),
+        AgentPlacement::Suppressed(None),
+        AgentPlacement::Suppressed(Some(TabId::new(0))),
     ] {
         test_client_roundtrip!(ClientToServerMsg::AgentControl(AgentRequest::Spawn {
             placement,
@@ -5699,6 +5702,19 @@ fn agent_spawn_placement_and_failure_resources_roundtrip() {
     test_client_roundtrip!(ClientToServerMsg::AgentControl(
         AgentRequest::SpawnPlacementSupport
     ));
+    test_client_roundtrip!(ClientToServerMsg::AgentControl(
+        AgentRequest::SpawnSuppressedSupport
+    ));
+    for expected_session_id in [None, Some("conversation".into())] {
+        test_client_roundtrip!(ClientToServerMsg::AgentControl(AgentRequest::Show {
+            pane_id: PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7)),
+            expected_session_id: expected_session_id.clone(),
+        }));
+        test_client_roundtrip!(ClientToServerMsg::AgentControl(AgentRequest::Hide {
+            pane_id: PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7)),
+            expected_session_id,
+        }));
+    }
     test_client_roundtrip!(ClientToServerMsg::AgentControl(
         AgentRequest::SpawnBubblewrapSupport
     ));

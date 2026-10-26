@@ -223,6 +223,7 @@ fn successful_read_prints_only_terminal_text_and_json_keeps_metadata() {
         prompt_supported: true,
         readiness: None,
         input_revision: None,
+        is_suppressed: false,
         clear_draft_supported: false,
         background_tasks: Vec::new(),
     });
@@ -296,6 +297,7 @@ fn background_work_is_shown_with_how_to_get_its_answer() {
         .agents
         .push(yinz_types::agent::control::AgentStatus {
             background_tasks: vec!["bj30txqod".into()],
+            is_suppressed: true,
             ..status
         });
     response.background_tasks = vec!["bj30txqod".into()];
@@ -303,6 +305,7 @@ fn background_work_is_shown_with_how_to_get_its_answer() {
     print_response(&response, false, &mut output).unwrap();
     let text = String::from_utf8(output).unwrap();
     assert!(text.contains("  background_tasks: bj30txqod\n"));
+    assert!(text.contains("is_suppressed: true"));
     assert!(text.ends_with(
         "Started.\nBackground work is still running (bj30txqod). `yinz agent wait terminal_7 --until idle` returns its final answer.\n"
     ));
@@ -498,6 +501,37 @@ fn clear_draft_request_preserves_authorized_revision_and_deadline() {
 fn spawn_tab_file_forms_and_cli_placement_precedence() {
     for (flags, input, expected) in [
         (vec![], json!({}), json!("automatic")),
+        (vec![], json!({"suppressed": false}), json!("automatic")),
+        (
+            vec![],
+            json!({"suppressed": true}),
+            json!({"suppressed": null}),
+        ),
+        (
+            vec![],
+            json!({"suppressed": true, "tab": 0}),
+            json!({"suppressed": 0}),
+        ),
+        (
+            vec!["--suppressed"],
+            json!({"new_tab": "ignored", "tab": "invalid"}),
+            json!({"suppressed": null}),
+        ),
+        (
+            vec!["--suppressed", "--tab", "7"],
+            json!({"new_tab": true}),
+            json!({"suppressed": 7}),
+        ),
+        (
+            vec!["--tab", "7"],
+            json!({"suppressed": true}),
+            json!({"tab": 7}),
+        ),
+        (
+            vec!["--new-tab"],
+            json!({"suppressed": true}),
+            json!({"new_tab": null}),
+        ),
         (vec![], json!({"tab": 0}), json!({"tab": 0})),
         (vec![], json!({"new_tab": true}), json!({"new_tab": null})),
         (
@@ -538,86 +572,115 @@ fn spawn_placement_waits_for_support_reply_before_sending_spawn() {
     for placement in [
         AgentPlacement::Tab(TabId::new(7)),
         AgentPlacement::NewTab(Some("images".into())),
+        AgentPlacement::Suppressed(None),
+        AgentPlacement::Suppressed(Some(TabId::new(7))),
     ] {
-        for ack_first in [true, false] {
-            for supported in [true, false] {
-                let dir = tempfile::tempdir().unwrap();
-                let path = dir.path().join("session.sock");
-                let listener = ListenerOptions::new()
-                    .name(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
-                    .create_sync()
-                    .unwrap();
-                let request = AgentRequest::Spawn {
-                    placement: placement.clone(),
-                    spec: AgentSpawnSpec::default(),
-                    cwd: None,
-                    project: None,
-                    remote_host: None,
-                };
-                let expected = request.clone();
-                let server = std::thread::spawn(move || {
-                    let mut sender =
-                        IpcSenderWithContext::<ServerToClientMsg>::new(listener.accept().unwrap());
-                    let mut receiver = sender.get_receiver::<ClientToServerMsg>().unwrap();
-                    receiver
-                        .set_recv_timeout(Some(Duration::from_secs(5)))
+        for new_project in [false, true] {
+            for ack_first in [true, false] {
+                for supported in [true, false] {
+                    let dir = tempfile::tempdir().unwrap();
+                    let path = dir.path().join("session.sock");
+                    let listener = ListenerOptions::new()
+                        .name(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
+                        .create_sync()
                         .unwrap();
-                    assert!(matches!(
-                        receiver.recv_client_msg(),
-                        IpcRecv::Msg(
-                            ClientToServerMsg::AgentControl(AgentRequest::SpawnPlacementSupport),
-                            _
+                    let request = if new_project {
+                        AgentRequest::SpawnNewProject {
+                            placement: placement.clone(),
+                            spec: AgentSpawnSpec::default(),
+                            name: "project".into(),
+                            destination: "/projects/new".into(),
+                        }
+                    } else {
+                        AgentRequest::Spawn {
+                            placement: placement.clone(),
+                            spec: AgentSpawnSpec::default(),
+                            cwd: None,
+                            project: None,
+                            remote_host: None,
+                        }
+                    };
+                    let (probe, token) = if matches!(placement, AgentPlacement::Suppressed(_)) {
+                        (AgentRequest::SpawnSuppressedSupport, "agent-suppressed-v1")
+                    } else {
+                        (
+                            AgentRequest::SpawnPlacementSupport,
+                            "agent-tab-placement-v1",
                         )
-                    ));
-                    let mut response = AgentResponse::new(AgentOutcome::Ok);
-                    response.output = supported.then(|| "agent-tab-placement-v1".into());
-                    // Deterministically exercise both router/screen scheduling orders.
-                    if ack_first {
-                        sender
-                            .send_server_msg(ServerToClientMsg::UnblockInputThread)
-                            .unwrap();
-                    }
-                    sender
-                        .send_server_msg(ServerToClientMsg::AgentControl(response))
-                        .unwrap();
-                    if !ack_first && supported {
-                        sender
-                            .send_server_msg(ServerToClientMsg::UnblockInputThread)
-                            .unwrap();
-                    }
-                    if supported {
-                        assert!(
-                            matches!(receiver.recv_client_msg(), IpcRecv::Msg(ClientToServerMsg::AgentControl(request), _) if request == expected)
+                    };
+                    let expected = request.clone();
+                    let server = std::thread::spawn(move || {
+                        let mut sender = IpcSenderWithContext::<ServerToClientMsg>::new(
+                            listener.accept().unwrap(),
                         );
-                        sender
-                            .send_server_msg(ServerToClientMsg::UnblockInputThread)
-                            .unwrap();
-                        sender
-                            .send_server_msg(ServerToClientMsg::AgentControl(AgentResponse::new(
-                                AgentOutcome::Submitted,
-                            )))
+                        let mut receiver = sender.get_receiver::<ClientToServerMsg>().unwrap();
+                        receiver
+                            .set_recv_timeout(Some(Duration::from_secs(5)))
                             .unwrap();
                         assert!(matches!(
                             receiver.recv_client_msg(),
-                            IpcRecv::Msg(ClientToServerMsg::ClientExited, _)
+                            IpcRecv::Msg(
+                                ClientToServerMsg::AgentControl(actual),
+                                _
+                            ) if actual == probe
                         ));
-                    } else {
-                        assert!(
-                            matches!(receiver.recv_client_msg(), IpcRecv::Eof),
-                            "unsupported placement must not send a spawn"
+                        let mut response = AgentResponse::new(AgentOutcome::Ok);
+                        response.output = Some(
+                            if supported {
+                                token
+                            } else {
+                                "unsupported-token"
+                            }
+                            .into(),
                         );
+                        // Deterministically exercise both router/screen scheduling orders.
+                        if ack_first {
+                            sender
+                                .send_server_msg(ServerToClientMsg::UnblockInputThread)
+                                .unwrap();
+                        }
+                        sender
+                            .send_server_msg(ServerToClientMsg::AgentControl(response))
+                            .unwrap();
+                        if !ack_first && supported {
+                            sender
+                                .send_server_msg(ServerToClientMsg::UnblockInputThread)
+                                .unwrap();
+                        }
+                        if supported {
+                            assert!(
+                                matches!(receiver.recv_client_msg(), IpcRecv::Msg(ClientToServerMsg::AgentControl(request), _) if request == expected)
+                            );
+                            sender
+                                .send_server_msg(ServerToClientMsg::UnblockInputThread)
+                                .unwrap();
+                            sender
+                                .send_server_msg(ServerToClientMsg::AgentControl(
+                                    AgentResponse::new(AgentOutcome::Submitted),
+                                ))
+                                .unwrap();
+                            assert!(matches!(
+                                receiver.recv_client_msg(),
+                                IpcRecv::Msg(ClientToServerMsg::ClientExited, _)
+                            ));
+                        } else {
+                            assert!(
+                                matches!(receiver.recv_client_msg(), IpcRecv::Eof),
+                                "unsupported placement must not send a spawn"
+                            );
+                        }
+                    });
+                    let socket = yinz_ipc::consts::ipc_connect(&path).unwrap();
+                    let result = exchange_on_socket(socket, request, Duration::from_secs(5));
+                    server.join().unwrap();
+                    if supported {
+                        assert_eq!(result.unwrap().outcome, AgentOutcome::Submitted);
+                    } else {
+                        assert!(result
+                            .unwrap_err()
+                            .to_string()
+                            .contains("spawn was not sent"));
                     }
-                });
-                let socket = yinz_ipc::consts::ipc_connect(&path).unwrap();
-                let result = exchange_on_socket(socket, request, Duration::from_secs(5));
-                server.join().unwrap();
-                if supported {
-                    assert_eq!(result.unwrap().outcome, AgentOutcome::Submitted);
-                } else {
-                    assert!(result
-                        .unwrap_err()
-                        .to_string()
-                        .contains("spawn was not sent"));
                 }
             }
         }
@@ -1052,4 +1115,67 @@ fn restart_cli_requires_session_and_passes_prompt_or_file() {
         request(cli.command, &mut &b""[..]).unwrap().0,
         AgentRequest::Restart { prompt: None, .. }
     ));
+}
+
+#[test]
+fn visibility_requests_preserve_the_conversation_pin() {
+    let target = "terminal_7".parse().unwrap();
+    for (command, expected) in [
+        (
+            Agent::Show {
+                target,
+                conversation: Some("conversation".into()),
+                json: true,
+            },
+            AgentRequest::Show {
+                pane_id: target,
+                expected_session_id: Some("conversation".into()),
+            },
+        ),
+        (
+            Agent::Hide {
+                target,
+                conversation: Some("conversation".into()),
+                json: true,
+            },
+            AgentRequest::Hide {
+                pane_id: target,
+                expected_session_id: Some("conversation".into()),
+            },
+        ),
+    ] {
+        let (actual, json, _) = request(command, &mut &b""[..]).unwrap();
+        assert_eq!(actual, expected);
+        assert!(json);
+    }
+}
+
+#[test]
+fn suppressed_json_rejects_new_tab_and_invalid_values_before_launch() {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: Agent,
+    }
+    for input in [
+        json!({"suppressed": true, "new_tab": true}),
+        json!({"suppressed": true, "new_tab": "review"}),
+        json!({"suppressed": "true"}),
+        json!({"suppressed": 1}),
+        json!({"suppressed": true, "tab": "0"}),
+    ] {
+        for new_project in [false, true] {
+            let mut input = input.clone();
+            if new_project {
+                input["new_project"] = json!("project");
+                input["destination"] = json!("new-root");
+            }
+            let cli = Cli::try_parse_from(["agent", "spawn", "--file", "-"]).unwrap();
+            assert!(
+                request(cli.command, &mut input.to_string().as_bytes()).is_err(),
+                "{input}"
+            );
+        }
+    }
 }

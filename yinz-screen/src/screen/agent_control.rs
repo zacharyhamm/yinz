@@ -862,6 +862,7 @@ impl Screen {
             session: self.session_name.to_string(),
             host_id: yinz_runtime::host_identity::host_id(),
             tab_id: self.tab_containing_pane(pane_id).map(|tab| tab.id),
+            is_suppressed: info.is_suppressed,
             target: info.target,
             cwd,
             branch: self
@@ -963,6 +964,7 @@ impl Screen {
             session: self.session_name.to_string(),
             host_id: yinz_runtime::host_identity::host_id(),
             tab_id: self.tab_containing_pane(pane_id).map(|tab| tab.id),
+            is_suppressed: info.is_suppressed,
             target: info.target,
             cwd: cwd.clone(),
             branch: None,
@@ -1105,6 +1107,12 @@ impl Screen {
                 self.agent_reply(&client, response);
                 return;
             },
+            SpawnSuppressedSupport => {
+                let mut response = AgentResponse::new(AgentOutcome::Ok);
+                response.output = Some("agent-suppressed-v1".into());
+                self.agent_reply(&client, response);
+                return;
+            },
             SpawnBubblewrapSupport => {
                 let mut response = AgentResponse::new(AgentOutcome::Ok);
                 response.output = Some("agent-bubblewrap-v1".into());
@@ -1144,6 +1152,14 @@ impl Screen {
                 (!expected_session_id.is_empty()).then_some(expected_session_id.as_str()),
             ),
             Status {
+                pane_id,
+                expected_session_id,
+            }
+            | Show {
+                pane_id,
+                expected_session_id,
+            }
+            | Hide {
                 pane_id,
                 expected_session_id,
             }
@@ -1193,7 +1209,18 @@ impl Screen {
             );
             return;
         }
-        let Some(status) = self.agent_status(pane, None) else {
+        let status = self.agent_status(pane, None);
+        // SessionEnd clears the live record before a managed command enters its held state.
+        let held_conversation = matches!(request, Show { .. } | Hide { .. })
+            .then(|| self.tab_containing_pane(pane)?.get_pane_with_id(pane))
+            .flatten()
+            .filter(|pane| pane.is_held() && pane.exited() && pane.was_an_agent())
+            .map(|pane| pane.last_agent_session_id());
+        let Some(conversation) = status
+            .as_ref()
+            .map(|s| s.agent.session_id.as_deref())
+            .or(held_conversation)
+        else {
             // Between a submitted `/clear` or `/new` ending the old conversation and the new
             // one starting there is no record. An unpinned wait then waits for the new one.
             if let (
@@ -1262,7 +1289,7 @@ impl Screen {
             reject(self, outcome, message);
             return;
         };
-        if expected.is_some() && expected != status.agent.session_id.as_deref() {
+        if expected.is_some() && expected != conversation {
             reject(
                 self,
                 AgentOutcome::TargetChanged,
@@ -1270,6 +1297,51 @@ impl Screen {
             );
             return;
         }
+        if matches!(request, Show { .. } | Hide { .. }) {
+            let suppress = matches!(request, Hide { .. });
+            if let Some(tab) = self.tab_containing_pane_mut(pane)
+                && tab
+                    .get_pane_info(pane)
+                    .is_some_and(|info| info.is_suppressed != suppress)
+            {
+                if suppress {
+                    tab.suppress_pane(pane, None);
+                } else if tab.pane_tabs_of(pane).is_some()
+                    || tab.pane_is_hidden_stack_list_member(&pane)
+                {
+                    reject(
+                        self,
+                        AgentOutcome::Rejected,
+                        "agent pane is hidden in a pane-tab group or stack; use pane-tab or stack navigation to show it",
+                    );
+                    return;
+                } else {
+                    tab.unsuppress_pane(pane, false);
+                }
+            }
+            if !self
+                .get_pane_info(pane)
+                .is_some_and(|info| info.is_suppressed == suppress)
+            {
+                reject(
+                    self,
+                    AgentOutcome::Rejected,
+                    if suppress {
+                        "agent pane could not be hidden"
+                    } else {
+                        "no room to show agent pane; it remains suppressed"
+                    },
+                );
+                return;
+            }
+            self.log_and_report_session_state().non_fatal();
+            self.render().non_fatal();
+            self.agent_reply(&client, self.agent_result(pane, AgentOutcome::Ok, None));
+            return;
+        }
+        let Some(status) = status else {
+            return;
+        };
         if self.agent_draft_clears.contains_key(&pane)
             && matches!(request, Prompt { .. } | Recover { .. } | ClearDraft { .. })
         {
@@ -1811,10 +1883,13 @@ impl Screen {
                 self.refresh_agent_controls();
             },
             List { .. }
+            | Show { .. }
+            | Hide { .. }
             | Restart { .. }
             | Spawn { .. }
             | SpawnNewProject { .. }
             | SpawnPlacementSupport
+            | SpawnSuppressedSupport
             | SpawnBubblewrapSupport => {},
         }
     }

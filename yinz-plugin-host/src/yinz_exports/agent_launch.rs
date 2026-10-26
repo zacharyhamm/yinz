@@ -307,12 +307,16 @@ pub(super) fn spawn_agent_prepared(
     }
     use yinz_types::agent::control::AgentPlacement;
     placement.validate()?;
+    let start_suppressed = matches!(placement, AgentPlacement::Suppressed(_));
     let mut destination = match &placement {
-        AgentPlacement::Tab(tab_id) => Some(
+        AgentPlacement::Tab(_) | AgentPlacement::Suppressed(_) => Some(
             resolve_agent_tab(senders, placement.clone(), None, client_id).map_err(|error| {
                 let mut failure = AgentSpawnError::from(error);
                 failure.0.launch_resources = Some(AgentLaunchResources {
-                    tab_id: Some(*tab_id),
+                    tab_id: match placement {
+                        AgentPlacement::Tab(id) | AgentPlacement::Suppressed(Some(id)) => Some(id),
+                        _ => None,
+                    },
                     ..Default::default()
                 });
                 failure
@@ -371,7 +375,7 @@ pub(super) fn spawn_agent_prepared(
             Some(TerminalAction::RunCommand(action)),
             title,
             surface,
-            false,
+            start_suppressed,
             target,
             Some(completion),
             false,

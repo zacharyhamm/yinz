@@ -814,6 +814,7 @@ fn readiness_reason_is_additive_and_uses_snake_case() {
     assert_eq!(status.input_revision, None);
     assert_eq!(status.readiness, None);
     assert!(!status.clear_draft_supported);
+    assert!(!status.is_suppressed);
     for (reason, name) in [
         (NotReadyReason::ClearingDraft, "clearing_draft"),
         (NotReadyReason::PromptUnsupported, "prompt_unsupported"),
@@ -1591,7 +1592,7 @@ fn spawn_placement_validates_flat_fields_and_direct_requests() {
         (json!(null), json!("review\u{7f}")),
     ] {
         assert!(
-            AgentPlacement::from_launch_fields(&tab, &new_tab).is_err(),
+            AgentPlacement::from_launch_fields(&tab, &new_tab, &json!(null)).is_err(),
             "{tab} {new_tab}"
         );
     }

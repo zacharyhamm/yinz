@@ -172,9 +172,32 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             },
             json,
         ),
+        Agent::Show {
+            target,
+            conversation,
+            json,
+        } => (
+            AgentRequest::Show {
+                pane_id: target,
+                expected_session_id: conversation,
+            },
+            json,
+        ),
+        Agent::Hide {
+            target,
+            conversation,
+            json,
+        } => (
+            AgentRequest::Hide {
+                pane_id: target,
+                expected_session_id: conversation,
+            },
+            json,
+        ),
         Agent::Spawn {
             tab,
             new_tab,
+            suppressed,
             kind,
             file,
             project,
@@ -238,20 +261,25 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             if allow_outside_worktree {
                 fields.insert("allow_outside_worktree".into(), true.into());
             }
-            if tab.is_some() || new_tab.is_some() {
+            if tab.is_some() || new_tab.is_some() || suppressed {
                 fields.remove("tab");
                 fields.remove("new_tab");
+                fields.remove("suppressed");
                 if let Some(tab) = tab {
                     fields.insert("tab".into(), tab.into());
                 }
                 if let Some(name) = new_tab {
                     fields.insert("new_tab".into(), name.map_or(true.into(), Into::into));
                 }
+                if suppressed {
+                    fields.insert("suppressed".into(), true.into());
+                }
             }
             let mut spec_fields = fields.clone();
             for field in [
                 "tab",
                 "new_tab",
+                "suppressed",
                 "project",
                 "remote_host",
                 "cwd",
@@ -263,6 +291,7 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             let placement = yinz_types::agent::control::AgentPlacement::from_launch_fields(
                 &input["tab"],
                 &input["new_tab"],
+                &input["suppressed"],
             )
             .map_err(|error| anyhow!(error))?;
             let mut spec: AgentSpawnSpec =
@@ -563,14 +592,30 @@ fn exchange_on_socket(
         .context("cannot set up agent reply")?;
     if let AgentRequest::Spawn {
         placement, spec, ..
+    }
+    | AgentRequest::SpawnNewProject {
+        placement, spec, ..
     } = &request
     {
         for (required, probe, feature, token) in [
             (
-                *placement != yinz_types::agent::control::AgentPlacement::Automatic,
+                matches!(
+                    placement,
+                    yinz_types::agent::control::AgentPlacement::Tab(_)
+                        | yinz_types::agent::control::AgentPlacement::NewTab(_)
+                ),
                 AgentRequest::SpawnPlacementSupport,
                 "tab placement",
                 "agent-tab-placement-v1",
+            ),
+            (
+                matches!(
+                    placement,
+                    yinz_types::agent::control::AgentPlacement::Suppressed(_)
+                ),
+                AgentRequest::SpawnSuppressedSupport,
+                "suppressed agent",
+                "agent-suppressed-v1",
             ),
             (
                 spec.bubblewrap,
@@ -753,8 +798,8 @@ fn write_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
         .context("cannot write agent status")?;
         writeln!(
             out,
-            "  ready: {}  status_available: {}  prompt_supported: {}",
-            status.ready, status.status_available, status.prompt_supported
+            "  ready: {}  status_available: {}  prompt_supported: {}  is_suppressed: {}",
+            status.ready, status.status_available, status.prompt_supported, status.is_suppressed
         )
         .context("cannot write agent readiness")?;
         writeln!(
