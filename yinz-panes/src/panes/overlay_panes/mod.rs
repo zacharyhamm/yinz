@@ -439,17 +439,16 @@ impl OverlayPanes {
             overlay.retains_tab = true;
         }
     }
-    pub fn has_selectable_tab_content(&self) -> bool {
-        self.selectable_tab_content_pane_id().is_some()
-    }
     pub fn selectable_tab_content_pane_id(&self) -> Option<PaneId> {
+        self.selectable_tab_content_pane_ids().min()
+    }
+    pub fn selectable_tab_content_pane_ids(&self) -> impl Iterator<Item = PaneId> + '_ {
         self.panes
             .values()
             .filter(|overlay| overlay.retains_tab)
             .flat_map(|overlay| overlay.children.as_slice())
             .filter(|(_, pane)| pane.selectable())
             .map(|(id, _)| *id)
-            .min()
     }
     pub fn update_split(&mut self, id: MultipaneId, split: MultipaneSplit) -> Result<()> {
         split.validate().map_err(|error| anyhow!(error))?;

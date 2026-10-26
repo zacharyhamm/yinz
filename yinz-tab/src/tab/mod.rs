@@ -2480,14 +2480,18 @@ impl Tab {
     }
 
     pub fn has_selectable_panes(&self) -> bool {
-        let selectable_tiled_panes = self.tiled_panes.get_panes().filter(|(_, p)| p.selectable());
-        let selectable_floating_panes = self
-            .floating_panes
+        self.selectable_pane_ids().next().is_some()
+    }
+    pub fn has_selectable_panes_except(&self, pane_id: PaneId) -> bool {
+        self.selectable_pane_ids().any(|id| id != pane_id)
+    }
+    fn selectable_pane_ids(&self) -> impl Iterator<Item = PaneId> + '_ {
+        self.tiled_panes
             .get_panes()
-            .filter(|(_, p)| p.selectable());
-        selectable_tiled_panes.count() > 0
-            || selectable_floating_panes.count() > 0
-            || self.overlay_panes.has_selectable_tab_content()
+            .chain(self.floating_panes.get_panes())
+            .filter(|(_, pane)| pane.selectable())
+            .map(|(id, _)| *id)
+            .chain(self.overlay_panes.selectable_tab_content_pane_ids())
     }
     /// Retain hidden live work as well as selectable panes. Screen settlement handles the
     /// separate case where no tab provides a usable destination.

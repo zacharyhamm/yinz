@@ -5,6 +5,37 @@ use yinz_bus::screen::ScreenInstruction;
 use yinz_types::data::Event;
 
 #[test]
+fn selectable_panes_except_target_only_counts_overlays_that_retain_the_tab() {
+    let mut tab = create_new_tab(Size { cols: 80, rows: 24 }, true);
+    tab.close_pane(PaneId::Terminal(TerminalId::new(1)), false, None);
+    let [target, other] = [2, 3].map(|id| PaneId::Terminal(TerminalId::new(id)));
+    for id in [target, other] {
+        tab.new_pane(
+            id,
+            None,
+            None,
+            false,
+            false,
+            NewPanePlacement::Overlay(yinz_types::data::OverlayPlacement::dismissible(None)),
+            Some(ClientId::new(1)),
+            None,
+        )
+        .unwrap();
+    }
+    assert!(!tab.has_selectable_panes());
+    assert!(!tab.has_selectable_panes_except(target));
+    tab.overlay_panes.retain_tab_for(target);
+    assert!(tab.has_selectable_panes());
+    assert!(!tab.has_selectable_panes_except(target));
+    assert!(tab.has_selectable_panes_except(other));
+    tab.overlay_panes.retain_tab_for(other);
+    assert!(tab.has_selectable_panes_except(target));
+    assert!(tab.has_selectable_panes_except(other));
+    tab.set_pane_selectable(other, false);
+    assert!(!tab.has_selectable_panes_except(target));
+}
+
+#[test]
 fn no_ui_fullscreen_editor_exit_reveals_floating_survivor() {
     let mut tab = create_new_tab(
         Size {
