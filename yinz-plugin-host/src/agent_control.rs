@@ -71,6 +71,11 @@ pub fn control_agent(
     };
     let result = (|| -> Result<AgentResponse, String> {
         let request = match request {
+            AgentRequest::Usage { provider } => {
+                let mut response = AgentResponse::new(AgentOutcome::Ok);
+                response.usage = Some(crate::provider_usage::collect(&provider));
+                return Ok(response);
+            },
             AgentRequest::Spawn {
                 spec,
                 cwd,

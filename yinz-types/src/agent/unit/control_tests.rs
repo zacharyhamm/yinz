@@ -1,6 +1,41 @@
 use super::*;
 use crate::internal_ids::TerminalId;
 
+#[test]
+fn provider_usage_responses_preserve_legacy_and_unavailable_shapes() {
+    let legacy = serde_json::to_value(AgentResponse::new(AgentOutcome::Ok)).unwrap();
+    assert!(legacy.get("usage").is_none());
+    assert!(serde_json::from_value::<AgentResponse>(legacy)
+        .unwrap()
+        .usage
+        .is_none());
+    for (status, wire_status) in [
+        (ProviderUsageStatus::Ok, "ok"),
+        (ProviderUsageStatus::Unavailable, "unavailable"),
+        (ProviderUsageStatus::Unsupported, "unsupported"),
+        (ProviderUsageStatus::Expired, "expired"),
+        (ProviderUsageStatus::Error, "error"),
+    ] {
+        let response = AgentResponse {
+            usage: Some(ProviderUsage {
+                provider: "codex".into(),
+                status,
+                observed_at_ms: None,
+                plan: None,
+                windows: vec![],
+                message: Some("Provider usage is unavailable".into()),
+            }),
+            ..Default::default()
+        };
+        let encoded = serde_json::to_value(&response).unwrap();
+        assert_eq!(encoded["usage"]["status"], wire_status);
+        assert_eq!(
+            serde_json::from_value::<AgentResponse>(encoded).unwrap(),
+            response
+        );
+    }
+}
+
 fn observe(observation: &mut PromptObservation, event: &AgentEvent) -> Option<AgentOutcome> {
     observation.observe(
         event,

@@ -151,6 +151,21 @@ fn remove_roots_of_dead_test_processes(parent: &Path) {
 }
 
 fn isolate_process_environment(test_root: &Path) {
+    // Panel quota refreshes must never use the developer's provider accounts or daemon.
+    let provider_bin = test_root.join("provider-bin");
+    std::fs::create_dir_all(&provider_bin).unwrap();
+    yinz_test_support::write_warm_script(&provider_bin.join("codex"), "exit 1");
+    let mut paths = vec![provider_bin];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    // Set provider overrides explicitly: macOS Keychain is outside the isolated HOME.
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe {
+        std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+        std::env::set_var("CODEX_HOME", test_root.join("home/.codex"));
+        std::env::set_var("CLAUDE_CONFIG_DIR", test_root.join("home/.claude"));
+    }
     // FIXME: Audit that the environment access only happens in single-threaded code.
     unsafe { std::env::set_var("TMPDIR", test_root.join("tmp")) };
     // FIXME: Audit that the environment access only happens in single-threaded code.

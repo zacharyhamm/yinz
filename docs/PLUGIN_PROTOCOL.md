@@ -864,6 +864,35 @@ and a message on error. This direct control request retains the held command's
 original plugin routing. Use `RestartAgentPane` to receive exit context in the
 calling hook plugin.
 
+`AgentControl` accepts `{"Usage":{"provider":"codex"}}` or provider `"claude"`
+to read the local provider account's subscription quotas. It requires
+`RunCommands` and runs outside the plugin executor. The response has outcome
+`ok` and a `usage` object, including when quota data is unavailable:
+
+```json
+{
+  "provider": "codex",
+  "status": "ok",
+  "observed_at_ms": 1793000000000,
+  "plan": "plus",
+  "windows": [{
+    "label": "5 hours",
+    "used_percent": 42.5,
+    "resets_at_ms": 1793003600000
+  }],
+  "message": null
+}
+```
+
+`status` is `ok`, `unavailable`, `unsupported`, `expired`, or `error`. The
+observation time, plan, reset time, and message can be null. Percentages can
+exceed 100. Unknown quotas have no windows; an empty list does not mean zero
+usage. Errors contain safe diagnostics, never credentials or raw provider
+responses. This request has no pane target: the server's provider environment
+selects the local account. Clients must not attribute these quotas to an SSH
+agent or a pane with different credentials. The Agents panel caches per
+provider and preserves the original observation time when a refresh fails.
+
 ### Directory project resolution
 
 `ResolveProject {directory}` requires `ReadApplicationState`. It resolves a local

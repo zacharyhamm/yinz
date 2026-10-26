@@ -120,6 +120,10 @@ pub enum AgentRequest {
     List {
         project: Option<String>,
     },
+    /// Account usage reported by the provider on this session's host.
+    Usage {
+        provider: String,
+    },
     Status {
         pane_id: PaneId,
         expected_session_id: Option<String>,
@@ -232,6 +236,33 @@ pub enum AgentOutcome {
     TargetExited,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProviderUsage {
+    pub provider: String,
+    pub status: ProviderUsageStatus,
+    pub observed_at_ms: Option<u64>,
+    pub plan: Option<String>,
+    pub windows: Vec<ProviderUsageWindow>,
+    pub message: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderUsageStatus {
+    Ok,
+    Unavailable,
+    Unsupported,
+    Expired,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProviderUsageWindow {
+    pub label: String,
+    pub used_percent: f64,
+    pub resets_at_ms: Option<u64>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AgentResponse {
     pub outcome: AgentOutcome,
@@ -241,6 +272,8 @@ pub struct AgentResponse {
     pub restarted: Option<RestartedAgent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_resources: Option<super::AgentLaunchResources>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ProviderUsage>,
     pub output: Option<String>,
     pub message: Option<String>,
     pub acknowledged: bool,

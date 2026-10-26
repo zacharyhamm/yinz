@@ -39,6 +39,28 @@ between separate commands.
 Registration returns the service's JSON acknowledgement; `--json` also structures
 its errors. It does not establish managed prompt readiness or accept a conversation guard.
 
+## Provider quotas in the Agents panel
+
+Open the Agents panel with `Ctrl e a` and select a local Codex or Claude agent.
+The detail view shows the local provider account's quota windows, percentage used,
+and time until reset. These are account limits, shared by all panes using that
+account. They are not per-agent token counts or spending totals.
+Compact layouts show the highest window percentage; enlarge the panel to see
+the individual windows and reset times.
+
+The panel checks the selected provider once a minute while visible. `Ctrl r`
+refreshes it immediately. A failed check keeps the last successful values and
+marks them stale with their original age. Missing limits appear as unavailable;
+they do not appear as zero usage. Hiding the panel stops further checks.
+
+Codex requires an installed CLI with the app-server protocol and a ChatGPT
+subscription login. Claude uses its local OAuth credentials. The server's
+`CODEX_HOME` and `CLAUDE_CONFIG_DIR` settings select the local accounts. A pane
+with a different environment can use a different account. SSH and Bubblewrap
+agents do not display the host's local quotas. Other providers and Codex
+API-key-only accounts report that subscription quotas are unsupported. Claude
+requires OAuth credentials; an API key alone cannot supply these limits.
+
 ## Restart an exited agent
 
 ```sh

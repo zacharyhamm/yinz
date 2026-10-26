@@ -3,6 +3,7 @@
 //! over [`yinz_bus`], using [`yinz_routing`] to dispatch actions. It owns plugin job queues.
 mod agent_provider;
 mod project_provider;
+mod provider_usage;
 pub use agent_provider::inspect_agent_provider;
 mod background_worker;
 mod compilation_worker;

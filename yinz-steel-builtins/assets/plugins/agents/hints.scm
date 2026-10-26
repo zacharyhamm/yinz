@@ -86,7 +86,7 @@
         (if filtered '(("c" "back to the whole list")) '())
         (if (and (not history) (not empty)) '(("PgUp/PgDn" "scroll the history") ("wheel" "scroll the column under it")) '())
         (if (and empty (not (a-get "strip_seen"))) '() (list (list "Tab" (if (or history (= (a-get "last_history_rows") 0)) "to the panel tab bar" "into the history"))))
-        (list (list "Shift+Tab" (if history "back to the list" "to the tab bar")) '("Ctrl-r" "look at the branches again")
+        (list (list "Shift+Tab" (if history "back to the list" "to the tab bar")) '("Ctrl-r" "refresh branches, history, and quotas")
           (list "Esc" (if filtered "back to the whole list" "put the panel away"))) tail))))
 (define (a-key-sheet-lines cols)
   (define sheet (key-sheet))

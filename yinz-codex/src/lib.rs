@@ -1,4 +1,5 @@
 //! Bind a Codex UI's selected conversation to its pane while retaining the shared daemon.
+mod usage;
 use futures_util::{future::OptionFuture, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -11,6 +12,7 @@ use std::process::{Command, Stdio};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
+pub use usage::provider_usage;
 use yinz_runtime::agent::codex::bridge_options;
 use yinz_runtime::agent::registry;
 use yinz_runtime::agent::report::route_env_from_process;

@@ -415,6 +415,16 @@ impl Pair {
                         || (command.pointer("/PaneTabs/Mount").is_none()
                             && command.get("BreakPanesToTabWithIndex").is_none())
                 })
+                // Usage subscribes to CustomMessage through the SDK; agents_usage covers both effects.
+                .filter(|command| {
+                    !agents
+                        || (command.get("Subscribe") != Some(&serde_json::json!(["CustomMessage"]))
+                            && !command
+                                .pointer("/AgentControl/request")
+                                .and_then(Value::as_str)
+                                .and_then(|request| serde_json::from_str::<Value>(request).ok())
+                                .is_some_and(|request| request.get("Usage").is_some()))
+                })
                 .filter(|command| {
                     !agents
                         || !(command.get("PostMessageTo").is_some()

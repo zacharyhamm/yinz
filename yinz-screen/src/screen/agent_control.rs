@@ -1134,7 +1134,7 @@ impl Screen {
                 self.agent_reply(&client, response);
                 return;
             },
-            Spawn { .. } | SpawnNewProject { .. } => {
+            Spawn { .. } | SpawnNewProject { .. } | Usage { .. } => {
                 self.agent_reply(&client, AgentResponse::new(AgentOutcome::Rejected));
                 return;
             },
@@ -1920,6 +1920,7 @@ impl Screen {
                 self.refresh_agent_controls();
             },
             List { .. }
+            | Usage { .. }
             | Show { .. }
             | Hide { .. }
             | Restart { .. }
