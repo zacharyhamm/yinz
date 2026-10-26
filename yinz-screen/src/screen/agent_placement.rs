@@ -294,7 +294,16 @@ impl Screen {
         use yinz_types::agent::control::AgentPlacement;
         placement.validate().map_err(str::to_owned)?;
         let (tab_id, created) = match placement {
-            AgentPlacement::Tab(id) => {
+            AgentPlacement::Tab(id) | AgentPlacement::Suppressed(Some(id)) => {
+                if let Some(tab) = self.tabs.get_mut(&id) {
+                    tab.agent_tab_cleanup_allowed = false;
+                }
+                (id, false)
+            },
+            AgentPlacement::Suppressed(None) => {
+                let id = self
+                    .tab_a_client_is_looking_at(client_id)
+                    .ok_or("no current tab for suppressed agent")?;
                 if let Some(tab) = self.tabs.get_mut(&id) {
                     tab.agent_tab_cleanup_allowed = false;
                 }

@@ -433,23 +433,28 @@ fn invalid_or_missing_agent_tab_is_rejected_before_checkout_preparation() {
         ..Default::default()
     };
     let worker = thread::spawn(move || {
-        let (instruction, _) = screen_rx.recv_timeout(Duration::from_secs(30)).unwrap();
-        let ScreenInstruction::ResolveAgentTab {
-            placement, reply, ..
-        } = instruction
-        else {
-            panic!("expected tab resolution before checkout");
-        };
-        assert_eq!(
-            placement,
-            AgentPlacement::Tab(yinz_types::internal_ids::TabId::new(42))
-        );
-        reply.send(Err("tab 42 does not exist".into())).unwrap();
+        for expected in [
+            AgentPlacement::Tab(yinz_types::internal_ids::TabId::new(42)),
+            AgentPlacement::Suppressed(Some(yinz_types::internal_ids::TabId::new(42))),
+            AgentPlacement::Suppressed(None),
+        ] {
+            let (instruction, _) = screen_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            let ScreenInstruction::ResolveAgentTab {
+                placement, reply, ..
+            } = instruction
+            else {
+                panic!("expected tab resolution before checkout");
+            };
+            assert_eq!(placement, expected);
+            reply.send(Err("tab 42 does not exist".into())).unwrap();
+        }
         assert!(screen_rx.try_recv().is_err());
     });
     for placement in [
         AgentPlacement::NewTab(Some("\n".into())),
         AgentPlacement::Tab(yinz_types::internal_ids::TabId::new(42)),
+        AgentPlacement::Suppressed(Some(yinz_types::internal_ids::TabId::new(42))),
+        AgentPlacement::Suppressed(None),
     ] {
         let response = agent_control::control_agent(
             yinz_types::agent::control::AgentRequest::Spawn {
@@ -477,7 +482,13 @@ fn invalid_or_missing_agent_tab_is_rejected_before_checkout_preparation() {
 fn created_agent_tab_failure_preserves_resources_and_unknown_completion_does_not_cleanup() {
     use yinz_types::agent::control::AgentPlacement;
     use yinz_types::internal_ids::TabId;
-    for (definitive, cleaned) in [(true, true), (true, false), (false, false)] {
+    for (suppressed, definitive, cleaned) in [
+        (false, true, true),
+        (false, true, false),
+        (false, false, false),
+        (true, true, false),
+        (true, false, false),
+    ] {
         let (_directory, root, data) = launch_failure_repository();
         let checkout = root.join(".worktrees/review");
         let (to_screen, screen_rx) = channels::unbounded();
@@ -497,30 +508,36 @@ fn created_agent_tab_failure_preserves_resources_and_unknown_completion_does_not
             else {
                 panic!("expected new tab request");
             };
-            assert!(
-                checkout.join(".git").exists(),
-                "checkout must precede new tab creation"
-            );
-            assert!(invoked_with.is_some());
+            assert_eq!(checkout.join(".git").exists(), !suppressed);
+            assert_eq!(invoked_with.is_some(), !suppressed);
             let lifetime = std::sync::Arc::new(());
             reply
                 .send(Ok(yinz_bus::route::AgentTabPlacement {
                     tab_id: TabId::new(7),
                     lifetime: std::sync::Arc::downgrade(&lifetime),
-                    created: true,
+                    created: !suppressed,
                 }))
                 .unwrap();
             let (instruction, _) = pty_rx.recv_timeout(Duration::from_secs(30)).unwrap();
-            let PtyInstruction::SpawnTerminal(_, _, _, _, _, Some(mut completion), _) = instruction
+            let PtyInstruction::SpawnTerminal(
+                _,
+                _,
+                _,
+                start_suppressed,
+                _,
+                Some(mut completion),
+                _,
+            ) = instruction
             else {
                 panic!("expected spawn");
             };
+            assert_eq!(start_suppressed, suppressed);
             if definitive {
                 completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(17)));
                 completion.set_error_message("destination closed during startup".into());
             }
             drop(completion);
-            if definitive {
+            if definitive && !suppressed {
                 let (instruction, _) = screen_rx.recv_timeout(Duration::from_secs(30)).unwrap();
                 let ScreenInstruction::CleanupAgentTab(target, reply) = instruction else {
                     panic!("expected cleanup");
@@ -530,7 +547,11 @@ fn created_agent_tab_failure_preserves_resources_and_unknown_completion_does_not
             }
         });
         let response = spawn_agent_for_control(
-            AgentPlacement::NewTab(Some("review".into())),
+            if suppressed {
+                AgentPlacement::Suppressed(None)
+            } else {
+                AgentPlacement::NewTab(Some("review".into()))
+            },
             AgentSpawnSpec {
                 kind: Some("codex".into()),
                 branch: Some("review".into()),
@@ -550,7 +571,7 @@ fn created_agent_tab_failure_preserves_resources_and_unknown_completion_does_not
         assert_eq!(resources.tab_id, Some(TabId::new(7)));
         assert_eq!(
             resources.created_tab_id,
-            (!cleaned).then_some(TabId::new(7))
+            (!suppressed && !cleaned).then_some(TabId::new(7))
         );
         assert_eq!(resources.cwd, Some(root.join(".worktrees/review")));
         assert!(root.join(".worktrees/review/.git").exists());
@@ -886,95 +907,103 @@ fn agent_destination_is_carried_for_local_and_ssh_spawns() {
     use yinz_types::agent::control::AgentPlacement;
     use yinz_types::internal_ids::TabId;
     for target in ["local", "ssh"] {
-        let (_directory, root, data) = launch_failure_repository();
-        for def in project_data::store::shared_defs() {
+        for placement in [
+            AgentPlacement::Tab(TabId::new(7)),
+            AgentPlacement::Suppressed(None),
+            AgentPlacement::Suppressed(Some(TabId::new(7))),
+        ] {
+            let suppressed = matches!(placement, AgentPlacement::Suppressed(_));
+            let (_directory, root, data) = launch_failure_repository();
+            for def in project_data::store::shared_defs() {
+                data.plugin_data()
+                    .define_entity(project_data::store::SHARED, "test", &def, false)
+                    .unwrap();
+            }
+            let project = project_data::projects::validate("work", root.to_str().unwrap()).unwrap();
             data.plugin_data()
-                .define_entity(project_data::store::SHARED, "test", &def, false)
+                .apply(
+                    project_data::store::SHARED,
+                    &[project_data::projects::to_mutation(&project)],
+                )
                 .unwrap();
-        }
-        let project = project_data::projects::validate("work", root.to_str().unwrap()).unwrap();
-        data.plugin_data()
-            .apply(
-                project_data::store::SHARED,
-                &[project_data::projects::to_mutation(&project)],
+            let (to_screen, screen_rx) = channels::unbounded();
+            let (to_pty, pty_rx) = channels::unbounded();
+            let senders = ThreadSenders {
+                to_screen: Some(SenderWithContext::new(to_screen)),
+                to_pty: Some(SenderWithContext::new(to_pty)),
+                ..Default::default()
+            };
+            let worker = thread::spawn(move || {
+                let (instruction, _) = screen_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+                let ScreenInstruction::ResolveAgentTab {
+                    reply,
+                    invoked_with,
+                    ..
+                } = instruction
+                else {
+                    panic!("expected resolution");
+                };
+                assert!(invoked_with.is_none());
+                let lifetime = std::sync::Arc::new(());
+                reply
+                    .send(Ok(yinz_bus::route::AgentTabPlacement {
+                        tab_id: TabId::new(7),
+                        lifetime: std::sync::Arc::downgrade(&lifetime),
+                        created: false,
+                    }))
+                    .unwrap();
+                let (instruction, _) = pty_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+                let PtyInstruction::SpawnTerminal(
+                    Some(TerminalAction::RunCommand(command)),
+                    _,
+                    _,
+                    start_suppressed,
+                    destination,
+                    Some(mut completion),
+                    false,
+                ) = instruction
+                else {
+                    panic!("expected nonblocking spawn");
+                };
+                assert_eq!(start_suppressed, suppressed);
+                assert_eq!(
+                    destination,
+                    ClientTabIndexOrPaneId::TabIndexNoFocus(TabId::new(7))
+                );
+                assert!(completion
+                    .agent_tab
+                    .as_ref()
+                    .unwrap()
+                    .lifetime
+                    .upgrade()
+                    .is_some());
+                match target {
+                    "ssh" => assert!(matches!(command.target, PaneTarget::Ssh { .. })),
+                    _ => assert!(matches!(command.target, PaneTarget::Local)),
+                }
+                completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(17)));
+                completion.set_affected_tab_id(TabId::new(7));
+            });
+            let result = spawn_agent_for_control(
+                placement,
+                AgentSpawnSpec {
+                    kind: Some("codex".into()),
+                    allow_outside_worktree: Some(true),
+                    ..Default::default()
+                },
+                (target == "ssh").then(|| root.clone()),
+                (target == "local").then(|| "work".into()),
+                (target == "ssh").then(|| "host".into()),
+                crate::ClientId::new(1),
+                &senders,
+                &data,
             )
             .unwrap();
-        let (to_screen, screen_rx) = channels::unbounded();
-        let (to_pty, pty_rx) = channels::unbounded();
-        let senders = ThreadSenders {
-            to_screen: Some(SenderWithContext::new(to_screen)),
-            to_pty: Some(SenderWithContext::new(to_pty)),
-            ..Default::default()
-        };
-        let worker = thread::spawn(move || {
-            let (instruction, _) = screen_rx.recv_timeout(Duration::from_secs(30)).unwrap();
-            let ScreenInstruction::ResolveAgentTab {
-                reply,
-                invoked_with,
-                ..
-            } = instruction
-            else {
-                panic!("expected resolution");
-            };
-            assert!(invoked_with.is_none());
-            let lifetime = std::sync::Arc::new(());
-            reply
-                .send(Ok(yinz_bus::route::AgentTabPlacement {
-                    tab_id: TabId::new(7),
-                    lifetime: std::sync::Arc::downgrade(&lifetime),
-                    created: false,
-                }))
-                .unwrap();
-            let (instruction, _) = pty_rx.recv_timeout(Duration::from_secs(30)).unwrap();
-            let PtyInstruction::SpawnTerminal(
-                Some(TerminalAction::RunCommand(command)),
-                _,
-                _,
-                _,
-                destination,
-                Some(mut completion),
-                false,
-            ) = instruction
-            else {
-                panic!("expected nonblocking spawn");
-            };
-            assert_eq!(
-                destination,
-                ClientTabIndexOrPaneId::TabIndexNoFocus(TabId::new(7))
-            );
-            assert!(completion
-                .agent_tab
-                .as_ref()
-                .unwrap()
-                .lifetime
-                .upgrade()
-                .is_some());
-            match target {
-                "ssh" => assert!(matches!(command.target, PaneTarget::Ssh { .. })),
-                _ => assert!(matches!(command.target, PaneTarget::Local)),
-            }
-            completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(17)));
-            completion.set_affected_tab_id(TabId::new(7));
-        });
-        let result = spawn_agent_for_control(
-            AgentPlacement::Tab(TabId::new(7)),
-            AgentSpawnSpec {
-                kind: Some("codex".into()),
-                allow_outside_worktree: Some(true),
-                ..Default::default()
-            },
-            (target == "ssh").then(|| root.clone()),
-            (target == "local").then(|| "work".into()),
-            (target == "ssh").then(|| "host".into()),
-            crate::ClientId::new(1),
-            &senders,
-            &data,
-        )
-        .unwrap();
-        assert_eq!(result.tab_id, Some(TabId::new(7)));
-        assert_eq!(result.cwd, Some(root));
-        assert_eq!(result.pane_id, PaneId::Terminal(TerminalId::new(17)));
-        worker.join().unwrap();
+            assert_eq!(result.tab_id, Some(TabId::new(7)));
+            assert_eq!(result.cwd, Some(root));
+            assert_eq!(result.pane_id, PaneId::Terminal(TerminalId::new(17)));
+            worker.join().unwrap();
+        }
     }
 }
 

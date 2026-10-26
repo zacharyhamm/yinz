@@ -1120,3 +1120,58 @@ fn a_deferred_tab_close_already_rejects_agent_arrivals() {
     assert!(result.error_message.unwrap().contains("closed"));
     assert!(result.affected_tab_id.is_none());
 }
+
+#[test]
+fn suppressed_agent_launch_completes_in_the_reserved_tab_without_layout_or_focus_changes() {
+    use yinz_types::agent::control::AgentPlacement;
+    for requested in [None, Some(TabId::new(0)), Some(TabId::new(1))] {
+        let mut screen = screen_with_floor();
+        tab_with_panes(&mut screen, TabId::new(0), 1, 4);
+        tab_with_panes(&mut screen, TabId::new(1), 10, 1);
+        let active_tabs = screen.active_tab_ids.clone();
+        let destination = screen
+            .resolve_agent_tab(AgentPlacement::Suppressed(requested), None, CLIENT)
+            .unwrap();
+        let tab_id = destination.tab_id;
+        assert_eq!(tab_id, requested.unwrap_or(active_tabs[&CLIENT]));
+        let tab = &screen.tabs[&tab_id];
+        let focus = tab.get_active_pane_id(CLIENT);
+        let geometry: Vec<_> = tab
+            .get_all_pane_ids()
+            .into_iter()
+            .map(|id| (id, tab.get_pane_with_id(id).unwrap().current_geom()))
+            .collect();
+        let pane = PaneId::Terminal(crate::TerminalId::new(20));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut completion = NotificationEnd::new(tx);
+        completion.wait_for_agent_start = true;
+        completion.agent_tab = Some(destination);
+        screen
+            .place_new_pane(
+                pane,
+                None,
+                None,
+                Some(run("claude")),
+                tiled(),
+                true,
+                ClientTabIndexOrPaneId::TabIndexNoFocus(tab_id),
+                Some(completion),
+                false,
+                &mut Default::default(),
+            )
+            .unwrap();
+        let result = rx.blocking_recv().unwrap();
+        assert_eq!(result.affected_pane_id, Some(pane));
+        assert_eq!(result.affected_tab_id, Some(tab_id));
+        assert!(result.error_message.is_none());
+        assert!(result.created_tab_id.is_none());
+        assert_eq!(screen.tabs.len(), 2);
+        assert_eq!(screen.active_tab_ids, active_tabs);
+        let tab = &screen.tabs[&tab_id];
+        assert!(tab.get_pane_info(pane).unwrap().is_suppressed);
+        assert_eq!(tab.get_active_pane_id(CLIENT), focus);
+        for (id, geom) in geometry {
+            assert_eq!(tab.get_pane_with_id(id).unwrap().current_geom(), geom);
+        }
+    }
+}

@@ -8565,3 +8565,330 @@ fn disconnect_before_prompt_delivery_finishes_cancels_enter() {
         );
     }
 }
+
+fn visibility(suppressed: bool, conversation: Option<&str>) -> AgentRequest {
+    let expected_session_id = conversation.map(str::to_owned);
+    if suppressed {
+        AgentRequest::Hide {
+            pane_id: PANE,
+            expected_session_id,
+        }
+    } else {
+        AgentRequest::Show {
+            pane_id: PANE,
+            expected_session_id,
+        }
+    }
+}
+
+#[test]
+fn suppressed_support_probe_confirms_the_exact_token() {
+    let (mut screen, messages, _writes) = setup("bash");
+    screen.agent_control(AgentRequest::SpawnSuppressedSupport, CLIENT);
+    let response = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(response.outcome, AgentOutcome::Ok);
+    assert_eq!(response.output.as_deref(), Some("agent-suppressed-v1"));
+}
+
+#[test]
+fn agent_show_hide_preserve_focus_and_validate_live_and_held_conversations() {
+    for exited in [false, true] {
+        for clear_record in [false, true] {
+            let (mut screen, messages, _writes) = setup("codex");
+            report(&mut screen, hook("SessionStart"));
+            if exited {
+                if clear_record {
+                    report(&mut screen, hook("SessionEnd"));
+                }
+                let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+                tab.hold_pane(PANE, Some(0), false, tab.pane_run_command(PANE).unwrap());
+            }
+            new_tab(&mut screen, 9, TabId::new(1));
+            let active_tabs = screen.active_tab_ids.clone();
+            for suppressed in [true, true, false, false, true] {
+                let before = screen.get_pane_info(PANE).unwrap().is_suppressed;
+                screen.agent_control(visibility(suppressed, Some("other")), CLIENT);
+                assert_eq!(
+                    replies(&messages, CLIENT)[0].outcome,
+                    AgentOutcome::TargetChanged
+                );
+                assert_eq!(screen.get_pane_info(PANE).unwrap().is_suppressed, before);
+                let focus = screen.tabs[&TabId::new(1)].get_active_pane_id(CLIENT);
+                screen.agent_control(visibility(suppressed, Some("conversation")), CLIENT);
+                let response = replies(&messages, CLIENT).pop().unwrap();
+                assert_eq!(response.outcome, AgentOutcome::Ok, "{response:?}");
+                let info = screen.get_pane_info(PANE).unwrap();
+                assert_eq!(info.is_suppressed, suppressed);
+                assert!(!info.is_floating);
+                assert_eq!(screen.tab_id_containing_pane(PANE), Some(TabId::new(0)));
+                assert_eq!(screen.active_tab_ids, active_tabs);
+                assert_eq!(
+                    screen.tabs[&TabId::new(1)].get_active_pane_id(CLIENT),
+                    focus
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn agent_show_rejects_suppressed_pane_tabs_without_changing_ownership() {
+    use yinz_types::pane_tabs::{PaneTabDescriptor, PaneTabsLayout};
+
+    for hide_group in [false, true] {
+        let (mut screen, messages, _writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        let (sender, _plugins) = channels::unbounded();
+        tab.senders
+            .replace_to_plugin(SenderWithContext::new(sender));
+        let info = tab
+            .mount_pane_tabs(
+                PANE,
+                PaneTabsLayout {
+                    active: 0,
+                    tabs: ["Conversation", "Overview"]
+                        .map(|label| PaneTabDescriptor {
+                            label: label.into(),
+                            location: "yinz:fixture-plugin-for-tests".into(),
+                            configuration: BTreeMap::new(),
+                            initial_cwd: None,
+                        })
+                        .to_vec(),
+                },
+                0,
+                CLIENT,
+            )
+            .unwrap();
+        tab.select_pane_tab(info.id, 1, CLIENT).unwrap();
+        let overview = PluginId::new(100);
+        let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "yinz:fixture-plugin-for-tests",
+            &None,
+            None,
+            None,
+        )
+        .unwrap();
+        tab.pane_tab_loaded(info.id, 1, 1, Ok((overview, run)))
+            .unwrap();
+        if hide_group {
+            tab.select_pane_tab(info.id, 0, CLIENT).unwrap();
+            tab.suppress_pane(PANE, None);
+        }
+        assert!(tab.get_pane_info(PANE).unwrap().is_suppressed);
+        let before = tab.pane_tabs_info(info.id).unwrap();
+        let focus = tab.get_active_pane_id(CLIENT);
+        let active_tabs = screen.active_tab_ids.clone();
+
+        for (conversation, outcome) in [
+            ("other", AgentOutcome::TargetChanged),
+            ("conversation", AgentOutcome::Rejected),
+        ] {
+            screen.agent_control(visibility(false, Some(conversation)), CLIENT);
+            let response = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(response.outcome, outcome, "{response:?}");
+            assert!(response.agents[0].is_suppressed);
+            if outcome == AgentOutcome::Rejected {
+                assert!(response.message.unwrap().contains("pane-tab"));
+            }
+            let tab = screen.tab_containing_pane(PANE).unwrap();
+            assert_eq!(tab.pane_tabs_info(info.id).unwrap(), before);
+            assert_eq!(tab.pane_tabs_of(PANE), Some(info.id));
+            assert_eq!(tab.pane_tabs_of(PaneId::Plugin(overview)), Some(info.id));
+            assert_eq!(tab.get_active_pane_id(CLIENT), focus);
+            assert_eq!(screen.active_tab_ids, active_tabs);
+        }
+
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        tab.select_pane_tab(info.id, 0, CLIENT).unwrap();
+        assert_eq!(tab.pane_tabs_info(info.id).unwrap().pane_id, PANE);
+        if !hide_group {
+            assert!(!tab.get_pane_info(PANE).unwrap().is_suppressed);
+            for _ in 0..2 {
+                screen.agent_control(visibility(false, None), CLIENT);
+                assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+            }
+        }
+    }
+}
+
+#[test]
+fn agent_show_rejects_hidden_stack_members_without_changing_client_focus() {
+    let (mut screen, messages, _writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    *screen.stacked_pane_list.borrow_mut() = true;
+    let visible = PaneId::Terminal(TerminalId::new(8));
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .new_pane(
+            visible,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Stacked {
+                pane_id_to_stack_under: Some(PANE),
+                borderless: None,
+            },
+            Some(CLIENT),
+            None,
+        )
+        .unwrap();
+    let other = ClientId::new(2);
+    screen.add_client(other).unwrap();
+    let active_tabs = screen.active_tab_ids.clone();
+    let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+    for client in [CLIENT, other] {
+        tab.focus_pane_with_id(visible, false, false, client)
+            .unwrap();
+    }
+    assert!(tab.pane_is_hidden_stack_list_member(&PANE));
+    assert!(tab.get_pane_info(PANE).unwrap().is_suppressed);
+
+    screen.agent_control(visibility(false, Some("conversation")), CLIENT);
+    let response = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(response.outcome, AgentOutcome::Rejected, "{response:?}");
+    assert!(response.message.unwrap().contains("stack"));
+    assert!(response.agents[0].is_suppressed);
+    assert_eq!(screen.active_tab_ids, active_tabs);
+    let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+    assert!(tab.pane_is_hidden_stack_list_member(&PANE));
+    assert!(tab.pane_is_stack_list_member(&visible));
+    assert!(!tab.get_pane_info(visible).unwrap().is_suppressed);
+    for client in [CLIENT, other] {
+        assert_eq!(tab.get_active_pane_id(client), Some(visible));
+    }
+    assert!(tab.focus_hidden_stack_list_member(PANE, CLIENT));
+    for _ in 0..2 {
+        screen.agent_control(visibility(false, None), CLIENT);
+        assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+    }
+}
+
+#[test]
+fn agent_visibility_rejects_missing_and_non_agent_targets() {
+    for missing in [false, true] {
+        let (mut screen, messages, _writes) = setup("bash");
+        if missing {
+            screen.close_pane_explicitly(PANE, None);
+        }
+        for suppressed in [false, true] {
+            for pin in [None, Some("conversation")] {
+                screen.agent_control(visibility(suppressed, pin), CLIENT);
+                assert_eq!(
+                    replies(&messages, CLIENT)[0].outcome,
+                    match (missing, pin.is_some()) {
+                        (true, false) => AgentOutcome::TargetNotFound,
+                        (true, true) => AgentOutcome::TargetClosed,
+                        (false, false) => AgentOutcome::NotAgent,
+                        (false, true) => AgentOutcome::TargetChanged,
+                    }
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn agent_show_without_room_keeps_the_running_pane_suppressed() {
+    let (mut screen, messages, _writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    screen.agent_control(visibility(true, None), CLIENT);
+    replies(&messages, CLIENT);
+    screen.resize_to_screen(Size { cols: 8, rows: 3 }).unwrap();
+    screen.agent_control(visibility(false, None), CLIENT);
+    let response = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(response.outcome, AgentOutcome::Rejected, "{response:?}");
+    assert!(response.message.unwrap().contains("no room"));
+    assert!(response.agents[0].is_suppressed);
+    assert!(response.agents[0].ready);
+    assert!(!screen.get_pane_info(PANE).unwrap().exited);
+    screen
+        .resize_to_screen(Size { cols: 80, rows: 24 })
+        .unwrap();
+    screen.agent_control(visibility(false, None), CLIENT);
+    assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+    assert!(!screen.get_pane_info(PANE).unwrap().is_suppressed);
+}
+
+#[test]
+fn suppressed_agents_support_status_list_prompts_reads_keys_recovery_and_restart() {
+    for target in pane_targets() {
+        let (mut screen, messages, writes) = setup_on_target("codex", target);
+        screen.agent_control(visibility(true, None), CLIENT);
+        assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+        report(&mut screen, hook("SessionStart"));
+        for request in [
+            AgentRequest::List { project: None },
+            AgentRequest::Status {
+                pane_id: PANE,
+                expected_session_id: Some("conversation".into()),
+            },
+        ] {
+            screen.agent_control(request, CLIENT);
+            let response = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(response.outcome, AgentOutcome::Ok);
+            assert_eq!(response.agents.len(), 1);
+            assert!(response.agents[0].is_suppressed && response.agents[0].ready);
+        }
+        screen.agent_control_with_clear(prompt(false), CLIENT, &writes);
+        assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+        assert!(replies(&messages, CLIENT).is_empty());
+        report(&mut screen, hook("UserPromptSubmit"));
+        let submitted = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(submitted.outcome, AgentOutcome::Submitted);
+        assert!(submitted.acknowledged);
+        screen.agent_control(
+            AgentRequest::WaitTurn {
+                pane_id: PANE,
+                expected_session_id: Some("conversation".into()),
+                submission_id: submitted.submission_id.unwrap(),
+                timeout_ms: 30_000,
+            },
+            CLIENT,
+        );
+        report(&mut screen, hook("Stop"));
+        assert_eq!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::Completed
+        );
+        screen
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .handle_pty_bytes(TerminalId::new(7), b"hidden result".to_vec())
+            .unwrap();
+        screen.agent_control(
+            AgentRequest::Read {
+                pane_id: PANE,
+                expected_session_id: None,
+                lines: 80,
+            },
+            CLIENT,
+        );
+        assert_eq!(
+            replies(&messages, CLIENT)[0].output.as_deref(),
+            Some("hidden result")
+        );
+        screen.agent_control(send_keys(vec![BareKey::Esc]), CLIENT);
+        assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+        assert!(finish_paste(&writes).ends_with(b"\x1b"));
+        screen.agent_control(recover(), CLIENT);
+        assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+        report(&mut screen, hook("SessionEnd"));
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        tab.hold_pane(PANE, Some(0), false, tab.pane_run_command(PANE).unwrap());
+        screen.agent_control(
+            AgentRequest::Restart {
+                pane_id: PANE,
+                prompt: None,
+                session: yinz_types::agent::control::AgentRestartSession::Fresh,
+            },
+            CLIENT,
+        );
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(response.outcome, AgentOutcome::Ok, "{response:?}");
+        assert_eq!(response.restarted.unwrap().pane_id, PANE);
+        assert!(screen.get_pane_info(PANE).unwrap().is_suppressed);
+    }
+}

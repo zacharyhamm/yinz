@@ -37,6 +37,7 @@ pub enum AgentPlacement {
     Automatic,
     Tab(crate::internal_ids::TabId),
     NewTab(Option<String>),
+    Suppressed(Option<crate::internal_ids::TabId>),
 }
 
 impl AgentPlacement {
@@ -53,6 +54,7 @@ impl AgentPlacement {
     pub fn from_launch_fields(
         tab: &serde_json::Value,
         new_tab: &serde_json::Value,
+        suppressed: &serde_json::Value,
     ) -> Result<Self, &'static str> {
         let existing =
             if tab.is_null() {
@@ -68,6 +70,19 @@ impl AgentPlacement {
             serde_json::Value::String(name) => Some(Some(name.clone())),
             _ => return Err("new_tab must be true, false, null, or a tab name"),
         };
+        let suppressed = match suppressed {
+            serde_json::Value::Null | serde_json::Value::Bool(false) => false,
+            serde_json::Value::Bool(true) => true,
+            _ => return Err("suppressed must be true, false, or null"),
+        };
+        if suppressed {
+            if new.is_some() {
+                return Err("suppressed and new_tab are mutually exclusive");
+            }
+            return Ok(Self::Suppressed(
+                existing.map(crate::internal_ids::TabId::new),
+            ));
+        }
         let placement = match (existing, new) {
             (Some(_), Some(_)) => return Err("tab and new_tab are mutually exclusive"),
             (Some(id), None) => Self::Tab(crate::internal_ids::TabId::new(id)),
@@ -98,12 +113,22 @@ pub struct RestartedAgent {
 pub enum AgentRequest {
     /// Read-only feature negotiation before sending placement to an older server.
     SpawnPlacementSupport,
+    /// Read-only negotiation before sending a suppressed launch to an older server.
+    SpawnSuppressedSupport,
     /// Read-only feature negotiation before sending a sandboxed spawn to an older server.
     SpawnBubblewrapSupport,
     List {
         project: Option<String>,
     },
     Status {
+        pane_id: PaneId,
+        expected_session_id: Option<String>,
+    },
+    Show {
+        pane_id: PaneId,
+        expected_session_id: Option<String>,
+    },
+    Hide {
         pane_id: PaneId,
         expected_session_id: Option<String>,
     },
@@ -336,6 +361,8 @@ pub struct AgentStatus {
     pub session: String,
     pub host_id: crate::internal_ids::HostId,
     pub tab_id: Option<crate::internal_ids::TabId>,
+    #[serde(default)]
+    pub is_suppressed: bool,
     pub target: crate::command::PaneTarget,
     pub agent: AgentInfo,
     pub cwd: Option<String>,
