@@ -1299,6 +1299,23 @@ impl Screen {
         }
         if matches!(request, Show { .. } | Hide { .. }) {
             let suppress = matches!(request, Hide { .. });
+            if suppress
+                && self
+                    .get_pane_info(pane)
+                    .is_some_and(|info| !info.is_suppressed)
+                && !self.tabs.values().any(|tab| {
+                    !tab.is_pending()
+                        && !self.deferred_tab_closes.contains(&tab.id)
+                        && tab.has_selectable_panes_except(pane)
+                })
+            {
+                reject(
+                    self,
+                    AgentOutcome::Rejected,
+                    "cannot hide the session's last selectable pane",
+                );
+                return;
+            }
             if let Some(tab) = self.tab_containing_pane_mut(pane)
                 && tab
                     .get_pane_info(pane)
