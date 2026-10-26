@@ -239,7 +239,7 @@ impl Tab {
         self.set_force_render();
         true
     }
-    /// Draw an overlay again. Does not focus it - see `OverlayPanes::show_pane`.
+    /// Draw an overlay again. Restoring a modal can take focus; see `OverlayPanes::show_pane`.
     pub fn show_overlay_pane(&mut self, pane_id: PaneId) -> bool {
         if !self.overlay_panes.show_pane(pane_id) {
             return false;

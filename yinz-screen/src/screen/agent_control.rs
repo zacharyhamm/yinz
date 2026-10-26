@@ -1321,10 +1321,9 @@ impl Screen {
                     .get_pane_info(pane)
                     .is_some_and(|info| info.is_suppressed != suppress)
             {
-                if suppress {
-                    tab.suppress_pane(pane, None);
-                } else if tab.pane_tabs_of(pane).is_some()
-                    || tab.pane_is_hidden_stack_list_member(&pane)
+                if !suppress
+                    && (tab.pane_tabs_of(pane).is_some()
+                        || tab.pane_is_hidden_stack_list_member(&pane))
                 {
                     reject(
                         self,
@@ -1332,6 +1331,27 @@ impl Screen {
                         "agent pane is hidden in a pane-tab group or stack; use pane-tab or stack navigation to show it",
                     );
                     return;
+                }
+                if !suppress
+                    && tab
+                        .overlay_placement_for(pane)
+                        .is_some_and(|placement| placement.kind.is_modal())
+                {
+                    reject(
+                        self,
+                        AgentOutcome::Rejected,
+                        "cannot show a hidden modal overlay without changing focus; use overlay navigation to show it",
+                    );
+                    return;
+                }
+                if tab.pane_is_overlay(pane) {
+                    if suppress {
+                        tab.hide_overlay_pane(pane);
+                    } else {
+                        tab.show_overlay_pane(pane);
+                    }
+                } else if suppress {
+                    tab.suppress_pane(pane, None);
                 } else {
                     tab.unsuppress_pane(pane, false);
                 }

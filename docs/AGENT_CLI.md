@@ -18,7 +18,7 @@ The separate `agent restart --session MODE` option selects `resume` or `fresh`.
 | `agent status TARGET` | State, reporting source, readiness, conversation and run IDs |
 | `agent spawn --kind KIND` | Actual pane ID, working directory and branch |
 | `agent spawn --kind KIND --suppressed` | Running agent in a hidden pane |
-| `agent show TARGET` | Restore the agent as tiled without changing focus or switching tabs |
+| `agent show TARGET` | Restore the agent without changing focus or switching tabs |
 | `agent hide TARGET` | Hide the agent without stopping its process |
 | `agent restart TARGET --session MODE [TEXT] [--file PATH]` | Restart an exited agent in the same held pane |
 | `agent prompt TARGET TEXT` | Acknowledgement that the agent accepted the prompt |
@@ -210,12 +210,22 @@ yinz agent hide terminal_7 --conversation CONVERSATION_ID --json
 Hidden agents use the existing prompt, wait, read, send-keys, recovery, restart, and lifecycle paths.
 Suppression changes visibility only. Checkout policy, provider behavior, and session lifetime remain the same.
 
-`show` restores the pane as tiled in its owning tab. It preserves focus and the active tab.
+`show` restores a regular pane as tiled in its owning tab. It preserves focus and the active tab.
 If the tab has no room, `show` returns `rejected` and leaves the running pane suppressed.
+
+For an overlay, `show` retains its kind and coordinates.
+Both `show` and `hide` affect the entire overlay container, including all multipane children.
+For a hidden modal overlay, `show` returns `rejected` because restoration would change focus.
+Use normal overlay navigation to restore a hidden modal.
+
 For a suppressed pane-tab member or hidden stack-list member, `show` returns `rejected` without changing the group or focus.
 Use pane-tab or stack navigation to select these agents.
-Repeated show or hide requests succeed when the pane is already in the requested state.
+
+Repeated show or hide requests succeed when the pane is already in the requested state, including `show` for an already visible modal.
 Both commands also work for held agents after exit and accept `--conversation` and `--json`.
+
+`hide` returns `rejected` if no selectable destination remains in the session.
+Other children of the same overlay container do not count as destinations because they are hidden together.
 
 ### Pi
 
