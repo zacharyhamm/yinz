@@ -5,6 +5,33 @@ use yinz_types::style::TerminalTheme;
 const CLIENT: ClientId = ClientId::new(1);
 
 #[test]
+fn selectable_panes_except_target_matches_stack_list_promotion() {
+    for floating in [false, true] {
+        for rank in 0..3 {
+            let mut tab = stack_tab(Size { cols: 80, rows: 24 }, floating, PaneFrameStyle::Full);
+            let members = tab.stack_lists.values().next().unwrap().members.clone();
+            let target = members[rank];
+            let promoted = members[if rank == 2 { 1 } else { rank + 1 }];
+            tab.focus_pane_with_id(target, false, false, CLIENT)
+                .unwrap();
+            for selectable in [false, true] {
+                tab.get_pane_with_id_mut(promoted)
+                    .unwrap()
+                    .set_selectable(selectable);
+                assert_eq!(tab.has_selectable_panes_except(target), selectable);
+            }
+            tab.suppress_pane(target, None);
+            assert!(tab.get_pane_info(target).unwrap().is_suppressed);
+            assert!(!tab.get_pane_info(promoted).unwrap().is_suppressed);
+            assert_eq!(tab.get_pane_info(promoted).unwrap().is_floating, floating);
+            assert!(tab.has_selectable_panes());
+            assert_eq!(tab.get_all_pane_ids().len(), members.len());
+            tab.assert_invariants();
+        }
+    }
+}
+
+#[test]
 fn stack_list_focus_cycles_in_both_directions_without_neighbors() {
     for floating in [false, true] {
         let mut tab = stack_tab(Size { cols: 80, rows: 24 }, floating, PaneFrameStyle::Full);

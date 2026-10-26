@@ -39,6 +39,19 @@ impl Tab {
             .map(|list| list.visible != *pane_id)
             .unwrap_or(false)
     }
+    pub(super) fn stack_list_promote_target(&self, pane_id: PaneId) -> Option<PaneId> {
+        let list = self
+            .stack_lists
+            .get(&self.stack_list_id_of_member(&pane_id)?)?;
+        if list.visible != pane_id {
+            return None;
+        }
+        let rank = list.rank_of(&pane_id).unwrap_or(0);
+        list.members
+            .get(rank + 1)
+            .copied()
+            .or_else(|| list.members[..rank].last().copied())
+    }
     pub fn focus_hidden_stack_list_member(&mut self, pane_id: PaneId, client_id: ClientId) -> bool {
         self.swap_in_hidden_stack_list_member(pane_id, Some(client_id))
     }
@@ -370,18 +383,7 @@ impl Tab {
             .map(|l| l.visible == id)
             .unwrap_or(false);
         let removed = if is_visible {
-            let (members, rank) = {
-                let list = match self.stack_lists.get(&stack_list_id) {
-                    Some(l) => l,
-                    None => return StackListRemoval::NotRemoved,
-                };
-                (list.members.clone(), list.rank_of(&id).unwrap_or(0))
-            };
-            let promote_target = members
-                .get(rank + 1)
-                .copied()
-                .or_else(|| members[..rank].iter().last().copied());
-            let promote_target = match promote_target {
+            let promote_target = match self.stack_list_promote_target(id) {
                 Some(target) => target,
                 None => {
                     self.dissolve_stack_list(stack_list_id);

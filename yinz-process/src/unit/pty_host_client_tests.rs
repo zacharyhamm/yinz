@@ -1533,7 +1533,7 @@ fn a_released_pane_can_be_attached_by_another_server() {
     // produced *during* the hand-off from output produced before or after it.
     let pending = spawn_real_host(
         dir.path(),
-        sh("while read line; do echo \"got:$line\"; done"),
+        sh("stty -echo; while read line; do printf 'got:%s' \"$line\"; done"),
     )
     .expect("spawning a real supervisor failed");
     let guard = KillOnDrop(pending.host_pid);
@@ -1575,8 +1575,7 @@ fn a_released_pane_can_be_attached_by_another_server() {
     first_master
         .write_all(b"during-the-gap\n")
         .expect("failed to write to the pty while detached");
-    // The pty echoes input, so a non-zero buffer proves nothing on its own —
-    // wait for the ring to be at least as big as the shell's reply will be.
+    // Echo is off and the previous reply is drained, so only the child's full reply can fill the ring.
     let expected = b"got:during-the-gap".len();
     wait_until(
         || {

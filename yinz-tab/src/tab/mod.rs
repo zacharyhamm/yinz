@@ -2482,8 +2482,15 @@ impl Tab {
     pub fn has_selectable_panes(&self) -> bool {
         self.selectable_pane_ids().next().is_some()
     }
+    /// Excludes the whole overlay container and includes the stack-list sibling removal promotes.
     pub fn has_selectable_panes_except(&self, pane_id: PaneId) -> bool {
-        self.selectable_pane_ids().any(|id| id != pane_id)
+        let overlay_members = self.overlay_panes.members(&pane_id);
+        self.selectable_pane_ids()
+            .any(|id| id != pane_id && !overlay_members.contains(&id))
+            || self
+                .stack_list_promote_target(pane_id)
+                .and_then(|id| self.suppressed_panes.get(&id))
+                .is_some_and(|suppressed| suppressed.pane.selectable())
     }
     fn selectable_pane_ids(&self) -> impl Iterator<Item = PaneId> + '_ {
         self.tiled_panes

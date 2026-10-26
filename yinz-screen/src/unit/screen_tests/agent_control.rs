@@ -8770,6 +8770,396 @@ fn agent_hide_with_another_selectable_pane_survives_settlement() {
 }
 
 #[test]
+fn agent_show_restores_an_overlay_hidden_through_the_screen_instruction() {
+    let mut mock = MockScreen::new(Size { cols: 80, rows: 24 });
+    let received = Watched::new(vec![]);
+    let receiver = mock.server_receiver.take().unwrap();
+    let server_thread = log_actions_in_thread!(received, ServerInstruction::KillSession, receiver);
+    let screen_thread = mock.run(None, vec![]);
+    let send = |instruction| mock.to_screen.send(instruction).unwrap();
+    let pane_info = || {
+        let (tx, rx) = channels::bounded(1);
+        send(ScreenInstruction::GetPaneInfo {
+            pane_id: PANE,
+            response_channel: tx,
+        });
+        rx.recv_timeout(yinz_test_support::default_timeout())
+            .unwrap()
+            .unwrap()
+    };
+    let focused_pane = || {
+        let (tx, rx) = channels::bounded(1);
+        send(ScreenInstruction::GetFocusedPaneInfo {
+            client_id: CLIENT,
+            response_channel: tx,
+        });
+        rx.recv_timeout(yinz_test_support::default_timeout())
+            .unwrap()
+    };
+    send(ScreenInstruction::NewPane(
+        PANE,
+        None,
+        None,
+        Some(Run::Command(RunCommand {
+            command: PathBuf::from("env"),
+            args: vec![
+                format!("{}=1", yinz_types::agent::AGENT_PANE_ENV),
+                "codex".into(),
+            ],
+            ..Default::default()
+        })),
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(
+            FloatingPaneCoordinates {
+                x: Some(PercentOrFixed::Fixed(2)),
+                y: Some(PercentOrFixed::Fixed(3)),
+                width: Some(PercentOrFixed::Fixed(40)),
+                height: Some(PercentOrFixed::Fixed(12)),
+                ..Default::default()
+            },
+        ))),
+        false,
+        ClientTabIndexOrPaneId::ClientId(CLIENT),
+        None,
+        false,
+    ));
+    send(ScreenInstruction::FocusPaneWithId(
+        PaneId::Terminal(TerminalId::new(0)),
+        false,
+        false,
+        CLIENT,
+        None,
+    ));
+    let before = pane_info();
+    assert!(!before.is_suppressed);
+    let focus = focused_pane();
+    assert_eq!(
+        focus,
+        yinz_types::data::GetFocusedPaneInfoResponse::Ok {
+            tab_id: TabId::new(0),
+            pane_id: PaneId::Terminal(TerminalId::new(0)),
+        }
+    );
+    send(ScreenInstruction::SuppressPane(PANE, CLIENT));
+    assert!(pane_info().is_suppressed);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    send(ScreenInstruction::AgentControlReply(
+        visibility(false, None),
+        tx,
+    ));
+    let response = rx
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap();
+    assert_eq!(response.outcome, AgentOutcome::Ok, "{response:?}");
+    assert!(!response.agents[0].is_suppressed);
+    assert_eq!(pane_info(), before);
+    assert_eq!(focused_pane(), focus);
+    mock.teardown(vec![screen_thread, server_thread]);
+}
+
+#[test]
+fn agent_overlay_hide_show_preserves_ownership_placement_and_client_focus() {
+    let placement = OverlayPlacement::dismissible(Some(FloatingPaneCoordinates {
+        x: Some(PercentOrFixed::Fixed(2)),
+        y: Some(PercentOrFixed::Fixed(3)),
+        width: Some(PercentOrFixed::Fixed(40)),
+        height: Some(PercentOrFixed::Fixed(12)),
+        ..Default::default()
+    }));
+    let (mut screen, messages, _writes) = setup_with_placement(
+        "codex",
+        PaneTarget::Local,
+        Size { cols: 80, rows: 24 },
+        NewPanePlacement::Overlay(placement.clone()),
+    );
+    report(&mut screen, hook("SessionStart"));
+    let other = ClientId::new(2);
+    screen.add_client(other).unwrap();
+    let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+    let shell = PaneId::Terminal(TerminalId::new(1));
+    for client in [CLIENT, other] {
+        tab.focus_pane_with_id(shell, false, false, client).unwrap();
+    }
+    let geom = tab.get_pane_with_id(PANE).unwrap().position_and_size();
+    let active_tabs = screen.active_tab_ids.clone();
+    for suppressed in [true, true, false, false, true, false] {
+        screen.agent_control(visibility(suppressed, Some("conversation")), CLIENT);
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(response.outcome, AgentOutcome::Ok, "{response:?}");
+        assert_eq!(response.agents[0].is_suppressed, suppressed);
+        let tab = screen.tab_containing_pane(PANE).unwrap();
+        assert!(tab.pane_is_overlay(PANE));
+        assert_eq!(tab.overlays_are_rendered(), !suppressed);
+        assert_eq!(tab.overlay_placement_for(PANE), Some(placement.clone()));
+        assert_eq!(
+            tab.get_pane_with_id(PANE).unwrap().position_and_size(),
+            geom
+        );
+        assert_eq!(screen.active_tab_ids, active_tabs);
+        for client in [CLIENT, other] {
+            assert_eq!(tab.get_active_pane_id(client), Some(shell));
+        }
+    }
+}
+
+#[test]
+fn agent_show_rejects_hidden_modals_without_changing_client_focus_or_tabs() {
+    for separate_tabs in [false, true] {
+        let (mut screen, messages, _writes) = setup_with_placement(
+            "codex",
+            PaneTarget::Local,
+            Size { cols: 80, rows: 24 },
+            NewPanePlacement::Overlay(OverlayPlacement::modal(Some(
+                FloatingPaneCoordinates::default(),
+            ))),
+        );
+        report(&mut screen, hook("SessionStart"));
+        let other = ClientId::new(2);
+        screen.add_client(other).unwrap();
+        if separate_tabs {
+            new_tab(&mut screen, 9, TabId::new(1));
+        }
+        for hidden in [false, true] {
+            if hidden {
+                screen.agent_control(visibility(true, Some("conversation")), CLIENT);
+                assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+            }
+            let before = screen.get_pane_info(PANE).unwrap();
+            assert_eq!(before.is_suppressed, hidden);
+            let placement = screen
+                .tab_containing_pane(PANE)
+                .unwrap()
+                .overlay_placement_for(PANE);
+            let active_tabs = screen.active_tab_ids.clone();
+            let focus = [CLIENT, other].map(|client| screen.active_pane_id(client));
+            assert_eq!(
+                focus,
+                [
+                    Some(if separate_tabs {
+                        PaneId::Terminal(TerminalId::new(9))
+                    } else if hidden {
+                        PaneId::Terminal(TerminalId::new(1))
+                    } else {
+                        PANE
+                    }),
+                    Some(if hidden {
+                        PaneId::Terminal(TerminalId::new(1))
+                    } else {
+                        PANE
+                    }),
+                ]
+            );
+
+            screen.agent_control(visibility(false, Some("conversation")), CLIENT);
+            let response = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(
+                response.outcome,
+                if hidden {
+                    AgentOutcome::Rejected
+                } else {
+                    AgentOutcome::Ok
+                },
+                "{response:?}"
+            );
+            assert_eq!(response.agents[0].is_suppressed, hidden);
+            if hidden {
+                assert_eq!(
+                    response.message.as_deref(),
+                    Some("cannot show a hidden modal overlay without changing focus; use overlay navigation to show it")
+                );
+            }
+            for settle in [false, true] {
+                if settle {
+                    screen.settle_tabs().unwrap();
+                }
+                assert_eq!(screen.get_pane_info(PANE).unwrap(), before);
+                let tab = screen.tab_containing_pane(PANE).unwrap();
+                assert_eq!(tab.overlay_placement_for(PANE), placement);
+                assert_eq!(tab.overlays_are_rendered(), !hidden);
+                assert_eq!(screen.active_tab_ids, active_tabs);
+                assert_eq!(
+                    [CLIENT, other].map(|client| screen.active_pane_id(client)),
+                    focus
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn agent_hide_retained_multipane_requires_a_destination_outside_its_container() {
+    use yinz_types::multipane::{MultipaneDirection, MultipaneSplit};
+
+    for destination in ["absent", "tiled", "floating", "tab"] {
+        let (mut screen, messages, _writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        let children = [PaneId::Terminal(TerminalId::new(1)), PANE];
+        let placement = OverlayPlacement::dismissible(Some(FloatingPaneCoordinates::default()));
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        tab.create_multipane(
+            children,
+            MultipaneSplit {
+                direction: MultipaneDirection::LeftRight,
+                ratio: 5000,
+            },
+            0,
+            placement.clone(),
+        )
+        .unwrap();
+        assert_eq!(tab.get_selectable_tiled_panes_count(), 0);
+        assert!(tab.has_selectable_panes());
+        let container = tab.multipane_info(PANE).unwrap();
+        let survivor = PaneId::Terminal(TerminalId::new(9));
+        let destination_tab = if destination == "tab" {
+            new_tab(&mut screen, 9, TabId::new(1));
+            TabId::new(1)
+        } else {
+            if destination != "absent" {
+                tab.new_pane(
+                    survivor,
+                    None,
+                    None,
+                    false,
+                    false,
+                    if destination == "floating" {
+                        NewPanePlacement::Floating(None)
+                    } else {
+                        NewPanePlacement::default()
+                    },
+                    Some(CLIENT),
+                    None,
+                )
+                .unwrap();
+            }
+            tab.focus_pane_with_id(PANE, false, false, CLIENT).unwrap();
+            TabId::new(0)
+        };
+        let (to_pty, pty) = channels::unbounded();
+        screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+        screen.tabs.get_mut(&TabId::new(0)).unwrap().senders.to_pty =
+            screen.bus.senders.to_pty.clone();
+        let hidden = destination != "absent";
+        for _ in 0..2 {
+            screen.agent_control(visibility(true, Some("conversation")), CLIENT);
+            let response = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(
+                response.outcome,
+                if hidden {
+                    AgentOutcome::Ok
+                } else {
+                    AgentOutcome::Rejected
+                },
+                "{destination}: {response:?}"
+            );
+            assert_eq!(response.agents[0].is_suppressed, hidden);
+            if !hidden {
+                assert_eq!(
+                    response.message.as_deref(),
+                    Some("cannot hide the session's last selectable pane")
+                );
+            }
+            screen.settle_tabs().unwrap();
+            let tab = screen.tab_containing_pane(PANE).unwrap();
+            assert_eq!(tab.id, TabId::new(0));
+            assert_eq!(tab.multipane_info(PANE), Some(container.clone()));
+            for child in children {
+                let info = tab.get_pane_info(child).unwrap();
+                assert_eq!(info.is_suppressed, hidden, "{destination}: {child}");
+                assert!(!info.exited);
+                assert_eq!(tab.overlay_placement_for(child), Some(placement.clone()));
+            }
+            assert_eq!(screen.active_tab_ids[&CLIENT], destination_tab);
+            assert_eq!(
+                screen.active_pane_id(CLIENT),
+                Some(if hidden { survivor } else { PANE })
+            );
+            assert_eq!(screen.tabs.len(), if destination == "tab" { 2 } else { 1 });
+            assert!(screen.replacement_tab.is_none() && !screen.replacement_pending);
+            assert!(pty.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn agent_hide_checks_the_stack_sibling_that_suppression_will_promote() {
+    let previous = PaneId::Terminal(TerminalId::new(1));
+    let next = PaneId::Terminal(TerminalId::new(8));
+    for has_next in [false, true] {
+        for selectable in [false, true] {
+            let (mut screen, messages, _writes) = setup_with_placement(
+                "codex",
+                PaneTarget::Local,
+                Size { cols: 80, rows: 24 },
+                NewPanePlacement::Stacked {
+                    pane_id_to_stack_under: Some(previous),
+                    borderless: None,
+                },
+            );
+            report(&mut screen, hook("SessionStart"));
+            *screen.stacked_pane_list.borrow_mut() = true;
+            let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+            tab.sync_stacked_pane_list_mode();
+            if has_next {
+                tab.new_pane(
+                    next,
+                    None,
+                    None,
+                    false,
+                    true,
+                    NewPanePlacement::Stacked {
+                        pane_id_to_stack_under: Some(PANE),
+                        borderless: None,
+                    },
+                    Some(CLIENT),
+                    None,
+                )
+                .unwrap();
+            }
+            tab.focus_pane_with_id(PANE, false, false, CLIENT).unwrap();
+            let promoted = if has_next { next } else { previous };
+            tab.get_pane_with_id_mut(promoted)
+                .unwrap()
+                .set_selectable(selectable);
+            assert!(tab.pane_is_hidden_stack_list_member(&promoted));
+            assert_eq!(tab.get_selectable_tiled_panes_count(), 1);
+            let (to_pty, pty) = channels::unbounded();
+            tab.senders.to_pty = Some(SenderWithContext::new(to_pty));
+            screen.bus.senders.to_pty = tab.senders.to_pty.clone();
+
+            for _ in 0..2 {
+                screen.agent_control(visibility(true, Some("conversation")), CLIENT);
+                let response = replies(&messages, CLIENT).pop().unwrap();
+                assert_eq!(
+                    response.outcome,
+                    if selectable {
+                        AgentOutcome::Ok
+                    } else {
+                        AgentOutcome::Rejected
+                    },
+                    "next {has_next}, selectable {selectable}: {response:?}"
+                );
+                screen.settle_tabs().unwrap();
+                let tab = screen.tab_containing_pane(PANE).unwrap();
+                assert_eq!(tab.get_pane_info(PANE).unwrap().is_suppressed, selectable);
+                assert_eq!(
+                    tab.get_pane_info(promoted).unwrap().is_suppressed,
+                    !selectable
+                );
+                assert_eq!(
+                    tab.get_active_pane_id(CLIENT),
+                    Some(if selectable { promoted } else { PANE })
+                );
+                assert_eq!(tab.get_all_pane_ids().len(), if has_next { 3 } else { 2 });
+                assert_eq!(screen.tabs.len(), 1);
+                assert_eq!(screen.active_tab_ids[&CLIENT], tab.id);
+                assert!(screen.replacement_tab.is_none() && !screen.replacement_pending);
+                assert!(pty.try_recv().is_err());
+            }
+        }
+    }
+}
+
+#[test]
 fn agent_hide_already_suppressed_without_a_selectable_destination_is_idempotent() {
     let (mut screen, messages, _writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
