@@ -16,6 +16,7 @@ vte = { workspace = true }
 yinz-routing = { path = "../yinz-routing", version = "0.1.0" }
 yinz-bus = { path = "../yinz-bus", version = "0.1.0" }
 yinz-config = { workspace = true }
+yinz-codex = { workspace = true }
 yinz-ipc = { workspace = true }
 yinz-key-codec = { workspace = true }
 yinz-plugin-api = { workspace = true }
@@ -35,6 +36,7 @@ crossbeam = { version = "0.8", default-features = false, features = ["crossbeam-
 kdl = { workspace = true }
 lazy_static = { workspace = true }
 log = { workspace = true }
+isahc = { workspace = true }
 notify-debouncer-full = { workspace = true }
 num_cpus = { workspace = true }
 prost = { workspace = true }

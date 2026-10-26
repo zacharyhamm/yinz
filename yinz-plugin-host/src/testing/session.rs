@@ -33,6 +33,8 @@ pub(super) fn environment(command: &mut Command, root: &Path) {
         .env_clear()
         .env("PATH", path)
         .env("HOME", root.join("home"))
+        .env("CODEX_HOME", root.join("home/.codex"))
+        .env("CLAUDE_CONFIG_DIR", root.join("home/.claude"))
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env("XDG_DATA_HOME", root.join("data"))
         .env("XDG_CACHE_HOME", root.join("cache"))
@@ -45,6 +47,32 @@ pub(super) fn environment(command: &mut Command, root: &Path) {
         .env("PS1", "yinz-test> ")
         .env("SHELL", "/bin/sh")
         .env("TERM", "xterm-256color");
+}
+
+fn write_fixture_command(root: &Path, name: &str, script: &str) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = root.join("fixtures").join(name);
+    // Like write_warm_script in test support, pay macOS's first-exec cost before observation.
+    fs::write(
+        &path,
+        format!("#!/bin/sh\n[ \"$YINZ_TEST_FIXTURE_WARMUP\" = 1 ] && exit 0\n{script}\n"),
+    )
+    .context("write fixture executable")?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
+        .context("make fixture executable")?;
+    let mut warm = Command::new(&path);
+    environment(&mut warm, root);
+    let status = warm
+        .env("YINZ_TEST_FIXTURE_WARMUP", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("warm fixture executable")?;
+    if !status.success() {
+        bail!("fixture warmup failed: {status}");
+    }
+    Ok(())
 }
 
 fn session_socket(root: &Path) -> PathBuf {
@@ -70,6 +98,9 @@ impl OwnedSession {
         ] {
             fs::create_dir(root.path().join(dir)).context("create test directory")?;
         }
+        // Panel usage refreshes cannot contact the developer's Codex app server.
+        // A case can replace this default with its own declared executable fixture.
+        write_fixture_command(root.path(), "codex", "exit 1")?;
         fs::create_dir_all(
             session_socket(root.path())
                 .parent()
@@ -543,26 +574,7 @@ impl Controller {
                     {
                         bail!("fixture command requires a simple executable name");
                     }
-                    use std::os::unix::fs::PermissionsExt;
-                    let path = self.root.join("fixtures").join(name);
-                    // Like write_warm_script in the Rust test support, pay macOS's
-                    // first-exec validation cost before the fixture's observed operation.
-                    fs::write(&path, format!("#!/bin/sh\n[ \"$YINZ_TEST_FIXTURE_WARMUP\" = 1 ] && exit 0\n{script}\n"))
-                        .context("write fixture executable")?;
-                    fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
-                        .context("make fixture executable")?;
-                    let mut warm = Command::new(&path);
-                    environment(&mut warm, &self.root);
-                    let status = warm
-                        .env("YINZ_TEST_FIXTURE_WARMUP", "1")
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status()
-                        .context("warm fixture executable")?;
-                    if !status.success() {
-                        bail!("fixture warmup failed: {status}");
-                    }
+                    write_fixture_command(&self.root, &name, &script)?;
                 }
                 return Ok(json!(self
                     .root

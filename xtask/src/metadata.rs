@@ -180,6 +180,8 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
     (
         "yinz-plugin-host",
         &[
+            // Read-only local account quota RPC through Codex's app-server transport.
+            "yinz-codex",
             "yinz-terminal",
             "yinz-types",
             "yinz-runtime",

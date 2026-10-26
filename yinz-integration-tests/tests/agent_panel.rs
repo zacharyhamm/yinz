@@ -52,6 +52,35 @@ fn panel_tabs_open_and_dismiss_without_chat() {
 }
 
 #[test]
+fn panel_reports_missing_local_quota_without_blocking_dismissal() {
+    let mut yinz = TestRunner::new(Size {
+        cols: 120,
+        rows: 40,
+    })
+    .with_config(CONFIG)
+    .with_layout(LayoutInfo::Stringified(
+        "layout { pane command=\"claude\"; }".into(),
+    ))
+    .start();
+    let agent = yinz.expect_pty_spawn();
+    agent.output(b"AGENT READY\r\n");
+    yinz.wait_until("the initial terminal is rendered", |s| {
+        s.contains("AGENT READY")
+    });
+    yinz.send_stdin(&keys::ctrl('b'));
+    // The harness has an empty, isolated Claude config; this exercises the real host reply.
+    let quota = yinz.wait_until("the panel explains missing local provider quotas", |s| {
+        s.contains("Local claude account") && s.contains("Unavailable")
+    });
+    assert!(!quota.contains("% used"));
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until("quota details dismiss with the panel", |s| {
+        !s.contains("Local claude account") && s.contains("AGENT READY")
+    });
+    yinz.quit();
+}
+
+#[test]
 fn open_agent_panel_repaints_its_background_when_the_theme_changes() {
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
         .with_config(&format!(

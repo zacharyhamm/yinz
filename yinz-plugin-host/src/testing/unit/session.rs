@@ -1,6 +1,35 @@
 use super::*;
 
 #[test]
+fn provider_environment_and_command_fixtures_are_isolated_and_replaceable() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("fixtures")).unwrap();
+    let mut command = Command::new("/usr/bin/true");
+    environment(&mut command, root.path());
+    let vars: BTreeMap<_, _> = command.get_envs().collect();
+    for (key, suffix) in [
+        ("CODEX_HOME", "home/.codex"),
+        ("CLAUDE_CONFIG_DIR", "home/.claude"),
+    ] {
+        assert_eq!(
+            vars[std::ffi::OsStr::new(key)],
+            Some(root.path().join(suffix).as_os_str())
+        );
+    }
+    let run = || {
+        let mut command = Command::new("codex");
+        environment(&mut command, root.path());
+        command.output().unwrap()
+    };
+    write_fixture_command(root.path(), "codex", "exit 1").unwrap();
+    assert_eq!(run().status.code(), Some(1));
+    write_fixture_command(root.path(), "codex", "printf fixture-codex").unwrap();
+    let output = run();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"fixture-codex");
+}
+
+#[test]
 fn bounded_post_shutdown_diagnostics_keep_the_owned_pid() {
     let root = tempfile::tempdir().unwrap();
     let child = Command::new("/usr/bin/true").spawn().unwrap();

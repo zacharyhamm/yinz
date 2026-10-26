@@ -1802,3 +1802,6 @@ mod render_tests;
 
 #[path = "agents_activity.rs"]
 mod activity_tests;
+
+#[path = "agents_usage.rs"]
+mod usage_tests;

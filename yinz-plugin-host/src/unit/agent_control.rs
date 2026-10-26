@@ -15,6 +15,63 @@ use yinz_types::internal_ids::TerminalId;
 use yinz_types::plugin_data::Mutation;
 
 #[test]
+fn provider_usage_replies_keep_the_request_client_and_generation_without_screen_work() {
+    use std::collections::HashSet;
+    use yinz_runtime::channels::{self, SenderWithContext};
+    use yinz_types::agent::control::ProviderUsageStatus;
+    use yinz_types::data::{Event, PermissionType, PluginCommand};
+
+    let mut env = crate::test_env::test_env();
+    let directory = tempfile::tempdir().unwrap();
+    env.data_access = std::sync::Arc::new(DataAccess::sqlite(directory.path()));
+    env.client_id = crate::ClientId::new(7);
+    env.generation = Some(91);
+    *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::RunCommands]));
+    let (to_plugin, plugin_rx) = channels::unbounded();
+    let (to_screen, screen_rx) = channels::unbounded();
+    env.senders = ThreadSenders {
+        to_plugin: Some(SenderWithContext::new(to_plugin)),
+        to_screen: Some(SenderWithContext::new(to_screen)),
+        ..Default::default()
+    };
+    crate::yinz_exports::run_plugin_command(
+        &mut env,
+        PluginCommand::AgentControl {
+            id: "usage-fixture".into(),
+            request: serde_json::to_string(&AgentRequest::Usage {
+                provider: "unsupported-fixture".into(),
+            })
+            .unwrap(),
+        },
+    )
+    .unwrap();
+    let (instruction, _) = plugin_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+    let PluginInstruction::PluginEvent(
+        plugin,
+        client,
+        generation,
+        Event::CustomMessage(name, body),
+    ) = instruction
+    else {
+        panic!("expected provider usage reply");
+    };
+    assert_eq!(plugin, env.plugin_id);
+    assert_eq!(client, env.client_id);
+    assert_ne!(client, env.owner_client_id);
+    assert_eq!(generation, 91);
+    assert_eq!(name, "agent-response");
+    let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["id"], "usage-fixture");
+    let response: AgentResponse = serde_json::from_value(body["response"].clone()).unwrap();
+    assert_eq!(response.outcome, AgentOutcome::Ok);
+    let usage = response.usage.unwrap();
+    assert_eq!(usage.provider, "unsupported-fixture");
+    assert_eq!(usage.status, ProviderUsageStatus::Unsupported);
+    assert!(usage.windows.is_empty());
+    assert!(screen_rx.is_empty());
+}
+
+#[test]
 fn lost_host_control_replies_keep_the_submission_identity_sent_to_screen() {
     let directory = tempfile::tempdir().unwrap();
     let data = DataAccess::sqlite(directory.path());

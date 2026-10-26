@@ -4826,6 +4826,7 @@ fn test_server_messages() {
             }),
             output: Some("Ready\n>".into()),
             launch_resources: None,
+            usage: None,
             message: Some("approval required".into()),
             acknowledged: true,
             turn_id: Some("turn-7".into()),
@@ -5668,6 +5669,31 @@ fn global_background_opacity_wire_range_and_roundtrip() {
         })
         .is_err());
     }
+}
+
+#[test]
+fn agent_provider_usage_roundtrip() {
+    use yinz_types::agent::control::{
+        AgentRequest, AgentResponse, ProviderUsage, ProviderUsageStatus, ProviderUsageWindow,
+    };
+    test_client_roundtrip!(ClientToServerMsg::AgentControl(AgentRequest::Usage {
+        provider: "codex".into(),
+    }));
+    test_server_roundtrip!(ServerToClientMsg::AgentControl(AgentResponse {
+        usage: Some(ProviderUsage {
+            provider: "codex".into(),
+            status: ProviderUsageStatus::Ok,
+            observed_at_ms: Some(1_800_000_000_000),
+            plan: Some("plus".into()),
+            windows: vec![ProviderUsageWindow {
+                label: "5-hour".into(),
+                used_percent: 37.5,
+                resets_at_ms: Some(1_800_000_100_000),
+            }],
+            message: None,
+        }),
+        ..Default::default()
+    }));
 }
 
 #[test]

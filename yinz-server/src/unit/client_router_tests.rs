@@ -544,7 +544,9 @@ fn report_router_acknowledges_with_screen_and_plugins_paused_and_no_active_clien
 fn agent_control_routes_explicit_targets_replies_and_removes_the_client_once() {
     use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
     use yinz_ipc::ipc::IpcSenderWithContext;
-    use yinz_types::agent::control::{AgentOutcome, AgentRequest, AgentResponse};
+    use yinz_types::agent::control::{
+        AgentOutcome, AgentRequest, AgentResponse, ProviderUsageStatus,
+    };
     use yinz_types::agent::AgentSpawnSpec;
 
     for ready in [true, false] {
@@ -592,6 +594,9 @@ fn agent_control_routes_explicit_targets_replies_and_removes_the_client_once() {
                 project: None,
                 remote_host: None,
             },
+            AgentRequest::Usage {
+                provider: "unsupported-fixture".into(),
+            },
         ] {
             sender
                 .send_client_msg(ClientToServerMsg::AgentControl(request))
@@ -632,8 +637,28 @@ fn agent_control_routes_explicit_targets_replies_and_removes_the_client_once() {
                 ScreenInstruction::AgentControl(queued, CLIENT_99) if queued == clear));
         }
         assert!(threads.screen_receiver.is_empty());
-        let replies = os.server_to_client_messages.lock();
-        let replies = replies.get(&CLIENT_99).unwrap();
+        let mut replies = os
+            .server_to_client_messages
+            .lock()
+            .get(&CLIENT_99)
+            .unwrap()
+            .clone();
+        assert_eq!(replies.pop(), Some(ServerToClientMsg::UnblockInputThread));
+        let Some(ServerToClientMsg::AgentControl(usage_response)) = replies.pop() else {
+            panic!("expected provider usage response");
+        };
+        if ready {
+            assert_eq!(usage_response.outcome, AgentOutcome::Ok);
+            let usage = usage_response.usage.unwrap();
+            assert_eq!(usage.provider, "unsupported-fixture");
+            assert_eq!(usage.status, ProviderUsageStatus::Unsupported);
+            assert!(usage.windows.is_empty());
+        } else {
+            assert_eq!(
+                usage_response,
+                AgentResponse::new(AgentOutcome::StatusUnavailable)
+            );
+        }
         let mut expected = Vec::new();
         if !ready {
             expected.push(ServerToClientMsg::AgentControl(AgentResponse::new(
@@ -657,7 +682,7 @@ fn agent_control_routes_explicit_targets_replies_and_removes_the_client_once() {
         }
         expected.push(ServerToClientMsg::AgentControl(rejected));
         expected.push(ServerToClientMsg::UnblockInputThread);
-        assert_eq!(replies, &expected);
+        assert_eq!(replies, expected);
         assert!(threads.plugin_receiver.is_empty());
         assert_eq!(
             threads
