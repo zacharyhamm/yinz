@@ -318,7 +318,7 @@ fn agents_usage_correlates_providers_and_keeps_successful_data_when_refresh_fail
     );
     let frame = panel.render(25, 64);
     assert!(
-        frame.contains("Weekly · 26% · 5hr · 102% · stale"),
+        frame.contains("Weekly · 75% · 5hr · 0% · stale"),
         "{frame}"
     );
     panel.key("Ctrl r");
@@ -412,7 +412,7 @@ fn agents_usage_header_shows_only_weekly_short_window_and_weekly_reset() {
     measurement["windows"][1]["resets_at_ms"] = json!(259_290_000);
     panel.reply(&request, measurement);
     let frame = panel.render(30, 120);
-    for expected in ["Weekly", "26%", "5hr · 102%", "3d left"] {
+    for expected in ["Weekly", "75%", "5hr · 0%", "3d left"] {
         assert!(frame.contains(expected), "missing {expected:?}:\n{frame}");
     }
     for removed in [
@@ -425,7 +425,7 @@ fn agents_usage_header_shows_only_weekly_short_window_and_weekly_reset() {
     ] {
         assert!(!frame.contains(removed), "unexpected {removed:?}:\n{frame}");
     }
-    assert_eq!(frame.matches("26%").count(), 1, "{frame}");
+    assert_eq!(frame.matches("75%").count(), 1, "{frame}");
     for (rows, cols) in [(20, 60), (12, 34), (6, 20), (2, 8)] {
         panel.render(rows, cols);
     }
@@ -450,7 +450,7 @@ fn agents_usage_summary_remains_visible_in_the_default_overlay_with_run_history(
         )
         .unwrap();
     let frame = panel.render(15, 48);
-    assert!(frame.contains("Weekly · 26% · 5hr · 102%"), "{frame}");
+    assert!(frame.contains("Weekly · 75% · 5hr · 0%"), "{frame}");
     panel.key("Ctrl r");
     let refresh = panel.request("codex");
     panel.reply(
@@ -459,7 +459,7 @@ fn agents_usage_summary_remains_visible_in_the_default_overlay_with_run_history(
     );
     let frame = panel.render(15, 48);
     assert!(
-        frame.contains("5hr · 102%") && frame.contains("stale"),
+        frame.contains("5hr · 0%") && frame.contains("stale"),
         "{frame}"
     );
     panel.set("usage_cache", json!({}));
@@ -477,12 +477,12 @@ fn agents_usage_summary_remains_visible_in_the_default_overlay_with_run_history(
 fn agents_quota_selects_and_rounds_without_losing_exact_usage() {
     let mut panel = Panel::new();
     for (used, rounded, remaining, tone) in [
-        (68.49, 68, 31.51, "success"),
-        (74.99, 75, 25.01, "success"),
-        (75.0, 75, 25.0, "attention"),
-        (90.0, 90, 10.0, "attention"),
-        (90.01, 90, 9.99, "error"),
-        (101.5, 102, 0.0, "error"),
+        (68.49, 32, 31.51, "success"),
+        (74.99, 25, 25.01, "success"),
+        (75.0, 25, 25.0, "attention"),
+        (90.0, 10, 10.0, "attention"),
+        (90.01, 10, 9.99, "error"),
+        (101.5, 0, 0.0, "error"),
     ] {
         let mut observation = usage("codex", 68.0);
         observation["windows"][1]["used_percent"] = json!(used);
@@ -512,7 +512,7 @@ fn agents_quota_selects_and_rounds_without_losing_exact_usage() {
         .invoke("a-usage-display", vec![])
         .unwrap();
     assert_eq!(display["featured"]["label"], "7d");
-    assert_eq!(display["value"], 26);
+    assert_eq!(display["value"], 75);
     let observation = usage("codex", 25.5);
     panel.set(
         "usage_cache",
@@ -570,7 +570,7 @@ fn agents_quota_header_handles_optional_windows_and_reset_times() {
             .unwrap();
         assert_eq!(display["reset"], expected);
         let frame = panel.render(30, 120);
-        assert!(frame.contains("Weekly") && frame.contains("26%"), "{frame}");
+        assert!(frame.contains("Weekly") && frame.contains("74%"), "{frame}");
         assert!(!frame.contains("5hr"), "{frame}");
         assert!(frame.contains(expected), "{frame}");
     }
@@ -582,7 +582,7 @@ fn agents_quota_header_handles_optional_windows_and_reset_times() {
         json!({"codex":{"observation":observation,"result":observation}}),
     );
     let frame = panel.render(30, 120);
-    assert!(frame.contains("5hr · 68%"), "{frame}");
+    assert!(frame.contains("5hr · 32%"), "{frame}");
     assert!(!frame.contains("Weekly"), "{frame}");
 }
 
@@ -645,12 +645,12 @@ fn agents_quota_header_reserves_history_and_ignores_header_clicks() {
                 assert!(body_rows >= 4);
                 let lines: Vec<_> = frame.lines().collect();
                 assert!(lines[header as usize].ends_with("Weekly"));
-                assert!(lines[header as usize + 1].ends_with("26%"));
-                assert!(lines[header as usize + 3].ends_with("5hr · 68%"));
+                assert!(lines[header as usize + 1].ends_with("75%"));
+                assert!(lines[header as usize + 3].ends_with("5hr · 32%"));
                 assert!(!frame.contains("remaining"));
             }
             if cols == 43 {
-                assert!(frame.contains("Weekly · 26% · 5hr · 68%"), "{frame}");
+                assert!(frame.contains("Weekly · 75% · 5hr · 32%"), "{frame}");
             }
         }
     }
@@ -704,7 +704,7 @@ fn agents_quota_images_reuse_ids_and_cache_each_clients_value_theme_and_geometry
         );
         assert!(output.contains('\u{10eeee}'), "missing image placeholders");
         assert!(
-            !output.contains("26%"),
+            !output.contains("75%"),
             "weekly value repeated alongside image"
         );
         assert!(output.contains("a=p,U=1,q=2,i=1,c=18,r=2"));
@@ -745,7 +745,7 @@ fn agents_quota_images_reuse_ids_and_cache_each_clients_value_theme_and_geometry
         panel.plugin.update(&Event::ModeUpdate(mode.clone()));
         let output = panel.plugin.render(30, 120);
         assert!(!output.contains('\u{10eeee}'));
-        assert!(panel.render(30, 120).contains("26%"));
+        assert!(panel.render(30, 120).contains("75%"));
         mode.capabilities.kitty_graphics = true;
         panel.plugin.update(&Event::ModeUpdate(mode));
         assert_cached(&panel.plugin.render(30, 120));
