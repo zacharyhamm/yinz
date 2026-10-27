@@ -36,7 +36,8 @@ impl Panel {
         panel.set(
             "snapshot",
             json!({"panes": [
-            {"pane_id":7,"title":"Review code"}, {"pane_id":8,"title":"Fix tests"}
+            {"pane_id":7,"title":"Review code","command":"codex","status":"Running"},
+            {"pane_id":8,"title":"Fix tests","command":"claude","status":"Running"}
         ], "runs":[], "hooks":{}, "activity":{}, "summaries":{}}),
         );
         panel.requests();
@@ -145,6 +146,40 @@ fn usage(provider: &str, used: f64) -> Value {
     json!({"provider":provider,"status":"ok","observed_at_ms":90_000,"plan":"Pro",
         "windows":[{"label":"5h","used_percent":used,"resets_at_ms":3_690_000},
             {"label":"7d","used_percent":25.5,"resets_at_ms":null}],"message":null})
+}
+
+#[test]
+fn agents_usage_queries_canonical_providers_for_hook_reported_rows() {
+    let mut panel = Panel::new();
+    let mut message = super::snapshot_message(1, &[], 2);
+    let mut snapshot: Value = serde_json::from_str(message.payload.as_ref().unwrap()).unwrap();
+    snapshot["hooks"]["7"] = json!({"phase":"Idle"});
+    message.payload = Some(snapshot.to_string());
+    panel.plugin.pipe(&message);
+    let rows = panel
+        .plugin
+        .runtime
+        .invoke("a-get", vec![json!("rows")])
+        .unwrap();
+    for provider in ["claude", "codex"] {
+        let selected = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|row| row["Agent"]["kind"] == format!("{provider}◆"))
+            .expect("the service snapshot produces a row with the hook marker");
+        panel.set("selected", json!(selected));
+        panel.show();
+        let request = panel.request(provider);
+        panel.reply(&request, usage(provider, 42.5));
+        let lines = panel.lines();
+        assert!(
+            lines.contains(&format!("Local {provider} account")),
+            "{lines}"
+        );
+        assert!(lines.contains("42.5% used"), "{lines}");
+        panel.plugin.update(&Event::Visible(false));
+    }
 }
 
 #[test]
@@ -275,15 +310,16 @@ fn agents_usage_times_out_and_ignores_late_responses() {
 }
 
 #[test]
-fn agents_usage_does_not_query_local_accounts_for_remote_isolated_or_unsupported_agents() {
+fn agents_usage_does_not_query_local_accounts_for_remote_or_isolated_agents() {
     for (provider, location, message) in [
         ("codex", json!({"host":"build-box"}), "SSH agents"),
         ("claude", json!({"bubblewrap":"/work"}), "isolated agents"),
-        ("gemini", json!({}), "not supported"),
     ] {
         let mut panel = Panel::new();
         let mut pane = location;
         pane["pane_id"] = json!(7);
+        pane["title"] = json!(provider);
+        pane["status"] = json!("Running");
         panel.set("snapshot", json!({"panes":[pane],"runs":[]}));
         panel.set("rows", json!([row(7, provider)]));
         panel.show();
@@ -292,6 +328,34 @@ fn agents_usage_does_not_query_local_accounts_for_remote_isolated_or_unsupported
         assert!(panel.lines().contains(message));
         assert!(!panel.lines().contains("Local"));
     }
+}
+
+#[test]
+fn agents_usage_displays_the_hosts_unsupported_status_for_other_providers() {
+    let mut panel = Panel::new();
+    panel.set("rows", json!([row(7, "gemini")]));
+    panel.set(
+        "snapshot",
+        json!({"panes":[{"pane_id":7,"title":"gemini","status":"Running"}]}),
+    );
+    panel.show();
+    let request = panel.request("gemini");
+    panel.reply(
+        &request,
+        serde_json::to_value(crate::provider_usage::collect("gemini")).unwrap(),
+    );
+    let lines = panel.lines();
+    assert!(lines.contains("Unsupported"), "{lines}");
+    assert!(
+        lines.contains("Usage reporting is not available for this provider."),
+        "{lines}"
+    );
+    let summary = panel
+        .plugin
+        .runtime
+        .invoke("a-usage-summary", vec![])
+        .unwrap();
+    assert_eq!(summary, "Local gemini: provider quota is not supported");
 }
 
 #[test]
