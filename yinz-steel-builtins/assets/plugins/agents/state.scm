@@ -36,7 +36,7 @@
       "usage_cache" (hash) "usage_pending" (hash) "usage_request" 0 "usage_visible" 'json-null
       "run" #f "run_offset_secs" 0 "history_scroll" 0 "history_cursor" 0
       "history_cursor_anchor" #f "history_bottom_anchor" #f "history_scrolled" #f
-      "reading" #f "reader_cache" #f "reading_id" 0 "last_reader_max_scroll" 0 "last_reader_rows" 0
+      "reading" #f "reader_cache" #f "reading_id" 0 "last_reader_max_scroll" 0 "last_reader_rows" 0 "last_reader_left" 0 "last_reader_width" 0
       "prompt_drafts" (hash) "prompt_error" #f "last_prompt_row" #f
       "focus" "list" "has_keyboard" 'json-null "pane_shown" #f "last_label_rows" 0
       "open_note" #f "strip_seen" #f "run_error" #f "key_sheet_scroll" #f
