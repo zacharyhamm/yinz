@@ -5,7 +5,7 @@ use std::{
 
 use serde_json::{json, Value};
 use yinz_steel::Runtime;
-use yinz_types::data::{Event, ModeInfo, PaneInfo, TabInfo};
+use yinz_types::data::{Event, ModeInfo, TabInfo};
 
 use crate::tests::{plugin_with_prelude, rendered_text, Host};
 
@@ -21,11 +21,22 @@ impl Status {
             BTreeMap::from([
                 ("GetLocalUtcOffset".to_owned(), json!(0)),
                 ("GetYinzVersion".to_owned(), json!("test")),
+                (
+                    "GetSessionList".to_owned(),
+                    json!({"live_sessions":[{"is_current_session":true,"plugins":{"42":{"location":"yinz:agent-service"}}}]}),
+                ),
             ]),
             "(define test-clock (vector 0)) (define (yinz-now-ms) (vector-ref test-clock 0))
              (define (yinz-wall-clock-ms) (vector-ref test-clock 0))",
         );
         Self { runtime, host }
+    }
+    fn counts(&mut self, busy: u64, waiting: u64, idle: u64) -> bool {
+        let seq = self.runtime.value("service-seq").unwrap().as_u64().unwrap() + 1;
+        self.count_message(42, seq, json!({"total":busy+waiting+idle,"busy":busy,"waiting":waiting,"idle":idle,"held":0,"exited":0,"unknown":0}))
+    }
+    fn count_message(&mut self, sender: u32, seq: u64, payload: Value) -> bool {
+        self.runtime.pipe(json!({"source":{"Plugin":sender},"name":"agent_counts","payload":payload.to_string(),"args":{"seq":seq.to_string()},"is_private":true})).unwrap()
     }
     fn event(&mut self, value: Value) -> bool {
         let event: Event = serde_json::from_value(value).unwrap();
@@ -391,23 +402,8 @@ fn session_mode_hints_name_the_palette_after_returning_to_the_base_mode() {
 fn status_counts_agents_without_animation_timers() {
     let mut status = Status::new(false);
     status.render(1, 200);
-    let panes = [
-        ("Busy", false),
-        ("Waiting", false),
-        ("Waiting", true),
-        ("Idle", false),
-        ("Exited", false),
-    ]
-    .into_iter()
-    .map(|(state, person)| {
-        let mut pane = serde_json::to_value(PaneInfo::default()).unwrap();
-        pane["agent"] = json!({"kind":"codex","state":state,"wait_needs_a_person":person});
-        pane
-    })
-    .collect::<Vec<_>>();
-    let event = json!({"PaneUpdate":{"panes":{"0":panes}}});
-    assert!(status.event(event.clone()));
-    assert!(!status.event(event));
+    assert!(status.counts(2, 1, 1));
+    assert!(!status.counts(2, 1, 1));
     assert_eq!(
         status.runtime.value("state").unwrap()["counts"],
         json!({"busy":2,"waiting":1,"idle":1})
@@ -470,11 +466,13 @@ fn status_agent_transitions_are_static_across_fonts_widths_and_layouts() {
                 ("Idle", "·1"),
                 ("Exited", ""),
             ] {
-                let mut pane = serde_json::to_value(PaneInfo::default()).unwrap();
-                pane["agent"] = json!({"kind":"codex","state":state,"wait_needs_a_person":true});
-                let event = json!({"PaneUpdate":{"panes":{"0":[pane]}}});
-                assert!(status.event(event.clone()));
-                assert!(!status.event(event));
+                let counts = (
+                    u64::from(state == "Busy"),
+                    u64::from(state == "Waiting"),
+                    u64::from(state == "Idle"),
+                );
+                assert!(status.counts(counts.0, counts.1, counts.2));
+                assert!(!status.counts(counts.0, counts.1, counts.2));
                 if !classic && rows == 1 {
                     let expected = if simple {
                         match state {
@@ -504,4 +502,64 @@ fn status_agent_transitions_are_static_across_fonts_widths_and_layouts() {
             );
         }
     }
+}
+
+#[test]
+fn status_counts_reject_invalid_messages_and_clear_on_service_changes() {
+    let mut status = Status::new(false);
+    assert_eq!(status.named("MessageToPlugin").len(), 1);
+    assert!(status.counts(2, 1, 3));
+    let valid = json!({"total":1,"busy":1,"waiting":0,"idle":0,"held":0,"exited":0,"unknown":0});
+    assert!(!status.count_message(99, 2, valid.clone()));
+    assert!(!status.count_message(42, 1, valid.clone()));
+    for args in [
+        json!({}),
+        json!({"seq":"no"}),
+        json!({"seq":"-1"}),
+        json!({"seq":"1.5"}),
+    ] {
+        assert!(!status.runtime.pipe(json!({"source":{"Plugin":42},"name":"agent_counts","payload":valid.to_string(),"args":args,"is_private":true})).unwrap());
+    }
+    assert!(!status.runtime.pipe(json!({"source":{"Plugin":42},"name":"agent_counts","payload":"{","args":{"seq":"2"},"is_private":true})).unwrap());
+    assert!(!status.runtime.pipe(json!({"source":{"Plugin":99},"name":"agent_hello","payload":null,"args":{},"is_private":false})).unwrap());
+    for invalid in [json!({}), json!([]), json!(null), json!("bad")] {
+        assert!(!status.count_message(42, 2, invalid));
+    }
+    for field in [
+        "total", "busy", "waiting", "idle", "held", "exited", "unknown",
+    ] {
+        for value in [json!(-1), json!(1.5), json!("1"), json!(null)] {
+            let mut invalid = valid.clone();
+            invalid[field] = value;
+            assert!(!status.count_message(42, 2, invalid));
+        }
+    }
+    assert_eq!(
+        status.runtime.value("state").unwrap()["counts"],
+        json!({"busy":2,"waiting":1,"idle":3})
+    );
+    assert!(status.count_message(42, 2, valid));
+    assert!(!status.event(json!({"PaneUpdate":{"panes":{}}})));
+    assert!(status.runtime.pipe(json!({"source":{"Plugin":42},"name":"agent_hello","payload":null,"args":{},"is_private":false})).unwrap());
+    assert_eq!(status.named("MessageToPlugin").len(), 2);
+    assert_eq!(
+        status.runtime.value("state").unwrap()["counts"],
+        json!({"busy":0,"waiting":0,"idle":0})
+    );
+    assert!(status.counts(1, 0, 0));
+    assert_eq!(
+        status
+            .runtime
+            .invoke("discover-service!", vec![json!([])])
+            .unwrap(),
+        true
+    );
+    assert!(!status.counts(2, 0, 0));
+    assert_eq!(status.runtime.invoke("discover-service!", vec![json!([{"is_current_session":true,"plugins":{"43":{"location":"yinz:agent-service"}}}])]).unwrap(), false);
+    assert_eq!(status.named("MessageToPlugin").len(), 3);
+    assert!(status.count_message(
+        43,
+        1,
+        json!({"total":1,"busy":1,"waiting":0,"idle":0,"held":0,"exited":0,"unknown":0})
+    ));
 }

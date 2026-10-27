@@ -99,6 +99,10 @@ impl Pair {
                 json!({"hostname":hostname,"plugin_id":0,"client_id":0}),
             ),
             ("GetYinzVersion".to_owned(), json!("test")),
+            (
+                "GetSessionList".to_owned(),
+                json!({"live_sessions":[{"is_current_session":true,"plugins":{"42":{"location":"yinz:agent-service"}}}]}),
+            ),
         ])));
         let recorded = steel_commands.clone();
         let replies = steel_replies.clone();
@@ -205,6 +209,10 @@ impl Pair {
                 .into_iter()
                 .map(|mut c| {
                     if let Some(Value::Array(events)) = c.get_mut("Subscribe") {
+                        if self.status_bar {
+                            events
+                                .retain(|event| event != "PaneUpdate" && event != "SessionUpdate");
+                        }
                         events.sort_by_key(Value::to_string);
                     }
                     if let Some(timeout) = c.get_mut("SetTimeout") {
@@ -220,8 +228,12 @@ impl Pair {
             "Deno/Wasm host commands differ"
         );
         // Steel tracks outstanding timers; its scheduling is covered by the status-bar tests.
-        let shared_command =
-            |command: &Value| !self.status_bar || command.get("SetTimeout").is_none();
+        let shared_command = |command: &Value| {
+            !self.status_bar
+                || (command.get("SetTimeout").is_none()
+                    && command != "GetSessionList"
+                    && command.get("MessageToPlugin").is_none())
+        };
         let steel = self
             .steel_commands
             .lock()
@@ -254,10 +266,35 @@ impl Pair {
                     .unwrap(),
             )
         });
-        let steel = self
-            .steel
-            .update(serde_json::to_value(&event).unwrap())
-            .unwrap();
+        // Frozen traces supplied hook counts through PaneUpdate. Feed the same values through
+        // the new pipe to retain their rendering assertions; service classification has its own tests.
+        let steel = if let Event::PaneUpdate(manifest) = &event
+            && self.status_bar
+        {
+            let (mut busy, mut waiting, mut idle) = (0, 0, 0);
+            for agent in manifest
+                .panes
+                .values()
+                .flatten()
+                .filter_map(|pane| pane.agent.as_ref())
+            {
+                use yinz_types::agent::AgentState;
+                match agent.state {
+                    AgentState::Exited => {},
+                    AgentState::Idle => idle += 1,
+                    AgentState::Waiting if agent.wait_needs_a_person => waiting += 1,
+                    _ => busy += 1,
+                }
+            }
+            let seq = self.steel.value("service-seq").unwrap().as_u64().unwrap() + 1;
+            self.steel.pipe(json!({"source":{"Plugin":42},"name":"agent_counts",
+                "payload":json!({"total":busy+waiting+idle,"busy":busy,"waiting":waiting,"idle":idle,"held":0,"exited":0,"unknown":0}).to_string(),
+                "args":{"seq":seq.to_string()},"is_private":true})).unwrap()
+        } else {
+            self.steel
+                .update(serde_json::to_value(&event).unwrap())
+                .unwrap()
+        };
         // The frozen reference animates; Steel redraws timers only for clock or hint changes.
         let expected = if let Some((clock, hint)) = timer_before {
             clock != self.steel.value("state").unwrap()["clock"]

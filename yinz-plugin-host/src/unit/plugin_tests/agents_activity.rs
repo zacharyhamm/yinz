@@ -111,50 +111,18 @@ fn agents_activity_does_not_turn_quiet_or_stale_hooks_into_completed_work() {
 }
 
 #[test]
-fn agents_activity_counts_all_agents_while_list_is_filtered() {
+fn agents_normal_list_has_no_heading_but_waiting_keeps_its_heading() {
     let mut plugin = plugin(json!({}));
-    let rows = json!([
-        {"Project": "project"}, {"Branch": "  topic"},
-        row(7, '●', false), row(8, '!', true), row(9, '○', false),
-        row(10, '■', false), row(11, '×', false), row(12, '?', false),
-        {"Run": {"run_id": "archived"}}
-    ]);
-    plugin
-        .runtime
-        .invoke("a-set!", vec![json!("rows"), json!([row(8, '!', true)])])
-        .unwrap();
-    plugin
-        .runtime
-        .invoke("a-set!", vec![json!("waiting_base"), json!({"rows": rows})])
-        .unwrap();
-    assert_eq!(
-        plugin.runtime.invoke("a-live-counts", vec![]).unwrap(),
-        json!([
-            "6 agents",
-            "1 needs input",
-            "1 working",
-            "1 idle",
-            "1 held",
-            "1 exited",
-            "1 unknown"
-        ])
+    set(
+        &mut plugin,
+        "rows",
+        json!([row(7, '●', false), row(8, '!', true)]),
     );
-    plugin
-        .runtime
-        .invoke("a-set!", vec![json!("waiting_base"), json!(false)])
-        .unwrap();
-    assert_eq!(
-        plugin.runtime.invoke("a-live-counts", vec![]).unwrap(),
-        json!(["1 agent", "1 needs input"])
-    );
-    plugin
-        .runtime
-        .invoke("a-set!", vec![json!("rows"), json!([])])
-        .unwrap();
-    assert_eq!(
-        plugin.runtime.invoke("a-live-counts", vec![]).unwrap(),
-        json!(["0 agents"])
-    );
+    plugin.render(24, 90);
+    assert_eq!(state(&mut plugin, "last_list_rows"), 23);
+    assert_eq!(key(&mut plugin, "w"), true);
+    plugin.render(24, 90);
+    assert_eq!(state(&mut plugin, "last_list_rows"), 22);
 }
 
 fn set(plugin: &mut SteelReference, key: &str, value: Value) {
@@ -321,16 +289,16 @@ fn agents_bottom_window_stays_put_when_a_click_or_wheel_pins_it() {
     set(&mut plugin, "focus", json!("history"));
     // 21 list rows make the last full window open on the tenth agent's activity line, so the
     // centered window starts one line later, on the eleventh agent.
-    plugin.render(23, 90);
+    plugin.render(22, 90);
     assert_eq!(state(&mut plugin, "last_list_rows"), 21);
     assert_eq!(state(&mut plugin, "last_window_start"), 22);
     assert_eq!(state(&mut plugin, "last_list_max_scroll"), 22);
-    // The last agent's line, below the label row.
-    let point = json!([1 + 40 - 22, 5]);
+    // The last agent's line, with no normal heading row.
+    let point = json!([40 - 22, 5]);
     plugin.take_commands();
     mouse(&mut plugin, "LeftClick", point.clone());
     mouse(&mut plugin, "Release", point.clone());
-    plugin.render(23, 90);
+    plugin.render(22, 90);
     assert_eq!(state(&mut plugin, "last_window_start"), 22);
     assert_eq!(state(&mut plugin, "selected"), 21);
     mouse(&mut plugin, "LeftClick", point.clone());
@@ -341,7 +309,7 @@ fn agents_bottom_window_stays_put_when_a_click_or_wheel_pins_it() {
         .any(|command| command.get("FocusTerminalPane") == Some(&json!([20, false, false]))));
 
     set(&mut plugin, "list_scroll", json!(false));
-    plugin.render(23, 90);
+    plugin.render(22, 90);
     mouse(&mut plugin, "ScrollDown", json!(1));
     assert_eq!(state(&mut plugin, "list_scroll"), false);
     mouse(&mut plugin, "ScrollUp", json!(1));
