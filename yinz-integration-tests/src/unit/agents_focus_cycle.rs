@@ -39,7 +39,7 @@ fn wait_for_bar(yinz: &TestSession, unfocused_bar: CellStyle) {
     });
 }
 
-fn cycle(width: usize, height: usize, history_visible: bool) {
+fn cycle(width: usize, height: usize, history_visible: bool, prompt_visible: bool) {
     let mut yinz = TestRunner::new(Size { rows: 40, cols: 120 })
         .with_config(&format!(
             r#"
@@ -74,6 +74,7 @@ load_plugins clear-defaults=true {{ "agent-service"; }}
             && frame.contains("Enter focus")
     });
     assert_eq!(initial.contains("nothing to show yet"), history_visible);
+    assert_eq!(initial.contains("Prompt:"), prompt_visible);
     let unfocused_bar = bar_style(&initial);
     yinz.send_stdin(b"\x1b[A");
     yinz.wait_until("first agent selected", |frame| selected(frame, "CLA"));
@@ -82,6 +83,12 @@ load_plugins clear-defaults=true {{ "agent-service"; }}
         yinz.send_stdin(&keys::TAB);
         if history_visible {
             wait_for_history(&yinz, unfocused_bar);
+            yinz.send_stdin(&keys::TAB);
+        }
+        if prompt_visible {
+            yinz.wait_until("prompt receives keyboard focus", |s| {
+                s.contains("Enter send")
+            });
             yinz.send_stdin(&keys::TAB);
         }
         wait_for_bar(&yinz, unfocused_bar);
@@ -102,6 +109,12 @@ load_plugins clear-defaults=true {{ "agent-service"; }}
         yinz.send_stdin(&keys::SHIFT_TAB);
         wait_for_bar(&yinz, unfocused_bar);
         yinz.send_stdin(&keys::SHIFT_TAB);
+        if prompt_visible {
+            yinz.wait_until("reverse Tab focuses the prompt", |s| {
+                s.contains("Enter send")
+            });
+            yinz.send_stdin(&keys::SHIFT_TAB);
+        }
         if history_visible {
             wait_for_history(&yinz, unfocused_bar);
             yinz.send_stdin(&keys::SHIFT_TAB);
@@ -113,15 +126,15 @@ load_plugins clear-defaults=true {{ "agent-service"; }}
 
 #[test]
 fn agents_tab_cycle_with_history() {
-    cycle(100, 20, true);
+    cycle(100, 20, true, true);
 }
 
 #[test]
 fn agents_tab_cycle_without_history() {
-    cycle(50, 8, false);
+    cycle(50, 8, false, false);
 }
 
 #[test]
 fn agents_short_wide_panel_keeps_history_in_the_focus_cycle() {
-    cycle(100, 8, true);
+    cycle(100, 8, true, false);
 }

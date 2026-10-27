@@ -394,3 +394,62 @@ fn panel_placement_drag_tab_follow_and_modal_return_work_without_chat() {
     assert_eq!(panel(&yinz).tab_position.get(), 1);
     yinz.quit();
 }
+
+#[test]
+fn panel_prompt_sends_text_to_the_selected_agent() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(CONFIG)
+        .with_layout(LayoutInfo::Stringified(
+            "layout { pane command=\"claude\"; pane command=\"codex\"; }".into(),
+        ))
+        .start();
+    let agent = yinz.expect_pty_spawn();
+    let other = yinz.expect_pty_spawn();
+    agent.output(b"AGENT READY\r\n");
+    yinz.wait_until("agent is visible", |s| s.contains("AGENT READY"));
+    yinz.send_stdin(&keys::ctrl('b'));
+    yinz.wait_until("prompt is available", |s| s.contains("Prompt:"));
+    yinz.send_stdin(b"\x1b[A");
+    yinz.wait_until("the first agent is selected", |s| {
+        s.text
+            .lines()
+            .any(|line| line.contains("┃") && line.contains("CLA"))
+    });
+    click_text(&mut yinz, "Prompt:");
+    yinz.wait_until("prompt has focus", |s| s.contains("Enter send"));
+    yinz.send_stdin(b"fix? jk/sw");
+    yinz.send_stdin(b"\x1b[200~ pasted text\x1b[201~");
+    yinz.wait_until("typing and paste stay in the prompt", |s| {
+        s.contains("fix? jk/sw pasted text")
+    });
+    click_text(&mut yinz, "CDX");
+    yinz.wait_until("another agent has its own draft", |s| {
+        s.text
+            .lines()
+            .any(|line| line.contains("Prompt:") && !line.contains("fix? jk/sw"))
+    });
+    click_text(&mut yinz, "CLA");
+    yinz.wait_until("the selected agent retains its draft", |s| {
+        s.contains("Prompt: fix? jk/sw pasted text")
+    });
+    click_text(&mut yinz, "Prompt:");
+    yinz.send_stdin(&keys::ENTER);
+    let expected = b"\x1b[200~fix? jk/sw pasted text\x1b[201~\r";
+    let sent = agent.wait_for_stdin("the prompt and Enter reach the agent", |s| {
+        s.len() >= expected.len()
+    });
+    assert_eq!(sent, expected);
+    assert!(
+        other.stdin_bytes().is_empty(),
+        "the other agent receives no prompt"
+    );
+    yinz.wait_until("sending clears the draft and keeps the panel open", |s| {
+        s.contains("Enter send")
+            && s.text
+                .lines()
+                .any(|line| line.contains("Prompt:") && !line.contains("fix? jk/sw"))
+    });
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until("Escape returns to history", |s| s.contains("↑↓ event"));
+    yinz.quit();
+}
