@@ -6,6 +6,9 @@ use yinz_tile_markdown::{self as md, MdLine, MdStyle, Options};
 
 #[path = "command_palette_agent.rs"]
 mod agent;
+#[path = "command_palette_live_agent.rs"]
+mod live_agent;
+pub use live_agent::AgentPresentation;
 
 use nucleo_matcher::{
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
@@ -179,6 +182,7 @@ pub struct CommandPalette {
     result_width: Cell<usize>,
     pub agent_metadata:
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    pub agent_presentations: std::collections::BTreeMap<String, AgentPresentation>,
     pub metadata: Option<String>,
     pub description: String,
     description_offset: Cell<usize>,
@@ -1160,6 +1164,9 @@ impl CommandPalette {
         if width == 0 {
             return vec![MdLine::blank()];
         }
+        if let Some(agent) = self.agent_presentation(index) {
+            return agent.lines(width, max_lines);
+        }
         let label = inline(&entry.label);
         let mut lines = wrap_inline(&label, width);
         for line in lines.iter_mut().skip(1) {
@@ -1179,6 +1186,23 @@ impl CommandPalette {
             }
         }
         lines
+    }
+
+    fn agent_presentation(&self, index: usize) -> Option<&AgentPresentation> {
+        let entry = &self.entries[self.matches[index]];
+        (entry.kind == EntryKind::Agent)
+            .then(|| self.agent_presentations.get(&entry.id))
+            .flatten()
+    }
+
+    fn entry_line_limit(&self, index: usize, capacity: usize) -> usize {
+        let heading = usize::from(self.entry_heading(index).is_some());
+        let limit = if self.agent_presentation(index).is_some() {
+            4
+        } else {
+            2
+        };
+        capacity.saturating_sub(heading).clamp(1, limit)
     }
 
     fn entry_heading(&self, index: usize) -> Option<String> {
@@ -1203,8 +1227,7 @@ impl CommandPalette {
         rows.into_iter()
             .flat_map(|row| {
                 if let ResultRow::Entry(index, _) = row {
-                    let heading = usize::from(self.entry_heading(index).is_some());
-                    let max_lines = capacity.saturating_sub(heading).clamp(1, 2);
+                    let max_lines = self.entry_line_limit(index, capacity);
                     (0..self.entry_lines(index, width, max_lines).len())
                         .map(|line| ResultRow::Entry(index, line))
                         .collect()
@@ -1563,6 +1586,7 @@ impl CommandPalette {
         (rect.y..rect.y + rect.rows)
             .map(|y| {
                 let mut markdown = MdLine::blank();
+                let mut selected_agent = false;
                 let mut shortcut_start = usize::MAX;
                 let mut label_span = 0..usize::MAX;
                 let (text, styles) = if layout.border == 1 && y == rect.y {
@@ -1709,8 +1733,9 @@ impl CommandPalette {
                             let shortcut = take_columns(&entry.shortcut, width.saturating_sub(3));
                             let label_width = width.saturating_sub(shortcut.width() + usize::from(!shortcut.is_empty()));
                             let remaining = layout.result_rows.len() - (y - layout.options_y);
-                            let max_lines = (line + remaining).min(2);
+                            let max_lines = self.entry_line_limit(*index, layout.options_rows).min(line + remaining);
                             let lines = self.entry_lines(*index, width, max_lines);
+                            selected_agent = is_selected && self.agent_presentation(*index).is_some();
                             let prefix = if is_selected && *line == 0 { "› " } else { "  " };
                             let prefix = take_columns(prefix, label_width.saturating_sub(1).min(2));
                             markdown = lines.get(*line).cloned().unwrap_or_default().prepend(&prefix, MdStyle::default());
@@ -1785,13 +1810,13 @@ impl CommandPalette {
                     characters.extend(text.chars().enumerate().map(|(index, c)| {
                         TerminalCharacter::new_styled(
                             c,
-                            paint_markdown(if (shortcut_start..text_len).contains(&index) {
+                            paint_markdown_with_selection(if (shortcut_start..text_len).contains(&index) {
                                 subtle.clone()
                             } else if label_span.contains(&index) {
                                 text_styles.clone()
                             } else {
                                 styles.clone()
-                            }, markdown.styles.get(index).copied().unwrap_or_default(), style),
+                            }, markdown.styles.get(index).copied().unwrap_or_default(), style, selected_agent),
                         )
                     }));
                     if layout.border == 1 {
@@ -1885,10 +1910,23 @@ fn wrap_inline(line: &MdLine, width: usize) -> Vec<MdLine> {
 }
 
 fn paint_markdown(base: RcCharacterStyles, md: MdStyle, style: &Style) -> RcCharacterStyles {
+    paint_markdown_with_selection(base, md, style, false)
+}
+
+fn paint_markdown_with_selection(
+    base: RcCharacterStyles,
+    md: MdStyle,
+    style: &Style,
+    selected: bool,
+) -> RcCharacterStyles {
     if md == MdStyle::default() {
         return base;
     }
-    let colors = style.colors.text_unselected;
+    let colors = if selected {
+        style.colors.text_selected
+    } else {
+        style.colors.text_unselected
+    };
     let mut painted = *base;
     if md.bold {
         painted = painted.bold(Some(AnsiCode::On));
@@ -1927,6 +1965,10 @@ fn fit(text: &str, cols: usize, pad: char) -> String {
 #[cfg(test)]
 #[path = "unit/command_palette_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "unit/command_palette_live_agent_tests.rs"]
+mod live_agent_tests;
 
 fn insert_multiline(input: &mut TextInput, text: &str) {
     let text: String = text

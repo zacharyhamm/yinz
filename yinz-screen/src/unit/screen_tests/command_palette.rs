@@ -3707,6 +3707,70 @@ fn native_agent_launch_replies_are_client_and_opening_scoped_and_errors_do_not_r
 }
 
 #[test]
+fn live_agent_results_refresh_panel_presentation_in_root_and_picker() {
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+
+    for picker in [false, true] {
+        let mut screen = screen();
+        let pane = PaneId::Terminal(TerminalId::new(1));
+        let mut agent = AgentInfo {
+            kind: "codex".into(),
+            state: AgentState::Busy,
+            source: AgentSource::Reported,
+            detail: Some("Run `cargo` **tests**".into()),
+            waiting_on: Some("Choose [a] or *b*".into()),
+            wait_needs_a_person: true,
+            cwd: None,
+            session_id: None,
+            run_id: None,
+        };
+        screen.with_pane(pane, |pane| {
+            pane.update_name("**task**_[title]");
+        });
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .set_pane_agent(pane, Some(agent.clone()));
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        palette_search(
+            &mut screen,
+            if picker { "Agents" } else { "provider:codex" },
+        );
+        if picker {
+            palette_key(&mut screen, BareKey::Enter);
+            // The filter action leads the picker; select the live pane explicitly.
+            palette_key(&mut screen, BareKey::Down);
+        }
+        for (state, main, activity) in [
+            (
+                AgentState::Busy,
+                "● codex  working",
+                "Run `cargo` **tests**",
+            ),
+            (
+                AgentState::Waiting,
+                "! codex  needs input",
+                "Choose [a] or *b*",
+            ),
+            (AgentState::Idle, "○ codex  idle", "**task**_[title]"),
+        ] {
+            agent.state = state;
+            screen
+                .tabs
+                .get_mut(&TabId::new(0))
+                .unwrap()
+                .set_pane_agent(pane, Some(agent.clone()));
+            let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+            assert!(frame.contains(&format!("› {main}")), "{frame}");
+            assert!(frame.contains(activity), "{frame}");
+            assert!(frame.contains("[1]"), "{frame}");
+        }
+    }
+}
+
+#[test]
 fn agent_info_keeps_missing_history_readable_and_rejects_replaced_identity() {
     use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
     let mut screen = screen();
@@ -3736,7 +3800,8 @@ fn agent_info_keeps_missing_history_readable_and_rejects_replaced_identity() {
     palette_search(&mut screen, "state:waiting directory:\"café space\"");
     let result = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(result.contains("codex"), "{result}");
-    assert!(result.contains("[1] project:branch: shell"), "{result}");
+    assert!(result.contains("! codex  needs input"), "{result}");
+    assert!(result.contains("permission"), "{result}");
     let enter = Some(KeyWithModifier::new(BareKey::Enter));
     screen.command_palette_handles_input(&enter, b"\r", false, CLIENT);
     let info = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
