@@ -6,6 +6,7 @@ use super::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use unicode_width::UnicodeWidthStr;
 use yinz_tile::prelude::TabId;
@@ -215,10 +216,18 @@ pub struct Strip {
 /// `owners` gives the project of a pane and `branches` its checkout's branch.
 /// Neither is repeated on the agent's own line: the headers carry them, so an
 /// agent row stays short enough to read in a narrow sidebar. Agents of no known
-/// project come last within each activity group, under a header that says so.
+/// project have a header that says so.
 /// Needs-input agents precede working agents, then idle agents and other states.
-/// One agent row with its activity priority, project, branch, and pane id as sorting keys.
-type SortableAgent<'a> = (u8, Option<&'a str>, Option<&'a str>, u32, StripRow);
+/// Within each activity group, the most recently received hook comes first, with
+/// project, branch, and pane id breaking ties. Agents without hooks follow those with hooks.
+type SortableAgent<'a> = (
+    u8,
+    Reverse<Option<i64>>,
+    Option<&'a str>,
+    Option<&'a str>,
+    u32,
+    StripRow,
+);
 
 pub fn strip_rows(
     panes: &[AgentPane],
@@ -263,6 +272,7 @@ pub fn strip_rows(
             let row = format!("{} {cell} {symbol}", pane.pane_id);
             Some((
                 priority,
+                Reverse(pane.last_hook_at_ms),
                 owners.get(&pane.pane_id).map(String::as_str),
                 branches.get(&pane.pane_id).map(String::as_str),
                 pane.pane_id,
@@ -282,19 +292,21 @@ pub fn strip_rows(
         // each is preceded by "has nothing to name".
         (
             left.0,
-            left.1.is_none(),
             left.1,
             left.2.is_none(),
             left.2,
+            left.3.is_none(),
             left.3,
+            left.4,
         )
             .cmp(&(
                 right.0,
-                right.1.is_none(),
                 right.1,
                 right.2.is_none(),
                 right.2,
+                right.3.is_none(),
                 right.3,
+                right.4,
             ))
     });
 
@@ -303,7 +315,7 @@ pub fn strip_rows(
     let mut project: Option<Option<&str>> = None;
     let mut branch: Option<Option<&str>> = None;
     let mut rows = Vec::with_capacity(agents.len());
-    for (_, owner, checkout, _, row) in agents {
+    for (_, _, owner, checkout, _, row) in agents {
         if project != Some(owner) {
             rows.push(StripRow::Project(owner.unwrap_or(NO_PROJECT).to_owned()));
             project = Some(owner);

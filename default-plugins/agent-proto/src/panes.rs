@@ -105,6 +105,7 @@ pub fn agent_pane(pane: &PaneInfo, tab: Option<(TabId, String)>) -> agents::Agen
         // Only the daemon knows that, and it writes it back on afterwards.
         detected: None,
         agent: pane.agent.clone(),
+        last_hook_at_ms: None,
     }
 }
 
