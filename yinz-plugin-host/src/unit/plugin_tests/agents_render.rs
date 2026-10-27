@@ -297,7 +297,7 @@ fn agents_history_and_reader_keep_markdown_and_navigation_without_dim() {
         assert_text(
             &lines,
             "Jan 1, 1970, 12:00 AM UTC",
-            style.colors.text_unselected.base,
+            style.colors.text_unselected.emphasis_3,
             false,
         );
         assert_text(&lines, "prompt:", style.colors.text_unselected.base, false);
@@ -817,7 +817,7 @@ fn agents_message_scrollback_uses_the_divider_below_the_header() {
                 .map(|cell| cell.character)
                 .collect::<String>()
         };
-        assert!(text(top as usize).contains("7 · claude · needs input"));
+        assert!(text(top as usize).contains("session claude:header-test"));
         let above = state(&mut plugin, "last_history_window_start")
             .as_u64()
             .unwrap();
@@ -826,11 +826,6 @@ fn agents_message_scrollback_uses_the_divider_below_the_header() {
         let readout = agent_proto::panel_text::scroll_readout(above as usize, below as usize);
         assert!(text(body as usize - 1).contains(&readout));
         assert!(!text(top as usize).contains(&readout));
-        assert!(!lines
-            .iter()
-            .flat_map(|line| line.iter().map(|cell| cell.character))
-            .collect::<String>()
-            .contains("claude:header-test"));
     }
 }
 
@@ -1101,6 +1096,79 @@ fn agents_history_clicks_open_a_full_panel_reader_only_on_release() {
     assert_eq!(state(&mut plugin, "history_cursor"), cursor);
     plugin.render(24, 90);
     assert_eq!(state(&mut plugin, "last_divider_col"), false);
+}
+
+#[test]
+fn agents_header_prioritizes_the_session_and_styles_details_with_the_theme() {
+    for style in themes() {
+        let mut plugin = plugin();
+        let mut history = run("active", 7, false);
+        history.session_id = "cccccccc-cccc-cccc-cccc-cccccccccccc".into();
+        history.origin_run_id = Some("claude:origin-hidden".into());
+        history.previous_run_id = Some("claude:previous-hidden".into());
+        plugin
+            .runtime
+            .invoke("a-load-run!", vec![json!(history), json!(0)])
+            .unwrap();
+        plugin.runtime.eval(r#"(a-set! "snapshot" (hash "panes" (list (hash "pane_id" 7 "title" "Review the release" "command" "claude" "status" "Running"))
+            "hooks" (hash "7" (hash "phase" "Waiting" "waiting_on" "Allow the release build to run and report any differences before finishing"))))"#).unwrap();
+        for (rows, cols) in [(30, 120), (12, 90), (15, 48), (8, 90), (6, 40)] {
+            let lines = render_sized(&mut plugin, style, rows, cols);
+            let text: String = lines
+                .iter()
+                .flat_map(|line| line.iter().map(|cell| cell.character))
+                .collect();
+            assert!(text.contains("session"), "{rows}x{cols}: {text}");
+            let x = state(&mut plugin, "last_divider_col")
+                .as_u64()
+                .map_or(0, |col| col as usize + 1);
+            let top = state(&mut plugin, "last_label_rows").as_u64().unwrap()
+                + state(&mut plugin, "last_history_top").as_u64().unwrap();
+            let header: String = lines
+                .iter()
+                .skip(top as usize)
+                .flat_map(|line| line.iter().skip(x).map(|cell| cell.character))
+                .filter(|ch| !ch.is_whitespace())
+                .collect();
+            assert!(
+                header.contains("sessioncccccccc-cccc-cccc-cccc-cccccccccccc"),
+                "{rows}x{cols}: {text}"
+            );
+            assert!(!text.contains("origin-hidden") && !text.contains("previous-hidden"));
+            if rows == 30 {
+                assert_text(
+                    &lines,
+                    "session",
+                    style.colors.text_unselected.emphasis_3,
+                    true,
+                );
+                assert_text(
+                    &lines,
+                    "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                    style.colors.text_unselected.base,
+                    false,
+                );
+                assert_text(
+                    &lines,
+                    "7 · claude",
+                    style.colors.text_unselected.emphasis_0,
+                    true,
+                );
+                assert_text(
+                    &lines,
+                    "Task: Review the release",
+                    style.colors.text_unselected.base,
+                    true,
+                );
+                assert_text(
+                    &lines,
+                    "project · topic",
+                    style.colors.text_unselected.emphasis_2,
+                    false,
+                );
+            }
+        }
+    }
 }
 
 #[test]

@@ -695,8 +695,6 @@ pub(super) struct RunFacts {
     session_id: String,
     kind: String,
     started_at_ms: i64,
-    origin_run_id: Option<String>,
-    previous_run_id: Option<String>,
     /// [`AgentRun::omitted_entries`], for the notice the timeline opens with.
     omitted_entries: usize,
 }
@@ -708,8 +706,6 @@ impl RunFacts {
             session_id: run.session_id.clone(),
             kind: run.kind.clone(),
             started_at_ms: run.started_at_ms,
-            origin_run_id: run.origin_run_id.clone(),
-            previous_run_id: run.previous_run_id.clone(),
             omitted_entries: run.omitted_entries,
         }
     }
@@ -748,19 +744,6 @@ pub(super) fn run_header(
         .map(MdLine::plain)
         .collect::<Vec<_>>();
     rows.extend(wrapped_field(label, value, width));
-    for (label, id) in [
-        ("origin", run.origin_run_id.as_deref()),
-        ("previous", run.previous_run_id.as_deref()),
-    ] {
-        if let Some(id) = id {
-            let prefix = format!("{}:", run.kind);
-            rows.extend(wrapped_field(
-                label,
-                id.strip_prefix(&prefix).unwrap_or(id),
-                width,
-            ));
-        }
-    }
     rows
 }
 
