@@ -837,7 +837,7 @@ fn agents_message_scrollback_uses_the_divider_below_the_header() {
                 .map(|cell| cell.character)
                 .collect::<String>()
         };
-        assert!(text(top as usize).contains("session claude:header-test"));
+        assert!(text(body as usize - 2).contains("session claude:header-test"));
         let above = state(&mut plugin, "last_history_window_start")
             .as_u64()
             .unwrap();
@@ -1119,7 +1119,7 @@ fn agents_history_clicks_open_a_full_panel_reader_only_on_release() {
 }
 
 #[test]
-fn agents_header_prioritizes_the_session_and_styles_details_with_the_theme() {
+fn agents_header_ends_with_the_session_and_styles_details_with_the_theme() {
     for style in themes() {
         let mut plugin = plugin();
         let mut history = run("active", 7, false);
@@ -1155,6 +1155,24 @@ fn agents_header_prioritizes_the_session_and_styles_details_with_the_theme() {
                 "{rows}x{cols}: {text}"
             );
             assert!(!text.contains("origin-hidden") && !text.contains("previous-hidden"));
+            let header_rows: Vec<String> = lines
+                .iter()
+                .skip(top as usize)
+                .map(|line| line.iter().skip(x).map(|cell| cell.character).collect())
+                .collect();
+            let session_row = header_rows
+                .iter()
+                .position(|row| row.contains("session"))
+                .unwrap();
+            for (index, row) in header_rows.iter().enumerate() {
+                if row.contains("7 · claude")
+                    || row.contains("project · topic")
+                    || row.contains("Jan 1, 1970")
+                {
+                    assert!(index < session_row, "{rows}x{cols}: {text}");
+                }
+            }
+
             if rows == 30 {
                 assert_text(
                     &lines,
@@ -1224,7 +1242,7 @@ fn agents_summary_and_quota_share_the_message_header_in_light_and_dark_themes() 
         assert!(row("Task: Review the release") < row("project · topic"));
         assert!(row("project · topic") < row("Allow the release build"));
         assert_eq!(row("7 · claude · needs input"), row("Weekly"));
-        assert!(row("resets in 3 days") < row("nothing to show yet"));
+        assert!(row("3d left") < row("nothing to show yet"));
         let lines = render_sized(&mut plugin, style, 10, 120);
         cells(&lines, "7 · claude · needs input");
         cells(&lines, "Weekly · 26% · 5hr · 68%");
