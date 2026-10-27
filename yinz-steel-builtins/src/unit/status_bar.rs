@@ -42,11 +42,14 @@ impl Status {
             .unwrap();
         format!("{}{components}", plain.as_str().unwrap())
     }
-    fn advance(&mut self, now: usize) {
+    fn set_time(&mut self, now: usize) {
         self.runtime
             .eval(&format!("(vector-set! test-clock 0 {now})"))
             .unwrap();
-        self.event(json!({"Timer":0}));
+    }
+    fn advance(&mut self, now: usize) -> bool {
+        self.set_time(now);
+        self.event(json!({"Timer":0}))
     }
     fn named(&self, name: &str) -> Vec<Value> {
         self.host
@@ -96,7 +99,7 @@ fn status_deduplicates_alt_pointer_and_late_timer_events() {
         status.named("SetTimeout"),
         vec![json!({"SetTimeout":60.0}), json!({"SetTimeout":3.0})]
     );
-    status.advance(3000);
+    assert!(status.advance(3000));
     assert_eq!(status.named("SetTimeout").len(), 2);
     status.advance(60000);
     assert_eq!(status.named("SetTimeout").len(), 3);
@@ -385,7 +388,7 @@ fn session_mode_hints_name_the_palette_after_returning_to_the_base_mode() {
 }
 
 #[test]
-fn status_counts_agents_and_uses_bounded_animation_ticks() {
+fn status_counts_agents_without_animation_timers() {
     let mut status = Status::new(false);
     status.render(1, 200);
     let panes = [
@@ -409,16 +412,19 @@ fn status_counts_agents_and_uses_bounded_animation_ticks() {
         status.runtime.value("state").unwrap()["counts"],
         json!({"busy":2,"waiting":1,"idle":1})
     );
-    assert_eq!(
-        status.named("SetTimeout").last(),
-        Some(&json!({"SetTimeout":0.125}))
-    );
+    assert_eq!(status.named("SetTimeout"), vec![json!({"SetTimeout":60.0})]);
     let frame = status.render(1, 200);
     assert!(frame.contains("1w"));
-    assert!(frame.contains("2|"));
+    assert!(frame.contains("2b"));
     assert!(frame.contains("1i"));
-    status.advance(125);
-    assert!(status.render(1, 200).contains("2/"));
+    for now in [125, 500, 999] {
+        status.set_time(now);
+        assert_eq!(status.render(1, 200), frame);
+    }
+    assert_eq!(status.named("SetTimeout"), vec![json!({"SetTimeout":60.0})]);
+    assert!(!status.advance(1000));
+    assert!(status.advance(60000));
+    assert!(status.render(1, 200).contains("00:01"));
     for mode_name in [
         "Normal",
         "Locked",
@@ -445,6 +451,57 @@ fn status_counts_agents_and_uses_bounded_animation_ticks() {
             for cols in [0, 1, 20, 80, 200] {
                 status.render(rows, cols);
             }
+        }
+    }
+}
+
+#[test]
+fn status_agent_transitions_are_static_across_fonts_widths_and_layouts() {
+    for (classic, rows) in [(false, 1), (true, 1), (false, 2), (true, 2)] {
+        for simple in [false, true] {
+            let mut status = Status::new(classic);
+            status.tab();
+            let mut mode = ModeInfo::default();
+            mode.capabilities.arrow_fonts = simple;
+            status.mode(json!(mode));
+            for (state, glyph) in [
+                ("Busy", "●1"),
+                ("Waiting", "◆1"),
+                ("Idle", "·1"),
+                ("Exited", ""),
+            ] {
+                let mut pane = serde_json::to_value(PaneInfo::default()).unwrap();
+                pane["agent"] = json!({"kind":"codex","state":state,"wait_needs_a_person":true});
+                let event = json!({"PaneUpdate":{"panes":{"0":[pane]}}});
+                assert!(status.event(event.clone()));
+                assert!(!status.event(event));
+                if !classic && rows == 1 {
+                    let expected = if simple {
+                        match state {
+                            "Busy" => "1b",
+                            "Waiting" => "1w",
+                            "Idle" => "1i",
+                            _ => "",
+                        }
+                    } else {
+                        glyph
+                    };
+                    assert!(status.render(rows, 200).contains(expected));
+                }
+                for cols in [0, 1, 20, 80, 200] {
+                    status.set_time(0);
+                    let frame = status.runtime.render(rows, cols).unwrap();
+                    for now in [125, 499, 500, 999] {
+                        status.set_time(now);
+                        assert_eq!(status.runtime.render(rows, cols).unwrap(), frame);
+                    }
+                }
+                assert_eq!(status.named("SetTimeout"), vec![json!({"SetTimeout":60.0})]);
+            }
+            assert_eq!(
+                status.runtime.value("state").unwrap()["counts"],
+                json!({"busy":0,"waiting":0,"idle":0})
+            );
         }
     }
 }

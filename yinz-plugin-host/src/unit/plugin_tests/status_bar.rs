@@ -452,7 +452,7 @@ fn status_bar_wasm_deno_narrow_width_transitions() {
 }
 
 #[test]
-fn status_bar_wasm_deno_mixed_agents_and_animation_frames() {
+fn status_bar_mixed_agents_remain_static() {
     let _reference_trace = crate::plugin_tests::reference_trace::Scenario::new(
         "status_bar_wasm_deno_mixed_agents_and_animation_frames",
     );
@@ -494,7 +494,13 @@ fn status_bar_wasm_deno_mixed_agents_and_animation_frames() {
         for _ in 0..9 {
             pair.at(pair.now.load(Ordering::SeqCst) + 125);
             for cols in [4, 5, 10, 25, 60, 120, 150, 200, 300, 500] {
-                pair.render(1, cols);
+                let frame = pair.render(1, cols);
+                if cols == 500 {
+                    assert!(
+                        frame.contains(if simple { "1w 2b 1i" } else { "◆1 ●2 ·1" }),
+                        "{frame}"
+                    );
+                }
             }
         }
     }
@@ -555,17 +561,9 @@ fn status_bar_wasm_deno_theme_colors_follow_mode_updates() {
                     continue;
                 };
                 let segments = [
-                    (
-                        "◆1",
-                        if phase == 0 {
-                            colors.exit_code_error.base
-                        } else {
-                            text.base
-                        },
-                        phase != 0,
-                    ),
+                    ("◆1", colors.exit_code_error.base, false),
                     (" ", text.base, true),
-                    (if phase == 0 { "⣾1" } else { "⡿1" }, text.emphasis_2, false),
+                    ("●1", text.emphasis_2, false),
                     (" ", text.base, true),
                     ("·1", text.base, true),
                     ("   ", text.base, true),
