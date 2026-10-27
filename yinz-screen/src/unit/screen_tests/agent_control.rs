@@ -2177,6 +2177,71 @@ fn replacement_and_closure_do_not_finish_the_original_conversation() {
 }
 
 #[test]
+fn claude_compaction_preserves_reported_state_without_a_lifecycle() {
+    for (initial, expected) in [
+        ("Stop", AgentState::Idle),
+        ("UserPromptSubmit", AgentState::Busy),
+        ("PreToolUse", AgentState::Waiting),
+    ] {
+        let (mut screen, _messages, _writes) = setup("claude");
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        let mut initial_hook = hook(initial);
+        initial_hook.tool_name = Some("AskUserQuestion".into());
+        report_kind(&mut screen, "claude", initial_hook);
+        // Reproduce an ordinary reported pane without managed lifecycle evidence.
+        screen.agent_lifecycle.remove(&PANE);
+        let before = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+        assert_eq!(before.state, expected);
+        for name in ["PreCompact", "PostCompact", "SessionStart"] {
+            let compact: HookEvent = serde_json::from_value(serde_json::json!({
+                "hook_event_name": name,
+                "session_id": "conversation",
+                "trigger": "auto",
+                "source": (name == "SessionStart").then_some("compact"),
+            }))
+            .unwrap();
+            report_kind(&mut screen, "claude", compact);
+            assert_eq!(
+                screen.get_pane_info(PANE).unwrap().agent,
+                Some(before.clone())
+            );
+            assert!(!screen.has_agent_lifecycle(PANE, "claude", "conversation"));
+        }
+    }
+}
+
+#[test]
+fn claude_active_turn_compaction_does_not_finish_a_pending_prompt() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    for name in ["PreCompact", "PostCompact", "SessionStart"] {
+        let mut compact = hook(name);
+        compact.source = (name == "SessionStart").then(|| "compact".into());
+        report_kind(&mut screen, "claude", compact);
+        assert!(replies(&messages, CLIENT).is_empty());
+        assert_eq!(
+            screen.get_pane_info(PANE).unwrap().agent.unwrap().state,
+            AgentState::Busy
+        );
+        assert!(!screen.agent_controls.is_empty());
+    }
+    // Compaction is also not a substitute for confirmed Stop completion.
+    let mut stop = hook("Stop");
+    stop.claude_turn_complete = None;
+    report_kind(&mut screen, "claude", stop);
+    assert!(replies(&messages, CLIENT).is_empty());
+    report_kind(&mut screen, "claude", hook("Stop"));
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Completed
+    );
+    assert!(screen.agent_controls.is_empty());
+}
+
+#[test]
 fn automatic_approval_and_compaction_continue_until_a_person_is_needed() {
     let (mut screen, messages, writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));

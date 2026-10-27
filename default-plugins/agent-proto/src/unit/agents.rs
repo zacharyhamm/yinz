@@ -2854,8 +2854,6 @@ fn the_rest_of_the_lifecycle_names_the_state_it_is_in() {
         "PostToolUseFailure",
         "PermissionDenied",
         "ElicitationResult",
-        "PreCompact",
-        "PostCompact",
     ] {
         assert_eq!(
             hook_phase("claude", &event(name)),
@@ -2867,7 +2865,7 @@ fn the_rest_of_the_lifecycle_names_the_state_it_is_in() {
         hook_phase("claude", &event("Elicitation")),
         Some(HookPhase::Waiting)
     );
-    for name in ["SubagentStart", "SubagentStop"] {
+    for name in ["SubagentStart", "SubagentStop", "PreCompact", "PostCompact"] {
         assert_eq!(hook_phase("claude", &event(name)), None);
     }
     // A *background* session that finished, which is the pane's agent still working —
