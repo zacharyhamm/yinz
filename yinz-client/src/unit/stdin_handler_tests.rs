@@ -284,6 +284,112 @@ fn kitty_sequence_inside_fragmented_bracketed_paste_stays_literal() {
 }
 
 #[test]
+fn recovery_discards_paste_at_every_boundary_and_chunk_split() {
+    use std::collections::BTreeSet;
+
+    let paste = b"\x1b[200~echo unsafe\r\x1b[201~";
+    // Cover transitions during both markers and the body. The same reset is used
+    // for connected -> offline, replacement generations, and offline -> connected.
+    for boundary in 1..paste.len() {
+        for split in boundary..=paste.len() {
+            let mut ansi = StdinAnsiParser::new();
+            let mut keyboard = InputParser::new();
+            let mut buffer = Vec::new();
+            let mut held = BTreeSet::new();
+            let first = ansi.feed(&paste[..boundary]);
+            let (instructions, _) = parse_keyboard_bytes(
+                &mut keyboard,
+                &mut buffer,
+                &first.residue,
+                true,
+                true,
+                false,
+                &mut held,
+            );
+            assert!(instructions.is_empty());
+            ansi.reset_for_recovery();
+            keyboard = InputParser::new();
+            buffer.clear();
+
+            let middle = ansi.feed(&paste[boundary..split]);
+            assert!(
+                middle.residue.is_empty(),
+                "boundary {boundary}, split {split}"
+            );
+            // Further recovery transitions and idle finalization cannot release the tail.
+            ansi.reset_for_recovery();
+            assert!(ansi.finalize_fast_partial().is_empty());
+            assert!(ansi.finalize_force().is_empty());
+            let mut last = paste[split..].to_vec();
+            last.push(b'b');
+            let output = ansi.feed(&last);
+            assert_eq!(output.residue, b"b", "boundary {boundary}, split {split}");
+            let (instructions, _) = parse_keyboard_bytes(
+                &mut keyboard,
+                &mut buffer,
+                &output.residue,
+                true,
+                false,
+                false,
+                &mut held,
+            );
+            assert!(
+                matches!(instructions.as_slice(), [InputInstruction::KeyEvent(InputEvent::Key(key), raw)]
+                if key.key == KeyCode::Char('b') && raw == b"b"),
+                "{instructions:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn idle_flush_during_paste_preserves_framing_for_recovery() {
+    let end = b"\x1b[201~";
+    for split in 0..end.len() {
+        let mut ansi = StdinAnsiParser::new();
+        ansi.feed(b"\x1b[200~echo unsafe\r");
+        ansi.feed(&end[..split]);
+        assert!(ansi.finalize_fast_partial().is_empty());
+        assert!(ansi.finalize_force().is_empty());
+        ansi.reset_for_recovery();
+        let mut tail = end[split..].to_vec();
+        tail.push(b'b');
+        assert_eq!(ansi.feed(&tail).residue, b"b", "split {split}");
+    }
+}
+
+#[test]
+fn discarded_paste_cannot_inject_host_replies_or_keyboard_sequences() {
+    let mut ansi = StdinAnsiParser::new();
+    ansi.feed(b"\x1b[200~");
+    ansi.reset_for_recovery();
+    for _ in 0..32 {
+        let output = ansi.feed(b"echo unsafe\r\x1b[97;5u\x1b]11;rgb:1/2/3\x1b\\\x1b[201x\x1b");
+        assert!(output.residue.is_empty());
+        assert!(output.replies.is_empty());
+        assert!(output.nested_frames.is_empty());
+        assert!(!output.has_partial_state);
+    }
+    // The final ESC above and this fresh ESC overlap; only the complete marker ends discard.
+    assert_eq!(ansi.feed(b"\x1b[201~b").residue, b"b");
+}
+
+#[test]
+fn recovery_preserves_new_input_when_an_old_prefix_is_not_a_paste() {
+    for prefix in [b"\x1b".as_slice(), b"\x1b[", b"\x1b[20", b"\x1b]11;rgb:"] {
+        let mut ansi = StdinAnsiParser::new();
+        ansi.feed(prefix);
+        ansi.reset_for_recovery();
+        assert_eq!(ansi.feed(b"b").residue, b"b");
+        // A fresh paste following recovery still uses ordinary paste handling.
+        assert_eq!(
+            ansi.feed(b"\x1b[200~safe\x1b[201~").residue,
+            b"\x1b[200~safe\x1b[201~"
+        );
+    }
+}
+
+#[test]
 fn focus_reports_are_extracted_from_the_byte_stream() {
     let (residue, focus_changes) = extract_focus_reports(b"a\x1b[Ib\x1b[Oc".to_vec());
     assert_eq!(residue, b"abc".to_vec());

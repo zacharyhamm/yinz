@@ -103,6 +103,17 @@ impl RecoveryControl {
                 | ClientToServerMsg::SynchronizedOutputSupport { .. }
         ) {
             let mut state = self.state.lock().unwrap();
+            if let ClientToServerMsg::TerminalPixelDimensions { pixel_dimensions } = message
+                && let Some(ClientToServerMsg::TerminalPixelDimensions {
+                    pixel_dimensions: cached,
+                }) = state
+                    .capabilities
+                    .iter_mut()
+                    .find(|old| matches!(old, ClientToServerMsg::TerminalPixelDimensions { .. }))
+            {
+                cached.merge(*pixel_dimensions);
+                return;
+            }
             state
                 .capabilities
                 .retain(|old| std::mem::discriminant(old) != std::mem::discriminant(message));

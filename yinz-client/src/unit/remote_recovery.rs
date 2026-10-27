@@ -69,6 +69,80 @@ fn replay_contains_capabilities_and_current_size_but_never_keyboard_input() {
 }
 
 #[test]
+fn replay_merges_partial_pixel_reports_in_either_order() {
+    use yinz_ipc::ipc::PixelDimensions;
+    use yinz_types::pane_size::SizeInPixels;
+
+    for reverse in [false, true] {
+        let control = RecoveryControl::new(CommandIsExecuting::new());
+        control.cache(&ClientToServerMsg::TerminalPixelDimensions {
+            pixel_dimensions: PixelDimensions {
+                text_area_size: Some(SizeInPixels {
+                    height: 600,
+                    width: 800,
+                }),
+                character_cell_size: Some(SizeInPixels {
+                    height: 10,
+                    width: 5,
+                }),
+                text_area_grid_size: Some(Size {
+                    rows: 60,
+                    cols: 160,
+                }),
+            },
+        });
+        control.lost(0, "EOF".into());
+        let area = PixelDimensions {
+            text_area_size: Some(SizeInPixels {
+                height: 720,
+                width: 1280,
+            }),
+            text_area_grid_size: Some(Size {
+                rows: 40,
+                cols: 128,
+            }),
+            ..Default::default()
+        };
+        let cell = PixelDimensions {
+            character_cell_size: Some(SizeInPixels {
+                height: 18,
+                width: 10,
+            }),
+            ..Default::default()
+        };
+        for report in if reverse { [cell, area] } else { [area, cell] } {
+            control.cache(&ClientToServerMsg::TerminalPixelDimensions {
+                pixel_dimensions: report,
+            });
+        }
+        // An empty report must not erase any previously observed dimensions.
+        control.cache(&ClientToServerMsg::TerminalPixelDimensions {
+            pixel_dimensions: Default::default(),
+        });
+        let os = crate::test_support::FakeClientOsApi::new();
+        control.replay(&os);
+        let replayed: Vec<_> = os
+            .sent_messages()
+            .into_iter()
+            .filter_map(|message| match message {
+                ClientToServerMsg::TerminalPixelDimensions { pixel_dimensions } => {
+                    Some(pixel_dimensions)
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            replayed,
+            vec![PixelDimensions {
+                text_area_size: area.text_area_size,
+                character_cell_size: cell.character_cell_size,
+                text_area_grid_size: area.text_area_grid_size,
+            }]
+        );
+    }
+}
+
+#[test]
 fn recovery_deadline_is_shared_with_bootstrap_and_forwarding_and_cancellation_reaps_children() {
     if yinz_test_support::reexec_test() {
         return;
