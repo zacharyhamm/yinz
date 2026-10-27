@@ -70,12 +70,12 @@ fn panel_reports_missing_local_quota_without_blocking_dismissal() {
     yinz.send_stdin(&keys::ctrl('b'));
     // The harness has an empty, isolated Claude config; this exercises the real host reply.
     let quota = yinz.wait_until("the panel explains missing local provider quotas", |s| {
-        s.contains("Local claude account") && s.contains("Unavailable")
+        s.contains("Agents") && s.contains("CLA") && s.contains("Unavailable")
     });
     assert!(!quota.contains("% used"));
     yinz.send_stdin(&keys::ESC);
     yinz.wait_until("quota details dismiss with the panel", |s| {
-        !s.contains("Local claude account") && s.contains("AGENT READY")
+        !s.contains("Agents") && !s.contains("Unavailable") && s.contains("AGENT READY")
     });
     yinz.quit();
 }
