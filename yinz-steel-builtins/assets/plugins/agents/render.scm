@@ -31,8 +31,8 @@
   (define decorated (if focused (if (equal? label "") "▸" (string-append "▸ " label))
       (if (equal? label "") "" (string-append "  " label))))
   (paint (styled (a-panel "Divider" (list decorated above below cols)) (if failed 6 1)) row cols))
-;; One line from (text levels) parts, in order: level 5 unbolds, 1 and 7 color, and a part
-;; with no levels stays bold.
+;; One line from (text levels) parts: levels 0–3 use the selected or unselected theme's
+;; emphasis colors, level 5 unbolds, and a part with no levels stays bold.
 (define (compose parts)
   (let loop ((parts parts) (text "") (levels (map (lambda (_) '()) (range 8))))
     (if (null? parts) (hash "text" text "levels" levels)
@@ -68,13 +68,13 @@
           (if (= width 0) "" (string-append text (make-string (+ (- width (yinz-text-width text)) 2) #\space)))) '("kind" "worktree")))
     (a-panel "Cut" (list (string-append (if (hash-ref run "continuation") "↳ " "") (hash-ref run "title")) (hash-ref layout "title")))))
 (define glyphs (hash "working" "●" "needs input" "!" "idle" "○" "held" "■" "exited" "×"))
-(define (tone status selected)
-  (cond (selected '()) ((equal? status "working") '(7)) ((equal? status "needs input") '(1)) (else '())))
+(define (tone status)
+  (cond ((equal? status "working") '(2)) ((equal? status "needs input") '(1)) (else '())))
 ;; State leads so the column scans. A narrow column gives up the pane id, then cuts the host
 ;; and the status word, then the kind; the glyph always stays.
 (define (agent-line row selected focused cols kind-cols)
   (define agent (hash-ref row "Agent")) (define id (hash-ref agent "pane_id"))
-  (define status (a-agent-status row)) (define color (cons 5 (tone status selected)))
+  (define status (a-agent-status row)) (define color (tone status))
   (define minutes (and (equal? status "idle") (a-quiet-minutes id)))
   (define word (string-append "  " status (if minutes (string-append " " (number->string minutes) "m") "")))
   (define host (a-some (a-field agent "host" 'json-null)))
@@ -82,21 +82,21 @@
   (define tag (string-append (if (equal? id (a-get "focused")) "◂ " "") "[" (number->string id) "]"))
   (define kind (kind-name (a-field agent "kind" "")))
   (define head (list (list (string-append (selection-marker selected focused) " ") '(5)) (list (a-field glyphs status "?") color)))
-  (define padded (append head (list (list (string-append " " (pad-to (a-panel "Cut" (list kind kind-cols)) kind-cols)) '(5)))))
+  (define padded (append head (list (list (string-append " " (pad-to (a-panel "Cut" (list kind kind-cols)) kind-cols)) '()))))
   (define fixed (if (<= (parts-width padded) cols) padded
-      (append head (list (list (string-append " " (a-panel "Cut" (list kind (a-sub cols 4)))) '(5))))))
+      (append head (list (list (string-append " " (a-panel "Cut" (list kind (a-sub cols 4)))) '())))))
   (define room (a-sub cols (parts-width fixed)))
   (define cut (if (> (yinz-text-width tail) room) (if (< room 4) "" (a-panel "Cut" (list tail room))) tail))
   (define split (min (string-length word) (string-length cut)))
-  (define parts (append fixed (list (list (substring cut 0 split) color) (list (substring cut split (string-length cut)) '(5)))))
+  (define parts (append fixed (list (list (substring cut 0 split) (cons 5 color)) (list (substring cut split (string-length cut)) '(3 5)))))
   (define gap (a-sub cols (+ (parts-width parts) (yinz-text-width tag))))
   (hash-insert (compose (if (and (equal? cut tail) (> gap 0))
-        (append parts (list (list (make-string gap #\space) '(5)) (list tag '(5)))) parts))
+        (append parts (list (list (make-string gap #\space) '(5)) (list tag '(3 5)))) parts))
     "selected" selected))
 (define (activity-text row) (hash-ref (a-agent-info row) "activity"))
 (define (list-activity row selected focused cols)
   (hash-insert (compose (list (list (string-append (selection-marker selected focused) "   ") '(5))
-        (list (a-panel "Cut" (list (activity-text row) (a-sub cols 4))) (if (and (not selected) (a-waiting? row)) '(1 5) '(5)))))
+        (list (a-panel "Cut" (list (activity-text row) (a-sub cols 4))) (if (a-waiting? row) '(1) '(5)))))
     "selected" selected))
 ;; A branch header names its project too, so one row heads each checkout; a project header
 ;; followed by a branch draws nothing.
@@ -109,7 +109,7 @@
       (if (equal? project "") trimmed (string-append project " · " trimmed))))
   (define cut (a-panel "Cut" (list label cols)))
   (define bold (min (string-length project) (string-length cut)))
-  (compose (list (list (substring cut 0 bold) '()) (list (substring cut bold (string-length cut)) '(5)))))
+  (compose (list (list (substring cut 0 bold) '(0)) (list (substring cut bold (string-length cut)) '(2 5)))))
 (define (list-text rows line selected focused layout now cols kind-cols)
   (define row (a-at rows (car line)))
   (define marker (selection-marker selected focused))
