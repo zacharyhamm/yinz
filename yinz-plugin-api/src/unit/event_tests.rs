@@ -413,6 +413,7 @@ fn serialize_mode_update_event_with_non_default_values() {
         yinz_types::data::ThemeHue,
     };
     let mode_update_event = Event::ModeUpdate(ModeInfo {
+        max_agent_width: Some(100),
         tab_groups: Some(false),
         mode: InputMode::Locked,
         keybinds: vec![

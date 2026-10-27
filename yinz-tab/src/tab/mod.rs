@@ -806,6 +806,7 @@ impl Tab {
             mode_info.currently_marking_pane_group =
                 currently_marking_pane_group.get(client_id).copied();
             mode_info.pane_frame_style = Some(self.pane_frame_style);
+            mode_info.max_agent_width = Some(self.max_agent_width);
             for plugin_id in &tab_plugin_ids {
                 plugin_updates.push((
                     Some(*plugin_id),

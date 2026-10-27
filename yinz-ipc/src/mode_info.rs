@@ -17,6 +17,7 @@ pub fn get_mode_info(
     let session_name = envs::get_session_name().ok();
 
     ModeInfo {
+        max_agent_width: None,
         tab_groups: None,
         mode,
         base_mode,

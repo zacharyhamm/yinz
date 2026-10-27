@@ -19,9 +19,16 @@ cargo x run -- -l strider
 cargo x bench                 # render throughput; separate from the gate
 ```
 
-**There is no CI in this fork.** Run `cargo x ci check` before handing off a
-branch or opening a PR. It runs every phase even after failures and uses 16
-integration-test workers. Docker suites run separately:
+**There is no CI in this fork. Run full test suites only when the user explicitly
+requests them.** This includes `cargo x ci check`, unfiltered workspace tests,
+and unfiltered integration suites. Handing off a branch or opening a PR does not
+authorize a full-suite run. In all other cases, use judgment to select the subset
+of tests that makes sense for the changes in the branch, including affected
+callers and behavior. This test-selection policy also applies when local
+instructions recommend full suites.
+
+When requested, `cargo x ci check` runs every phase even after failures and uses
+16 integration-test workers. Docker suites run separately:
 
 | Command | Requirement |
 |---|---|
@@ -69,7 +76,7 @@ Put xtask flags first. Remaining arguments go to:
 | `x bench` | Criterion |
 | `x ci e2e` | E2E runner |
 
-Default to tests for the changed crate or behavior:
+Select tests for the changed crates and affected behavior:
 
 ```sh
 cargo x test -p yinz-server
@@ -90,25 +97,19 @@ Remote tests accept `--test -- --exact <name>`.
 For a bare `cargo test` inner loop, run from the repo root without `--target`.
 Nextest runs each test in a separate process; bare `cargo test` does not.
 
-Run full `cargo x test` and `cargo x integration-test -j 16` for changes to:
-
-- Shared libraries, plugin-facing APIs, or assets under `yinz-config/`,
-  `yinz-project-config/`, `yinz-steel/`, `yinz-steel-builtins/`, `yinz-plugin-api/`,
-  `yinz-plugin-location/`, `yinz-ipc/`, `yinz-host-protocol/`, or
-  `default-plugins/project-data/` (linked by the agent plugins and the plugin host).
-- Render paths in `yinz-panes/`, `yinz-terminal/` or `yinz-terminal-graphics/`,
-  key encoding in `yinz-key-codec/`, screen/tab/pty plumbing (`yinz-screen/`,
-  `yinz-tab/`, `yinz-pty/`), `yinz-plugin-host/`, or `yinz-plugin-authoring/`.
-- Dependencies, toolchain, `xtask`, multiple crates, or regenerated snapshots.
+For shared libraries, plugin APIs, rendering, dependencies, tooling, or changes
+across multiple crates, consider downstream behavior when selecting tests.
+These changes do not automatically require or authorize a full-suite run.
 
 In-process whole-app tests use a fake OS backend. The real `yinz-server-os/`
 backend runs end to end only in tests that spawn the `yinz` binary, mainly the
 root package's tests and the integration suite's plugin-test sessions. For
-`yinz-server-os/` changes, run `cargo x test -p yinz-server-os -p yinz`
-and `cargo x integration-test -j 16`, plus `cargo x remote-test` when remote spawning changes.
+`yinz-server-os/` changes, select relevant tests from `yinz-server-os`, the root
+package, and the integration suite. Include relevant remote tests when remote
+spawning changes.
 
-Full test and integration suites bind TCP and Unix sockets: use sandbox
-escalation on the first attempt.
+For selected tests that bind TCP or Unix sockets, use sandbox escalation on the
+first attempt.
 
 ### Failures and test timing
 

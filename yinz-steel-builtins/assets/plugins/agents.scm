@@ -37,7 +37,8 @@
       ((equal? tag "ModeUpdate")
         (define client (hash-ref (yinz-command "GetPluginIds") "client_id"))
         (a-set! "client_modes" (hash-insert (a-get "client_modes") client
-            (hash "style" (hash-ref value "style") "capabilities" (hash-ref value "capabilities")))) #t)
+            (hash "style" (hash-ref value "style") "capabilities" (hash-ref value "capabilities")
+              "max_agent_width" (a-field value "max_agent_width" 0)))) #t)
       ((equal? tag "CellPixelSizeChanged") #t)
       ((equal? tag "TabUpdate") (a-set! "own_client_id" (hash-ref (yinz-command "GetPluginIds") "client_id")) (a-panel-tabs! value) #f)
       ((equal? tag "SessionUpdate") (a-discover-service! (car value)) #f)

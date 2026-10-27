@@ -552,6 +552,61 @@ fn agents_message_selection_covers_visible_event_rows_across_focus_and_layouts()
 }
 
 #[test]
+fn agents_reader_centers_and_rewraps_at_max_agent_width() {
+    let style = themes()[0];
+    let mut plugin = plugin();
+    let mut run = run("active", 7, false);
+    run.entries.last_mut().unwrap().text =
+        "Message **detail** with enough words to wrap across several lines. ".repeat(80);
+    plugin
+        .runtime
+        .invoke("a-load-run!", vec![json!(run), json!(0)])
+        .unwrap();
+    render(&mut plugin, style);
+    plugin.runtime.eval("(a-open-reader!)").unwrap();
+
+    // Reuse the open reader so each case also exercises cache invalidation.
+    for (cols, limit, width) in [
+        (121, Some(80), 80),
+        (120, Some(100), 100),
+        (60, Some(80), 60),
+        (120, Some(0), 120),
+        (120, Some(79), 120),
+        (120, None, 120),
+    ] {
+        plugin.update(&yinz_types::data::Event::ModeUpdate(
+            yinz_types::data::ModeInfo {
+                style,
+                max_agent_width: limit,
+                ..Default::default()
+            },
+        ));
+        let expected = render_sized(&mut plugin, style, 12, width);
+        let actual = render_sized(&mut plugin, style, 12, cols);
+        let left = (cols - width) / 2;
+        assert!(actual[1..10]
+            .iter()
+            .flatten()
+            .any(|cell| cell.character.is_alphanumeric()));
+        for row in 1..10 {
+            assert_eq!(actual[row][left..left + width], expected[row][..width]);
+            assert!(actual[row][..left]
+                .iter()
+                .chain(&actual[row][left + width..])
+                .all(|cell| cell.character == ' '));
+        }
+        let cache = state(&mut plugin, "reader_cache");
+        assert_eq!(cache["key"][2], width);
+        let count = cache["lines"]["lines"].as_array().unwrap().len();
+        let room = state(&mut plugin, "last_reader_rows").as_u64().unwrap() as usize;
+        assert_eq!(
+            state(&mut plugin, "last_reader_max_scroll"),
+            count.saturating_sub(room)
+        );
+    }
+}
+
+#[test]
 fn agents_reader_selection_covers_only_its_section_even_when_clipped() {
     for style in themes() {
         let mut plugin = plugin();

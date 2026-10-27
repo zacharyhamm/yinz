@@ -824,6 +824,9 @@ pub type KeybindsVec = Vec<(InputMode, Vec<(KeyWithModifier, Vec<Action>)>)>;
 /// Provides information helpful in rendering the Yinz controls for UI bars
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModeInfo {
+    /// Maximum agent content width; values below 80 disable the limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_agent_width: Option<usize>,
     /// Missing values preserve the default enabled behavior for older plugins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab_groups: Option<bool>,
