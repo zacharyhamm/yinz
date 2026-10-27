@@ -63,6 +63,7 @@ use {
     yinz_plugin_api::plugin_command::ProtobufGenerateRandomNameResponse,
     yinz_plugin_api::plugin_command::ProtobufGetFocusedPaneInfoResponse,
     yinz_plugin_api::plugin_command::ProtobufGetLayoutDirResponse,
+    yinz_plugin_api::plugin_command::ProtobufGetLocalTimeResponse,
     yinz_plugin_api::plugin_command::ProtobufGetLocalUtcOffsetResponse,
     yinz_plugin_api::plugin_command::ProtobufGetPaneCwdResponse,
     yinz_plugin_api::plugin_command::ProtobufGetPaneGitProbeResponse,
@@ -208,6 +209,9 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
             decode(bytes).and_then(|r: ProtobufGetUserPluginDirResponse| value(r.user_plugin_dir))
         },
         // Seconds east of UTC, supplied by the host timezone database.
+        CommandType::GetLocalTime => {
+            decode(bytes).and_then(|r: ProtobufGetLocalTimeResponse| value(r.text))
+        },
         CommandType::GetLocalUtcOffset => {
             decode(bytes).and_then(|r: ProtobufGetLocalUtcOffsetResponse| value(r.offset_seconds))
         },

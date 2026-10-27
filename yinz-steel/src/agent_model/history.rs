@@ -48,9 +48,15 @@ pub(super) fn register(engine: &mut Engine) {
                         Ok(Value::Null)
                     },
                     "Lines" => {
-                        let (width, now, offset) = decode(args)?;
+                        let (width, now, offset, local_date): (usize, i64, i32, String) =
+                            decode(args)?;
                         check_width(width)?;
-                        Ok(history(&parsed.lines(width, now, offset)))
+                        Ok(history(&parsed.lines(
+                            width,
+                            now,
+                            offset,
+                            Some(&local_date),
+                        )))
                     },
                     _ => bail!("unknown parsed history operation {op}"),
                 }

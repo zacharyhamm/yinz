@@ -226,13 +226,13 @@ interface CommandArgs {
   ProjectConfigRead: {directory: string}; ProjectConfigWrite: {directory: string; source: string; expected: string | null};
   SpawnAgent: {spec: AgentSpawnSpec; source_directory?: string | null; cwd?: string | null; name?: string | null; context?: StringMap; start_suppressed?: boolean};
   SetQuitNotice: {notice: string | null; guard: boolean}; ReloadPluginByUrl: string;
-  ReadPluginLog: {name: string; lines: Integer}; GetLocalUtcOffset: {epoch_ms: Integer};
+  ReadPluginLog: {name: string; lines: Integer}; GetLocalUtcOffset: {epoch_ms: Integer}; GetLocalTime: {epoch_ms: Integer};
 }
 
 interface CommandReplies {
   CheckPlugin: PluginCheckReport;
   GetPluginIds: PluginIds; GetCellPixelSize: { width: Integer; height: Integer } | null; GetPluginIdsForUrl: number[]; GetPluginInfo: PluginInfo | null; Pick: { options: PickOptions; cwd: string } | null; GetPluginIdsForUrlWithConfiguration: number[]; GetYinzVersion: string; GetUserPluginDir: string | null; GetLayoutDir: string | null;
-  GetLocalUtcOffset: number; GetSessionEnvironmentVariables: StringMap; GetPluginAliasConfiguration: StringMap;
+  GetLocalUtcOffset: number; GetLocalTime: string; GetSessionEnvironmentVariables: StringMap; GetPluginAliasConfiguration: StringMap;
   GetFocusedPaneInfo: {tab_id: number; pane_id: PaneId}; GetPaneInfo: PaneInfo | null; GetTabInfo: TabInfo | null;
   GetPaneCwd: string | null; GetPanePid: number | null; GetPaneRunningCommand: string[] | null; GetPaneGitProbe: PaneGitProbe | null;
   GetPaneScrollback: PaneContents; GetDisconnectTargets: number[]; GetSessionList: SessionListSnapshot; CurrentSessionLastSavedTime: Integer | null;

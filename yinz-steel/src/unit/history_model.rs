@@ -80,7 +80,7 @@ fn long_histories_preserve_headers_mutations_fingerprints_and_rendering() {
         .eval(
             r#"(define document (yinz-history-create run))
         (define rendered #f)
-        (define (render-history) (set! rendered (yinz-history-call document "Lines" '(80 90000 0))))
+        (define (render-history) (set! rendered (yinz-history-call document "Lines" '(80 90000 0 "Jan 1, 1970, 12:00 AM UTC"))))
         (render-history)"#,
         )
         .unwrap();
@@ -106,7 +106,7 @@ fn long_histories_preserve_headers_mutations_fingerprints_and_rendering() {
         }
         let actual =
             crate::bridge::from_model(&runtime.engine.extract_value("rendered").unwrap()).unwrap();
-        let expected = parsed.lines(80, 90_000, 0);
+        let expected = parsed.lines(80, 90_000, 0, Some("Jan 1, 1970, 12:00 AM UTC"));
         assert_eq!(actual["entries"], lines(&expected.entries));
         assert_eq!(actual["header"], lines(&expected.header));
         assert_eq!(actual["label"], expected.label);
@@ -154,14 +154,14 @@ fn parsed_history_keeps_shared_markdown_styles_across_updates_and_resizes() {
         "run",
         to_scheme(&serde_json::to_value(&run).unwrap()).unwrap(),
     );
-    runtime.eval("(define document (yinz-history-create run)) (define (render-history width) (yinz-history-call document \"Lines\" (list width 90000 0)))").unwrap();
+    runtime.eval("(define document (yinz-history-create run)) (define (render-history width) (yinz-history-call document \"Lines\" (list width 90000 0 \"Jan 1, 1970, 12:00 AM UTC\")))").unwrap();
     let mut original = agents::ParsedRun::new(&run);
     for width in [0, 4, 20, 80] {
         runtime
             .eval(&format!("(define rendered (render-history {width}))"))
             .unwrap();
         let actual = runtime.value("rendered").unwrap();
-        let expected = original.lines(width, 90_000, 0);
+        let expected = original.lines(width, 90_000, 0, Some("Jan 1, 1970, 12:00 AM UTC"));
         assert_eq!(actual["entries"], lines(&expected.entries));
         assert_eq!(actual["header"], lines(&expected.header));
         assert_eq!(actual["label"], expected.label);
@@ -186,7 +186,11 @@ fn parsed_history_keeps_shared_markdown_styles_across_updates_and_resizes() {
     original.update(&run);
     assert_eq!(
         runtime.value("rendered").unwrap()["entries"],
-        lines(&original.lines(30, 90_000, 0).entries)
+        lines(
+            &original
+                .lines(30, 90_000, 0, Some("Jan 1, 1970, 12:00 AM UTC"))
+                .entries
+        )
     );
     assert!(runtime.eval("(render-history 1000000)").is_err());
     assert!(runtime.eval("(yinz-command document)").is_err());

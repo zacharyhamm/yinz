@@ -131,9 +131,9 @@ pub(crate) use plugins::broadcast_agent_providers;
 pub(crate) use plugins::broadcast_project_providers;
 use plugins::{
     block_cli_pipe_input, check_plugin, clear_key_presses_intercepts, cli_pipe_output,
-    configuration_editor, generate_random_name, get_cell_pixel_size, get_local_utc_offset,
-    get_plugin_alias_configuration, get_plugin_ids, get_plugin_ids_for_url, get_plugin_info,
-    get_session_environment_variables, get_user_plugin_dir, get_yinz_version,
+    configuration_editor, generate_random_name, get_cell_pixel_size, get_local_time,
+    get_local_utc_offset, get_plugin_alias_configuration, get_plugin_ids, get_plugin_ids_for_url,
+    get_plugin_info, get_session_environment_variables, get_user_plugin_dir, get_yinz_version,
     intercept_key_presses, load_new_plugin, message_to_plugin, post_message_to,
     post_message_to_plugin, project_config, read_plugin_log, rebind_keys, reconfigure,
     register_default_keybindings, reload_plugin, reload_plugin_by_url, report_panic,
@@ -824,6 +824,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::DataWatch { request, mode } => data_watch(env, request, mode),
             PluginCommand::DataCatalog { namespace } => data_catalog(env, namespace),
             PluginCommand::GetLocalUtcOffset { epoch_ms } => get_local_utc_offset(env, epoch_ms),
+            PluginCommand::GetLocalTime { epoch_ms } => get_local_time(env, epoch_ms),
             PluginCommand::DataUnwatch { watch_id } => data_unwatch(env, watch_id),
             PluginCommand::ScanHostFolder(folder_to_scan) => scan_host_folder(env, folder_to_scan),
             PluginCommand::InspectConfiguration(theme) => configuration_editor(env, None, theme),

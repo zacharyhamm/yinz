@@ -16,9 +16,10 @@ use yinz_bus::thread_bus::ThreadSenders;
 use yinz_bus::ServerInstruction;
 use yinz_plugin_api::plugin_command::{
     fs_read_response, read_plugin_log_response, ProtobufFsReadResponse,
-    ProtobufGenerateRandomNameResponse, ProtobufGetLocalUtcOffsetResponse,
-    ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
-    ProtobufGetUserPluginDirResponse, ProtobufReadPluginLogResponse,
+    ProtobufGenerateRandomNameResponse, ProtobufGetLocalTimeResponse,
+    ProtobufGetLocalUtcOffsetResponse, ProtobufGetPluginAliasConfigurationResponse,
+    ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetUserPluginDirResponse,
+    ProtobufReadPluginLogResponse,
 };
 use yinz_plugin_api::plugin_ids::{ProtobufPluginIds, ProtobufYinzVersion};
 use yinz_runtime::consts::{VERSION, YINZ_SOCK_DIR};
@@ -825,3 +826,46 @@ pub(super) fn report_panic(env: &PluginEnv, msg: &str) {
         env.senders.clone(),
     );
 }
+
+/// Use the host timezone database: an offset alone cannot distinguish CDT from other zones.
+fn local_time(epoch_ms: SignedUnixMillis) -> Result<String> {
+    let seconds = epoch_ms.get().div_euclid(1000);
+    let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // SAFETY: both pointers refer to valid storage; localtime_r initializes local on success.
+    let result = unsafe { libc::localtime_r(&seconds, local.as_mut_ptr()) };
+    anyhow::ensure!(!result.is_null(), "local timestamp is out of range");
+    let mut text = [0_u8; 256];
+    // SAFETY: local was initialized above and strftime receives the buffer's actual size.
+    let len = unsafe {
+        libc::strftime(
+            text.as_mut_ptr().cast(),
+            text.len(),
+            c"%b %e, %Y, %l:%M %p %Z".as_ptr(),
+            local.as_ptr(),
+        )
+    };
+    anyhow::ensure!(len > 0, "local date exceeded formatting buffer");
+    Ok(std::str::from_utf8(&text[..len])
+        .context("decoding local date")?
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" "))
+}
+
+pub(super) fn get_local_time(env: &mut PluginEnv, epoch_ms: SignedUnixMillis) {
+    let response = ProtobufGetLocalTimeResponse {
+        text: local_time(epoch_ms)
+            .context("formatting local date")
+            .unwrap_or_else(|error| {
+                Err::<(), _>(error).non_fatal();
+                "Date unavailable".into()
+            }),
+    };
+    write_response(env, &response.encode_to_vec())
+        .context("sending local date response")
+        .non_fatal();
+}
+
+#[cfg(test)]
+#[path = "../unit/local_time.rs"]
+mod local_time_tests;

@@ -79,7 +79,8 @@ pub use super::generated_api::api::{
         GetDisconnectTargetsResponse as ProtobufGetDisconnectTargetsResponse,
         GetFocusedPaneInfoPayload,
         GetFocusedPaneInfoResponse as ProtobufGetFocusedPaneInfoResponse, GetLayoutDirPayload,
-        GetLayoutDirResponse as ProtobufGetLayoutDirResponse, GetLocalUtcOffsetPayload,
+        GetLayoutDirResponse as ProtobufGetLayoutDirResponse,
+        GetLocalTimeResponse as ProtobufGetLocalTimeResponse, GetLocalUtcOffsetPayload,
         GetLocalUtcOffsetResponse as ProtobufGetLocalUtcOffsetResponse,
         GetPaneCwdPayload as ProtobufGetPaneCwdPayload,
         GetPaneCwdResponse as ProtobufGetPaneCwdResponse,
@@ -3629,6 +3630,12 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 }),
                 _ => Err("Mismatched payload for DataCatalog"),
             },
+            Some(CommandName::GetLocalTime) => match protobuf_plugin_command.payload {
+                Some(Payload::GetLocalTimePayload(epoch_ms)) => Ok(PluginCommand::GetLocalTime {
+                    epoch_ms: yinz_types::units::SignedUnixMillis::new(epoch_ms),
+                }),
+                _ => Err("Mismatched payload for GetLocalTime"),
+            },
             Some(CommandName::GetLocalUtcOffset) => match protobuf_plugin_command.payload {
                 Some(Payload::GetLocalUtcOffsetPayload(payload)) => {
                     Ok(PluginCommand::GetLocalUtcOffset {
@@ -5667,6 +5674,10 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                         },
                     },
                 })),
+            }),
+            PluginCommand::GetLocalTime { epoch_ms } => Ok(ProtobufPluginCommand {
+                name: CommandName::GetLocalTime as i32,
+                payload: Some(Payload::GetLocalTimePayload(epoch_ms.get())),
             }),
             PluginCommand::GetLocalUtcOffset { epoch_ms } => Ok(ProtobufPluginCommand {
                 name: CommandName::GetLocalUtcOffset as i32,

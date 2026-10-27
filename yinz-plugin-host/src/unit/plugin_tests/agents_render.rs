@@ -294,7 +294,12 @@ fn agents_history_and_reader_keep_markdown_and_navigation_without_dim() {
             .unwrap();
         let lines = render(&mut plugin, style);
         assert_text(&lines, "summary:", style.colors.text_selected.base, true);
-        assert_text(&lines, "started", style.colors.text_unselected.base, false);
+        assert_text(
+            &lines,
+            "Jan 1, 1970, 12:00 AM UTC",
+            style.colors.text_unselected.base,
+            false,
+        );
         assert_text(&lines, "prompt:", style.colors.text_unselected.base, false);
         assert_text(
             &lines,
@@ -345,7 +350,7 @@ fn agents_waiting_cues_are_distinct_from_failures() {
         let lines = render(&mut plugin, style);
         assert_text(
             &lines,
-            "claude !",
+            "────",
             style.colors.text_unselected.emphasis_1,
             false,
         );
@@ -418,8 +423,7 @@ fn agents_message_selection_covers_visible_event_rows_across_focus_and_layouts()
                 ]
                 .into_iter()
                 .map(|key| state(&mut plugin, key).as_u64().unwrap() as usize)
-                .sum::<usize>()
-                    + 1;
+                .sum::<usize>();
                 let divider = state(&mut plugin, "last_divider_col")
                     .as_u64()
                     .map(|n| n as usize);
@@ -776,6 +780,61 @@ fn agents_divider_drag_clamps_restores_and_never_activates() {
 }
 
 #[test]
+fn agents_message_scrollback_uses_the_divider_below_the_header() {
+    for (rows, cols) in [(16, 90), (20, 48)] {
+        let mut plugin = plugin();
+        let mut history = run("claude:header-test", 7, false);
+        history.entries = (1..=30)
+            .map(|revision| agent_proto::agents::RunEntry {
+                revision,
+                text: format!("Message {revision}"),
+                ..history.entries[0].clone()
+            })
+            .collect();
+        plugin
+            .runtime
+            .invoke("a-load-run!", vec![json!(history), json!(0)])
+            .unwrap();
+        plugin.render(rows, cols);
+        plugin
+            .runtime
+            .invoke("a-scroll-history!", vec![json!(2)])
+            .unwrap();
+        let lines = render_sized(&mut plugin, themes()[0], rows, cols);
+        let top = state(&mut plugin, "last_label_rows").as_u64().unwrap()
+            + state(&mut plugin, "last_history_top").as_u64().unwrap();
+        let body = top
+            + state(&mut plugin, "last_history_body_top")
+                .as_u64()
+                .unwrap();
+        let x = state(&mut plugin, "last_divider_col")
+            .as_u64()
+            .map_or(0, |col| col as usize + 1);
+        let text = |row: usize| {
+            lines[row]
+                .iter()
+                .skip(x)
+                .map(|cell| cell.character)
+                .collect::<String>()
+        };
+        assert!(text(top as usize).contains("7 · claude · needs input"));
+        let above = state(&mut plugin, "last_history_window_start")
+            .as_u64()
+            .unwrap();
+        let below = state(&mut plugin, "history_scroll").as_u64().unwrap();
+        assert!(above > 0 && below > 0);
+        let readout = agent_proto::panel_text::scroll_readout(above as usize, below as usize);
+        assert!(text(body as usize - 1).contains(&readout));
+        assert!(!text(top as usize).contains(&readout));
+        assert!(!lines
+            .iter()
+            .flat_map(|line| line.iter().map(|cell| cell.character))
+            .collect::<String>()
+            .contains("claude:header-test"));
+    }
+}
+
+#[test]
 fn agents_columns_clip_align_and_route_mouse_independently() {
     let mut plugin = plugin();
     let mut history = run("active", 7, false);
@@ -863,7 +922,11 @@ fn agents_detail_updates_repaint_without_changing_compact_rows() {
     cells(&first, "7 CLA ●");
     cells(&first, "working");
     cells(&first, "Bash cargo test");
-    cells(&first, "State: hooks");
+    assert!(!first.iter().any(|line| line
+        .iter()
+        .map(|cell| cell.character)
+        .collect::<String>()
+        .contains("State:")));
     snapshot["panes"][0]["title"] = json!("New title");
     snapshot["hooks"]["7"]["detail"] = json!("Read render.scm");
     message.payload = Some(snapshot.to_string());
@@ -924,7 +987,6 @@ fn agents_detail_wraps_a_long_question_the_list_row_cuts() {
     let lines = render(&mut plugin, themes()[0]);
     cells(&lines, "Allow Bash to run");
     cells(&lines, "before finishing");
-    cells(&lines, "State: hooks");
 }
 
 #[test]
@@ -938,8 +1000,8 @@ fn agents_short_history_keeps_the_start_of_long_details() {
         )
         .unwrap();
     let lines = render_sized(&mut plugin, themes()[0], 24, 90);
-    cells(&lines, "State: hooks");
-    // Seven history rows cannot hold all five detail lines, so the status and question stay.
+    cells(&lines, "7 · claude · needs input");
+    // Seven history rows cannot hold all detail lines, so the status and question stay.
     let lines = render_sized(&mut plugin, themes()[0], 10, 90);
     cells(&lines, "7 · claude · needs input");
     cells(&lines, "Allow Bash to run");
@@ -1018,8 +1080,7 @@ fn agents_history_clicks_open_a_full_panel_reader_only_on_release() {
     let row = state(&mut plugin, "last_history_body_top")
         .as_u64()
         .unwrap()
-        + state(&mut plugin, "last_label_rows").as_u64().unwrap()
-        + 1;
+        + state(&mut plugin, "last_label_rows").as_u64().unwrap();
     mouse(&mut plugin, "LeftClick", json!([row, 50]));
     assert_eq!(state(&mut plugin, "focus"), "history");
     let cursor = state(&mut plugin, "history_cursor");
