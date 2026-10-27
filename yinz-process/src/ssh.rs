@@ -310,7 +310,27 @@ impl HostForward {
         remote_socket: &str,
         cancelled: Option<&AtomicBool>,
     ) -> Result<Self> {
+        Self::start_until(
+            host,
+            options,
+            local_socket,
+            remote_socket,
+            cancelled,
+            Instant::now() + FORWARD_READY_TIMEOUT,
+        )
+    }
+
+    /// The caller's deadline also bounds forwarding setup.
+    pub fn start_until(
+        host: &str,
+        options: &SshOptions,
+        local_socket: &Path,
+        remote_socket: &str,
+        cancelled: Option<&AtomicBool>,
+        deadline: Instant,
+    ) -> Result<Self> {
         check_cancelled(cancelled)?;
+        anyhow::ensure!(Instant::now() < deadline, "SSH forwarding deadline expired");
         validate_ssh_host(host)?;
         check_socket_path_length(local_socket, 0)?;
         match std::fs::symlink_metadata(local_socket) {
@@ -358,7 +378,7 @@ impl HostForward {
 
         // Wait for the forward to actually carry a connection. `ssh` returning
         // immediately does not mean the socket is bound yet.
-        let deadline = Instant::now() + FORWARD_READY_TIMEOUT;
+        let deadline = deadline.min(Instant::now() + FORWARD_READY_TIMEOUT);
         loop {
             check_cancelled(cancelled)?;
             if UnixStream::connect(&forward.local_socket).is_ok() {

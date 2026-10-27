@@ -73,7 +73,7 @@ fn check_frames(deadline: Option<Instant>) {
 #[test]
 fn controls_and_exit_do_not_wait_for_the_splash_or_write_deferred_frames() {
     let os = FakeClientOsApi::new().capturing_stdout();
-    let budget = RenderBudget::new(100);
+    let budget = Arc::new(RenderBudget::new(100));
     let (tx, rx) = channels::unbounded();
     let tx = SenderWithContext::new(tx);
     budget.reserve(5).unwrap();
@@ -101,7 +101,7 @@ fn controls_and_exit_do_not_wait_for_the_splash_or_write_deferred_frames() {
 
 fn run(
     os: &FakeClientOsApi,
-    budget: &RenderBudget,
+    budget: &Arc<RenderBudget>,
     splash_deadline: Option<Instant>,
     rx: &channels::Receiver<(ClientInstruction, yinz_types::diagnostics::ErrorContext)>,
     input_tx: channels::Sender<(InputInstruction, yinz_types::diagnostics::ErrorContext)>,
@@ -109,6 +109,8 @@ fn run(
     let nested = NestedReannounce::spawn(Box::new(FakeClientOsApi::new()), "splash-test".into());
     nested.stop();
     ClientLoop {
+        recovery: &mut None,
+        send_client_instructions: None,
         sessions: &mut crate::session_switch::Sessions::new(
             None,
             "test".into(),

@@ -24,6 +24,21 @@ use {
     yinz_types::input::options::Options,
 };
 
+fn is_cancel_key(instruction: &InputInstruction) -> bool {
+    match instruction {
+        InputInstruction::KeyEvent(InputEvent::Key(key), raw) => {
+            raw == &[3]
+                || cast_termwiz_key(key.clone(), raw, |_| false).is_some_and(|key| {
+                    key.is_key_with_ctrl_modifier(yinz_types::keys::BareKey::Char('c'))
+                })
+        },
+        InputInstruction::KeyWithModifierEvent(key, raw, _) => {
+            raw == &[3] || key.is_key_with_ctrl_modifier(yinz_types::keys::BareKey::Char('c'))
+        },
+        _ => false,
+    }
+}
+
 /// Forwards terminal input to the server, which owns the current mode and keybindings.
 struct InputHandler {
     os_input: Box<dyn ClientOsApi>,
@@ -156,11 +171,54 @@ impl InputHandler {
             self.os_input.enable_mouse().non_fatal();
             self.mouse_mode_active = true;
         }
+        let mut generation = None;
         loop {
             if self.should_exit {
                 break;
             }
-            match self.receive_input_instructions.recv() {
+            let received = self
+                .receive_input_instructions
+                .recv()
+                .map(|(instruction, context)| {
+                    let (stamp, instruction) = match instruction {
+                        InputInstruction::FromGeneration(stamp, instruction) => {
+                            (Some(stamp), *instruction)
+                        },
+                        instruction => (None, instruction),
+                    };
+                    (stamp, instruction, context)
+                });
+            let received = match received {
+                Ok((stamp, instruction, context)) => {
+                    if let Some(control) = self.os_input.remote_recovery() {
+                        // Capability replies describe the local terminal even while offline.
+                        let capability =
+                            matches!(instruction, InputInstruction::AnsiStdinInstructions(_));
+                        let current = control.stamp();
+                        if generation != Some(current.0) {
+                            self.mouse_old_event = MouseEvent::new();
+                            generation = Some(current.0);
+                        }
+                        self.os_input.pin_input_generation(current.0);
+                        let offline = !current.1 || stamp.is_some_and(|stamp| !stamp.1);
+                        if offline && is_cancel_key(&instruction) {
+                            control.cancel();
+                        }
+                        if !capability
+                            && !matches!(
+                                instruction,
+                                InputInstruction::Exit | InputInstruction::SetMouseMode(_)
+                            )
+                            && (offline || stamp.is_some_and(|stamp| stamp.0 != current.0))
+                        {
+                            continue;
+                        }
+                    }
+                    Ok((instruction, context))
+                },
+                Err(error) => Err(error),
+            };
+            match received {
                 Ok((InputInstruction::KeyEvent(input_event, raw_bytes), _error_context)) => {
                     match input_event {
                         InputEvent::Key(key_event) => {
@@ -242,6 +300,9 @@ impl InputHandler {
                 },
                 Ok((InputInstruction::Exit, _error_context)) => {
                     self.should_exit = true;
+                },
+                Ok((InputInstruction::FromGeneration(..), _)) => {
+                    unreachable!("input generation already checked")
                 },
                 Err(err) => panic!("Encountered read error: {:?}", err),
             }
@@ -433,6 +494,13 @@ impl InputHandler {
                     client_id,
                     is_cli_client: false,
                 });
+                if self
+                    .os_input
+                    .remote_recovery()
+                    .is_some_and(|control| !control.stamp().1)
+                {
+                    self.command_is_executing.unblock_input_thread();
+                }
                 self.command_is_executing
                     .wait_until_input_thread_is_unblocked();
             },

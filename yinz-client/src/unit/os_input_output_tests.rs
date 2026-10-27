@@ -789,3 +789,78 @@ fn stdin_read_errors_return_without_panicking() {
     assert!(output.status.success(), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
 }
+
+fn recovery_socket() -> (
+    tempfile::TempDir,
+    interprocess::local_socket::Stream,
+    interprocess::local_socket::Stream,
+) {
+    use interprocess::local_socket::traits::Listener;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("remote");
+    let listener = yinz_ipc::consts::ipc_bind(&path).unwrap();
+    let stream = yinz_ipc::consts::ipc_connect(&path).unwrap();
+    let peer = listener.accept().unwrap();
+    (dir, stream, peer)
+}
+
+#[test]
+fn remote_write_failure_invalidates_the_transport_and_unblocks_input() {
+    let (_dir, stream, peer) = recovery_socket();
+    let os = get_client_os_input().unwrap();
+    let sender = IpcSenderWithContext::new(stream);
+    let receiver = sender.get_receiver().unwrap();
+    os.install_session_connection(sender, receiver).unwrap();
+    let mut command = crate::command_is_executing::CommandIsExecuting::new();
+    let control = crate::remote_recovery::RecoveryControl::new(command.clone());
+    os.set_remote_recovery(Some(control.clone())).unwrap();
+    command.blocking_input_thread();
+    drop(peer);
+    os.send_to_server(ClientToServerMsg::Paste("failed write".into()));
+    assert_eq!(control.phase(), crate::remote_recovery::Phase::Reconnecting);
+    let (done, result) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        command.wait_until_input_thread_is_unblocked();
+        done.send(()).unwrap();
+    });
+    result.recv_timeout(time::Duration::from_secs(2)).unwrap();
+    worker.join().unwrap();
+}
+
+#[test]
+fn remote_writes_to_a_nonreading_peer_are_bounded_and_old_input_cannot_reach_a_replacement() {
+    let (_dir, stream, peer) = recovery_socket();
+    let mut os = get_client_os_input().unwrap();
+    let sender = IpcSenderWithContext::new(stream);
+    let receiver = sender.get_receiver().unwrap();
+    os.install_session_connection(sender, receiver).unwrap();
+    let control = crate::remote_recovery::RecoveryControl::new(
+        crate::command_is_executing::CommandIsExecuting::new(),
+    );
+    os.set_remote_recovery(Some(control.clone())).unwrap();
+    // Timing is the behavior under test: the peer remains open and never reads.
+    let started = time::Instant::now();
+    os.send_to_server(ClientToServerMsg::Paste("x".repeat(8 * 1024 * 1024)));
+    assert!(started.elapsed() < time::Duration::from_secs(10));
+    assert_eq!(control.phase(), crate::remote_recovery::Phase::Reconnecting);
+    drop(peer);
+    os.disconnect_session_connection();
+    let (_replacement_dir, stream, peer) = recovery_socket();
+    let sender = IpcSenderWithContext::new(stream);
+    let receiver = sender.get_receiver().unwrap();
+    os.install_session_connection(sender, receiver).unwrap();
+    control.replacing();
+    control.repainted();
+    let mut peer = IpcReceiverWithContext::<ClientToServerMsg>::new(peer);
+    peer.set_recv_timeout(Some(time::Duration::from_millis(100)))
+        .unwrap();
+    os.pin_input_generation(0);
+    os.send_to_server(ClientToServerMsg::Paste("STALE".into()));
+    assert!(matches!(peer.recv_client_msg(), IpcRecv::Idle));
+    assert!(matches!(os.recv_from_server_generation(0), IpcRecv::Eof));
+    os.pin_input_generation(1);
+    os.send_to_server(ClientToServerMsg::Paste("CURRENT".into()));
+    assert!(
+        matches!(peer.recv_client_msg(), IpcRecv::Msg(ClientToServerMsg::Paste(text), _) if text == "CURRENT")
+    );
+}

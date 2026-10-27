@@ -68,7 +68,10 @@ impl Drop for PreparedConnection {
     fn drop(&mut self) {
         if let Some(sender) = &mut self.sender {
             sender
-                .send_client_msg(ClientToServerMsg::ClientExited)
+                .send_client_msg_until(
+                    ClientToServerMsg::ClientExited,
+                    Instant::now() + Duration::from_millis(100),
+                )
                 .context("detach unused destination")
                 .non_fatal();
         }
@@ -145,6 +148,10 @@ impl<'a> Sessions<'a> {
         for worker in self.workers.extract_if(.., |worker| worker.is_finished()) {
             join_worker(worker);
         }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     pub fn rename(&mut self, name: String) {
@@ -529,7 +536,30 @@ fn resurrection_command(
     Ok(command)
 }
 
-fn attach_socket(
+pub(crate) fn prepare_recovery(
+    host: String,
+    name: String,
+    assets: CliAssets,
+    cancelled: &AtomicBool,
+    deadline: Instant,
+) -> Result<PreparedConnection> {
+    // Recovery never creates or resurrects, including after an original --create.
+    let forward = remote_sessions::own_forward(remote_sessions::connect_until(
+        &host, &name, false, cancelled, deadline,
+    )?);
+    let socket = forward.socket().to_owned();
+    attach_socket(
+        Destination::Remote(host),
+        name,
+        Some(forward),
+        &socket,
+        assets,
+        cancelled,
+        deadline,
+    )
+}
+
+pub(crate) fn attach_socket(
     machine: Destination,
     name: String,
     forward: Option<remote_sessions::ClientForward>,
@@ -542,7 +572,9 @@ fn attach_socket(
     // Connect exactly once: a vanished running session must never become a new session.
     let stream = yinz_ipc::consts::ipc_connect(socket).context("connect to destination session")?;
     stream
-        .set_send_timeout(Some(Duration::from_secs(3)))
+        .set_send_timeout(Some(
+            remote_sessions::remaining(deadline)?.min(Duration::from_secs(3)),
+        ))
         .context("bound destination attach request")?;
     stream
         .set_recv_timeout(Some(Duration::from_millis(100)))
@@ -563,11 +595,14 @@ fn attach_socket(
         .sender
         .as_mut()
         .expect("prepared sender")
-        .send_client_msg(ClientToServerMsg::AttachClient {
-            cli_assets: assets,
-            tab_number_to_focus: None,
-            pane_to_focus: None,
-        })
+        .send_client_msg_until(
+            ClientToServerMsg::AttachClient {
+                cli_assets: assets,
+                tab_number_to_focus: None,
+                pane_to_focus: None,
+            },
+            deadline.min(Instant::now() + Duration::from_secs(3)),
+        )
         .context("attach destination session")?;
     let mut bytes = 0;
     loop {
@@ -583,7 +618,7 @@ fn attach_socket(
             .recv_server_msg_until(deadline.min(Instant::now() + Duration::from_millis(100)))
         {
             IpcRecv::Msg(ServerToClientMsg::Exit { exit_reason }, _) => {
-                bail!("Destination rejected attachment: {exit_reason}")
+                return Err(remote_sessions::attachment_rejected(exit_reason))
             },
             IpcRecv::Msg(message, context) => {
                 let ready = matches!(message, ServerToClientMsg::Render { .. });

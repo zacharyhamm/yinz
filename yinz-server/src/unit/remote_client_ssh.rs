@@ -439,23 +439,134 @@ fn remote_client_input_resize_detach_concurrent_and_named_switch() {
 
 #[test]
 #[ignore = "requires Docker SSH fixture"]
-fn remote_client_network_cut_restores_terminal_and_preserves_server() {
-    let session = Session::new();
+fn remote_client_reconnects_after_repeated_network_cuts() {
+    let mut session = Session::new();
     let mut client = Client::start(HOST, &session.0, true);
     client.see(&session.0);
     client.marker("BEFORE_CUT");
+    let renamed = format!("{}-renamed", session.0);
+    session.action(&["rename-session", &renamed]);
+    session.0 = renamed;
+    client.see_screen(&format!("({})", session.0));
+    for attempt in 0..2 {
+        client.output.lock().bytes.clear();
+        with_link_down(|| {
+            client.see_screen("Reconnecting");
+            client.see_screen("Ctrl-C to cancel");
+            client.send(b"printf 'OFFLINE_INPUT_WAS_REPLAYED\\n'\r");
+            client.send(b"\x1b[200~OFFLINE_PASTE\x1b[201~");
+            client.send(b"\x1b[<0;10;10M\x1b[<0;10;10m");
+            if attempt == 0 {
+                client.resize(25, 90);
+            }
+            session.alive();
+        });
+        // Wait for the replacement frame, not a marker already present before the cut.
+        client
+            .output
+            .wait_until("replacement repaint", Duration::from_secs(45), |out| {
+                (out.screen.contains("YINZ_CLIENT_BEFORE_CUT")
+                    && !out.screen.contains("Reconnecting"))
+                .then_some(())
+            });
+        client.marker(&format!("AFTER_CUT_{attempt}"));
+        assert!(!client
+            .output
+            .lock()
+            .screen
+            .contains("OFFLINE_INPUT_WAS_REPLAYED"));
+        assert!(!client.output.lock().screen.contains("OFFLINE_PASTE"));
+    }
+    client.detach();
+    session.alive();
+}
+
+#[test]
+#[ignore = "requires Docker SSH fixture"]
+fn remote_client_cancels_recovery_and_restores_terminal() {
+    let session = Session::new();
+    let mut client = Client::start(HOST, &session.0, true);
+    client.marker("BEFORE_CANCEL");
     with_link_down(|| {
-        let message = client.exit(false);
-        assert!(
-            message.contains("connection") || message.contains("Connection"),
-            "{message}"
-        );
+        client.see_screen("Ctrl-C to cancel");
+        client.send(b"\x03");
+        assert!(client
+            .exit(false)
+            .contains("Interrupted while reconnecting"));
+        assert_eq!(client.output.lock().status.unwrap().code(), Some(130));
         session.alive();
     });
-    let mut reattached = Client::start(HOST, &session.0, false);
-    reattached.see("YINZ_CLIENT_BEFORE_CUT");
-    reattached.marker("AFTER_CUT");
-    reattached.detach();
+}
+
+#[test]
+#[ignore = "requires Docker SSH fixture"]
+fn remote_client_never_recreates_a_session_during_recovery() {
+    let session = Session::new();
+    let mut client = Client::start(HOST, &session.0, true);
+    client.marker("BEFORE_DISAPPEARANCE");
+    with_link_down(|| {
+        client.see_screen("Reconnecting");
+        remote_exec(&["yinz", "kill-session", &session.0]);
+    });
+    assert!(client.exit(false).contains("does not exist"));
+    let sessions = remote_exec(&["yinz", "list-sessions", "--short", "--no-formatting"]);
+    assert!(
+        !sessions.lines().any(|name| name == session.0),
+        "{sessions}"
+    );
+}
+
+fn toxic_request(method: &str, suffix: &str, body: &str) {
+    let request = format!("{method} /proxies/{PROXY_NAME}/toxics{suffix} HTTP/1.1\r\nHost: {PROXY_API}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    let mut stream = TcpStream::connect(PROXY_API).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    assert!(
+        response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.1 204"),
+        "{response}"
+    );
+}
+
+#[test]
+#[ignore = "requires Docker SSH fixture"]
+fn remote_client_recovers_after_silent_traffic_loss() {
+    let session = Session::new();
+    let mut client = Client::start(HOST, &session.0, true);
+    client.marker("BEFORE_SILENCE");
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            toxic_request("DELETE", "/client_silence", "");
+        }
+    }
+    toxic_request(
+        "POST",
+        "",
+        r#"{"name":"client_silence","type":"timeout","stream":"downstream","toxicity":1.0,"attributes":{"timeout":0}}"#,
+    );
+    let restore = Restore;
+    // SSH keepalives, rather than a TCP close, must detect this blackhole.
+    client
+        .output
+        .wait_until("keepalive detection", Duration::from_secs(90), |out| {
+            assert!(out.status.is_none(), "{}", out.screen);
+            out.screen.contains("Reconnecting").then_some(())
+        });
+    drop(restore);
+    client
+        .output
+        .wait_until("replacement repaint", Duration::from_secs(60), |out| {
+            (out.screen.contains("YINZ_CLIENT_BEFORE_SILENCE")
+                && !out.screen.contains("Reconnecting"))
+            .then_some(())
+        });
+    client.marker("AFTER_SILENCE");
+    client.detach();
+    session.alive();
 }
 
 fn root_sh(script: &str) {
@@ -649,6 +760,18 @@ fn attached_palette_switches_machines_with_identical_names_and_survives_failed_h
     local.send(b"\r");
     local.see("YINZ_CLIENT_DESTINATION");
     local.marker("ON_REMOTE");
+    with_link_down(|| {
+        local.see_screen("Reconnecting");
+    });
+    local.output.wait_until(
+        "picker destination reattached",
+        Duration::from_secs(45),
+        |out| {
+            (out.screen.contains("YINZ_CLIENT_ON_REMOTE") && !out.screen.contains("Reconnecting"))
+                .then_some(())
+        },
+    );
+    local.marker("PICKER_RECOVERED");
     // Both a same-host session change and a different remembered SSH endpoint use the coordinator.
     local.switch_picker(&format!("{HOST} / {}", second.0));
     local.send(b"\r");

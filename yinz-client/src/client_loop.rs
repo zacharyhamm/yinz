@@ -39,6 +39,8 @@ pub struct ClientOutcome {
 }
 
 pub(crate) struct ClientLoop<'a, 'config> {
+    pub recovery: &'a mut Option<crate::remote_recovery::Recovery>,
+    pub send_client_instructions: Option<&'a SenderWithContext<ClientInstruction>>,
     pub sessions: &'a mut crate::session_switch::Sessions<'config>,
     pub remote_host: Option<&'a str>,
     pub os_input: &'a dyn ClientOsApi,
@@ -55,7 +57,7 @@ pub(crate) struct ClientLoop<'a, 'config> {
     /// at runtime once it learns what the terminal advertised.
     pub synchronised_output: Option<SyncOutput>,
     /// Released as each frame reaches the terminal, so the router reads the next.
-    pub render_budget: &'a RenderBudget,
+    pub render_budget: &'a Arc<RenderBudget>,
     pub startup_started: Instant,
     pub splash_deadline: Option<Instant>,
 }
@@ -83,6 +85,12 @@ impl ClientLoop<'_, '_> {
         self.announce_synchronised_output();
 
         loop {
+            if receive_client_instructions.is_empty()
+                && deferred.is_empty()
+                && self.poll_recovery(&mut outcome)
+            {
+                break;
+            }
             let waiting_for_splash = self.splash_deadline.filter(|end| *end > Instant::now());
             let next = if let Some(deadline) = waiting_for_splash {
                 match receive_client_instructions.recv_deadline(deadline) {
@@ -92,10 +100,32 @@ impl ClientLoop<'_, '_> {
                 }
             } else if let Some(instruction) = deferred.pop_front() {
                 instruction
+            } else if self.recovery.is_some() {
+                match receive_client_instructions.recv_timeout(crate::remote_recovery::READ_POLL) {
+                    Ok(instruction) => instruction,
+                    Err(yinz_runtime::channels::RecvTimeoutError::Timeout) => continue,
+                    Err(error) => panic!("failed to receive app instruction: {error}"),
+                }
             } else {
                 receive_client_instructions
                     .recv()
                     .expect("failed to receive app instruction on channel")
+            };
+            let next = match next {
+                (ClientInstruction::FromServer(generation, instruction), context) => {
+                    if self
+                        .recovery
+                        .as_ref()
+                        .is_some_and(|recovery| !recovery.control.accepts(generation))
+                    {
+                        if let ClientInstruction::Render(output) = *instruction {
+                            self.render_budget.release(output.len()).non_fatal();
+                        }
+                        continue;
+                    }
+                    (*instruction, context)
+                },
+                next => next,
             };
             if waiting_for_splash.is_some() && matches!(next.0, ClientInstruction::Render(_)) {
                 // Frames may be incremental; keep every frame and its budget reservation.
@@ -169,9 +199,52 @@ impl ClientLoop<'_, '_> {
             log::warn!("output pressure: client pid={} stage=terminal_write_flush final suppressed={suppressed} max_suppressed_ms={}", std::process::id(), max_suppressed.as_millis());
         }
 
+        if let Some(recovery) = self.recovery {
+            recovery.shutdown();
+        }
         self.nested_reannounce.stop();
 
         outcome
+    }
+
+    fn poll_recovery(&mut self, outcome: &mut ClientOutcome) -> bool {
+        let Some(recovery) = self.recovery else {
+            return false;
+        };
+        if recovery.control.phase() == crate::remote_recovery::Phase::Reconnecting {
+            self.sessions.cancel();
+            let mut parser = self.stdin_ansi_parser.lock().unwrap();
+            parser.take_active(ForwardKind::Barrier);
+            parser.take_active(ForwardKind::Clipboard);
+        }
+        let result = (|| -> Result<()> {
+            if let Some(mut prepared) =
+                recovery.poll(self.os_input, self.sessions.name(), Instant::now())?
+            {
+                recovery.install(self.os_input, &mut prepared)?;
+                // The router owns a shared budget clone, supplied by the startup path.
+                let router = crate::router::spawn_with_initial(
+                    self.os_input.box_clone(),
+                    self.send_client_instructions
+                        .context("recovery instruction sender is missing")?
+                        .clone(),
+                    self.render_budget.clone(),
+                    std::mem::take(&mut prepared.buffered),
+                );
+                recovery.routers.push(router);
+            }
+            recovery.paint_status(self.os_input, self.sessions.name(), Instant::now())
+        })();
+        if let Err(error) = result {
+            outcome.exit_msg = format!("Remote attachment failed: {error:#}");
+            outcome.exit_status = if recovery.interrupted() {
+                crate::INTERRUPTED_EXIT_STATUS
+            } else {
+                1
+            };
+            return true;
+        }
+        false
     }
 
     /// Tell the server whether this client's host presents each frame atomically.
@@ -195,6 +268,9 @@ impl ClientLoop<'_, '_> {
         slow_warnings: &mut SlowWarnings,
     ) -> bool {
         match instruction {
+            ClientInstruction::FromServer(_, _) => {
+                unreachable!("server generation is checked before dispatch")
+            },
             ClientInstruction::Exit(reason) => {
                 self.os_input
                     .send_to_server(ClientToServerMsg::ClientExited);
@@ -266,6 +342,9 @@ impl ClientLoop<'_, '_> {
                     outcome.exit_status = 1;
                     return true;
                 }
+                if let Some(recovery) = self.recovery {
+                    recovery.first_render(self.os_input, Instant::now());
+                }
                 let elapsed = started.elapsed();
                 if let Some((suppressed, max_suppressed)) =
                     slow_warnings.record(Instant::now(), elapsed)
@@ -335,6 +414,9 @@ impl ClientLoop<'_, '_> {
 
     /// Restore the terminal, report `message`, and exit non-zero.
     fn fail(&mut self, message: String) -> ! {
+        if let Some(recovery) = self.recovery {
+            recovery.shutdown();
+        }
         self.sessions.shutdown();
         self.teardown.tear_down(self.os_input, message, 1)
     }

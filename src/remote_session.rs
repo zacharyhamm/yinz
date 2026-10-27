@@ -6,13 +6,14 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{Duration, Instant};
 use yinz_cli::args::{CliArgs, Sessions};
+use yinz_cli::session_picker::{Destination, Outcome, PickerRow};
 use yinz_cli::setup::Setup;
 use yinz_client::os_input_output::{connect_with_deadline, get_client_os_input};
 use yinz_client::remote_sessions::{
-    check_versions, connect, probe, validate_name, Endpoint, StartupCancellation,
+    check_versions, connect, discover, probe, validate_name, Endpoint, StartupCancellation,
 };
 #[cfg(test)]
-use yinz_client::remote_sessions::{client_socket, discover, parse_endpoint, parse_sessions};
+use yinz_client::remote_sessions::{client_socket, parse_endpoint, parse_sessions};
 use yinz_client::{start_client, ClientInfo};
 use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
 use yinz_ipc::probe::SessionProbe;
@@ -44,7 +45,11 @@ pub(crate) fn bootstrap(
     terminal_window_size: Option<&str>,
     opts: &CliArgs,
 ) -> Result<()> {
-    check_versions(client_version, contract, bootstrap)?;
+    use yinz_client::remote_failure::{BootstrapCategory, BootstrapError};
+    check_versions(client_version, contract, bootstrap).map_err(|diagnostic| BootstrapError {
+        category: BootstrapCategory::Compatibility,
+        diagnostic,
+    })?;
     validate_name(name)?;
     let configuration_options = configuration_options
         .map(serde_json::from_str::<Options>)
@@ -82,12 +87,30 @@ pub(crate) fn bootstrap(
             terminal_window_size,
         )?,
         SessionProbe::Absent => {
-            bail!("remote session {name:?} does not exist; use --create to create or resurrect it")
+            return Err(BootstrapError {
+                category: BootstrapCategory::SessionMissing,
+                diagnostic: anyhow!(
+                "remote session {name:?} does not exist; use --create to create or resurrect it"
+            ),
+            }
+            .into())
         },
         SessionProbe::Unresponsive => {
-            bail!("remote session {name:?} is unresponsive; refusing to replace it")
+            return Err(BootstrapError {
+                category: BootstrapCategory::Unresponsive,
+                diagnostic: anyhow!(
+                    "remote session {name:?} is unresponsive; refusing to replace it"
+                ),
+            }
+            .into())
         },
-        SessionProbe::Denied => bail!("permission denied probing remote session {name:?}"),
+        SessionProbe::Denied => {
+            return Err(BootstrapError {
+                category: BootstrapCategory::Permission,
+                diagnostic: anyhow!("permission denied probing remote session {name:?}"),
+            }
+            .into())
+        },
     }
     probe(&socket).context("remote session is not ready")?;
     let endpoint = Endpoint {
@@ -251,6 +274,8 @@ fn cleanup_forward() {
 fn validate_options(opts: &CliArgs) -> Result<()> {
     let Some(yinz_cli::args::Command::Sessions(Sessions::Attach {
         remote: Some(_),
+        session_name,
+        create,
         index,
         create_background,
         force_run_commands,
@@ -264,6 +289,10 @@ fn validate_options(opts: &CliArgs) -> Result<()> {
         && opts.layout.is_none() && opts.layout_string.is_none() && opts.new_session_with_layout.is_none()
         && opts.session.is_none() && opts.max_panes.is_none() && opts.data_dir.is_none(),
         "remote attach does not support local session selection, layout, data-directory, or session option overrides; configure the session on the remote host");
+    anyhow::ensure!(
+        session_name.is_some() || !create,
+        "remote attach with --create requires a session name"
+    );
     Ok(())
 }
 
@@ -283,10 +312,53 @@ fn switch_target(
     Ok((name.into_string(), target.tab_position, target.pane_id))
 }
 
-pub(crate) fn attach(opts: &CliArgs, host: &str, name: &str, mut create: bool) -> Result<i32> {
+fn select_discovered_session(
+    host: &str,
+    rows: Vec<PickerRow>,
+    interactive: bool,
+) -> Result<Outcome> {
+    anyhow::ensure!(!rows.is_empty(), "No active yinz sessions found on {host}.");
+    if let [row] = rows.as_slice()
+        && row.listing == yinz_cli::sessions::SessionListing::Running
+        && let Some(destination) = &row.destination
+    {
+        return Ok(Outcome::Picked(destination.clone()));
+    }
+    anyhow::ensure!(
+        interactive,
+        "Specify a session name with `yinz attach --remote {host} SESSION`, or use a terminal to choose. Sessions on {host}: {}",
+        rows.iter().map(|row| row.label.as_str()).collect::<Vec<_>>().join(", ")
+    );
+    crate::session_menu::run(rows, "attach", Vec::new()).context("choose a remote session")
+}
+
+pub(crate) fn attach(
+    opts: &CliArgs,
+    host: &str,
+    name: Option<&str>,
+    mut create: bool,
+) -> Result<i32> {
     validate_options(opts)?;
-    validate_name(name)?;
+    if let Some(name) = name {
+        validate_name(name)?;
+    }
     ssh::validate_ssh_host(host)?;
+    let cancellation = StartupCancellation::new()?;
+    let mut name = match name {
+        Some(name) => name.to_owned(),
+        None => {
+            let rows = discover(host, &cancellation.cancelled);
+            if cancellation.is_cancelled() {
+                return Ok(yinz_client::INTERRUPTED_EXIT_STATUS);
+            }
+            match select_discovered_session(host, rows?, crate::commands::can_pick_a_session())? {
+                Outcome::Picked(Destination::Remote { name, .. }) => name.into_string(),
+                Outcome::Cancelled(_) => return Ok(0),
+                Outcome::Interrupted => return Ok(yinz_client::INTERRUPTED_EXIT_STATUS),
+                _ => bail!("remote session picker returned no remote destination"),
+            }
+        },
+    };
     let mut config = yinz_config::config::Config::load(
         opts.config.as_deref(),
         opts.config_dir.as_deref(),
@@ -298,10 +370,8 @@ pub(crate) fn attach(opts: &CliArgs, host: &str, name: &str, mut create: bool) -
         .map_err(|e| anyhow!("{e}"))
         .context("load local terminal theme")?;
     let os = get_client_os_input().context("open local terminal")?;
-    let mut name = name.to_owned();
     let mut tab = None;
     let mut pane = None;
-    let cancellation = StartupCancellation::new()?;
     loop {
         let forward = connect(host, &name, create, &cancellation.cancelled);
         if cancellation.is_cancelled() {

@@ -177,6 +177,7 @@ fn remote_attach_cli_combinations() {
         .stack_size(32 * 1024 * 1024)
         .spawn(|| {
             for args in [
+                vec!["yinz", "attach", "--remote", "host"],
                 vec!["yinz", "attach", "--remote", "host", "work"],
                 vec![
                     "yinz",
@@ -200,7 +201,6 @@ fn remote_attach_cli_combinations() {
                 validate_options(&opts).unwrap();
             }
             for args in [
-                vec!["yinz", "attach", "--remote", "host"],
                 vec!["yinz", "attach", "--remote", "host", "work", "--index", "1"],
                 vec![
                     "yinz",
@@ -222,6 +222,7 @@ fn remote_attach_cli_combinations() {
                 assert!(CliArgs::try_parse_from(args).is_err());
             }
             for args in [
+                vec!["yinz", "attach", "--remote", "host", "--create"],
                 vec![
                     "yinz",
                     "--layout",
@@ -257,6 +258,54 @@ fn remote_attach_cli_combinations() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[test]
+fn remote_discovery_selects_the_only_running_session_without_a_terminal() {
+    let rows = discovery_rows(&[("work", yinz_cli::sessions::SessionListing::Running)]);
+    assert_eq!(
+        select_discovered_session("host", rows, false).unwrap(),
+        Outcome::Picked(Destination::Remote {
+            host: "host".into(),
+            name: "work".into(),
+        })
+    );
+}
+
+#[test]
+fn remote_discovery_reports_empty_ambiguous_and_unreachable_sessions() {
+    use yinz_cli::sessions::SessionListing::{Denied, Running, Unresponsive};
+    let error = select_discovered_session("host", Vec::new(), false)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, "No active yinz sessions found on host.");
+    for sessions in [
+        vec![("one", Running), ("two", Running)],
+        vec![("busy", Unresponsive)],
+        vec![("denied", Denied)],
+    ] {
+        let rows = discovery_rows(&sessions);
+        let error = select_discovered_session("host", rows, false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("yinz attach --remote host SESSION"),
+            "{error}"
+        );
+        for (name, _) in sessions {
+            assert!(error.contains(&format!("host / {name}")), "{error}");
+        }
+    }
+}
+
+fn discovery_rows(sessions: &[(&str, yinz_cli::sessions::SessionListing)]) -> Vec<PickerRow> {
+    let response = serde_json::json!({
+        "yinz_version": VERSION,
+        "contract_version": CLIENT_SERVER_CONTRACT_VERSION,
+        "bootstrap_version": REMOTE_BOOTSTRAP_VERSION,
+        "sessions": sessions.iter().map(|(name, listing)| (name, Duration::ZERO, listing)).collect::<Vec<_>>(),
+    });
+    parse_sessions("host", &serde_json::to_vec(&response).unwrap()).unwrap()
 }
 
 #[test]
