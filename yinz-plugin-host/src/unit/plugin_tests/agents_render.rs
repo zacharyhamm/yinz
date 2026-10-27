@@ -92,6 +92,8 @@ fn render_sized(
     for cell in lines.iter().flatten() {
         assert!(
             [
+                None,
+                Some(AnsiCode::Reset),
                 Some(style.colors.text_unselected.background.into()),
                 Some(style.colors.text_selected.background.into()),
             ]
@@ -155,8 +157,19 @@ fn assert_selection(row: &[TerminalCharacter], style: Style, selected: bool, mar
     } else {
         style.colors.text_unselected.background
     };
-    for cell in row {
-        assert_eq!(cell.styles.background, Some(background.into()), "{cell:?}");
+    let text_end = row
+        .iter()
+        .rposition(|cell| !cell.character.is_whitespace())
+        .map_or(0, |index| index + 1);
+    for (index, cell) in row.iter().enumerate() {
+        if selected || index < text_end {
+            assert_eq!(cell.styles.background, Some(background.into()), "{cell:?}");
+        } else {
+            assert!(
+                matches!(cell.styles.background, None | Some(AnsiCode::Reset)),
+                "padding must remain translucent: {cell:?}"
+            );
+        }
     }
 }
 
@@ -782,6 +795,39 @@ fn agents_search_labels_keep_queries_and_cursors_visible_in_narrow_panes() {
                         assert_eq!(line.trim_end(), expected.trim_end());
                         assert!(cursor.is_null());
                     }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn agents_labels_preserve_unicode_suffixes_and_clip_to_available_columns() {
+    for style in themes() {
+        let mut plugin = plugin();
+        plugin
+            .runtime
+            .eval("(a-begin-search!) (a-set! \"search_editing\" #f)")
+            .unwrap();
+        for (query, full, clipped) in [
+            ("👩‍💻 hello", "All: 👩💻 hello", "/👩💻 he"),
+            ("plain hello", "All: plain hello", "/plain h"),
+            ("界 hello", "All: 界 hello", "/界 hell"),
+        ] {
+            plugin
+                .runtime
+                .invoke("a-set!", vec![json!("search_query"), json!(query)])
+                .unwrap();
+            for (cols, expected) in [(16, full), (8, clipped)] {
+                let lines = render_sized(&mut plugin, style, 1, cols);
+                // The grid stores individual characters and discards the zero-width joiner.
+                let actual: String = lines[0].iter().map(|cell| cell.character).collect();
+                assert_eq!(actual.trim_end(), expected, "{query:?}, {cols} columns");
+                for cell in cells(&lines, expected) {
+                    assert_eq!(
+                        cell.styles.background,
+                        Some(style.colors.text_unselected.background.into())
+                    );
                 }
             }
         }

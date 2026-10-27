@@ -18,7 +18,13 @@
     (set! levels (append levels (map (lambda (_) '()) (range (max 0 (- 6 (length levels)))))))
     (set! text (hash-insert text "levels" (map (lambda (i)
             (cond ((= i 4) '()) ((= i 5) (append dim (list-ref levels i))) (else (list-ref levels i)))) (range (length levels))))))
-  (display (yinz-ui-text (hash-insert text "opaque" #t) (hash "x" paint-x "y" row "width" cols "height" (if (null? height) 'json-null (car height))))))
+  ;; Keep labels and their spaces legible, but leave unused columns translucent.
+  ;; Selected rows still paint their whole width.
+  ;; The renderer clips by individual character widths, including joined emoji.
+  (define width (if (a-field text "selected" #f) cols
+      (min cols (fold-from 0 (lambda (sum ch) (+ sum (yinz-text-width (string ch))))
+          (string->list (hash-ref text "text"))))))
+  (display (yinz-ui-text (hash-insert text "opaque" #t) (hash "x" paint-x "y" row "width" width "height" (if (null? height) 'json-null (car height))))))
 (define (selection-marker selected focused)
   (if selected (if focused "┃" "│") " "))
 (define (prefix line text selected)
@@ -364,8 +370,6 @@
   (cond ((or (= rows 0) (= cols 0))
       (for-each (lambda (key) (a-set! key 0)) '("last_window_start" "last_list_rows" "last_list_max_scroll" "last_list_offset" "last_list_window" "last_history_rows" "last_history_body_rows" "last_history_max_scroll" "last_reader_rows" "last_reader_max_scroll")))
     (else
-      ; Empty rows need the semantic background too, including after a theme change.
-      (for-each (lambda (row) (paint (styled "" #f) row cols)) (range rows))
       (when footer (a-set! "last_footer_row" (- rows 1)) (paint (styled footer 1) (- rows 1) cols 1))
       (when (> body-rows 0)
         (cond ((a-get "key_sheet_scroll") (draw-sheet body-rows cols))
