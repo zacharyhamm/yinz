@@ -3390,6 +3390,10 @@ pub enum PluginCommand {
     GetLocalUtcOffset {
         epoch_ms: SignedUnixMillis,
     },
+    /// A readable date and time in the host's local timezone, including its abbreviation.
+    GetLocalTime {
+        epoch_ms: SignedUnixMillis,
+    },
 }
 
 /// The outcome of declaring an entity in the data store.

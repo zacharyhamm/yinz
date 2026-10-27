@@ -505,7 +505,7 @@ pub(super) fn command_permission(kind: CommandType) -> Option<PermissionType> {
         // A clock. It says the machine's offset from UTC and nothing about the session,
         // which is less than `GetYinzVersion` already says, and a permission prompt in
         // front of drawing a timestamp would be answered blind every time.
-        CommandType::GetLocalUtcOffset => return None,
+        CommandType::GetLocalUtcOffset | CommandType::GetLocalTime => return None,
         // Reloading a plugin someone wrote is the second half of writing it.
         CommandType::ReloadPluginByUrl => PermissionType::AuthorPlugins,
         // Reading a plugin's log lines is the authoring loop's "what did it say" step, the same

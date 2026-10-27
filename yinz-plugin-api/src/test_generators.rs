@@ -1661,6 +1661,11 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
                 (true, true) => yinz_types::authoring::PluginCheckMode::Prepare,
             },
         },
+        CommandType::GetLocalTime => PluginCommand::GetLocalTime {
+            epoch_ms: yinz_types::units::SignedUnixMillis::new(
+                tc.draw(generators::integers::<i64>()),
+            ),
+        },
         CommandType::GetLocalUtcOffset => PluginCommand::GetLocalUtcOffset {
             epoch_ms: yinz_types::units::SignedUnixMillis::new(
                 tc.draw(generators::integers::<i64>()),

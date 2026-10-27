@@ -527,6 +527,7 @@ fn the_commands_that_need_no_permission_are_exactly_these() {
         CommandType::ScanHostFolder,
         CommandType::WatchFilesystem,
         CommandType::GetLocalUtcOffset,
+        CommandType::GetLocalTime,
     ];
     for kind in CommandType::iter() {
         assert_eq!(

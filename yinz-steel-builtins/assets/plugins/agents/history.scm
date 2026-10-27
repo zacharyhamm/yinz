@@ -4,7 +4,7 @@
   a-event-at-row a-history-page a-open-reader! a-read-key! a-reader a-reader-set!
   a-fill-reader! a-reader-lines a-reader-starts a-reader-label a-reveal-fold!
   a-scroll-reader! a-fold-at a-toggle-fold! a-open-target a-copy-event! a-open-file!
-  a-divider-hint a-history-label a-shows-age? a-reanchor-history! a-bottom-anchor
+  a-divider-hint a-shows-age? a-reanchor-history! a-bottom-anchor
   a-cursor-anchor a-cursor-into-window a-reveal-cursor a-position-search-hit!
   a-reader-page a-folding? a-event-end a-blank-history)
 (define a-blank-history (hash "label" "" "entries" '() "events" '() "header" '()))
@@ -21,7 +21,8 @@
     (define agent (a-field (a-row) "Agent" #f))
     (define summary (and agent (a-field (a-get "summaries") (number->string (hash-ref agent "pane_id")) #f)))
     (define lines (cond
-        (matches (yinz-history-call (hash-ref run "parsed") "Lines" (list width now (a-get "run_offset_secs"))))
+        (matches (yinz-history-call (hash-ref run "parsed") "Lines" (list width now (a-get "run_offset_secs")
+              (yinz-command (hash "GetLocalTime" (hash "epoch_ms" (hash-ref run "started_at_ms")))))))
         (summary (yinz-agent-model "history" "Summary" (list (hash-ref agent "pane_id") (hash-ref agent "kind") summary (hash-ref agent "waiting") width now)))
         (else a-blank-history)))
     (a-set! "history_cache" (hash "key" key "lines" lines))))
@@ -218,11 +219,6 @@
         (if (hash-ref ask "stale") '("instead" "no new summary · s to try again") '("beside" "summarising…")))
       ((and (a-get "waiting_base") (a-field (a-row) "Agent" #f) (not (a-waiting? (a-row)))) '("beside" "no longer waiting"))
       (else #f))))
-(define (a-history-label)
-  (define label (hash-ref (a-history) "label")) (define hint (a-divider-hint))
-  (cond ((not hint) label) ((or (equal? (car hint) "instead") (equal? label "")) (cadr hint))
-    ((equal? (car hint) "before") (string-append (cadr hint) " · " label))
-    (else (string-append label " · " (cadr hint)))))
 (define (a-shows-age?)
   (cond ((a-get "reading") (if (a-some (a-reader "created_at_ms")) #t #f))
     ((and (a-get "search_base") (a-get "searched_at_ms") (not (a-get "search_editing"))) #t)

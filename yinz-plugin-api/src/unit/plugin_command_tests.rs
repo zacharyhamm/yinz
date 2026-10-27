@@ -650,6 +650,7 @@ mod props {
             | PluginCommand::ReloadPluginByUrl(_)
             | PluginCommand::ReadPluginLog { .. }
             | PluginCommand::GetLocalUtcOffset { .. }
+            | PluginCommand::GetLocalTime { .. }
             | PluginCommand::Unsubscribe(_)
             | PluginCommand::SetSelectable(_)
             | PluginCommand::GetCellPixelSize
@@ -963,4 +964,13 @@ mod props {
             );
         }
     }
+}
+
+#[test]
+fn local_time_command_round_trips() {
+    let command = PluginCommand::GetLocalTime {
+        epoch_ms: yinz_types::units::SignedUnixMillis::new(-1),
+    };
+    let encoded = ProtobufPluginCommand::try_from(command.clone()).unwrap();
+    assert_eq!(PluginCommand::try_from(encoded).unwrap(), command);
 }

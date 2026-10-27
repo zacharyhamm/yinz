@@ -60,6 +60,12 @@ pub(crate) fn default_reply(command: &PluginCommand) -> Option<Vec<u8>> {
             version: "test".into(),
         }
         .encode_to_vec(),
+        PluginCommand::GetLocalTime { epoch_ms } => ProtobufGetLocalTimeResponse {
+            text: chrono::DateTime::from_timestamp_millis(epoch_ms.get())
+                .map(|at| at.format("%b %-d, %Y, %-I:%M %p UTC").to_string())
+                .unwrap_or_default(),
+        }
+        .encode_to_vec(),
         PluginCommand::GetLocalUtcOffset { .. } => {
             ProtobufGetLocalUtcOffsetResponse { offset_seconds: 0 }.encode_to_vec()
         },
@@ -434,7 +440,8 @@ impl Pair {
                             || command.pointer("/DataFetch/request/select")
                                 == Some(&serde_json::json!(["payload"]))
                             || command.get("DataCount").is_some()
-                            || command.get("GetLocalUtcOffset").is_some())
+                            || command.get("GetLocalUtcOffset").is_some()
+                            || command.get("GetLocalTime").is_some())
                 })
                 .map(|mut command| {
                     // The agents search label now includes its mode; its cursor is tested separately.

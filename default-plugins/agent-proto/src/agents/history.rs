@@ -253,7 +253,7 @@ pub fn run_history(
     now_ms: i64,
     utc_offset_secs: i32,
 ) -> HistoryLines {
-    ParsedRun::new(run).lines(width, now_ms, utc_offset_secs)
+    ParsedRun::new(run).lines(width, now_ms, utc_offset_secs, None)
 }
 
 /// [`run_history`] with the expensive half kept: every event's markdown parsed once, and its
@@ -521,7 +521,13 @@ impl ParsedRun {
     }
 
     /// The run as the history half draws it at `width`, its ages read against `now_ms`.
-    pub fn lines(&mut self, width: usize, now_ms: i64, utc_offset_secs: i32) -> HistoryLines {
+    pub fn lines(
+        &mut self,
+        width: usize,
+        now_ms: i64,
+        utc_offset_secs: i32,
+        local_date: Option<&str>,
+    ) -> HistoryLines {
         let Some(inner) = wrap_width(width) else {
             return HistoryLines::default();
         };
@@ -564,7 +570,7 @@ impl ParsedRun {
             event.gutter = gutter;
         }
         HistoryLines {
-            header: run_header(&self.run, inner, utc_offset_secs),
+            header: run_header(&self.run, inner, utc_offset_secs, local_date),
             // The run's own id rather than its kind: the id opens with the kind anyway
             // (`run_id`), so this says everything the kind said and names *which* run of that
             // agent the half is drawing - the one thing the pane could not tell you before.
@@ -719,21 +725,28 @@ impl RunFacts {
 ///
 /// Wrapped rather than cut. A tail-cut uuid is a uuid nobody can use, and unlike the divider
 /// (`fit_label`) this has as many rows as it needs.
-pub(super) fn run_header(run: &RunFacts, width: usize, utc_offset_secs: i32) -> Vec<MdLine> {
+pub(super) fn run_header(
+    run: &RunFacts,
+    width: usize,
+    utc_offset_secs: i32,
+    local_date: Option<&str>,
+) -> Vec<MdLine> {
     // `run.id` when the agent supplied no session id of its own: `run_id` keys such a run by
     // pane and start time, and naming that "session" would be a claim the run cannot make.
     let (label, value) = match run.session_id.trim() {
         "" => ("run", run.id.as_str()),
         session_id => ("session", session_id),
     };
-    let mut rows = wrapped_field(
-        "started",
-        &wall_clock(
+    let date = local_date.map(str::to_owned).unwrap_or_else(|| {
+        wall_clock(
             yinz_tile::prelude::SignedUnixMillis::new(run.started_at_ms),
             utc_offset_secs,
-        ),
-        width,
-    );
+        )
+    });
+    let mut rows = crate::panel_text::wrap_words(&date, width)
+        .into_iter()
+        .map(MdLine::plain)
+        .collect::<Vec<_>>();
     rows.extend(wrapped_field(label, value, width));
     for (label, id) in [
         ("origin", run.origin_run_id.as_deref()),

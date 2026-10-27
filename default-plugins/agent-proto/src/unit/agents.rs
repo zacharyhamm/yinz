@@ -1115,10 +1115,13 @@ fn the_header_states_the_start_and_the_whole_session_id() {
     assert_eq!(
         rows,
         vec![
-            "started 2026-09-04 19:32:07 +01:00",
+            "2026-09-04 19:32:07 +01:00",
             "session 9f3c1a7e-4b21-4d8e-9c02-1a2b3c4d5e6f",
         ]
     );
+    let local =
+        ParsedRun::new(&run).lines(60, run.started_at_ms, 0, Some("Sep 4, 2026, 1:32 PM CDT"));
+    assert_eq!(local.header[0].text, "Sep 4, 2026, 1:32 PM CDT");
     // The divider still says the short form: the header is what the whole id is for.
     assert_eq!(run_history(&run, 60, 0, 0).label, "claude:9f3c1a7e");
 }
@@ -1771,7 +1774,7 @@ fn lineage_header_wraps_full_agent_session_ids() {
     run.origin_run_id = Some(format!("claude:{origin}"));
     run.previous_run_id = Some(format!("claude:{previous}"));
     for width in [20, 32, 60] {
-        let header = run_header(&RunFacts::of(&run), width, 0);
+        let header = run_header(&RunFacts::of(&run), width, 0, None);
         assert!(header.iter().all(|row| row.text.chars().count() <= width));
         for (label, expected) in [("origin", origin), ("previous", previous)] {
             let field: String = header
@@ -3954,7 +3957,7 @@ fn a_kept_parse_draws_what_a_fresh_one_draws_at_every_width() {
     let mut parsed = ParsedRun::new(&run);
     for (width, now) in [(80, 100), (30, 100), (57, 90_000_000), (80, 100)] {
         assert_eq!(
-            parsed.lines(width, now, 0),
+            parsed.lines(width, now, 0, None),
             run_history(&run, width, now, 0),
             "width {width} at {now}"
         );
@@ -3969,7 +3972,7 @@ fn a_kept_parse_draws_what_a_fresh_one_draws_at_every_width() {
 fn a_grown_run_parses_only_what_is_new() {
     let mut run = a_mixed_run();
     let mut parsed = ParsedRun::new(&run);
-    let _ = parsed.lines(60, 100, 0);
+    let _ = parsed.lines(60, 100, 0, None);
     let before = parsed.parses;
 
     run.entries.push(RunEntry {
@@ -3981,7 +3984,10 @@ fn a_grown_run_parses_only_what_is_new() {
         created_at_ms: Some(8_000_000),
     });
     parsed.update(&run);
-    assert_eq!(parsed.lines(60, 100, 0), run_history(&run, 60, 100, 0));
+    assert_eq!(
+        parsed.lines(60, 100, 0, None),
+        run_history(&run, 60, 100, 0)
+    );
     assert_eq!(parsed.parses - before, 1, "only the question");
 }
 
@@ -3993,7 +3999,7 @@ fn a_grown_run_parses_only_what_is_new() {
 fn an_entry_that_changed_is_parsed_again() {
     let mut run = a_mixed_run();
     let mut parsed = ParsedRun::new(&run);
-    let _ = parsed.lines(60, 100, 0);
+    let _ = parsed.lines(60, 100, 0, None);
     let before = parsed.parses;
 
     run.entries[0].text = "fix the *other* test".to_owned();
@@ -4003,13 +4009,19 @@ fn an_entry_that_changed_is_parsed_again() {
     );
     run.summary = Some(a_summary("Something else entirely.", true));
     parsed.update(&run);
-    assert_eq!(parsed.lines(60, 100, 0), run_history(&run, 60, 100, 0));
+    assert_eq!(
+        parsed.lines(60, 100, 0, None),
+        run_history(&run, 60, 100, 0)
+    );
     assert_eq!(parsed.parses - before, 2);
 
     // And one the run dropped is dropped here too.
     run.entries.remove(1);
     parsed.update(&run);
-    assert_eq!(parsed.lines(60, 100, 0), run_history(&run, 60, 100, 0));
+    assert_eq!(
+        parsed.lines(60, 100, 0, None),
+        run_history(&run, 60, 100, 0)
+    );
 }
 
 /// The rolling summary is rewritten in place, so it is recognised by what it says and not
@@ -4018,7 +4030,7 @@ fn an_entry_that_changed_is_parsed_again() {
 fn a_summary_rewritten_to_the_same_length_is_parsed_again() {
     let mut run = a_mixed_run();
     let mut parsed = ParsedRun::new(&run);
-    let _ = parsed.lines(60, 100, 0);
+    let _ = parsed.lines(60, 100, 0, None);
     let before = parsed.parses;
 
     let old = run.summary.as_ref().expect("a summary").text.clone();
@@ -4026,7 +4038,10 @@ fn a_summary_rewritten_to_the_same_length_is_parsed_again() {
     assert_eq!(old.len(), new.len());
     run.summary = Some(a_summary(new, false));
     parsed.update(&run);
-    assert_eq!(parsed.lines(60, 100, 0), run_history(&run, 60, 100, 0));
+    assert_eq!(
+        parsed.lines(60, 100, 0, None),
+        run_history(&run, 60, 100, 0)
+    );
     assert_eq!(parsed.parses - before, 1, "only the summary");
 }
 
@@ -4037,16 +4052,19 @@ fn a_summary_rewritten_to_the_same_length_is_parsed_again() {
 fn another_run_is_parsed_afresh_however_alike_its_revisions_are() {
     let run = a_mixed_run();
     let mut parsed = ParsedRun::new(&run);
-    let _ = parsed.lines(60, 100, 0);
+    let _ = parsed.lines(60, 100, 0, None);
 
     let mut other = run.clone();
     other.id = "claude:session-2".to_owned();
     other.entries[0].text = "fix the **stale** test".to_owned();
     assert_eq!(other.entries[0].text.len(), run.entries[0].text.len());
     parsed.update(&other);
-    assert_eq!(parsed.lines(60, 100, 0), run_history(&other, 60, 100, 0));
+    assert_eq!(
+        parsed.lines(60, 100, 0, None),
+        run_history(&other, 60, 100, 0)
+    );
     assert!(parsed
-        .lines(60, 100, 0)
+        .lines(60, 100, 0, None)
         .entries
         .iter()
         .any(|line| line.text.contains("stale")));
@@ -4058,7 +4076,7 @@ fn another_run_is_parsed_afresh_however_alike_its_revisions_are() {
 fn a_restamped_entry_is_not_parsed_again() {
     let mut run = a_mixed_run();
     let mut parsed = ParsedRun::new(&run);
-    let _ = parsed.lines(60, 90_000_000, 0);
+    let _ = parsed.lines(60, 90_000_000, 0, None);
     let before = parsed.parses;
 
     // A new age, a stamp where there was none - which widens the gutter the rows were
@@ -4068,7 +4086,7 @@ fn a_restamped_entry_is_not_parsed_again() {
     run.summary.as_mut().expect("a summary").created_at_ms = Some(80_000_000);
     parsed.update(&run);
     assert_eq!(
-        parsed.lines(60, 90_000_000, 0),
+        parsed.lines(60, 90_000_000, 0, None),
         run_history(&run, 60, 90_000_000, 0)
     );
     assert_eq!(parsed.parses, before);
@@ -4080,7 +4098,7 @@ fn a_restamped_entry_is_not_parsed_again() {
 fn a_restamped_timeline_is_the_one_drawn_at_the_new_minute() {
     let run = a_mixed_run();
     let mut parsed = ParsedRun::new(&run);
-    let mut lines = parsed.lines(60, 100, 0);
+    let mut lines = parsed.lines(60, 100, 0, None);
     for now in [90_000_000, 90_060_000, 200_000_000, 200_000_000] {
         assert!(parsed.restamp(&mut lines, now), "at {now}");
         assert_eq!(lines, run_history(&run, 60, now, 0), "at {now}");
@@ -4097,7 +4115,7 @@ fn a_restamped_timeline_is_the_one_drawn_at_the_new_minute() {
 fn only_an_event_parsed_whole_shares_its_parse() {
     let run = a_mixed_run();
     let mut parsed = ParsedRun::new(&run);
-    let lines = parsed.lines(60, 100, 0);
+    let lines = parsed.lines(60, 100, 0, None);
     let options = crate::markdown::Options::compact();
 
     let blocks = parsed
@@ -4128,7 +4146,7 @@ fn only_an_event_parsed_whole_shares_its_parse() {
         created_at_ms: None,
     }];
     let mut parsed = ParsedRun::new(&long);
-    let lines = parsed.lines(60, 100, 0);
+    let lines = parsed.lines(60, 100, 0, None);
     assert!(
         parsed.whole_blocks(&lines.events[0].text).is_none(),
         "an event parsed only in part"

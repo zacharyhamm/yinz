@@ -254,6 +254,7 @@ enum CommandName {
   DataCatalog = 278;
   SetQuitNotice = 279;
   GetLocalUtcOffset = 280;
+  GetLocalTime = 318;
   GetDisconnectTargets = 305;
   InspectConfiguration = 306;
   EditConfiguration = 307;
@@ -507,6 +508,7 @@ message PluginCommand {
     DataCatalogPayload data_catalog_payload = 219;
     SetQuitNoticePayload set_quit_notice_payload = 220;
     GetLocalUtcOffsetPayload get_local_utc_offset_payload = 221;
+    int64 get_local_time_payload = 255;
     SpawnAgentPayload spawn_agent_payload = 222;
     string resolve_project_payload = 254;
     string project_config_read_payload = 223;
@@ -779,6 +781,10 @@ message GetLocalUtcOffsetPayload {
 
 // Seconds east of UTC. Signed, and half the planet's is negative, so zigzag rather
 // than a two's-complement varint ten bytes long.
+message GetLocalTimeResponse {
+  string text = 1;
+}
+
 message GetLocalUtcOffsetResponse {
   sint32 offset_seconds = 1;
 }
