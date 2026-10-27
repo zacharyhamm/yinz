@@ -1,9 +1,10 @@
 use crate::{keys, CellStyle, GridSnapshot, LayoutInfo, Size, TestRunner, TestSession};
 
 fn selected(frame: &GridSnapshot, title: &str) -> bool {
-    frame.text.lines().any(|line| {
-        line.contains(title) && line.trim_start_matches([' ', '│']).starts_with(['>', '·'])
-    })
+    frame
+        .text
+        .lines()
+        .any(|line| line.contains(title) && line.trim_start_matches([' ', '│']).starts_with('┃'))
 }
 
 fn bar_style(frame: &GridSnapshot) -> CellStyle {

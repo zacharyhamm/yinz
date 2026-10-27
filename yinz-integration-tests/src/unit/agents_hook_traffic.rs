@@ -106,7 +106,7 @@ fn selected(frame: &GridSnapshot, title: &str) -> bool {
     frame
         .text
         .lines()
-        .any(|line| line.contains(title) && line.trim_start_matches([' ', '│']).starts_with('>'))
+        .any(|line| line.contains(title) && line.trim_start_matches([' ', '│']).starts_with('┃'))
 }
 
 fn pace(deadline: Instant) {
