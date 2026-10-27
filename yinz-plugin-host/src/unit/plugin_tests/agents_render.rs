@@ -13,7 +13,10 @@ use yinz_terminal::panes::{
 use yinz_types::{data::PaletteColor, style::Style};
 
 fn plugin() -> SteelReference {
-    let clock = Arc::new(AtomicU64::new(90_000));
+    plugin_with_clock(Arc::new(AtomicU64::new(90_000)))
+}
+
+fn plugin_with_clock(clock: Arc<AtomicU64>) -> SteelReference {
     let (_, responder) = host(&[], clock.clone());
     let mut plugin = SteelReference::with_clock(
         "agents",
@@ -928,7 +931,13 @@ fn agents_detail_updates_repaint_without_changing_compact_rows() {
     let first = render(&mut plugin, themes()[0]);
     cells(&first, "7 CLA ●");
     cells(&first, "working");
-    cells(&first, "Bash cargo test");
+    let history_col = state(&mut plugin, "last_divider_col").as_u64().unwrap() as usize + 1;
+    assert!(!first.iter().any(|line| line
+        .iter()
+        .skip(history_col)
+        .map(|cell| cell.character)
+        .collect::<String>()
+        .contains("Bash cargo test")));
     assert!(!first.iter().any(|line| line
         .iter()
         .map(|cell| cell.character)
@@ -942,7 +951,12 @@ fn agents_detail_updates_repaint_without_changing_compact_rows() {
     assert_eq!(state(&mut plugin, "rows"), rows);
     let next = render(&mut plugin, themes()[0]);
     cells(&next, "7 CLA ●");
-    cells(&next, "Read render.scm");
+    assert!(!next.iter().any(|line| line
+        .iter()
+        .skip(history_col)
+        .map(|cell| cell.character)
+        .collect::<String>()
+        .contains("Read render.scm")));
     cells(&next, "New title");
 
     snapshot["hooks"]["8"]["waiting_on"] = json!("Review the patch?");
@@ -1352,6 +1366,121 @@ fn agents_session_and_reset_share_one_row_and_truncate_the_id() {
                 text.iter().filter(|line| line.contains("3d left")).count(),
                 1
             );
+        }
+    }
+}
+
+fn working_snapshot(plugin: &mut SteelReference) {
+    let mut message = super::snapshot_message(1, &[], 2);
+    let mut snapshot: serde_json::Value =
+        serde_json::from_str(message.payload.as_deref().unwrap()).unwrap();
+    snapshot["hooks"]["7"] = json!({"phase": "Busy", "detail": "hidden tool"});
+    message.payload = Some(snapshot.to_string());
+    plugin.pipe(&message);
+}
+
+#[test]
+fn agents_working_pulse_restarts_and_restores_header() {
+    use std::sync::atomic::Ordering;
+    let clock = Arc::new(AtomicU64::new(90_000));
+    let mut plugin = plugin_with_clock(clock.clone());
+    assert!(plugin.take_commands().iter().any(|c| c
+        .get("Subscribe")
+        .and_then(|v| v.as_array())
+        .is_some_and(|events| events.contains(&json!("AgentEvent")))));
+    working_snapshot(&mut plugin);
+    plugin
+        .runtime
+        .eval(r#"(a-set! "maintenance_at" 92000)"#)
+        .unwrap();
+    let normal = render(&mut plugin, themes()[0]);
+    let hook = json!({"AgentEvent": {"pane_id": 7}});
+    plugin.take_commands();
+    assert!(!plugin
+        .runtime
+        .update(json!({"AgentEvent": {"pane_id": 8}}))
+        .unwrap());
+    assert_eq!(state(&mut plugin, "pulse"), false);
+    assert!(plugin.runtime.update(hook.clone()).unwrap());
+    let first = render(&mut plugin, themes()[0]);
+    assert_ne!(cells(&first, " · working"), cells(&normal, " · working"));
+    clock.store(90_050, Ordering::SeqCst);
+    assert!(plugin.runtime.update(json!({"Timer": 0.05})).unwrap());
+    let next = render(&mut plugin, themes()[0]);
+    assert_ne!(cells(&first, " · working"), cells(&next, " · working"));
+    assert!(!plugin
+        .take_commands()
+        .iter()
+        .any(|c| c.get("SetTimeout") == Some(&json!(2.0))));
+    clock.store(90_075, Ordering::SeqCst);
+    assert!(plugin.runtime.update(hook).unwrap());
+    assert!(!plugin
+        .take_commands()
+        .iter()
+        .any(|c| c.get("SetTimeout").is_some()));
+    assert_eq!(
+        cells(&render(&mut plugin, themes()[0]), " · working"),
+        cells(&first, " · working")
+    );
+    clock.store(91_025, Ordering::SeqCst);
+    plugin.runtime.update(json!({"Timer": 0.05})).unwrap();
+    assert_ne!(state(&mut plugin, "pulse"), false);
+    clock.store(91_075, Ordering::SeqCst);
+    assert!(plugin.runtime.update(json!({"Timer": 0.05})).unwrap());
+    assert_eq!(state(&mut plugin, "pulse"), false);
+    assert_eq!(
+        cells(&render(&mut plugin, themes()[0]), " · working"),
+        cells(&normal, " · working")
+    );
+    assert!(!plugin.runtime.update(json!({"Timer": 0.05})).unwrap());
+    plugin.take_commands();
+    clock.store(92_000, Ordering::SeqCst);
+    plugin.runtime.update(json!({"Timer": 2.0})).unwrap();
+    assert_eq!(
+        plugin
+            .take_commands()
+            .iter()
+            .filter(|c| c.get("SetTimeout") == Some(&json!(2.0)))
+            .count(),
+        1
+    );
+    assert_eq!(state(&mut plugin, "maintenance_at"), 94_000);
+}
+
+#[test]
+fn agents_working_pulse_clears_and_clips() {
+    for change in [
+        r#"(a-set! "selected" 3) (a-follow-selection! "pane:7")"#,
+        r#"(a-end-visit!)"#,
+        r#"(a-set! "rows" (list (hash "Agent" (hash "pane_id" 7 "kind" "claude" "text" "7 CLA ○" "waiting" #f)))) (a-set! "selected" 0)"#,
+        r#"(a-set! "rows" (list (hash "Agent" (hash "pane_id" 7 "kind" "claude" "text" "7 CLA !" "waiting" #t)))) (a-set! "selected" 0)"#,
+    ] {
+        let mut plugin = plugin();
+        working_snapshot(&mut plugin);
+        plugin
+            .runtime
+            .update(json!({"AgentEvent": {"pane_id": 7}}))
+            .unwrap();
+        assert_ne!(state(&mut plugin, "pulse"), false);
+        plugin.runtime.eval(change).unwrap();
+        plugin.runtime.invoke("a-check-pulse!", vec![]).unwrap();
+        assert_eq!(state(&mut plugin, "pulse"), false);
+    }
+    for style in themes() {
+        let mut plugin = plugin();
+        working_snapshot(&mut plugin);
+        for width in [10, 17, 20, 30, 50, 51, 100] {
+            plugin.runtime.eval(r#"(a-set! "pulse" #f)"#).unwrap();
+            let normal = render_at_width(&mut plugin, style, width);
+            plugin
+                .runtime
+                .update(json!({"AgentEvent": {"pane_id": 7}}))
+                .unwrap();
+            let pulse = render_at_width(&mut plugin, style, width);
+            for (normal, pulse) in normal.iter().flatten().zip(pulse.iter().flatten()) {
+                assert_eq!(normal.character, pulse.character);
+                assert_eq!(normal.styles.background, pulse.styles.background);
+            }
         }
     }
 }

@@ -189,7 +189,8 @@
       (define target (surface-at args))
       (if (not target) #f
         (let ((point (if (equal? target "prompt")
-                (begin (a-set! "focus" "prompt") (list #t #f))
+                (begin (when (a-get "search_editing") (a-cancel-search!))
+                  (a-set! "focus" "prompt") (list #t #f))
                 (point-at! content target keys))))
           (when (cadr point) (a-set! "click_press" (list args (cadr point)))) (car point))))
     ((equal? kind "Release")
