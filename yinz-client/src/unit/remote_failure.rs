@@ -48,3 +48,38 @@ fn cancellation_wins_over_permanent_diagnostics_and_unknown_diagnostics_are_reta
 fn bootstrap_categories_survive_the_ssh_error_context_prefix() {
     assert!(permanent_diagnostic("SSH bootstrap failed: YINZ_REMOTE_ERROR \"session_missing\"\nError: session does not exist"));
 }
+
+#[test]
+fn markerless_bootstrap_diagnostics_from_compatible_peers_are_permanent() {
+    let name = yinz_types::internal_ids::SessionName::new("work session");
+    for diagnostic in [
+        format!("remote session {name:?} does not exist; use --create to create or resurrect it"),
+        format!("permission denied probing remote session {name:?}"),
+        "remote session \"work\" does not exist; use --create to create or resurrect it".into(),
+        "permission denied probing remote session \"work\"".into(),
+    ] {
+        for prefix in ["", "SSH bootstrap failed: ssh exited (1): Error: "] {
+            let diagnostic = format!("{prefix}{diagnostic}");
+            let failure = ConnectionFailure::classify(
+                anyhow::anyhow!(diagnostic.clone()),
+                &AtomicBool::new(false),
+            );
+            assert_eq!(failure.kind, FailureKind::Permanent, "{diagnostic}");
+            assert_eq!(failure.diagnostic, diagnostic);
+            assert_eq!(
+                ConnectionFailure::classify(anyhow::anyhow!(diagnostic), &AtomicBool::new(true))
+                    .kind,
+                FailureKind::Cancelled
+            );
+        }
+    }
+    for diagnostic in [
+        format!("remote session {name:?} is unresponsive; refusing to replace it"),
+        "remote session is not ready: Connection refused".into(),
+        "configuration file does not exist".into(),
+        "remote session log file does not exist".into(),
+        "remote session \"work\" does not exist on this proxy".into(),
+    ] {
+        assert!(!permanent_diagnostic(&diagnostic), "{diagnostic}");
+    }
+}

@@ -188,6 +188,13 @@ enum StartupKittyProbe {
     Resolved,
 }
 
+/// A paste crossing a recovery boundary must never reach the new keyboard parser.
+/// Keep only the matched marker length, even for arbitrarily long pastes.
+enum RecoveryPaste {
+    Opening(usize),
+    Closing(usize),
+}
+
 /// Continuous host-reply parser. Lives for the whole client session.
 pub struct StdinAnsiParser {
     inner: InputParser,
@@ -204,6 +211,7 @@ pub struct StdinAnsiParser {
     partial_paste: Vec<u8>,
     nested_frame_extractor: nested_session::NestedFrameExtractor,
     in_bracketed_paste: bool,
+    recovery_paste: Option<RecoveryPaste>,
     startup_kitty_probe: StartupKittyProbe,
     partial_apc: Vec<u8>,
 }
@@ -230,6 +238,7 @@ impl StdinAnsiParser {
             partial_paste: Vec::new(),
             nested_frame_extractor: nested_session::NestedFrameExtractor::new(),
             in_bracketed_paste: false,
+            recovery_paste: None,
             startup_kitty_probe: StartupKittyProbe::NotSent,
             partial_apc: Vec::new(),
         }
@@ -382,6 +391,7 @@ impl StdinAnsiParser {
     /// residue bytes that were not part of any classified sequence — these
     /// are the bytes the caller should feed to the keyboard parser.
     pub fn feed(&mut self, bytes: &[u8]) -> ParseOutput {
+        let bytes = self.discard_recovery_paste(bytes);
         let mut out = ParseOutput::default();
         let (bytes, nested_frames) = self.nested_frame_extractor.extract(bytes);
         let bytes = &bytes[..];
@@ -538,6 +548,9 @@ impl StdinAnsiParser {
     /// ESC or a bare `ESC [` / `ESC ]` introducer, from whichever buffer holds it.
     /// The nested-frame extractor keeps priority, as in `pending_partial`.
     pub fn finalize_fast_partial(&mut self) -> Vec<u8> {
+        if self.in_bracketed_paste {
+            return Vec::new();
+        }
         match self.pending_partial() {
             PendingPartial::LoneEsc | PendingPartial::BareIntroducer => {
                 if !self.nested_frame_extractor.partial_bytes().is_empty() {
@@ -553,7 +566,10 @@ impl StdinAnsiParser {
     }
 
     pub fn finalize_force(&mut self) -> Vec<u8> {
-        self.in_bracketed_paste = false;
+        // An idle timeout cannot end a paste: its closing marker may still be in flight.
+        if self.in_bracketed_paste {
+            return Vec::new();
+        }
         let mut partial_nested_frame = self.nested_frame_extractor.take_partial();
         let mut out = Vec::with_capacity(
             self.partial_osc.len()
@@ -568,6 +584,55 @@ impl StdinAnsiParser {
         out.append(&mut partial_nested_frame);
         out.append(&mut self.partial_apc);
         out
+    }
+
+    pub(crate) fn reset_for_recovery(&mut self) {
+        let in_paste = self.in_bracketed_paste;
+        self.in_bracketed_paste = false;
+        let pending = self.finalize_force();
+        self.inner = InputParser::new();
+        // Further transitions must not forget an already quarantined paste.
+        if self.recovery_paste.is_none() {
+            if in_paste {
+                let matched = (1..PASTE_END_MARKER.len())
+                    .rev()
+                    .find(|&len| pending.ends_with(&PASTE_END_MARKER[..len]))
+                    .unwrap_or(0);
+                self.recovery_paste = Some(RecoveryPaste::Closing(matched));
+            } else if !pending.is_empty() && PASTE_START_MARKER.starts_with(&pending) {
+                self.recovery_paste = Some(RecoveryPaste::Opening(pending.len()));
+            }
+        }
+    }
+
+    fn discard_recovery_paste<'a>(&mut self, bytes: &'a [u8]) -> &'a [u8] {
+        for (i, &byte) in bytes.iter().enumerate() {
+            match self.recovery_paste.as_mut() {
+                None => return &bytes[i..],
+                Some(RecoveryPaste::Opening(matched)) => {
+                    if byte != PASTE_START_MARKER[*matched] {
+                        // The old prefix was not a paste. Only new bytes may become input.
+                        self.recovery_paste = None;
+                        return &bytes[i..];
+                    }
+                    *matched += 1;
+                    if *matched == PASTE_START_MARKER.len() {
+                        self.recovery_paste = Some(RecoveryPaste::Closing(0));
+                    }
+                },
+                Some(RecoveryPaste::Closing(matched)) => {
+                    if byte == PASTE_END_MARKER[*matched] {
+                        *matched += 1;
+                        if *matched == PASTE_END_MARKER.len() {
+                            self.recovery_paste = None;
+                        }
+                    } else {
+                        *matched = usize::from(byte == PASTE_END_MARKER[0]);
+                    }
+                },
+            }
+        }
+        &bytes[bytes.len()..]
     }
 
     fn extract_kitty_probe_reply(&mut self, bytes: &[u8], replies: &mut Vec<HostReply>) -> Vec<u8> {

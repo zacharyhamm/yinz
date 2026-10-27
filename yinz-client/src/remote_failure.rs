@@ -96,6 +96,22 @@ pub(crate) fn permanent_diagnostic(diagnostic: &str) -> bool {
         return true;
     }
     let diagnostic = diagnostic.to_ascii_lowercase();
+    // Compatible older peers do not emit the category marker. Match their specific
+    // bootstrap diagnostics rather than treating arbitrary missing files as permanent.
+    if diagnostic.lines().any(|line| {
+        line.contains("permission denied probing remote session ")
+            || line
+                .split_once("remote session ")
+                .and_then(|(_, rest)| {
+                    rest.split_once(" does not exist; use --create to create or resurrect it")
+                })
+                .is_some_and(|(name, _)| {
+                    (name.starts_with('"') && name.ends_with('"'))
+                        || (name.starts_with("sessionname(\"") && name.ends_with("\")"))
+                })
+    }) {
+        return true;
+    }
     [
         "yinz compatibility mismatch",
         "permission denied (",
