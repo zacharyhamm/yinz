@@ -864,3 +864,247 @@ fn remote_writes_to_a_nonreading_peer_are_bounded_and_old_input_cannot_reach_a_r
         matches!(peer.recv_client_msg(), IpcRecv::Msg(ClientToServerMsg::Paste(text), _) if text == "CURRENT")
     );
 }
+
+#[test]
+fn remote_reads_yield_during_a_trickling_frame_and_preserve_the_partial_message() {
+    use std::sync::mpsc;
+
+    // Serialize through the real IPC encoder, then deliver the frame in small chunks.
+    let content = "fragmented render".repeat(100);
+    let (_encoding_dir, stream, mut peer) = recovery_socket();
+    let mut encoder = IpcSenderWithContext::<ServerToClientMsg>::new(stream);
+    encoder
+        .send_server_msg(ServerToClientMsg::Render {
+            content: content.clone(),
+        })
+        .unwrap();
+    drop(encoder);
+    let mut frame = Vec::new();
+    peer.read_to_end(&mut frame).unwrap();
+
+    for split in [1, 5] {
+        let (_dir, stream, mut peer) = recovery_socket();
+        let os = get_client_os_input().unwrap();
+        let sender = IpcSenderWithContext::new(stream);
+        let receiver = sender.get_receiver().unwrap();
+        os.install_session_connection(sender, receiver).unwrap();
+        let control = crate::remote_recovery::RecoveryControl::new(
+            crate::command_is_executing::CommandIsExecuting::new(),
+        );
+        os.set_remote_recovery(Some(control.clone())).unwrap();
+        peer.write_all(&frame[..split]).unwrap();
+        let frame = frame.clone();
+        let (finish, finished) = mpsc::channel();
+        let writer = thread::spawn(move || {
+            let mut sent = split;
+            // Timing is the behavior under test: each chunk arrives inside READ_POLL,
+            // but the whole frame takes much longer than the absolute read deadline.
+            for _ in 0..100 {
+                if finished
+                    .recv_timeout(time::Duration::from_millis(10))
+                    .is_ok()
+                {
+                    break;
+                }
+                peer.write_all(&frame[sent..sent + 1]).unwrap();
+                sent += 1;
+            }
+            peer.write_all(&frame[sent..]).unwrap();
+            // Keep the connection open until the client has consumed the frame.
+            let _ = finished.recv();
+        });
+        let started = time::Instant::now();
+        let result = os.recv_from_server_generation(0);
+        let elapsed = started.elapsed();
+        finish.send(()).unwrap();
+        assert!(matches!(result, IpcRecv::Idle));
+        assert!(
+            elapsed < time::Duration::from_millis(750),
+            "read took {elapsed:?}"
+        );
+        loop {
+            match os.recv_from_server_generation(0) {
+                IpcRecv::Idle if started.elapsed() < time::Duration::from_secs(5) => {},
+                IpcRecv::Msg(ServerToClientMsg::Render { content: received }, _) => {
+                    assert_eq!(received, content);
+                    break;
+                },
+                _ => panic!("expected preserved partial render"),
+            }
+        }
+        control.lost(0, "write failed".into());
+        assert!(matches!(os.recv_from_server_generation(0), IpcRecv::Eof));
+        os.disconnect_session_connection();
+        drop(finish);
+        writer.join().unwrap();
+    }
+}
+
+#[test]
+fn terminal_replay_serializes_live_focus_updates_and_keeps_the_newest_cache() {
+    use std::sync::mpsc;
+
+    for live_first in [true, false] {
+        let (_dir, stream, peer) = recovery_socket();
+        let os = get_client_os_input().unwrap();
+        let sender = IpcSenderWithContext::new(stream);
+        let receiver = sender.get_receiver().unwrap();
+        os.install_session_connection(sender, receiver).unwrap();
+        let control = crate::remote_recovery::RecoveryControl::new(
+            crate::command_is_executing::CommandIsExecuting::new(),
+        );
+        os.set_remote_recovery(Some(control.clone())).unwrap();
+        // Backpressure pauses replay between its snapshot and the focus message.
+        control.cache(&ClientToServerMsg::BackgroundColor {
+            color: "x".repeat(8 * 1024 * 1024),
+        });
+        control.cache(&ClientToServerMsg::HostTerminalFocusChanged { focused: true });
+        control.lost(0, "offline".into());
+        control.replacing();
+        let mut peer = IpcReceiverWithContext::<ClientToServerMsg>::new(peer);
+        peer.set_recv_timeout(Some(time::Duration::from_secs(10)))
+            .unwrap();
+        if live_first {
+            os.send_to_server(ClientToServerMsg::HostTerminalFocusChanged { focused: false });
+            assert!(matches!(
+                peer.recv_client_msg(),
+                IpcRecv::Msg(
+                    ClientToServerMsg::HostTerminalFocusChanged { focused: false },
+                    _
+                )
+            ));
+        }
+        let replay_os = os.clone();
+        let replay_control = control.clone();
+        let replay = thread::spawn(move || replay_control.replay(&replay_os));
+        assert!(matches!(
+            peer.recv_client_msg(),
+            IpcRecv::Msg(ClientToServerMsg::TerminalResize { .. }, _)
+        ));
+        let live = if live_first {
+            None
+        } else {
+            let live_os = os.clone();
+            let (entered, ready) = mpsc::channel();
+            let (done, finished) = mpsc::channel();
+            let live = thread::spawn(move || {
+                entered.send(()).unwrap();
+                live_os
+                    .send_to_server(ClientToServerMsg::HostTerminalFocusChanged { focused: false });
+                done.send(()).unwrap();
+            });
+            ready.recv_timeout(time::Duration::from_secs(10)).unwrap();
+            // Blocking is under test: the observation must wait with the write,
+            // so replay cannot overwrite a value already observed by this worker.
+            assert!(matches!(
+                finished.recv_timeout(time::Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            let cached = control.replay_messages(Size { rows: 24, cols: 80 });
+            assert!(cached.iter().any(|message| matches!(
+                message,
+                ClientToServerMsg::HostTerminalFocusChanged { focused: true }
+            )));
+            Some((live, finished))
+        };
+        assert!(matches!(
+            peer.recv_client_msg(),
+            IpcRecv::Msg(ClientToServerMsg::BackgroundColor { .. }, _)
+        ));
+        assert!(matches!(peer.recv_client_msg(), IpcRecv::Msg(
+            ClientToServerMsg::HostTerminalFocusChanged { focused }, _
+        ) if focused != live_first));
+        assert!(matches!(
+            peer.recv_client_msg(),
+            IpcRecv::Msg(ClientToServerMsg::ModifiersHeld { .. }, _)
+        ));
+        replay.join().unwrap();
+        if let Some((live, finished)) = live {
+            finished
+                .recv_timeout(time::Duration::from_secs(10))
+                .unwrap();
+            live.join().unwrap();
+            assert!(matches!(
+                peer.recv_client_msg(),
+                IpcRecv::Msg(
+                    ClientToServerMsg::HostTerminalFocusChanged { focused: false },
+                    _
+                )
+            ));
+        }
+        // A later reconnection must replay the live observation, too.
+        let replay_os = os.clone();
+        let replay = thread::spawn(move || control.replay(&replay_os));
+        let mut focus = Vec::new();
+        for _ in 0..4 {
+            if let IpcRecv::Msg(ClientToServerMsg::HostTerminalFocusChanged { focused }, _) =
+                peer.recv_client_msg()
+            {
+                focus.push(focused);
+            }
+        }
+        replay.join().unwrap();
+        assert_eq!(focus, vec![false]);
+    }
+}
+
+#[test]
+fn remote_disconnect_does_not_wait_for_a_trickling_partial_frame() {
+    use std::sync::mpsc;
+
+    let (_dir, stream, mut peer) = recovery_socket();
+    let os = get_client_os_input().unwrap();
+    let sender = IpcSenderWithContext::new(stream);
+    let receiver = sender.get_receiver().unwrap();
+    os.install_session_connection(sender, receiver).unwrap();
+    let control = crate::remote_recovery::RecoveryControl::new(
+        crate::command_is_executing::CommandIsExecuting::new(),
+    );
+    os.set_remote_recovery(Some(control.clone())).unwrap();
+    peer.write_all(&1024u32.to_le_bytes()).unwrap();
+    let (finish, finished) = mpsc::channel();
+    let writer = thread::spawn(move || {
+        // Keep the payload incomplete, but satisfy every individual read timeout.
+        // This timed producer is necessary to test the absolute deadline.
+        for _ in 0..100 {
+            if finished
+                .recv_timeout(time::Duration::from_millis(10))
+                .is_ok()
+                || peer.write_all(&[0]).is_err()
+            {
+                return;
+            }
+        }
+        let _ = finished.recv();
+    });
+    let reader_os = os.clone();
+    let reader_control = control.clone();
+    let reader = thread::spawn(move || loop {
+        let result = reader_os.recv_from_server_generation(0);
+        if !matches!(result, IpcRecv::Idle) || !reader_control.can_write() {
+            break result;
+        }
+    });
+    let waiting = time::Instant::now();
+    // Observe actual lock ownership rather than assuming the reader was scheduled.
+    while os.receive_instructions_from_server.try_lock().is_ok() {
+        assert!(waiting.elapsed() < time::Duration::from_secs(10));
+        thread::yield_now();
+    }
+    control.lost(0, "write failed during partial read".into());
+    let started = time::Instant::now();
+    os.disconnect_session_connection();
+    let elapsed = started.elapsed();
+    let _ = finish.send(());
+    writer.join().unwrap();
+    // The failure can win the phase check before the blocking read begins.
+    assert!(matches!(
+        reader.join().unwrap(),
+        IpcRecv::Idle | IpcRecv::Eof
+    ));
+    assert!(
+        elapsed < time::Duration::from_millis(750),
+        "disconnect took {elapsed:?}"
+    );
+    assert!(matches!(os.recv_from_server_generation(0), IpcRecv::Eof));
+}

@@ -404,3 +404,56 @@ fn recovery_status_uses_current_terminal_geometry_and_permanent_failures_do_not_
     assert!(error.to_string().contains("Host key verification failed"));
     assert!(recovery.attempt.is_none());
 }
+
+#[test]
+fn replay_merges_color_registers_by_index_with_the_latest_value_winning() {
+    use yinz_ipc::ipc::ColorRegister;
+
+    let control = RecoveryControl::new(CommandIsExecuting::new());
+    // Normalize duplicates even in the first report.
+    for report in [
+        vec![(2, "old"), (2, "green"), (1, "red")],
+        vec![(3, "blue")],
+        vec![(1, "old"), (1, "new")],
+        vec![],
+    ] {
+        control.cache(&ClientToServerMsg::ColorRegisters {
+            color_registers: report
+                .into_iter()
+                .map(|(index, color)| ColorRegister {
+                    index,
+                    color: color.into(),
+                })
+                .collect(),
+        });
+        control.lost(0, "offline".into());
+    }
+    control.replacing();
+    let os = crate::test_support::FakeClientOsApi::new();
+    control.replay(&os);
+    let registers: Vec<_> = os
+        .sent_messages()
+        .into_iter()
+        .filter_map(|message| match message {
+            ClientToServerMsg::ColorRegisters { color_registers } => Some(color_registers),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        registers,
+        vec![vec![
+            ColorRegister {
+                index: 1,
+                color: "new".into()
+            },
+            ColorRegister {
+                index: 2,
+                color: "green".into()
+            },
+            ColorRegister {
+                index: 3,
+                color: "blue".into()
+            },
+        ]]
+    );
+}
