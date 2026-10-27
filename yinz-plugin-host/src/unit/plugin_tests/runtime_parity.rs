@@ -320,6 +320,7 @@ pub(crate) struct Pair {
     pub(crate) steel: SteelReference,
     pub(crate) mode: ModeInfo,
     history_worker: Option<SteelReference>,
+    unrecorded_hook_publications: u64,
     _root: tempfile::TempDir,
 }
 impl Pair {
@@ -362,12 +363,16 @@ impl Pair {
                 clock,
             ),
             mode: ModeInfo::default(),
+            unrecorded_hook_publications: 0,
             _root: root,
         };
         pair.commands();
         pair
     }
     pub(crate) fn commands(&mut self) -> Vec<Value> {
+        self.commands_for_event(false)
+    }
+    fn commands_for_event(&mut self, hook_event: bool) -> Vec<Value> {
         let mut actual = self.steel.take_commands();
         if let Some(worker) = &mut self.history_worker {
             // Compare the recorded cells after explicitly delivering every history result.
@@ -402,8 +407,35 @@ impl Pair {
                 actual.extend(commands);
             }
         }
+        let expected = self.wasm.take_commands();
+        let is_snapshot = |command: &Value| {
+            command.pointer("/MessageToPlugin/message_name")
+                == Some(&serde_json::json!("agent_snapshot"))
+        };
+        // Receipt timestamps now publish even when a hook leaves the legacy snapshot unchanged.
+        // Keep comparing every recorded publication, accounting for these extra sequence values.
+        if hook_event && !expected.iter().any(is_snapshot) {
+            let mut publication = None;
+            actual.retain(|command| {
+                if !is_snapshot(command) {
+                    return true;
+                }
+                let seq = command
+                    .pointer("/MessageToPlugin/message_args/seq")
+                    .unwrap();
+                if let Some(previous) = &publication {
+                    assert_eq!(
+                        seq, previous,
+                        "one hook publication shared by all subscribers"
+                    );
+                }
+                publication = Some(seq.clone());
+                false
+            });
+            self.unrecorded_hook_publications += u64::from(publication.is_some());
+        }
         let agents = self.history_worker.is_some();
-        let normalize = |commands: Vec<Value>| {
+        let normalize = |commands: Vec<Value>, sequence_offset: u64| {
             commands
                 .into_iter()
                 // Provider-chain and cache tests cover these new service effects.
@@ -472,13 +504,38 @@ impl Pair {
                     {
                         *preset = Value::String(super::reference_trace::legacy_preset(source));
                     }
+                    // Live hook receipt times postdate the recordings. The builtin service's
+                    // timestamp test checks their publication and preservation separately.
+                    if command.pointer("/MessageToPlugin/message_name")
+                        == Some(&serde_json::json!("agent_snapshot"))
+                        && let Some(Value::String(payload)) =
+                            command.pointer_mut("/MessageToPlugin/message_payload")
+                    {
+                        let mut snapshot: Value = serde_json::from_str(payload).unwrap();
+                        for field in ["panes", "suppressed_panes"] {
+                            if let Some(panes) =
+                                snapshot.get_mut(field).and_then(Value::as_array_mut)
+                            {
+                                for pane in panes {
+                                    pane.as_object_mut().unwrap().remove("last_hook_at_ms");
+                                }
+                            }
+                        }
+                        *payload = snapshot.to_string();
+                        let seq = command
+                            .pointer_mut("/MessageToPlugin/message_args/seq")
+                            .unwrap();
+                        let number = seq.as_str().unwrap().parse::<u64>().unwrap();
+                        *seq =
+                            Value::String(number.checked_sub(sequence_offset).unwrap().to_string());
+                    }
                     normalize_command_settings(&mut command);
                     command
                 })
                 .collect::<Vec<_>>()
         };
-        let expected = normalize(self.wasm.take_commands());
-        let actual = normalize(actual);
+        let expected = normalize(expected, 0);
+        let actual = normalize(actual, self.unrecorded_hook_publications);
         assert_eq!(
             actual, expected,
             "actual runtimes emitted different host commands"
@@ -506,7 +563,7 @@ impl Pair {
         if self.history_worker.is_none() {
             assert_eq!(actual, expected, "update decision for {event:?}");
         }
-        self.commands()
+        self.commands_for_event(matches!(event, Event::AgentEvent(_)))
     }
     pub(crate) fn key(&mut self, key: &str) -> Vec<Value> {
         self.event(Event::Key(key.parse().unwrap()))
