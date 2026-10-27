@@ -4258,8 +4258,8 @@ fn an_event_that_fits_the_cap_grows_no_marker() {
         revision: 1,
         event_id: None,
         kind: RunEntryKind::Prompt,
-        // A list, so the label takes a row of its own: exactly the four the cap allows.
-        text: "- one\n- two\n- three".to_owned(),
+        // Four list items fill the cap without a label row.
+        text: "- one\n- two\n- three\n- four".to_owned(),
         created_at_ms: None,
     }];
     let history = run_history(&run, 40, 100, 0);
@@ -4337,9 +4337,9 @@ fn a_run_s_history_is_rendered_as_markdown() {
     assert_eq!(
         texts(&history.entries),
         [
-            "    prompt: Do it:",
-            "    • one",
-            "    • two",
+            "                                Do it:",
+            "                                • one",
+            "                                • two",
             "    summary: Ran the tests, all green.",
         ],
         "the list is a list, the label rides on the prose above it, and the summary is the              newest row rather than a block above them - no asterisks in any of it"
@@ -4366,11 +4366,9 @@ fn a_run_s_history_is_rendered_as_markdown() {
     );
 }
 
-/// An entry that opens with a marker of its own gives the label a row, whichever kind of
-/// marker it is: `prompt: 1. one` is not a numbered list, and the numbering would take the
-/// continuation rows of the item with it.
+/// Outgoing lists keep their markers and align together without a label row.
 #[test]
-fn a_label_never_lands_on_a_list_marker() {
+fn outgoing_lists_keep_their_markers() {
     let mut run = a_pane_run();
     run.summary = None;
     run.entries = vec![
@@ -4395,12 +4393,10 @@ fn a_label_never_lands_on_a_list_marker() {
     assert_eq!(
         texts(&run_history(&run, 40, 100, 0).entries),
         [
-            "    prompt:",
-            "    1. one", // the numbering kept, and its column with it
-            "    2. two",
-            "    prompt:",
-            "    • one",
-            "    • two",
+            "                                1. one", // the numbering kept, and its column with it
+            "                                2. two",
+            "                                 • one",
+            "                                 • two",
         ],
     );
 }
@@ -4450,7 +4446,7 @@ fn the_rolling_summary_is_the_newest_row_of_the_timeline() {
     assert_eq!(
         texts(&run_history(&run, 40, 100, 0).entries),
         [
-            "    prompt: run the tests",
+            "                         run the tests",
             "    question: which ones?",
             "    summary: Ran the tests.",
         ],
@@ -4504,7 +4500,10 @@ fn the_half_draws_the_blocks_hard_against_each_other() {
     }];
     assert_eq!(
         texts(&run_history(&run, 40, 100, 0).entries),
-        ["    prompt: first", "    second"]
+        [
+            "                                first",
+            "                                second"
+        ]
     );
 }
 
@@ -4602,13 +4601,13 @@ fn an_entry_wears_its_age_in_the_left_hand_column() {
     assert_eq!(
         texts(&history.entries),
         [
-            " 6m prompt: run the tests",
+            " 6m                                          run the tests",
             " 1m question: which ones?",
             "    plan: all of them",
         ],
     );
     assert!(
-        history.entries.iter().all(|line| line
+        history.entries.iter().skip(1).all(|line| line
             .text
             .char_indices()
             .nth(AGE_WIDTH)
@@ -4618,7 +4617,7 @@ fn an_entry_wears_its_age_in_the_left_hand_column() {
 }
 
 /// The age is painted to be read as a column rather than as more label: undimmed and in
-/// the navigation colour, against a dim `prompt: ` (normalized by the Agents renderer).
+/// the navigation colour, independent of the outgoing prompt color.
 #[test]
 fn the_age_is_the_undimmed_part_of_the_furniture() {
     let mut run = a_pane_run();
@@ -4641,10 +4640,10 @@ fn the_age_is_the_undimmed_part_of_the_furniture() {
         "the age"
     );
     assert!(
-        row.styles[AGE_WIDTH..AGE_WIDTH + "prompt:".len()]
+        row.styles[row.styles.len() - "run the tests".len()..]
             .iter()
-            .all(|style| style.dim),
-        "and the label it sits beside, still dim"
+            .all(|style| !style.dim && style.color == Some(0)),
+        "the outgoing prompt uses its theme color"
     );
 }
 
@@ -5108,7 +5107,7 @@ fn a_task_notification_on_the_timeline_reads_as_what_it_is() {
     let history = run_history(&run_of_prompts(&[&task_notification(3)]), 52, 10, 0);
     let rows = texts(&history.entries).join("\n");
 
-    assert!(rows.contains("prompt:"), "{rows}");
+    assert!(!rows.contains("prompt:"), "{rows}");
     assert!(rows.contains('✓'), "{rows}");
     assert!(rows.contains("a10fe836"), "{rows}");
     assert!(rows.contains("/code-review"), "{rows}");
@@ -5203,26 +5202,19 @@ fn an_events_spans_still_tile_the_entries() {
 /// The regression guard that matters most: nothing a person typed goes anywhere near the
 /// scanner's output.
 #[test]
-fn a_plain_prompt_is_rendered_exactly_as_before() {
+fn a_plain_prompt_keeps_its_prose_and_markdown() {
     let prose = "fix the flaky reconnect test\n\n- check the timeout\n- check the retry";
     let run = run_of_prompts(&[prose]);
     let history = run_history(&run, 52, 10, 0);
     assert_eq!(&*history.events[0].text, prose);
 
-    // Byte for byte what an entry of any other kind renders to.
-    let mut same = a_pane_run();
-    same.entries = vec![RunEntry {
-        tool: None,
-        kind: RunEntryKind::Question,
-        ..run.entries[0].clone()
-    }];
-    let expected = run_history(&same, 52, 10, 0);
     assert_eq!(
-        texts(&history.entries)
-            .iter()
-            .map(|row| row.replacen("prompt", "question", 1))
-            .collect::<Vec<_>>(),
-        texts(&expected.entries)
+        texts(&history.entries),
+        [
+            "now                   fix the flaky reconnect test",
+            "                      • check the timeout",
+            "                      • check the retry",
+        ]
     );
 }
 
@@ -5486,4 +5478,28 @@ fn panes_keep_their_checkout_location() {
     // Nothing said about either half is no location at all, which is what keeps a
     // pane from being probed under a half-known one.
     assert_eq!(pane(10, "zsh", None).checkout_location(), None);
+}
+
+#[test]
+fn history_messages_use_opposite_alignment_and_theme_colors() {
+    for width in [22, 40, 80] {
+        let mut run = run_of_prompts(&["**hello** 界"]);
+        run.entries.push(RunEntry {
+            kind: RunEntryKind::Message,
+            revision: 2,
+            ..run.entries[0].clone()
+        });
+        let history = run_history(&run, width, 10, 0);
+        let outgoing = &history.entries[0];
+        let incoming = &history.entries[1];
+        assert_eq!(outgoing.text.width(), width - 2);
+        assert_eq!(&incoming.text[AGE_WIDTH..], "hello 界");
+        for (row, color) in [(outgoing, 0), (incoming, 2)] {
+            let body = &row.styles[row.styles.len() - "hello 界".chars().count()..];
+            assert!(body.iter().all(|style| style.color == Some(color)));
+            assert!(body[..5].iter().all(|style| style.bold));
+            assert!(!row.text.contains("prompt:"));
+            assert!(!row.text.contains("message:"));
+        }
+    }
 }

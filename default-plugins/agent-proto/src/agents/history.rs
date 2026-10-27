@@ -485,8 +485,7 @@ impl ParsedRun {
             // the whole of what it said, which is what the reader shows and what `r` shows raw.
             //
             // `digest` is `None` for everything a person typed, which is the common case and
-            // the one that must cost nothing; the label stays `prompt:` either way, because a
-            // prompt is what it is however it was written. Only asked when the entry is new.
+            // the one that must cost nothing. Only asked when the entry is new.
             let prompt = matches!(entry.kind, RunEntryKind::Prompt);
             let event = take(
                 Some(entry.revision),
@@ -693,7 +692,6 @@ pub fn run_payload_fingerprint(payload: &str) -> (usize, u64) {
 pub(super) struct RunFacts {
     id: String,
     session_id: String,
-    kind: String,
     started_at_ms: i64,
     /// [`AgentRun::omitted_entries`], for the notice the timeline opens with.
     omitted_entries: usize,
@@ -704,7 +702,6 @@ impl RunFacts {
         Self {
             id: run.id.clone(),
             session_id: run.session_id.clone(),
-            kind: run.kind.clone(),
             started_at_ms: run.started_at_ms,
             omitted_entries: run.omitted_entries,
         }
@@ -750,8 +747,7 @@ pub(super) fn run_header(
 /// One `label  value` row, plus a continuation row per further slice the value needs, each
 /// indented under the value column so the field reads as one block.
 ///
-/// The label column is at least [`HEADER_LABEL_WIDTH`] wide, with a separating space
-/// even for the longer `previous` label.
+/// The label column is at least [`HEADER_LABEL_WIDTH`] wide, including a separating space.
 fn wrapped_field(label: &str, value: &str, width: usize) -> Vec<MdLine> {
     let label_width = HEADER_LABEL_WIDTH.max(label.len() + 1);
     let label = format!("{label:<label_width$}");
@@ -965,6 +961,26 @@ pub(super) fn labelled_blocks(
     width: usize,
     style: MdStyle,
 ) -> (Vec<MdLine>, bool) {
+    if matches!(label, "prompt" | "message") {
+        let outgoing = label == "prompt";
+        let body = width.saturating_sub(indent + 2).max(1);
+        let mut rows = wrap_head(blocks, body, MAX_ENTRY_ROWS);
+        let block_width = rows.iter().map(|row| row.text.width()).max().unwrap_or(0);
+        let offset = if outgoing {
+            width.saturating_sub(indent + block_width)
+        } else {
+            0
+        };
+        for (index, row) in rows.iter_mut().enumerate() {
+            for style in &mut row.styles {
+                style.color = Some(if outgoing { 0 } else { 2 });
+            }
+            *row = row
+                .clone()
+                .indent(offset + if index == 0 { 0 } else { indent });
+        }
+        return (rows, false);
+    }
     let label = format!("{label}: ");
     let inline = blocks
         .first()
@@ -998,7 +1014,7 @@ pub(super) fn labelled_blocks(
     (labelled, true)
 }
 
-/// How a history row's `prompt: ` label is painted: dim, the way every other piece of pane
+/// How a history row's kind label is painted: dim, the way every other piece of pane
 /// furniture is.
 pub(super) const LABEL_STYLE: MdStyle = MdStyle {
     bold: false,
