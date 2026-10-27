@@ -1098,8 +1098,14 @@ fn agents_history_navigation_renders_while_pending_and_only_loads_latest_selecti
     let mut h = HistoryPanel::new(&runs);
     h.snapshot(1, &runs);
     let first = h.request();
-    for expected in ["pane:8", "run:archive-a", "run:archive-b"] {
-        assert!(h.key("Down"));
+    // The waiting pane precedes focused pane 7; visit it before the archives.
+    for (key, expected) in [
+        ("Up", "pane:8"),
+        ("Down", "pane:7"),
+        ("Down", "run:archive-a"),
+        ("Down", "run:archive-b"),
+    ] {
+        assert!(h.key(key));
         assert_eq!(
             h.panel.runtime.invoke("a-selection-key", vec![]).unwrap(),
             expected
@@ -1338,7 +1344,11 @@ fn agents_history_navigation_hiding_and_explicit_refresh_cancel_stale_retries() 
         assert_eq!(h.get("run_revision"), 0);
         match action {
             "navigate" => {
-                h.key("Down");
+                assert!(h.key("Up"));
+                assert_eq!(
+                    h.panel.runtime.invoke("a-selection-key", vec![]).unwrap(),
+                    "pane:8"
+                );
             },
             "hide" => {
                 h.panel.update(&Event::Visible(false));
@@ -1665,10 +1675,12 @@ fn agents_history_real_worker_probes_navigation_during_snapshot_bursts() {
             Duration::from_secs(30),
             |waiting| (*waiting).then_some(()),
         );
-        for _ in 0..3 {
+        // Starting at focused pane 7, the two archives follow it directly.
+        for expected in ["run:archive-a", "run:archive-b"] {
             assert!(panel
                 .update(crate::event::event_to_json(&Event::Key("Down".parse().unwrap())).unwrap())
                 .unwrap());
+            assert_eq!(panel.invoke("a-selection-key", vec![]).unwrap(), expected);
         }
         let mut latency = Vec::new();
         for i in 0..32 {

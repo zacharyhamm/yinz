@@ -33,6 +33,12 @@ opaque text plus empty rows now apply the semantic theme background across the v
 The original text, coordinates, selection markers, lifecycle inputs, host calls, replies, and source fingerprints remain intact.
 Independent style transformations produced these expectations. The current renderer was checked against them.
 
+The Agents archive-history fixture also adapts two focus commands for activity-first ordering.
+Waiting pane 8 now precedes focused pane 7, so Up then Down returns to pane 7.
+Its `activity_ordering` adaptation metadata records the two commands changed from pane 8 to pane 7.
+This expectation follows the navigation sequence; it was not captured from Steel.
+Original source fingerprints, inputs, render streams, update decisions, replies, and unrelated calls remain intact.
+
 The notes and todos feature removal drops its dedicated fixtures and lifecycle steps.
 Surviving fixtures omit retired entity declarations, todo import calls, and empty
 root-move mutations. The legacy project import fixture adjusts marker IDs for the
