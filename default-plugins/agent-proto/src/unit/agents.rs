@@ -1767,31 +1767,31 @@ fn lineage_round_trips_in_payload_and_header_and_defaults_to_absent() {
 }
 
 #[test]
-fn lineage_header_wraps_full_agent_session_ids() {
+fn header_wraps_the_session_id_without_showing_lineage() {
     let mut run = a_pane_run();
-    let origin = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-    let previous = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
-    run.origin_run_id = Some(format!("claude:{origin}"));
-    run.previous_run_id = Some(format!("claude:{previous}"));
+    run.session_id = "cccccccc-cccc-cccc-cccc-cccccccccccc".into();
+    run.origin_run_id = Some("claude:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".into());
+    run.previous_run_id = Some("claude:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb".into());
     for width in [20, 32, 60] {
         let header = run_header(&RunFacts::of(&run), width, 0, None);
         assert!(header.iter().all(|row| row.text.chars().count() <= width));
-        for (label, expected) in [("origin", origin), ("previous", previous)] {
-            let field: String = header
-                .iter()
-                .skip_while(|row| !row.text.starts_with(label))
-                .enumerate()
-                .take_while(|(i, row)| *i == 0 || row.text.starts_with(' '))
-                .map(|(i, row)| {
-                    if i == 0 {
-                        row.text[label.len()..].trim()
-                    } else {
-                        row.text.trim()
-                    }
-                })
-                .collect();
-            assert_eq!(field, expected);
-        }
+        let session: String = header
+            .iter()
+            .skip_while(|row| !row.text.starts_with("session"))
+            .enumerate()
+            .map(|(i, row)| {
+                if i == 0 {
+                    row.text["session".len()..].trim()
+                } else {
+                    row.text.trim()
+                }
+            })
+            .collect();
+        assert_eq!(session, run.session_id);
+        assert!(!header.iter().any(|row| row.text.contains("origin")
+            || row.text.contains("previous")
+            || row.text.contains("aaaaaaaa")
+            || row.text.contains("bbbbbbbb")));
     }
 }
 

@@ -224,7 +224,7 @@
       (and summary (not (json-null? (hash-ref summary "created_at_ms"))))))
   (a-set! "run" (hash "id" (hash-ref run "id") "pane_id" (hash-ref run "pane_id")
       "ended" (not (json-null? (hash-ref run "ended_at_ms"))) "host" (hash-ref run "host") "cwd" (hash-ref run "cwd")
-      "started_at_ms" (hash-ref run "started_at_ms")
+      "started_at_ms" (hash-ref run "started_at_ms") "session_id" (hash-ref run "session_id")
       "stamped" (if stamped #t #f) "fingerprint" fingerprint "parsed" parsed))
   (a-inc! "run_revision") (a-set! "prompt_document" #f) (a-set! "run_error" #f)
   (define ask (a-get "summarizing"))
