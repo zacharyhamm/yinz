@@ -72,6 +72,7 @@ use {
 pub(crate) enum ClientInstruction {
     Error(String),
     FromServer(u64, Box<ClientInstruction>),
+    ServerReaderDrained(u64),
     Render(String),
     UnblockInputThread,
     Exit(ExitReason),
@@ -152,6 +153,7 @@ impl From<&ClientInstruction> for ClientContext {
             ClientInstruction::Exit(_) => ClientContext::Exit,
             ClientInstruction::Error(_) => ClientContext::Error,
             ClientInstruction::FromServer(_, ref instruction) => (&**instruction).into(),
+            ClientInstruction::ServerReaderDrained(_) => ClientContext::UnblockInputThread,
             ClientInstruction::Render(_) => ClientContext::Render,
             ClientInstruction::UnblockInputThread => ClientContext::UnblockInputThread,
             ClientInstruction::Connected => ClientContext::Connected,

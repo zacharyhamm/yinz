@@ -45,6 +45,31 @@ fn failed_transport_unblocks_input_and_generations_reject_stale_failures() {
 }
 
 #[test]
+fn recovery_waits_for_the_current_routers_drain_marker_before_disconnect() {
+    let os = crate::test_support::FakeClientOsApi::new();
+    let mut recovery = Recovery::new("host".into(), CommandIsExecuting::new());
+    recovery.rendered = true;
+    recovery.control.replacing();
+    recovery.control.repainted();
+    recovery
+        .control
+        .lost(1, "Host key verification failed".into());
+    let now = Instant::now();
+    assert!(recovery.poll(&os, "work", now).unwrap().is_none());
+    assert!(recovery.next_retry.is_none());
+    recovery.control.reader_drained(0);
+    assert!(recovery.poll(&os, "work", now).unwrap().is_none());
+    recovery.control.reader_drained(1);
+    assert!(recovery
+        .poll(&os, "work", now)
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("Host key verification failed"));
+    assert!(recovery.attempt.is_none());
+}
+
+#[test]
 fn replay_contains_capabilities_and_current_size_but_never_keyboard_input() {
     let control = RecoveryControl::new(CommandIsExecuting::new());
     control.cache(&ClientToServerMsg::KittyGraphicsSupport { supported: false });
@@ -368,7 +393,9 @@ fn eof_starts_remote_recovery_but_explicit_detach_does_not() {
             );
         } else {
             assert_eq!(control.phase(), Phase::Reconnecting);
-            assert!(instructions.is_empty());
+            assert!(
+                matches!(&instructions[..], [ClientInstruction::FromServer(0, instruction)] if matches!(**instruction, ClientInstruction::ServerReaderDrained(0)))
+            );
         }
     }
 }
@@ -390,6 +417,7 @@ fn recovery_status_uses_current_terminal_geometry_and_permanent_failures_do_not_
     let output = String::from_utf8(os.stdout_bytes()).unwrap();
     assert!(output.contains("\x1b[24;1H"));
     assert!(output.contains("\x1b[40;1H"));
+    assert!(output.contains("\x1b7\x1b[24;1H\x1b[0m\x1b[2K\x1b[40;1H"));
     assert!(output.contains("host / renamed"));
     assert!(output.contains("Ctrl-C to cancel"));
     let narrow = crate::test_support::FakeClientOsApi::new()
@@ -400,9 +428,33 @@ fn recovery_status_uses_current_terminal_geometry_and_permanent_failures_do_not_
     assert!(output.contains("host / work"));
     assert!(output.contains("Ctrl-C to cancel"));
     recovery.control.state.lock().unwrap().failure = Some("Host key verification failed".into());
+    recovery.control.reader_drained(0);
     let error = recovery.poll(&os, "renamed", now).err().unwrap();
     assert!(error.to_string().contains("Host key verification failed"));
     assert!(recovery.attempt.is_none());
+}
+
+#[test]
+fn recovery_status_clears_each_previous_visible_row_without_clamping_old_rows() {
+    let os = crate::test_support::FakeClientOsApi::new().capturing_stdout();
+    let mut recovery = Recovery::new("host".into(), CommandIsExecuting::new());
+    recovery.control.lost(0, "outage".into());
+    let now = Instant::now();
+    for rows in [24, 40, 50, 12, 30] {
+        let previous_len = os.stdout_bytes().len();
+        let resized = os.clone().with_terminal_size(Size { rows, cols: 100 });
+        recovery.paint_status(&resized, "work", now).unwrap();
+        let output = String::from_utf8(os.stdout_bytes()[previous_len..].to_vec()).unwrap();
+        assert!(output.starts_with("\x1b7"));
+        assert!(output.ends_with("\x1b8"));
+        match rows {
+            40 => assert!(output.contains("\x1b[24;1H\x1b[0m\x1b[2K")),
+            50 => assert!(output.contains("\x1b[40;1H\x1b[0m\x1b[2K")),
+            12 => assert!(!output.contains("\x1b[50;1H")),
+            30 => assert!(output.contains("\x1b[12;1H\x1b[0m\x1b[2K")),
+            _ => {},
+        }
+    }
 }
 
 #[test]

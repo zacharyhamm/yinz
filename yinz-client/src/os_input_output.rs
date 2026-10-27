@@ -172,6 +172,39 @@ pub trait TtyControl {
     fn disable_mouse(&self) -> Result<()>;
 }
 
+/// Terminal bytes and their transport generation/eligibility at consumption.
+pub type StampedStdin = (Vec<u8>, Option<(u64, bool)>);
+
+pub(crate) fn stamp_stdin_consumption<T>(
+    recovery: Option<&crate::remote_recovery::RecoveryControl>,
+    consume: impl FnOnce() -> T,
+) -> (T, Option<(u64, bool)>) {
+    let before = recovery.map(|control| control.stamp());
+    let result = consume();
+    let stamp = recovery.map(|control| {
+        let after = control.stamp();
+        (after.0, after.1 && before == Some(after))
+    });
+    (result, stamp)
+}
+
+fn read_stdin_buffer(
+    reader: &mut impl io::BufRead,
+    recovery: Option<&crate::remote_recovery::RecoveryControl>,
+) -> Result<StampedStdin, &'static str> {
+    // fill_buf may wait through an entire recovery on an idle terminal. Only
+    // stamp once bytes are available, around copying them out of the buffer.
+    let buffer = reader.fill_buf().map_err(|error| {
+        Err::<(), _>(error)
+            .context("read terminal stdin")
+            .non_fatal();
+        "Failed to read stdin"
+    })?;
+    let result = stamp_stdin_consumption(recovery, || buffer.to_vec());
+    reader.consume(result.0.len());
+    Ok(result)
+}
+
 /// Access to the process's standard streams.
 pub trait StdioAccess {
     /// Returns the writer that allows writing to standard output.
@@ -184,6 +217,15 @@ pub trait StdioAccess {
     fn get_stdin_reader(&self) -> Box<dyn io::BufRead>;
     /// Returns the raw contents of standard input.
     fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str>;
+    /// Read bytes with recovery eligibility. Blocking readers must override this
+    /// to exclude their idle wait from the consumption stamps.
+    fn read_stamped_stdin(
+        &mut self,
+        recovery: Option<&crate::remote_recovery::RecoveryControl>,
+    ) -> Result<StampedStdin, &'static str> {
+        let (result, stamp) = stamp_stdin_consumption(recovery, || self.read_from_stdin());
+        result.map(|bytes| (bytes, stamp))
+    }
     fn stdin_is_terminal(&self) -> bool {
         true
     }
@@ -474,31 +516,29 @@ impl TtyControl for ClientOsInputOutput {
 
 impl StdioAccess for ClientOsInputOutput {
     fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
+        self.read_stamped_stdin(None).map(|(bytes, _)| bytes)
+    }
+    fn read_stamped_stdin(
+        &mut self,
+        recovery: Option<&crate::remote_recovery::RecoveryControl>,
+    ) -> Result<StampedStdin, &'static str> {
         // Readers from an old connection leave bytes for the new reader, even for equal names.
         let mut buffered_bytes = self.reading_from_stdin.lock().unwrap();
         if !self.is_current_connection() {
             return Err("Session ended");
         }
         match buffered_bytes.take() {
-            Some(buffered_bytes) => Ok(buffered_bytes),
+            Some(buffered_bytes) => Ok(stamp_stdin_consumption(recovery, || buffered_bytes)),
             None => {
                 let stdin = std::io::stdin();
                 let mut stdin = stdin.lock();
-                let buffer = stdin.fill_buf().map_err(|error| {
-                    Err::<(), _>(error)
-                        .context("read terminal stdin")
-                        .non_fatal();
-                    "Failed to read stdin"
-                })?;
-                let length = buffer.len();
-                let read_bytes = Vec::from(buffer);
-                stdin.consume(length);
+                let (read_bytes, stamp) = read_stdin_buffer(&mut stdin, recovery)?;
 
                 if !self.is_current_connection() {
                     *buffered_bytes = Some(read_bytes);
                     Err("Session ended")
                 } else {
-                    Ok(read_bytes)
+                    Ok((read_bytes, stamp))
                 }
             },
         }
@@ -569,7 +609,7 @@ impl ServerConnection for ClientOsInputOutput {
         let control = self.remote_recovery();
         if control
             .as_ref()
-            .is_some_and(|control| !control.accepts(generation) || !control.can_write())
+            .is_some_and(|control| !control.can_read(generation))
         {
             return IpcRecv::Eof;
         }

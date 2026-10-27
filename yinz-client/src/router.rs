@@ -28,6 +28,10 @@ const MAX_CONSECUTIVE_MALFORMED_MESSAGES: usize = 1000;
 /// blocking cannot spin a core on the way to giving up.
 const MALFORMED_MESSAGE_BACKOFF: Duration = Duration::from_millis(1);
 
+// A peer may keep producing complete frames after our writer fails. Limit both
+// ready frames and transport read time, excluding render/queue backpressure.
+const MAX_DRAIN_FRAMES: usize = 256;
+
 /// What the user is told when the server's socket closes without an `Exit`.
 /// The server sends one on every shutdown path, so reaching this means it went
 /// away without saying goodbye.
@@ -90,10 +94,36 @@ pub(crate) fn spawn_with_initial(
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("router".to_string())
-        .spawn(move || {
-            route_with_initial(os_input, send_client_instructions, &render_budget, initial)
-        })
+        .spawn(worker_with_initial(
+            os_input,
+            send_client_instructions,
+            render_budget,
+            initial,
+        ))
         .unwrap()
+}
+
+fn worker_with_initial(
+    os_input: Box<dyn ClientOsApi>,
+    send_client_instructions: SenderWithContext<ClientInstruction>,
+    render_budget: Arc<RenderBudget>,
+    initial: std::collections::VecDeque<(ServerToClientMsg, ErrorContext)>,
+) -> impl FnOnce() + Send {
+    // Capture before spawning: initial frames and the socket belong to this
+    // generation even if the worker starts after a later connection is installed.
+    let recovery = os_input.remote_recovery().map(|control| {
+        let generation = control.stamp().0;
+        (control, generation)
+    });
+    move || {
+        route_with_initial(
+            os_input,
+            send_client_instructions,
+            &render_budget,
+            initial,
+            recovery,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -102,11 +132,16 @@ pub(crate) fn route(
     send_client_instructions: SenderWithContext<ClientInstruction>,
     render_budget: &RenderBudget,
 ) {
+    let recovery = os_input.remote_recovery().map(|control| {
+        let generation = control.stamp().0;
+        (control, generation)
+    });
     route_with_initial(
         os_input,
         send_client_instructions,
         render_budget,
         Default::default(),
+        recovery,
     );
 }
 fn route_with_initial(
@@ -114,9 +149,10 @@ fn route_with_initial(
     send_client_instructions: SenderWithContext<ClientInstruction>,
     render_budget: &RenderBudget,
     mut initial: std::collections::VecDeque<(ServerToClientMsg, ErrorContext)>,
+    recovery: Option<(crate::remote_recovery::RecoveryControl, u64)>,
 ) {
-    let control = os_input.remote_recovery();
-    let generation = control.as_ref().map(|control| control.stamp().0);
+    let control = recovery.as_ref().map(|(control, _)| control);
+    let generation = recovery.as_ref().map(|(_, generation)| *generation);
     let send_client_instructions = RouterSender {
         sender: send_client_instructions,
         generation,
@@ -127,24 +163,44 @@ fn route_with_initial(
     let mut waiting_for_first_render = true;
     let mut slow_warnings = SlowWarnings::default();
     let mut budget_warnings = SlowWarnings::default();
+    let mut drain_frames = 0;
+    let mut drain_read_time = Duration::ZERO;
     log::info!(
         "attach trace: client pid={} router started; waiting for first server message",
         std::process::id()
     );
     loop {
-        if control
-            .as_ref()
-            .is_some_and(|control| !control.can_write() || Some(control.stamp().0) != generation)
+        if let Some((control, generation)) = &recovery
+            && !control.can_read(*generation)
         {
             break;
         }
-        match initial
+        let draining = control.is_some_and(|control| !control.can_write());
+        if let Some(generation) = generation
+            && draining
+            && (drain_frames >= MAX_DRAIN_FRAMES
+                || drain_read_time >= crate::remote_recovery::READ_POLL)
+        {
+            send_client_instructions.reader_drained(generation);
+            break;
+        }
+        let read_started = Instant::now();
+        let received = initial
             .pop_front()
             .map(|(message, context)| IpcRecv::Msg(message, context))
             .unwrap_or_else(|| match generation {
                 Some(generation) => os_input.recv_from_server_generation(generation),
                 None => os_input.recv_from_server(),
-            }) {
+            });
+        if control.is_some_and(|control| !control.can_write()) {
+            if matches!(&received, IpcRecv::Msg(..) | IpcRecv::Malformed) {
+                drain_frames += 1;
+            }
+            if draining {
+                drain_read_time += read_started.elapsed();
+            }
+        }
+        match received {
             IpcRecv::Msg(instruction, err_ctx) => {
                 consecutive_malformed_messages_received = 0;
                 let tracing_first_message = waiting_for_first_message;
@@ -260,6 +316,7 @@ fn route_with_initial(
                 log::error!("The server closed the connection without sending Exit");
                 if let (Some(control), Some(generation)) = (&control, generation) {
                     control.lost(generation, SERVER_HUNG_UP.to_owned());
+                    send_client_instructions.reader_drained(generation);
                     break;
                 }
                 send_client_instructions
@@ -298,7 +355,17 @@ fn route_with_initial(
                 }
                 thread::sleep(MALFORMED_MESSAGE_BACKOFF);
             },
-            IpcRecv::Idle => {},
+            IpcRecv::Idle => {
+                // Writes stop immediately on failure, but explicit detach/handoff
+                // frames may still be pending. EOF/idle finish draining early;
+                // otherwise the transport budget bounds a continuously busy peer.
+                if let Some((control, generation)) = &recovery
+                    && !control.can_write()
+                {
+                    send_client_instructions.reader_drained(*generation);
+                    break;
+                }
+            },
         }
     }
     if let Some((suppressed, max_suppressed)) = slow_warnings.finish() {
@@ -314,6 +381,12 @@ struct RouterSender {
     generation: Option<u64>,
 }
 impl RouterSender {
+    fn reader_drained(&self, generation: u64) {
+        self.send_required(ClientInstruction::ServerReaderDrained(generation))
+            .to_anyhow()
+            .context("failed to report completion of server message draining")
+            .non_fatal();
+    }
     fn tagged(&self, instruction: ClientInstruction) -> ClientInstruction {
         match self.generation {
             Some(generation) => ClientInstruction::FromServer(generation, Box::new(instruction)),
@@ -333,6 +406,10 @@ impl RouterSender {
         self.sender.send_required(self.tagged(instruction))
     }
 }
+
+#[cfg(test)]
+#[path = "unit/router_recovery_tests.rs"]
+mod recovery_tests;
 
 /// Forward one message to the main loop. Returns whether this was the last
 /// one — `Exit` is still delivered before the thread stops — or the main loop

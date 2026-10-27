@@ -34,6 +34,7 @@ struct State {
     generation: u64,
     phase: Phase,
     failure: Option<String>,
+    reader_drained: bool,
     capabilities: Vec<ClientToServerMsg>,
 }
 
@@ -51,6 +52,7 @@ impl RecoveryControl {
                 generation: 0,
                 phase: Phase::Connected,
                 failure: None,
+                reader_drained: false,
                 capabilities: Vec::new(),
             })),
             cancelled: Arc::new(AtomicBool::new(false)),
@@ -70,6 +72,17 @@ impl RecoveryControl {
     pub(crate) fn accepts(&self, generation: u64) -> bool {
         self.stamp().0 == generation
     }
+    pub(crate) fn can_read(&self, generation: u64) -> bool {
+        let state = self.state.lock().unwrap();
+        state.generation == generation && state.phase != Phase::Stopped
+    }
+    /// Called by the client loop after all preceding router messages were handled.
+    pub(crate) fn reader_drained(&self, generation: u64) {
+        let mut state = self.state.lock().unwrap();
+        if state.generation == generation && state.phase == Phase::Reconnecting {
+            state.reader_drained = true;
+        }
+    }
     pub(crate) fn lost(&self, generation: u64, diagnostic: String) {
         let mut state = self.state.lock().unwrap();
         if state.generation == generation
@@ -77,6 +90,7 @@ impl RecoveryControl {
         {
             state.phase = Phase::Reconnecting;
             state.failure = Some(diagnostic);
+            state.reader_drained = false;
             self.command.clone().unblock_input_thread();
         }
     }
@@ -158,6 +172,7 @@ impl RecoveryControl {
         state.generation += 1;
         state.phase = Phase::Repainting;
         state.failure = None;
+        state.reader_drained = false;
     }
     pub(crate) fn repainted(&self) -> bool {
         let mut state = self.state.lock().unwrap();
@@ -264,7 +279,14 @@ impl Recovery {
         for router in self.routers.extract_if(.., |router| router.is_finished()) {
             join(router);
         }
-        let failure = self.control.state.lock().unwrap().failure.take();
+        let failure = {
+            let mut state = self.control.state.lock().unwrap();
+            if state.reader_drained {
+                state.failure.take()
+            } else {
+                None
+            }
+        };
         if let Some(failure) = failure {
             self.diagnostic = failure;
             anyhow::ensure!(self.rendered, "{}", self.diagnostic);
@@ -461,8 +483,14 @@ impl Recovery {
                 Some(character)
             })
             .collect();
+        let clear_previous = self.status.as_ref().and_then(|(old_size, _)| {
+            let old_row = old_size.rows.max(1);
+            (old_row != size.rows.max(1) && old_row <= size.rows.max(1))
+                .then(|| format!("\x1b[{old_row};1H\x1b[0m\x1b[2K"))
+        });
         let output = format!(
-            "\x1b7\x1b[{};1H\x1b[0m\x1b[7m{text}\x1b[K\x1b[0m\x1b8",
+            "\x1b7{}\x1b[{};1H\x1b[0m\x1b[7m{text}\x1b[K\x1b[0m\x1b8",
+            clear_previous.unwrap_or_default(),
             size.rows.max(1)
         );
         let mut out = os.get_stdout_writer();
