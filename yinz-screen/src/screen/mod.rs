@@ -1367,6 +1367,7 @@ impl Screen {
             notification_position,
             notification_timeout_secs,
         } = config;
+        mode_info.max_agent_width = Some(max_agent_width);
         mode_info.tab_groups = Some(tab_groups);
         let arrow_fonts = !simplified_ui;
         let explicitly_disable_kitty_keyboard_protocol = !support_kitty_keyboard_protocol;

@@ -210,6 +210,14 @@ fn a_reload_applies_every_field_of_the_screen_config() {
     assert_eq!(screen.pane_frame_style, pane_frame_style);
     assert_eq!(screen.max_agent_width, max_agent_width);
     assert_eq!(
+        screen.default_mode_info.max_agent_width,
+        Some(max_agent_width)
+    );
+    assert_eq!(
+        screen.mode_info[&client_id].max_agent_width,
+        Some(max_agent_width)
+    );
+    assert_eq!(
         screen.get_active_tab(client_id).unwrap().max_agent_width,
         max_agent_width
     );

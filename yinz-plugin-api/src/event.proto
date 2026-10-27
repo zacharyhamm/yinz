@@ -664,6 +664,7 @@ message ModeUpdatePayload {
   repeated string nested_descend_keys = 22;
   bool kitty_graphics_support = 23;
   optional bool tab_groups = 24;
+  optional uint64 max_agent_width = 25;
 }
 
 enum PaneFrameStyle {

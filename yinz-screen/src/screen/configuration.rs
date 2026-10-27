@@ -146,6 +146,7 @@ impl Screen {
         self.plugin_aliases = plugin_aliases;
         // global configuration
         self.style.colors = theme;
+        self.default_mode_info.max_agent_width = Some(max_agent_width);
         self.default_mode_info.tab_groups = Some(tab_groups);
         self.default_mode_info.update_theme(theme);
         self.default_mode_info
@@ -221,6 +222,7 @@ impl Screen {
             self.support_kitty_graphics_protocol != support_kitty_graphics_protocol;
         self.support_kitty_graphics_protocol = support_kitty_graphics_protocol;
         for mode in self.mode_info.values_mut() {
+            mode.max_agent_width = Some(max_agent_width);
             mode.tab_groups = Some(tab_groups);
         }
         for tab in self.tabs.values_mut() {

@@ -2575,6 +2575,11 @@ impl TryFrom<ProtobufModeUpdatePayload> for ModeInfo {
             .collect();
 
         let mode_info = ModeInfo {
+            max_agent_width: protobuf_mode_update_payload
+                .max_agent_width
+                .map(usize::try_from)
+                .transpose()
+                .map_err(|_| "agent width exceeds platform size")?,
             tab_groups: protobuf_mode_update_payload.tab_groups,
             mode: current_mode,
             keybinds,
@@ -2654,6 +2659,7 @@ impl TryFrom<ModeInfo> for ProtobufModeUpdatePayload {
             protobuf_input_mode_keybinds.push(input_mode_keybind);
         }
         Ok(ProtobufModeUpdatePayload {
+            max_agent_width: mode_info.max_agent_width.map(|width| width as u64),
             tab_groups: mode_info.tab_groups,
             current_mode: current_mode as i32,
             style: Some(style),
