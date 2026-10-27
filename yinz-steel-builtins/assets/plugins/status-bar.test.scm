@@ -1,5 +1,5 @@
 (require "./testing/common.scm")
-(define replies (hash "GetLocalUtcOffset" 0 "GetYinzVersion" "test" "FsMetadata" json-null "FsWrite" json-null))
+(define replies (hash "GetSessionList" (hash "live_sessions" '()) "GetLocalUtcOffset" 0 "GetYinzVersion" "test" "FsMetadata" json-null "FsWrite" json-null))
 (for-each (lambda (failure)
     (test (string-append "status bar keeps drawing when tip cache fails: " failure) (lambda ()
         (define cache (cond [(equal? failure "malformed") "{"] [(equal? failure "invalid counts") "{\"yinz_version\":\"test\",\"cached_data\":{\"quicknav\":-1}}"] [else "{\"yinz_version\":\"test\",\"cached_data\":{\"quicknav\":1}}"] ))
@@ -87,3 +87,9 @@
     (test-event "SystemClipboardFailure") (assert (string-contains? (test-render 1 200) "Text copied to system clipboard"))
     (test-event "InputReceived") (assert (string-contains? (test-render 1 200) "00:00"))
     (test-event "SystemClipboardFailure") (assert (string-contains? (test-render 1 200) "Error using the system clipboard"))))
+
+
+(test "status bar draws while session discovery is unavailable" (lambda ()
+    (test-stub-error "GetSessionList" "Session-scan state not initialized")
+    (t-load "./status-bar.scm" replies)
+    (assert (string-contains? (test-render 1 80) "00:00"))))

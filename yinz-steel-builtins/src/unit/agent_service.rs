@@ -25,9 +25,10 @@ fn ordinary_directory_publishes_snapshots_and_supplies_null_summary_branch() {
 fn assert_repository_snapshot_and_summary(head: Option<&str>) {
     let source = format!(
         "{}\n{}",
-        include_str!("../../assets/plugins/agent-service/summaries.scm"),
+        include_str!("../../assets/plugins/agent-service/summaries.scm")
+            .replace("./state.scm", "./agent-service/state.scm"),
         r#"
-        (require "./probes.scm")
+        (require "./agent-service/probes.scm")
         (define (seed panes repository other)
           (as-set! "panes" panes) (as-set! "subscribers" '(42 43))
           (for-each (lambda (pane)
@@ -38,13 +39,8 @@ fn assert_repository_snapshot_and_summary(head: Option<&str>) {
           (as-set! "focused" focused) (as-publish! #t))
         "#,
     );
-    let (mut runtime, host) = plugin_with_source(
-        "agent-service/summaries",
-        &source,
-        json!({}),
-        BTreeMap::new(),
-        "",
-    );
+    let (mut runtime, host) =
+        plugin_with_source("agent-service", &source, json!({}), BTreeMap::new(), "");
     let mut repository = |head: Option<&str>| {
         if let Some(head) = head {
             let metadata = format!("/repo\n/repo/.git\n/repo/.git\n{head}\n");
@@ -424,4 +420,132 @@ fn marker_project_example_runs_its_real_command() {
         .update(json!({"RunCommandResult":[0.0, output.stdout, output.stderr, command[3]]}))
         .unwrap();
     assert_eq!(runtime.invoke("observed-result", vec![]).unwrap(), result);
+}
+
+#[test]
+fn counts_use_panel_classification_and_publish_only_changes() {
+    let source = format!(
+        "{}\n(define (load _) (as-reset!))\n(require \"./shared/agent-status.scm\")",
+        include_str!("../../assets/plugins/agent-service.scm").replace(
+            "(define (load configuration)",
+            "(define (service-load configuration)"
+        )
+    );
+    let (mut runtime, host) =
+        plugin_with_source("agent-service", &source, json!({}), BTreeMap::new(), "");
+    let panes: Vec<_> = (1..=11)
+        .map(|id| {
+            json!({
+                "pane_id":id, "title":"task", "command":if id >= 10 {"shell"} else {"claude"},
+                "status":match id {7 => "Held", 8 => "Exited", _ => "Running"},
+                "cwd":null, "tab":[1,"agents"], "agent":null
+            })
+        })
+        .collect();
+    runtime
+        .invoke("as-set!", vec![json!("panes"), json!(panes)])
+        .unwrap();
+    runtime.eval(r#"
+        (as-set! "manual" (hash "10" "codex"))
+        (as-set! "hooks" (hash "1" (hash "phase" "Busy") "2" (hash "phase" "Waiting") "3" (hash "phase" "Idle")))
+        (as-set! "activity" (hash "4" '(12 0) "5" '(12 2) "6" '(13 2)))
+        (as-set! "summaries" (hash "5" (hash "text" "Fresh?" "awaiting" #t "hash" 12)
+            "6" (hash "text" "Stale?" "awaiting" #t "hash" 12)))
+        (as-set! "suppressed" (as-get "panes"))
+    "#).unwrap();
+    let subscribe = |runtime: &mut yinz_steel::Runtime, id| {
+        runtime.pipe(json!({"source":{"Plugin":id},"name":"agent_counts_subscribe","payload":null,"args":{},"is_private":true})).unwrap();
+    };
+    subscribe(&mut runtime, 42);
+    let counts = runtime.invoke("as-get", vec![json!("counts")]).unwrap();
+    assert_eq!(
+        counts,
+        json!({"total":10,"busy":2,"waiting":2,"idle":2,"held":1,"exited":1,"unknown":2})
+    );
+    // Panel details and the service aggregate use the same pure classification, without UI state.
+    let rows = runtime.eval(r#"(define count-test-rows (as-model "StripRows" (as-panes) (as-get "manual") (as-get "activity") (hash) (hash) (as-get "summaries") (as-get "hooks")))"#);
+    rows.unwrap();
+    let count_rows = runtime.value("count-test-rows").unwrap();
+    assert_eq!(
+        runtime
+            .invoke("agent-row-counts", vec![count_rows])
+            .unwrap(),
+        counts
+    );
+    let messages = || {
+        host.lock()
+            .unwrap()
+            .commands
+            .iter()
+            .filter_map(|command| command.get("MessageToPlugin").cloned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(messages().len(), 1);
+    runtime
+        .invoke("as-publish-counts!", vec![json!(false)])
+        .unwrap();
+    assert_eq!(messages().len(), 1);
+    subscribe(&mut runtime, 42);
+    subscribe(&mut runtime, 43);
+    assert_eq!(messages().len(), 3);
+    assert_eq!(
+        runtime
+            .invoke("as-get", vec![json!("count-subscribers")])
+            .unwrap(),
+        json!([43, 42])
+    );
+    // Non-classification changes do not send counts; a fresh summary changing to stale does.
+    runtime.eval(r#"(as-set! "focused" 5) (as-map-set! "summaries" 5 (hash "text" "Reworded?" "awaiting" #t "hash" 12))"#).unwrap();
+    runtime
+        .invoke("as-publish-counts!", vec![json!(false)])
+        .unwrap();
+    assert_eq!(messages().len(), 3);
+    runtime
+        .eval(r#"(as-map-set! "activity" 5 '(14 2))"#)
+        .unwrap();
+    runtime
+        .invoke("as-publish-counts!", vec![json!(false)])
+        .unwrap();
+    let sent = messages();
+    assert_eq!(sent.len(), 5);
+    let updated: serde_json::Value =
+        serde_json::from_str(sent[3]["message_payload"].as_str().unwrap()).unwrap();
+    assert_eq!(updated["waiting"], 1);
+    assert_eq!(updated["idle"], 3);
+    assert_eq!(
+        sent[3]["message_args"]["seq"],
+        sent[4]["message_args"]["seq"]
+    );
+    assert!(
+        sent[3]["message_args"]["seq"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            > sent[2]["message_args"]["seq"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+    );
+    runtime
+        .invoke("as-publish-counts!", vec![json!(false)])
+        .unwrap();
+    assert_eq!(messages().len(), 5);
+    // Provider snapshots classify custom commands without depending on the panel's provider load.
+    let provider = yinz_types::agent::provider::AgentProvider {
+        kind: "custom".into(),
+        executable: "shell".into(),
+        ..Default::default()
+    };
+    runtime
+        .invoke("as-set!", vec![json!("providers"), json!([provider])])
+        .unwrap();
+    runtime
+        .invoke("as-publish-counts!", vec![json!(false)])
+        .unwrap();
+    assert_eq!(
+        runtime.invoke("as-get", vec![json!("counts")]).unwrap()["total"],
+        11
+    );
 }

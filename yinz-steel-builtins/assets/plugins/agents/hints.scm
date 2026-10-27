@@ -121,10 +121,7 @@
         (if (and at (>= (- now at) 60000)) (string-append " · " (a-panel "ShortAge" (list now at)) " ago") "")
         (if (a-get "search_truncated") "  more matches omitted" "")))
     ((a-get "waiting_base") "Waiting for you")
-    (else
-      (and (>= (a-get "last_rows") 8) (>= (a-get "last_cols") 24)
-        (or (a-get "strip_seen") (not (null? (a-get "rows"))))
-        (a-panel "FitKeys" (list (a-live-counts) (a-get "last_cols")))))))
+    (else #f)))
 (define (a-search-failure cols)
   (if (and (a-get "search_editing") (a-get "search_error"))
     (a-panel "WrapWords" (list (string-append "failed: " (a-get "search_error")) cols)) '()))

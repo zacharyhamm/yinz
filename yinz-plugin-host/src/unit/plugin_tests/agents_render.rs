@@ -187,16 +187,16 @@ fn agents_selections_and_secondary_text_resolve_theme_colors() {
             assert_text(&lines, "project", style.colors.text_unselected.base, true);
             assert_text(&lines, "topic", style.colors.text_unselected.base, false);
             assert_text(&lines, selected, style.colors.text_selected.base, false);
-            let selected_row = if selected == "archived run" { 5 } else { 3 };
+            let selected_row = if selected == "archived run" { 4 } else { 2 };
             assert_selection(&lines[selected_row][..33], style, true, marker);
             assert_selection(
-                &lines[4][..33],
+                &lines[3][..33],
                 style,
-                selected_row == 3,
-                if selected_row == 3 { marker } else { ' ' },
+                selected_row == 2,
+                if selected_row == 2 { marker } else { ' ' },
             );
             assert_selection(
-                &lines[if selected_row == 3 { 5 } else { 3 }][..33],
+                &lines[if selected_row == 2 { 4 } else { 2 }][..33],
                 style,
                 false,
                 ' ',
@@ -260,7 +260,11 @@ fn agents_selections_and_secondary_text_resolve_theme_colors() {
         assert!(first_line.starts_with("waiting for agent…"));
         plugin.runtime.eval("(a-set! \"strip_seen\" #t)").unwrap();
         let lines = render(&mut plugin, style);
-        cells(&lines, "0 agents");
+        assert!(lines[0]
+            .iter()
+            .map(|cell| cell.character)
+            .collect::<String>()
+            .starts_with("no agents"));
         assert_text(
             &lines,
             "no agents",
@@ -707,7 +711,7 @@ fn agents_clipped_remote_hosts_preserve_status_and_waiting_emphasis() {
                     let lines = render_at_width(&mut plugin, style, 60);
                     assert_eq!(state(&mut plugin, "last_divider_col"), 20);
                     assert_eq!(state(&mut plugin, "rows"), rows);
-                    let row = &lines[2];
+                    let row = &lines[1];
                     let divider = row.iter().position(|cell| cell.character == '│').unwrap();
                     assert_eq!(
                         row[..divider]
@@ -725,7 +729,7 @@ fn agents_clipped_remote_hosts_preserve_status_and_waiting_emphasis() {
                     } else {
                         style.colors.text_unselected.base
                     };
-                    assert_text(&lines[2..3], &symbol.to_string(), color, false);
+                    assert_text(&lines[1..2], &symbol.to_string(), color, false);
                     if selected == 1 {
                         cells(&lines, &format!("7 · claude · {status}"));
                     }
@@ -747,7 +751,7 @@ fn agents_divider_drag_clamps_restores_and_never_activates() {
     let mut plugin = plugin();
     plugin.render(24, 90);
     assert_eq!(state(&mut plugin, "last_divider_col"), 30);
-    assert_eq!(state(&mut plugin, "last_list_rows"), 22);
+    assert_eq!(state(&mut plugin, "last_list_rows"), 23);
     plugin.take_commands();
     mouse(&mut plugin, "LeftClick", json!([2, 30]));
     mouse(&mut plugin, "Hold", json!([2, 45]));
@@ -859,11 +863,11 @@ fn agents_columns_clip_align_and_route_mouse_independently() {
             "title" "a long archived title that must stay in the list" "started_at_ms" 1000 "continuation" #f))) (range 30))))
     "#).unwrap();
     let lines = render(&mut plugin, themes()[0]);
-    assert_eq!(lines[2][2].character, 't');
-    assert_eq!(lines[3][2].character, '7');
-    assert_eq!(lines[3][33].character, '│');
+    assert_eq!(lines[1][2].character, 't');
+    assert_eq!(lines[2][2].character, '7');
+    assert_eq!(lines[2][33].character, '│');
     plugin.render(10, 90);
-    mouse(&mut plugin, "Hover", json!([2, 4]));
+    mouse(&mut plugin, "Hover", json!([1, 4]));
     mouse(&mut plugin, "ScrollDown", json!(3));
     assert_eq!(state(&mut plugin, "list_scroll"), 3);
     assert_eq!(state(&mut plugin, "history_scroll"), 0);
@@ -875,7 +879,7 @@ fn agents_columns_clip_align_and_route_mouse_independently() {
     mouse(&mut plugin, "LeftClick", json!([2, 50]));
     assert_eq!(state(&mut plugin, "focus"), "history");
     assert_eq!(state(&mut plugin, "selected"), 2);
-    mouse(&mut plugin, "LeftClick", json!([2, 4]));
+    mouse(&mut plugin, "LeftClick", json!([1, 4]));
     assert_eq!(state(&mut plugin, "focus"), "list");
     assert_eq!(state(&mut plugin, "selected"), 3);
     mouse(&mut plugin, "Release", json!([100, 4]));
@@ -1035,20 +1039,20 @@ fn agents_activity_lines_share_selection_and_activate_only_on_release() {
     plugin.render(24, 90);
     assert_eq!(state(&mut plugin, "list_lines")[3], json!([2, true]));
     plugin.take_commands();
-    mouse(&mut plugin, "LeftClick", json!([4, 5]));
-    mouse(&mut plugin, "Release", json!([4, 5]));
+    mouse(&mut plugin, "LeftClick", json!([3, 5]));
+    mouse(&mut plugin, "Release", json!([3, 5]));
     assert_eq!(state(&mut plugin, "selected"), 2);
     assert!(!plugin
         .take_commands()
         .iter()
         .any(|command| command.get("FocusTerminalPane").is_some()));
 
-    mouse(&mut plugin, "LeftClick", json!([4, 5]));
+    mouse(&mut plugin, "LeftClick", json!([3, 5]));
     assert!(!plugin
         .take_commands()
         .iter()
         .any(|command| command.get("FocusTerminalPane").is_some()));
-    mouse(&mut plugin, "Release", json!([4, 5]));
+    mouse(&mut plugin, "Release", json!([3, 5]));
     assert!(plugin
         .take_commands()
         .iter()

@@ -1,9 +1,10 @@
+(require "../shared/agent-status.scm")
 (provide as-get as-set! as-field as-present? as-find as-model as-register! as-call
   as-map-get as-map-set! as-map-remove! as-map-prune! as-map-values as-keys as-unique
   as-all-panes as-panes as-pane as-owner as-entity-request as-owned-request as-fetch
   as-safe as-log-safe as-send as-message as-result as-record-cwd! as-rejoin! as-update-pane!
   as-settle-latches! as-forget! as-reset! as-row-value as-restore-metadata!
-  as-set-session! as-bootstrap! as-rebuild! as-publish! as-classify as-kind
+  as-set-session! as-bootstrap! as-rebuild! as-publish-counts! as-publish! as-classify as-kind
   as-location as-locations as-agent-locations as-sorted-ids as-take)
 
 ;; Every mutable service fact belongs to this interpreter. Other modules register guest functions.
@@ -58,7 +59,7 @@
 (define (as-reset!)
   (vector-set! state 0 (hash "providers" '() "host" "" "session" "" "env" (hash)
       "manifest" (hash "panes" (hash)) "tabs" '() "panes" json-null "suppressed" '() "focused" json-null
-      "bootstrapped" #f "watches" '() "subscribers" '() "seq" 0 "published" #f "run-headers" (hash)
+      "bootstrapped" #f "watches" '() "count-subscribers" '() "counts" #f "count-seq" 0 "subscribers" '() "seq" 0 "published" #f "run-headers" (hash)
       "manual" (hash) "assignments" (hash) "commands" (hash) "cwds" (hash) "hosts" (hash) "bubblewrap" (hash)
       "latched" (hash) "pending-release" '() "activity" (hash) "hooks" (hash) "event-fed" '() "prompts" (hash)
       "runs" (hash) "dirty-runs" (hash) "released-runs" (hash) "finished-runs" '() "observed-runs" '()
@@ -233,7 +234,18 @@
       (unless (equal? label (as-map-get "prefixes" id #f))
         (as-send (hash "SetPaneTitlePrefix" (hash "pane_id" (hash "Terminal" id) "prefix" label))))) (as-sorted-ids wanted))
   (as-set! "prefixes" wanted))
+(define (as-publish-counts! requester)
+  (define counts (agent-row-counts (as-model "StripRows" (as-panes) (as-get "manual")
+        (as-get "activity") (hash) (hash) (as-get "summaries") (as-get "hooks"))))
+  (define changed (not (equal? counts (as-get "counts"))))
+  (when (or changed requester)
+    (as-set! "count-seq" (+ 1 (as-get "count-seq")))
+    (as-set! "counts" counts)
+    (for-each (lambda (id)
+        (as-message "agent_counts" id (yinz-json-string counts) (hash "seq" (number->string (as-get "count-seq")))))
+      (if changed (as-get "count-subscribers") (list requester)))))
 (define (as-publish! force)
+  (as-publish-counts! #f)
   (define locations-published
     (or (equal? (as-get "repositories") (as-get "published-locations"))
       (as-log-safe "publish project locations" (lambda ()

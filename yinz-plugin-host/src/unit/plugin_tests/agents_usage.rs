@@ -709,11 +709,11 @@ fn agents_quota_images_reuse_ids_and_cache_each_clients_value_theme_and_geometry
         );
         assert!(output.contains("a=p,U=1,q=2,i=1,c=18,r=2"));
         assert!(
-            output.contains("\x1b[3;103H"),
+            output.contains("\x1b[2;103H"),
             "first image row follows heading"
         );
         assert!(
-            output.contains("\x1b[4;103H"),
+            output.contains("\x1b[3;103H"),
             "second image row precedes the short window"
         );
         assert_cached(&panel.plugin.render(30, 120));
