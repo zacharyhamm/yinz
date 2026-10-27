@@ -12,7 +12,7 @@ impl Screen {
         })
     }
 
-    fn multipane_member(&self, id: MultipaneId) -> Result<PaneId> {
+    fn multipane_member(&self, id: MultipaneId) -> Option<PaneId> {
         self.tabs
             .values()
             .flat_map(|tab| {
@@ -22,7 +22,6 @@ impl Screen {
             })
             .find(|info| info.id == id)
             .map(|info| info.children[0])
-            .context("unknown multipane")
     }
     fn validate_multipane_children(&self, ids: &[PaneId]) -> Result<()> {
         let mut unique = std::collections::HashSet::new();
@@ -95,7 +94,11 @@ impl Screen {
                 self.validate_multipane_children(&ids)?;
                 return Ok(None);
             },
-            MultipaneOperation::Get(id) => self.multipane_member(id)?,
+            MultipaneOperation::Get(id) => match self.multipane_member(id) {
+                Some(member) => member,
+                // A launched headless child can give up its slot before the caller reads back.
+                None => return Ok(None),
+            },
             MultipaneOperation::Create {
                 children,
                 placement,
@@ -123,7 +126,9 @@ impl Screen {
                 if let Some(split) = request.split {
                     split.validate().map_err(|error| anyhow!(error))?;
                 }
-                let member = self.multipane_member(request.id)?;
+                let member = self
+                    .multipane_member(request.id)
+                    .context("unknown multipane")?;
                 let tab = self
                     .tab_containing_pane_mut(member)
                     .context("multipane tab disappeared")?;
@@ -145,7 +150,7 @@ impl Screen {
                 if slot >= 2 {
                     return Err(anyhow!("invalid multipane child slot"));
                 }
-                let member = self.multipane_member(id)?;
+                let member = self.multipane_member(id).context("unknown multipane")?;
                 let info = self
                     .tab_containing_pane(member)
                     .and_then(|tab| tab.multipane_info(member))
@@ -155,7 +160,7 @@ impl Screen {
                 }
                 self.validate_multipane_children(&[child])?;
                 self.replace_pane_with_existing_pane(info.children[slot], child, false, None)?;
-                self.multipane_member(id)?
+                self.multipane_member(id).context("unknown multipane")?
             },
         };
         self.tab_containing_pane(member)

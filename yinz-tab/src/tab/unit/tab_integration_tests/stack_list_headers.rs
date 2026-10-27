@@ -249,6 +249,11 @@ fn assert_header_cells(tab: &Tab, grid: &Grid, shared_divider: bool) {
                 expected[entry_x - rect.x + i] = character;
             }
         }
+        if selected {
+            // Both columns of a wide glyph resolve to the same terminal character.
+            expected[offset.left + 1] = '👇';
+            expected[offset.left + 2] = '👇';
+        }
         for (column, character) in expected.into_iter().enumerate() {
             let x = rect.x + column;
             let y = rect.y + rank;
@@ -264,7 +269,8 @@ fn assert_header_cells(tab: &Tab, grid: &Grid, shared_divider: bool) {
                 "background at ({x}, {y})"
             );
             let selected_text = selected && (entry_x + 4..entry_x + 4 + label.len()).contains(&x);
-            let expected_foreground = if selected_text {
+            let focus_marker = selected && (offset.left..offset.left + 4).contains(&column);
+            let expected_foreground = if selected_text || focus_marker {
                 tab.style.colors.frame_selected.base.into()
             } else {
                 foreground

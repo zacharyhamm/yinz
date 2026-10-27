@@ -4,7 +4,7 @@ expression: normalized(&grid_snapshot)
 ---
  Yinz (test)  [1] Tab #1  [2] Tab #2  + 
                                                      │ [0] Pane #1 │
-                                                   > │ [1] Pane #2 │
+ 👇                                                > │ [1] Pane #2 │
 $ second-member
 $ █
  Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 

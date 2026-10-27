@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use unicode_width::UnicodeWidthStr;
 use yinz_types::internal_ids::ClientId;
 use yinz_types::position::Position;
 use yinz_types::style::{Palette, Style};
@@ -2372,7 +2373,7 @@ fn agent_double_escape_frame_prefix_restores_title_and_respects_geometry() {
         geom.cols.set_inner(cols);
         pane.set_geom(geom);
         let narrow = render(&mut pane, client, frame_params(true)).unwrap();
-        assert_eq!(narrow.chars().count(), cols, "{narrow}");
+        assert_eq!(narrow.width(), cols, "{narrow}");
         if cols > 8 {
             assert!(
                 narrow.contains("[..]") || narrow.contains("[...]"),
@@ -3022,4 +3023,27 @@ fn reusing_an_agent_pane_for_a_non_agent_clears_its_session_memory() {
     assert!(info.agent.is_none());
     assert!(info.last_agent_session_id.is_none());
     assert!(!pane.was_an_agent());
+}
+
+#[test]
+fn focus_emoji_follows_focus_without_renaming_the_pane() {
+    let mut pane = agent_pane();
+    pane.update_name("my pane");
+    for focused in [false, true, false] {
+        let rendered: String = pane
+            .render_frame(ClientId::new(1), frame_params(focused), InputMode::Normal)
+            .unwrap()
+            .unwrap()
+            .0
+            .into_iter()
+            .flat_map(|chunk| chunk.terminal_characters)
+            .map(|character| character.character)
+            .collect();
+        assert_eq!(rendered.contains('👇'), focused);
+        assert_eq!(pane.display_title(), "my pane");
+        assert!(pane
+            .render_frame(ClientId::new(1), frame_params(focused), InputMode::Normal)
+            .unwrap()
+            .is_none());
+    }
 }

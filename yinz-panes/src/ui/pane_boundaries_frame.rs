@@ -201,9 +201,15 @@ impl PaneFrame {
         main_title: String,
         frame_params: FrameParams,
     ) -> Self {
+        let title = yinz_types::text::clean_string_from_control_and_linebreak(&main_title);
+        let title = if frame_params.is_main_client && !title.is_empty() {
+            format!("👇 {title}")
+        } else {
+            title
+        };
         PaneFrame {
             geom,
-            title: yinz_types::text::clean_string_from_control_and_linebreak(&main_title),
+            title,
             subtitle: None,
             scroll_position,
             style: frame_params.style,
@@ -1008,7 +1014,8 @@ impl PaneFrame {
             && self.other_focused_clients.is_empty()
             && !self.other_cursors_exist_in_session
         {
-            None
+            let (part, length) = self.plain_title_part("👇");
+            (self.stack_list_entry.is_some() && length <= max_length).then_some((part, length))
         } else if self.is_main_client
             && self.other_focused_clients.is_empty()
             && self.other_cursors_exist_in_session

@@ -3,9 +3,9 @@ source: yinz-integration-tests/tests/nested_sessions.rs
 expression: normalized(&host_pane_count_unchanged)
 ---
  Yinz (test)  Tab #1  + 
-                       [0] Yinz:test-1                     │                         [1] Pane #2
+                     👇 [0] Yinz:test-1                    │                         [1] Pane #2
  Yinz (test)  Tab #1  +        Alt <[]>  VERTICAL  │$
-          [0] Pane #1        │         [1] Pane #2         │
+          [0] Pane #1        │       👇 [1] Pane #2        │
 $                            │█                            │
                              │                             │
                              │                             │

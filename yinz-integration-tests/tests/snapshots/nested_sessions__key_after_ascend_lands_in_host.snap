@@ -5,7 +5,7 @@ expression: normalized(&host_end_state)
  Yinz (test)  Tab #1  + 
                        [0] Yinz:test-1                     │                         [1] Pane #2
  Yinz (test)  Tab #1  +        Alt <[]>  VERTICAL  │$
-          [0] Pane #1        │         [1] Pane #2         │
+          [0] Pane #1        │       👇 [1] Pane #2        │
 $                            │                             │
                              │                             │
                              │                             │
@@ -14,7 +14,7 @@ $                            │                             │
                              │                             │
  Descend: Ctrl + <o> + <[>                                 │
 ───────────────────────────────────────────────────────────┤
-                         [2] Pane #3                       │
+                       👇 [2] Pane #3                      │
 $ █                                                        │
                                                            │
                                                            │

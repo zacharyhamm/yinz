@@ -7,7 +7,7 @@ expression: "format!(\"{}\", snapshot)"
 02 (C): │                                                                              │
 03 (C): │                                                                              │
 04 (C): │                                                                              │
-05 (C): │                   ┌ [0] floating_pane_to_eject ─ PIN [ ] ┐                   │
+05 (C): │                   ┌ 👇 [0] floating_pane_to_eject ───────┐                   │
 06 (C): │                   │                                      │                   │
 07 (C): │                   │                                      │                   │
 08 (C): │                   │                                      │                   │

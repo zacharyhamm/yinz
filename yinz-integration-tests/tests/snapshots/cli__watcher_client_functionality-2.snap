@@ -3,7 +3,7 @@ source: yinz-integration-tests/tests/cli.rs
 expression: normalized(&watcher_snapshot)
 ---
  Yinz (test)  Tab #1  + 
-                         [0] Pane #1                       │                         [1] Pane #2
+                         [0] Pane #1                       │                       👇 [1] Pane #2
 $                                                          │$ █
 WATCHER_OUTPUT_1                                           │
 WATCHER_OUTPUT_2                                           │
