@@ -110,10 +110,8 @@
   (define reset (and window (a-some (a-field window "resets_at_ms" #f))))
   (if (not reset) ""
     (let ((left (- reset (yinz-wall-clock-ms))))
-      (cond ((<= left 0) "reset due") ((< left 60000) "resets in <1m")
-        ((< left 86400000) (string-append "resets in " (usage-age left)))
-        (else (define days (quotient (inexact->exact (floor left)) 86400000))
-          (string-append "resets in " (number->string days) (if (= days 1) " day" " days")))))))
+      (cond ((<= left 0) "reset due") ((< left 60000) "<1m left")
+        (else (string-append (usage-age left) " left"))))))
 (define (a-usage-display)
   (define target (usage-target))
   (if (not target) #f

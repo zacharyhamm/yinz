@@ -412,7 +412,7 @@ fn agents_usage_header_shows_only_weekly_short_window_and_weekly_reset() {
     measurement["windows"][1]["resets_at_ms"] = json!(259_290_000);
     panel.reply(&request, measurement);
     let frame = panel.render(30, 120);
-    for expected in ["Weekly", "26%", "5hr · 102%", "resets in 3 days"] {
+    for expected in ["Weekly", "26%", "5hr · 102%", "3d left"] {
         assert!(frame.contains(expected), "missing {expected:?}:\n{frame}");
     }
     for removed in [
@@ -549,10 +549,12 @@ fn agents_quota_header_handles_optional_windows_and_reset_times() {
     for (reset, expected) in [
         (json!(null), ""),
         (json!(90_000), "reset due"),
-        (json!(120_000), "resets in <1m"),
-        (json!(3_690_000), "resets in 1h"),
-        (json!(86_490_000), "resets in 1 day"),
-        (json!(259_290_000), "resets in 3 days"),
+        (json!(120_000), "<1m left"),
+        (json!(390_000), "5m left"),
+        (json!(3_690_000), "1h left"),
+        (json!(21_690_000), "6h left"),
+        (json!(86_490_000), "1d left"),
+        (json!(259_290_000), "3d left"),
     ] {
         let observation = json!({"status":"ok", "windows":[
             {"label":"Weekly limit","used_percent":26,"resets_at_ms":reset}],
