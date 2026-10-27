@@ -1082,3 +1082,73 @@ fn agents_summary_order_and_fixed_quota_footer_follow_light_and_dark_themes() {
         cells(&lines, "Local claude:");
     }
 }
+
+#[test]
+fn agents_tool_spans_collapse_and_enter_reads_every_call_and_result() {
+    use agent_proto::agents::RunEntryKind::{Message, ToolCall, ToolResult};
+    let mut plugin = plugin();
+    let mut run = run("active", 7, false);
+    let template = run.entries[0].clone();
+    run.entries = [
+        (ToolCall, "first **literal** call"),
+        (ToolResult, "first result"),
+        (ToolCall, "second call"),
+        (ToolResult, "second result"),
+        (Message, "between spans"),
+        (ToolCall, "third call"),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (kind, text))| agent_proto::agents::RunEntry {
+        revision: index as u64 + 1,
+        kind,
+        text: text.into(),
+        ..template.clone()
+    })
+    .collect();
+    plugin
+        .runtime
+        .invoke("a-load-run!", vec![json!(run), json!(0)])
+        .unwrap();
+    plugin.render(40, 100);
+    let history = state(&mut plugin, "history_cache")["lines"].clone();
+    let events = history["events"].as_array().unwrap();
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0]["revisions"], json!([1, 2, 3, 4]));
+    assert_eq!(events[0]["len"], 1);
+    assert_eq!(events[1]["start"], 1);
+    assert!(history["entries"][0]["text"]
+        .as_str()
+        .unwrap()
+        .ends_with("tool call x2"));
+    assert!(
+        history["entries"][events[2]["start"].as_u64().unwrap() as usize]["text"]
+            .as_str()
+            .unwrap()
+            .ends_with("tool call x1")
+    );
+    plugin
+        .runtime
+        .eval(
+            r#"
+        (a-set! "focus" "history")
+        (a-set! "pending_history_revision" 4)
+        (a-position-search-hit!)
+    "#,
+        )
+        .unwrap();
+    assert_eq!(state(&mut plugin, "history_cursor"), 2);
+    plugin
+        .runtime
+        .invoke(
+            "a-on-key!",
+            vec![json!({"bare_key": "Enter", "key_modifiers": []})],
+        )
+        .unwrap();
+    assert_eq!(plugin.runtime.invoke("a-reader", vec![json!("text")]).unwrap(),
+        "tool_call:\nfirst **literal** call\n\ntool_result:\nfirst result\n\ntool_call:\nsecond call\n\ntool_result:\nsecond result");
+    plugin.render(40, 100);
+    let reader = state(&mut plugin, "reader_cache")["lines"]["lines"].to_string();
+    assert!(reader.contains("first **literal** call"));
+    assert!(reader.contains("second result"));
+}

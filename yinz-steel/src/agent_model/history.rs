@@ -118,12 +118,70 @@ fn line(value: &markdown::MdLine) -> Value {
     json!({"text": value.text, "levels": styled.indices()})
 }
 fn history(value: &agents::HistoryLines) -> Value {
+    let prefix = value
+        .events
+        .first()
+        .map_or(value.entries.len(), |event| event.start);
+    let mut entries: Vec<Value> = value.entries[..prefix].iter().map(line).collect();
+    let mut events = Vec::new();
+    let mut remaining = value.events.as_slice();
+    while let Some(event) = remaining.first() {
+        let span_len = if event.kind == "tool_call" {
+            remaining
+                .iter()
+                .take_while(|event| matches!(event.kind, "tool_call" | "tool_result"))
+                .count()
+        } else {
+            1
+        };
+        let (span, rest) = remaining.split_at(span_len);
+        remaining = rest;
+        let start = entries.len();
+        let text = if event.kind == "tool_call" {
+            let count = span
+                .iter()
+                .filter(|event| event.kind == "tool_call")
+                .count();
+            let gutter: String = value.entries[event.start]
+                .text
+                .chars()
+                .take(agents::AGE_WIDTH)
+                .collect();
+            entries.push(line(
+                &markdown::MdLine::plain("")
+                    .prepend(
+                        &format!("tool call x{count}"),
+                        markdown::MdStyle {
+                            dim: true,
+                            ..Default::default()
+                        },
+                    )
+                    .prepend(
+                        &gutter,
+                        markdown::MdStyle {
+                            color: Some(1),
+                            ..Default::default()
+                        },
+                    ),
+            ));
+            span.iter()
+                .map(|event| format!("{}:\n{}", event.kind, event.text))
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        } else {
+            entries.extend(value.entries[event.start..event.end()].iter().map(line));
+            event.text.to_string()
+        };
+        events.push(json!({"revision": event.revision,
+            "revisions": span.iter().map(|event| event.revision).collect::<Vec<_>>(),
+            "start": start, "len": entries.len() - start, "kind": event.kind,
+            "created_at_ms": event.created_at_ms, "text": text}));
+    }
     json!({
         "label": value.label,
-        "entries": value.entries.iter().map(line).collect::<Vec<_>>(),
+        "entries": entries,
         "header": value.header.iter().map(line).collect::<Vec<_>>(),
-        "events": value.events.iter().map(|event| json!({"revision": event.revision, "start": event.start, "len": event.len,
-            "kind": event.kind, "created_at_ms": event.created_at_ms, "text": event.text.as_ref()})).collect::<Vec<_>>(),
+        "events": events,
     })
 }
 fn section(value: &envelope::Section) -> Value {

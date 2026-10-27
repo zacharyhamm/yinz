@@ -25,6 +25,8 @@
         (summary (yinz-agent-model "history" "Summary" (list (hash-ref agent "pane_id") (hash-ref agent "kind") summary (hash-ref agent "waiting") width now)))
         (else a-blank-history)))
     (a-set! "history_cache" (hash "key" key "lines" lines))))
+(define (event-revision? event revision)
+  (if (member revision (a-field event "revisions" (list (hash-ref event "revision")))) #t #f))
 (define (a-event-end event) (+ (hash-ref event "start") (hash-ref event "len")))
 (define (a-cursor-event)
   (define events (hash-ref (a-history) "events"))
@@ -44,11 +46,11 @@
   (define events (hash-ref (a-history) "events"))
   (define cursor (a-get "history_cursor_anchor"))
   (when cursor
-    (define at (a-index (lambda (event) (equal? (hash-ref event "revision") (car cursor))) (reverse events)))
+    (define at (a-index (lambda (event) (event-revision? event (car cursor))) (reverse events)))
     (if at (a-set! "history_cursor" at) (a-set! "history_cursor_anchor" #f)))
   (define bottom (a-get "history_bottom_anchor"))
   (when bottom
-    (define event (a-find (lambda (event) (equal? (hash-ref event "revision") (car bottom))) events))
+    (define event (a-find (lambda (event) (event-revision? event (car bottom))) events))
     (if event (a-set! "history_scroll" (a-sub (length (hash-ref (a-history) "entries"))
           (+ 1 (hash-ref event "start") (min (cadr bottom) (a-sub (hash-ref event "len") 1)))))
       (a-set! "history_bottom_anchor" #f))))
@@ -72,7 +74,7 @@
 (define (a-position-search-hit!)
   (define revision (a-get "pending_history_revision"))
   (define events (hash-ref (a-history) "events"))
-  (define at (and revision (a-index (lambda (event) (equal? revision (hash-ref event "revision"))) (reverse events))))
+  (define at (and revision (a-index (lambda (event) (event-revision? event revision)) (reverse events))))
   (when at
     (a-set! "history_cursor" at) (a-set! "history_cursor_anchor" (list revision))
     (a-set! "pending_history_revision" #f))
