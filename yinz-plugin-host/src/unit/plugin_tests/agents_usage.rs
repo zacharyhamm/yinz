@@ -317,10 +317,7 @@ fn agents_usage_correlates_providers_and_keeps_successful_data_when_refresh_fail
         101.5
     );
     let frame = panel.render(25, 64);
-    assert!(
-        frame.contains("Weekly · 75% · 5hr · 0% · stale"),
-        "{frame}"
-    );
+    assert!(frame.contains("Weekly · 75% · 5hr · 0% · stale"), "{frame}");
     panel.key("Ctrl r");
     let empty = panel.request("codex");
     panel.reply(
