@@ -1,5 +1,5 @@
 (require "./state.scm")
-(provide a-refresh-usage! a-usage-lines a-usage-summary)
+(provide a-refresh-usage! a-usage-lines a-usage-summary a-usage-display)
 
 (define (usage-target)
   (define agent (a-field (a-row) "Agent" #f))
@@ -106,16 +106,16 @@
             ((equal? status "error") "quota refresh failed")
             ((equal? status "unsupported") "provider quota is not supported")
             (else "quota unavailable")))))))
-(define (a-usage-lines)
+(define (a-usage-display)
   (define target (usage-target))
-  (if (not target) '()
+  (if (not target) #f
     (let* ((provider (hash-ref target "provider")) (reason (hash-ref target "reason"))
         (entry (usage-entry provider)) (observation (a-field entry "observation" #f))
         (result (a-field entry "result" #f)) (pending (hash-contains? (a-get "usage_pending") provider))
         (plan (usage-text (a-field observation "plan" #f)))
         (checked (a-field entry "checked_wall" #f))
         (observed (a-some (a-field observation "observed_at_ms" #f))))
-      (cond (reason (list reason))
+      (cond (reason (hash "lines" (list reason) "summary" reason "windows" '() "featured" #f "freshness" ""))
         (else
           (define windows (a-field observation "windows" '()))
           (define stale (usage-stale? entry))
@@ -127,9 +127,22 @@
               (else "")))
           (define message (if (or pending (equal? (a-field result "status" #f) "ok")) ""
               (usage-text (a-field result "message" #f))))
-          (append (list (string-append "Local " provider " account" (if (equal? plan "") "" (string-append " · " plan))))
-            (map usage-window windows)
-            (list (string-append (if (equal? status "") "" (string-append status " · "))
-                (if stale (string-append "Stale" (if observed (string-append " " (usage-age (- (yinz-wall-clock-ms) observed))) "") " · ") "")
-                (if checked (string-append "checked " (usage-age (- (yinz-wall-clock-ms) checked))) "Not checked")))
-            (if (equal? message "") '() (list message))))))))
+          (define heading (string-append "Local " provider " account" (if (equal? plan "") "" (string-append " · " plan))))
+          (define freshness (string-append (if (equal? status "") "" (string-append status " · "))
+              (if stale (string-append "Stale" (if observed (string-append " " (usage-age (- (yinz-wall-clock-ms) observed))) "") " · ") "")
+              (if checked (string-append "checked " (usage-age (- (yinz-wall-clock-ms) checked))) "Not checked")))
+          ; Strict comparison preserves provider order for equally used windows.
+          (define featured (foldl (lambda (window best)
+                (if (or (not best) (> (hash-ref window "used_percent") (hash-ref best "used_percent"))) window best)) #f windows))
+          (define used (and featured (hash-ref featured "used_percent")))
+          (define remaining (and used (max 0 (min 100 (- 100 used)))))
+          (hash "heading" heading "windows" (map usage-window windows) "freshness" freshness
+            "message" message "summary" (a-usage-summary) "featured" featured
+            "value" (and used (inexact->exact (floor (+ used 0.5)))) "remaining" remaining
+            "tone" (cond ((or stale (not remaining)) "neutral") ((> remaining 25) "success") ((>= remaining 10) "attention") (else "error"))
+            "label" (and used (string-append (number->string (inexact->exact (floor (+ used 0.5)))) "% USED · " (usage-text (hash-ref featured "label"))))
+            "lines" (append (list heading) (map usage-window windows) (list freshness)
+              (if (equal? message "") '() (list message)))))))))
+(define (a-usage-lines)
+  (define display (a-usage-display))
+  (if display (hash-ref display "lines") '()))

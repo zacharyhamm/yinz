@@ -1041,3 +1041,44 @@ fn agents_history_clicks_open_a_full_panel_reader_only_on_release() {
     plugin.render(24, 90);
     assert_eq!(state(&mut plugin, "last_divider_col"), false);
 }
+
+#[test]
+fn agents_summary_order_and_fixed_quota_footer_follow_light_and_dark_themes() {
+    for style in themes() {
+        let mut plugin = plugin();
+        plugin.runtime.eval(r#"
+          (a-set! "snapshot" (hash "panes" (list (hash "pane_id" 7 "title" "Review the release" "command" "claude" "status" "Running"))
+            "hooks" (hash "7" (hash "phase" "Waiting" "waiting_on" "Allow the release build to run with all features and report any differences before finishing"))))
+          (define observation (hash "status" "ok" "windows" (list (hash "label" "5-hour" "used_percent" 68 "resets_at_ms" 3690000)) "observed_at_ms" 90000))
+          (a-set! "usage_cache" (hash "claude" (hash "observation" observation "result" observation)))
+        "#).unwrap();
+        plugin.update(&yinz_types::data::Event::ModeUpdate(
+            yinz_types::data::ModeInfo {
+                style,
+                ..Default::default()
+            },
+        ));
+        let lines = render_sized(&mut plugin, style, 30, 120);
+        let row = |needle: &str| {
+            lines
+                .iter()
+                .position(|line| {
+                    line.iter()
+                        .skip(41)
+                        .map(|cell| cell.character)
+                        .collect::<String>()
+                        .contains(needle)
+                })
+                .unwrap()
+        };
+        assert!(row("7 · claude · needs input") < row("Task: Review the release"));
+        assert!(row("Task: Review the release") < row("project · topic"));
+        assert!(row("project · topic") < row("Allow the release build"));
+        assert!(row("State: hooks") < row("Local claude account"));
+        assert_eq!(row("32% remaining"), 28);
+        assert_text(&lines, "██████", style.colors.exit_code_success.base, false);
+        let lines = render_sized(&mut plugin, style, 10, 120);
+        cells(&lines, "7 · claude · needs input");
+        cells(&lines, "Local claude:");
+    }
+}

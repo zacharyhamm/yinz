@@ -31,6 +31,7 @@
       "bar_focused" '() "tabs_focused" #f "age_minute" 0 "rows" '() "summaries" (hash)
       "history_request" 0 "history_pending" #f "history_desired" #f "history_next" #f
       "history_deadline" 0 "history_retry_at" #f "history_hidden" #f "prompt_document" #f "search_headers" (hash)
+      "client_modes" (hash) "quota_images" (hash) "last_quota_top" #f "render_client" 0
       "usage_cache" (hash) "usage_pending" (hash) "usage_request" 0 "usage_visible" 'json-null
       "run" #f "run_offset_secs" 0 "history_scroll" 0 "history_cursor" 0
       "history_cursor_anchor" #f "history_bottom_anchor" #f "history_scrolled" #f

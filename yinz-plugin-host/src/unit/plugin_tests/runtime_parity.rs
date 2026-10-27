@@ -444,8 +444,11 @@ impl Pair {
                     if let Some(Value::Array(events)) = command.get_mut("Subscribe") {
                         if agents {
                             // Worker replies and theme repainting were added after the recordings.
-                            events
-                                .retain(|event| event != "CustomMessage" && event != "ModeUpdate");
+                            events.retain(|event| {
+                                event != "CustomMessage"
+                                    && event != "ModeUpdate"
+                                    && event != "CellPixelSizeChanged"
+                            });
                         }
                         events.sort_by_key(Value::to_string);
                     }

@@ -15,7 +15,7 @@
   (a-reset!) (a-set! "configuration" configuration)
   (yinz-command (hash "Subscribe" '("AgentProvidersChanged")))
   (a-set! "providers" (or (a-some (a-call "GetAgentProviders" #f)) '()))
-  (yinz-command (hash "Subscribe" '("CustomMessage" "Key" "Mouse" "PastedText" "PaneTabsUpdate" "Timer" "Visible" "PaneUpdate" "SessionUpdate" "TabUpdate" "PluginConfigurationChanged" "ModeUpdate")))
+  (yinz-command (hash "Subscribe" '("CustomMessage" "Key" "Mouse" "PastedText" "PaneTabsUpdate" "Timer" "Visible" "PaneUpdate" "SessionUpdate" "TabUpdate" "PluginConfigurationChanged" "ModeUpdate" "CellPixelSizeChanged")))
   (yinz-command (hash "SetTimeout" 2.0)) (yinz-command (hash "SetSelectable" #t))
   (yinz-command (hash "SetSelfMouseSelectionSupport" #t))
   (define ids (yinz-command "GetPluginIds"))
@@ -32,7 +32,11 @@
   (define had-bar (a-get "tabs_focused")) (define selection (a-selection-key)) (define revision (a-selected-revision))
   (define changed
     (cond ((equal? tag "PluginConfigurationChanged") (a-set! "configuration" value) (a-place-panel! #f) #t)
-      ((equal? tag "ModeUpdate") #t)
+      ((equal? tag "ModeUpdate")
+        (define client (hash-ref (yinz-command "GetPluginIds") "client_id"))
+        (a-set! "client_modes" (hash-insert (a-get "client_modes") client
+            (hash "style" (hash-ref value "style") "capabilities" (hash-ref value "capabilities")))) #t)
+      ((equal? tag "CellPixelSizeChanged") #t)
       ((equal? tag "TabUpdate") (a-set! "own_client_id" (hash-ref (yinz-command "GetPluginIds") "client_id")) (a-panel-tabs! value) #f)
       ((equal? tag "SessionUpdate") (a-discover-service! (car value)) #f)
       ((equal? tag "CustomMessage") (a-receive-history! (car value) (cadr value)))
