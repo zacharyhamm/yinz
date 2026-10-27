@@ -293,7 +293,7 @@ fn agents_history_and_reader_keep_markdown_and_navigation_without_dim() {
             .invoke("a-load-run!", vec![json!(run), json!(0)])
             .unwrap();
         let lines = render(&mut plugin, style);
-        assert_text(&lines, "summary:", style.colors.text_selected.base, true);
+        assert_text(&lines, "summary:", style.colors.text_unselected.base, true);
         assert_text(
             &lines,
             "Jan 1, 1970, 12:00 AM UTC",
@@ -362,7 +362,7 @@ fn agents_waiting_cues_are_distinct_from_failures() {
         assert_text(
             &lines,
             "Ready for review",
-            style.colors.text_selected.base,
+            style.colors.text_unselected.base,
             false,
         );
         for state in [
@@ -456,38 +456,30 @@ fn agents_message_selection_covers_visible_event_rows_across_focus_and_layouts()
                 let mut selected_rows = 0;
                 let mut adjacent_rows = 0;
                 for i in start..event_end.min(start + room) {
-                    let selected = i >= event_start;
+                    let selected = i >= event_start && focus == "history" && keyboard;
                     let marker = if selected {
                         selected_rows += 1;
-                        if focus == "history" && keyboard {
-                            '┃'
-                        } else {
-                            '│'
-                        }
+                        '┃'
                     } else {
                         adjacent_rows += 1;
                         ' '
                     };
                     assert_selection(&lines[top + i - start][x..], style, selected, marker);
                 }
-                assert!(selected_rows > 0);
+                let focused = focus == "history" && keyboard;
+                assert_eq!(selected_rows > 0, focused);
                 if rows == 40 {
-                    assert!(selected_rows > 1);
+                    assert_eq!(selected_rows > 1, focused);
                     assert!(adjacent_rows > 0);
                     if cols == 100 {
-                        assert_text(
-                            &lines,
-                            "strong",
-                            style.colors.text_selected.emphasis_2,
-                            true,
-                        );
-                        assert_text(
-                            &lines,
-                            "emphasis",
-                            style.colors.text_selected.emphasis_2,
-                            false,
-                        );
-                        assert_text(&lines, "code", style.colors.text_selected.emphasis_2, false);
+                        let colors = if focused {
+                            style.colors.text_selected
+                        } else {
+                            style.colors.text_unselected
+                        };
+                        assert_text(&lines, "strong", colors.emphasis_2, true);
+                        assert_text(&lines, "emphasis", colors.emphasis_2, false);
+                        assert_text(&lines, "code", colors.emphasis_2, false);
                         assert!(cells(&lines, "removed")
                             .iter()
                             .all(|c| c.styles.strike == Some(AnsiCode::On)));
@@ -505,7 +497,7 @@ fn agents_message_selection_covers_visible_event_rows_across_focus_and_layouts()
                 assert_text(
                     &lines,
                     "history",
-                    style.colors.text_selected.emphasis_0,
+                    style.colors.text_unselected.emphasis_0,
                     true,
                 );
                 assert_text(

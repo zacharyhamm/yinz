@@ -235,7 +235,7 @@
         (lines (take wrapped (min (length wrapped) room))))
       (for-each (lambda (i) (paint (styled (string-append "  " (list-ref lines i)) (cond (failed 6) ((equal? (a-row) "MoreRuns") 1) (else 5))) (+ body i) cols)) (range (length lines))))
     (for-each (lambda (i)
-        (define marked (and cursor (>= i (hash-ref cursor "start")) (< i (a-event-end cursor))))
+        (define marked (and focused cursor (>= i (hash-ref cursor "start")) (< i (a-event-end cursor))))
         (paint (prefix (list-ref entries i) (selection-marker marked focused) marked) (+ body (- i start)) cols)) (range start end))))
 (define (draw-reader rows cols)
   (define room (a-sub rows 1)) (a-set! "last_reader_rows" room)
