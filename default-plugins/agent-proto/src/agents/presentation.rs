@@ -146,6 +146,10 @@ pub enum StripRow {
         /// its title or from a completed turn; shared with the marker and `agent_list`.
         #[serde(default)]
         waiting: bool,
+        /// The remote host the agent runs on, also appended to `text`. A field of its own so
+        /// the panel can lay the row out without parsing the compact line.
+        #[serde(default)]
+        host: Option<String>,
     },
     /// A completed hook session with no live pane to focus.
     ///
@@ -258,6 +262,7 @@ pub fn strip_rows(
                     // The row already names the host; the history header only needs the kind.
                     kind: kind_cell(&kind, None, hooked),
                     waiting,
+                    host: pane.host.clone(),
                 },
             ))
         })

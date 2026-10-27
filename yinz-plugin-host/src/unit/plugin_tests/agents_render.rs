@@ -1,5 +1,6 @@
 use super::{host, run};
 use crate::plugin_tests::runtime_parity::SteelReference;
+use agent_proto::agents;
 use serde_json::json;
 use std::{
     collections::BTreeMap,
@@ -164,15 +165,15 @@ fn agents_selections_and_secondary_text_resolve_theme_colors() {
     for style in themes() {
         let mut plugin = plugin();
         for (state, selected, marker) in [
-            ("", "┃ 7 CLA !", '┃'),
+            ("", "┃ ! claude", '┃'),
             (
                 "(a-set! \"focused\" 8) (a-set! \"has_keyboard\" #f)",
-                "│ 7 CLA !",
+                "│ ! claude",
                 '│',
             ),
             (
                 "(a-set! \"focus\" \"history\") (a-set! \"has_keyboard\" #t)",
-                "│ 7 CLA !",
+                "│ ! claude",
                 '│',
             ),
             (
@@ -184,24 +185,41 @@ fn agents_selections_and_secondary_text_resolve_theme_colors() {
         ] {
             plugin.runtime.eval(state).unwrap();
             let lines = render(&mut plugin, style);
-            assert_text(&lines, "project", style.colors.text_unselected.base, true);
-            assert_text(&lines, "topic", style.colors.text_unselected.base, false);
-            assert_text(&lines, selected, style.colors.text_selected.base, false);
-            let selected_row = if selected == "archived run" { 4 } else { 2 };
-            assert_selection(&lines[selected_row][..33], style, true, marker);
-            assert_selection(
-                &lines[3][..33],
-                style,
-                selected_row == 2,
-                if selected_row == 2 { marker } else { ' ' },
+            // The waiting agent is pinned under its own header and drawn again in its group.
+            assert_text(
+                &lines[..1],
+                "Needs you",
+                style.colors.text_unselected.emphasis_1,
+                true,
             );
-            assert_selection(
-                &lines[if selected_row == 2 { 4 } else { 2 }][..33],
-                style,
+            assert_text(
+                &lines[2..3],
+                "project",
+                style.colors.text_unselected.base,
+                true,
+            );
+            assert_text(
+                &lines[2..3],
+                "topic",
+                style.colors.text_unselected.base,
                 false,
-                ' ',
             );
-            for cell in &lines[selected_row][..33] {
+            assert_text(&lines, selected, style.colors.text_selected.base, false);
+            let selected_rows: &[usize] = if selected == "archived run" {
+                &[4]
+            } else {
+                &[1, 3]
+            };
+            for row in [1, 3, 4] {
+                let chosen = selected_rows.contains(&row);
+                assert_selection(
+                    &lines[row][..33],
+                    style,
+                    chosen,
+                    if chosen { marker } else { ' ' },
+                );
+            }
+            for cell in selected_rows.iter().flat_map(|row| &lines[*row][..33]) {
                 assert_eq!(
                     cell.styles.foreground,
                     Some(style.colors.text_selected.base.into())
@@ -213,6 +231,12 @@ fn agents_selections_and_secondary_text_resolve_theme_colors() {
             }
             if selected == "archived run" {
                 assert_text(&lines, "!", style.colors.text_unselected.emphasis_1, false);
+                assert_text(
+                    &lines,
+                    "needs input",
+                    style.colors.text_unselected.emphasis_1,
+                    false,
+                );
             } else {
                 assert_text(
                     &lines,
@@ -441,9 +465,18 @@ fn agents_message_selection_covers_visible_event_rows_across_focus_and_layouts()
                     .map(|n| n as usize);
                 let x = divider.map_or(0, |n| n + 1);
                 let list_width = divider.unwrap_or(cols);
-                let agent_row = state(&mut plugin, "last_label_rows").as_u64().unwrap() as usize
-                    + 2
-                    - state(&mut plugin, "last_window_start").as_u64().unwrap() as usize;
+                // The first drawn line of the selected agent, pinned or grouped: both are marked.
+                let window_start =
+                    state(&mut plugin, "last_window_start").as_u64().unwrap() as usize;
+                let line = state(&mut plugin, "list_lines").as_array().unwrap()[window_start..]
+                    .iter()
+                    .position(|line| line[0] == 2)
+                    .unwrap();
+                let agent_row = ["last_label_rows", "last_list_offset"]
+                    .into_iter()
+                    .map(|key| state(&mut plugin, key).as_u64().unwrap() as usize)
+                    .sum::<usize>()
+                    + line;
                 assert_selection(
                     &lines[agent_row][..list_width],
                     style,
@@ -677,10 +710,10 @@ fn agents_search_labels_keep_queries_and_cursors_visible_in_narrow_panes() {
 fn agents_clipped_remote_hosts_preserve_status_and_waiting_emphasis() {
     for style in themes() {
         let mut plugin = plugin();
-        for (host, clipped) in [
-            ("very-long-remote-host.example", "7 CLA@very-long-"),
-            ("遠隔計算機.example", "7 CLA@遠隔計算機"),
-            ("a遠隔計算機.example", "7 CLA@a遠隔計算"),
+        for host in [
+            "very-long-remote-host.example",
+            "遠隔計算機.example",
+            "a遠隔計算機.example",
         ] {
             for (symbol, status) in [
                 ('!', "needs input"),
@@ -693,7 +726,8 @@ fn agents_clipped_remote_hosts_preserve_status_and_waiting_emphasis() {
                 let rows = json!([
                     {"Project": "project"},
                     {"Agent": {"pane_id": 7, "kind": "claude",
-                        "text": format!("7 CLA@{host} {symbol}"), "waiting": symbol == '!'}}
+                        "text": format!("7 CLA@{host} {symbol}"), "waiting": symbol == '!',
+                        "host": host}}
                 ]);
                 plugin
                     .runtime
@@ -721,11 +755,19 @@ fn agents_clipped_remote_hosts_preserve_status_and_waiting_emphasis() {
                         20
                     );
                     let plain: String = row[..divider].iter().map(|cell| cell.character).collect();
-                    assert_eq!(plain.trim_end(), format!("{marker} {clipped} {symbol}"));
+                    // The glyph leads; the status word and then the host are cut to what the
+                    // ten columns after the kind leave, never past a wide character.
+                    let tail = agents::cut_to_width(format!("  {status} @{host}"), 10);
+                    assert_eq!(
+                        plain.trim_end(),
+                        format!("{marker} {symbol} claude{tail}").trim_end()
+                    );
                     let color = if selected == 1 {
                         style.colors.text_selected.base
                     } else if symbol == '!' {
                         style.colors.text_unselected.emphasis_1
+                    } else if symbol == '●' {
+                        style.colors.exit_code_success.base
                     } else {
                         style.colors.text_unselected.base
                     };
@@ -863,9 +905,10 @@ fn agents_columns_clip_align_and_route_mouse_independently() {
             "title" "a long archived title that must stay in the list" "started_at_ms" 1000 "continuation" #f))) (range 30))))
     "#).unwrap();
     let lines = render(&mut plugin, themes()[0]);
-    assert_eq!(lines[1][2].character, 't');
-    assert_eq!(lines[2][2].character, '7');
-    assert_eq!(lines[2][33].character, '│');
+    // "Needs you", its pinned agent, then "project · topic" and the agent's grouped copy.
+    assert_eq!(lines[2][10].character, 't');
+    assert_eq!(lines[3][2].character, '!');
+    assert_eq!(lines[3][33].character, '│');
     plugin.render(10, 90);
     mouse(&mut plugin, "Hover", json!([1, 4]));
     mouse(&mut plugin, "ScrollDown", json!(3));
@@ -879,7 +922,9 @@ fn agents_columns_clip_align_and_route_mouse_independently() {
     mouse(&mut plugin, "LeftClick", json!([2, 50]));
     assert_eq!(state(&mut plugin, "focus"), "history");
     assert_eq!(state(&mut plugin, "selected"), 2);
-    mouse(&mut plugin, "LeftClick", json!([1, 4]));
+    // Row 0 is the cue for what the scrolled window hides, so the window starts on row 1.
+    assert_eq!(state(&mut plugin, "last_list_offset"), 1);
+    mouse(&mut plugin, "LeftClick", json!([2, 4]));
     assert_eq!(state(&mut plugin, "focus"), "list");
     assert_eq!(state(&mut plugin, "selected"), 3);
     mouse(&mut plugin, "Release", json!([100, 4]));
@@ -933,7 +978,7 @@ fn agents_detail_updates_repaint_without_changing_compact_rows() {
     assert_eq!(plugin.pipe(&message), Some(true));
     let rows = state(&mut plugin, "rows");
     let first = render(&mut plugin, themes()[0]);
-    cells(&first, "7 CLA ●");
+    cells(&first, "● claude  working");
     cells(&first, "working");
     let history_col = state(&mut plugin, "last_divider_col").as_u64().unwrap() as usize + 1;
     assert!(!first.iter().any(|line| line
@@ -954,7 +999,7 @@ fn agents_detail_updates_repaint_without_changing_compact_rows() {
     assert_eq!(plugin.pipe(&message), Some(true));
     assert_eq!(state(&mut plugin, "rows"), rows);
     let next = render(&mut plugin, themes()[0]);
-    cells(&next, "7 CLA ●");
+    cells(&next, "● claude  working");
     assert!(!next.iter().any(|line| line
         .iter()
         .skip(history_col)
@@ -1000,6 +1045,47 @@ fn agents_detail_updates_repaint_without_changing_compact_rows() {
 }
 
 #[test]
+fn agents_first_reported_activity_repaints_an_unselected_agent() {
+    let mut plugin = plugin();
+    let mut message = super::snapshot_message(1, &[], 2);
+    let mut snapshot: serde_json::Value =
+        serde_json::from_str(message.payload.as_deref().unwrap()).unwrap();
+    snapshot["panes"][0]["title"] = json!("");
+    message.payload = Some(snapshot.to_string());
+    assert_eq!(plugin.pipe(&message), Some(true));
+    let rows = state(&mut plugin, "rows");
+    let quiet = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|row| row["Agent"]["pane_id"] == 7)
+        .unwrap();
+    let other = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|row| row["Agent"]["pane_id"] == 8)
+        .unwrap();
+    plugin
+        .runtime
+        .eval(&format!("(a-set! \"selected\" {other})"))
+        .unwrap();
+    render(&mut plugin, themes()[0]);
+    // With nothing to report, the agent draws no activity line yet.
+    assert!(!state(&mut plugin, "list_lines")
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|line| line[0] == quiet && line[1] == true));
+    snapshot["panes"][0]["title"] = json!("Fix the flaky test");
+    message.payload = Some(snapshot.to_string());
+    message.args.insert("seq".into(), "2".into());
+    assert_eq!(plugin.pipe(&message), Some(true));
+    assert_eq!(state(&mut plugin, "rows"), rows);
+    cells(&render(&mut plugin, themes()[0]), "Fix the flaky test");
+}
+
+#[test]
 fn agents_detail_wraps_a_long_question_the_list_row_cuts() {
     let mut plugin = plugin();
     plugin
@@ -1035,24 +1121,34 @@ fn agents_short_history_keeps_the_start_of_long_details() {
 #[test]
 fn agents_activity_lines_share_selection_and_activate_only_on_release() {
     let mut plugin = plugin();
-    plugin.runtime.eval(r#"(a-set! "selected" 3)"#).unwrap();
+    plugin
+        .runtime
+        .eval(
+            r#"(a-set! "selected" 3)
+            (a-set! "snapshot" (hash "hooks" (hash "7" (hash "phase" "Waiting" "waiting_on" "Approve?"))))"#,
+        )
+        .unwrap();
     plugin.render(24, 90);
-    assert_eq!(state(&mut plugin, "list_lines")[3], json!([2, true]));
+    // The waiting agent's activity line sits under its pinned copy, below "Needs you".
+    assert_eq!(
+        state(&mut plugin, "list_lines")[2],
+        json!([2, true, "pinned"])
+    );
     plugin.take_commands();
-    mouse(&mut plugin, "LeftClick", json!([3, 5]));
-    mouse(&mut plugin, "Release", json!([3, 5]));
+    mouse(&mut plugin, "LeftClick", json!([2, 5]));
+    mouse(&mut plugin, "Release", json!([2, 5]));
     assert_eq!(state(&mut plugin, "selected"), 2);
     assert!(!plugin
         .take_commands()
         .iter()
         .any(|command| command.get("FocusTerminalPane").is_some()));
 
-    mouse(&mut plugin, "LeftClick", json!([3, 5]));
+    mouse(&mut plugin, "LeftClick", json!([2, 5]));
     assert!(!plugin
         .take_commands()
         .iter()
         .any(|command| command.get("FocusTerminalPane").is_some()));
-    mouse(&mut plugin, "Release", json!([3, 5]));
+    mouse(&mut plugin, "Release", json!([2, 5]));
     assert!(plugin
         .take_commands()
         .iter()
@@ -1062,6 +1158,11 @@ fn agents_activity_lines_share_selection_and_activate_only_on_release() {
 #[test]
 fn agents_activity_rows_collapse_in_small_views_without_losing_selection() {
     let mut plugin = plugin();
+    // An agent with nothing to report draws no activity line at all.
+    plugin
+        .runtime
+        .eval(r#"(a-set! "snapshot" (hash "hooks" (hash "7" (hash "phase" "Waiting" "waiting_on" "Approve?"))))"#)
+        .unwrap();
     let mut previous_rich = false;
     for (rows, cols, rich) in [
         (24, 90, true),
@@ -1487,4 +1588,57 @@ fn agents_working_pulse_clears_and_clips() {
             }
         }
     }
+}
+
+#[test]
+fn agents_list_pins_waiting_agents_and_labels_groups_archive_and_scroll() {
+    let style = themes()[0];
+    let mut plugin = plugin();
+    let text = |lines: &[Vec<TerminalCharacter>], row: usize| -> String {
+        lines[row][..33].iter().map(|cell| cell.character).collect()
+    };
+    let lines = render(&mut plugin, style);
+    assert!(text(&lines, 0).starts_with("Needs you · 1"));
+    assert_eq!(
+        state(&mut plugin, "list_lines")[0],
+        json!([-1, false, "pinned"])
+    );
+    // One header per checkout, naming its project, with its agent and waiting counts.
+    assert!(text(&lines, 2).starts_with("project · topic"));
+    assert!(text(&lines, 2).trim_end().ends_with("1! · 1"));
+    assert_text(
+        &lines[2..3],
+        "1!",
+        style.colors.text_unselected.emphasis_1,
+        true,
+    );
+    assert!(text(&lines, 3).starts_with("┃ ! claude  needs input"));
+    assert!(text(&lines, 3).trim_end().ends_with("◂ #7"));
+
+    // A filtered list draws no pinned copies.
+    plugin
+        .runtime
+        .eval(r#"(a-set! "waiting_base" (hash "rows" (a-get "rows")))"#)
+        .unwrap();
+    let lines = render(&mut plugin, style);
+    assert!(!(0..lines.len()).any(|row| text(&lines, row).contains("Needs you")));
+    plugin
+        .runtime
+        .eval(
+            r#"(a-set! "waiting_base" #f)
+            (a-set! "rows" (append (a-get "rows") (list (hash "Project" "archive" "archive" "31+"))
+              (map (lambda (i) (hash "Run" (hash "run_id" (number->string i) "kind" "opencode"
+                "worktree" "" "title" "older run" "started_at_ms" 1000 "continuation" #f))) (range 30))
+              (list "MoreRuns")))"#,
+        )
+        .unwrap();
+    let lines = render_sized(&mut plugin, style, 12, 100);
+    // The window starts below a cue row, which stays blank while nothing is hidden above.
+    assert_eq!(state(&mut plugin, "last_list_offset"), 1);
+    assert_eq!(text(&lines, 0).trim(), "");
+    assert!(text(&lines, 6).starts_with("─ archive · 31+ ─"));
+    assert!(text(&lines, 7).contains("opencode  older run"));
+    // The last list row counts the runs and the "load older runs" entry below the window.
+    let list_rows = state(&mut plugin, "last_list_rows").as_u64().unwrap() as usize;
+    assert_eq!(text(&lines, list_rows - 1).trim(), "↓ 28 more");
 }

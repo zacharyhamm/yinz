@@ -1,5 +1,6 @@
 (require "./state.scm")
 (require "./overlay.scm")
+(require "./activity.scm")
 (require "../shared/agent-service.scm")
 (provide a-broadcast! a-discover-service! a-receive-snapshot! a-refresh-strip! a-load-history!
   a-load-more! a-request-summary! a-expire-summary! a-resume-run! a-load-run!
@@ -23,24 +24,29 @@
       (append (reverse before) (cons run rest))
       (loop (cdr rest) (cons (car rest) before)))))
 ;; Only what the panel last drew can repaint it: the titles and hooks behind the activity lines
-;; in the list window, and the selected agent's details, including its activity sample, whose
-;; idle counter advances on every poll. Strip rows compare the rest themselves, including a pane
-;; that becomes an agent. Off-screen agents' titles, which some agents animate while they work,
-;; and other panes' titles and folders, which change with every shell command, draw nowhere here.
-(define (drawn-agents)
+;; in the list window, the quiet minutes on its agent lines, and the selected agent's details,
+;; including its activity sample, whose idle counter advances on every poll. Strip rows compare
+;; the rest themselves, including a pane that becomes an agent. Off-screen agents' titles, which
+;; some agents animate while they work, and other panes' titles and folders, which change with
+;; every shell command, draw nowhere here. In a rich list an agent with nothing to report draws no
+;; activity line yet, so the titles and hooks of every agent in the window count: the first one
+;; it reports adds that line.
+(define (drawn-agents activity-lines)
   (define lines (a-get "list_lines")) (define start (a-get "last_window_start")) (define rows (a-get "rows"))
   (define window (if (< start (length lines)) (list-tail lines start) '()))
+  (define wanted (if activity-lines (lambda (line) (or (cadr line) (a-get "list_rich"))) (lambda (line) (not (cadr line)))))
   (filter (lambda (id) id)
     (cons (a-selection)
-      (map (lambda (line) (and (cadr line) (a-field (a-field (a-at rows (car line)) "Agent" #f) "pane_id" #f)))
-        (take window (min (length window) (a-get "last_list_rows")))))))
-(define (live-details snapshot agents)
-  (define pane (a-selection)) (define hooks (a-field snapshot "hooks" #f))
+      (map (lambda (line) (and (wanted line) (a-field (a-field (a-at rows (car line)) "Agent" #f) "pane_id" #f)))
+        (take window (min (length window) (a-get "last_list_window")))))))
+(define (live-details snapshot agents listed)
+  (define pane (a-selection)) (define hooks (a-field snapshot "hooks" #f)) (define activity (a-field snapshot "activity" #f))
   (list (filter (lambda (title) title)
       (map (lambda (entry) (and (member (hash-ref entry "pane_id") agents) (list (hash-ref entry "pane_id") (a-field entry "title" ""))))
         (or (a-some (a-field snapshot "panes" #f)) '())))
     (map (lambda (id) (a-field hooks (number->string id) #f)) agents)
-    (a-field (a-field snapshot "activity" #f) (if pane (number->string pane) "") #f)))
+    (a-field activity (if pane (number->string pane) "") #f)
+    (map (lambda (id) (a-snapshot-quiet-minutes snapshot id)) listed)))
 (define (a-receive-snapshot! message)
   (unless (a-get "service_id")
     (define sessions (a-call "GetSessionList" #f))
@@ -75,8 +81,8 @@
                     (a-set! "archive_offset" (min 4294967295 (+ (a-get "archive_offset") 1))))
                   (a-set! "archived_runs" (insert-run (a-get "archived_runs") run))))) (hash-ref snapshot "runs"))
           (a-set! "archive_sorted" (a-get "archived_runs"))
-          (define agents (drawn-agents))
-          (define details-changed (not (equal? (live-details snapshot agents) (live-details (a-get "snapshot") agents))))
+          (define agents (drawn-agents #t)) (define listed (drawn-agents #f))
+          (define details-changed (not (equal? (live-details snapshot agents listed) (live-details (a-get "snapshot") agents listed))))
           (a-set! "snapshot" snapshot)
           (define first (not (a-get "strip_seen"))) (a-set! "strip_seen" #t)
           (define changed (a-refresh-strip!)) (a-load-history!) (or changed first details-changed))))))
@@ -114,7 +120,8 @@
                 (cadr entry)) (a-get "archived_runs")))
           (set! cached (list (a-get "archived_runs") archive-rows entries))
           (a-set! "archive_rows" cached))
-        (set! rows (append rows (list (hash "Project" "archive")) (cadr cached)
+        (define total (string-append (number->string (length (a-get "archived_runs"))) (if (a-get "archive_more") "+" "")))
+        (set! rows (append rows (list (hash "Project" "archive" "archive" total)) (cadr cached)
             (if (a-get "archive_more") '("MoreRuns") '()))))
       (define was (a-selection-key))
       (define changed (a-set-rows! (hash "rows" rows "focused" (hash-ref snapshot "focused") "summaries" (hash-ref snapshot "summaries"))))

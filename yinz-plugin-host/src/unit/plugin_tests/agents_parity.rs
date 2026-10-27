@@ -995,7 +995,7 @@ fn agents_follow_the_theme_on_startup_and_mode_updates() {
             let frame = h.panel.render(24, 90);
             vte::Parser::new().advance(&mut grid, frame.as_bytes());
             let lines = grid.as_character_lines();
-            for text in ["CLA", "CDX", "Themed history", "Enter focus"] {
+            for text in ["? claude", "codex", "Themed history", "Enter focus"] {
                 let line = lines
                     .iter()
                     .find(|line| {
@@ -1005,10 +1005,14 @@ fn agents_follow_the_theme_on_startup_and_mode_updates() {
                             .contains(text)
                     })
                     .unwrap_or_else(|| panic!("missing {text}: {}", grid.dump_screen(false)));
-                let region = if matches!(text, "CLA" | "CDX") {
-                    &line[..30]
-                } else {
-                    &line[..]
+                // The waiting agent's glyph and status take the attention color; its kind does not.
+                // A cell index, not a byte offset: the glyphs before the kind are multibyte.
+                let chars: String = line.iter().map(|c| c.character).collect();
+                let start = chars[..chars.find(text).unwrap()].chars().count();
+                let region = match text {
+                    "? claude" => &line[..30],
+                    "codex" => &line[start..start + text.chars().count()],
+                    _ => &line[..],
                 };
                 for cell in region.iter().filter(|cell| !cell.character.is_whitespace()) {
                     let selected = cell.styles.background
@@ -1026,7 +1030,7 @@ fn agents_follow_the_theme_on_startup_and_mode_updates() {
                     assert_ne!(cell.styles.dim, Some(AnsiCode::On), "{text}: {cell:?}");
                     assert_ne!(cell.styles.bold, Some(AnsiCode::On), "{text}: {cell:?}");
                 }
-                if text == "CLA" {
+                if text == "? claude" {
                     assert!(region.iter().all(|cell| cell.styles.background
                         == Some(style.colors.text_selected.background.into())));
                 }
