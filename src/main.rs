@@ -153,7 +153,7 @@ fn main() {
             &opts,
         );
         if let Err(error) = result {
-            eprintln!("Error: {error:#}");
+            yinz_client::remote_failure::report_bootstrap_error(&error);
             std::process::exit(1);
         }
         return;
@@ -166,12 +166,7 @@ fn main() {
     })) = &opts.command
     {
         configure_logger();
-        let result = remote_session::attach(
-            &opts,
-            host,
-            session_name.as_deref().unwrap_or_default(),
-            *create,
-        );
+        let result = remote_session::attach(&opts, host, session_name.as_deref(), *create);
         match result {
             Ok(code) => std::process::exit(code),
             Err(error) => {

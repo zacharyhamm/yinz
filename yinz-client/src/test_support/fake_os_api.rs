@@ -23,6 +23,7 @@ use {yinz_ipc::ipc::ClientToServerMsg, yinz_ipc::ipc::IpcRecv, yinz_ipc::ipc::Se
 #[derive(Clone)]
 pub struct FakeClientOsApi {
     raw_mode: Arc<AtomicBool>,
+    recovery: Arc<Mutex<Option<crate::remote_recovery::RecoveryControl>>>,
     terminal_size: Size,
     stdout: Option<Arc<Mutex<Vec<u8>>>>,
     pub stdout_attempts: Watched<Vec<Vec<u8>>>,
@@ -41,6 +42,7 @@ impl Default for FakeClientOsApi {
     fn default() -> Self {
         Self {
             raw_mode: Arc::new(AtomicBool::new(false)),
+            recovery: Arc::new(Mutex::new(None)),
             terminal_size: Size { rows: 24, cols: 80 },
             stdout: None,
             stdout_attempts: Watched::default(),
@@ -69,6 +71,11 @@ impl std::fmt::Debug for FakeClientOsApi {
 impl FakeClientOsApi {
     pub fn raw_mode(&self) -> bool {
         self.raw_mode.load(Ordering::SeqCst)
+    }
+
+    pub fn with_terminal_size(mut self, size: Size) -> Self {
+        self.terminal_size = size;
+        self
     }
 
     pub fn new() -> Self {
@@ -273,11 +280,28 @@ impl StdioAccess for FakeClientOsApi {
 }
 
 impl ServerConnection for FakeClientOsApi {
+    fn set_remote_recovery(
+        &self,
+        control: Option<crate::remote_recovery::RecoveryControl>,
+    ) -> io::Result<()> {
+        *self.recovery.lock().unwrap() = control;
+        Ok(())
+    }
+    fn remote_recovery(&self) -> Option<crate::remote_recovery::RecoveryControl> {
+        self.recovery.lock().unwrap().clone()
+    }
+
     fn spawn_server(&self, _socket_path: &Path, _debug: bool) -> io::Result<()> {
         Ok(())
     }
 
     fn send_to_server(&self, msg: ClientToServerMsg) {
+        if let Some(control) = self.remote_recovery() {
+            control.cache(&msg);
+            if !control.can_write() {
+                return;
+            }
+        }
         self.sent_to_server.lock().push(msg);
     }
     fn recv_from_server(&self) -> IpcRecv<ServerToClientMsg> {

@@ -36,6 +36,9 @@ mod protobuf_conversion;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+#[path = "ipc/unit/write_deadline.rs"]
+mod write_deadline_tests;
 
 type SessionId = u64;
 
@@ -445,17 +448,40 @@ impl<T: Serialize> IpcSenderWithContext<T> {
         self.send_message(&proto_msg)
     }
 
+    /// Bound the whole frame, including partial writes and flushing, by one deadline.
+    /// Like `recv_server_msg_until`, this updates the socket's timeout.
+    pub fn send_client_msg_until(
+        &mut self,
+        msg: ClientToServerMsg,
+        deadline: Instant,
+    ) -> Result<()> {
+        let proto_msg: ProtoClientToServerMsg = msg.try_into()?;
+        self.send_message_with_deadline(&proto_msg, Some(deadline))
+    }
+
     pub fn send_server_msg(&mut self, msg: ServerToClientMsg) -> Result<()> {
         let proto_msg: ProtoServerToClientMsg = msg.into();
         self.send_message(&proto_msg)
     }
 
     fn send_message(&mut self, msg: &impl Message) -> Result<()> {
+        self.send_message_with_deadline(msg, None)
+    }
+
+    fn send_message_with_deadline(
+        &mut self,
+        msg: &impl Message,
+        deadline: Option<Instant>,
+    ) -> Result<()> {
         if self.closed {
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, "IPC sender is closed").into());
         }
-        let result = write_protobuf_message(&mut self.sender, msg)
-            .and_then(|()| self.sender.flush().map_err(Into::into));
+        let mut writer = DeadlineWriter {
+            stream: &mut *self.sender,
+            deadline,
+        };
+        let result = write_protobuf_message(&mut writer, msg)
+            .and_then(|()| writer.flush().map_err(Into::into));
         // A partial write loses the frame boundary. Retrying on this stream would
         // make the next message part of the failed one. Encoding/size errors occur
         // before any bytes are written, so those leave the sender usable.
@@ -472,6 +498,35 @@ impl<T: Serialize> IpcSenderWithContext<T> {
     {
         let socket = self.sender.try_clone_stream()?;
         Ok(IpcReceiverWithContext::from_boxed(socket))
+    }
+}
+
+struct DeadlineWriter<'a> {
+    stream: &'a mut dyn IpcStream,
+    deadline: Option<Instant>,
+}
+
+impl DeadlineWriter<'_> {
+    fn bound(&self) -> io::Result<()> {
+        if let Some(deadline) = self.deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            self.stream.set_write_timeout(Some(remaining))?;
+        }
+        Ok(())
+    }
+}
+
+impl Write for DeadlineWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.bound()?;
+        self.stream.write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.bound()?;
+        self.stream.flush()
     }
 }
 

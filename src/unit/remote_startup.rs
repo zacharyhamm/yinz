@@ -8,6 +8,159 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use yinz_test_support::{default_timeout, Watched};
 
+fn discovery_command(session: &Session, names: &[&str]) -> Command {
+    let root = session.0.path();
+    yinz_test_support::write_warm_script(
+        &root.join("ssh"),
+        r#"printf '%s\n' "$@" >> "$YINZ_TEST_SSH_ARGS"
+for command do :; done
+case "$command" in
+    *remote-sessions*) printf '%s\n' "$YINZ_TEST_SESSIONS" ;;
+    *) echo 'selected-session-bootstrap' >&2; exit 1 ;;
+esac"#,
+    );
+    let mut path = vec![root.to_path_buf()];
+    path.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let sessions = names
+        .iter()
+        .map(|name| {
+            (
+                name,
+                Duration::ZERO,
+                yinz_cli::sessions::SessionListing::Running,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut command = session.command();
+    command
+        .env("PATH", std::env::join_paths(path).unwrap())
+        .env("YINZ_TEST_SSH_ARGS", root.join("ssh-args"))
+        .env(
+            "YINZ_TEST_SESSIONS",
+            serde_json::json!({
+                "yinz_version": yinz_runtime::consts::VERSION,
+                "contract_version": yinz_runtime::consts::CLIENT_SERVER_CONTRACT_VERSION,
+                "bootstrap_version": yinz_runtime::consts::REMOTE_BOOTSTRAP_VERSION,
+                "sessions": sessions,
+            })
+            .to_string(),
+        )
+        .args(["attach", "--remote", "user@example"]);
+    command
+}
+
+#[test]
+fn remote_attach_without_a_name_discovers_before_selecting_or_reporting_sessions() {
+    for (names, expected) in [
+        (vec![], "No active yinz sessions found on user@example."),
+        (vec!["remote work"], "selected-session-bootstrap"),
+        (
+            vec!["one", "two"],
+            "yinz attach --remote user@example SESSION",
+        ),
+    ] {
+        let session = Session::new();
+        let output = discovery_command(&session, &names).output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(stderr.contains(expected), "{stderr}");
+        let args = fs::read_to_string(session.0.path().join("ssh-args")).unwrap();
+        assert!(
+            args.contains("user@example\n'yinz' 'remote-sessions'"),
+            "{args}"
+        );
+        assert_eq!(
+            args.matches("BatchMode=yes").count(),
+            if names.len() == 1 { 2 } else { 1 }
+        );
+        if names.len() == 1 {
+            assert!(args.contains("'--' 'remote work'"), "{args}");
+        } else {
+            assert!(!args.contains("'remote-session'"), "{args}");
+        }
+    }
+}
+
+#[test]
+fn remote_attach_discovery_picker_selects_only_from_the_requested_host() {
+    use nix::sys::termios::{self, LocalFlags};
+    use std::io::Write;
+
+    let session = Session::new();
+    let pty = nix::pty::openpty(
+        Some(&nix::pty::Winsize {
+            ws_row: 24,
+            ws_col: 100,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        }),
+        None,
+    )
+    .unwrap();
+    let slave = fs::File::from(pty.slave);
+    let original = termios::tcgetattr(&slave).unwrap();
+    let mut master = fs::File::from(pty.master);
+    let mut reader = master.try_clone().unwrap();
+    let screen = Watched::new(Vec::new());
+    let captured = screen.clone();
+    let capture = std::thread::spawn(move || {
+        let mut buffer = [0; 4096];
+        while let Ok(count) = reader.read(&mut buffer) {
+            if count == 0 {
+                break;
+            }
+            captured.lock().extend_from_slice(&buffer[..count]);
+        }
+    });
+    let child = discovery_command(&session, &["one", "two"])
+        .stdin(slave.try_clone().unwrap())
+        .stdout(slave.try_clone().unwrap())
+        .stderr(slave.try_clone().unwrap())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let client = Client {
+        pid: Pid::from_raw(child.id() as i32),
+        output: Watched::new(None),
+    };
+    let completed = client.output.clone();
+    let waiter = std::thread::spawn(move || {
+        *completed.lock() = Some(child.wait_with_output().unwrap());
+    });
+    screen.wait_until("remote session choices", default_timeout(), |bytes| {
+        let text = String::from_utf8_lossy(bytes);
+        (text.contains("user@example / one") && text.contains("user@example / two")).then_some(())
+    });
+    master.write_all(b"two\r").unwrap();
+    client
+        .output
+        .wait_until("selected remote bootstrap", default_timeout(), |output| {
+            output
+                .as_ref()
+                .map(|output| assert_eq!(output.status.code(), Some(1), "{output:?}"))
+        });
+    waiter.join().unwrap();
+    // XNU sets PENDIN when canonical mode returns; it is kernel status, not part
+    // of the restored settings.
+    let restored = termios::tcgetattr(&slave).unwrap();
+    assert_eq!(restored.input_flags, original.input_flags);
+    assert_eq!(restored.output_flags, original.output_flags);
+    assert_eq!(restored.control_flags, original.control_flags);
+    assert_eq!(
+        restored.local_flags - LocalFlags::PENDIN,
+        original.local_flags - LocalFlags::PENDIN,
+    );
+    assert_eq!(restored.control_chars, original.control_chars);
+    let args = fs::read_to_string(session.0.path().join("ssh-args")).unwrap();
+    assert_eq!(args.matches("remote-sessions").count(), 1, "{args}");
+    assert!(args.contains("'--' 'two'"), "{args}");
+    drop(slave);
+    drop(master);
+    capture.join().unwrap();
+}
+
 #[test]
 fn remote_creation_and_resurrection_preserve_or_default_term() {
     for (inherited, configured, expected) in [

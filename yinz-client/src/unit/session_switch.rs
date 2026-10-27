@@ -301,6 +301,8 @@ fn client_loop_rename_updates_current_identity_without_cancelling_preparation() 
         let nested = NestedReannounce::spawn(Box::new(os.clone()), "rename-test".into());
         nested.stop();
         let outcome = ClientLoop {
+            recovery: &mut None,
+            send_client_instructions: None,
             sessions: &mut sessions,
             remote_host: host.as_deref(),
             os_input: &os,
@@ -310,7 +312,7 @@ fn client_loop_rename_updates_current_identity_without_cancelling_preparation() 
             nested_reannounce: &nested,
             teardown: ClientTeardown::new(24, false),
             synchronised_output: None,
-            render_budget: &RenderBudget::new(100),
+            render_budget: &Arc::new(RenderBudget::new(100)),
             startup_started: Instant::now(),
             splash_deadline: None,
         }
@@ -683,6 +685,8 @@ fn fatal_client_exit_reaps_preparation_children() {
         let nested = NestedReannounce::spawn(Box::new(os.clone()), "shutdown-test".into());
         nested.stop();
         ClientLoop {
+            recovery: &mut None,
+            send_client_instructions: None,
             sessions: &mut sessions,
             remote_host: Some("host"),
             os_input: &os,
@@ -692,7 +696,7 @@ fn fatal_client_exit_reaps_preparation_children() {
             nested_reannounce: &nested,
             teardown: ClientTeardown::new(24, false),
             synchronised_output: None,
-            render_budget: &RenderBudget::new(100),
+            render_budget: &Arc::new(RenderBudget::new(100)),
             startup_started: Instant::now(),
             splash_deadline: None,
         }

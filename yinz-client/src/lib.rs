@@ -71,6 +71,7 @@ use {
 #[derive(Debug, Clone)]
 pub(crate) enum ClientInstruction {
     Error(String),
+    FromServer(u64, Box<ClientInstruction>),
     Render(String),
     UnblockInputThread,
     Exit(ExitReason),
@@ -83,7 +84,6 @@ pub(crate) enum ClientInstruction {
     UnblockCliPipeInput(()), // String -> pipe name
     CliPipeOutput((), ()),   // String -> pipe name, String -> output
     QueryTerminalSize,
-    #[allow(dead_code)] // we need the session name here even though we're not currently using it
     RenamedSession(SessionName), // String -> new session name
     ConfigFileUpdated,
     SetMouseMode(bool),
@@ -151,6 +151,7 @@ impl From<&ClientInstruction> for ClientContext {
         match *client_instruction {
             ClientInstruction::Exit(_) => ClientContext::Exit,
             ClientInstruction::Error(_) => ClientContext::Error,
+            ClientInstruction::FromServer(_, ref instruction) => (&**instruction).into(),
             ClientInstruction::Render(_) => ClientContext::Render,
             ClientInstruction::UnblockInputThread => ClientContext::UnblockInputThread,
             ClientInstruction::Connected => ClientContext::Connected,
@@ -404,6 +405,7 @@ impl ClientInfo {
 
 #[derive(Debug, Clone)]
 pub(crate) enum InputInstruction {
+    FromGeneration((u64, bool), Box<InputInstruction>),
     SetMouseMode(bool),
     KeyEvent(InputEvent, Vec<u8>),
     KeyWithModifierEvent(KeyWithModifier, Vec<u8>, bool), // bool = is_kitty_keyboard_protocol
@@ -663,6 +665,11 @@ fn run_client(
         full_screen_ws,
         terminal_teardown,
     );
+    // A previous destination has stopped its supervisor. Release that gate before
+    // sending the next attachment's first message or its prepared connection's resize.
+    if let Err(error) = os_input.set_remote_recovery(None) {
+        ClientTeardown::exit_after_startup_error(startup.teardown, error.to_string());
+    }
     let mut initial_messages = std::collections::VecDeque::new();
     if let Some(mut connection) = prepared.take() {
         envs::set_session_name(own_session_name.clone());
@@ -704,6 +711,14 @@ fn run_client(
     }
 
     let mut command_is_executing = CommandIsExecuting::new();
+    let recovery = remote_host
+        .clone()
+        .map(|host| remote_recovery::Recovery::new(host, command_is_executing.clone()));
+    if let Err(error) =
+        os_input.set_remote_recovery(recovery.as_ref().map(|recovery| recovery.control.clone()))
+    {
+        ClientTeardown::exit_after_startup_error(startup.teardown, error.to_string());
+    }
 
     // The socket is up and we are about to start reading the keyboard, so take the signal keys
     // too: from here on Ctrl-C is a keystroke to forward to a pane, not a way out of a stuck
@@ -781,6 +796,12 @@ fn run_client(
             Box::new({
                 let os_api = os_input.clone();
                 move || {
+                    if let Some(control) = os_api.remote_recovery()
+                        && !control.stamp().1
+                    {
+                        control.cancel();
+                        return;
+                    }
                     // A paused terminal must not keep the client from quitting.
                     crate::terminal_escapes::abandon_stalled_output();
                     os_api.send_to_server(ClientToServerMsg::Action {
@@ -886,12 +907,12 @@ fn run_client(
     let render_budget = std::sync::Arc::new(crate::render_budget::RenderBudget::new(
         crate::render_budget::RENDER_BUDGET_BYTES,
     ));
-    let router_thread = crate::router::spawn_with_initial(
+    let mut router_thread = Some(crate::router::spawn_with_initial(
         os_input.clone(),
-        send_client_instructions,
+        send_client_instructions.clone(),
         render_budget.clone(),
         initial_messages,
-    );
+    ));
 
     let teardown = ClientTeardown::new(
         full_screen_ws.rows,
@@ -917,8 +938,16 @@ fn run_client(
         &cli_args,
         local_config,
     );
+    let mut recovery = recovery;
+    if let Some(recovery) = &mut recovery {
+        recovery
+            .routers
+            .push(router_thread.take().expect("initial router"));
+    }
     let mut outcome = crate::client_loop::ClientLoop {
         sessions: &mut sessions,
+        recovery: &mut recovery,
+        send_client_instructions: Some(&send_client_instructions),
         remote_host: remote_host.as_deref(),
         os_input: &*os_input,
         command_is_executing: &mut command_is_executing,
@@ -955,7 +984,17 @@ fn run_client(
         }
     }
 
-    router_thread.join().unwrap();
+    if let Some(recovery) = &mut recovery {
+        recovery.shutdown();
+        os_input.disconnect_session_connection();
+        remote_sessions::set_forward(None);
+        for router in recovery.routers.drain(..) {
+            remote_recovery::join(router);
+        }
+    }
+    if let Some(router) = router_thread {
+        remote_recovery::join(router);
+    }
 
     if nested_reannounce.host_contacted() {
         say_bye(&*os_input);
@@ -1028,6 +1067,9 @@ pub mod store_client;
 
 pub mod wait_client;
 
+pub mod remote_failure;
+#[doc(hidden)]
+pub mod remote_recovery;
 pub mod remote_sessions;
 pub mod session_discovery;
 mod session_switch;

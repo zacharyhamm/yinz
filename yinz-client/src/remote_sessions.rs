@@ -9,7 +9,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
 use yinz_process::ssh::{self, HostForward, SshOptions};
@@ -163,21 +163,37 @@ pub fn parse_endpoint(bytes: &[u8], name: &str) -> Result<Endpoint> {
 }
 
 pub fn probe(socket: &Path) -> Result<()> {
+    probe_until(
+        socket,
+        &AtomicBool::new(false),
+        Instant::now() + Duration::from_secs(5),
+    )
+}
+
+fn probe_until(socket: &Path, cancelled: &AtomicBool, deadline: Instant) -> Result<()> {
     let stream = yinz_ipc::consts::ipc_connect(socket).context("connect to session socket")?;
     stream
-        .set_recv_timeout(Some(Duration::from_secs(5)))
+        .set_recv_timeout(Some(remaining(deadline)?))
         .context("bound session probe reply")?;
     stream
-        .set_send_timeout(Some(Duration::from_secs(5)))
+        .set_send_timeout(Some(remaining(deadline)?))
         .context("bound session probe request")?;
     let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(stream);
     let mut receiver = sender
         .get_receiver::<ServerToClientMsg>()
         .context("read session probe")?;
     sender
-        .send_client_msg(ClientToServerMsg::ConnStatus)
+        .send_client_msg_until(ClientToServerMsg::ConnStatus, deadline)
         .context("send session probe")?;
-    anyhow::ensure!(matches!(receiver.recv_server_msg(), IpcRecv::Msg(ServerToClientMsg::Connected { .. }, _)), "session did not answer through the socket; check SSH Unix-socket forwarding permissions and server responsiveness");
+    loop {
+        ssh::check_cancelled(Some(cancelled))?;
+        remaining(deadline)?;
+        match receiver.recv_server_msg_until(deadline.min(Instant::now() + Duration::from_millis(100))) {
+            IpcRecv::Msg(ServerToClientMsg::Connected { .. }, _) => break,
+            IpcRecv::Idle => {},
+            _ => bail!("session did not answer through the socket; check SSH Unix-socket forwarding permissions and server responsiveness"),
+        }
+    }
     Ok(())
 }
 
@@ -186,6 +202,23 @@ pub fn connect(
     name: &str,
     create: bool,
     cancelled: &AtomicBool,
+) -> Result<HostForward> {
+    connect_until(
+        host,
+        name,
+        create,
+        cancelled,
+        Instant::now() + Duration::from_secs(85),
+    )
+}
+
+/// One budget covers bootstrap, forwarding and probing during recovery.
+pub(crate) fn connect_until(
+    host: &str,
+    name: &str,
+    create: bool,
+    cancelled: &AtomicBool,
+    deadline: Instant,
 ) -> Result<HostForward> {
     ssh::validate_ssh_host(host)?;
     validate_name(name)?;
@@ -213,7 +246,7 @@ pub fn connect(
         Command::new("ssh")
             .args(ssh::ssh_forward_args(&options))
             .args(["-T", "--", host, &remote_command]),
-        Duration::from_secs(60),
+        remaining(deadline)?.min(Duration::from_secs(60)),
         Some(cancelled),
     )
     .with_context(|| format!("run remote session bootstrap on {host}"))?;
@@ -224,9 +257,13 @@ pub fn connect(
     }
     anyhow::ensure!(output.status.success(), "SSH bootstrap on {host} failed ({}). Check key/agent authentication and that compatible Yinz is on the remote PATH: {}", output.status, String::from_utf8_lossy(&output.stderr).trim());
     let endpoint = parse_endpoint(&output.stdout, name)
+        .map_err(|diagnostic| crate::remote_failure::BootstrapError {
+            category: crate::remote_failure::BootstrapCategory::Configuration,
+            diagnostic,
+        })
         .with_context(|| format!("read endpoint from {host}"))?;
     let socket = client_socket(&YINZ_SOCK_DIR)?;
-    let mut forward = HostForward::start(
+    let mut forward = HostForward::start_until(
         host,
         &options,
         &socket,
@@ -235,9 +272,10 @@ pub fn connect(
             .to_str()
             .context("remote socket is not UTF-8")?,
         Some(cancelled),
+        deadline,
     )?;
     ssh::check_cancelled(Some(cancelled))?;
-    let probed = probe(forward.socket());
+    let probed = probe_until(forward.socket(), cancelled, deadline);
     ssh::check_cancelled(Some(cancelled))?;
     if let Err(error) = probed {
         bail!(
@@ -246,6 +284,12 @@ pub fn connect(
         );
     }
     Ok(forward)
+}
+
+pub(crate) fn remaining(deadline: Instant) -> Result<Duration> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    anyhow::ensure!(!remaining.is_zero(), "Remote attachment deadline expired");
+    Ok(remaining)
 }
 
 pub fn client_socket(session_directory: &Path) -> Result<PathBuf> {
@@ -394,4 +438,30 @@ pub(crate) fn set_owned_forward(forward: Option<ClientForward>) {
 }
 pub fn set_forward(forward: Option<HostForward>) {
     set_owned_forward(forward.map(own_forward));
+}
+
+/// Collect the old SSH diagnostic before releasing its private socket and process.
+pub(crate) fn release_forward() -> String {
+    let forward = CLIENT_FORWARD
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take();
+    forward
+        .and_then(|forward| {
+            forward
+                ._forward
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+                .and_then(|mut owned| owned.diagnostics().ok())
+        })
+        .unwrap_or_default()
+}
+
+pub(crate) fn attachment_rejected(reason: yinz_ipc::ipc::ExitReason) -> anyhow::Error {
+    crate::remote_failure::BootstrapError {
+        category: crate::remote_failure::BootstrapCategory::AttachmentRejected,
+        diagnostic: anyhow!("Destination rejected attachment: {reason}"),
+    }
+    .into()
 }

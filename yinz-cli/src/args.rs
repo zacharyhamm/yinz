@@ -1039,9 +1039,11 @@ pub enum Sessions {
         #[clap(value_parser)]
         session_name: Option<String>,
 
-        /// Attach through OpenSSH to this host or SSH config alias. Requires a session name.
+        /// Attach through OpenSSH to this host or SSH config alias. Without a session name,
+        /// discover sessions on this host, attaching to the only running session or opening
+        /// a picker on a terminal. --create requires a session name.
         /// Successful attachments remember the host for interactive session discovery.
-        #[clap(long, value_name = "HOST", requires = "session_name", conflicts_with_all = ["index", "create_background", "force_run_commands"])]
+        #[clap(long, value_name = "HOST", conflicts_with_all = ["index", "create_background", "force_run_commands"])]
         remote: Option<String>,
 
         /// Create a session if one does not exist.

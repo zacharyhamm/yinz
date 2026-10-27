@@ -641,3 +641,43 @@ fn check_query_cleanup(error: ErrorKind, reconnect: bool, quit: bool) {
         }
     }
 }
+
+#[test]
+fn a_stopped_remote_supervisor_cannot_suppress_the_next_attachment() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    let os = FakeClientOsApi::new().capturing_stdout();
+    for _ in 0..2 {
+        os.queue_from_server(ServerToClientMsg::Render {
+            content: "ATTACHED".into(),
+        });
+        os.queue_from_server(ServerToClientMsg::Exit {
+            exit_reason: ExitReason::Normal,
+        });
+        let outcome = start_client(
+            Box::new(os.clone()),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            ClientInfo::Remote {
+                host: "example".into(),
+                name: "work".into(),
+                socket: "/unused".into(),
+                cancelled: Default::default(),
+            },
+            None,
+            None,
+            true,
+            false,
+        );
+        assert_eq!(outcome.exit_status, 0, "{}", outcome.exit_msg);
+    }
+    assert_eq!(
+        os.sent_messages()
+            .iter()
+            .filter(|message| matches!(message, ClientToServerMsg::AttachClient { .. }))
+            .count(),
+        2
+    );
+}

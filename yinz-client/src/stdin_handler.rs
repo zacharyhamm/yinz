@@ -14,6 +14,28 @@ use yinz_key_codec::vendored::termwiz::input::InputParser;
 use yinz_runtime::channels::SenderWithContext;
 use yinz_types::keys::KeyModifier;
 
+struct StampedInput {
+    sender: SenderWithContext<InputInstruction>,
+    stamp: Option<(u64, bool)>,
+}
+impl StampedInput {
+    fn send(
+        &self,
+        instruction: InputInstruction,
+    ) -> Result<
+        (),
+        yinz_runtime::channels::SendError<(
+            InputInstruction,
+            yinz_types::diagnostics::ErrorContext,
+        )>,
+    > {
+        self.sender.send(match self.stamp {
+            Some(stamp) => InputInstruction::FromGeneration(stamp, Box::new(instruction)),
+            None => instruction,
+        })
+    }
+}
+
 pub(crate) fn stdin_loop(
     mut os_input: Box<dyn ClientOsApi>,
     send_input_instructions: SenderWithContext<InputInstruction>,
@@ -22,6 +44,11 @@ pub(crate) fn stdin_loop(
     support_kitty_graphics_protocol: bool,
     report_modifier_keys: bool,
 ) {
+    let recovery = os_input.remote_recovery();
+    let mut send_input_instructions = StampedInput {
+        sender: send_input_instructions,
+        stamp: recovery.as_ref().map(|control| control.stamp()),
+    };
     // Send the startup host query string so the host terminal replies
     // with its live pixel dimensions, fg/bg, sync-output support, and
     // palette registers. These replies will be classified by the
@@ -66,10 +93,14 @@ pub(crate) fn stdin_loop(
     let _stdin_pump = std::thread::Builder::new()
         .name("stdin_pump".to_string())
         .spawn({
+            let recovery = recovery.clone();
             move || loop {
                 match os_input.read_from_stdin() {
                     Ok(buf) => {
-                        if stdin_tx.send(Ok(buf)).is_err() {
+                        if stdin_tx
+                            .send(Ok((buf, recovery.as_ref().map(|control| control.stamp()))))
+                            .is_err()
+                        {
                             break; // receiver dropped
                         }
                     },
@@ -112,7 +143,16 @@ pub(crate) fn stdin_loop(
         match received {
             Ok(result) => {
                 match result {
-                    Ok(buf) => {
+                    Ok((buf, stamp)) => {
+                        if send_input_instructions.stamp != stamp {
+                            stdin_ansi_parser.lock().unwrap().finalize_force();
+                            input_parser = InputParser::new();
+                            termwiz_buffer.clear();
+                            held_modifiers.clear();
+                            finalize_at = None;
+                            reply_in_progress_since = None;
+                        }
+                        send_input_instructions.stamp = stamp;
                         // Strip + classify any host-reply sequences
                         // continuously. The residue is the byte stream
                         // the keyboard parser should see.

@@ -55,7 +55,7 @@ pub(crate) fn list_sessions(no_formatting: bool, short: bool, reverse: bool, exi
 
 /// Whether a nameless `yinz attach` may ask which session to attach to: only
 /// a person at a terminal can answer.
-fn can_pick_a_session() -> bool {
+pub(crate) fn can_pick_a_session() -> bool {
     use std::io::IsTerminal;
     std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
@@ -110,7 +110,7 @@ fn pick_session_to_attach(remote: Option<(&CliArgs, Vec<String>)>) -> SessionNam
                 *remote = Some(host.clone());
                 *session_name = Some(name.to_string());
             }
-            match crate::remote_session::attach(&opts, &host, name.as_str(), false) {
+            match crate::remote_session::attach(&opts, &host, Some(name.as_str()), false) {
                 Ok(code) => process::exit(code),
                 Err(error) => {
                     eprintln!("Error: {error:#}");

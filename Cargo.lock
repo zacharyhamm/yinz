@@ -4653,6 +4653,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "unicode-width 0.2.2",
  "uuid",
  "yinz-cli",
  "yinz-config",

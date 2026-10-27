@@ -32,7 +32,7 @@ const MALFORMED_MESSAGE_BACKOFF: Duration = Duration::from_millis(1);
 /// The server sends one on every shutdown path, so reaching this means it went
 /// away without saying goodbye.
 const SERVER_HUNG_UP: &str =
-    "The connection to the yinz server closed unexpectedly.\nFor a remote session, retry your `yinz attach --remote HOST SESSION` command. For a local session, run `yinz ls`.";
+    "The connection to the yinz server closed unexpectedly.\nFor a local session, run `yinz ls`.";
 
 #[derive(Default)]
 pub(crate) struct SlowWarnings {
@@ -115,6 +115,12 @@ fn route_with_initial(
     render_budget: &RenderBudget,
     mut initial: std::collections::VecDeque<(ServerToClientMsg, ErrorContext)>,
 ) {
+    let control = os_input.remote_recovery();
+    let generation = control.as_ref().map(|control| control.stamp().0);
+    let send_client_instructions = RouterSender {
+        sender: send_client_instructions,
+        generation,
+    };
     let mut consecutive_malformed_messages_received = 0;
     let started_at = Instant::now();
     let mut waiting_for_first_message = true;
@@ -126,11 +132,19 @@ fn route_with_initial(
         std::process::id()
     );
     loop {
+        if control
+            .as_ref()
+            .is_some_and(|control| !control.can_write() || Some(control.stamp().0) != generation)
+        {
+            break;
+        }
         match initial
             .pop_front()
             .map(|(message, context)| IpcRecv::Msg(message, context))
-            .unwrap_or_else(|| os_input.recv_from_server())
-        {
+            .unwrap_or_else(|| match generation {
+                Some(generation) => os_input.recv_from_server_generation(generation),
+                None => os_input.recv_from_server(),
+            }) {
             IpcRecv::Msg(instruction, err_ctx) => {
                 consecutive_malformed_messages_received = 0;
                 let tracing_first_message = waiting_for_first_message;
@@ -244,6 +258,10 @@ fn route_with_initial(
                 // once and leave, rather than spinning until a counter runs out
                 // and then blaming an empty message.
                 log::error!("The server closed the connection without sending Exit");
+                if let (Some(control), Some(generation)) = (&control, generation) {
+                    control.lost(generation, SERVER_HUNG_UP.to_owned());
+                    break;
+                }
                 send_client_instructions
                     .send(ClientInstruction::Error(SERVER_HUNG_UP.to_string()))
                     .to_anyhow()
@@ -291,16 +309,44 @@ fn route_with_initial(
     }
 }
 
+struct RouterSender {
+    sender: SenderWithContext<ClientInstruction>,
+    generation: Option<u64>,
+}
+impl RouterSender {
+    fn tagged(&self, instruction: ClientInstruction) -> ClientInstruction {
+        match self.generation {
+            Some(generation) => ClientInstruction::FromServer(generation, Box::new(instruction)),
+            None => instruction,
+        }
+    }
+    fn send(
+        &self,
+        instruction: ClientInstruction,
+    ) -> Result<(), yinz_runtime::channels::SendError<(ClientInstruction, ErrorContext)>> {
+        self.sender.send(self.tagged(instruction))
+    }
+    fn send_required(
+        &self,
+        instruction: ClientInstruction,
+    ) -> Result<(), yinz_runtime::channels::SendError<(ClientInstruction, ErrorContext)>> {
+        self.sender.send_required(self.tagged(instruction))
+    }
+}
+
 /// Forward one message to the main loop. Returns whether this was the last
 /// one — `Exit` is still delivered before the thread stops — or the main loop
 /// has already exited, say after failing to write to the terminal.
 fn forward(
-    send_client_instructions: &SenderWithContext<ClientInstruction>,
+    send_client_instructions: &RouterSender,
     instruction: ServerToClientMsg,
     err_ctx: ErrorContext,
 ) -> bool {
     yinz_runtime::errors::update_thread_ctx(&err_ctx);
-    let is_exit = matches!(instruction, ServerToClientMsg::Exit { .. });
+    let is_exit = matches!(
+        instruction,
+        ServerToClientMsg::Exit { .. } | ServerToClientMsg::SwitchSession { .. }
+    );
     // A disconnected receiver is the normal way shutdown stops the router.
     send_client_instructions
         .send_required(instruction.into())

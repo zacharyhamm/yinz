@@ -99,7 +99,10 @@ pub struct ClientOsInputOutput {
     reading_from_stdin: Arc<Mutex<Option<Vec<u8>>>>,
     connection_generation: Arc<std::sync::atomic::AtomicUsize>,
     generation: usize,
+    // Pinned by the input handler for one event, so a racing replacement cannot receive it.
+    input_generation: Option<u64>,
     orig_termios: Option<yinz_runtime::termios::WireTermios>,
+    recovery: Arc<Mutex<Option<crate::remote_recovery::RecoveryControl>>>,
 }
 
 impl ClientOsInputOutput {
@@ -254,6 +257,23 @@ pub fn connect_with_deadline(
 
 /// The IPC link to the session's server process.
 pub trait ServerConnection {
+    #[doc(hidden)]
+    fn pin_input_generation(&mut self, _generation: u64) {}
+    #[doc(hidden)]
+    fn set_remote_recovery(
+        &self,
+        _control: Option<crate::remote_recovery::RecoveryControl>,
+    ) -> io::Result<()> {
+        Ok(())
+    }
+    #[doc(hidden)]
+    fn remote_recovery(&self) -> Option<crate::remote_recovery::RecoveryControl> {
+        None
+    }
+    fn disconnect_session_connection(&self) {}
+    fn recv_from_server_generation(&self, _generation: u64) -> IpcRecv<ServerToClientMsg> {
+        self.recv_from_server()
+    }
     /// Sends a message to the server.
     fn send_to_server(&self, msg: ClientToServerMsg);
     /// Receives a message on client-side IPC channel
@@ -468,6 +488,55 @@ impl StdioAccess for ClientOsInputOutput {
 }
 
 impl ServerConnection for ClientOsInputOutput {
+    fn pin_input_generation(&mut self, generation: u64) {
+        self.input_generation = Some(generation);
+    }
+    fn set_remote_recovery(
+        &self,
+        control: Option<crate::remote_recovery::RecoveryControl>,
+    ) -> io::Result<()> {
+        if control.is_some() {
+            if let Some(sender) = self.send_instructions_to_server.lock().unwrap().as_ref() {
+                sender.set_send_timeout(Some(crate::remote_recovery::WRITE_TIMEOUT))?;
+            }
+            if let Some(receiver) = self
+                .receive_instructions_from_server
+                .lock()
+                .unwrap()
+                .as_ref()
+            {
+                receiver.set_recv_timeout(Some(crate::remote_recovery::READ_POLL))?;
+            }
+        }
+        *self.recovery.lock().unwrap() = control;
+        Ok(())
+    }
+    fn remote_recovery(&self) -> Option<crate::remote_recovery::RecoveryControl> {
+        if !self.is_current_connection() {
+            return None;
+        }
+        self.recovery.lock().unwrap().clone()
+    }
+    fn disconnect_session_connection(&self) {
+        self.send_instructions_to_server.lock().unwrap().take();
+        self.receive_instructions_from_server.lock().unwrap().take();
+    }
+    fn recv_from_server_generation(&self, generation: u64) -> IpcRecv<ServerToClientMsg> {
+        let mut receiver = self.receive_instructions_from_server.lock().unwrap();
+        if !self.is_current_connection() {
+            return IpcRecv::Eof;
+        }
+        if self
+            .remote_recovery()
+            .is_some_and(|control| !control.accepts(generation) || !control.can_write())
+        {
+            return IpcRecv::Eof;
+        }
+        receiver
+            .as_mut()
+            .map(|receiver| receiver.recv_server_msg())
+            .unwrap_or(IpcRecv::Eof)
+    }
     fn spawn_server(&self, socket_path: &Path, debug: bool) -> io::Result<()> {
         crate::spawn_server_with_termios(socket_path, debug, Some(&self.orig_termios))
     }
@@ -495,7 +564,21 @@ impl ServerConnection for ClientOsInputOutput {
                 std::process::id()
             );
         }
+        let control = self.remote_recovery();
+        if let Some(control) = &control {
+            control.cache(&msg);
+        }
+        let generation = self
+            .input_generation
+            .or_else(|| control.as_ref().map(|control| control.stamp().0));
         let mut sender = self.send_instructions_to_server.lock().unwrap();
+        if !self.is_current_connection()
+            || control.as_ref().is_some_and(|control| {
+                !control.can_write() || Some(control.stamp().0) != generation
+            })
+        {
+            return;
+        }
         if let Some(kind) = startup_message {
             log::info!(
                 "startup trace: client pid={} message={kind} acquired IPC sender lock after {:?}",
@@ -505,7 +588,14 @@ impl ServerConnection for ClientOsInputOutput {
         }
         match sender.as_mut() {
             Some(sender) => {
-                let result = sender.send_client_msg(msg);
+                let result = if control.is_some() {
+                    sender.send_client_msg_until(
+                        msg,
+                        time::Instant::now() + crate::remote_recovery::WRITE_TIMEOUT,
+                    )
+                } else {
+                    sender.send_client_msg(msg)
+                };
                 if let Some(kind) = startup_message {
                     log::info!(
                         "startup trace: client pid={} IPC {kind} write finished after {:?} ({})",
@@ -516,6 +606,12 @@ impl ServerConnection for ClientOsInputOutput {
                 }
                 if let Err(error) = result {
                     log::warn!("failed to send message to server: {error:#}");
+                    if let (Some(control), Some(generation)) = (&control, generation) {
+                        control.lost(
+                            generation,
+                            format!("Failed to write to the remote session: {error:#}"),
+                        );
+                    }
                 }
             },
             None => {
@@ -528,6 +624,9 @@ impl ServerConnection for ClientOsInputOutput {
             log::error!("client receiver lock poisoned");
             return IpcRecv::Eof;
         };
+        if !self.is_current_connection() {
+            return IpcRecv::Eof;
+        }
         match receiver.as_mut() {
             Some(receiver) => receiver.recv_server_msg(),
             None => IpcRecv::Eof,
@@ -628,8 +727,10 @@ pub fn get_client_os_input() -> Result<ClientOsInputOutput, std::io::Error> {
         send_instructions_to_server: Arc::new(Mutex::new(None)),
         receive_instructions_from_server: Arc::new(Mutex::new(None)),
         reading_from_stdin,
+        recovery: Arc::new(Mutex::new(None)),
         connection_generation: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         generation: 0,
+        input_generation: None,
         orig_termios: nix::sys::termios::tcgetattr(io::stdin())
             .ok()
             .as_ref()
