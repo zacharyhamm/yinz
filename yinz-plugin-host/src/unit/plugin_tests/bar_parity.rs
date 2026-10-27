@@ -7,7 +7,7 @@ use std::{
         Arc, Mutex,
     },
 };
-use yinz_terminal::panes::{grid::Grid, terminal_character::TerminalCharacter};
+use yinz_terminal::panes::{grid::Grid, terminal_character::TerminalCharacter, AnsiCode};
 use yinz_types::{
     data::{Event, InputMode, ModeInfo, PluginCommand},
     units::FractionalSeconds,
@@ -244,10 +244,27 @@ impl Pair {
         let (expected, actual) = self.reference(json!(["update", event]));
         let expected = expected.as_bool().unwrap();
         assert_eq!(actual, json!(expected), "update decision for {event:?}");
+        let timer_before = (self.status_bar && matches!(event, Event::Timer(_))).then(|| {
+            (
+                self.steel.value("state").unwrap()["clock"].clone(),
+                self.steel
+                    .invoke("hint-until", vec![])
+                    .unwrap()
+                    .as_u64()
+                    .unwrap(),
+            )
+        });
         let steel = self
             .steel
             .update(serde_json::to_value(&event).unwrap())
             .unwrap();
+        // The frozen reference animates; Steel redraws timers only for clock or hint changes.
+        let expected = if let Some((clock, hint)) = timer_before {
+            clock != self.steel.value("state").unwrap()["clock"]
+                || (hint != 0 && hint <= self.now.load(Ordering::SeqCst))
+        } else {
+            expected
+        };
         assert_eq!(steel, expected, "Steel update decision for {event:?}");
         self.compare_commands();
     }
@@ -315,6 +332,48 @@ impl Pair {
         let right = cells(&actual);
         let steel_cells = cells(&steel);
         let mut steel_expected = left.clone();
+        if self.status_bar && rows == 1 && self.steel.value("state").unwrap()["classic"] == false {
+            // Preserve historical layout/style coverage while replacing the retired animation.
+            for row in &mut steel_expected {
+                for i in 0..row.len() {
+                    let glyph = row[i].character;
+                    if "⣾⣽⣻⢿⡿⣟⣯⣷".contains(glyph) {
+                        row[i].character = '●';
+                    } else if "|/-\\".contains(glyph)
+                        && i > 0
+                        && row[i - 1].character.is_ascii_digit()
+                    {
+                        row[i].character = 'b';
+                    }
+                    let range = if glyph == '◆' {
+                        let end = i
+                            + 1
+                            + row[i + 1..]
+                                .iter()
+                                .take_while(|c| c.character.is_ascii_digit())
+                                .count();
+                        i..end
+                    } else if glyph == 'w' && i > 0 && row[i - 1].character.is_ascii_digit() {
+                        let digits = row[..i]
+                            .iter()
+                            .rev()
+                            .take_while(|c| c.character.is_ascii_digit())
+                            .count();
+                        i - digits..i + 1
+                    } else {
+                        continue;
+                    };
+                    for cell in &mut row[range] {
+                        cell.styles.update(|style| {
+                            style.foreground =
+                                Some(self.mode.style.colors.exit_code_error.base.into());
+                            style.bold = Some(AnsiCode::On);
+                            style.dim = Some(AnsiCode::Reset);
+                        });
+                    }
+                }
+            }
+        }
         if self.tab_bar && !self.mode.capabilities.arrow_fonts {
             let parts = self.steel.value("parts").unwrap();
             if parts
@@ -365,7 +424,11 @@ impl Pair {
                 panic!("{:?} {rows}x{cols}:\nWasm: {:?}\n{runtime}: {:?}\nfirst different cell (position, characters and styles): {first:?}", self.mode.mode, plain(left), plain(right));
             }
         }
-        left
+        if self.status_bar {
+            steel_cells
+        } else {
+            left
+        }
     }
 
     pub(super) fn reload_steel_tip(
