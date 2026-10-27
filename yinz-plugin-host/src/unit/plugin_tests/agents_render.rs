@@ -195,16 +195,43 @@ fn agents_selections_and_secondary_text_resolve_theme_colors() {
             assert_text(
                 &lines[2..3],
                 "project",
-                style.colors.text_unselected.base,
+                style.colors.text_unselected.emphasis_0,
                 true,
             );
             assert_text(
                 &lines[2..3],
                 "topic",
-                style.colors.text_unselected.base,
+                style.colors.text_unselected.emphasis_2,
                 false,
             );
-            assert_text(&lines, selected, style.colors.text_selected.base, false);
+            if selected == "archived run" {
+                assert_text(&lines, selected, style.colors.text_selected.base, false);
+            } else {
+                assert_text(
+                    &lines[1..2],
+                    &marker.to_string(),
+                    style.colors.text_selected.base,
+                    false,
+                );
+                assert_text(
+                    &lines[1..2],
+                    "claude",
+                    style.colors.text_selected.base,
+                    true,
+                );
+                assert_text(
+                    &lines[1..2],
+                    "!",
+                    style.colors.text_selected.emphasis_1,
+                    true,
+                );
+                assert_text(
+                    &lines[1..2],
+                    "needs input",
+                    style.colors.text_selected.emphasis_1,
+                    false,
+                );
+            }
             let selected_rows: &[usize] = if selected == "archived run" {
                 &[4]
             } else {
@@ -219,18 +246,15 @@ fn agents_selections_and_secondary_text_resolve_theme_colors() {
                     if chosen { marker } else { ' ' },
                 );
             }
-            for cell in selected_rows.iter().flat_map(|row| &lines[*row][..33]) {
-                assert_eq!(
-                    cell.styles.foreground,
-                    Some(style.colors.text_selected.base.into())
-                );
-                assert_eq!(
-                    cell.styles.background,
-                    Some(style.colors.text_selected.background.into())
-                );
-            }
+            let colors = if selected == "archived run" {
+                style.colors.text_unselected
+            } else {
+                style.colors.text_selected
+            };
+            assert_text(&lines[1..2], "[7]", colors.emphasis_3, false);
             if selected == "archived run" {
-                assert_text(&lines, "!", style.colors.text_unselected.emphasis_1, false);
+                assert_text(&lines, "claude", style.colors.text_unselected.base, true);
+                assert_text(&lines, "!", style.colors.text_unselected.emphasis_1, true);
                 assert_text(
                     &lines,
                     "needs input",
@@ -820,16 +844,28 @@ fn agents_clipped_remote_hosts_preserve_status_and_waiting_emphasis() {
                         plain.trim_end(),
                         format!("{marker} {symbol} claude{tail}").trim_end()
                     );
-                    let color = if selected == 1 {
-                        style.colors.text_selected.base
-                    } else if symbol == '!' {
-                        style.colors.text_unselected.emphasis_1
-                    } else if symbol == '●' {
-                        style.colors.exit_code_success.base
+                    let colors = if selected == 1 {
+                        style.colors.text_selected
                     } else {
-                        style.colors.text_unselected.base
+                        style.colors.text_unselected
                     };
-                    assert_text(&lines[1..2], &symbol.to_string(), color, false);
+                    let color = if symbol == '!' {
+                        colors.emphasis_1
+                    } else if symbol == '●' {
+                        colors.emphasis_2
+                    } else {
+                        colors.base
+                    };
+                    assert_text(&lines[1..2], &symbol.to_string(), color, true);
+                    assert_text(&lines[1..2], "claude", colors.base, true);
+                    if let Some(host_start) = plain.find('@') {
+                        assert_text(
+                            &lines[1..2],
+                            plain[host_start..].trim_end(),
+                            colors.emphasis_3,
+                            false,
+                        );
+                    }
                     if selected == 1 {
                         cells(&lines, &format!("[7] · claude · {status}"));
                     }
@@ -1186,7 +1222,15 @@ fn agents_activity_lines_share_selection_and_activate_only_on_release() {
             (a-set! "snapshot" (hash "hooks" (hash "7" (hash "phase" "Waiting" "waiting_on" "Approve?"))))"#,
         )
         .unwrap();
-    plugin.render(24, 90);
+    for style in themes() {
+        let lines = render_sized(&mut plugin, style, 24, 90);
+        assert_text(
+            &lines[..3],
+            "Approve?",
+            style.colors.text_unselected.emphasis_1,
+            true,
+        );
+    }
     // The waiting agent's activity line sits under its pinned copy, below "Needs you".
     assert_eq!(
         state(&mut plugin, "list_lines")[2],
@@ -1196,6 +1240,15 @@ fn agents_activity_lines_share_selection_and_activate_only_on_release() {
     mouse(&mut plugin, "LeftClick", json!([2, 5]));
     mouse(&mut plugin, "Release", json!([2, 5]));
     assert_eq!(state(&mut plugin, "selected"), 2);
+    for style in themes() {
+        let lines = render_sized(&mut plugin, style, 24, 90);
+        assert_text(
+            &lines[..3],
+            "Approve?",
+            style.colors.text_selected.emphasis_1,
+            true,
+        );
+    }
     assert!(!plugin
         .take_commands()
         .iter()
