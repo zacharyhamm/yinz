@@ -2,7 +2,8 @@
 
 use yinz_cli::args::CliAction;
 use yinz_integration_tests::{
-    agent_row_column, keys, lists_agent, LayoutInfo, Size, TestRunner, TestSession, TERMINAL_SIZE,
+    agent_row_column, keys, lists_agent, GridSnapshot, LayoutInfo, Size, TestRunner, TestSession,
+    TERMINAL_SIZE,
 };
 use yinz_types::{data::PaneListEntry, input::actions::Action};
 
@@ -26,6 +27,65 @@ plugins {
 }
 load_plugins clear-defaults=true { "agent-service"; "project-store"; }
 "#;
+
+fn selected_agent(frame: &GridSnapshot, kind: &str) -> bool {
+    frame
+        .text
+        .lines()
+        .any(|line| agent_row_column(line, kind).is_some_and(|column| line[..column].contains('┃')))
+}
+
+#[test]
+fn panel_opens_with_last_focused_agent_even_after_focusing_a_shell() {
+    let mut yinz = TestRunner::new(Size {
+        cols: 120,
+        rows: 40,
+    })
+    .with_config(CONFIG)
+    .with_layout(LayoutInfo::Stringified(
+        "layout { pane command=\"claude\"; pane command=\"codex\"; pane; }".into(),
+    ))
+    .start();
+    let claude = yinz.expect_pty_spawn();
+    let codex = yinz.expect_pty_spawn();
+    let shell = yinz.expect_pty_spawn();
+    claude.output(b"CLAUDE READY\r\n");
+    codex.output(b"CODEX READY\r\n");
+    shell.output(b"SHELL READY\r\n");
+    yinz.wait_until("the initial layout is rendered", |s| {
+        s.contains("CLAUDE READY") && s.contains("CODEX READY") && s.contains("SHELL READY")
+    });
+    assert_eq!(
+        yinz.run_cli_action(CliAction::FocusPaneId {
+            pane_id: yinz_types::pane_id::PaneId::Terminal(codex.terminal_id()).to_string(),
+        }),
+        0
+    );
+    yinz.send_stdin(&keys::ctrl('b'));
+    yinz.wait_until("the first opening selects the focused Codex pane", |s| {
+        selected_agent(s, "codex")
+    });
+    click_agent(&mut yinz, "claude");
+    yinz.wait_until(
+        "the panel browses Claude independently of terminal focus",
+        |s| selected_agent(s, "claude"),
+    );
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until("the panel is dismissed", |s| !s.contains("Agents"));
+
+    assert_eq!(
+        yinz.run_cli_action(CliAction::FocusPaneId {
+            pane_id: yinz_types::pane_id::PaneId::Terminal(shell.terminal_id()).to_string(),
+        }),
+        0
+    );
+    yinz.send_stdin(&keys::ctrl('b'));
+    yinz.wait_until(
+        "reopening from a shell selects the last focused agent",
+        |s| selected_agent(s, "codex"),
+    );
+    yinz.quit();
+}
 
 #[test]
 fn panel_tabs_open_and_dismiss_without_chat() {

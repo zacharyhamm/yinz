@@ -122,6 +122,9 @@ pub struct PollReply {
     /// answer it: a plugin cannot read its own focus off a `PaneUpdate`.
     #[serde(default)]
     pub focused: Option<u32>,
+    /// The most recently focused agent pane, retained while a shell or plugin has focus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_focused_agent: Option<u32>,
     /// What the model last said about each idle agent's pane.
     ///
     /// Only the daemon can answer this: it is the one thing watching for the busy→idle

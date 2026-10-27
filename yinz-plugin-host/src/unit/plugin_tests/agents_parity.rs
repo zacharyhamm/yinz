@@ -114,7 +114,8 @@ fn pair(
 fn snapshot(pair: &mut Pair, seq: u64, runs: &[agents::AgentRun], source: u32) {
     pair.wasm.pipe(&snapshot_message(seq, runs, source));
     let current: Vec<_> = runs.iter().map(current_run).collect();
-    pair.steel.pipe(&snapshot_message(seq, &current, source));
+    let message = opening_reply(&mut pair.steel, snapshot_message(seq, &current, source));
+    pair.steel.pipe(&message);
     pair.commands();
 }
 fn snapshot_message(seq: u64, runs: &[agents::AgentRun], source: u32) -> PipeMessage {
@@ -590,7 +591,256 @@ struct HistoryPanel {
     clock: Arc<AtomicU64>,
     data: Arc<DataHost>,
 }
+
+// Model the service's reply to the panel's currently pending subscription.
+fn opening_reply(
+    panel: &mut super::runtime_parity::SteelReference,
+    mut message: PipeMessage,
+) -> PipeMessage {
+    let token = panel
+        .runtime
+        .invoke("a-get", vec![json!("select_on_open")])
+        .unwrap();
+    if let Some(token) = token.as_str() {
+        message.args.insert("open_request".into(), token.into());
+    }
+    message
+}
+
+fn focus_message(seq: u64, focused: Option<u32>, last: u32) -> PipeMessage {
+    let mut message = snapshot_message(seq, &[], 2);
+    let mut snapshot: Value = serde_json::from_str(message.payload.as_ref().unwrap()).unwrap();
+    snapshot["focused"] = json!(focused);
+    snapshot["last_focused_agent"] = json!(last);
+    message.payload = Some(snapshot.to_string());
+    message
+}
+
+fn focus_snapshot(
+    panel: &mut HistoryPanel,
+    seq: u64,
+    focused: Option<u32>,
+    last: u32,
+) -> Option<bool> {
+    let message = opening_reply(&mut panel.panel, focus_message(seq, focused, last));
+    panel.panel.pipe(&message)
+}
+
+fn panel_visibility(panel: &mut HistoryPanel, visible: bool, focused: bool) {
+    panel.panel.update(&Event::PaneUpdate(PaneManifest {
+        panes: std::collections::HashMap::from([(
+            yinz_types::internal_ids::TabPosition::new(0),
+            vec![PaneInfo {
+                id: yinz_types::pane_id::PaneId::Plugin(PluginId::new(1)),
+                is_suppressed: !visible,
+                is_focused: focused,
+                ..Default::default()
+            }],
+        )]),
+    }));
+}
+
+#[test]
+fn agents_panel_preserves_browsed_selection_across_agent_focus_changes() {
+    let mut h = HistoryPanel::new(&[]);
+    focus_snapshot(&mut h, 1, Some(7), 7);
+    assert_eq!(h.selection(), "pane:7");
+    focus_snapshot(&mut h, 2, Some(8), 8);
+    assert_eq!(h.selection(), "pane:7");
+    assert_eq!(h.get("focused"), 8);
+
+    h.key("Up");
+    assert_eq!(h.selection(), "pane:8");
+    focus_snapshot(&mut h, 3, Some(7), 7);
+    assert_eq!(h.selection(), "pane:8");
+    assert_eq!(h.get("focused"), 7);
+}
+
+#[test]
+fn agents_panel_selects_last_focused_agent_on_first_open_and_reopen() {
+    let mut h = HistoryPanel::new(&[]);
+    panel_visibility(&mut h, true, true);
+    focus_snapshot(&mut h, 1, None, 7);
+    assert_eq!(h.selection(), "pane:7");
+    h.key("Up");
+    assert_eq!(h.selection(), "pane:8");
+
+    // Losing keyboard focus while still shown does not start another visit.
+    panel_visibility(&mut h, true, false);
+    focus_snapshot(&mut h, 2, Some(7), 7);
+    assert_eq!(h.selection(), "pane:8");
+    panel_visibility(&mut h, true, true);
+    focus_snapshot(&mut h, 3, None, 7);
+    assert_eq!(h.selection(), "pane:8");
+
+    panel_visibility(&mut h, false, false);
+    h.panel.take_commands();
+    panel_visibility(&mut h, true, true);
+    assert!(h.panel.take_commands().iter().any(|command| {
+        command.pointer("/MessageToPlugin/message_name") == Some(&json!("agent_subscribe"))
+    }));
+    // Selection waits for the fresh snapshot requested when opening.
+    assert_eq!(h.selection(), "pane:8");
+    focus_snapshot(&mut h, 4, None, 7);
+    assert_eq!(h.selection(), "pane:7");
+    focus_snapshot(&mut h, 5, Some(8), 8);
+    assert_eq!(h.selection(), "pane:7");
+}
+
+#[test]
+fn agents_panel_open_skips_closed_agents_and_clears_filters_for_open_agents() {
+    let mut h = HistoryPanel::new(&[]);
+    focus_snapshot(&mut h, 1, None, 7);
+    h.key("w");
+    assert_ne!(h.get("waiting_base"), false);
+    panel_visibility(&mut h, false, false);
+    panel_visibility(&mut h, true, true);
+    focus_snapshot(&mut h, 2, None, 7);
+    assert_eq!(h.get("waiting_base"), false);
+    assert_eq!(h.selection(), "pane:7");
+
+    h.key("Up");
+    panel_visibility(&mut h, false, false);
+    panel_visibility(&mut h, true, true);
+    focus_snapshot(&mut h, 3, None, 999);
+    assert_eq!(h.selection(), "pane:8");
+    assert_eq!(h.get("select_on_open"), false);
+
+    h.key("w");
+    panel_visibility(&mut h, false, false);
+    panel_visibility(&mut h, true, true);
+    assert_eq!(focus_snapshot(&mut h, 4, None, 8), Some(true));
+    assert_eq!(h.get("waiting_base"), false);
+    assert_eq!(h.selection(), "pane:8");
+}
+
+#[test]
+fn agents_panel_open_ignores_inflight_publications_and_invalid_replies() {
+    let mut h = HistoryPanel::new(&[]);
+    focus_snapshot(&mut h, 1, None, 7);
+    h.key("Up");
+    panel_visibility(&mut h, false, false);
+    panel_visibility(&mut h, true, true);
+    let token = h.get("select_on_open");
+    assert!(token.is_string());
+
+    // This newer publication was already in flight when the panel reopened.
+    h.panel.pipe(&focus_message(2, None, 8));
+    assert_eq!(h.selection(), "pane:8");
+    assert_eq!(h.get("select_on_open"), token);
+
+    let mut earlier_visit = focus_message(3, None, 8);
+    earlier_visit.args.insert("open_request".into(), "1".into());
+    h.panel.pipe(&earlier_visit);
+    assert_eq!(h.get("select_on_open"), token);
+
+    let reply = opening_reply(&mut h.panel, focus_message(4, None, 7));
+    let mut untrusted = reply.clone();
+    untrusted.source = PipeSource::Plugin(PluginId::new(99));
+    h.panel.pipe(&untrusted);
+    let mut malformed = reply.clone();
+    malformed.payload = Some("{".into());
+    h.panel.pipe(&malformed);
+    let mut stale = reply.clone();
+    stale.args.insert("seq".into(), "3".into());
+    h.panel.pipe(&stale);
+    assert_eq!(h.selection(), "pane:8");
+    assert_eq!(h.get("select_on_open"), token);
+
+    h.panel.pipe(&reply);
+    assert_eq!(h.selection(), "pane:7");
+    assert_eq!(h.get("select_on_open"), false);
+    h.panel.pipe(&focus_message(5, Some(8), 8));
+    assert_eq!(h.selection(), "pane:7");
+}
+
+#[test]
+fn agents_panel_open_retries_keep_the_token_and_user_input_cancels_it() {
+    let mut h = HistoryPanel::new(&[]);
+    let token = h.get("select_on_open");
+    h.panel.take_commands();
+    h.panel.update(&Event::SessionUpdate(
+        sessions().live_sessions,
+        Default::default(),
+    ));
+    let mut hello = focus_message(0, None, 7);
+    hello.name = "agent_hello".into();
+    h.panel.pipe(&hello);
+    let subscriptions: Vec<_> = h
+        .panel
+        .take_commands()
+        .into_iter()
+        .filter_map(|command| {
+            let send = command.get("MessageToPlugin")?;
+            (send["message_name"] == "agent_subscribe").then(|| send.clone())
+        })
+        .collect();
+    assert_eq!(subscriptions.len(), 2);
+    for send in subscriptions {
+        assert_eq!(send["message_args"]["open_request"], token);
+    }
+    focus_snapshot(&mut h, 1, None, 7);
+    panel_visibility(&mut h, true, true);
+    panel_visibility(&mut h, false, false);
+    panel_visibility(&mut h, true, true);
+    let reply = opening_reply(&mut h.panel, focus_message(2, None, 7));
+    h.key("Up");
+    assert_eq!(h.get("select_on_open"), false);
+    h.panel.pipe(&reply);
+    assert_eq!(h.selection(), "pane:8");
+
+    panel_visibility(&mut h, false, false);
+    panel_visibility(&mut h, true, true);
+    let hidden_reply = opening_reply(&mut h.panel, focus_message(3, None, 7));
+    panel_visibility(&mut h, false, false);
+    h.panel.pipe(&hidden_reply);
+    assert_eq!(h.get("select_on_open"), false);
+    assert_eq!(h.selection(), "pane:8");
+}
+
+#[test]
+fn agents_panel_open_loads_focused_history_before_the_waiting_agents_history() {
+    for publication_first in [false, true] {
+        let runs = [run("focused", 7, false), run("waiting", 8, false)];
+        let mut h = HistoryPanel::new(&runs);
+        panel_visibility(&mut h, true, true);
+        if publication_first {
+            // Pane 8 sorts first because it is waiting for approval.
+            h.panel.pipe(&snapshot_message(1, &runs, 2));
+            assert_eq!(h.selection(), "pane:8");
+            h.panel.update(&Event::Visible(true));
+            assert!(h.requests().is_empty());
+        }
+        h.snapshot(2, &runs);
+        assert_eq!(h.selection(), "pane:7");
+        let request = h.request();
+        let payload: Value = serde_json::from_str(request["payload"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["id"], "focused");
+        assert_eq!(h.complete(&request)["run"]["id"], "focused");
+
+        h.key("Up");
+        let request = h.request();
+        h.complete(&request);
+        panel_visibility(&mut h, false, false);
+        panel_visibility(&mut h, true, true);
+        assert!(
+            h.requests().is_empty(),
+            "opening must wait for fresh focus before loading cached rows"
+        );
+        h.snapshot(3, &runs);
+        let request = h.request();
+        let payload: Value = serde_json::from_str(request["payload"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["id"], "focused");
+    }
+}
+
 impl HistoryPanel {
+    fn selection(&mut self) -> Value {
+        self.panel
+            .runtime
+            .invoke("a-selection-key", vec![])
+            .unwrap()
+    }
     fn new(runs: &[agents::AgentRun]) -> Self {
         let clock = Arc::new(AtomicU64::new(90_000));
         let (data, responder) = host(runs, clock.clone());
@@ -615,7 +865,8 @@ impl HistoryPanel {
         }
     }
     fn snapshot(&mut self, seq: u64, runs: &[agents::AgentRun]) {
-        self.panel.pipe(&snapshot_message(seq, runs, 2));
+        let message = opening_reply(&mut self.panel, snapshot_message(seq, runs, 2));
+        self.panel.pipe(&message);
     }
     fn key(&mut self, key: &str) -> bool {
         self.panel.update(&Event::Key(key.parse().unwrap()))
@@ -1067,7 +1318,8 @@ fn agents_pane_tabs_focus_updates_preserve_another_clients_history() {
             "tabs":[{"descriptor":{"label":"Agents","location":"yinz:agents"},"plugin_id":1,"state":"Ready"}]
         })).unwrap()])
     };
-    panel.pipe(&snapshot_message(1, &[], 2));
+    let message = opening_reply(&mut panel, snapshot_message(1, &[], 2));
+    panel.pipe(&message);
     panel.render(24, 90);
     assert!(panel.update(&Event::Key("Tab".parse().unwrap())));
     assert!(history_frame(&panel.render(24, 90)).contains("▸"));
@@ -1223,6 +1475,16 @@ fn agents_history_snapshot_headers_refresh_errors_timeout_and_hide() {
     assert!(h.requests().is_empty());
     assert!(!h.reply(&hidden, "hidden"));
     h.panel.update(&Event::Visible(true));
+    assert!(h.requests().is_empty());
+    // Without a remembered live agent, reopening retains the browsed archive.
+    let mut message = snapshot_message(17, &runs, 2);
+    let mut snapshot: Value = serde_json::from_str(message.payload.as_ref().unwrap()).unwrap();
+    snapshot["last_focused_agent"] = Value::Null;
+    snapshot["focused"] = Value::Null;
+    message.payload = Some(snapshot.to_string());
+    let message = opening_reply(&mut h.panel, message);
+    h.panel.pipe(&message);
+    assert_eq!(h.selection(), "run:archive");
     let reopened = h.request();
     h.data
         .apply(store::SHARED, &agents::rows::run_mutations(&runs[0]));
@@ -1655,9 +1917,9 @@ fn agents_history_real_worker_probes_navigation_during_snapshot_bursts() {
         let (mut panel, commands) = history_process(responder, None);
         panel.load(json!({"view":"agents"})).unwrap();
         commands.lock().unwrap().clear();
-        panel
-            .pipe(serde_json::to_value(snapshot_message(1, &runs, 2)).unwrap())
-            .unwrap();
+        let mut first = snapshot_message(1, &runs, 2);
+        first.args.insert("open_request".into(), "1".into());
+        panel.pipe(serde_json::to_value(first).unwrap()).unwrap();
         let requests = process_messages(&commands, "PostMessageTo");
         assert_eq!(requests.len(), 1);
         let request = requests[0].clone();

@@ -78,6 +78,7 @@ fn older_snapshots_default_to_no_suppressed_panes() {
     let reply: crate::wire::PollReply =
         serde_json::from_str(r#"{"panes":[],"activity":{}}"#).unwrap();
     assert!(reply.suppressed_panes.is_empty());
+    assert_eq!(reply.last_focused_agent, None);
 }
 
 /// A suppressed pane is hidden, not gone. It keeps its id and its process,

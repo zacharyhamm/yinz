@@ -2,6 +2,7 @@
   a-row a-row-data a-row-key a-selection-key a-selection a-selected-run a-selected-revision
   a-selectable? a-waiting? a-waiting-rows a-waiting-count a-live? a-step a-set-rows!
   a-leave-row! a-follow-selection! a-close-reader! a-keys-here? a-bar-keys?
+  a-clear-search! a-clear-waiting! a-clear-predecessors!
   a-invalidate-history! a-key? a-char a-inc! a-none a-sub a-base-strip a-predecessor-rows)
 (define state (hash))
 (define (a-get key) (hash-ref state key))
@@ -39,7 +40,7 @@
       "reading" #f "reader_cache" #f "reading_id" 0 "last_reader_max_scroll" 0 "last_reader_rows" 0 "last_reader_left" 0 "last_reader_width" 0
       "prompt_drafts" (hash) "prompt_error" #f "last_prompt_row" #f
       "focus" "list" "has_keyboard" 'json-null "pane_shown" #f "last_label_rows" 0
-      "open_note" #f "strip_seen" #f "run_error" #f "key_sheet_scroll" #f
+      "open_note" #f "strip_seen" #f "select_on_open" #f "open_request" 0 "run_error" #f "key_sheet_scroll" #f
       "last_sheet_rows" 0 "last_sheet_max_scroll" 0 "selected" 0 "focused" #f
       "last_window_start" 0 "list_scroll" #f "list_lines" '() "list_rich" #f "click_press" #f "mouse_position" #f
       "split_ratio" (/ 1.0 3) "divider_drag" #f "last_divider_col" #f "last_history_top" 0
@@ -137,8 +138,6 @@
       (a-set! "focused" (or focused (a-get "focused")))
       (or (not (equal? was-live (a-live?))) (not (= was-waiting (a-waiting-count)))))
     (let* ((was (a-selection-key))
-        (walked (and focused (not filtered) (not (equal? focused (a-get "focused")))
-            (a-index (lambda (row) (equal? (a-field (a-field row "Agent" #f) "pane_id" #f) focused)) rows)))
         (same (and was (a-index (lambda (row) (equal? (a-row-key row) was)) rows)))
         (last-run (and (equal? was "more") (a-find (lambda (row) (a-field row "Run" #f))
               (reverse (take (a-get "rows") (min (a-get "selected") (length (a-get "rows"))))))))
@@ -149,7 +148,7 @@
         (nearest (and filtered (a-find (lambda (i) (a-selectable? (list-ref rows i)))
               (append (range (min (a-get "selected") (length rows)) (length rows))
                 (reverse (range (min (a-get "selected") (length rows))))))))
-        (selected (or walked same first-loaded nearest (a-index a-selectable? rows) 0))
+        (selected (or same first-loaded nearest (a-index a-selectable? rows) 0))
         (new-focus (or focused (a-get "focused")))
         (new-live (and new-focus (equal? new-focus (a-field (a-field (a-at rows selected) "Agent" #f) "pane_id" #f))))
         (changed (or (not (equal? rows (a-get "rows"))) (not (= selected (a-get "selected")))
@@ -158,3 +157,23 @@
       (unless (equal? was (a-row-key (a-at rows selected))) (a-set! "list_scroll" #f))
       (a-set! "rows" rows) (a-set! "selected" selected) (a-set! "summaries" summaries)
       (a-set! "focused" new-focus) changed)))
+
+(define (a-clear-waiting!)
+  (define base (a-get "waiting_base"))
+  (if (not base) #f (begin (a-set! "waiting_base" #f) (a-set! "list_scroll" #f) (a-set-rows! base) #t)))
+(define (a-clear-predecessors!)
+  (define previous (a-get "predecessors"))
+  (if (not previous) #f (begin (a-set! "predecessors" #f) (a-set-rows! (hash-ref previous "base")) #t)))
+(define (a-clear-search!)
+  (a-set! "search_headers" (hash)) (a-set! "search_revisions" (hash)) (a-set! "pending_history_revision" #f)
+  (a-set! "applied_search_query" #f) (a-set! "searched_at_ms" #f) (a-inc! "search_request")
+  (a-set! "search_pending" #f) (a-set! "search_editing" #f)
+  (define base (a-get "search_base"))
+  (if (not base) #f
+    (let ((keep (a-selection-key)))
+      (a-set! "search_base" #f) (a-set! "search_draft" #f) (a-set! "rows" (hash-ref base "rows"))
+      (a-set! "summaries" (hash-ref base "summaries")) (a-set! "search_query" "")
+      (a-set! "search_error" #f) (a-set! "search_truncated" #f)
+      (a-set! "selected" (or (and keep (a-index (lambda (row) (equal? (a-row-key row) keep)) (a-get "rows")))
+          (a-index a-selectable? (a-get "rows")) 0))
+      (a-inc! "generation") #t)))
