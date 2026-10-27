@@ -421,6 +421,13 @@ impl Pair {
                         || (command.pointer("/PaneTabs/Mount").is_none()
                             && command.get("BreakPanesToTabWithIndex").is_none())
                 })
+                // Opening now requests the latest focus. The panel opening tests cover this
+                // extra service request, which did not exist in the original runtime.
+                .filter(|command| {
+                    !agents
+                        || command.pointer("/MessageToPlugin/message_name")
+                            != Some(&serde_json::json!("agent_subscribe"))
+                })
                 // Usage subscribes to CustomMessage through the SDK; agents_usage covers both effects.
                 .filter(|command| {
                     !agents

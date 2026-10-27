@@ -224,6 +224,67 @@ fn agent_service_actual_runtimes_match_empty_startup_subscriptions_and_heartbeat
     ));
 }
 
+#[test]
+fn agent_service_echoes_open_request_only_to_the_requesting_subscriber() {
+    use super::runtime_parity::SteelReference;
+
+    let (_, responder) = host(Arc::new(AtomicU64::new(90_000)), session(false), false);
+    let mut service = SteelReference::new(
+        "agent-service",
+        BTreeMap::new(),
+        std::path::Path::new("/work"),
+        responder,
+    );
+    for id in [7, 8] {
+        service.pipe(&message(
+            "agent_subscribe",
+            PipeSource::Plugin(PluginId::new(id)),
+            None,
+        ));
+    }
+    service.take_commands();
+    let mut request = message(
+        "agent_subscribe",
+        PipeSource::Plugin(PluginId::new(7)),
+        None,
+    );
+    request.args.insert("open_request".into(), "visit-2".into());
+    service.pipe(&request);
+    let snapshots: Vec<_> = service
+        .take_commands()
+        .into_iter()
+        .filter_map(|command| {
+            let send = command.get("MessageToPlugin")?;
+            (send["message_name"] == "agent_snapshot").then(|| send.clone())
+        })
+        .collect();
+    assert_eq!(snapshots.len(), 2);
+    for send in &snapshots {
+        if send["destination_plugin_id"] == 7 {
+            assert_eq!(send["message_args"]["open_request"], "visit-2");
+        } else {
+            assert_eq!(send["destination_plugin_id"], 8);
+            assert!(send["message_args"].get("open_request").is_none());
+        }
+    }
+    assert_eq!(
+        snapshots[0]["message_args"]["seq"],
+        snapshots[1]["message_args"]["seq"]
+    );
+
+    // Subsequent forced publications do not retain another request's token.
+    service.pipe(&message(
+        "agent_subscribe",
+        PipeSource::Plugin(PluginId::new(8)),
+        None,
+    ));
+    for command in service.take_commands() {
+        if let Some(send) = command.get("MessageToPlugin") {
+            assert!(send["message_args"].get("open_request").is_none());
+        }
+    }
+}
+
 fn hook(name: &str, extra: Value) -> Event {
     let mut raw = json!({"hook_event_name":name,"session_id":"conversation-1","cwd":"/work/topic"});
     raw.as_object_mut()
@@ -666,6 +727,70 @@ fn agent_service_actual_runtimes_match_reload_claim_and_released_run_ownership()
     let kept = agent_proto::agents::rows::runs_from_rows(&rows).remove(0);
     assert_eq!(kept.host_id.as_str(), "other-host");
     assert_eq!(kept.pane_id, 88);
+}
+
+#[test]
+fn agent_service_remembers_last_focused_agent_until_its_pane_closes() {
+    use super::runtime_parity::SteelReference;
+
+    let clock = Arc::new(AtomicU64::new(90_000));
+    let mut session = session(true);
+    session.panes.panes.get_mut(&TabPosition::new(0)).unwrap()[0].is_focused = true;
+    let agent = session.panes.panes[&TabPosition::new(0)][0].clone();
+    let (_, responder) = host(clock.clone(), session, false);
+    let mut service = SteelReference::with_clock(
+        "agent-service",
+        BTreeMap::new(),
+        std::path::Path::new("/work"),
+        responder,
+        Some(clock),
+    );
+    let snapshot = |service: &mut SteelReference| -> Value {
+        service.pipe(&message(
+            "agent_subscribe",
+            PipeSource::Plugin(PluginId::new(7)),
+            None,
+        ));
+        service
+            .take_commands()
+            .iter()
+            .find_map(|command| {
+                let send = command.get("MessageToPlugin")?;
+                (send["message_name"] == "agent_snapshot").then(|| {
+                    serde_json::from_str(send["message_payload"].as_str().unwrap()).unwrap()
+                })
+            })
+            .unwrap()
+    };
+    assert_eq!(snapshot(&mut service)["last_focused_agent"], 10);
+    let mut panes = vec![agent];
+    panes[0].is_focused = false;
+    panes.push(PaneInfo {
+        id: PaneId::Terminal(TerminalId::new(11)),
+        is_focused: true,
+        terminal_command: Some("/bin/sh".into()),
+        ..Default::default()
+    });
+    service.update(&Event::PaneUpdate(PaneManifest {
+        panes: [(TabPosition::new(0), panes.clone())].into(),
+    }));
+    let shell = snapshot(&mut service);
+    assert_eq!(shell["focused"], 11);
+    assert_eq!(shell["last_focused_agent"], 10);
+
+    panes[1].id = PaneId::Plugin(PluginId::new(11));
+    service.update(&Event::PaneUpdate(PaneManifest {
+        panes: [(TabPosition::new(0), panes.clone())].into(),
+    }));
+    let panel = snapshot(&mut service);
+    assert!(panel["focused"].is_null());
+    assert_eq!(panel["last_focused_agent"], 10);
+
+    panes.remove(0);
+    service.update(&Event::PaneUpdate(PaneManifest {
+        panes: [(TabPosition::new(0), panes)].into(),
+    }));
+    assert!(snapshot(&mut service)["last_focused_agent"].is_null());
 }
 
 #[test]

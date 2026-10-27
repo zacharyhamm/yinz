@@ -110,4 +110,5 @@
     ((equal? name "agent_subscribe")
       (when (and (hash? source) (hash-contains? source "Plugin") (not (member (hash-ref source "Plugin") (as-get "subscribers"))))
         (as-set! "subscribers" (append (as-get "subscribers") (list (hash-ref source "Plugin")))))
-      (as-publish! #t))) #f)
+      (define token (as-field (hash-ref message "args") "open_request" #f))
+      (as-publish! #t (and (hash? source) (as-field source "Plugin" #f)) token))) #f)
