@@ -106,6 +106,14 @@
             ((equal? status "error") "quota refresh failed")
             ((equal? status "unsupported") "provider quota is not supported")
             (else "quota unavailable")))))))
+(define (usage-reset window)
+  (define reset (and window (a-some (a-field window "resets_at_ms" #f))))
+  (if (not reset) ""
+    (let ((left (- reset (yinz-wall-clock-ms))))
+      (cond ((<= left 0) "reset due") ((< left 60000) "resets in <1m")
+        ((< left 86400000) (string-append "resets in " (usage-age left)))
+        (else (define days (quotient (inexact->exact (floor left)) 86400000))
+          (string-append "resets in " (number->string days) (if (= days 1) " day" " days")))))))
 (define (a-usage-display)
   (define target (usage-target))
   (if (not target) #f
@@ -115,7 +123,7 @@
         (plan (usage-text (a-field observation "plan" #f)))
         (checked (a-field entry "checked_wall" #f))
         (observed (a-some (a-field observation "observed_at_ms" #f))))
-      (cond (reason (hash "lines" (list reason) "summary" reason "windows" '() "featured" #f "freshness" ""))
+      (cond (reason (hash "lines" (list reason) "summary" reason "compact" reason "reset" "" "short" "" "windows" '() "featured" #f "freshness" ""))
         (else
           (define windows (a-field observation "windows" '()))
           (define stale (usage-stale? entry))
@@ -131,12 +139,22 @@
           (define freshness (string-append (if (equal? status "") "" (string-append status " · "))
               (if stale (string-append "Stale" (if observed (string-append " " (usage-age (- (yinz-wall-clock-ms) observed))) "") " · ") "")
               (if checked (string-append "checked " (usage-age (- (yinz-wall-clock-ms) checked))) "Not checked")))
-          ; Strict comparison preserves provider order for equally used windows.
-          (define featured (foldl (lambda (window best)
-                (if (or (not best) (> (hash-ref window "used_percent") (hash-ref best "used_percent"))) window best)) #f windows))
+          (define featured (a-find (lambda (window)
+                (member (hash-ref window "label") '("Weekly limit" "7d"))) windows))
+          (define short (a-find (lambda (window)
+                (member (hash-ref window "label") '("5-hour limit" "5-hour" "5h"))) windows))
+          (define short-label (if short (string-append "5hr · " (number->string
+                  (inexact->exact (floor (+ (hash-ref short "used_percent") 0.5)))) "%") ""))
+          (define warning (cond (stale "stale") ((and (not featured) (not short)) status) (else "")))
+          (define compact (string-join (filter (lambda (text) (not (equal? text "")))
+                (list (if featured (string-append "Weekly · " (number->string
+                        (inexact->exact (floor (+ (hash-ref featured "used_percent") 0.5)))) "%") "")
+                  short-label warning)) " · "))
           (define used (and featured (hash-ref featured "used_percent")))
           (define remaining (and used (max 0 (min 100 (- 100 used)))))
           (hash "heading" heading "windows" (map usage-window windows) "freshness" freshness
+            "compact" compact "short" short-label "reset" (usage-reset featured)
+            "weekly-label" (if stale "Weekly · stale" "Weekly")
             "message" message "summary" (a-usage-summary) "featured" featured
             "value" (and used (inexact->exact (floor (+ used 0.5)))) "remaining" remaining
             "tone" (cond ((or stale (not remaining)) "neutral") ((> remaining 25) "success") ((>= remaining 10) "attention") (else "error"))

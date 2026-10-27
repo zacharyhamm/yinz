@@ -317,8 +317,10 @@ fn agents_usage_correlates_providers_and_keeps_successful_data_when_refresh_fail
         101.5
     );
     let frame = panel.render(25, 64);
-    assert!(frame.contains("Refresh failed"), "{frame}");
-    assert!(frame.contains("Stale"), "{frame}");
+    assert!(
+        frame.contains("Weekly · 26% · 5hr · 102% · stale"),
+        "{frame}"
+    );
     panel.key("Ctrl r");
     let empty = panel.request("codex");
     panel.reply(
@@ -397,7 +399,7 @@ fn agents_usage_displays_the_hosts_unsupported_status_for_other_providers() {
 }
 
 #[test]
-fn agents_usage_renders_account_windows_resets_and_unknowns_in_the_selected_details() {
+fn agents_usage_header_shows_only_weekly_short_window_and_weekly_reset() {
     let mut panel = Panel::new();
     panel.show();
     let request = panel.request("codex");
@@ -407,19 +409,23 @@ fn agents_usage_renders_account_windows_resets_and_unknowns_in_the_selected_deta
         json!({"label":"Sonnet","used_percent":30.0,"resets_at_ms":null}),
         json!({"label":"Opus","used_percent":105.0,"resets_at_ms":null}),
     ]);
+    measurement["windows"][1]["resets_at_ms"] = json!(259_290_000);
     panel.reply(&request, measurement);
     let frame = panel.render(30, 120);
-    for expected in [
-        "Local codex account",
-        "Pro plan",
-        "101.5% used",
-        "resets in 1h",
-        "reset unknown",
-        "checked now",
-        "Opus: 105",
-    ] {
+    for expected in ["Weekly", "26%", "5hr · 102%", "resets in 3 days"] {
         assert!(frame.contains(expected), "missing {expected:?}:\n{frame}");
     }
+    for removed in [
+        "Local codex account",
+        "Pro plan",
+        "checked",
+        "remaining",
+        "Opus",
+        "% USED",
+    ] {
+        assert!(!frame.contains(removed), "unexpected {removed:?}:\n{frame}");
+    }
+    assert_eq!(frame.matches("26%").count(), 1, "{frame}");
     for (rows, cols) in [(20, 60), (12, 34), (6, 20), (2, 8)] {
         panel.render(rows, cols);
     }
@@ -444,7 +450,7 @@ fn agents_usage_summary_remains_visible_in_the_default_overlay_with_run_history(
         )
         .unwrap();
     let frame = panel.render(15, 48);
-    assert!(frame.contains("Local codex: up to 101.5% used"), "{frame}");
+    assert!(frame.contains("Weekly · 26% · 5hr · 102%"), "{frame}");
     panel.key("Ctrl r");
     let refresh = panel.request("codex");
     panel.reply(
@@ -453,7 +459,7 @@ fn agents_usage_summary_remains_visible_in_the_default_overlay_with_run_history(
     );
     let frame = panel.render(15, 48);
     assert!(
-        frame.contains("101.5% used") && frame.contains("stale"),
+        frame.contains("5hr · 102%") && frame.contains("stale"),
         "{frame}"
     );
     panel.set("usage_cache", json!({}));
@@ -464,7 +470,7 @@ fn agents_usage_summary_remains_visible_in_the_default_overlay_with_run_history(
         json!({"provider":"codex","status":"unavailable","windows":[],"message":"No local login"}),
     );
     let frame = panel.render(15, 48);
-    assert!(frame.contains("Local codex: quota unavailable"), "{frame}");
+    assert!(frame.contains("Unavailable"), "{frame}");
 }
 
 #[test]
@@ -478,7 +484,8 @@ fn agents_quota_selects_and_rounds_without_losing_exact_usage() {
         (90.01, 90, 9.99, "error"),
         (101.5, 102, 0.0, "error"),
     ] {
-        let observation = usage("codex", used);
+        let mut observation = usage("codex", 68.0);
+        observation["windows"][1]["used_percent"] = json!(used);
         panel.set(
             "usage_cache",
             json!({"codex":{"observation":observation,"result":observation}}),
@@ -516,7 +523,7 @@ fn agents_quota_selects_and_rounds_without_losing_exact_usage() {
         .runtime
         .invoke("a-usage-display", vec![])
         .unwrap();
-    assert_eq!(display["featured"]["label"], "5h");
+    assert_eq!(display["featured"]["label"], "7d");
     panel.tick(120_000);
     let display = panel
         .plugin
@@ -537,7 +544,48 @@ fn agents_quota_selects_and_rounds_without_losing_exact_usage() {
 }
 
 #[test]
-fn agents_quota_footer_reserves_history_and_ignores_footer_clicks() {
+fn agents_quota_header_handles_optional_windows_and_reset_times() {
+    let mut panel = Panel::new();
+    for (reset, expected) in [
+        (json!(null), ""),
+        (json!(90_000), "reset due"),
+        (json!(120_000), "resets in <1m"),
+        (json!(3_690_000), "resets in 1h"),
+        (json!(86_490_000), "resets in 1 day"),
+        (json!(259_290_000), "resets in 3 days"),
+    ] {
+        let observation = json!({"status":"ok", "windows":[
+            {"label":"Weekly limit","used_percent":26,"resets_at_ms":reset}],
+            "observed_at_ms":90_000});
+        panel.set(
+            "usage_cache",
+            json!({"codex":{"observation":observation,"result":observation}}),
+        );
+        let display = panel
+            .plugin
+            .runtime
+            .invoke("a-usage-display", vec![])
+            .unwrap();
+        assert_eq!(display["reset"], expected);
+        let frame = panel.render(30, 120);
+        assert!(frame.contains("Weekly") && frame.contains("26%"), "{frame}");
+        assert!(!frame.contains("5hr"), "{frame}");
+        assert!(frame.contains(expected), "{frame}");
+    }
+    let observation = json!({"status":"ok", "windows":[
+        {"label":"5-hour limit","used_percent":68,"resets_at_ms":null}],
+        "observed_at_ms":90_000});
+    panel.set(
+        "usage_cache",
+        json!({"codex":{"observation":observation,"result":observation}}),
+    );
+    let frame = panel.render(30, 120);
+    assert!(frame.contains("5hr · 68%"), "{frame}");
+    assert!(!frame.contains("Weekly"), "{frame}");
+}
+
+#[test]
+fn agents_quota_header_reserves_history_and_ignores_header_clicks() {
     let mut panel = Panel::new();
     panel.show();
     let request = panel.request("codex");
@@ -569,19 +617,19 @@ fn agents_quota_footer_reserves_history_and_ignores_footer_clicks() {
                 .invoke("a-get", vec![json!(key)])
                 .unwrap()
         };
-        let footer = get(&mut panel, "last_quota_top");
-        if let Some(footer) = footer.as_u64() {
-            assert!(footer < rows as u64, "{frame}");
+        let header = get(&mut panel, "last_quota_top");
+        if let Some(header) = header.as_u64() {
+            assert!(header < rows as u64, "{frame}");
             let before = get(&mut panel, "history_cursor");
             panel
                 .plugin
                 .runtime
-                .update(json!({"Mouse":{"LeftClick":[footer, cols-1]}}))
+                .update(json!({"Mouse":{"LeftClick":[header, cols-1]}}))
                 .unwrap();
             panel
                 .plugin
                 .runtime
-                .update(json!({"Mouse":{"Release":[footer, cols-1]}}))
+                .update(json!({"Mouse":{"Release":[header, cols-1]}}))
                 .unwrap();
             assert_eq!(get(&mut panel, "history_cursor"), before);
             assert_eq!(get(&mut panel, "reading"), false);
@@ -590,17 +638,18 @@ fn agents_quota_footer_reserves_history_and_ignores_footer_clicks() {
                 + 1
                 + get(&mut panel, "last_history_body_top").as_u64().unwrap();
             let body_rows = get(&mut panel, "last_history_body_rows").as_u64().unwrap();
-            assert!(body_top + body_rows <= footer, "{frame}");
+            assert!(body_top > header, "{frame}");
+            assert!(body_top + body_rows < rows as u64, "{frame}");
             if cols == 120 {
                 assert!(body_rows >= 4);
-                assert_eq!(footer, rows as u64 - 7, "six footer rows before hints");
                 let lines: Vec<_> = frame.lines().collect();
-                assert!(lines[footer as usize + 3].ends_with("68% USED · 5h"));
-                assert!(lines[footer as usize + 4].ends_with("█████░░░░░░░░░░░░░"));
-                assert!(lines[footer as usize + 5].ends_with("32% remaining"));
+                assert!(lines[header as usize].ends_with("Weekly"));
+                assert!(lines[header as usize + 1].ends_with("26%"));
+                assert!(lines[header as usize + 3].ends_with("5hr · 68%"));
+                assert!(!frame.contains("remaining"));
             }
             if cols == 43 {
-                assert!(frame.contains("Local codex: up to 68.0% used"), "{frame}");
+                assert!(frame.contains("Weekly · 26% · 5hr · 68%"), "{frame}");
             }
         }
     }
@@ -653,14 +702,18 @@ fn agents_quota_images_reuse_ids_and_cache_each_clients_value_theme_and_geometry
             "missing PNG transmission"
         );
         assert!(output.contains('\u{10eeee}'), "missing image placeholders");
+        assert!(
+            !output.contains("26%"),
+            "weekly value repeated alongside image"
+        );
         assert!(output.contains("a=p,U=1,q=2,i=1,c=18,r=2"));
         assert!(
-            output.contains("\x1b[25;103H"),
+            output.contains("\x1b[4;103H"),
             "first image row follows heading"
         );
         assert!(
-            output.contains("\x1b[26;103H"),
-            "second image row precedes label"
+            output.contains("\x1b[5;103H"),
+            "second image row precedes the short window"
         );
         assert_cached(&panel.plugin.render(30, 120));
         for (rows, cols) in [(10, 120), (30, 43)] {
@@ -691,12 +744,13 @@ fn agents_quota_images_reuse_ids_and_cache_each_clients_value_theme_and_geometry
         panel.plugin.update(&Event::ModeUpdate(mode.clone()));
         let output = panel.plugin.render(30, 120);
         assert!(!output.contains('\u{10eeee}'));
-        assert!(panel.render(30, 120).contains("68% USED"));
+        assert!(panel.render(30, 120).contains("26%"));
         mode.capabilities.kitty_graphics = true;
         panel.plugin.update(&Event::ModeUpdate(mode));
         assert_cached(&panel.plugin.render(30, 120));
     }
-    let observation = usage("codex", 69.6);
+    let mut observation = usage("codex", 68.0);
+    observation["windows"][1]["used_percent"] = json!(69.6);
     panel.set(
         "usage_cache",
         json!({"codex":{"observation":observation,"result":observation}}),
