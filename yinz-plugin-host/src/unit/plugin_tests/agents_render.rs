@@ -1151,7 +1151,11 @@ fn agents_header_ends_with_the_session_and_styles_details_with_the_theme() {
                 .filter(|ch| !ch.is_whitespace())
                 .collect();
             assert!(
-                header.contains("sessioncccccccc-cccc-cccc-cccc-cccccccccccc"),
+                header.contains(if cols >= 48 {
+                    "sessioncccccccc-cccc-cccc-cccc-cccccccccccc"
+                } else {
+                    "sessioncccccccc-"
+                }),
                 "{rows}x{cols}: {text}"
             );
             assert!(!text.contains("origin-hidden") && !text.contains("previous-hidden"));
@@ -1317,4 +1321,45 @@ fn agents_tool_spans_collapse_and_enter_reads_every_call_and_result() {
     let reader = state(&mut plugin, "reader_cache")["lines"]["lines"].to_string();
     assert!(reader.contains("first **literal** call"));
     assert!(reader.contains("second result"));
+}
+
+#[test]
+fn agents_session_and_reset_share_one_row_and_truncate_the_id() {
+    for style in themes() {
+        let mut plugin = plugin();
+        let mut history = run("active", 7, false);
+        history.session_id = "session-id-".repeat(20);
+        plugin
+            .runtime
+            .invoke("a-load-run!", vec![json!(history), json!(0)])
+            .unwrap();
+        plugin.runtime.eval(r#"
+          (a-set! "snapshot" (hash "panes" (list (hash "pane_id" 7 "title" "Review the release" "command" "claude" "status" "Running"))))
+          (define observation (hash "status" "ok" "windows" (list (hash "label" "Weekly limit" "used_percent" 26 "resets_at_ms" 259290000)) "observed_at_ms" 90000))
+          (a-set! "usage_cache" (hash "claude" (hash "observation" observation "result" observation)))
+        "#).unwrap();
+        for (rows, cols) in [(30, 120), (12, 90), (15, 48), (8, 90), (6, 40)] {
+            let lines = render_sized(&mut plugin, style, rows, cols);
+            let x = state(&mut plugin, "last_divider_col")
+                .as_u64()
+                .map_or(0, |col| col as usize + 1);
+            let text: Vec<String> = lines
+                .iter()
+                .map(|line| line.iter().skip(x).map(|cell| cell.character).collect())
+                .collect();
+            let session_rows: Vec<_> = text
+                .iter()
+                .filter(|line| line.contains("session "))
+                .collect();
+            assert_eq!(session_rows.len(), 1, "{rows}x{cols}: {text:?}");
+            let row = session_rows[0];
+            assert!(row.contains("session session-id-"), "{row}");
+            assert!(row.ends_with("3d left"), "{row}");
+            assert!(!row.contains(&"session-id-".repeat(20)), "{row}");
+            assert_eq!(
+                text.iter().filter(|line| line.contains("3d left")).count(),
+                1
+            );
+        }
+    }
 }
