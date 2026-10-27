@@ -18,6 +18,7 @@ struct StampedInput {
     sender: SenderWithContext<InputInstruction>,
     stamp: Option<(u64, bool)>,
 }
+
 impl StampedInput {
     fn send(
         &self,
@@ -95,12 +96,9 @@ pub(crate) fn stdin_loop(
         .spawn({
             let recovery = recovery.clone();
             move || loop {
-                match os_input.read_from_stdin() {
-                    Ok(buf) => {
-                        if stdin_tx
-                            .send(Ok((buf, recovery.as_ref().map(|control| control.stamp()))))
-                            .is_err()
-                        {
+                match os_input.read_stamped_stdin(recovery.as_ref()) {
+                    Ok((buf, stamp)) => {
+                        if stdin_tx.send(Ok((buf, stamp))).is_err() {
                             break; // receiver dropped
                         }
                     },

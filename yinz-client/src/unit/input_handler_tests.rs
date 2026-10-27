@@ -239,6 +239,64 @@ fn offline_focus_changes_survive_recovery_and_queued_generation_changes() {
 }
 
 #[test]
+fn fresh_keyboard_paste_and_ctrl_c_after_recovery_reach_the_healthy_server() {
+    let os = FakeClientOsApi::new();
+    let command = CommandIsExecuting::new();
+    let recovery = crate::remote_recovery::Recovery::new("host".into(), command.clone());
+    os.set_remote_recovery(Some(recovery.control.clone()))
+        .unwrap();
+    recovery.control.lost(0, "outage".into());
+    recovery.control.replacing();
+    recovery.control.repainted();
+    let (client_tx, _client_rx) = channels::unbounded();
+    let (input_tx, input_rx) = channels::unbounded();
+    let input_tx = SenderWithContext::new(input_tx);
+    let key = KeyWithModifier::new(yinz_types::keys::BareKey::Char('x'));
+    let ctrl_c = KeyWithModifier::new(yinz_types::keys::BareKey::Char('c')).with_ctrl_modifier();
+    for instruction in [
+        InputInstruction::KeyWithModifierEvent(key.clone(), b"x".to_vec(), false),
+        InputInstruction::KeyEvent(InputEvent::Paste("fresh".into()), Vec::new()),
+        InputInstruction::KeyWithModifierEvent(ctrl_c.clone(), vec![3], false),
+    ] {
+        input_tx
+            .send(InputInstruction::FromGeneration(
+                (1, true),
+                Box::new(instruction),
+            ))
+            .unwrap();
+    }
+    input_tx.send(InputInstruction::Exit).unwrap();
+    let nested = NestedReannounce::spawn(Box::new(os.clone()), "fresh-input".into());
+    nested.stop();
+    InputHandler::new(
+        Box::new(os.clone()),
+        command,
+        Options::default(),
+        SenderWithContext::new(client_tx),
+        input_rx,
+        nested,
+    )
+    .handle_input();
+    assert!(!recovery.interrupted());
+    assert_eq!(
+        os.sent_messages(),
+        vec![
+            ClientToServerMsg::Key {
+                key,
+                raw_bytes: b"x".to_vec(),
+                is_kitty_keyboard_protocol: false
+            },
+            ClientToServerMsg::Paste("fresh".into()),
+            ClientToServerMsg::Key {
+                key: ctrl_c,
+                raw_bytes: vec![3],
+                is_kitty_keyboard_protocol: false
+            },
+        ]
+    );
+}
+
+#[test]
 fn ctrl_c_during_recovery_cancels_locally_and_is_not_sent_to_the_server() {
     if yinz_test_support::reexec_test() {
         return;

@@ -1,6 +1,48 @@
 use super::*;
 
 #[test]
+fn idle_stdin_wait_does_not_make_post_recovery_input_ineligible() {
+    use std::sync::mpsc;
+
+    struct WaitingStdin {
+        entered: mpsc::Sender<()>,
+        bytes: mpsc::Receiver<Vec<u8>>,
+    }
+    impl io::Read for WaitingStdin {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.entered.send(()).unwrap();
+            let bytes = self.bytes.recv().unwrap();
+            buffer[..bytes.len()].copy_from_slice(&bytes);
+            Ok(bytes.len())
+        }
+    }
+
+    for bytes in [b"x".as_slice(), b"\x1b[200~fresh paste\x1b[201~", b"\x03"] {
+        let control = crate::remote_recovery::RecoveryControl::new(
+            crate::command_is_executing::CommandIsExecuting::new(),
+        );
+        let (entered, waiting) = mpsc::channel();
+        let (send_bytes, received) = mpsc::channel();
+        let reader_control = control.clone();
+        let reader = thread::spawn(move || {
+            let mut stdin = io::BufReader::new(WaitingStdin {
+                entered,
+                bytes: received,
+            });
+            read_stdin_buffer(&mut stdin, Some(&reader_control)).unwrap()
+        });
+        waiting.recv_timeout(time::Duration::from_secs(10)).unwrap();
+        // The reader is inside fill_buf with no bytes. Recovery finishes before
+        // any key/paste is supplied, without relying on scheduling or sleeps.
+        control.lost(0, "outage".into());
+        control.replacing();
+        control.repainted();
+        send_bytes.send(bytes.to_vec()).unwrap();
+        assert_eq!(reader.join().unwrap(), (bytes.to_vec(), Some((1, true))));
+    }
+}
+
+#[test]
 fn tty_writers_preserve_buffered_stdout_order() {
     use nix::fcntl::{fcntl, FcntlArg, OFlag};
     const CHILD: &str = "YINZ_TEST_STDOUT_ORDER";
@@ -805,6 +847,73 @@ fn recovery_socket() -> (
 }
 
 #[test]
+fn failed_writer_draining_is_bounded_when_complete_frames_keep_arriving() {
+    use std::sync::mpsc;
+
+    let (_dir, stream, peer) = recovery_socket();
+    let os = get_client_os_input().unwrap();
+    let sender = IpcSenderWithContext::new(stream);
+    let receiver = sender.get_receiver().unwrap();
+    os.install_session_connection(sender, receiver).unwrap();
+    let control = crate::remote_recovery::RecoveryControl::new(
+        crate::command_is_executing::CommandIsExecuting::new(),
+    );
+    os.set_remote_recovery(Some(control.clone())).unwrap();
+    let mut peer = IpcSenderWithContext::<ServerToClientMsg>::new(peer);
+    peer.send_server_msg(ServerToClientMsg::UnblockInputThread)
+        .unwrap();
+    control.lost(0, "write failed".into());
+    let (stop, stopped) = mpsc::channel();
+    let producer = thread::spawn(move || {
+        // Timing is under test: complete frames arrive inside each read's idle
+        // deadline, but their cumulative read time exceeds the draining budget.
+        while stopped
+            .recv_timeout(crate::remote_recovery::READ_POLL / 4)
+            .is_err()
+        {
+            if peer
+                .send_server_msg(ServerToClientMsg::UnblockInputThread)
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    let (tx, rx) = yinz_runtime::channels::unbounded();
+    let router = crate::router::spawn(
+        Box::new(os),
+        yinz_runtime::channels::SenderWithContext::new(tx),
+        Arc::new(crate::render_budget::RenderBudget::new(100)),
+    );
+    let deadline = time::Instant::now() + time::Duration::from_secs(2);
+    let mut drained = false;
+    let mut frames = 0;
+    while let Ok((instruction, _)) =
+        rx.recv_timeout(deadline.saturating_duration_since(time::Instant::now()))
+    {
+        if let crate::ClientInstruction::FromServer(0, instruction) = instruction {
+            match *instruction {
+                crate::ClientInstruction::ServerReaderDrained(0) => {
+                    drained = true;
+                    break;
+                },
+                crate::ClientInstruction::UnblockInputThread => frames += 1,
+                other => panic!("unexpected instruction: {other:?}"),
+            }
+        }
+    }
+    // Stop the producer even on failure so the old router can reach EOF and join.
+    let _ = stop.send(());
+    producer.join().unwrap();
+    router.join().unwrap();
+    assert!(drained, "continuous complete frames suppressed recovery");
+    assert!(
+        (1..256).contains(&frames),
+        "expected read-time limit before frame cap, got {frames}"
+    );
+}
+
+#[test]
 fn remote_write_failure_invalidates_the_transport_and_unblocks_input() {
     let (_dir, stream, peer) = recovery_socket();
     let os = get_client_os_input().unwrap();
@@ -825,6 +934,51 @@ fn remote_write_failure_invalidates_the_transport_and_unblocks_input() {
     });
     result.recv_timeout(time::Duration::from_secs(2)).unwrap();
     worker.join().unwrap();
+}
+
+#[test]
+fn pending_explicit_server_messages_survive_a_real_write_failure() {
+    use crate::{render_budget::RenderBudget, ClientInstruction};
+    use yinz_ipc::ipc::ExitReason;
+    use yinz_runtime::channels::{self, SenderWithContext};
+
+    for message in [
+        ServerToClientMsg::Exit {
+            exit_reason: ExitReason::NormalDetached,
+        },
+        ServerToClientMsg::SwitchSession {
+            connect_to_session: Default::default(),
+        },
+    ] {
+        let (_dir, stream, peer) = recovery_socket();
+        let os = get_client_os_input().unwrap();
+        let sender = IpcSenderWithContext::new(stream);
+        let receiver = sender.get_receiver().unwrap();
+        os.install_session_connection(sender, receiver).unwrap();
+        let control = crate::remote_recovery::RecoveryControl::new(
+            crate::command_is_executing::CommandIsExecuting::new(),
+        );
+        os.set_remote_recovery(Some(control.clone())).unwrap();
+        let mut server = IpcSenderWithContext::<ServerToClientMsg>::new(peer);
+        server.send_server_msg(message).unwrap();
+        drop(server);
+        os.send_to_server(ClientToServerMsg::TerminalResize {
+            new_size: Size { rows: 24, cols: 80 },
+        });
+        assert!(!control.can_write());
+        let (tx, rx) = channels::unbounded();
+        crate::router::route(
+            Box::new(os),
+            SenderWithContext::new(tx),
+            &RenderBudget::new(100),
+        );
+        let instructions: Vec<_> = rx.iter().map(|(instruction, _)| instruction).collect();
+        assert!(
+            matches!(&instructions[..], [ClientInstruction::FromServer(0, instruction)]
+            if matches!(**instruction, ClientInstruction::Exit(_) | ClientInstruction::SwitchSession(_))),
+            "{instructions:?}"
+        );
+    }
 }
 
 #[test]
@@ -933,7 +1087,8 @@ fn remote_reads_yield_during_a_trickling_frame_and_preserve_the_partial_message(
             }
         }
         control.lost(0, "write failed".into());
-        assert!(matches!(os.recv_from_server_generation(0), IpcRecv::Eof));
+        // A failed writer must leave the reader available to drain an explicit exit.
+        assert!(matches!(os.recv_from_server_generation(0), IpcRecv::Idle));
         os.disconnect_session_connection();
         drop(finish);
         writer.join().unwrap();

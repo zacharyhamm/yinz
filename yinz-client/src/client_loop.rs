@@ -268,6 +268,11 @@ impl ClientLoop<'_, '_> {
         slow_warnings: &mut SlowWarnings,
     ) -> bool {
         match instruction {
+            ClientInstruction::ServerReaderDrained(generation) => {
+                if let Some(recovery) = self.recovery {
+                    recovery.control.reader_drained(generation);
+                }
+            },
             ClientInstruction::FromServer(_, _) => {
                 unreachable!("server generation is checked before dispatch")
             },
