@@ -75,6 +75,7 @@ fn pane(pane_id: u32, title: &str, command: Option<&str>) -> AgentPane {
         tab: None,
         detected: None,
         agent: None,
+        last_hook_at_ms: None,
     }
 }
 
@@ -3484,6 +3485,96 @@ fn strip_rows_group_by_activity_before_project_and_follow_status_changes() {
         })
         .collect();
     assert_eq!(ids, vec![4, 2, 5, 1, 3, 6]);
+}
+
+#[test]
+fn strip_rows_sort_by_last_hook_within_activity_groups_before_project() {
+    let mut panes: Vec<_> = (1..=7).map(|id| pane(id, "codex", Some("codex"))).collect();
+    for (pane, timestamp) in panes.iter_mut().zip([
+        Some(10),
+        Some(100),
+        Some(200),
+        Some(30),
+        Some(20),
+        Some(0),
+        None,
+    ]) {
+        pane.last_hook_at_ms = timestamp;
+    }
+    let hooks = feeds(&[
+        (1, HookPhase::Waiting),
+        (2, HookPhase::Busy),
+        (3, HookPhase::Idle),
+        (4, HookPhase::Waiting),
+        (5, HookPhase::Waiting),
+        (6, HookPhase::Waiting),
+        (7, HookPhase::Waiting),
+    ]);
+    let ids = |panes: &[AgentPane]| {
+        strip_rows(
+            panes,
+            &manual(&[]),
+            &Activity::new(),
+            &owners(&[(1, "alpha"), (4, "zeta")]),
+            &BTreeMap::new(),
+            &Summaries::new(),
+            &hooks,
+        )
+        .into_iter()
+        .filter_map(|row| match row {
+            StripRow::Agent { pane_id, .. } => Some(pane_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&panes), vec![4, 5, 1, 6, 7, 2, 3]);
+    // Another hook moves the agent even when its phase has not changed.
+    panes[0].last_hook_at_ms = Some(40);
+    assert_eq!(ids(&panes), vec![1, 4, 5, 6, 7, 2, 3]);
+}
+
+#[test]
+fn strip_rows_break_equal_hook_timestamps_by_project_branch_and_pane() {
+    let mut panes: Vec<_> = (1..=6)
+        .rev()
+        .map(|id| pane(id, "codex", Some("codex")))
+        .collect();
+    for pane in &mut panes {
+        pane.last_hook_at_ms = Some(100);
+    }
+    assert_eq!(
+        strip_rows(
+            &panes,
+            &manual(&[]),
+            &Activity::new(),
+            &owners(&[
+                (1, "zeta"),
+                (2, "alpha"),
+                (3, "alpha"),
+                (4, "alpha"),
+                (6, "alpha")
+            ]),
+            &branches(&[(1, "main"), (2, "zeta"), (3, "alpha"), (4, "alpha")]),
+            &Summaries::new(),
+            &no_hooks(),
+        ),
+        vec![
+            project("alpha"),
+            branch("alpha"),
+            agent(3, "codex", "3 CDX ?"),
+            agent(4, "codex", "4 CDX ?"),
+            branch("zeta"),
+            agent(2, "codex", "2 CDX ?"),
+            branch("no branch"),
+            agent(6, "codex", "6 CDX ?"),
+            project("zeta"),
+            branch("main"),
+            agent(1, "codex", "1 CDX ?"),
+            project("no project"),
+            branch("no branch"),
+            agent(5, "codex", "5 CDX ?"),
+        ]
+    );
 }
 
 #[test]

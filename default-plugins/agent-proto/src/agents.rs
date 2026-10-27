@@ -115,6 +115,10 @@ pub struct AgentPane {
     /// spawn path, a plugin, or the agent's hooks; the one answer every reader shares.
     #[serde(default)]
     pub agent: Option<AgentInfo>,
+    /// When agent-service last received a live hook for this pane, in Unix milliseconds.
+    /// `None` until a hook arrives; pane updates and screen activity do not advance it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_hook_at_ms: Option<i64>,
 }
 
 impl AgentPane {

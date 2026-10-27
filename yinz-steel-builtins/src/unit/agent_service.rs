@@ -8,6 +8,122 @@ fn service_modules_compile_in_the_confined_graph() {
 }
 
 #[test]
+fn live_hook_receipt_times_are_published_and_survive_pane_updates() {
+    let (mut runtime, host) = plugin_with_source(
+        "agent-service",
+        r#"
+        (require "./agent-service/state.scm" "./agent-service/observe.scm")
+        (define (load _)
+          (as-reset!) (as-set! "subscribers" '(42))
+          (for-each (lambda (name) (as-register! name (lambda args (void))))
+            '("record-event" "drain" "persist" "resolve-repositories" "adopt-arrived-runs"
+              "finish-run" "publish-arrangement")))
+        (define (rebuild manifest) (as-set! "manifest" manifest) (as-rebuild!))
+        (define (hook id name now archive)
+          (vector-set! test-clock 0 now)
+          (define event (as-model "HookEvent" (yinz-json-string
+              (hash "hook_event_name" name "session_id" "same-session" "archive_only" archive))))
+          (as-call "hook" id "claude" (hash-ref event "Ok")))
+        (define (stamp id) (as-field (as-pane id) "last_hook_at_ms" json-null))
+        "#,
+        json!({}),
+        BTreeMap::new(),
+        "(define test-clock (vector 0)) (define (yinz-wall-clock-ms) (vector-ref test-clock 0))",
+    );
+    let pane = |id| yinz_types::data::PaneInfo {
+        id: yinz_types::pane_id::PaneId::from_legacy(id, false),
+        title: "claude".to_owned(),
+        terminal_command: Some("claude".to_owned()),
+        ..Default::default()
+    };
+    let manifest = json!({"panes":{"0":[pane(7), pane(8)]}});
+    runtime.invoke("rebuild", vec![manifest.clone()]).unwrap();
+    assert_eq!(
+        runtime.invoke("stamp", vec![json!(7)]).unwrap(),
+        json!(null)
+    );
+
+    let published = || {
+        host.lock()
+            .unwrap()
+            .commands
+            .iter()
+            .filter_map(|command| command.get("MessageToPlugin"))
+            .filter(|message| message["message_name"] == "agent_snapshot")
+            .map(|message| {
+                serde_json::from_str::<serde_json::Value>(
+                    message["message_payload"].as_str().unwrap(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    for (id, name, now) in [
+        (7, "PreCompact", 100),
+        (8, "PreCompact", 200),
+        // An identical hook still advances the timestamp and publishes a fresh snapshot.
+        (7, "PreCompact", 300),
+        // Worker lifecycle hooks do not change the parent's phase.
+        (8, "SubagentStart", 400),
+        (7, "SessionEnd", 500),
+    ] {
+        runtime
+            .invoke(
+                "hook",
+                vec![json!(id), json!(name), json!(now), json!(false)],
+            )
+            .unwrap();
+        assert_eq!(runtime.invoke("stamp", vec![json!(id)]).unwrap(), now);
+        let snapshots = published();
+        let snapshot = snapshots.last().unwrap();
+        let pane = snapshot["panes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|pane| pane["pane_id"] == id)
+            .unwrap();
+        assert_eq!(pane["last_hook_at_ms"], now);
+    }
+    assert_eq!(published().len(), 5);
+    // Transcript replay and hooks for a pane that has closed do not change list ordering.
+    for (id, archive) in [(7, true), (99, false)] {
+        runtime
+            .invoke(
+                "hook",
+                vec![json!(id), json!("PreCompact"), json!(600), json!(archive)],
+            )
+            .unwrap();
+    }
+    assert_eq!(published().len(), 5);
+    assert_eq!(runtime.invoke("stamp", vec![json!(7)]).unwrap(), 500);
+
+    let mut updated = manifest.clone();
+    updated["panes"]["0"][0]["title"] = json!("new title");
+    updated["panes"]["0"][0]["is_suppressed"] = json!(true);
+    runtime.invoke("rebuild", vec![updated]).unwrap();
+    assert_eq!(runtime.invoke("stamp", vec![json!(7)]).unwrap(), 500);
+    assert_eq!(runtime.invoke("stamp", vec![json!(8)]).unwrap(), 400);
+    // Removal and rerunning a pane must not give a new agent the previous agent's timestamp.
+    runtime
+        .invoke("rebuild", vec![json!({"panes":{"0":[pane(8)]}})])
+        .unwrap();
+    runtime.invoke("rebuild", vec![manifest.clone()]).unwrap();
+    assert_eq!(
+        runtime.invoke("stamp", vec![json!(7)]).unwrap(),
+        json!(null)
+    );
+    let mut held = manifest.clone();
+    held["panes"]["0"][1]["is_held"] = json!(true);
+    runtime.invoke("rebuild", vec![held]).unwrap();
+    assert_eq!(runtime.invoke("stamp", vec![json!(8)]).unwrap(), 400);
+    runtime.invoke("rebuild", vec![manifest]).unwrap();
+    assert_eq!(
+        runtime.invoke("stamp", vec![json!(8)]).unwrap(),
+        json!(null)
+    );
+}
+
+#[test]
 fn named_branch_repository_publishes_snapshots_and_supplies_summary_branch() {
     assert_repository_snapshot_and_summary(Some("main"));
 }
