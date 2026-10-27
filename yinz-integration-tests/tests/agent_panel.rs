@@ -116,7 +116,7 @@ fn open_agent_panel_repaints_its_background_when_the_theme_changes() {
         yinz.wait_until(&format!("the whole agents panel uses {name}"), |s| {
             let lines = s.lines();
             let Some(selected) = (y..y + rows)
-                .find(|&row| lines[row].chars().nth(x) == Some('>') && lines[row].contains("CLA"))
+                .find(|&row| lines[row].chars().nth(x) == Some('┃') && lines[row].contains("CLA"))
             else {
                 return false;
             };
@@ -128,11 +128,12 @@ fn open_agent_panel_repaints_its_background_when_the_theme_changes() {
                 .unwrap_or(columns);
             (y..y + rows).all(|row| {
                 (x..x + columns).all(|col| {
-                    let expected = if row == selected && col < x + list_columns {
-                        colors.text_selected
-                    } else {
-                        colors.text_unselected
-                    };
+                    let expected =
+                        if lines[row].chars().nth(x) == Some('┃') && col < x + list_columns {
+                            colors.text_selected
+                        } else {
+                            colors.text_unselected
+                        };
                     s.cell_style(col, row).background == Some(expected.background.into())
                 })
             }) && s.cell_foreground(x, selected) == Some(colors.text_selected.base.into())

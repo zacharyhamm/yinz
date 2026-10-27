@@ -139,21 +139,45 @@ fn assert_text(lines: &[Vec<TerminalCharacter>], text: &str, color: PaletteColor
     }
 }
 
+fn assert_selection(row: &[TerminalCharacter], style: Style, selected: bool, marker: char) {
+    assert_eq!(
+        row[0].character,
+        marker,
+        "row: {}",
+        row.iter().map(|cell| cell.character).collect::<String>()
+    );
+    let background = if selected {
+        style.colors.text_selected.background
+    } else {
+        style.colors.text_unselected.background
+    };
+    for cell in row {
+        assert_eq!(cell.styles.background, Some(background.into()), "{cell:?}");
+    }
+}
+
 #[test]
 fn agents_selections_and_secondary_text_resolve_theme_colors() {
     for style in themes() {
         let mut plugin = plugin();
-        for (state, selected) in [
-            ("", "> 7 CLA !"),
+        for (state, selected, marker) in [
+            ("", "┃ 7 CLA !", '┃'),
             (
                 "(a-set! \"focused\" 8) (a-set! \"has_keyboard\" #f)",
-                "· 7 CLA !",
+                "│ 7 CLA !",
+                '│',
             ),
             (
-                "(a-set! \"selected\" 3) (a-set! \"has_keyboard\" #t)",
-                "archived run",
+                "(a-set! \"focus\" \"history\") (a-set! \"has_keyboard\" #t)",
+                "│ 7 CLA !",
+                '│',
             ),
-            ("(a-set! \"has_keyboard\" #f)", "archived run"),
+            (
+                "(a-set! \"selected\" 3) (a-set! \"focus\" \"list\")",
+                "archived run",
+                '┃',
+            ),
+            ("(a-set! \"has_keyboard\" #f)", "archived run", '│'),
         ] {
             plugin.runtime.eval(state).unwrap();
             let lines = render(&mut plugin, style);
@@ -161,6 +185,19 @@ fn agents_selections_and_secondary_text_resolve_theme_colors() {
             assert_text(&lines, "topic", style.colors.text_unselected.base, false);
             assert_text(&lines, selected, style.colors.text_selected.base, false);
             let selected_row = if selected == "archived run" { 5 } else { 3 };
+            assert_selection(&lines[selected_row][..33], style, true, marker);
+            assert_selection(
+                &lines[4][..33],
+                style,
+                selected_row == 3,
+                if selected_row == 3 { marker } else { ' ' },
+            );
+            assert_selection(
+                &lines[if selected_row == 3 { 5 } else { 3 }][..33],
+                style,
+                false,
+                ' ',
+            );
             for cell in &lines[selected_row][..33] {
                 assert_eq!(
                     cell.styles.foreground,
@@ -256,7 +293,7 @@ fn agents_history_and_reader_keep_markdown_and_navigation_without_dim() {
             .invoke("a-load-run!", vec![json!(run), json!(0)])
             .unwrap();
         let lines = render(&mut plugin, style);
-        assert_text(&lines, "summary:", style.colors.text_unselected.base, true);
+        assert_text(&lines, "summary:", style.colors.text_selected.base, true);
         assert_text(&lines, "started", style.colors.text_unselected.base, false);
         assert_text(&lines, "prompt:", style.colors.text_unselected.base, false);
         assert_text(
@@ -315,7 +352,7 @@ fn agents_waiting_cues_are_distinct_from_failures() {
         assert_text(
             &lines,
             "Ready for review",
-            style.colors.text_unselected.base,
+            style.colors.text_selected.base,
             false,
         );
         for state in [
@@ -335,6 +372,225 @@ fn agents_waiting_cues_are_distinct_from_failures() {
 
 fn state(plugin: &mut SteelReference, key: &str) -> serde_json::Value {
     plugin.runtime.invoke("a-get", vec![json!(key)]).unwrap()
+}
+
+#[test]
+fn agents_message_selection_covers_visible_event_rows_across_focus_and_layouts() {
+    for style in themes() {
+        for (rows, cols) in [(40, 100), (40, 40), (5, 100)] {
+            let mut plugin = plugin();
+            let mut run = run("active", 7, false);
+            run.entries.truncate(2);
+            run.entries[1].text =
+                "Plain **strong** *emphasis* `code` ~~removed~~\n\nSecond line\n\nThird line\n\nFourth line".into();
+            plugin
+                .runtime
+                .invoke("a-load-run!", vec![json!(run), json!(0)])
+                .unwrap();
+            for (focus, keyboard) in [
+                ("list", true),
+                ("history", true),
+                ("history", false),
+                ("list", false),
+            ] {
+                plugin
+                    .runtime
+                    .eval(&format!(
+                        "(a-set! \"focus\" \"{focus}\") (a-set! \"has_keyboard\" #{})",
+                        if keyboard { "t" } else { "f" }
+                    ))
+                    .unwrap();
+                let lines = render_sized(&mut plugin, style, rows, cols);
+                let event = plugin.runtime.invoke("a-cursor-event", vec![]).unwrap();
+                let event_start = event["start"].as_u64().unwrap() as usize;
+                let event_end = event_start + event["len"].as_u64().unwrap() as usize;
+                assert!(event_end > event_start + 1);
+                let start = state(&mut plugin, "last_history_window_start")
+                    .as_u64()
+                    .unwrap() as usize;
+                let room = state(&mut plugin, "last_history_body_rows")
+                    .as_u64()
+                    .unwrap() as usize;
+                let top = [
+                    "last_label_rows",
+                    "last_history_top",
+                    "last_history_body_top",
+                ]
+                .into_iter()
+                .map(|key| state(&mut plugin, key).as_u64().unwrap() as usize)
+                .sum::<usize>()
+                    + 1;
+                let divider = state(&mut plugin, "last_divider_col")
+                    .as_u64()
+                    .map(|n| n as usize);
+                let x = divider.map_or(0, |n| n + 1);
+                let list_width = divider.unwrap_or(cols);
+                let agent_row = state(&mut plugin, "last_label_rows").as_u64().unwrap() as usize
+                    + 2
+                    - state(&mut plugin, "last_window_start").as_u64().unwrap() as usize;
+                assert_selection(
+                    &lines[agent_row][..list_width],
+                    style,
+                    true,
+                    if focus == "list" && keyboard {
+                        '┃'
+                    } else {
+                        '│'
+                    },
+                );
+                if rows == 5 && focus == "list" && keyboard {
+                    assert!(
+                        start > event_start,
+                        "expected a clipped message: {start}, {event:?}"
+                    );
+                }
+                let mut selected_rows = 0;
+                let mut adjacent_rows = 0;
+                for i in start..event_end.min(start + room) {
+                    let selected = i >= event_start;
+                    let marker = if selected {
+                        selected_rows += 1;
+                        if focus == "history" && keyboard {
+                            '┃'
+                        } else {
+                            '│'
+                        }
+                    } else {
+                        adjacent_rows += 1;
+                        ' '
+                    };
+                    assert_selection(&lines[top + i - start][x..], style, selected, marker);
+                }
+                assert!(selected_rows > 0);
+                if rows == 40 {
+                    assert!(selected_rows > 1);
+                    assert!(adjacent_rows > 0);
+                    if cols == 100 {
+                        assert_text(&lines, "strong", style.colors.text_selected.base, true);
+                        assert_text(
+                            &lines,
+                            "emphasis",
+                            style.colors.text_selected.emphasis_1,
+                            false,
+                        );
+                        assert_text(&lines, "code", style.colors.text_selected.emphasis_3, false);
+                        assert!(cells(&lines, "removed")
+                            .iter()
+                            .all(|c| c.styles.strike == Some(AnsiCode::On)));
+                    }
+                }
+                assert_eq!(state(&mut plugin, "history_cursor"), 0);
+            }
+            if rows == 40 {
+                plugin
+                    .runtime
+                    .eval("(a-set! \"pending_history_revision\" 1)")
+                    .unwrap();
+                let lines = render_sized(&mut plugin, style, rows, cols);
+                assert_eq!(state(&mut plugin, "history_cursor"), 1);
+                assert_text(&lines, "history", style.colors.text_selected.base, true);
+                assert_text(&lines, "strong", style.colors.text_unselected.base, true);
+            }
+        }
+    }
+}
+
+#[test]
+fn agents_reader_selection_covers_only_its_section_even_when_clipped() {
+    for style in themes() {
+        let mut plugin = plugin();
+        let mut run = run("active", 7, false);
+        run.entries.last_mut().unwrap().text = "<task-notification><summary>Finished</summary><note>Plain **strong** *emphasis* `code` ~~removed~~\n\nSecond line\n\nThird line</note><result>Adjacent result</result></task-notification>".into();
+        plugin
+            .runtime
+            .invoke("a-load-run!", vec![json!(run), json!(0)])
+            .unwrap();
+        render(&mut plugin, style);
+        plugin
+            .runtime
+            .eval(
+                r#"
+            (a-open-reader!)
+            (a-reader-set! "cursor" 1)
+            (a-toggle-fold!)
+        "#,
+            )
+            .unwrap();
+        for (rows, keyboard) in [(40, true), (40, false), (5, true), (5, false)] {
+            plugin
+                .runtime
+                .eval(if keyboard {
+                    "(a-set! \"has_keyboard\" #t)"
+                } else {
+                    "(a-set! \"has_keyboard\" #f)"
+                })
+                .unwrap();
+            if rows == 5 {
+                plugin
+                    .runtime
+                    .eval(r#"(a-reader-set! "scroll" (+ 1 (list-ref (a-reader-starts) 1)))"#)
+                    .unwrap();
+            }
+            let lines = render_sized(&mut plugin, style, rows, 100);
+            let starts = plugin.runtime.invoke("a-reader-starts", vec![]).unwrap();
+            let start = starts[1].as_u64().unwrap() as usize;
+            let end = starts[2].as_u64().unwrap() as usize;
+            assert!(end > start + 1);
+            let scroll = plugin
+                .runtime
+                .invoke("a-reader", vec![json!("scroll")])
+                .unwrap()
+                .as_u64()
+                .unwrap() as usize;
+            let count = plugin
+                .runtime
+                .invoke("a-reader-lines", vec![])
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len();
+            let room = state(&mut plugin, "last_reader_rows").as_u64().unwrap() as usize;
+            if rows == 5 {
+                assert!(scroll > start);
+            }
+            for i in scroll..count.min(scroll + room) {
+                let selected = (start..end).contains(&i);
+                assert_selection(
+                    &lines[1 + i - scroll],
+                    style,
+                    selected,
+                    if selected {
+                        if keyboard {
+                            '┃'
+                        } else {
+                            '│'
+                        }
+                    } else {
+                        ' '
+                    },
+                );
+            }
+            if rows == 40 {
+                assert_text(&lines, "strong", style.colors.text_selected.base, true);
+                assert_text(
+                    &lines,
+                    "emphasis",
+                    style.colors.text_selected.emphasis_1,
+                    false,
+                );
+                assert_text(&lines, "code", style.colors.text_selected.emphasis_3, false);
+                assert_text(
+                    &lines,
+                    "Adjacent result",
+                    style.colors.text_unselected.base,
+                    false,
+                );
+                assert!(cells(&lines, "removed")
+                    .iter()
+                    .all(|c| c.styles.strike == Some(AnsiCode::On)));
+            }
+        }
+    }
 }
 
 #[test]
@@ -420,7 +676,7 @@ fn agents_clipped_remote_hosts_preserve_status_and_waiting_emphasis() {
                     .runtime
                     .invoke("a-set!", vec![json!("rows"), rows.clone()])
                     .unwrap();
-                for (selected, focused, marker) in [(1, 7, '>'), (1, 8, '·'), (0, 7, ' ')] {
+                for (selected, focused, marker) in [(1, 7, '┃'), (1, 8, '┃'), (0, 7, ' ')] {
                     plugin
                         .runtime
                         .invoke("a-set!", vec![json!("selected"), json!(selected)])
