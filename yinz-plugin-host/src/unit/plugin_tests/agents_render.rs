@@ -831,7 +831,7 @@ fn agents_clipped_remote_hosts_preserve_status_and_waiting_emphasis() {
                     };
                     assert_text(&lines[1..2], &symbol.to_string(), color, false);
                     if selected == 1 {
-                        cells(&lines, &format!("7 · claude · {status}"));
+                        cells(&lines, &format!("[7] · claude · {status}"));
                     }
                 }
             }
@@ -1089,7 +1089,7 @@ fn agents_detail_updates_repaint_without_changing_compact_rows() {
     assert_eq!(state(&mut plugin, "rows"), rows);
 
     // A compact list draws no activity lines, so only the selected agent's details repaint it.
-    assert_eq!(state(&mut plugin, "selected"), 2);
+    assert_eq!(plugin.runtime.invoke("a-selection", vec![]).unwrap(), 7);
     plugin.render(7, 90);
     snapshot["panes"][1]["title"] = json!("⠐ codex working");
     snapshot["hooks"]["8"]["waiting_on"] = json!("Another question?");
@@ -1169,10 +1169,10 @@ fn agents_short_history_keeps_the_start_of_long_details() {
         )
         .unwrap();
     let lines = render_sized(&mut plugin, themes()[0], 24, 90);
-    cells(&lines, "7 · claude · needs input");
+    cells(&lines, "[7] · claude · needs input");
     // Seven history rows cannot hold all detail lines, so the status and question stay.
     let lines = render_sized(&mut plugin, themes()[0], 10, 90);
-    cells(&lines, "7 · claude · needs input");
+    cells(&lines, "[7] · claude · needs input");
     cells(&lines, "Allow Bash to run");
 }
 
@@ -1338,7 +1338,7 @@ fn agents_header_ends_with_the_session_and_styles_details_with_the_theme() {
                 .position(|row| row.contains("session"))
                 .unwrap();
             for (index, row) in header_rows.iter().enumerate() {
-                if row.contains("7 · claude")
+                if row.contains("[7] · claude")
                     || row.contains("project · topic")
                     || row.contains("Jan 1, 1970")
                 {
@@ -1361,7 +1361,7 @@ fn agents_header_ends_with_the_session_and_styles_details_with_the_theme() {
                 );
                 assert_text(
                     &lines,
-                    "7 · claude",
+                    "[7] · claude",
                     style.colors.text_unselected.emphasis_0,
                     true,
                 );
@@ -1411,13 +1411,13 @@ fn agents_summary_and_quota_share_the_message_header_in_light_and_dark_themes() 
                 })
                 .unwrap()
         };
-        assert!(row("7 · claude · needs input") < row("Task: Review the release"));
+        assert!(row("[7] · claude · needs input") < row("Task: Review the release"));
         assert!(row("Task: Review the release") < row("project · topic"));
         assert!(row("project · topic") < row("Allow the release build"));
-        assert_eq!(row("7 · claude · needs input"), row("Weekly"));
+        assert_eq!(row("[7] · claude · needs input"), row("Weekly"));
         assert!(row("3d left") < row("nothing to show yet"));
         let lines = render_sized(&mut plugin, style, 10, 120);
-        cells(&lines, "7 · claude · needs input");
+        cells(&lines, "[7] · claude · needs input");
         cells(&lines, "Weekly · 26% · 5hr · 68%");
     }
 }
@@ -1613,7 +1613,8 @@ fn agents_working_pulse_restarts_and_restores_header() {
 #[test]
 fn agents_working_pulse_clears_and_clips() {
     for change in [
-        r#"(a-set! "selected" 3) (a-follow-selection! "pane:7")"#,
+        r#"(a-set! "selected" (a-index (lambda (row) (equal? (a-row-key row) "pane:8")) (a-get "rows")))
+          (a-follow-selection! "pane:7")"#,
         r#"(a-end-visit!)"#,
         r#"(a-set! "rows" (list (hash "Agent" (hash "pane_id" 7 "kind" "claude" "text" "7 CLA ○" "waiting" #f)))) (a-set! "selected" 0)"#,
         r#"(a-set! "rows" (list (hash "Agent" (hash "pane_id" 7 "kind" "claude" "text" "7 CLA !" "waiting" #t)))) (a-set! "selected" 0)"#,
@@ -1656,22 +1657,15 @@ fn agents_list_pins_waiting_agents_and_labels_groups_archive_and_scroll() {
         lines[row][..33].iter().map(|cell| cell.character).collect()
     };
     let lines = render(&mut plugin, style);
-    assert!(text(&lines, 0).starts_with("Needs you · 1"));
+    assert_eq!(text(&lines, 0).trim_end(), "Needs you");
     assert_eq!(
         state(&mut plugin, "list_lines")[0],
         json!([-1, false, "pinned"])
     );
-    // One header per checkout, naming its project, with its agent and waiting counts.
-    assert!(text(&lines, 2).starts_with("project · topic"));
-    assert!(text(&lines, 2).trim_end().ends_with("1! · 1"));
-    assert_text(
-        &lines[2..3],
-        "1!",
-        style.colors.text_unselected.emphasis_1,
-        true,
-    );
+    // One header per checkout, naming its project without agent or waiting counts.
+    assert_eq!(text(&lines, 2).trim_end(), "project · topic");
     assert!(text(&lines, 3).starts_with("┃ ! claude  needs input"));
-    assert!(text(&lines, 3).trim_end().ends_with("◂ #7"));
+    assert!(text(&lines, 3).trim_end().ends_with("◂ [7]"));
 
     // A filtered list draws no pinned copies.
     plugin
