@@ -29,6 +29,7 @@
       "archived_runs" '() "archive_sorted" #f "archive_rows" #f "archive_offset" 0 "archive_loaded_through" #f "archive_more" #f
       "pane_tabs" #f "own_plugin_id" 0 "own_client_id" 0 "initial_cwd" ""
       "bar_focused" '() "tabs_focused" #f "age_minute" 0 "rows" '() "summaries" (hash)
+      "pulse" #f "pulse_timer" #f "maintenance_at" 0
       "history_request" 0 "history_pending" #f "history_desired" #f "history_next" #f
       "history_deadline" 0 "history_retry_at" #f "history_hidden" #f "prompt_document" #f "search_headers" (hash)
       "client_modes" (hash) "quota_images" (hash) "last_quota_top" #f "render_client" 0
@@ -108,6 +109,7 @@
   (define next (a-get "history_next")) (a-set! "history_next" #f)
   (when next (yinz-resolve! next #f)))
 (define (a-leave-row!)
+  (a-set! "pulse" #f)
   (a-invalidate-history!)
   (a-set! "run" #f) (a-set! "history_cache" #f) (a-set! "prompt_document" #f)
   (for-each (lambda (key) (a-set! key #f))

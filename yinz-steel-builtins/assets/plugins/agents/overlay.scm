@@ -87,6 +87,7 @@
     (unless (equal? surface (a-get "panel_surface"))
       (a-set! "panel_surface" surface) (a-place-panel! #f))))
 (define (a-end-visit!)
+  (a-set! "pulse" #f)
   (a-invalidate-history!) (a-set! "history_hidden" #t)
   (a-set! "tabs_focused" #f) (a-set! "bar_focused" '()) (a-set! "focus" "list")
   (a-set! "divider_drag" #f) (a-set! "click_press" #f) (a-set! "confirming_resume" #f) (a-set! "key_sheet_scroll" #f))

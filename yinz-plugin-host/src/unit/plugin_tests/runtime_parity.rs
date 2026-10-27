@@ -450,9 +450,10 @@ impl Pair {
                     }
                     if let Some(Value::Array(events)) = command.get_mut("Subscribe") {
                         if agents {
-                            // Worker replies and theme repainting were added after the recordings.
+                            // Worker replies, theme repainting, and the tested hook pulse postdate these recordings.
                             events.retain(|event| {
-                                event != "CustomMessage"
+                                event != "AgentEvent"
+                                    && event != "CustomMessage"
                                     && event != "ModeUpdate"
                                     && event != "CellPixelSizeChanged"
                             });
