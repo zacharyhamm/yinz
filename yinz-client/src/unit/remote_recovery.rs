@@ -69,6 +69,61 @@ fn replay_contains_capabilities_and_current_size_but_never_keyboard_input() {
 }
 
 #[test]
+fn recovery_reannounces_after_repaint_even_when_the_host_recently_pinged() {
+    use crate::nested_reannounce::NestedReannounce;
+    use yinz_ipc::nested_session::{self, NestedSessionCapability, NestedSessionMessage};
+
+    let os = crate::test_support::FakeClientOsApi::new().capturing_stdout();
+    let nested = NestedReannounce::spawn(Box::new(os.clone()), "original".into());
+    nested.stop();
+    nested.note_host_contact();
+    let mut recovery = Recovery::new("host".into(), CommandIsExecuting::new());
+    recovery.first_render(&os, "original", Instant::now());
+    assert!(os.stdout_bytes().is_empty());
+
+    recovery.control.lost(0, "EOF".into());
+    recovery.control.replacing();
+    // A short outage never triggers the silence timer. Use the session's current
+    // name in case it was renamed since the original announcement.
+    nested.note_host_contact();
+    recovery.first_render(&os, "renamed", Instant::now());
+    assert_eq!(recovery.control.phase(), Phase::Connected);
+    let expected = nested_session::encode_frame(&NestedSessionMessage::Announce {
+        session_name: "renamed".into(),
+        capabilities: vec![NestedSessionCapability::NestedControl],
+    });
+    assert_eq!(os.stdout_bytes(), expected);
+    recovery.first_render(&os, "renamed", Instant::now());
+    assert_eq!(os.stdout_bytes(), expected);
+}
+
+#[test]
+fn replay_preserves_only_the_latest_observed_focus_without_inventing_a_default() {
+    for changes in [vec![], vec![false], vec![false, true], vec![true, false]] {
+        let control = RecoveryControl::new(CommandIsExecuting::new());
+        for focused in &changes {
+            control.cache(&ClientToServerMsg::HostTerminalFocusChanged { focused: *focused });
+        }
+        control.lost(0, "EOF".into());
+        control.replacing();
+        let os = crate::test_support::FakeClientOsApi::new();
+        control.replay(&os);
+        let replayed: Vec<_> = os
+            .sent_messages()
+            .into_iter()
+            .filter_map(|message| match message {
+                ClientToServerMsg::HostTerminalFocusChanged { focused } => Some(focused),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            replayed,
+            changes.last().copied().into_iter().collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
 fn replay_merges_partial_pixel_reports_in_either_order() {
     use yinz_ipc::ipc::PixelDimensions;
     use yinz_types::pane_size::SizeInPixels;

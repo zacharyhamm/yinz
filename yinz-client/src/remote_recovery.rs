@@ -98,6 +98,7 @@ impl RecoveryControl {
                 | ClientToServerMsg::ForegroundColor { .. }
                 | ClientToServerMsg::ColorRegisters { .. }
                 | ClientToServerMsg::HostTerminalThemeChanged { .. }
+                | ClientToServerMsg::HostTerminalFocusChanged { .. }
                 | ClientToServerMsg::KittyGraphicsSupport { .. }
                 | ClientToServerMsg::SixelSupport { .. }
                 | ClientToServerMsg::SynchronizedOutputSupport { .. }
@@ -214,13 +215,17 @@ impl Recovery {
             routers: Vec::new(),
         }
     }
-    pub fn first_render(&mut self, os: &dyn ClientOsApi, now: Instant) {
+    pub fn first_render(&mut self, os: &dyn ClientOsApi, name: &str, now: Instant) {
         self.rendered = true;
         if self.control.phase() == Phase::Repainting {
             self.control.replay(os);
             if self.control.repainted() {
                 self.healthy_since = Some(now);
                 self.status = None;
+                // The old connection's ancestry was cleared on disconnect. Host pings
+                // can keep the silence timer satisfied, so force a new handshake once
+                // input handling is connected and can forward the host's reply again.
+                crate::terminal_escapes::announce_nested(os, &name.into());
             }
         } else if self.healthy_since.is_none() {
             self.healthy_since = Some(now);

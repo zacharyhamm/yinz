@@ -318,9 +318,12 @@ fn select_discovered_session(
     interactive: bool,
 ) -> Result<Outcome> {
     anyhow::ensure!(!rows.is_empty(), "No active yinz sessions found on {host}.");
-    if let [row] = rows.as_slice()
-        && row.listing == yinz_cli::sessions::SessionListing::Running
-        && let Some(destination) = &row.destination
+    let mut candidates = rows
+        .iter()
+        .filter(|row| row.listing == yinz_cli::sessions::SessionListing::Running)
+        .filter_map(|row| row.destination.as_ref());
+    if let Some(destination) = candidates.next()
+        && candidates.next().is_none()
     {
         return Ok(Outcome::Picked(destination.clone()));
     }

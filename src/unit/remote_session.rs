@@ -261,15 +261,29 @@ fn remote_attach_cli_combinations() {
 }
 
 #[test]
-fn remote_discovery_selects_the_only_running_session_without_a_terminal() {
-    let rows = discovery_rows(&[("work", yinz_cli::sessions::SessionListing::Running)]);
-    assert_eq!(
-        select_discovered_session("host", rows, false).unwrap(),
-        Outcome::Picked(Destination::Remote {
-            host: "host".into(),
-            name: "work".into(),
-        })
-    );
+fn remote_discovery_selects_the_only_running_session_among_unreachable_entries() {
+    use yinz_cli::sessions::SessionListing::{Denied, Running, Unresponsive};
+
+    for interactive in [false, true] {
+        for sessions in [
+            vec![("work", Running)],
+            vec![("busy", Unresponsive), ("work", Running)],
+            vec![("work", Running), ("denied", Denied)],
+            vec![
+                ("busy", Unresponsive),
+                ("work", Running),
+                ("denied", Denied),
+            ],
+        ] {
+            assert_eq!(
+                select_discovered_session("host", discovery_rows(&sessions), interactive).unwrap(),
+                Outcome::Picked(Destination::Remote {
+                    host: "host".into(),
+                    name: "work".into(),
+                })
+            );
+        }
+    }
 }
 
 #[test]
