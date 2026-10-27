@@ -779,6 +779,13 @@ impl Screen {
         }
         let live = self.live_palette_agents();
         state.widget.agent_metadata = live.iter().map(|a| (a.id(), a.metadata.clone())).collect();
+        state.widget.agent_presentations = live
+            .iter()
+            .filter_map(|agent| {
+                crate::ui::command_palette::AgentPresentation::from_pane(&agent.pane)
+                    .map(|presentation| (agent.id(), presentation))
+            })
+            .collect();
         entries.extend(live.into_iter().map(|agent| {
             (
                 Entry {
