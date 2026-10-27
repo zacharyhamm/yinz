@@ -729,7 +729,22 @@ fn two_idle_agents_keep_their_records_after_a_whole_tab_warp_and_source_shutdown
     use yinz_types::input::actions::Action;
     use yinz_types::pane_id::PaneId;
 
-    let ((mut sender, _source_shell), (receiver, _receiver_shell)) = sender_and_receiver();
+    // The status bar receives agent counts from the background service.
+    let receiver = TestRunner::new(TERMINAL_SIZE)
+        .with_config(
+            r#"
+            plugins {
+                agent-service location="yinz:agent-service" { shared true; summaries false; }
+            }
+            load_plugins clear-defaults=true { "agent-service"; }
+            "#,
+        )
+        .skip_concurrency_slot()
+        .start();
+    let receiver_shell = receiver.expect_pty_spawn();
+    receiver_shell.output(PROMPT);
+    receiver.wait_for_app_load();
+    let (mut sender, _source_shell) = start_with_a_shell();
     // Leave room for the idle count beside the status bar's key hints.
     receiver.resize(yinz_types::pane_size::Size {
         rows: 24,
