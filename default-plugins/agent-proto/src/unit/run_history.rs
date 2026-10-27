@@ -548,7 +548,7 @@ fn assistant_messages_are_searchable_and_pageable_after_archival_and_summary() {
     assert!(history
         .entries
         .iter()
-        .any(|row| row.text.contains("message: commentary")));
+        .any(|row| row.text.contains("commentary about the lexer")));
     assert!(history
         .entries
         .iter()

@@ -300,7 +300,12 @@ fn agents_history_and_reader_keep_markdown_and_navigation_without_dim() {
             style.colors.text_unselected.emphasis_3,
             false,
         );
-        assert_text(&lines, "prompt:", style.colors.text_unselected.base, false);
+        assert_text(
+            &lines,
+            "Plain",
+            style.colors.text_unselected.emphasis_0,
+            false,
+        );
         assert_text(
             &lines,
             " 1m ",
@@ -470,14 +475,19 @@ fn agents_message_selection_covers_visible_event_rows_across_focus_and_layouts()
                     assert!(selected_rows > 1);
                     assert!(adjacent_rows > 0);
                     if cols == 100 {
-                        assert_text(&lines, "strong", style.colors.text_selected.base, true);
+                        assert_text(
+                            &lines,
+                            "strong",
+                            style.colors.text_selected.emphasis_2,
+                            true,
+                        );
                         assert_text(
                             &lines,
                             "emphasis",
-                            style.colors.text_selected.emphasis_1,
+                            style.colors.text_selected.emphasis_2,
                             false,
                         );
-                        assert_text(&lines, "code", style.colors.text_selected.emphasis_3, false);
+                        assert_text(&lines, "code", style.colors.text_selected.emphasis_2, false);
                         assert!(cells(&lines, "removed")
                             .iter()
                             .all(|c| c.styles.strike == Some(AnsiCode::On)));
@@ -492,8 +502,18 @@ fn agents_message_selection_covers_visible_event_rows_across_focus_and_layouts()
                     .unwrap();
                 let lines = render_sized(&mut plugin, style, rows, cols);
                 assert_eq!(state(&mut plugin, "history_cursor"), 1);
-                assert_text(&lines, "history", style.colors.text_selected.base, true);
-                assert_text(&lines, "strong", style.colors.text_unselected.base, true);
+                assert_text(
+                    &lines,
+                    "history",
+                    style.colors.text_selected.emphasis_0,
+                    true,
+                );
+                assert_text(
+                    &lines,
+                    "strong",
+                    style.colors.text_unselected.emphasis_2,
+                    true,
+                );
             }
         }
     }
