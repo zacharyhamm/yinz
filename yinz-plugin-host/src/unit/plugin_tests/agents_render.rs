@@ -1076,7 +1076,7 @@ fn agents_summary_order_and_fixed_quota_footer_follow_light_and_dark_themes() {
         assert!(row("project · topic") < row("Allow the release build"));
         assert!(row("State: hooks") < row("Local claude account"));
         assert_eq!(row("32% remaining"), 28);
-        assert_text(&lines, "██████", style.colors.exit_code_success.base, false);
+        assert_text(&lines, "█████", style.colors.exit_code_success.base, false);
         let lines = render_sized(&mut plugin, style, 10, 120);
         cells(&lines, "7 · claude · needs input");
         cells(&lines, "Local claude:");
