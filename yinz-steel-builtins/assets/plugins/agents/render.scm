@@ -130,6 +130,8 @@
       (define cached (a-field (a-get "quota_images") client #f))
       (unless (and cached (equal? (car cached) key))
         (set! cached (list key (a-panel "QuotaImage" key)))
+        ; Plugin grids preserve images and virtual placements between frames.
+        (display (cadr cached)) (display (yinz-ui-image-place 1 width 3))
         (a-set! "quota_images" (hash-insert (a-get "quota_images") client cached)))
       (cadr cached))))
 (define (draw-quota quota top rows cols full)
@@ -150,7 +152,6 @@
         (define image (quota-image quota mode color graphic-cols))
         (define saved-x paint-x) (set! paint-x (+ paint-x (- cols graphic-cols)))
         (when image
-          (display image) (display (yinz-ui-image-place 1 graphic-cols 3))
           (for-each (lambda (i)
               (display (string-append (string (integer->char 27)) "[" (number->string (+ graphic-top 2 i)) ";" (number->string (+ paint-x 1)) "H"))
               (display (yinz-ui-image-row 1 i graphic-cols))) (range 3)))
