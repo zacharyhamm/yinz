@@ -2,18 +2,20 @@
 (require "../shared/archive.scm")
 (provide a-history-worker)
 (define (a-fetch request) (yinz-data-fetch "shared:yinz" request))
+;; Keep the scan at module scope: a local recursive closure retains the fetched
+;; transcript in Steel's tracing heap until collection, across many refreshes.
+(define (a-keep-newest run total truncated rest kept spent)
+  (define bytes (if (null? rest) 0 (utf8-length (hash-ref (car rest) "text"))))
+  (if (or (null? rest) (and (not (null? kept)) (> (+ spent bytes) 262144)))
+    (hash-insert (hash-insert run "entries" kept) "omitted_entries"
+      (+ (- total (length kept)) (if truncated 1 0)))
+    (a-keep-newest run total truncated (cdr rest) (cons (car rest) kept) (+ spent bytes))))
 (define (a-hydrate-newest run)
-  (set! run (hash-insert run "omitted_entries" 0))
   (define id (hash-ref run "id"))
   (define rows (a-fetch (a-model "NewestEntriesRequest" (list id))))
   (define entries (a-field (a-model "EntriesFromRows" (list rows)) id #f))
-  (if (not entries) run
-    (let loop ((rest (reverse entries)) (kept '()) (spent 0))
-      (define bytes (if (null? rest) 0 (utf8-length (hash-ref (car rest) "text"))))
-      (if (or (null? rest) (and (not (null? kept)) (> (+ spent bytes) 262144)))
-        (hash-insert (hash-insert run "entries" kept) "omitted_entries"
-          (+ (- (length entries) (length kept)) (if (hash-ref rows "truncated") 1 0)))
-        (loop (cdr rest) (cons (car rest) kept) (+ spent bytes))))))
+  (if (not entries) (hash-insert run "omitted_entries" 0)
+    (a-keep-newest run (length entries) (hash-ref rows "truncated") (reverse entries) '() 0)))
 (define (a-history-worker name payload)
   (define reply
     (with-handler (lambda (e) (hash "error" (trim (error-object-message e))))
@@ -23,10 +25,10 @@
       (define rows (a-fetch (a-model "RunByIdRequest" (list id))))
       (define run (a-at (a-model "RunsFromRows" (list rows)) 0))
       (unless run (error "the run is no longer in the archive"))
-      (set! run (if revision
+      (define hydrated (if revision
           (let ((page (archive-search-detail id revision)))
             (hash-insert (hash-insert run "entries" (hash-ref page "entries")) "omitted_entries" (if (hash-ref page "earlier") 1 0)))
           (a-hydrate-newest run)))
-      (hash "run" run "fingerprint" (yinz-agent-model "history" "Fingerprint" run)
+      (hash "run" hydrated "fingerprint" (yinz-agent-model "history" "Fingerprint" hydrated)
         "offset" (or (a-some (yinz-command (hash "GetLocalUtcOffset" (hash "epoch_ms" (hash-ref run "started_at_ms"))))) 0))))
   (yinz-post-plugin name (yinz-json-string reply)))

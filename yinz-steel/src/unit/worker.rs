@@ -31,6 +31,86 @@ pub(super) fn binary() -> std::path::PathBuf {
 }
 
 #[test]
+fn history_worker_releases_transcripts_between_refreshes() {
+    use serde_json::json;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    let replies = Arc::new(AtomicUsize::new(0));
+    let received = replies.clone();
+    let run = json!({"id":"history", "pane_id":7, "kind":"claude",
+        "session_id":"history", "cwd":"/work", "started_at_ms":1000,
+        "ended_at_ms":null, "entries":[]});
+    let headers = json!({"columns":["payload"], "rows":[[{"Text":run.to_string()}]],
+        "truncated":false, "next_cursor":null});
+    // A normal fetch can carry 2 MiB even though the panel keeps only 256 KiB.
+    let entries = json!({"columns":["run_id","revision","kind","text"],
+        "rows":[[{"Text":"history"},{"Int":1},{"Text":"message"},{"Text":"x".repeat(1_900_000)}],
+                [{"Text":"history"},{"Int":2},{"Text":"message"},{"Text":"newest"}]],
+        "truncated":false,"next_cursor":null});
+    let mut worker = super::WorkerRuntime::new(&binary(), move |command| {
+        if let Some(fetch) = command.get("DataFetch") {
+            return Ok(if fetch["request"]["entity"] == "agent_run" {
+                headers.clone()
+            } else {
+                entries.clone()
+            });
+        }
+        if let Some(reply) = command.get("PostMessageToPlugin") {
+            let reply: serde_json::Value =
+                serde_json::from_str(reply["payload"].as_str().unwrap()).unwrap();
+            assert_eq!(reply["run"]["entries"][0]["text"], "newest", "{reply}");
+            assert_eq!(reply["run"]["omitted_entries"], 1);
+            received.fetch_add(1, Ordering::Relaxed);
+            return Ok(serde_json::Value::Null);
+        }
+        assert!(command.get("GetLocalUtcOffset").is_some(), "{command}");
+        Ok(json!(0))
+    })
+    .unwrap();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../yinz-steel-builtins/assets/plugins/agents.scm");
+    worker.set_source_root(crate::modules::SourceRoot::file(&path, None).unwrap());
+    worker.eval("(require \"./agents/history-worker.scm\") (yinz-register-workers (hash \"history\" a-history-worker))").unwrap();
+    worker
+        .invoke("yinz-worker-bind", vec![json!("history")])
+        .unwrap();
+    // Repeated real jobs must release discarded transcripts before the tracing heap's
+    // allocation-count threshold is reached. Large captures can exhaust the process first.
+    for refresh in 0..100 {
+        worker
+            .invoke(
+                "yinz-worker-message",
+                vec![
+                    json!("history"),
+                    json!(json!({"id":"history", "revision":false}).to_string()),
+                ],
+            )
+            .unwrap_or_else(|error| panic!("refresh {refresh}: {error:#}"));
+    }
+    assert_eq!(replies.load(Ordering::Relaxed), 100);
+    #[cfg(target_os = "linux")]
+    {
+        let status =
+            std::fs::read_to_string(format!("/proc/{}/status", worker.process_id())).unwrap();
+        let rss_kib: usize = status
+            .lines()
+            .find_map(|line| line.strip_prefix("VmRSS:"))
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            rss_kib < 128 * 1024,
+            "history worker retained discarded transcripts: {rss_kib} KiB RSS"
+        );
+    }
+}
+
+#[test]
 fn large_image_frames_fit_transport_and_keep_the_worker_healthy() {
     use super::protocol::{Output, Response};
     use yinz_tile::ui_components::png_transmit_sequence;
