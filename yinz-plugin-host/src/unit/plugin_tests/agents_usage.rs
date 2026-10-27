@@ -618,6 +618,11 @@ fn agents_quota_images_reuse_ids_and_cache_each_clients_value_theme_and_geometry
             .to_owned()
     };
     let mut first = String::new();
+    let assert_cached = |output: &str| {
+        assert!(!output.contains("\x1b_Ga=t"), "retransmitted cached PNG");
+        assert!(!output.contains("\x1b_Ga=p"), "recreated cached placement");
+        assert_eq!(output.matches('\u{10eeee}').count(), 60);
+    };
     for (client, theme) in [
         (1, "gruvbox-dark"),
         (2, "gruvbox-light"),
@@ -639,7 +644,12 @@ fn agents_quota_images_reuse_ids_and_cache_each_clients_value_theme_and_geometry
             "missing PNG transmission"
         );
         assert!(output.contains('\u{10eeee}'), "missing image placeholders");
-        assert_eq!(image(&output), image(&panel.plugin.render(30, 120)));
+        assert!(output.contains("a=p,U=1,q=2,i=1,c=20,r=3"));
+        assert_cached(&panel.plugin.render(30, 120));
+        let compact = panel.plugin.render(10, 120);
+        assert!(!compact.contains('\u{10eeee}'));
+        assert!(!compact.contains("\x1b_G"));
+        assert_cached(&panel.plugin.render(30, 120));
         if first.is_empty() {
             first = image(&output);
         } else {
@@ -659,12 +669,14 @@ fn agents_quota_images_reuse_ids_and_cache_each_clients_value_theme_and_geometry
             }
         );
         mode.capabilities.kitty_graphics = false;
-        panel.plugin.update(&Event::ModeUpdate(mode));
+        panel.plugin.update(&Event::ModeUpdate(mode.clone()));
         let output = panel.plugin.render(30, 120);
         assert!(!output.contains('\u{10eeee}'));
         assert!(panel.render(30, 120).contains("68% USED"));
+        mode.capabilities.kitty_graphics = true;
+        panel.plugin.update(&Event::ModeUpdate(mode));
+        assert_cached(&panel.plugin.render(30, 120));
     }
-    panel.plugin.runtime.eval("(a-set! \"client_modes\" (hash-insert (a-get \"client_modes\") 1 (hash-insert (hash-ref (a-get \"client_modes\") 1) \"capabilities\" (hash \"kitty_graphics\" #t))))").unwrap();
     let observation = usage("codex", 69.6);
     panel.set(
         "usage_cache",
@@ -672,13 +684,17 @@ fn agents_quota_images_reuse_ids_and_cache_each_clients_value_theme_and_geometry
     );
     let changed = panel.plugin.render(30, 120);
     assert!(changed.contains("a=t,f=100,t=d,q=2,i=1"));
+    assert!(changed.contains("a=p,U=1,q=2,i=1,c=20,r=3"));
     assert_ne!(image(&changed), first);
+    assert_cached(&panel.plugin.render(30, 120));
     for width in [9, 0, 1000] {
         panel.cell_width.store(width, Ordering::SeqCst);
         let output = panel.plugin.render(30, 120);
         assert_eq!(output.contains('\u{10eeee}'), width == 9);
         if width == 9 {
             assert_ne!(image(&output), first);
+            assert!(output.contains("a=p,U=1,q=2,i=1,c=20,r=3"));
+            assert_cached(&panel.plugin.render(30, 120));
         }
     }
 }
