@@ -215,9 +215,10 @@ pub struct Strip {
 /// `owners` gives the project of a pane and `branches` its checkout's branch.
 /// Neither is repeated on the agent's own line: the headers carry them, so an
 /// agent row stays short enough to read in a narrow sidebar. Agents of no known
-/// project come last, under a header that says so.
-/// One agent row with its project, branch, and pane id as sorting keys.
-type SortableAgent<'a> = (Option<&'a str>, Option<&'a str>, u32, StripRow);
+/// project come last within each activity group, under a header that says so.
+/// Needs-input agents precede working agents, then idle agents and other states.
+/// One agent row with its activity priority, project, branch, and pane id as sorting keys.
+type SortableAgent<'a> = (u8, Option<&'a str>, Option<&'a str>, u32, StripRow);
 
 pub fn strip_rows(
     panes: &[AgentPane],
@@ -251,8 +252,17 @@ pub fn strip_rows(
                     },
                 },
             };
+            // Rank the same resolved state that supplies the visible marker, including
+            // hook precedence and summary-based requests for input.
+            let priority = match symbol {
+                '!' => 0,
+                '●' => 1,
+                '○' => 2,
+                _ => 3,
+            };
             let row = format!("{} {cell} {symbol}", pane.pane_id);
             Some((
+                priority,
                 owners.get(&pane.pane_id).map(String::as_str),
                 branches.get(&pane.pane_id).map(String::as_str),
                 pane.pane_id,
@@ -270,13 +280,22 @@ pub fn strip_rows(
     agents.sort_by(|left, right| {
         // `None` sorts before `Some`, and the nameless go last on both keys, so
         // each is preceded by "has nothing to name".
-        (left.0.is_none(), left.0, left.1.is_none(), left.1, left.2).cmp(&(
-            right.0.is_none(),
-            right.0,
-            right.1.is_none(),
-            right.1,
-            right.2,
-        ))
+        (
+            left.0,
+            left.1.is_none(),
+            left.1,
+            left.2.is_none(),
+            left.2,
+            left.3,
+        )
+            .cmp(&(
+                right.0,
+                right.1.is_none(),
+                right.1,
+                right.2.is_none(),
+                right.2,
+                right.3,
+            ))
     });
 
     // `None` is "no header written yet", which is not the same as a header for
@@ -284,7 +303,7 @@ pub fn strip_rows(
     let mut project: Option<Option<&str>> = None;
     let mut branch: Option<Option<&str>> = None;
     let mut rows = Vec::with_capacity(agents.len());
-    for (owner, checkout, _, row) in agents {
+    for (_, owner, checkout, _, row) in agents {
         if project != Some(owner) {
             rows.push(StripRow::Project(owner.unwrap_or(NO_PROJECT).to_owned()));
             project = Some(owner);

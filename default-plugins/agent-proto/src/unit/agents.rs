@@ -2489,9 +2489,9 @@ fn strip_rows_flag_only_the_agents_waiting_on_an_answer() {
         vec![
             project("no project"),
             branch("no branch"),
-            agent(3, "codex", "3 CDX ○"),
             // `waiting` rather than the `idle` its screen is: the row says one thing.
             waiting(4, "claude", "4 CLA !"),
+            agent(3, "codex", "3 CDX ○"),
             agent(5, "aider", "5 AID ○"),
         ],
     );
@@ -2522,9 +2522,9 @@ fn hook_markers_stay_in_details_but_not_compact_rows() {
         vec![
             project("no project"),
             branch("no branch"),
+            agent(5, "claude◆", "5 CLA@box ●"),
             agent(3, "codex", "3 CDX ○"),
             agent(4, "claude◆", "4 CLA ○"),
-            agent(5, "claude◆", "5 CLA@box ●"),
         ],
     );
 
@@ -2536,7 +2536,7 @@ fn hook_markers_stay_in_details_but_not_compact_rows() {
                 _ => None,
             })
             .collect::<Vec<_>>(),
-        vec![(3, "codex"), (4, "claude◆"), (5, "claude◆")],
+        vec![(5, "claude◆"), (3, "codex"), (4, "claude◆")],
     );
 }
 
@@ -3426,6 +3426,64 @@ fn list_json_carries_the_folder_the_project_and_the_branch() {
         serde_json::from_str::<Value>(&json).unwrap(),
         serde_json::json!([{"branch":"topic","cwd":"/work/agent/src","kind":"codex","pane_id":3,"preview":"","project":"agent","source":"auto","status":"running","tab":"tab 9","tab_id":9,"title":"codex"}]),
     );
+}
+
+#[test]
+fn strip_rows_group_by_activity_before_project_and_follow_status_changes() {
+    let panes: Vec<_> = (1..=6).map(|id| pane(id, "codex", Some("codex"))).collect();
+    let owners = owners(&[(1, "alpha"), (2, "alpha"), (3, "zeta"), (4, "zeta")]);
+    let branches = branches(&[(1, "main"), (2, "main"), (3, "topic"), (4, "topic")]);
+    let activity = Activity::from([
+        (1, (1, 2)),
+        (2, (1, 0)),
+        (3, (1, 2)),
+        (4, (1, 2)),
+        (5, (1, 0)),
+    ]);
+    let mut hooks = feeds(&[(3, HookPhase::Waiting), (4, HookPhase::Busy)]);
+    let rows_for = |hooks: &HookFeeds| {
+        strip_rows(
+            &panes,
+            &manual(&[]),
+            &activity,
+            &owners,
+            &branches,
+            &Summaries::new(),
+            hooks,
+        )
+    };
+    assert_eq!(
+        rows_for(&hooks),
+        vec![
+            project("zeta"),
+            branch("topic"),
+            waiting(3, "codex◆", "3 CDX !"),
+            project("alpha"),
+            branch("main"),
+            agent(2, "codex", "2 CDX ●"),
+            project("zeta"),
+            branch("topic"),
+            agent(4, "codex◆", "4 CDX ●"),
+            project("no project"),
+            branch("no branch"),
+            agent(5, "codex", "5 CDX ●"),
+            project("alpha"),
+            branch("main"),
+            agent(1, "codex", "1 CDX ○"),
+            project("no project"),
+            branch("no branch"),
+            agent(6, "codex", "6 CDX ?"),
+        ]
+    );
+    hooks = feeds(&[(3, HookPhase::Idle), (4, HookPhase::Waiting)]);
+    let ids: Vec<_> = rows_for(&hooks)
+        .into_iter()
+        .filter_map(|row| match row {
+            StripRow::Agent { pane_id, .. } => Some(pane_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, vec![4, 2, 5, 1, 3, 6]);
 }
 
 #[test]
