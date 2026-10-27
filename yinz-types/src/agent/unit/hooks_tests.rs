@@ -447,6 +447,52 @@ fn each_hook_event_names_the_state_it_means() {
     }
 }
 
+#[test]
+fn claude_compaction_preserves_state_without_claiming_a_turn_boundary() {
+    // Claude sends the same auto trigger for idle and active-turn compaction.
+    // Missing/future triggers must not invent a turn boundary either.
+    for trigger in [Some("auto"), Some("manual"), None, Some("unknown")] {
+        for name in ["PreCompact", "PostCompact", "SessionStart"] {
+            let raw = serde_json::json!({
+                "hook_event_name": name,
+                "session_id": "conversation",
+                "source": (name == "SessionStart").then_some("compact"),
+                "trigger": trigger,
+                "compact_summary": "summary",
+            });
+            let hook: HookEvent = serde_json::from_value(raw.clone()).unwrap();
+            assert_eq!(hook_state_for("claude", &hook), None);
+            assert_eq!(hook_outcome("claude", &hook), HookOutcome::Nothing);
+            let broadcast = AgentEvent::from_hook(
+                "claude",
+                crate::internal_ids::TerminalId::new(7),
+                &hook,
+                raw.to_string(),
+            );
+            assert_eq!(broadcast.state, None);
+            assert_eq!(broadcast.hook, name);
+            assert_eq!(broadcast.session_id.as_deref(), Some("conversation"));
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&broadcast.raw).unwrap(),
+                raw
+            );
+        }
+    }
+    // The exception is provider-specific; Pi has its own explicit idle signal.
+    for name in ["PreCompact", "PostCompact"] {
+        assert_eq!(
+            hook_state_for("codex", &event(name)),
+            Some(AgentState::Busy)
+        );
+        assert_eq!(hook_state_for("pi", &event(name)), Some(AgentState::Busy));
+    }
+    let idle = HookEvent {
+        source: Some("idle".into()),
+        ..event("PostCompact")
+    };
+    assert_eq!(hook_state_for("pi", &idle), Some(AgentState::Idle));
+}
+
 /// Other providers use the permission mode to distinguish automatic approval.
 /// Direct questions and elicitation still need a person under every mode.
 #[test]

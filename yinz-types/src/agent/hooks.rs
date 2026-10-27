@@ -1058,6 +1058,11 @@ pub fn hook_state_for(kind: &str, event: &HookEvent) -> Option<AgentState> {
     }
     if kind == "claude" {
         match event.hook_event_name.as_str() {
+            // Claude uses trigger=auto both during a turn and while idle. Neither
+            // compaction hook establishes a turn boundary, so preserve the last
+            // reported state (also when no managed-agent lifecycle exists).
+            // SessionStart(source=compact) is already stateless for the same reason.
+            "PreCompact" | "PostCompact" => return None,
             "Stop" if event.claude_turn_complete != Some(true) => {
                 return Some(AgentState::Busy);
             },
