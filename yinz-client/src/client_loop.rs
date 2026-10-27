@@ -343,7 +343,7 @@ impl ClientLoop<'_, '_> {
                     return true;
                 }
                 if let Some(recovery) = self.recovery {
-                    recovery.first_render(self.os_input, Instant::now());
+                    recovery.first_render(self.os_input, self.sessions.name(), Instant::now());
                 }
                 let elapsed = started.elapsed();
                 if let Some((suppressed, max_suppressed)) =

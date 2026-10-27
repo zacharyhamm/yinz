@@ -191,9 +191,17 @@ impl InputHandler {
             let received = match received {
                 Ok((stamp, instruction, context)) => {
                     if let Some(control) = self.os_input.remote_recovery() {
-                        // Capability replies describe the local terminal even while offline.
-                        let capability =
-                            matches!(instruction, InputInstruction::AnsiStdinInstructions(_));
+                        // Terminal state remains current across transport generations.
+                        // Let focus changes reach the recovery cache even while offline.
+                        let terminal_state = matches!(
+                            instruction,
+                            InputInstruction::AnsiStdinInstructions(_)
+                                | InputInstruction::HostTerminalFocusChanged(_)
+                                | InputInstruction::KeyEvent(
+                                    InputEvent::FocusGained | InputEvent::FocusLost,
+                                    _
+                                )
+                        );
                         let current = control.stamp();
                         if generation != Some(current.0) {
                             self.mouse_old_event = MouseEvent::new();
@@ -204,7 +212,7 @@ impl InputHandler {
                         if offline && is_cancel_key(&instruction) {
                             control.cancel();
                         }
-                        if !capability
+                        if !terminal_state
                             && !matches!(
                                 instruction,
                                 InputInstruction::Exit | InputInstruction::SetMouseMode(_)

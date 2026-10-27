@@ -148,6 +148,97 @@ fn offline_and_stale_keyboard_paste_and_mouse_input_are_discarded_after_replacem
 }
 
 #[test]
+fn offline_focus_changes_survive_recovery_and_queued_generation_changes() {
+    use crate::remote_recovery::Phase;
+
+    for phase in [Phase::Reconnecting, Phase::Repainting, Phase::Connected] {
+        for (focused, final_focus) in [
+            (false, InputInstruction::HostTerminalFocusChanged(false)),
+            (
+                false,
+                InputInstruction::KeyEvent(InputEvent::FocusLost, Vec::new()),
+            ),
+            (true, InputInstruction::HostTerminalFocusChanged(true)),
+            (
+                true,
+                InputInstruction::KeyEvent(InputEvent::FocusGained, Vec::new()),
+            ),
+        ] {
+            let os = FakeClientOsApi::new();
+            let command = CommandIsExecuting::new();
+            let recovery = crate::remote_recovery::Recovery::new("host".into(), command.clone());
+            os.set_remote_recovery(Some(recovery.control.clone()))
+                .unwrap();
+            os.send_to_server(ClientToServerMsg::HostTerminalFocusChanged { focused: true });
+            recovery.control.lost(0, "EOF".into());
+            if phase != Phase::Reconnecting {
+                recovery.control.replacing();
+            }
+            if phase == Phase::Connected {
+                recovery.control.repainted();
+            }
+            let (client_tx, _client_rx) = channels::unbounded();
+            let (input_tx, input_rx) = channels::unbounded();
+            let input_tx = SenderWithContext::new(input_tx);
+            // Both focus representations describe this terminal even when queued
+            // before a generation change or read during the outage.
+            for (stamp, instruction) in [
+                ((0, true), InputInstruction::HostTerminalFocusChanged(false)),
+                (
+                    (0, false),
+                    InputInstruction::KeyEvent(InputEvent::FocusGained, Vec::new()),
+                ),
+                (
+                    (0, false),
+                    InputInstruction::KeyEvent(InputEvent::FocusLost, Vec::new()),
+                ),
+                ((0, false), final_focus),
+                (
+                    (0, false),
+                    InputInstruction::KeyEvent(InputEvent::Paste("OFFLINE".into()), Vec::new()),
+                ),
+            ] {
+                input_tx
+                    .send(InputInstruction::FromGeneration(
+                        stamp,
+                        Box::new(instruction),
+                    ))
+                    .unwrap();
+            }
+            input_tx.send(InputInstruction::Exit).unwrap();
+            let nested = NestedReannounce::spawn(Box::new(os.clone()), "focus-recovery".into());
+            nested.stop();
+            InputHandler::new(
+                Box::new(os.clone()),
+                command,
+                Options::default(),
+                SenderWithContext::new(client_tx),
+                input_rx,
+                nested,
+            )
+            .handle_input();
+            let before_replay = os.sent_messages();
+            assert!(!before_replay
+                .iter()
+                .any(|msg| matches!(msg, ClientToServerMsg::Paste(_))));
+            if phase == Phase::Reconnecting {
+                assert_eq!(before_replay.len(), 1, "offline focus must only be cached");
+                recovery.control.replacing();
+            }
+            recovery.control.replay(&os);
+            let replayed: Vec<_> = os.sent_messages()[before_replay.len()..]
+                .iter()
+                .filter_map(|msg| match msg {
+                    ClientToServerMsg::HostTerminalFocusChanged { focused } => Some(*focused),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(replayed, vec![focused], "{phase:?}");
+        }
+    }
+}
+
+#[test]
 fn ctrl_c_during_recovery_cancels_locally_and_is_not_sent_to_the_server() {
     if yinz_test_support::reexec_test() {
         return;
