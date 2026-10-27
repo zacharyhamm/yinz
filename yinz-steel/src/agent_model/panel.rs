@@ -5,11 +5,18 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use yinz_tile::ui_components::forms;
 
+mod quota;
+
 fn decode<T: DeserializeOwned>(args: Value) -> Result<T> {
     serde_json::from_value(args).context("invalid panel typography arguments")
 }
 pub(super) fn run(op: &str, args: Value) -> Result<Value> {
     Ok(match op {
+        "QuotaImage" => {
+            let (value, color, terminal, width, height) = decode(args)?;
+            let png = quota::render(value, color, terminal, width, height)?;
+            json!(yinz_tile::ui_components::png_transmit_sequence(1, &png))
+        },
         "Divider" => {
             let (label, above, below, cols): (String, usize, usize, usize) = decode(args)?;
             anyhow::ensure!(cols <= 16384, "panel width exceeds budget");

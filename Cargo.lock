@@ -5163,6 +5163,7 @@ dependencies = [
  "hegeltest",
  "libc",
  "miette 7.6.0",
+ "png",
  "rand 0.10.2",
  "regex",
  "serde",

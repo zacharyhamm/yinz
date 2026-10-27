@@ -1,5 +1,6 @@
 use super::{host, run};
 use crate::plugin_tests::runtime_parity::SteelReference;
+use prost::Message;
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
@@ -9,17 +10,49 @@ use std::{
         Arc,
     },
 };
+use yinz_plugin_api::{
+    plugin_command::ProtobufGetCellPixelSizeResponse, plugin_ids::ProtobufPluginIds,
+};
 use yinz_terminal::panes::grid::Grid;
 use yinz_types::{data::Event, units::FractionalSeconds};
+use yinz_types::{
+    data::{ModeInfo, PluginCommand},
+    style::Style,
+};
 
 struct Panel {
     plugin: SteelReference,
     clock: Arc<AtomicU64>,
+    client: Arc<AtomicU64>,
+    cell_width: Arc<AtomicU64>,
 }
 impl Panel {
     fn new() -> Self {
         let clock = Arc::new(AtomicU64::new(90_000));
         let (_, responder) = host(&[], clock.clone());
+        let client = Arc::new(AtomicU64::new(1));
+        let cell_width = Arc::new(AtomicU64::new(8));
+        let acting = client.clone();
+        let pixels = cell_width.clone();
+        let responder = Arc::new(move |command: &PluginCommand| match command {
+            PluginCommand::GetPluginIds => {
+                let mut ids = ProtobufPluginIds::decode(responder(command)?.as_slice()).unwrap();
+                ids.client_id = acting.load(Ordering::SeqCst) as _;
+                Some(ids.encode_to_vec())
+            },
+            PluginCommand::GetCellPixelSize => Some(
+                ProtobufGetCellPixelSizeResponse {
+                    size: (pixels.load(Ordering::SeqCst) > 0).then(|| {
+                        yinz_plugin_api::event::CellPixelSize {
+                            width: pixels.load(Ordering::SeqCst) as u32,
+                            height: 18,
+                        }
+                    }),
+                }
+                .encode_to_vec(),
+            ),
+            _ => responder(command),
+        });
         let mut plugin = SteelReference::with_clock(
             "agents",
             BTreeMap::from([("view".into(), "agents".into())]),
@@ -29,9 +62,14 @@ impl Panel {
         );
         plugin
             .runtime
-            .eval("(define (usage-test-set! key value) (a-set! key value) (void))")
+            .eval("(define (usage-test-set! key value) (a-set! key value) (void)) (define (usage-test-cache-size) (length (hash-keys->list (a-get \"quota_images\"))))")
             .unwrap();
-        let mut panel = Self { plugin, clock };
+        let mut panel = Self {
+            plugin,
+            clock,
+            client,
+            cell_width,
+        };
         panel.set("rows", json!([row(7, "codex"), row(8, "claude")]));
         panel.set(
             "snapshot",
@@ -427,4 +465,220 @@ fn agents_usage_summary_remains_visible_in_the_default_overlay_with_run_history(
     );
     let frame = panel.render(15, 48);
     assert!(frame.contains("Local codex: quota unavailable"), "{frame}");
+}
+
+#[test]
+fn agents_quota_selects_and_rounds_without_losing_exact_usage() {
+    let mut panel = Panel::new();
+    for (used, rounded, remaining, tone) in [
+        (68.49, 68, 31.51, "success"),
+        (74.99, 75, 25.01, "success"),
+        (75.0, 75, 25.0, "attention"),
+        (90.0, 90, 10.0, "attention"),
+        (90.01, 90, 9.99, "error"),
+        (101.5, 102, 0.0, "error"),
+    ] {
+        let observation = usage("codex", used);
+        panel.set(
+            "usage_cache",
+            json!({"codex":{"observation":observation,"result":observation}}),
+        );
+        let display = panel
+            .plugin
+            .runtime
+            .invoke("a-usage-display", vec![])
+            .unwrap();
+        assert_eq!(display["value"], rounded);
+        assert_eq!(display["tone"], tone);
+        assert!((display["remaining"].as_f64().unwrap() - remaining).abs() < 0.001);
+        assert_eq!(display["featured"]["used_percent"], used);
+        assert!(panel.lines().contains(&format!("{used:?}% used")));
+    }
+    let observation = usage("codex", 10.0);
+    panel.set(
+        "usage_cache",
+        json!({"codex":{"observation":observation,"result":observation}}),
+    );
+    let display = panel
+        .plugin
+        .runtime
+        .invoke("a-usage-display", vec![])
+        .unwrap();
+    assert_eq!(display["featured"]["label"], "7d");
+    assert_eq!(display["value"], 26);
+    let observation = usage("codex", 25.5);
+    panel.set(
+        "usage_cache",
+        json!({"codex":{"observation":observation,"result":observation}}),
+    );
+    let display = panel
+        .plugin
+        .runtime
+        .invoke("a-usage-display", vec![])
+        .unwrap();
+    assert_eq!(display["featured"]["label"], "5h");
+    panel.tick(120_000);
+    let display = panel
+        .plugin
+        .runtime
+        .invoke("a-usage-display", vec![])
+        .unwrap();
+    assert_eq!(display["tone"], "neutral");
+    assert!(display["freshness"].as_str().unwrap().contains("Stale 2m"));
+    panel.set("rows", json!([]));
+    assert_eq!(
+        panel
+            .plugin
+            .runtime
+            .invoke("a-usage-display", vec![])
+            .unwrap(),
+        false
+    );
+}
+
+#[test]
+fn agents_quota_footer_reserves_history_and_ignores_footer_clicks() {
+    let mut panel = Panel::new();
+    panel.show();
+    let request = panel.request("codex");
+    panel.reply(&request, usage("codex", 68.0));
+    panel
+        .plugin
+        .runtime
+        .invoke(
+            "a-load-run!",
+            vec![json!(run("active", 7, false)), json!(0)],
+        )
+        .unwrap();
+    for (rows, cols) in [
+        (30, 120),
+        (20, 68),
+        (15, 48),
+        (8, 90),
+        (4, 90),
+        (2, 90),
+        (6, 20),
+    ] {
+        let frame = panel.render(rows, cols);
+        let get = |panel: &mut Panel, key| {
+            panel
+                .plugin
+                .runtime
+                .invoke("a-get", vec![json!(key)])
+                .unwrap()
+        };
+        let footer = get(&mut panel, "last_quota_top");
+        if let Some(footer) = footer.as_u64() {
+            assert!(footer < rows as u64, "{frame}");
+            let before = get(&mut panel, "history_cursor");
+            panel
+                .plugin
+                .runtime
+                .update(json!({"Mouse":{"LeftClick":[footer, cols-1]}}))
+                .unwrap();
+            panel
+                .plugin
+                .runtime
+                .update(json!({"Mouse":{"Release":[footer, cols-1]}}))
+                .unwrap();
+            assert_eq!(get(&mut panel, "history_cursor"), before);
+            assert_eq!(get(&mut panel, "reading"), false);
+            let body_top = get(&mut panel, "last_history_top").as_u64().unwrap()
+                + get(&mut panel, "last_label_rows").as_u64().unwrap()
+                + 1
+                + get(&mut panel, "last_history_body_top").as_u64().unwrap();
+            let body_rows = get(&mut panel, "last_history_body_rows").as_u64().unwrap();
+            assert!(body_top + body_rows <= footer, "{frame}");
+            if cols == 120 {
+                assert!(body_rows >= 4);
+                assert!(frame.contains("68% USED · 5h"));
+            }
+        }
+    }
+    panel.set("rows", json!([{"Run":{"run_id":"archived","kind":"codex","worktree":"topic","title":"Archive","started_at_ms":1000,"continuation":false}}]));
+    let frame = panel.render(30, 120);
+    assert!(!frame.contains("Local codex"));
+}
+
+#[test]
+fn agents_quota_images_reuse_ids_and_cache_each_clients_value_theme_and_geometry() {
+    let mut panel = Panel::new();
+    panel.show();
+    let request = panel.request("codex");
+    panel.reply(&request, usage("codex", 68.0));
+    let themes = yinz_config::assets::get_default_themes();
+    let image = |output: &str| {
+        output
+            .split("\x1b_Ga=t")
+            .nth(1)
+            .unwrap()
+            .split("\x1b_Ga=p")
+            .next()
+            .unwrap()
+            .to_owned()
+    };
+    let mut first = String::new();
+    for (client, theme) in [
+        (1, "gruvbox-dark"),
+        (2, "gruvbox-light"),
+        (1, "gruvbox-light"),
+    ] {
+        panel.client.store(client, Ordering::SeqCst);
+        let mut mode = ModeInfo {
+            style: Style {
+                colors: themes.get_theme(theme).unwrap().palette,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        mode.capabilities.kitty_graphics = true;
+        panel.plugin.update(&Event::ModeUpdate(mode.clone()));
+        let output = panel.plugin.render(30, 120);
+        assert!(
+            output.contains("a=t,f=100,t=d,q=2,i=1"),
+            "missing PNG transmission"
+        );
+        assert!(output.contains('\u{10eeee}'), "missing image placeholders");
+        assert_eq!(image(&output), image(&panel.plugin.render(30, 120)));
+        if first.is_empty() {
+            first = image(&output);
+        } else {
+            assert_ne!(first, image(&output));
+        }
+        let cache = panel
+            .plugin
+            .runtime
+            .invoke("usage-test-cache-size", vec![])
+            .unwrap();
+        assert_eq!(
+            cache.as_u64().unwrap(),
+            if client == 1 && theme == "gruvbox-dark" {
+                1
+            } else {
+                2
+            }
+        );
+        mode.capabilities.kitty_graphics = false;
+        panel.plugin.update(&Event::ModeUpdate(mode));
+        let output = panel.plugin.render(30, 120);
+        assert!(!output.contains('\u{10eeee}'));
+        assert!(panel.render(30, 120).contains("68% USED"));
+    }
+    panel.plugin.runtime.eval("(a-set! \"client_modes\" (hash-insert (a-get \"client_modes\") 1 (hash-insert (hash-ref (a-get \"client_modes\") 1) \"capabilities\" (hash \"kitty_graphics\" #t))))").unwrap();
+    let observation = usage("codex", 69.6);
+    panel.set(
+        "usage_cache",
+        json!({"codex":{"observation":observation,"result":observation}}),
+    );
+    let changed = panel.plugin.render(30, 120);
+    assert!(changed.contains("a=t,f=100,t=d,q=2,i=1"));
+    assert_ne!(image(&changed), first);
+    for width in [9, 0, 1000] {
+        panel.cell_width.store(width, Ordering::SeqCst);
+        let output = panel.plugin.render(30, 120);
+        assert_eq!(output.contains('\u{10eeee}'), width == 9);
+        if width == 9 {
+            assert_ne!(image(&output), first);
+        }
+    }
 }
