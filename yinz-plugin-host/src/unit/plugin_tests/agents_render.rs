@@ -1418,7 +1418,7 @@ fn agents_summary_and_quota_share_the_message_header_in_light_and_dark_themes() 
         assert!(row("3d left") < row("nothing to show yet"));
         let lines = render_sized(&mut plugin, style, 10, 120);
         cells(&lines, "[7] · claude · needs input");
-        cells(&lines, "Weekly · 26% · 5hr · 68%");
+        cells(&lines, "Weekly · 74% · 5hr · 32%");
     }
 }
 

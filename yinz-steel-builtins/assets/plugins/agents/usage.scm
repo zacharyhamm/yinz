@@ -142,11 +142,11 @@
           (define short (a-find (lambda (window)
                 (member (hash-ref window "label") '("5-hour limit" "5-hour" "5h"))) windows))
           (define short-label (if short (string-append "5hr · " (number->string
-                  (inexact->exact (floor (+ (hash-ref short "used_percent") 0.5)))) "%") ""))
+                  (inexact->exact (floor (+ (max 0 (min 100 (- 100 (hash-ref short "used_percent")))) 0.5)))) "%") ""))
           (define warning (cond (stale "stale") ((and (not featured) (not short)) status) (else "")))
           (define compact (string-join (filter (lambda (text) (not (equal? text "")))
                 (list (if featured (string-append "Weekly · " (number->string
-                        (inexact->exact (floor (+ (hash-ref featured "used_percent") 0.5)))) "%") "")
+                        (inexact->exact (floor (+ (max 0 (min 100 (- 100 (hash-ref featured "used_percent")))) 0.5)))) "%") "")
                   short-label warning)) " · "))
           (define used (and featured (hash-ref featured "used_percent")))
           (define remaining (and used (max 0 (min 100 (- 100 used)))))
@@ -154,7 +154,7 @@
             "compact" compact "short" short-label "reset" (usage-reset featured)
             "weekly-label" (if stale "Weekly · stale" "Weekly")
             "message" message "summary" (a-usage-summary) "featured" featured
-            "value" (and used (inexact->exact (floor (+ used 0.5)))) "remaining" remaining
+            "value" (and remaining (inexact->exact (floor (+ remaining 0.5)))) "remaining" remaining
             "tone" (cond ((or stale (not remaining)) "neutral") ((> remaining 25) "success") ((>= remaining 10) "attention") (else "error"))
             "label" (and used (string-append (number->string (inexact->exact (floor (+ used 0.5)))) "% USED · " (usage-text (hash-ref featured "label"))))
             "lines" (append (list heading) (map usage-window windows) (list freshness)
