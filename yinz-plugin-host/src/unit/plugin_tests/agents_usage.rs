@@ -553,6 +553,8 @@ fn agents_quota_footer_reserves_history_and_ignores_footer_clicks() {
     for (rows, cols) in [
         (30, 120),
         (20, 68),
+        (30, 44),
+        (30, 43),
         (15, 48),
         (8, 90),
         (4, 90),
@@ -591,7 +593,14 @@ fn agents_quota_footer_reserves_history_and_ignores_footer_clicks() {
             assert!(body_top + body_rows <= footer, "{frame}");
             if cols == 120 {
                 assert!(body_rows >= 4);
-                assert!(frame.contains("68% USED · 5h"));
+                assert_eq!(footer, rows as u64 - 7, "six footer rows before hints");
+                let lines: Vec<_> = frame.lines().collect();
+                assert!(lines[footer as usize + 3].ends_with("68% USED · 5h"));
+                assert!(lines[footer as usize + 4].ends_with("█████░░░░░░░░░░░░░"));
+                assert!(lines[footer as usize + 5].ends_with("32% remaining"));
+            }
+            if cols == 43 {
+                assert!(frame.contains("Local codex: up to 68.0% used"), "{frame}");
             }
         }
     }
@@ -621,7 +630,7 @@ fn agents_quota_images_reuse_ids_and_cache_each_clients_value_theme_and_geometry
     let assert_cached = |output: &str| {
         assert!(!output.contains("\x1b_Ga=t"), "retransmitted cached PNG");
         assert!(!output.contains("\x1b_Ga=p"), "recreated cached placement");
-        assert_eq!(output.matches('\u{10eeee}').count(), 60);
+        assert_eq!(output.matches('\u{10eeee}').count(), 36);
     };
     for (client, theme) in [
         (1, "gruvbox-dark"),
@@ -644,12 +653,22 @@ fn agents_quota_images_reuse_ids_and_cache_each_clients_value_theme_and_geometry
             "missing PNG transmission"
         );
         assert!(output.contains('\u{10eeee}'), "missing image placeholders");
-        assert!(output.contains("a=p,U=1,q=2,i=1,c=20,r=3"));
+        assert!(output.contains("a=p,U=1,q=2,i=1,c=18,r=2"));
+        assert!(
+            output.contains("\x1b[25;103H"),
+            "first image row follows heading"
+        );
+        assert!(
+            output.contains("\x1b[26;103H"),
+            "second image row precedes label"
+        );
         assert_cached(&panel.plugin.render(30, 120));
-        let compact = panel.plugin.render(10, 120);
-        assert!(!compact.contains('\u{10eeee}'));
-        assert!(!compact.contains("\x1b_G"));
-        assert_cached(&panel.plugin.render(30, 120));
+        for (rows, cols) in [(10, 120), (30, 43)] {
+            let compact = panel.plugin.render(rows, cols);
+            assert!(!compact.contains('\u{10eeee}'));
+            assert!(!compact.contains("\x1b_G"));
+            assert_cached(&panel.plugin.render(30, 120));
+        }
         if first.is_empty() {
             first = image(&output);
         } else {
@@ -684,7 +703,7 @@ fn agents_quota_images_reuse_ids_and_cache_each_clients_value_theme_and_geometry
     );
     let changed = panel.plugin.render(30, 120);
     assert!(changed.contains("a=t,f=100,t=d,q=2,i=1"));
-    assert!(changed.contains("a=p,U=1,q=2,i=1,c=20,r=3"));
+    assert!(changed.contains("a=p,U=1,q=2,i=1,c=18,r=2"));
     assert_ne!(image(&changed), first);
     assert_cached(&panel.plugin.render(30, 120));
     for width in [9, 0, 1000] {
@@ -693,7 +712,7 @@ fn agents_quota_images_reuse_ids_and_cache_each_clients_value_theme_and_geometry
         assert_eq!(output.contains('\u{10eeee}'), width == 9);
         if width == 9 {
             assert_ne!(image(&output), first);
-            assert!(output.contains("a=p,U=1,q=2,i=1,c=20,r=3"));
+            assert!(output.contains("a=p,U=1,q=2,i=1,c=18,r=2"));
             assert_cached(&panel.plugin.render(30, 120));
         }
     }

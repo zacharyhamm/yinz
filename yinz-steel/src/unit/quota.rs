@@ -8,14 +8,14 @@ fn quota_png_dimensions_color_antialiasing_and_digits() {
         foreground: (255, 255, 255),
         background: (0, 0, 0),
     };
-    for value in [0, 1, 8, 68, 100, 102] {
-        let png = render(value, PaletteColor::EightBit(2), Some(terminal), 160, 60).unwrap();
+    for value in (0..=9).chain([68, 100, 102, 999]) {
+        let png = render(value, PaletteColor::EightBit(2), Some(terminal), 144, 36).unwrap();
         let mut reader = png::Decoder::new(Cursor::new(png)).read_info().unwrap();
         let mut buffer = vec![0; reader.output_buffer_size()];
         let info = reader.next_frame(&mut buffer).unwrap();
         assert_eq!(
             (info.width, info.height, info.color_type),
-            (160, 60, png::ColorType::Rgba)
+            (144, 36, png::ColorType::Rgba)
         );
         assert!(buffer
             .as_chunks::<4>()
@@ -28,13 +28,57 @@ fn quota_png_dimensions_color_antialiasing_and_digits() {
             .iter()
             .any(|p| p[3] > 0 && p[3] < 255));
         assert!(buffer.as_chunks::<4>().0.iter().any(|p| p[3] == 255));
+        assert!(buffer.as_chunks::<4>().0.iter().any(|p| p[3] == 0));
     }
-    assert!(digit_distance(8, 0.29, 0.5) < 0.0);
-    assert!(digit_distance(0, 0.29, 0.5) > 0.0);
-    assert_ne!(
-        render(68, PaletteColor::Rgb((0, 0, 0)), None, 160, 60).unwrap(),
-        render(68, PaletteColor::Rgb((255, 255, 255)), None, 160, 60).unwrap()
-    );
+    for (color, rgb) in [
+        (PaletteColor::Rgb((0, 0, 0)), [0, 0, 0]),
+        (PaletteColor::Rgb((255, 255, 255)), [255, 255, 255]),
+        (PaletteColor::EightBit(196), [255, 0, 0]),
+    ] {
+        for (width, height) in [(108, 24), (18, 2), (1, 1)] {
+            let png = render(102, color, None, width, height).unwrap();
+            let mut reader = png::Decoder::new(Cursor::new(png)).read_info().unwrap();
+            let mut buffer = vec![0; reader.output_buffer_size()];
+            let info = reader.next_frame(&mut buffer).unwrap();
+            assert_eq!((info.width, info.height), (width, height));
+            assert!(buffer.as_chunks::<4>().0.iter().all(|p| p[..3] == rgb));
+        }
+    }
+}
+
+#[test]
+fn compact_digits_are_distinct_continuous_strokes() {
+    let mut glyphs = Vec::new();
+    for digit in 0..=9 {
+        let png = render(digit, PaletteColor::Rgb((255, 255, 255)), None, 144, 36).unwrap();
+        let mut reader = png::Decoder::new(Cursor::new(png)).read_info().unwrap();
+        let mut buffer = vec![0; reader.output_buffer_size()];
+        reader.next_frame(&mut buffer).unwrap();
+        // The numeral sits in these columns, before the smaller percent sign.
+        let mut ink = std::collections::BTreeSet::new();
+        for y in 0..36 {
+            for x in 106..129 {
+                if buffer[(y * 144 + x) * 4 + 3] >= 128 {
+                    ink.insert((x as i32, y as i32));
+                }
+            }
+        }
+        assert!(!ink.is_empty(), "missing digit {digit}");
+        assert!(!glyphs.contains(&ink), "duplicate digit {digit}");
+        glyphs.push(ink.clone());
+        let mut pending = vec![ink.pop_first().unwrap()];
+        while let Some((x, y)) = pending.pop() {
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    let neighbor = (x + dx, y + dy);
+                    if ink.remove(&neighbor) {
+                        pending.push(neighbor);
+                    }
+                }
+            }
+        }
+        assert!(ink.is_empty(), "disconnected digit {digit}");
+    }
 }
 
 #[test]
