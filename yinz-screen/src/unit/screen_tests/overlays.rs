@@ -18,6 +18,115 @@ use yinz_types::internal_ids::TabPosition;
 use {yinz_types::data::OverlayKind, yinz_types::data::OverlayPlacement};
 
 #[test]
+fn agents_semantic_backgrounds_follow_themes_in_standalone_and_overlay_panes() {
+    use yinz_types::colors::PaletteColor;
+
+    let size = Size { cols: 80, rows: 16 };
+    let themes = yinz_config::assets::get_default_themes();
+    for overlay in [false, true] {
+        let (mut screen, _, server_rx) =
+            create_new_screen_with_capture(size, false, false, true, false);
+        let (plugin_tx, _plugin_rx) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+        new_tab(&mut screen, 1, TabId::new(0));
+        let plugin_id = PluginId::new(9);
+        let pane_id = PaneId::Plugin(plugin_id);
+        let run = configured_overlay_run("yinz:agents");
+        let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+        let mut backing = String::from("\x1b[?7l\x1b[38;2;200;210;220m\x1b[48;2;10;20;30m");
+        for row in 1..=size.rows {
+            backing.push_str(&format!("\x1b[{row};1H{}", "w".repeat(size.cols)));
+        }
+        tab.handle_pty_bytes(TerminalId::new(1), backing.into_bytes())
+            .unwrap();
+        let placement = if overlay {
+            NewPanePlacement::Overlay(OverlayPlacement {
+                background_opacity: Some(yinz_types::input::options::DEFAULT_BACKGROUND_OPACITY),
+                ..OverlayPlacement::dismissible(Some(FloatingPaneCoordinates {
+                    height: Some(PercentOrFixed::Fixed(8)),
+                    ..popup_coordinates()
+                }))
+            })
+        } else {
+            NewPanePlacement::default()
+        };
+        tab.new_pane(
+            pane_id,
+            None,
+            Some(Run::Plugin(run)),
+            false,
+            true,
+            placement,
+            Some(CLIENT_1),
+            None,
+        )
+        .unwrap();
+        let mut grid = grid_for_render_snapshot(size);
+        for name in ["gruvbox-light", "gruvbox-dark", "gruvbox-light"] {
+            let colors = themes.get_theme(name).unwrap().palette;
+            screen.repaint_theme(colors).unwrap();
+            for opacity in [100, 50] {
+                let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+                tab.update_background_opacity(opacity);
+                let pane = tab.get_pane_with_id(pane_id).unwrap();
+                let (x, y, columns) = (
+                    pane.get_content_x(),
+                    pane.get_content_y(),
+                    pane.get_content_columns(),
+                );
+                let background = |color: PaletteColor| match color {
+                    PaletteColor::Rgb((r, g, b)) => format!("\x1b[48;2;{r};{g};{b}m"),
+                    PaletteColor::EightBit(index) => format!("\x1b[48;5;{index}m"),
+                };
+                tab.handle_plugin_bytes(
+                    plugin_id,
+                    CLIENT_1,
+                    format!(
+                        "\x1b[2J\x1b[H{}Label\x1b[2;1H{}{}\x1b[0m",
+                        background(colors.text_unselected.background),
+                        background(colors.text_selected.background),
+                        " ".repeat(columns),
+                    )
+                    .into_bytes(),
+                )
+                .unwrap();
+                render_frame_into(&mut screen, &server_rx, CLIENT_1, &mut grid);
+                let lines = grid.as_character_lines();
+                let blank = &lines[y + 2][x + columns - 1];
+                let translucent = overlay && opacity < 100;
+                assert_eq!(
+                    blank.character,
+                    if translucent { 'w' } else { ' ' },
+                    "{name}, overlay {overlay}, opacity {opacity}"
+                );
+                let expected = if translucent {
+                    yinz_types::animation::blend(
+                        PaletteColor::Rgb((10, 20, 30)),
+                        colors.text_unselected.background,
+                        0.5,
+                    )
+                } else {
+                    colors.text_unselected.background
+                };
+                assert_eq!(blank.styles.background, Some(expected.into()));
+                for cell in &lines[y][x..x + 5] {
+                    assert_eq!(
+                        cell.styles.background,
+                        Some(colors.text_unselected.background.into())
+                    );
+                }
+                for cell in &lines[y + 1][x..x + columns] {
+                    assert_eq!(
+                        cell.styles.background,
+                        Some(colors.text_selected.background.into())
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn modal_plugin_configuration_requests_overlay() {
     let mut modal = yinz_runtime::plugin_location::run_plugin_from_url("yinz:quit-confirmation")
         .expect("test plugin");
@@ -7897,6 +8006,13 @@ fn configured_overlay_coalesces_launches_selects_unloaded_tabs_and_survives_relo
     );
     let info = screen.tabs[&TabId::new(0)].pane_tabs_info(id).unwrap();
     assert!(info.overlay_group);
+    assert_eq!(
+        screen.tabs[&TabId::new(0)]
+            .overlay_placement_for(info.pane_id)
+            .unwrap()
+            .background_opacity,
+        Some(yinz_types::input::options::DEFAULT_BACKGROUND_OPACITY)
+    );
     assert_eq!(info.active, 1);
     screen
         .pane_tab_loaded(

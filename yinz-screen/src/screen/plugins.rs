@@ -854,7 +854,10 @@ impl Screen {
             Some(Run::Plugin(run.clone())),
             false,
             true,
-            NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+            NewPanePlacement::Overlay(OverlayPlacement {
+                background_opacity: Some(yinz_types::input::options::DEFAULT_BACKGROUND_OPACITY),
+                ..OverlayPlacement::dismissible(None)
+            }),
             Some(pending.focus_client),
             None,
         )?;

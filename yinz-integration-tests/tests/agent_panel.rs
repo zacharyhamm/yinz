@@ -143,7 +143,7 @@ fn panel_reports_missing_local_quota_without_blocking_dismissal() {
 }
 
 #[test]
-fn open_agent_panel_repaints_its_background_when_the_theme_changes() {
+fn agent_panel_translucency_tracks_theme_opacity_and_terminal_output() {
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
         .with_config(&format!(
             "{CONFIG}\npane_animations false\ntheme \"gruvbox-light\""
@@ -157,6 +157,20 @@ fn open_agent_panel_repaints_its_background_when_the_theme_changes() {
     yinz.wait_until("the initial terminal is rendered", |s| {
         s.contains("AGENT READY")
     });
+    let paint_backing = |letter: char| {
+        let mut bytes = String::from("\x1b[?25l\x1b[?7l\x1b[38;2;200;210;220m\x1b[48;2;10;20;30m");
+        for row in 1..=TERMINAL_SIZE.rows {
+            bytes.push_str(&format!(
+                "\x1b[{row};1H{}",
+                letter.to_string().repeat(TERMINAL_SIZE.cols)
+            ));
+        }
+        agent.output(bytes.as_bytes());
+    };
+    paint_backing('w');
+    yinz.wait_until("the terminal backing is painted", |s| {
+        s.contains(&"w".repeat(TERMINAL_SIZE.cols))
+    });
     yinz.send_stdin(&keys::ctrl('e'));
     yinz.send_stdin(b"a");
     yinz.wait_until("the agents panel receives the service snapshot", |s| {
@@ -167,6 +181,10 @@ fn open_agent_panel_repaints_its_background_when_the_theme_changes() {
     let y = pane.pane_content_y.get();
     let columns = pane.pane_content_columns.get();
     let rows = pane.pane_content_rows.get();
+    let backdrop_x = x + columns - 1;
+    let backdrop_y = y + rows - 4;
+    let backing_background = yinz_types::data::PaletteColor::Rgb((10, 20, 30));
+    let backing_foreground = yinz_types::data::PaletteColor::Rgb((200, 210, 220));
     let themes = yinz_config::assets::get_default_themes();
     for name in ["gruvbox-light", "gruvbox-dark", "dracula", "gruvbox-light"] {
         let (code, error) = yinz.run_actions_reporting(vec![Action::Reconfigure {
@@ -175,7 +193,17 @@ fn open_agent_panel_repaints_its_background_when_the_theme_changes() {
         }]);
         assert_eq!(code, 0, "{error}");
         let colors = themes.get_theme(name).unwrap().palette;
-        yinz.wait_until(&format!("the whole agents panel uses {name}"), |s| {
+        let background = yinz_types::animation::blend(
+            backing_background,
+            colors.text_unselected.background,
+            0.85,
+        );
+        let foreground = yinz_types::animation::blend(
+            backing_foreground,
+            colors.text_unselected.background,
+            0.85,
+        );
+        yinz.wait_until(&format!("the translucent agents panel uses {name}"), |s| {
             let lines = s.lines();
             let Some(selected) = (y..y + rows).find(|&row| {
                 lines[row].chars().nth(x) == Some('┃')
@@ -191,17 +219,64 @@ fn open_agent_panel_repaints_its_background_when_the_theme_changes() {
                 .unwrap_or(columns);
             (y..y + rows).all(|row| {
                 (x..x + columns).all(|col| {
-                    let expected =
-                        if lines[row].chars().nth(x) == Some('┃') && col < x + list_columns {
-                            colors.text_selected
-                        } else {
-                            colors.text_unselected
-                        };
-                    s.cell_style(col, row).background == Some(expected.background.into())
+                    let actual = s.cell_style(col, row).background;
+                    if lines[row].chars().nth(x) == Some('┃') && col < x + list_columns {
+                        actual == Some(colors.text_selected.background.into())
+                    } else {
+                        [
+                            Some(colors.text_unselected.background.into()),
+                            Some(background.into()),
+                        ]
+                        .contains(&actual)
+                    }
                 })
             }) && s.cell_foreground(x, selected) == Some(colors.text_selected.base.into())
+                && lines[backdrop_y].chars().nth(backdrop_x) == Some('w')
+                && s.cell_style(backdrop_x, backdrop_y).background == Some(background.into())
+                && s.cell_foreground(backdrop_x, backdrop_y) == Some(foreground.into())
         });
     }
+    let colors = themes.get_theme("gruvbox-light").unwrap().palette;
+    for opacity in [0, 50, 100, 85] {
+        let (code, error) = yinz.run_actions_reporting(vec![Action::Reconfigure {
+            config: format!("background_opacity {opacity}"),
+            write_to_disk: false,
+        }]);
+        assert_eq!(code, 0, "{error}");
+        yinz.wait_until(
+            &format!("the agents panel inherits opacity {opacity}"),
+            |s| {
+                let letter = s.lines()[backdrop_y].chars().nth(backdrop_x);
+                if opacity == 100 {
+                    letter == Some(' ')
+                        && s.cell_style(backdrop_x, backdrop_y).background
+                            == Some(colors.text_unselected.background.into())
+                } else {
+                    letter == Some('w')
+                        && s.cell_foreground(backdrop_x, backdrop_y)
+                            == Some(
+                                yinz_types::animation::blend(
+                                    backing_foreground,
+                                    colors.text_unselected.background,
+                                    opacity as f32 / 100.0,
+                                )
+                                .into(),
+                            )
+                }
+            },
+        );
+    }
+    paint_backing('v');
+    yinz.wait_until("the open panel reveals updated terminal output", |s| {
+        s.lines()[backdrop_y].chars().nth(backdrop_x) == Some('v')
+    });
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until("dismissal restores the terminal without tint", |s| {
+        !s.contains("Agents")
+            && s.lines()[backdrop_y].chars().nth(backdrop_x) == Some('v')
+            && s.cell_foreground(backdrop_x, backdrop_y) == Some(backing_foreground.into())
+            && s.cell_style(backdrop_x, backdrop_y).background == Some(backing_background.into())
+    });
     yinz.quit();
 }
 
