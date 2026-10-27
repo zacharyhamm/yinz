@@ -1043,13 +1043,13 @@ fn agents_history_clicks_open_a_full_panel_reader_only_on_release() {
 }
 
 #[test]
-fn agents_summary_order_and_fixed_quota_footer_follow_light_and_dark_themes() {
+fn agents_summary_and_quota_share_the_message_header_in_light_and_dark_themes() {
     for style in themes() {
         let mut plugin = plugin();
         plugin.runtime.eval(r#"
           (a-set! "snapshot" (hash "panes" (list (hash "pane_id" 7 "title" "Review the release" "command" "claude" "status" "Running"))
             "hooks" (hash "7" (hash "phase" "Waiting" "waiting_on" "Allow the release build to run with all features and report any differences before finishing"))))
-          (define observation (hash "status" "ok" "windows" (list (hash "label" "5-hour" "used_percent" 68 "resets_at_ms" 3690000)) "observed_at_ms" 90000))
+          (define observation (hash "status" "ok" "windows" (list (hash "label" "5-hour" "used_percent" 68 "resets_at_ms" 3690000) (hash "label" "Weekly limit" "used_percent" 26 "resets_at_ms" 259290000)) "observed_at_ms" 90000))
           (a-set! "usage_cache" (hash "claude" (hash "observation" observation "result" observation)))
         "#).unwrap();
         plugin.update(&yinz_types::data::Event::ModeUpdate(
@@ -1074,12 +1074,11 @@ fn agents_summary_order_and_fixed_quota_footer_follow_light_and_dark_themes() {
         assert!(row("7 · claude · needs input") < row("Task: Review the release"));
         assert!(row("Task: Review the release") < row("project · topic"));
         assert!(row("project · topic") < row("Allow the release build"));
-        assert!(row("State: hooks") < row("Local claude account"));
-        assert_eq!(row("32% remaining"), 28);
-        assert_text(&lines, "█████", style.colors.exit_code_success.base, false);
+        assert_eq!(row("7 · claude · needs input"), row("Weekly"));
+        assert!(row("resets in 3 days") < row("nothing to show yet"));
         let lines = render_sized(&mut plugin, style, 10, 120);
         cells(&lines, "7 · claude · needs input");
-        cells(&lines, "Local claude:");
+        cells(&lines, "Weekly · 26% · 5hr · 68%");
     }
 }
 

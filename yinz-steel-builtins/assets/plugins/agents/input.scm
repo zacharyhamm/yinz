@@ -125,7 +125,6 @@
   (cond ((or (< line 0) (< col 0) (>= col (a-get "last_cols"))) #f)
     ((and divider (= col divider)) #f)
     ((and (or (not divider) (< col divider)) (< line (a-get "last_list_rows"))) "list")
-    ((and (a-get "last_quota_top") (>= (car point) (a-get "last_quota_top"))) #f)
     ((and (> (a-get "last_history_rows") 0)
         (>= line (a-get "last_history_top"))
         (<= line (+ (a-get "last_history_top") (a-get "last_history_rows")))) "history")
