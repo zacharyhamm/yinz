@@ -4,7 +4,7 @@ expression: normalized(&grid_snapshot)
 ---
  Yinz (test)  [1] Tab #1  + 
                                                      │ [0] Pane #1 │
-                                                   > │ [1] Pane #2 │                                  [ SCROLL: 21/22 ]
+ 👇                                                > │ [1] Pane #2 │                                  [ SCROLL: 21/22 ]
 line1
 line2
 line3

@@ -14,7 +14,7 @@ expression: normalized(&host_after_guest_gone)
                                                            │
                                                            │
 ───────────────────────────────────────────────────────────┤
-                         [2] Pane #3                       │
+                       👇 [2] Pane #3                      │
 $ █                                                        │
                                                            │
                                                            │

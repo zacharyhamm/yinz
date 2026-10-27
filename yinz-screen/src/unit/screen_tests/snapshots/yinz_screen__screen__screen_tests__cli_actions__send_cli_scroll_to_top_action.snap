@@ -2,7 +2,7 @@
 source: yinz-screen/src/screen/../unit/screen_tests/cli_actions.rs
 expression: settled
 ---
-00 (C): ┌ [0] Pane #1 ───────── SCROLL:  13/13 ┐┌ [1] Pane #2 ─────────────────────────┐
+00 (C): ┌ 👇 [0] Pane #1 ────── SCROLL:  13/13 ┐┌ [1] Pane #2 ─────────────────────────┐
 01 (C): │fill pane up with something 0         ││                                      │
 02 (C): │fill pane up with something 1         ││                                      │
 03 (C): │fill pane up with something 2         ││                                      │

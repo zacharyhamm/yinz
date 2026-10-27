@@ -2,7 +2,7 @@
 source: yinz-screen/src/screen/../unit/screen_tests/cli_actions.rs
 expression: "format!(\"{}\", snapshot)"
 ---
-00 (C): ┌ [0] Pane #1 ─────────────────────┐┌ [1] Pane #2 ─────────────────────────────┐
+00 (C): ┌ 👇 [0] Pane #1 ──────────────────┐┌ [1] Pane #2 ─────────────────────────────┐
 01 (C): │                                  ││                                          │
 02 (C): │                                  ││                                          │
 03 (C): │                                  ││                                          │

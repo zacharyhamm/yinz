@@ -11,7 +11,7 @@ expression: snapshot
 06 (C): │ │E│EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE│                                             │                              │
 07 (C): │ └─│EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE│3 ───────────────────── SCROLL:  0/1 | PIN [ ] ┐                            │
 08 (C): │   │EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE│EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE│                            │
-09 (C): │   └─────────────────────────────┌ [4] Pane #4 ───────────────────── SCROLL:  0/1 | PIN [ ] ┐                          │
+09 (C): │   └─────────────────────────────┌ 👇 [4] Pane #4 ────────────────── SCROLL:  0/1 | PIN [ ] ┐                          │
 10 (C): │                             │ │E│EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE│                          │
 11 (C): │                             │ │E│EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE│                          │
 12 (C): │                             │ │E│EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE│                          │

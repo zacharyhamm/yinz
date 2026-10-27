@@ -56,7 +56,7 @@ layout {
 /// halves are matched separately rather than as one substring — a test that spelled
 /// the id would be asserting on which pane the server happened to hand out.
 fn is_selected_entry(line: &str, title: &str) -> bool {
-    let trimmed = line.trim_start();
+    let trimmed = line.trim_start().trim_start_matches('👇').trim_start();
     trimmed.starts_with("> │") && trimmed.contains(title)
 }
 
@@ -153,7 +153,7 @@ fn sgr_alt_left_click(column: usize, line: usize) -> Vec<u8> {
 
 fn display_column_of(line: &str, needle: &str) -> Option<usize> {
     line.find(needle)
-        .map(|byte_offset| line[..byte_offset].chars().count())
+        .map(|byte_offset| yinz_types::text::ansi_len(&line[..byte_offset]))
 }
 
 fn entry_click_coordinates(grid_snapshot: &GridSnapshot, entry_title: &str) -> (usize, usize) {

@@ -4,10 +4,10 @@ expression: normalized(&grid_snapshot)
 ---
  Yinz (test)  [1] Tab #1  + 
                                                      │ [0] Pane #1 │
-                                                   > │ [1] Pane #2 │
+ 👇                                                > │ [1] Pane #2 │
 $ second-member
 $
-                              ┌ [2] Pane #3 ──────────────────────────────────── PIN [ ] ┐
+                              ┌ 👇 [2] Pane #3 ───────────────────────────────── PIN [ ] ┐
                               │$ third-member                                            │
                               │$ █                                                       │
                               │                                                          │

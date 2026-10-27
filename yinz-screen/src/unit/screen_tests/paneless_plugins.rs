@@ -1824,12 +1824,18 @@ fn a_given_up_multipane_slot_leaves_its_owner_alone_in_the_container() {
     let mut harness = Harness::new();
     let slot = PaneId::Terminal(TerminalId::new(5));
     let [owner, _] = harness.compose_with(slot);
+    let id = harness.multipane_of(owner).unwrap().id;
 
     harness
         .screen
         .give_up_slot(slot, &mut harness.pending)
         .unwrap();
 
+    assert!(harness
+        .screen
+        .multipane_command(yinz_types::multipane::MultipaneOperation::Get(id), CLIENT)
+        .unwrap()
+        .is_none());
     assert!(harness.screen.tab_containing_pane(slot).is_none());
     assert!(harness.has_pane(OWNER), "the owner stays");
     assert_eq!(

@@ -11,7 +11,7 @@ fn pane_frame_with(mouse_scroll_resize: bool, is_floating: bool, cols: usize) ->
             rows: 10,
         },
         (0, 0),
-        String::new(),
+        "pane".into(),
         FrameParams {
             focused_client: None,
             is_main_client: true,
@@ -307,4 +307,37 @@ fn opening_ripple_halves_sample_the_same_travelling_wave() {
         OpeningRipple::sample(start, start, 0, 0).unwrap().stroke(0),
         "─"
     );
+}
+
+#[test]
+fn focus_emoji_is_part_of_the_title_and_fits_available_columns() {
+    let mut frame = pane_frame_with(false, false, 80);
+    assert_eq!(frame.title, "👇 pane");
+    for full in [false, true] {
+        frame.should_draw_pane_frames = full;
+        for cols in 7..80 {
+            frame.geom.cols = cols;
+            let title = frame.render_one_line_title().unwrap();
+            assert_eq!(title.iter().map(|c| c.width()).sum::<usize>(), cols);
+        }
+    }
+    frame.stack_list_entry = Some(StackListEntry {
+        width: 10,
+        label: "pane".into(),
+        is_selected: true,
+        is_emphasized: false,
+        stack_is_focused: true,
+        border_color: None,
+    });
+    for focused in [false, true] {
+        frame.is_main_client = focused;
+        for width in 0..20 {
+            let indicator = frame.bracketed_focus_indicator(width);
+            assert_eq!(indicator.is_some(), focused && width >= 4);
+            if let Some((characters, length)) = indicator {
+                assert_eq!(characters_to_string(&characters), " 👇 ");
+                assert_eq!(length, characters.iter().map(|c| c.width()).sum::<usize>());
+            }
+        }
+    }
 }

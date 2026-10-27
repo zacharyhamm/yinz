@@ -5,6 +5,6 @@ expression: normalized(&grid_snapshot)
  Yinz (test)  [2] Tab #1  + 
                                                      │ [0] Pane #1 │
                                                      │ [1] Pane #2 │
-                                                   > │ [2] Pane #3 │
+ 👇                                                > │ [2] Pane #3 │
 $ █
  Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 

@@ -3,7 +3,7 @@ source: yinz-integration-tests/tests/clients.rs
 expression: normalized(&main_grid)
 ---
  Yinz (test)  Tab #1 [ ] + 
-┌ [0] Pane #1 ─────────────────────────────────────┤ MY FOCUS AND:   ├─────────────────────────────────────────────────┐
+┌ 👇 [0] Pane #1 ──────────────────────────────────┤ MY FOCUS AND:   ├─────────────────────────────────────────────────┐
 │$ █                                                                                                                   │
 │                                                                                                                      │
 │                                                                                                                      │

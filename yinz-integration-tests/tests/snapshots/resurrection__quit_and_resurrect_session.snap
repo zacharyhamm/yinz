@@ -3,7 +3,7 @@ source: yinz-integration-tests/tests/resurrection.rs
 expression: normalized(&grid_snapshot)
 ---
  Yinz (test)  [0] alpha  beta  + 
-                         [1] Pane #1                       │                         [2] Pane #2
+                         [1] Pane #1                       │                       👇 [2] Pane #2
                                                            │█
                                                            │
                                                            │

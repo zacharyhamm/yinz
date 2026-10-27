@@ -3,7 +3,7 @@ source: yinz-tab/src/tab/./unit/tab_integration_tests/swap_layouts.rs
 assertion_line: 1528
 expression: snapshot
 ---
-00 (C): ┌ yinz:tab-bar ───────────────────────────────────┌ yinz:status-bar ──────────────────────────────── PIN [ ] ┐──────────┐
+00 (C): ┌ yinz:tab-bar ───────────────────────────────────┌ 👇 yinz:status-bar ───────────────────────────── PIN [ ] ┐──────────┐
 01 (C): │I am a tab bar                                   │I am a                                                    │          │
 02 (C): │                                                 │status bar                                                │          │
 03 (C): │                                                 │                                                          │          │
