@@ -595,6 +595,9 @@ fn agents_reader_centers_and_rewraps_at_max_agent_width() {
                 .chain(&actual[row][left + width..])
                 .all(|cell| cell.character == ' '));
         }
+        // Mouse hit-testing reads the drawn column to ignore clicks in the margins.
+        assert_eq!(state(&mut plugin, "last_reader_left"), left);
+        assert_eq!(state(&mut plugin, "last_reader_width"), width);
         let cache = state(&mut plugin, "reader_cache");
         assert_eq!(cache["key"][2], width);
         let count = cache["lines"]["lines"].as_array().unwrap().len();

@@ -173,9 +173,12 @@
       (when (and (= (cadr action) (a-get "selected")) (a-selection)) (activate!)) #f)
     (else (and (equal? (a-get "focus") "history") (= (a-get "history_cursor") (cadr action))
         (not (a-get "reading")) (a-open-reader!)))))
-(define (reader-click! row keys)
+(define (reader-click! row col keys)
   (define line (+ (a-reader "scroll") row))
-  (define fold (and (< row (a-get "last_reader_rows")) (< line (length (a-reader-lines))) (a-fold-at line)))
+  ; A capped reader leaves blank margins; clicks there miss its rows.
+  (define left (a-get "last_reader_left"))
+  (define fold (and (< row (a-get "last_reader_rows")) (>= col left) (< col (+ left (a-get "last_reader_width")))
+      (< line (length (a-reader-lines))) (a-fold-at line)))
   (if (or (not fold) (not (equal? (a-at (a-reader-starts) fold) line))) #f
     (if (and (= (a-reader "cursor") fold) keys) (a-toggle-fold!)
       (begin (a-reader-set! "cursor" fold) #t))))
@@ -183,7 +186,7 @@
   (cond ((a-get "reading")
       (cond ((equal? kind "ScrollUp") (a-scroll-reader! (- (max args 1))))
         ((equal? kind "ScrollDown") (a-scroll-reader! (max args 1)))
-        ((and (equal? kind "LeftClick") (>= (car args) 1)) (reader-click! (- (car args) 1) keys)) (else #f)))
+        ((and (equal? kind "LeftClick") (>= (car args) 1)) (reader-click! (- (car args) 1) (cadr args) keys)) (else #f)))
     ((and (equal? kind "LeftClick") (>= (car args) 0))
       (a-set! "click_press" #f)
       (define content (- (car args) (a-get "last_label_rows")))
