@@ -112,6 +112,35 @@ impl ClientOsInputOutput {
                 .connection_generation
                 .load(std::sync::atomic::Ordering::Acquire)
     }
+
+    /// The caller holds the sender lock; recovery state is never locked across IPC.
+    fn send_message(
+        sender: &mut IpcSenderWithContext<ClientToServerMsg>,
+        msg: ClientToServerMsg,
+        control: Option<&crate::remote_recovery::RecoveryControl>,
+        generation: Option<u64>,
+    ) -> bool {
+        let result = if control.is_some() {
+            sender.send_client_msg_until(
+                msg,
+                time::Instant::now() + crate::remote_recovery::WRITE_TIMEOUT,
+            )
+        } else {
+            sender.send_client_msg(msg)
+        };
+        if let Err(error) = result {
+            log::warn!("failed to send message to server: {error:#}");
+            if let (Some(control), Some(generation)) = (control, generation) {
+                control.lost(
+                    generation,
+                    format!("Failed to write to the remote session: {error:#}"),
+                );
+            }
+            false
+        } else {
+            true
+        }
+    }
 }
 
 impl std::fmt::Debug for ClientOsInputOutput {
@@ -276,6 +305,17 @@ pub trait ServerConnection {
     }
     /// Sends a message to the server.
     fn send_to_server(&self, msg: ClientToServerMsg);
+    /// Replays cached terminal state. Real transports serialize this batch with live updates.
+    #[doc(hidden)]
+    fn replay_terminal_state(
+        &self,
+        control: &crate::remote_recovery::RecoveryControl,
+        new_size: Size,
+    ) {
+        for message in control.replay_messages(new_size) {
+            self.send_to_server(message);
+        }
+    }
     /// Receives a message on client-side IPC channel
     // This should be called from the client-side router thread only.
     ///
@@ -526,15 +566,24 @@ impl ServerConnection for ClientOsInputOutput {
         if !self.is_current_connection() {
             return IpcRecv::Eof;
         }
-        if self
-            .remote_recovery()
+        let control = self.remote_recovery();
+        if control
+            .as_ref()
             .is_some_and(|control| !control.accepts(generation) || !control.can_write())
         {
             return IpcRecv::Eof;
         }
         receiver
             .as_mut()
-            .map(|receiver| receiver.recv_server_msg())
+            .map(|receiver| {
+                if control.is_some() {
+                    receiver.recv_server_msg_until(
+                        time::Instant::now() + crate::remote_recovery::READ_POLL,
+                    )
+                } else {
+                    receiver.recv_server_msg()
+                }
+            })
             .unwrap_or(IpcRecv::Eof)
     }
     fn spawn_server(&self, socket_path: &Path, debug: bool) -> io::Result<()> {
@@ -565,17 +614,21 @@ impl ServerConnection for ClientOsInputOutput {
             );
         }
         let control = self.remote_recovery();
-        if let Some(control) = &control {
-            control.cache(&msg);
-        }
         let generation = self
             .input_generation
             .or_else(|| control.as_ref().map(|control| control.stamp().0));
         let mut sender = self.send_instructions_to_server.lock().unwrap();
-        if !self.is_current_connection()
-            || control.as_ref().is_some_and(|control| {
-                !control.can_write() || Some(control.stamp().0) != generation
-            })
+        if !self.is_current_connection() {
+            return;
+        }
+        // Observations and replay snapshots share the sender lock. Cache even while
+        // offline, but never let a live update be overwritten by an older replay.
+        if let Some(control) = &control {
+            control.cache(&msg);
+        }
+        if control
+            .as_ref()
+            .is_some_and(|control| !control.can_write() || Some(control.stamp().0) != generation)
         {
             return;
         }
@@ -588,35 +641,40 @@ impl ServerConnection for ClientOsInputOutput {
         }
         match sender.as_mut() {
             Some(sender) => {
-                let result = if control.is_some() {
-                    sender.send_client_msg_until(
-                        msg,
-                        time::Instant::now() + crate::remote_recovery::WRITE_TIMEOUT,
-                    )
-                } else {
-                    sender.send_client_msg(msg)
-                };
+                let sent = Self::send_message(sender, msg, control.as_ref(), generation);
                 if let Some(kind) = startup_message {
                     log::info!(
                         "startup trace: client pid={} IPC {kind} write finished after {:?} ({})",
                         std::process::id(),
                         started_at.elapsed(),
-                        if result.is_ok() { "ok" } else { "error" }
+                        if sent { "ok" } else { "error" }
                     );
-                }
-                if let Err(error) = result {
-                    log::warn!("failed to send message to server: {error:#}");
-                    if let (Some(control), Some(generation)) = (&control, generation) {
-                        control.lost(
-                            generation,
-                            format!("Failed to write to the remote session: {error:#}"),
-                        );
-                    }
                 }
             },
             None => {
                 log::warn!("Server not ready, dropping message.");
             },
+        }
+    }
+    fn replay_terminal_state(
+        &self,
+        control: &crate::remote_recovery::RecoveryControl,
+        new_size: Size,
+    ) {
+        let mut sender = self.send_instructions_to_server.lock().unwrap();
+        if !self.is_current_connection() || !control.can_write() {
+            return;
+        }
+        let Some(sender) = sender.as_mut() else {
+            return;
+        };
+        let generation = control.stamp().0;
+        for message in control.replay_messages(new_size) {
+            if !control.can_write()
+                || !Self::send_message(sender, message, Some(control), Some(generation))
+            {
+                break;
+            }
         }
     }
     fn recv_from_server(&self) -> IpcRecv<ServerToClientMsg> {

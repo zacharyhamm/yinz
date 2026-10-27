@@ -104,6 +104,26 @@ impl RecoveryControl {
                 | ClientToServerMsg::SynchronizedOutputSupport { .. }
         ) {
             let mut state = self.state.lock().unwrap();
+            if let ClientToServerMsg::ColorRegisters { color_registers } = message {
+                let mut registers = std::collections::BTreeMap::new();
+                for cached in &state.capabilities {
+                    if let ClientToServerMsg::ColorRegisters { color_registers } = cached {
+                        for register in color_registers {
+                            registers.insert(register.index, register.clone());
+                        }
+                    }
+                }
+                for register in color_registers {
+                    registers.insert(register.index, register.clone());
+                }
+                state
+                    .capabilities
+                    .retain(|old| !matches!(old, ClientToServerMsg::ColorRegisters { .. }));
+                state.capabilities.push(ClientToServerMsg::ColorRegisters {
+                    color_registers: registers.into_values().collect(),
+                });
+                return;
+            }
             if let ClientToServerMsg::TerminalPixelDimensions { pixel_dimensions } = message
                 && let Some(ClientToServerMsg::TerminalPixelDimensions {
                     pixel_dimensions: cached,
@@ -122,16 +142,16 @@ impl RecoveryControl {
         }
     }
     pub(crate) fn replay(&self, os: &dyn ClientOsApi) {
-        let capabilities = self.state.lock().unwrap().capabilities.clone();
-        os.send_to_server(ClientToServerMsg::TerminalResize {
-            new_size: os.get_terminal_size(),
-        });
-        for message in capabilities {
-            os.send_to_server(message);
-        }
-        os.send_to_server(ClientToServerMsg::ModifiersHeld {
+        os.replay_terminal_state(self, os.get_terminal_size());
+    }
+    /// Snapshot only while serialized with live observations by the transport's sender lock.
+    pub(crate) fn replay_messages(&self, new_size: Size) -> Vec<ClientToServerMsg> {
+        let mut messages = vec![ClientToServerMsg::TerminalResize { new_size }];
+        messages.extend(self.state.lock().unwrap().capabilities.clone());
+        messages.push(ClientToServerMsg::ModifiersHeld {
             modifiers: Default::default(),
         });
+        messages
     }
     pub(crate) fn replacing(&self) {
         let mut state = self.state.lock().unwrap();
