@@ -1,7 +1,9 @@
 #![cfg(unix)]
 
 use yinz_cli::args::CliAction;
-use yinz_integration_tests::{keys, LayoutInfo, Size, TestRunner, TestSession, TERMINAL_SIZE};
+use yinz_integration_tests::{
+    agent_row_column, keys, lists_agent, LayoutInfo, Size, TestRunner, TestSession, TERMINAL_SIZE,
+};
 use yinz_types::{data::PaneListEntry, input::actions::Action};
 
 const CONFIG: &str = r#"
@@ -40,7 +42,7 @@ fn panel_tabs_open_and_dismiss_without_chat() {
     });
     yinz.send_stdin(&keys::ctrl('b'));
     let initial = yinz.wait_until("the agents panel receives the service snapshot", |s| {
-        s.contains("Agents") && s.contains("CLA")
+        s.contains("Agents") && lists_agent(&s.text, "claude")
     });
     assert!(!initial.contains("Hocus"));
     assert_eq!(panel(&yinz).pane_info.pane_tabs.unwrap().tabs.len(), 1);
@@ -70,7 +72,7 @@ fn panel_reports_missing_local_quota_without_blocking_dismissal() {
     yinz.send_stdin(&keys::ctrl('b'));
     // The harness has an empty, isolated Claude config; this exercises the real host reply.
     let quota = yinz.wait_until("the panel explains missing local provider quotas", |s| {
-        s.contains("Agents") && s.contains("CLA") && s.contains("Unavailable")
+        s.contains("Agents") && lists_agent(&s.text, "claude") && s.contains("Unavailable")
     });
     assert!(!quota.contains("% used"));
     yinz.send_stdin(&keys::ESC);
@@ -98,7 +100,7 @@ fn open_agent_panel_repaints_its_background_when_the_theme_changes() {
     yinz.send_stdin(&keys::ctrl('e'));
     yinz.send_stdin(b"a");
     yinz.wait_until("the agents panel receives the service snapshot", |s| {
-        s.contains("Agents") && s.contains("CLA")
+        s.contains("Agents") && lists_agent(&s.text, "claude")
     });
     let pane = panel(&yinz).pane_info;
     let x = pane.pane_content_x.get();
@@ -115,9 +117,10 @@ fn open_agent_panel_repaints_its_background_when_the_theme_changes() {
         let colors = themes.get_theme(name).unwrap().palette;
         yinz.wait_until(&format!("the whole agents panel uses {name}"), |s| {
             let lines = s.lines();
-            let Some(selected) = (y..y + rows)
-                .find(|&row| lines[row].chars().nth(x) == Some('┃') && lines[row].contains("CLA"))
-            else {
+            let Some(selected) = (y..y + rows).find(|&row| {
+                lines[row].chars().nth(x) == Some('┃')
+                    && agent_row_column(&lines[row], "claude").is_some()
+            }) else {
                 return false;
             };
             let list_columns = lines[selected]
@@ -153,6 +156,20 @@ fn click_text(yinz: &mut TestSession, text: &str) {
                 .map(|index| (line[..index].chars().count() + 1, row + 1))
         })
         .unwrap_or_else(|| panic!("{text} is missing:\n{}", snapshot.text));
+    yinz.send_stdin(format!("\x1b[<0;{column};{row}M").as_bytes());
+    yinz.send_stdin(format!("\x1b[<0;{column};{row}m").as_bytes());
+}
+
+fn click_agent(yinz: &mut TestSession, kind: &str) {
+    let snapshot = yinz.snapshot();
+    let (column, row) = snapshot
+        .text
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| {
+            agent_row_column(line, kind).map(|index| (line[..index].chars().count() + 2, row + 1))
+        })
+        .unwrap_or_else(|| panic!("the {kind} row is missing:\n{}", snapshot.text));
     yinz.send_stdin(format!("\x1b[<0;{column};{row}M").as_bytes());
     yinz.send_stdin(format!("\x1b[<0;{column};{row}m").as_bytes());
 }
@@ -284,7 +301,7 @@ fn panel_placement_drag_tab_follow_and_modal_return_work_without_chat() {
     });
     yinz.send_stdin(&keys::ctrl('b'));
     yinz.wait_until("the project panel is placed", |s| {
-        s.contains("Agents") && s.contains("CLA")
+        s.contains("Agents") && lists_agent(&s.text, "claude")
     });
     let first = panel(&yinz).pane_info;
     assert_eq!(
@@ -333,7 +350,7 @@ fn panel_placement_drag_tab_follow_and_modal_return_work_without_chat() {
     yinz.send_stdin(&keys::ctrl('b'));
     yinz.wait_until(
         "the panel reopens after the hidden reposition message",
-        |s| s.contains("Agents") && s.contains("CLA"),
+        |s| s.contains("Agents") && lists_agent(&s.text, "claude"),
     );
     let reopened = panel(&yinz).pane_info;
     assert_eq!(
@@ -413,7 +430,7 @@ fn panel_prompt_sends_text_to_the_selected_agent() {
     yinz.wait_until("the first agent is selected", |s| {
         s.text
             .lines()
-            .any(|line| line.contains("┃") && line.contains("CLA"))
+            .any(|line| line.contains("┃") && agent_row_column(line, "claude").is_some())
     });
     click_text(&mut yinz, "Prompt:");
     yinz.wait_until("prompt has focus", |s| s.contains("Enter send"));
@@ -422,13 +439,13 @@ fn panel_prompt_sends_text_to_the_selected_agent() {
     yinz.wait_until("typing and paste stay in the prompt", |s| {
         s.contains("fix? jk/sw pasted text")
     });
-    click_text(&mut yinz, "CDX");
+    click_agent(&mut yinz, "codex");
     yinz.wait_until("another agent has its own draft", |s| {
         s.text
             .lines()
             .any(|line| line.contains("Prompt:") && !line.contains("fix? jk/sw"))
     });
-    click_text(&mut yinz, "CLA");
+    click_agent(&mut yinz, "claude");
     yinz.wait_until("the selected agent retains its draft", |s| {
         s.contains("Prompt: fix? jk/sw pasted text")
     });

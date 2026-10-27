@@ -29,6 +29,19 @@ fn row(pane: u32, symbol: char, waiting: bool) -> Value {
     json!({"Agent": {"pane_id": pane, "kind": "claude", "text": format!("{pane} CLA {symbol}"), "waiting": waiting}})
 }
 
+/// A snapshot in which every listed pane reports a tool call, so each agent has an activity line.
+fn busy(panes: impl Iterator<Item = u32>) -> Value {
+    let hooks: serde_json::Map<String, Value> = panes
+        .map(|pane| {
+            (
+                pane.to_string(),
+                json!({"phase": "Busy", "detail": "running tests"}),
+            )
+        })
+        .collect();
+    json!({ "hooks": hooks })
+}
+
 fn info(plugin: &mut SteelReference, row: Value) -> Value {
     plugin.runtime.invoke("a-agent-info", vec![row]).unwrap()
 }
@@ -157,7 +170,7 @@ fn key(plugin: &mut SteelReference, char: &str) -> Value {
 
 #[test]
 fn agents_centered_rows_never_open_on_an_orphaned_activity_line() {
-    let mut plugin = plugin(json!({}));
+    let mut plugin = plugin(busy(1..=20));
     let mut rows = vec![json!({"Project": "project"}), json!({"Branch": "  topic"})];
     rows.extend((1..=20).map(|pane| row(pane, '●', false)));
     set(&mut plugin, "rows", json!(rows));
@@ -168,7 +181,7 @@ fn agents_centered_rows_never_open_on_an_orphaned_activity_line() {
         let lines = state(&mut plugin, "list_lines");
         let lines = lines.as_array().unwrap();
         let start = state(&mut plugin, "last_window_start").as_u64().unwrap() as usize;
-        let height = state(&mut plugin, "last_list_rows").as_u64().unwrap() as usize;
+        let height = state(&mut plugin, "last_list_window").as_u64().unwrap() as usize;
         assert_eq!(lines[start][1], false, "selected {selected}");
         let window = &lines[start..lines.len().min(start + height)];
         assert!(
@@ -281,25 +294,27 @@ fn mouse(plugin: &mut SteelReference, kind: &str, point: Value) {
 
 #[test]
 fn agents_bottom_window_stays_put_when_a_click_or_wheel_pins_it() {
-    let mut plugin = plugin(json!({}));
+    let mut plugin = plugin(busy(1..=20));
     let mut rows = vec![json!({"Project": "project"}), json!({"Branch": "  topic"})];
     rows.extend((1..=20).map(|pane| row(pane, '●', false)));
     set(&mut plugin, "rows", json!(rows));
     set(&mut plugin, "selected", json!(21));
     set(&mut plugin, "focus", json!("history"));
-    // 21 list rows make the last full window open on the tenth agent's activity line, so the
-    // centered window starts one line later, on the eleventh agent.
+    // 21 list rows leave a 19-line window between the scroll cues. The last full window would
+    // open on the eleventh agent's activity line, so it starts one line later, on the twelfth.
     plugin.render(22, 90);
     assert_eq!(state(&mut plugin, "last_list_rows"), 21);
-    assert_eq!(state(&mut plugin, "last_window_start"), 22);
-    assert_eq!(state(&mut plugin, "last_list_max_scroll"), 22);
-    // The last agent's line, with no normal heading row.
-    let point = json!([40 - 22, 5]);
+    assert_eq!(state(&mut plugin, "last_list_window"), 19);
+    assert_eq!(state(&mut plugin, "last_window_start"), 23);
+    assert_eq!(state(&mut plugin, "last_list_max_scroll"), 23);
+    // The last agent's line: one merged heading line precedes the agents, and the top cue
+    // row precedes the window.
+    let point = json!([39 - 23 + 1, 5]);
     plugin.take_commands();
     mouse(&mut plugin, "LeftClick", point.clone());
     mouse(&mut plugin, "Release", point.clone());
     plugin.render(22, 90);
-    assert_eq!(state(&mut plugin, "last_window_start"), 22);
+    assert_eq!(state(&mut plugin, "last_window_start"), 23);
     assert_eq!(state(&mut plugin, "selected"), 21);
     mouse(&mut plugin, "LeftClick", point.clone());
     mouse(&mut plugin, "Release", point);
@@ -313,5 +328,5 @@ fn agents_bottom_window_stays_put_when_a_click_or_wheel_pins_it() {
     mouse(&mut plugin, "ScrollDown", json!(1));
     assert_eq!(state(&mut plugin, "list_scroll"), false);
     mouse(&mut plugin, "ScrollUp", json!(1));
-    assert_eq!(state(&mut plugin, "list_scroll"), 21);
+    assert_eq!(state(&mut plugin, "list_scroll"), 22);
 }

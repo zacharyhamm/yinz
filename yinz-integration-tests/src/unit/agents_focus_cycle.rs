@@ -1,10 +1,10 @@
 use crate::{keys, CellStyle, GridSnapshot, LayoutInfo, Size, TestRunner, TestSession};
 
 fn selected(frame: &GridSnapshot, title: &str) -> bool {
-    frame
-        .text
-        .lines()
-        .any(|line| line.contains(title) && line.trim_start_matches([' ', '│']).starts_with('┃'))
+    frame.text.lines().any(|line| {
+        crate::agent_row_column(line, title).is_some()
+            && line.trim_start_matches([' ', '│']).starts_with('┃')
+    })
 }
 
 fn bar_style(frame: &GridSnapshot) -> CellStyle {
@@ -69,15 +69,15 @@ load_plugins clear-defaults=true {{ "agent-service"; }}
     yinz.send_stdin(&keys::ctrl('b'));
     let initial = yinz.wait_until("both agents appear in the panel", |frame| {
         frame.contains("Agents")
-            && frame.contains("CLA")
-            && frame.contains("CDX")
+            && crate::lists_agent(&frame.text, "claude")
+            && crate::lists_agent(&frame.text, "codex")
             && frame.contains("Enter focus")
     });
     assert_eq!(initial.contains("nothing to show yet"), history_visible);
     assert_eq!(initial.contains("Prompt:"), prompt_visible);
     let unfocused_bar = bar_style(&initial);
     yinz.send_stdin(b"\x1b[A");
-    yinz.wait_until("first agent selected", |frame| selected(frame, "CLA"));
+    yinz.wait_until("first agent selected", |frame| selected(frame, "claude"));
 
     for _ in 0..2 {
         yinz.send_stdin(&keys::TAB);
@@ -97,11 +97,11 @@ load_plugins clear-defaults=true {{ "agent-service"; }}
         yinz.send_stdin(b"\x1b[B");
         yinz.wait_until(
             "Down moves through the list after leaving the bar",
-            |frame| selected(frame, "CDX"),
+            |frame| selected(frame, "codex"),
         );
         yinz.send_stdin(b"\x1b[A");
         yinz.wait_until("Up returns to the first agent", |frame| {
-            selected(frame, "CLA")
+            selected(frame, "claude")
         });
     }
 

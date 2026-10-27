@@ -110,6 +110,12 @@ fn branch(name: &str) -> StripRow {
     StripRow::Branch(format!("  {name}"))
 }
 
+/// The host a compact line names after its provider code, as `strip_rows` carries it.
+fn host_of(text: &str) -> Option<String> {
+    let (_, host) = text.split_whitespace().nth(1)?.split_once('@')?;
+    Some(host.to_owned())
+}
+
 /// Full provider identity stays separate from compact list text.
 fn agent(pane_id: u32, kind: &str, text: &str) -> StripRow {
     StripRow::Agent {
@@ -117,6 +123,7 @@ fn agent(pane_id: u32, kind: &str, text: &str) -> StripRow {
         kind: kind.into(),
         text: text.into(),
         waiting: false,
+        host: host_of(text),
     }
 }
 
@@ -127,6 +134,7 @@ fn waiting(pane_id: u32, kind: &str, text: &str) -> StripRow {
         kind: kind.into(),
         text: text.into(),
         waiting: true,
+        host: host_of(text),
     }
 }
 

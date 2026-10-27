@@ -1,6 +1,13 @@
 (require "./state.scm" "../shared/agent-status.scm")
-(provide a-agent-status a-agent-info a-pulse-elapsed a-check-pulse! a-hook-pulse!)
+(provide a-agent-status a-agent-info a-quiet-minutes a-snapshot-quiet-minutes a-pulse-elapsed a-check-pulse! a-hook-pulse!)
 (define (a-agent-status row) (agent-row-status row))
+;; Whole minutes a pane's screen has been still, from the service's activity sample, which
+;; counts quiet polls five seconds apart; #f under a minute.
+(define (a-snapshot-quiet-minutes snapshot id)
+  (define sample (a-field (a-field snapshot "activity" #f) (number->string id) #f))
+  (define minutes (if sample (quotient (* 5 (cadr sample)) 60) 0))
+  (and (> minutes 0) minutes))
+(define (a-quiet-minutes id) (a-snapshot-quiet-minutes (a-get "snapshot") id))
 ;; Sanitizing drops a bare carriage return, so it becomes a space first rather than joining words.
 (define (one-line text)
   (if (string? text) (string-join (split-whitespace (yinz-text-sanitize (string-replace text "\r" " "))) " ") ""))
