@@ -170,6 +170,12 @@ fn inject_pane_env(value: &mut Value, env: &HashMap<String, String>) -> bool {
     true
 }
 
+struct Review {
+    request_id: Value,
+    thread: String,
+    turn: Option<String>,
+}
+
 #[derive(Default)]
 struct Conversations {
     /// Request ids of conversation selections awaiting their reply, and whether each asked
@@ -179,6 +185,9 @@ struct Conversations {
     ephemeral: HashSet<String>,
     selected: Option<String>,
     current_turn: Option<String>,
+    review: Option<Review>,
+    /// Review identities already observed, including superseded or consumed parents.
+    review_turns: HashSet<(String, String)>,
 }
 
 impl Conversations {
@@ -187,6 +196,7 @@ impl Conversations {
         if self.selected.as_deref() != Some(thread) {
             self.selected = Some(thread.to_owned());
             self.current_turn = None;
+            self.review = None;
         }
         Ok(())
     }
@@ -199,6 +209,9 @@ impl Conversations {
             && let Some(id) = value.get("id")
         {
             let ephemeral = value["params"]["ephemeral"].as_bool() == Some(true);
+            if !ephemeral {
+                self.review = None;
+            }
             self.pending
                 .insert(id.to_string(), (method.to_owned(), ephemeral));
         }
@@ -208,25 +221,83 @@ impl Conversations {
             && !self.ephemeral.contains(thread)
         {
             self.select(thread, registration)?;
+            self.review = None;
+        }
+        if method == "review/start"
+            && let (Some(id), Some(thread)) =
+                (value.get("id"), value["params"]["threadId"].as_str())
+            && (id.is_string() || id.is_number())
+            && !thread.is_empty()
+            && !self.ephemeral.contains(thread)
+            && (value["params"]["delivery"].is_null() || value["params"]["delivery"] == "inline")
+        {
+            self.select(thread, registration)?;
+            self.current_turn = None;
+            self.review = Some(Review {
+                request_id: id.clone(),
+                thread: thread.to_owned(),
+                turn: None,
+            });
         }
         Ok(())
     }
 
-    /// Observe selections and final failures without changing the backend's messages.
+    /// Observe selections and terminal lifecycle events without changing backend messages.
     ///
     /// Returns the lifecycle hooks to report, in order.
     fn response(&mut self, value: &Value, registration: &Registration) -> Result<Vec<Value>> {
+        // Keeping only the current request also invalidates replies from older selections/work.
+        if value.get("method").is_none()
+            && let Some(review) = &mut self.review
+            && value.get("id").is_some_and(|id| *id == review.request_id)
+        {
+            let result = &value["result"];
+            if result["reviewThreadId"].as_str() == Some(review.thread.as_str())
+                && let Some(id) = result["turn"]["id"].as_str().filter(|id| !id.is_empty())
+                && (review.turn.as_deref() == Some(id)
+                    || self
+                        .review_turns
+                        .insert((review.thread.clone(), id.to_owned())))
+            {
+                review.turn = Some(id.to_owned());
+            } else {
+                self.review = None;
+            }
+            return Ok(Vec::new());
+        }
         if value.get("id").is_none() {
             let params = &value["params"];
+            if let Some(review) = &mut self.review
+                && params["threadId"].as_str() == Some(review.thread.as_str())
+                && matches!(
+                    value["method"].as_str(),
+                    Some("item/started" | "item/completed")
+                )
+                && params["item"]["type"] == "enteredReviewMode"
+                && review.turn.is_none()
+                && let Some(id) = params["turnId"].as_str().filter(|id| !id.is_empty())
+                && self
+                    .review_turns
+                    .insert((review.thread.clone(), id.to_owned()))
+            {
+                review.turn = Some(id.to_owned());
+            }
             if params["threadId"].as_str().is_some_and(|thread| {
                 self.selected.as_deref() == Some(thread) && !self.ephemeral.contains(thread)
             }) {
                 let turn = &params["turn"];
                 if let Some(id) = turn["id"].as_str().filter(|id| !id.is_empty()) {
                     match value["method"].as_str() {
-                        Some("turn/started") => self.current_turn = Some(id.to_owned()),
+                        Some("turn/started") if self.review.is_none() => {
+                            self.current_turn = Some(id.to_owned());
+                        },
                         Some("turn/completed")
-                            if self.current_turn.as_deref() == Some(id)
+                            if (self
+                                .review
+                                .as_ref()
+                                .is_some_and(|review| review.turn.as_deref() == Some(id))
+                                || (self.review.is_none()
+                                    && self.current_turn.as_deref() == Some(id)))
                                 && matches!(
                                     turn["status"].as_str(),
                                     Some("completed" | "interrupted" | "failed")
@@ -235,13 +306,25 @@ impl Conversations {
                             // Consume every terminal event so a duplicate or delayed failure
                             // cannot end this turn twice or affect a newer turn.
                             self.current_turn = None;
-                            if turn["status"] == "failed" {
-                                return Ok(vec![serde_json::json!({
-                                    "hook_event_name": "StopFailure",
+                            let review = self.review.take().is_some();
+                            if review || turn["status"] == "failed" {
+                                let event = match turn["status"].as_str() {
+                                    Some("completed") => "Stop",
+                                    Some("interrupted") => "Interrupt",
+                                    _ => "StopFailure",
+                                };
+                                let mut hook = serde_json::json!({
+                                    "hook_event_name": event,
                                     "session_id": params["threadId"],
                                     "turn_id": id,
-                                    "last_assistant_message": turn["error"]["message"].as_str().unwrap_or("Codex turn failed."),
-                                })]);
+                                });
+                                if turn["status"] == "failed" {
+                                    hook["last_assistant_message"] = turn["error"]["message"]
+                                        .as_str()
+                                        .unwrap_or("Codex turn failed.")
+                                        .into();
+                                }
+                                return Ok(vec![hook]);
                             }
                         },
                         _ => {},

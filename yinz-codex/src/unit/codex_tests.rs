@@ -2376,7 +2376,7 @@ fn resumed_plans_do_not_report_waiting_on_completion() {
 }
 
 #[tokio::test]
-async fn bridge_reports_only_failures_locally_and_remotely_without_changing_traffic() {
+async fn bridge_reports_failures_and_reviews_in_order_without_changing_traffic() {
     for remote in [false, true] {
         let root = tempfile::tempdir().unwrap();
         let reports = root.path().join("reports");
@@ -2461,6 +2461,34 @@ async fn bridge_reports_only_failures_locally_and_remotely_without_changing_traf
                 backend.send(message.clone()).await.unwrap();
                 assert_eq!(ui.next().await.unwrap().unwrap(), message);
             }
+            for (request_id, status, event) in
+                [(2, "completed", "Stop"), (3, "interrupted", "Interrupt")]
+            {
+                let request = Message::text(json!({"id":request_id,"method":"review/start","params":{"threadId":"selected"}}).to_string());
+                ui.send(request.clone()).await.unwrap();
+                assert_eq!(backend.next().await.unwrap().unwrap(), request);
+                let terminal = json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":format!("review-parent-{request_id}"),"status":status}}});
+                for value in [
+                    json!({"method":"item/started","params":{"threadId":"selected","turnId":format!("review-parent-{request_id}"),"item":{"type":"enteredReviewMode","id":"entry"}}}),
+                    json!({"method":"turn/started","params":{"threadId":"selected","turn":{"id":"review-child"}}}),
+                    terminal.clone(),
+                    json!({"id":request_id,"result":{"reviewThreadId":"selected","turn":{"id":format!("review-parent-{request_id}")}}}),
+                    terminal,
+                ] {
+                    let message = Message::text(format!(" {value} "));
+                    backend.send(message.clone()).await.unwrap();
+                    assert_eq!(ui.next().await.unwrap().unwrap(), message);
+                    if value["method"] == "turn/completed" {
+                        let recorded = std::fs::read_to_string(&reports).unwrap();
+                        let hook: Value =
+                            serde_json::from_str(recorded.lines().last().unwrap()).unwrap();
+                        assert_eq!(
+                            hook["hook_event_name"], event,
+                            "report precedes UI completion"
+                        );
+                    }
+                }
+            }
             // A new turn followed by a transport disconnect is not a final failure.
             let start = Message::text(json!({"method":"turn/started","params":{"threadId":"selected","turn":{"id":"next"}}}).to_string());
             backend.send(start.clone()).await.unwrap();
@@ -2475,7 +2503,11 @@ async fn bridge_reports_only_failures_locally_and_remotely_without_changing_traf
         .unwrap();
         let reports = std::fs::read_to_string(&reports).unwrap();
         let lines: Vec<_> = reports.lines().collect();
-        assert_eq!(lines.len(), 2, "only the failure is reported: {reports}");
+        assert_eq!(
+            lines.len(),
+            6,
+            "failure and two reviews are reported: {reports}"
+        );
         assert_eq!(
             lines[0],
             if remote {
@@ -2789,4 +2821,226 @@ fn routed_hook_traces_finish_for_success_unbound_and_errors() {
         );
         assert!(!log.contains("private-payload") && !log.contains("private-token"));
     }
+}
+
+#[test]
+fn review_completion_tracks_parent_and_consumes_terminal_events() {
+    for (status, event) in [
+        ("completed", "Stop"),
+        ("interrupted", "Interrupt"),
+        ("failed", "StopFailure"),
+    ] {
+        for reply_timing in 0..3 {
+            let root = tempfile::tempdir().unwrap();
+            let registration = registration(root.path(), "aaaaaaaaaaaa");
+            let mut conversations = Conversations::default();
+            conversations
+                .request(
+                    &json!({"id":1,"method":"review/start","params":{"threadId":"selected"}}),
+                    &registration,
+                )
+                .unwrap();
+            let reply =
+                json!({"id":1,"result":{"reviewThreadId":"selected","turn":{"id":"parent"}}});
+            let entered = json!({"method":"item/started","params":{"threadId":"selected","turnId":"parent","item":{"id":"item-id","type":"enteredReviewMode"}}});
+            if reply_timing == 0 {
+                assert!(conversations
+                    .response(&reply, &registration)
+                    .unwrap()
+                    .is_empty());
+            }
+            assert!(conversations
+                .response(&entered, &registration)
+                .unwrap()
+                .is_empty());
+            if reply_timing == 1 {
+                assert!(conversations
+                    .response(&reply, &registration)
+                    .unwrap()
+                    .is_empty());
+            }
+            for notification in [
+                json!({"method":"turn/started","params":{"threadId":"selected","turn":{"id":"child"}}}),
+                json!({"method":"item/started","params":{"threadId":"selected","turnId":"child","item":{"type":"commandExecution"}}}),
+                json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"child","status":"failed"}}}),
+                json!({"method":"turn/completed","params":{"threadId":"unrelated","turn":{"id":"parent","status":"completed"}}}),
+                json!({"method":"item/completed","params":{"threadId":"selected","turnId":"parent","item":{"type":"exitedReviewMode"}}}),
+            ] {
+                assert!(conversations
+                    .response(&notification, &registration)
+                    .unwrap()
+                    .is_empty());
+            }
+            let completed = json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"parent","status":status,"error":{"message":"review failed"}}}});
+            let hooks = conversations.response(&completed, &registration).unwrap();
+            assert_eq!(hooks.len(), 1);
+            assert_eq!(hooks[0]["hook_event_name"], event);
+            assert_eq!(hooks[0]["turn_id"], "parent");
+            assert_eq!(hooks[0]["session_id"], "selected");
+            if status == "failed" {
+                assert_eq!(hooks[0]["last_assistant_message"], "review failed");
+            }
+            for late in [
+                reply,
+                entered,
+                completed,
+                json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"parent","status":"failed"}}}),
+            ] {
+                assert!(conversations
+                    .response(&late, &registration)
+                    .unwrap()
+                    .is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn newer_work_invalidates_review_requests_and_turns() {
+    for active in [false, true] {
+        for method in [
+            "turn/start",
+            "turn/steer",
+            "review/start",
+            "thread/resume",
+            "thread/start",
+            "thread/fork",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let registration = registration(root.path(), "aaaaaaaaaaaa");
+            let mut conversations = Conversations::default();
+            conversations
+                .request(
+                    &json!({"id":1,"method":"review/start","params":{"threadId":"selected"}}),
+                    &registration,
+                )
+                .unwrap();
+            let reply = json!({"id":1,"result":{"reviewThreadId":"selected","turn":{"id":"old"}}});
+            if active {
+                conversations.response(&reply, &registration).unwrap();
+            }
+            conversations
+                .request(
+                    &json!({"id":2,"method":method,"params":{"threadId":"other"}}),
+                    &registration,
+                )
+                .unwrap();
+            conversations
+                .request(
+                    &json!({"id":3,"method":"turn/start","params":{"threadId":"selected"}}),
+                    &registration,
+                )
+                .unwrap();
+            for stale in [
+                reply,
+                json!({"method":"item/started","params":{"threadId":"selected","turnId":"old","item":{"type":"enteredReviewMode"}}}),
+                json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"old","status":"failed"}}}),
+            ] {
+                assert!(
+                    conversations
+                        .response(&stale, &registration)
+                        .unwrap()
+                        .is_empty(),
+                    "{method}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn review_requires_valid_inline_parent_identity() {
+    for params in [
+        json!({"threadId":"hidden"}),
+        json!({"threadId":"selected","delivery":"detached"}),
+        json!({"threadId":"selected","delivery":false}),
+        json!({}),
+        json!({"threadId":""}),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let registration = registration(root.path(), "aaaaaaaaaaaa");
+        let mut conversations = Conversations::default();
+        conversations.ephemeral.insert("hidden".into());
+        conversations
+            .request(
+                &json!({"id":1,"method":"review/start","params":params}),
+                &registration,
+            )
+            .unwrap();
+        assert!(conversations.review.is_none());
+        conversations
+            .request(
+                &json!({"id":2,"method":"review/start","params":{"threadId":"selected"}}),
+                &registration,
+            )
+            .unwrap();
+        conversations
+            .request(
+                &json!({"id":3,"method":"review/start","params":params}),
+                &registration,
+            )
+            .unwrap();
+        assert_eq!(conversations.review.as_ref().unwrap().request_id, json!(2));
+    }
+    for result in [
+        json!({"reviewThreadId":"detached","turn":{"id":"parent"}}),
+        json!({"reviewThreadId":"selected","turn":{"id":""}}),
+        json!({}),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let registration = registration(root.path(), "aaaaaaaaaaaa");
+        let mut conversations = Conversations::default();
+        conversations
+            .request(
+                &json!({"id":1,"method":"review/start","params":{"threadId":"selected"}}),
+                &registration,
+            )
+            .unwrap();
+        conversations
+            .response(&json!({"id":1,"result":result}), &registration)
+            .unwrap();
+        assert!(conversations.response(&json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"parent","status":"completed"}}}), &registration).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn a_new_review_rejects_old_replies_and_replayed_entry_items() {
+    let root = tempfile::tempdir().unwrap();
+    let registration = registration(root.path(), "aaaaaaaaaaaa");
+    let mut conversations = Conversations::default();
+    let old_reply = json!({"id":1,"result":{"reviewThreadId":"selected","turn":{"id":"old"}}});
+    conversations
+        .request(
+            &json!({"id":1,"method":"review/start","params":{"threadId":"selected"}}),
+            &registration,
+        )
+        .unwrap();
+    conversations.response(&old_reply, &registration).unwrap();
+    conversations
+        .request(
+            &json!({"id":2,"method":"review/start","params":{"threadId":"selected"}}),
+            &registration,
+        )
+        .unwrap();
+    for stale in [
+        old_reply,
+        json!({"method":"item/started","params":{"threadId":"selected","turnId":"old","item":{"type":"enteredReviewMode"}}}),
+        json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"old","status":"completed"}}}),
+    ] {
+        assert!(conversations
+            .response(&stale, &registration)
+            .unwrap()
+            .is_empty());
+    }
+    conversations
+        .response(
+            &json!({"id":2,"result":{"reviewThreadId":"selected","turn":{"id":"new"}}}),
+            &registration,
+        )
+        .unwrap();
+    let hooks = conversations.response(&json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"new","status":"completed"}}}), &registration).unwrap();
+    assert_eq!(
+        hooks,
+        vec![json!({"hook_event_name":"Stop","session_id":"selected","turn_id":"new"})]
+    );
 }
