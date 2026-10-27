@@ -673,6 +673,60 @@ impl HistoryPanel {
 }
 
 #[test]
+fn agents_prompt_preserves_draft_without_writing_to_held_or_exited_agents() {
+    for status in ["Held", "Exited"] {
+        let mut h = HistoryPanel::new(&[]);
+        h.snapshot(1, &[]);
+        h.panel
+            .runtime
+            .invoke("a-set!", vec![json!("focus"), json!("prompt")])
+            .unwrap();
+        h.panel.update(&Event::PastedText("keep this draft".into()));
+
+        let mut message = snapshot_message(2, &[], 2);
+        let mut snapshot: Value = serde_json::from_str(message.payload.as_ref().unwrap()).unwrap();
+        snapshot["panes"][0]["status"] = json!(status);
+        message.payload = Some(snapshot.to_string());
+        h.panel.pipe(&message);
+        h.panel.take_commands();
+
+        assert!(h.key("Enter"));
+        assert!(h
+            .panel
+            .take_commands()
+            .iter()
+            .all(|command| command.get("WriteToPaneId").is_none()));
+        assert_eq!(
+            h.panel.runtime.invoke("a-prompt-text", vec![]).unwrap(),
+            "keep this draft"
+        );
+        let error = "Agent is not running. Restart it before sending a prompt.";
+        assert_eq!(h.get("prompt_error").as_str().unwrap().trim(), error);
+        let frame = history_frame(&h.panel.render(24, 90));
+        assert!(frame.contains("Send failed:"), "{frame}");
+
+        h.snapshot(3, &[]);
+        h.panel.take_commands();
+        assert!(h.key("Enter"));
+        let writes: Vec<_> = h
+            .panel
+            .take_commands()
+            .into_iter()
+            .filter_map(|command| command.get("WriteToPaneId").cloned())
+            .collect();
+        assert_eq!(
+            writes,
+            vec![
+                json!([b"\x1b[200~keep this draft\x1b[201~", {"Terminal": 7}]),
+                json!([[13], {"Terminal": 7}]),
+            ]
+        );
+        assert_eq!(h.panel.runtime.invoke("a-prompt-text", vec![]).unwrap(), "");
+        assert_eq!(h.get("prompt_error"), false);
+    }
+}
+
+#[test]
 fn agents_prompt_search_applies_cancels_and_restores_drafts() {
     let runs = [run("prompt-run", 7, false)];
     let mut h = HistoryPanel::new(&runs);
