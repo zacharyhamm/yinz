@@ -36,6 +36,7 @@
       "run" #f "run_offset_secs" 0 "history_scroll" 0 "history_cursor" 0
       "history_cursor_anchor" #f "history_bottom_anchor" #f "history_scrolled" #f
       "reading" #f "reader_cache" #f "reading_id" 0 "last_reader_max_scroll" 0 "last_reader_rows" 0
+      "prompt_drafts" (hash) "prompt_error" #f "last_prompt_row" #f
       "focus" "list" "has_keyboard" 'json-null "pane_shown" #f "last_label_rows" 0
       "open_note" #f "strip_seen" #f "run_error" #f "key_sheet_scroll" #f
       "last_sheet_rows" 0 "last_sheet_max_scroll" 0 "selected" 0 "focused" #f
@@ -115,7 +116,9 @@
   (a-set! "history_scroll" 0) (a-set! "history_cursor" 0) (a-close-reader!))
 (define (a-follow-selection! was)
   (if (equal? was (a-selection-key)) #f
-    (begin (a-leave-row!) (a-set! "pending_history_revision" (a-selected-revision)) #t)))
+    (begin (a-set! "prompt_error" #f)
+      (when (equal? (a-get "focus") "prompt") (a-set! "focus" "history"))
+      (a-leave-row!) (a-set! "pending_history_revision" (a-selected-revision)) #t)))
 (define (a-set-rows! strip . keep-option)
   (define keep (if (null? keep-option) (a-selection-key) (car keep-option)))
   (define filtered (or (a-get "predecessors") (a-get "waiting_base")))
