@@ -1193,6 +1193,104 @@ fn palette_history_keeps_panel_tool_entries_and_opens_full_retained_tools() {
 }
 
 #[test]
+fn palette_history_opens_merged_tools_exceeding_fetch_budget() {
+    use agent_proto::agents::{rows, RunEntryKind};
+    use yinz_bus::command_palette::{collapse_tools, HistoryAction, HistoryReply};
+    use yinz_tile::prelude::{FetchRequest, Pred};
+
+    let (temp, data) = repository();
+    let mut recorded = recorded_run(temp.path());
+    let template = recorded.entries[0].clone();
+    // Reverse insertion order so row-ID pagination differs from display order.
+    recorded.entries = (1..=30)
+        .rev()
+        .map(|revision| {
+            let mut entry = template.clone();
+            entry.revision = revision;
+            entry.kind = RunEntryKind::ToolResult;
+            entry.text = format!("revision {revision}: {}", "x".repeat(100_000));
+            entry
+        })
+        .collect();
+    recorded.revision = 30;
+    for batch in rows::run_mutations(&recorded).chunks(10) {
+        data.plugin_data()
+            .apply(project_data::store::SHARED, batch)
+            .unwrap();
+    }
+    let first_page = data
+        .plugin_data()
+        .fetch(
+            project_data::store::SHARED,
+            &FetchRequest::entity(rows::ENTRY_ENTITY)
+                .filter(Pred::eq("run_id", recorded.id.as_str()))
+                .limit(30),
+        )
+        .unwrap();
+    assert!(first_page.truncated);
+    assert!(first_page.rows.len() < 30);
+
+    let execute = |action| run(&request(temp.path(), AgentAction::History(action)), &data).0;
+    let mut action = HistoryAction::Run {
+        id: recorded.id.clone(),
+        from: None,
+        query: String::new(),
+    };
+    let mut loaded = Vec::new();
+    let mut pages = 0;
+    loop {
+        let AgentReply::History(HistoryReply::Run {
+            mut events, rows, ..
+        }) = execute(action).unwrap()
+        else {
+            panic!("expected conversation");
+        };
+        pages += 1;
+        assert!(pages <= 30, "backfill must terminate");
+        events.append(&mut loaded);
+        loaded = events;
+        let Some(older) = rows.iter().find(|row| row.id == "continue") else {
+            break;
+        };
+        action = older.action.clone();
+    }
+    assert!(pages > 1);
+    // Backfill overlaps the initial latest page; merge as the timeline does.
+    loaded.sort_by_key(|event| event.revision);
+    loaded.dedup_by_key(|event| event.revision);
+    let groups = collapse_tools(loaded);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].revisions, (1..=30).collect::<Vec<_>>());
+    let AgentReply::History(HistoryReply::Reader { markdown, .. }) =
+        execute(HistoryAction::Tools {
+            id: recorded.id.clone(),
+            revisions: groups[0].revisions.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("expected full tool reader");
+    };
+    let expected = recorded
+        .entries
+        .iter()
+        .rev()
+        .map(|entry| format!("tool_result · revision {}:\n{}", entry.revision, entry.text))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    assert_eq!(markdown, expected);
+    let mut missing = groups[0].revisions.clone();
+    missing[29] = 31;
+    assert_eq!(
+        execute(HistoryAction::Tools {
+            id: recorded.id,
+            revisions: missing,
+        })
+        .unwrap_err(),
+        "Tool event no longer retained"
+    );
+}
+
+#[test]
 fn palette_prompt_rejects_unpinned_conversations_before_local_or_peer_dispatch() {
     let (temp, data) = repository();
     let (tx, rx) = unbounded();
