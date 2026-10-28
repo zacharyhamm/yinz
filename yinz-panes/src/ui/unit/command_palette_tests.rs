@@ -1,5 +1,41 @@
 use super::*;
 
+#[test]
+fn wheel_moves_list_selection_and_clamps_without_editing_query() {
+    let mut palette = CommandPalette::default();
+    palette.set_entries(
+        (0..12)
+            .map(|i| {
+                entry(
+                    &format!("item-{i}"),
+                    &format!("Item {i:02}"),
+                    EntryKind::Command,
+                )
+            })
+            .collect(),
+    );
+    palette.insert_text("Item");
+    palette.scroll(true);
+    assert_eq!(palette.selected, 3);
+    palette.busy = true;
+    palette.scroll(true);
+    assert_eq!(palette.selected, 3);
+    palette.busy = false;
+    for _ in 0..10 {
+        palette.scroll(true);
+    }
+    assert_eq!(palette.selected, 11);
+    for _ in 0..10 {
+        palette.scroll(false);
+    }
+    assert_eq!(palette.selected, 0);
+    assert_eq!(palette.query(), "Item");
+    palette.insert_text("missing");
+    palette.scroll(true);
+    palette.scroll(false);
+    assert!(palette.selected_entry().is_none());
+}
+
 fn key(palette: &mut CommandPalette, key: BareKey) {
     assert_eq!(palette.handle_key(KeyWithModifier::new(key)), Outcome::None);
 }

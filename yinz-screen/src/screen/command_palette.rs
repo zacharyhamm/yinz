@@ -338,7 +338,9 @@ impl Screen {
         let layout = state
             .widget
             .layout_with_arrow_fonts(surface, self.arrow_fonts);
-        if (event.wheel_up || event.wheel_down) && state.widget.scroll_agent(event.wheel_down) {
+        if event.wheel_up || event.wheel_down {
+            state.widget.scroll(event.wheel_down);
+            self.refresh_theme_preview(client_id);
             self.render().non_fatal();
             return true;
         }

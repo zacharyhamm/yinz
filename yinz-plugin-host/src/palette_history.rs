@@ -86,7 +86,7 @@ pub(super) fn execute(
         return Err("Archive request cancelled".into());
     }
     if let HistoryAction::Hit { id, revision } = action {
-        return execute(
+        let mut reply = execute(
             request,
             &HistoryAction::Run {
                 id: id.clone(),
@@ -95,7 +95,19 @@ pub(super) fn execute(
             },
             senders,
             data,
-        );
+        )?;
+        if let AgentReply::History(HistoryReply::Run { rows, .. }) = &mut reply {
+            // Show the hit immediately, then backfill the whole run. Only the
+            // initial Hit restarts at 1; Run continuations advance normally.
+            rows.retain(|row| row.id != "continue");
+            rows.push(row(
+                "continue".into(),
+                "Loading history…",
+                String::new(),
+                run_action(id, Some(1)),
+            ));
+        }
+        return Ok(reply);
     }
     let backend = Reader(data);
     let projects = project_data::projects::from_rows(&agent_control::projects(data)?);

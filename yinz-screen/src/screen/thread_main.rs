@@ -1005,13 +1005,18 @@ pub fn screen_thread_main(
                     _completion_tx, // the action ends here, dropping this will release anything
                                     // waiting for it
                 ) => {
-                    active_tab_and_connected_client_id!(
-                        screen,
+                    if !screen.command_palette_handles_mouse(
+                        &yinz_types::mouse::MouseEvent::new_scroll_up_event(point),
                         client_id,
-                        |tab: &mut Tab, client_id: ClientId| tab
-                            .handle_scrollwheel_up(&point, 3, client_id), ?
-                    );
-                    screen.render()?;
+                    ) {
+                        active_tab_and_connected_client_id!(
+                            screen,
+                            client_id,
+                            |tab: &mut Tab, client_id: ClientId| tab
+                                .handle_scrollwheel_up(&point, 3, client_id), ?
+                        );
+                        screen.render()?;
+                    }
                 },
                 ScreenInstruction::ScrollDown(
                     client_id,
@@ -1033,13 +1038,18 @@ pub fn screen_thread_main(
                     _completion_tx, // the action ends here, dropping this will release anything
                                     // waiting for it
                 ) => {
-                    active_tab_and_connected_client_id!(
-                        screen,
+                    if !screen.command_palette_handles_mouse(
+                        &yinz_types::mouse::MouseEvent::new_scroll_down_event(point),
                         client_id,
-                        |tab: &mut Tab, client_id: ClientId| tab
-                            .handle_scrollwheel_down(&point, 3, client_id), ?
-                    );
-                    screen.render()?;
+                    ) {
+                        active_tab_and_connected_client_id!(
+                            screen,
+                            client_id,
+                            |tab: &mut Tab, client_id: ClientId| tab
+                                .handle_scrollwheel_down(&point, 3, client_id), ?
+                        );
+                        screen.render()?;
+                    }
                 },
                 ScreenInstruction::ScrollToBottom(
                     client_id,
