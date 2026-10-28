@@ -1043,20 +1043,11 @@ fn quota_custom_windows_remain_visible_in_compact_and_graphical_palette_headers(
                 .map(|line| line.text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n");
-            for label in [
-                "Daily limit · 70%",
-                "Weekly Fable · 60%",
-                "stale",
-                "reset due",
-            ] {
+            for label in ["Daily limit · 70%", "Fable · 60%", "stale", "reset due"] {
                 assert!(text.contains(label), "{label}: {text}");
             }
             assert_eq!(
-                text.contains(if rows == 40 {
-                    "Weekly remaining"
-                } else {
-                    "Weekly ·"
-                }),
+                text.contains(if rows == 40 { "Weekly" } else { "Weekly ·" }),
                 weekly || rows == 40,
                 "{text}"
             );
@@ -1066,13 +1057,13 @@ fn quota_custom_windows_remain_visible_in_compact_and_graphical_palette_headers(
                 .unwrap()
                 .lines
                 .iter()
-                .find(|line| line.text.contains("Weekly Fable"))
+                .find(|line| line.text.contains("Fable"))
                 .unwrap();
             let width =
                 layout.rect.cols - layout.border * 2 - layout.agent.as_ref().unwrap().padding * 2;
             assert_eq!(line.text.width(), width, "{text}");
             if weekly && rows == 40 {
-                assert!(line.text.ends_with("Weekly Fable · 60%"), "{text}");
+                assert!(line.text.ends_with("Fable · 60%"), "{text}");
             }
         }
     }
@@ -1649,7 +1640,11 @@ fn balanced_header_keeps_usage_in_one_column_with_no_duplicate_values() {
             assert_eq!(line.styles.len(), line.text.chars().count());
             assert_eq!(
                 right.trim().is_empty(),
-                std::ptr::eq(lines, graphical) && (1..=2).contains(&row)
+                if std::ptr::eq(lines, graphical) {
+                    (1..=2).contains(&row) || row >= 5
+                } else {
+                    row >= 4
+                }
             );
         }
     }
@@ -1667,10 +1662,10 @@ fn balanced_header_keeps_usage_in_one_column_with_no_duplicate_values() {
         "42%",
         "18%",
         "reset due",
-        "Updated",
     ] {
         assert_eq!(text.matches(value).count(), 1, "{value}: {text}");
     }
+    assert!(!text.contains("Updated"));
     assert!(grid.lines[2].text.ends_with("5hr · 18%"));
     assert!(graphical[3].text.ends_with("5hr · 18%"));
     insta::assert_snapshot!("agent_header_balanced_text", text);

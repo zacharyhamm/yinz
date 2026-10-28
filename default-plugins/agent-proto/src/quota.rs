@@ -303,7 +303,10 @@ impl Display {
             .map(|w| {
                 format!(
                     "{} · {}%",
-                    w.label,
+                    match w.label.as_str() {
+                        "Weekly Fable" => "Fable",
+                        label => label,
+                    },
                     (100.0 - w.used_percent).clamp(0.0, 100.0).round() as u64
                 )
             })

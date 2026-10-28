@@ -238,6 +238,7 @@ pub struct CommandPaletteLayout {
     footer_y: Option<usize>,
     picker_heading_y: Option<usize>,
     result_rows: Vec<ResultRow>,
+    result_overflow: Option<(usize, usize)>,
     text_lines: Vec<MdLine>,
     metadata_lines: Vec<MdLine>,
     description_lines: Vec<MdLine>,
@@ -264,8 +265,15 @@ impl CommandPaletteLayout {
 
 enum ResultRow {
     Heading(String),
+    Divider,
     Status(usize, String),
     Entry(usize, usize),
+}
+
+impl ResultRow {
+    fn selectable(&self) -> bool {
+        matches!(self, Self::Entry(_, _) | Self::Status(_, _))
+    }
 }
 
 impl CommandPalette {
@@ -1087,7 +1095,11 @@ impl CommandPalette {
                 self.page_selection(key.bare_key == BareKey::PageDown);
             },
             BareKey::Up | BareKey::Down if key.has_no_modifiers() => {
-                let rows = self.result_rows(1);
+                let rows: Vec<_> = self
+                    .result_rows(1)
+                    .into_iter()
+                    .filter(ResultRow::selectable)
+                    .collect();
                 let selected = rows
                     .iter()
                     .position(|row| self.row_selected(row))
@@ -1183,7 +1195,7 @@ impl CommandPalette {
                 self.selected_entry().is_some() && *index == self.selected
             },
             ResultRow::Status(section, _) => self.selected_status == Some(*section),
-            ResultRow::Heading(_) => false,
+            ResultRow::Heading(_) | ResultRow::Divider => false,
         }
     }
 
@@ -1195,7 +1207,7 @@ impl CommandPalette {
                 self.selected_status = None;
             },
             ResultRow::Status(section, _) => self.selected_status = Some(*section),
-            ResultRow::Heading(_) => (),
+            ResultRow::Heading(_) | ResultRow::Divider => (),
         }
     }
 
@@ -1229,6 +1241,22 @@ impl CommandPalette {
                 && let Some(label) = label
             {
                 rows.push(ResultRow::Heading(label.into()));
+            }
+            // Only divide adjacent live-agent groups after filtering and ranking.
+            // Waiting agents belong to the working group; exited agents stay unchanged.
+            if (self.is_root() || self.agent_picker())
+                && let Some(ResultRow::Entry(previous, _)) = rows.last()
+                && matches!(
+                    self.agent_presentation(*previous).map(|agent| agent.state),
+                    Some(
+                        yinz_types::agent::AgentState::Busy
+                            | yinz_types::agent::AgentState::Waiting
+                    )
+                )
+                && self.agent_presentation(index).map(|agent| agent.state)
+                    == Some(yinz_types::agent::AgentState::Idle)
+            {
+                rows.push(ResultRow::Divider);
             }
             rows.push(ResultRow::Entry(index, 0));
             previous = (section, label);
@@ -1362,7 +1390,7 @@ impl CommandPalette {
         let heading = match &rows[selected] {
             ResultRow::Entry(index, _) => self.entry_heading(*index).is_some(),
             ResultRow::Status(_, _) => true,
-            ResultRow::Heading(_) => false,
+            ResultRow::Heading(_) | ResultRow::Divider => false,
         };
         let distance = capacity.saturating_sub(usize::from(heading)).max(1);
         let target = if down {
@@ -1373,18 +1401,13 @@ impl CommandPalette {
             selected.saturating_sub(distance)
         };
         let row = if down {
-            rows[target..]
-                .iter()
-                .find(|row| !matches!(row, ResultRow::Heading(_)))
+            rows[target..].iter().find(|row| row.selectable())
         } else {
             rows[..=target]
                 .iter()
                 .rev()
-                .find(|row| !matches!(row, ResultRow::Heading(_)))
-                .or_else(|| {
-                    rows.iter()
-                        .find(|row| !matches!(row, ResultRow::Heading(_)))
-                })
+                .find(|row| row.selectable())
+                .or_else(|| rows.iter().find(|row| row.selectable()))
         };
         if let Some(row) = row {
             self.select_row(row);
@@ -1415,6 +1438,7 @@ impl CommandPalette {
             let heading = usize::from(capacity >= 2 && sticky_heading(start).is_some());
             if selected >= start + capacity - heading
                 || matches!(rows.get(start), Some(ResultRow::Entry(_, line)) if *line > 0)
+                || matches!(rows.get(start), Some(ResultRow::Divider))
             {
                 start += 1;
             } else {
@@ -1429,10 +1453,43 @@ impl CommandPalette {
         }
         let remaining = capacity - visible.len();
         visible.extend(rows.into_iter().skip(start).take(remaining));
-        if matches!(visible.last(), Some(ResultRow::Heading(_))) {
+        if matches!(
+            visible.last(),
+            Some(ResultRow::Heading(_) | ResultRow::Divider)
+        ) {
             visible.pop();
         }
         visible
+    }
+
+    fn result_overflow(&self, visible: &[ResultRow]) -> Option<(usize, usize)> {
+        let visible_entries: std::collections::BTreeSet<_> = visible
+            .iter()
+            .filter_map(|row| match row {
+                ResultRow::Entry(index, _) => Some(*index),
+                _ => None,
+            })
+            .collect();
+        if visible_entries.is_empty() {
+            return None;
+        }
+        // Use display order, which can differ from match order for provider sections.
+        // Count each entry once, even if it wraps or appears in multiple sections.
+        let mut seen = std::collections::BTreeSet::new();
+        let entries: Vec<_> = self
+            .result_rows(1)
+            .into_iter()
+            .filter_map(|row| match row {
+                ResultRow::Entry(index, _) => Some(index),
+                _ => None,
+            })
+            .filter(|index| seen.insert(*index))
+            .collect();
+        let above = entries
+            .iter()
+            .position(|index| visible_entries.contains(index))?;
+        let below = entries.len() - above - visible_entries.len();
+        (above > 0 || below > 0).then_some((above, below))
     }
 
     pub fn layout(&self, surface: Viewport) -> CommandPaletteLayout {
@@ -1562,6 +1619,12 @@ impl CommandPalette {
         let offset = self
             .text_offset
             .min(text_lines.len().saturating_sub(options_rows));
+        let result_rows = self.visible_result_rows(options_rows, self.result_width.get());
+        let result_overflow = if footer_y.is_some() && self.agent.is_none() {
+            self.result_overflow(&result_rows)
+        } else {
+            None
+        };
         CommandPaletteLayout {
             agent: self.agent.as_ref().map(|a| {
                 a.borrow_mut().layout(
@@ -1586,7 +1649,8 @@ impl CommandPalette {
             footer_y,
             picker_heading_y: (self.picker.is_some() && self.form.is_none() && rows >= 6)
                 .then_some(input_y + 1),
-            result_rows: self.visible_result_rows(options_rows, self.result_width.get()),
+            result_rows,
+            result_overflow,
             text_lines: text_lines
                 .into_iter()
                 .skip(offset)
@@ -1792,13 +1856,18 @@ impl CommandPalette {
                                 } else {
                                     "↑↓/Ctrl+n/p Select  Enter Choose  Esc Close"
                                 };
-                                if !self.busy && self.description_total.get() > layout.description_lines.len() {
+                                let help = if !self.busy && self.description_total.get() > layout.description_lines.len() {
                                     format!("Alt+PgUp/Dn Desc {}–{}/{} · {help}",
                                         self.description_offset.get() + 1,
                                         self.description_offset.get() + layout.description_lines.len(),
                                         self.description_total.get())
                                 } else {
                                     help.into()
+                                };
+                                if !self.busy && let Some((above, below)) = layout.result_overflow {
+                                    format!("↑ {above} above · ↓ {below} below · {help}")
+                                } else {
+                                    help
                                 }
                             }),
                             if self.error.is_some() {
@@ -1863,6 +1932,8 @@ impl CommandPalette {
                         {
                             markdown = inline(label);
                             markdown.text.clone()
+                        } else if let Some(ResultRow::Divider) = row {
+                            "─".repeat(width)
                         } else if let Some(ResultRow::Entry(index, line)) = row {
                             use unicode_width::UnicodeWidthStr;
                             let entry = &self.entries[self.matches[*index]];
@@ -1906,7 +1977,7 @@ impl CommandPalette {
                                 selected.clone()
                             } else if matches!(
                                 row,
-                                Some(ResultRow::Heading(_) | ResultRow::Status(_, _))
+                                Some(ResultRow::Heading(_) | ResultRow::Divider | ResultRow::Status(_, _))
                             ) {
                                 heading.clone()
                             } else {

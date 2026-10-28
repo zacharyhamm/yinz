@@ -1080,24 +1080,10 @@ fn agent_header(header: &HistoryHeader, width: usize, budget: usize, full: bool)
         };
     }
 
-    let freshness = header
-        .usage
-        .as_ref()
-        .map(|usage| {
-            if quota.as_ref().is_some_and(|q| q.stale) {
-                return "stale".into();
-            }
-            match usage.observed_at_ms.map(|at| now.saturating_sub(at)) {
-                Some(0..60_000) => "Updated just now".into(),
-                Some(age) => format!("Updated {}m ago", age / 60_000),
-                None => "Updated —".into(),
-            }
-        })
-        .unwrap_or_else(|| "Updated —".into());
     let mut right = vec![];
     let mut graphical_right = None;
     if let Some(q) = &quota {
-        right.push("Weekly remaining".into());
+        right.push(q.weekly_label.clone());
         right.push(
             q.value
                 .map(|v| format!("{v}%"))
@@ -1108,14 +1094,13 @@ fn agent_header(header: &HistoryHeader, width: usize, budget: usize, full: bool)
         } else {
             q.short.clone()
         }];
-        // Leave room for reset and freshness even with many custom windows.
-        tail.extend(q.other.iter().take(budget.saturating_sub(6)).cloned());
+        // Leave room for reset even with many custom windows.
+        tail.extend(q.other.iter().take(budget.saturating_sub(5)).cloned());
         tail.push(if q.reset.is_empty() {
             "Reset —".into()
         } else {
             q.reset.clone()
         });
-        tail.push(freshness);
         if q.value.is_some() {
             let mut graphical = right.clone();
             graphical[1].clear();
@@ -1134,7 +1119,6 @@ fn agent_header(header: &HistoryHeader, width: usize, budget: usize, full: bool)
             "—".into(),
             "5hr · —".into(),
             "Reset —".into(),
-            freshness,
         ];
     }
     let height = graphical_right
@@ -1171,7 +1155,7 @@ fn agent_header(header: &HistoryHeader, width: usize, budget: usize, full: bool)
                     .unwrap_or_else(|| MdLine::plain("—"));
                 let gap = left_width.saturating_sub(line.text.width());
                 append(&mut line, &MdLine::plain(format!("{} │ ", " ".repeat(gap))));
-                let text = right.get(row).map(String::as_str).unwrap_or("—");
+                let text = right.get(row).map(String::as_str).unwrap_or("");
                 // Preserve percentages when custom window names exceed the usage column.
                 let text = if let Some((label, value)) = text.rsplit_once(" · ") {
                     let suffix = format!(" · {value}");

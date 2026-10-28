@@ -62,6 +62,318 @@ fn texts(lines: &[MdLine]) -> Vec<&str> {
     lines.iter().map(|line| line.text.as_str()).collect()
 }
 
+fn grouped_palette(picker: bool, states: &[AgentState]) -> CommandPalette {
+    let mut palette = palette(states.len());
+    for (i, state) in states.iter().enumerate() {
+        let id = format!("agent:{i}");
+        let presentation = palette.agent_presentations.get_mut(&id).unwrap();
+        presentation.state = *state;
+        presentation.project.clear();
+        presentation.branch.clear();
+        presentation.activity.clear();
+        palette.agent_metadata.get_mut(&id).unwrap().insert(
+            "state".into(),
+            match state {
+                AgentState::Busy => "busy",
+                AgentState::Waiting => "waiting",
+                AgentState::Idle => "idle",
+                AgentState::Exited => "exited",
+            }
+            .into(),
+        );
+    }
+    if !picker {
+        palette.back();
+    }
+    palette.set_query("alias".into());
+    palette
+}
+
+fn divider_count(rows: &[ResultRow]) -> usize {
+    rows.iter()
+        .filter(|row| matches!(row, ResultRow::Divider))
+        .count()
+}
+
+#[test]
+fn overflow_footer_counts_agents_without_counting_dividers() {
+    use AgentState::*;
+    for picker in [false, true] {
+        let mut palette = grouped_palette(
+            picker,
+            &[Busy, Busy, Idle, Idle, Idle, Idle, Idle, Idle, Idle, Idle],
+        );
+        let surface = Viewport {
+            cols: 80,
+            rows: 20,
+            ..Default::default()
+        };
+        let layout = palette.layout(surface);
+        assert_eq!(divider_count(&layout.result_rows), 1);
+        assert_eq!(
+            layout.result_overflow,
+            Some((0, if picker { 4 } else { 5 }))
+        );
+        palette.select_id("agent:9");
+        let layout = palette.layout(surface);
+        assert_eq!(divider_count(&layout.result_rows), 0);
+        assert_eq!(
+            layout.result_overflow,
+            Some((if picker { 3 } else { 4 }, 0))
+        );
+        palette.select_id("agent:0");
+        let layout = palette.layout(Viewport {
+            rows: if picker { 14 } else { 15 },
+            ..surface
+        });
+        // Suppressing a trailing divider leaves exactly the two busy agents visible.
+        assert_eq!(divider_count(&layout.result_rows), 0);
+        assert_eq!(layout.result_overflow, Some((0, 8)));
+    }
+}
+
+#[test]
+fn agent_divider_separates_adjacent_working_and_idle_groups_after_filtering() {
+    use AgentState::*;
+    for picker in [false, true] {
+        let mut palette = grouped_palette(picker, &[Busy, Waiting, Idle, Idle, Exited]);
+        let rows = palette.result_rows(20);
+        let divider = rows
+            .iter()
+            .position(|row| matches!(row, ResultRow::Divider))
+            .unwrap();
+        assert_eq!(divider_count(&rows), 1);
+        assert!(matches!(rows[divider - 1], ResultRow::Entry(1, 0)));
+        assert!(matches!(rows[divider + 1], ResultRow::Entry(2, 0)));
+        assert_eq!(
+            rows.iter()
+                .filter_map(|row| match row {
+                    ResultRow::Entry(index, _) => Some(*index),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 3, 4]
+        );
+        for query in [
+            "state:busy",
+            "state:waiting",
+            "state:idle",
+            "state:exited",
+            "missing",
+        ] {
+            palette.set_query(query.into());
+            assert_eq!(divider_count(&palette.result_rows(20)), 0, "{query}");
+        }
+        // A fuzzy match can remove agents within both groups without losing the boundary.
+        let mut entries = palette.native_entries.clone();
+        entries[0].aliases.push("subset".into());
+        entries[3].aliases.push("subset".into());
+        palette.set_entries(entries);
+        palette.set_query("subset".into());
+        let rows = palette.result_rows(20);
+        assert_eq!(palette.matches.len(), 2);
+        assert_eq!(divider_count(&rows), 1);
+        assert!(matches!(rows.last(), Some(ResultRow::Entry(1, 0))));
+
+        for states in [
+            &[Busy, Waiting][..],
+            &[Idle, Idle],
+            &[Busy, Exited],
+            &[Exited, Idle],
+        ] {
+            assert_eq!(
+                divider_count(&grouped_palette(picker, states).result_rows(20)),
+                0
+            );
+        }
+    }
+}
+
+#[test]
+fn agent_divider_does_not_cross_other_root_search_results() {
+    let mut palette = grouped_palette(false, &[AgentState::Busy, AgentState::Idle]);
+    let mut entries = palette.native_entries.clone();
+    entries.insert(
+        1,
+        Entry {
+            id: "command".into(),
+            label: "alias".into(),
+            description: String::new(),
+            shortcut: String::new(),
+            aliases: vec![],
+            kind: EntryKind::Command,
+        },
+    );
+    palette.set_entries(entries);
+    assert_eq!(
+        palette
+            .matches
+            .iter()
+            .map(|i| palette.entries[*i].id.as_str())
+            .collect::<Vec<_>>(),
+        ["agent:0", "command", "agent:1"]
+    );
+    assert_eq!(divider_count(&palette.result_rows(20)), 0);
+    palette.open_picker(EntryKind::Agent);
+    assert_eq!(divider_count(&palette.result_rows(20)), 1);
+}
+
+#[test]
+fn agent_divider_refreshes_with_live_states_and_counts_toward_height() {
+    for picker in [false, true] {
+        let mut palette = grouped_palette(
+            picker,
+            &[AgentState::Busy, AgentState::Waiting, AgentState::Idle],
+        );
+        palette.select_id("agent:1");
+        let surface = Viewport {
+            cols: 80,
+            rows: 40,
+            ..Default::default()
+        };
+        let mixed = palette.layout(surface);
+        assert_eq!(divider_count(&mixed.result_rows), 1);
+        let chunks = palette.chunks(&mixed, &Style::default());
+        let divider = mixed
+            .result_rows
+            .iter()
+            .position(|row| matches!(row, ResultRow::Divider))
+            .unwrap();
+        let rule = &chunks[mixed.options_y + divider - mixed.rect.y].terminal_characters;
+        for cell in &rule[mixed.border..rule.len() - mixed.border] {
+            assert_eq!(cell.character, '─');
+            assert_eq!(cell.styles.dim, Some(AnsiCode::On));
+        }
+        // Presentations can change even when set_entries has no new labels to rebuild.
+        palette
+            .agent_presentations
+            .get_mut("agent:2")
+            .unwrap()
+            .state = AgentState::Busy;
+        palette.set_entries(palette.native_entries.clone());
+        let working = palette.layout(surface);
+        assert_eq!(divider_count(&working.result_rows), 0);
+        assert_eq!(working.rect.rows + 1, mixed.rect.rows);
+        assert_eq!(palette.selected_entry().unwrap().id, "agent:1");
+        palette
+            .agent_presentations
+            .get_mut("agent:1")
+            .unwrap()
+            .state = AgentState::Idle;
+        palette
+            .agent_presentations
+            .get_mut("agent:2")
+            .unwrap()
+            .state = AgentState::Idle;
+        let rows = palette.layout(surface).result_rows;
+        let divider = rows
+            .iter()
+            .position(|row| matches!(row, ResultRow::Divider))
+            .unwrap();
+        assert!(matches!(rows[divider - 1], ResultRow::Entry(0, 0)));
+        assert!(matches!(rows[divider + 1], ResultRow::Entry(1, 0)));
+        assert_eq!(palette.selected_entry().unwrap().id, "agent:1");
+    }
+}
+
+#[test]
+fn agent_divider_is_never_selected_or_orphaned_in_short_and_scrolled_views() {
+    use AgentState::*;
+    for picker in [false, true] {
+        let mut palette = grouped_palette(picker, &[Busy, Waiting, Idle, Idle, Exited]);
+        // A one-row page lands on the divider in both directions.
+        palette.page_rows.set(1);
+        palette.result_width.set(80);
+        palette.select_id("agent:1");
+        palette.handle_key(KeyWithModifier::new(BareKey::PageDown));
+        assert_eq!(palette.selected_entry().unwrap().id, "agent:2");
+        palette.handle_key(KeyWithModifier::new(BareKey::PageUp));
+        assert_eq!(palette.selected_entry().unwrap().id, "agent:1");
+        for wrapped in [false, true] {
+            if wrapped {
+                for presentation in palette.agent_presentations.values_mut() {
+                    presentation.activity =
+                        "An activity that wraps across several lines in a narrow palette".into();
+                }
+            }
+            for cols in [0, 1, 4, 20, 80] {
+                for height in 0..=40 {
+                    let surface = Viewport {
+                        x: 2,
+                        y: 3,
+                        cols,
+                        rows: height,
+                    };
+                    for selected in 0_usize..5 {
+                        let id = format!("agent:{selected}");
+                        palette.select_id(&id);
+                        let layout = palette.layout(surface);
+                        assert!(!matches!(
+                            layout.result_rows.first(),
+                            Some(ResultRow::Divider)
+                        ));
+                        assert!(!matches!(
+                            layout.result_rows.last(),
+                            Some(ResultRow::Divider)
+                        ));
+                        if layout.options_rows > 0 {
+                            assert!(layout.result_rows.iter().any(|row| palette.row_selected(row)),
+                                "picker={picker}, wrapped={wrapped}, {cols}x{height}, selected={selected}");
+                        }
+                        for (row, result) in layout.result_rows.iter().enumerate() {
+                            if matches!(result, ResultRow::Divider) {
+                                assert!(matches!(
+                                    layout.result_rows[row - 1],
+                                    ResultRow::Entry(_, _)
+                                ));
+                                assert!(matches!(
+                                    layout.result_rows[row + 1],
+                                    ResultRow::Entry(_, 0)
+                                ));
+                                assert!(!palette.row_selected(result));
+                                assert_eq!(
+                                    palette.click(
+                                        &layout,
+                                        Position::new(
+                                            (layout.options_y + row) as i32,
+                                            (layout.rect.x + layout.border) as u16,
+                                        )
+                                    ),
+                                    Outcome::None
+                                );
+                                assert_eq!(palette.selected_entry().unwrap().id, id);
+                            }
+                        }
+                        for (key, expected) in [
+                            (BareKey::Down, (selected + 1).min(4)),
+                            (BareKey::Up, selected.saturating_sub(1)),
+                        ] {
+                            palette.select_id(&id);
+                            palette.handle_key(KeyWithModifier::new(key));
+                            assert_eq!(
+                                palette.selected_entry().unwrap().id,
+                                format!("agent:{expected}")
+                            );
+                        }
+                        for key in [BareKey::PageDown, BareKey::PageUp] {
+                            palette.select_id(&id);
+                            palette.handle_key(KeyWithModifier::new(key));
+                            assert!(palette.selected_entry().is_some());
+                            let next = palette.layout(surface);
+                            if next.options_rows > 0 {
+                                assert!(next
+                                    .result_rows
+                                    .iter()
+                                    .any(|row| palette.row_selected(row)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn live_agent_activity_follows_state_and_falls_back_to_literal_title() {
     for (state, expected) in [
