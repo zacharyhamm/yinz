@@ -12,6 +12,7 @@ pub struct AgentPresentation {
     pub host: Option<String>,
     pub pane_id: String,
     pub activity: String,
+    pub hook_flash: bool,
 }
 
 impl AgentPresentation {
@@ -38,6 +39,7 @@ impl AgentPresentation {
             host: pane.target.display().map(|host| one_line(&host)),
             pane_id: pane.id.legacy_parts().0.to_string(),
             activity,
+            hook_flash: false,
         })
     }
 
@@ -52,7 +54,11 @@ impl AgentPresentation {
             glyph,
             MdStyle {
                 bold: true,
-                color,
+                color: if self.state == AgentState::Busy && self.hook_flash {
+                    Some(0)
+                } else {
+                    color
+                },
                 ..Default::default()
             },
         );

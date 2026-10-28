@@ -16,7 +16,7 @@ use yinz_types::{
 
 #[derive(Clone)]
 pub(in crate::screen) struct LiveAgent {
-    session: SessionName,
+    pub(super) session: SessionName,
     host: String,
     pub(in crate::screen) pane: PaneInfo,
     pub(in crate::screen) metadata: BTreeMap<String, String>,
@@ -160,6 +160,9 @@ impl Browser {
 
 impl Screen {
     pub(super) fn refresh_palette_history_titles(&mut self) {
+        for state in self.command_palettes.values_mut() {
+            state.widget.set_agent_header_flash(None, false);
+        }
         if !self.command_palettes.values().any(|state| {
             state
                 .agents
@@ -170,6 +173,7 @@ impl Screen {
             return;
         }
         let live = self.live_palette_agents();
+        let flashing = self.flashing_palette_agent_ids(self.frame_now());
         for state in self.command_palettes.values_mut() {
             let Some(browser) = state.agents.browsers.get_mut(&state.widget.view) else {
                 continue;
@@ -180,7 +184,11 @@ impl Screen {
             let Some(current) = live.iter().find(|agent| old.same(agent)) else {
                 continue;
             };
-            let labels = state.agents.labels.get(&current.id());
+            let id = current.id();
+            state
+                .widget
+                .set_agent_header_flash(Some(id.clone()), flashing.contains(&id));
+            let labels = state.agents.labels.get(&id);
             state.widget.refresh_agent_title(
                 current.pane.clone(),
                 labels.map(|l| l.project.clone()).unwrap_or_else(|| {

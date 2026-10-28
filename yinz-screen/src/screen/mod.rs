@@ -687,6 +687,8 @@ pub(crate) struct Screen {
     /// so `sync_animation_clock` is a no-op on the overwhelming majority of ticks rather than a
     /// message on the bus sixty times a second.
     animation_clock: Option<Duration>,
+    /// Local hook activity, guarded by agent identity and sampled with monotonic frame time.
+    agent_hook_flashes: HashMap<PaneId, agent_reports::HookFlash>,
     global_last_active_tab_id: TabId,
     tab_history: BTreeMap<ClientId, Vec<TabId>>,
     tab_groups: BTreeMap<u32, tab_groups::TabGroup>,
@@ -983,6 +985,7 @@ impl Screen {
     /// period underneath it.
     pub(crate) fn animation_clock_period(&self, now: Instant) -> Option<Duration> {
         if self.notifications_are_animating(now)
+            || self.palette_hook_flashes_are_visible(now)
             || !self.fading_frame_panes.is_empty()
             || self.tabs.values().any(|tab| tab.overlay_ripple_is_live())
         {
@@ -1029,6 +1032,7 @@ impl Screen {
     /// that becomes coarser, or an animation that ends, is picked up within one period without
     /// every surface having to know about every other one.
     pub(crate) fn sync_animation_clock(&mut self, now: Instant) -> Result<()> {
+        self.reap_agent_hook_flashes(now);
         let wanted = self.animation_clock_period(now);
         if wanted == self.animation_clock {
             return Ok(());
@@ -1437,6 +1441,7 @@ impl Screen {
             fading_frame_panes: HashSet::new(),
             animating_plugin_loads: HashSet::new(),
             animation_clock: None,
+            agent_hook_flashes: HashMap::new(),
             global_last_active_tab_id: TabId::new(0),
             tabs: BTreeMap::new(),
             has_created_tab: false,
@@ -2962,6 +2967,7 @@ impl Screen {
         self.forget_notification_assemblies(id);
         self.retire_agent_event_pane(id, "pane_closed");
         self.destroyed_panes.insert(id);
+        self.agent_hook_flashes.remove(&id);
         self.invalidate_agent_lifecycle(id, "pane_closed");
         self.agent_launches.remove(&id);
         self.close_context_menus_for_pane(id);

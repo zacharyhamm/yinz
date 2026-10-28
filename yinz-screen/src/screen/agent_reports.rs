@@ -4,9 +4,80 @@ use super::Screen;
 use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
 use crate::TerminalId;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use yinz_runtime::errors::prelude::*;
-use yinz_types::agent::{AgentInfo, AgentSource};
+use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+
+const HOOK_FLASH_DURATION: Duration = Duration::from_millis(150);
+
+pub(super) struct HookFlash {
+    kind: String,
+    session: Option<String>,
+    run: Option<String>,
+    deadline: Instant,
+}
+
+impl HookFlash {
+    fn matches(&self, agent: &AgentInfo) -> bool {
+        agent.state == AgentState::Busy
+            && self.kind == agent.kind
+            && self.session == agent.session_id
+            && self.run == agent.run_id
+    }
+}
+
+impl Screen {
+    pub(super) fn agent_hook_is_flashing(
+        &self,
+        pane: &yinz_types::data::PaneInfo,
+        now: Instant,
+    ) -> bool {
+        !pane.exited
+            && pane.agent.as_ref().is_some_and(|agent| {
+                self.agent_hook_flashes
+                    .get(&pane.id)
+                    .is_some_and(|flash| now < flash.deadline && flash.matches(agent))
+            })
+    }
+
+    pub(super) fn reap_agent_hook_flashes(&mut self, now: Instant) {
+        let stale: Vec<_> = self
+            .agent_hook_flashes
+            .keys()
+            .copied()
+            .filter(|pane| {
+                self.get_pane_info(*pane)
+                    .is_none_or(|pane| !self.agent_hook_is_flashing(&pane, now))
+            })
+            .collect();
+        for pane in stale {
+            self.agent_hook_flashes.remove(&pane);
+        }
+    }
+
+    fn flash_agent_hook(&mut self, pane: PaneId, kind: &str, hook: &yinz_types::agent::HookEvent) {
+        let Some(info) = self.get_pane_info(pane) else {
+            return;
+        };
+        let Some(agent) = info.agent.filter(|agent| {
+            !info.exited
+                && agent.state == AgentState::Busy
+                && agent.kind == kind
+                && agent.session_id.as_deref().unwrap_or_default() == hook.session_id
+        }) else {
+            return;
+        };
+        self.agent_hook_flashes.insert(
+            pane,
+            HookFlash {
+                kind: agent.kind,
+                session: agent.session_id,
+                run: agent.run_id,
+                deadline: self.frame_now() + HOOK_FLASH_DURATION,
+            },
+        );
+    }
+}
 
 pub(super) fn apply_queued_agent_report(
     screen: &mut Screen,
@@ -149,7 +220,8 @@ pub(super) fn apply_queued_agent_report(
         if result.is_ok() { "ok" } else { "error" },
     );
     result?;
-    if hook.as_ref().is_some_and(|hook| !hook.archive_only) {
+    if let Some(hook) = hook.as_ref().filter(|hook| !hook.archive_only) {
+        screen.flash_agent_hook(pane_id, &report.kind, hook);
         let at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -260,6 +332,13 @@ pub(crate) fn apply_pane_agent_report(
         .tab_containing_pane_mut(pane_id)
         .map(|tab| tab.set_pane_agent(pane_id, agent.clone()))
         .unwrap_or(false);
+    if screen
+        .agent_hook_flashes
+        .get(&pane_id)
+        .is_some_and(|flash| agent.as_ref().is_none_or(|agent| !flash.matches(agent)))
+    {
+        screen.agent_hook_flashes.remove(&pane_id);
+    }
     // A Muse pane verified at startup binds its conversation with its first turn:
     // the record moves from the bootstrap's empty session to the provider's, and
     // that expected edge must not end the submission that caused it.
