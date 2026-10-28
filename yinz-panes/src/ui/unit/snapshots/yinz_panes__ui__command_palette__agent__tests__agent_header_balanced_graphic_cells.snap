@@ -1,0 +1,10 @@
+---
+source: yinz-panes/src/ui/unit/command_palette_agent_tests.rs
+expression: "graphical.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(\"\\n\")"
+---
+codex · idle                                              │   Weekly remaining
+Task: Agent task                                          │                   
+Project: yinz · command-palette                           │                   
+Location: session · /work                                 │          5hr · 18%
+Started: 2026-10-09 10:00 UTC                             │          reset due
+Session: abc123                                           │          Updated —

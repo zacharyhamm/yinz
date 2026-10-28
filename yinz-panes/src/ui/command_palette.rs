@@ -226,7 +226,6 @@ pub struct CommandPalette {
 pub struct QuotaPlacement {
     pub rect: CellRect,
     pub display: agent_proto::quota::Display,
-    line: usize,
 }
 
 pub struct CommandPaletteLayout {
@@ -253,16 +252,12 @@ impl CommandPaletteLayout {
     }
     /// Hide the ordinary percentage only after the managed image was prepared successfully.
     pub fn use_quota_image(&mut self) {
-        use unicode_width::UnicodeWidthStr;
         if let Some(agent) = &mut self.agent
-            && let Some(quota) = &agent.quota
+            && let Some(header) = agent.graphical_header.take()
         {
-            let line = &mut agent.lines[quota.line];
-            let width = self
-                .rect
-                .cols
-                .saturating_sub(self.border * 2 + agent.padding * 2 + quota.rect.cols);
-            *line = agent::clipped(line, width.min(line.text.width()));
+            for (line, graphical) in agent.lines.iter_mut().zip(header) {
+                *line = graphical;
+            }
         }
     }
 }
@@ -345,6 +340,15 @@ impl CommandPalette {
     pub fn agent_following(&self) -> bool {
         self.agent.as_ref().is_some_and(|a| a.borrow().following)
     }
+    pub fn agent_prompt_sent(&mut self) -> bool {
+        if let Some(agent) = &mut self.agent {
+            agent.get_mut().prompt_sent();
+            self.error = None;
+            true
+        } else {
+            false
+        }
+    }
     pub fn agent_first_revision(&self) -> Option<u64> {
         self.agent
             .as_ref()
@@ -353,6 +357,11 @@ impl CommandPalette {
     pub fn agent_page_request(&mut self, following: bool) {
         if let Some(agent) = &mut self.agent {
             agent.get_mut().page_request(following);
+        }
+    }
+    pub fn agent_retarget_run(&mut self) {
+        if let Some(agent) = &mut self.agent {
+            agent.get_mut().retarget_run();
         }
     }
     pub fn select_agent_revision(&mut self, revision: u64) {
@@ -742,7 +751,7 @@ impl CommandPalette {
         if self
             .agent
             .as_mut()
-            .is_some_and(|agent| agent.get_mut().back())
+            .is_some_and(|agent| agent.get_mut().back(&mut self.input))
         {
             return Outcome::None;
         }
@@ -805,6 +814,15 @@ impl CommandPalette {
                 return Outcome::None;
             }
         }
+        if key.bare_key == BareKey::Esc {
+            return self.back();
+        }
+        if self.busy {
+            return Outcome::None;
+        }
+        if let Some(agent) = &mut self.agent {
+            return agent.get_mut().key(&key, self.view, &mut self.input);
+        }
         let key = match key.bare_key {
             BareKey::Char('n') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
                 KeyWithModifier::new(BareKey::Down)
@@ -814,12 +832,6 @@ impl CommandPalette {
             },
             _ => key,
         };
-        if key.bare_key == BareKey::Esc {
-            return self.back();
-        }
-        if self.busy {
-            return Outcome::None;
-        }
         if !self.description.is_empty()
             && key.has_only_modifiers(&[KeyModifier::Alt])
             && matches!(key.bare_key, BareKey::PageUp | BareKey::PageDown)
@@ -834,11 +846,6 @@ impl CommandPalette {
                     offset.saturating_sub(page)
                 });
             return Outcome::None;
-        }
-        if let Some(agent) = &mut self.agent
-            && let Some(outcome) = agent.get_mut().key(&key, self.view)
-        {
-            return outcome;
         }
         if self.form.is_none() && self.metadata.is_some() && key.bare_key == BareKey::Tab {
             self.metadata_focus = (self.metadata_focus
@@ -1108,6 +1115,10 @@ impl CommandPalette {
             || self.text.is_some()
             || self.agent.as_ref().is_some_and(|a| a.borrow().is_reader())
         {
+            return;
+        }
+        if let Some(agent) = &mut self.agent {
+            agent.get_mut().insert_text(&mut self.input, text);
             return;
         }
         if let Some(field) = self
@@ -1418,6 +1429,14 @@ impl CommandPalette {
     }
 
     pub fn layout(&self, surface: Viewport) -> CommandPaletteLayout {
+        self.layout_with_arrow_fonts(surface, true)
+    }
+
+    pub fn layout_with_arrow_fonts(
+        &self,
+        surface: Viewport,
+        arrow_fonts: bool,
+    ) -> CommandPaletteLayout {
         let expanded = self.metadata.is_some()
             || !self.description.is_empty()
             || self.text.is_some()
@@ -1544,6 +1563,7 @@ impl CommandPalette {
                     &self.input,
                     self.error.as_deref(),
                     self.busy || self.pending,
+                    arrow_fonts,
                 )
             }),
             rect,
@@ -1568,19 +1588,32 @@ impl CommandPalette {
         }
     }
 
-    pub fn click(&mut self, layout: &CommandPaletteLayout, position: Position) {
+    pub fn click(&mut self, layout: &CommandPaletteLayout, position: Position) -> Outcome {
         let Ok(y) = usize::try_from(position.line()) else {
-            return;
+            return Outcome::None;
         };
         if !layout.rect.contains(position.column(), y) {
-            return;
+            return Outcome::None;
         }
         if let (Some(agent), Some(agent_layout)) = (&mut self.agent, &layout.agent) {
-            agent.get_mut().click(
+            let content = CellRect {
+                x: layout.rect.x + layout.border + agent_layout.padding,
+                y: layout.rect.y + layout.border,
+                cols: layout
+                    .rect
+                    .cols
+                    .saturating_sub(2 * (layout.border + agent_layout.padding)),
+                rows: layout.rect.rows.saturating_sub(2 * layout.border),
+            };
+            if !content.contains(position.column(), y) {
+                return Outcome::None;
+            }
+            return agent.get_mut().click(
                 agent_layout,
-                y.saturating_sub(layout.rect.y + layout.border),
+                position.column() - content.x,
+                y - content.y,
+                &mut self.input,
             );
-            return;
         }
         if (layout.options_y..layout.options_y + layout.options_rows).contains(&y) {
             let index = layout.first_option + y - layout.options_y;
@@ -1602,11 +1635,20 @@ impl CommandPalette {
                 }
             }
         }
+        Outcome::None
     }
 
     pub fn cursor(&self, layout: &CommandPaletteLayout) -> Option<(usize, usize)> {
-        if self.agent.is_some() {
-            return None;
+        if let Some(agent) = &layout.agent {
+            return (!self.busy)
+                .then_some(agent.cursor)
+                .flatten()
+                .map(|(x, y)| {
+                    (
+                        layout.rect.x + layout.border + agent.padding + x,
+                        layout.rect.y + layout.border + y,
+                    )
+                });
         }
         if layout.rect.is_empty()
             || self.text.is_some()

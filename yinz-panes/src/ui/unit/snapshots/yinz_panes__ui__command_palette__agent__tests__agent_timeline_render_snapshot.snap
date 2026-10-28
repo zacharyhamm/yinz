@@ -1,33 +1,32 @@
 ---
 source: yinz-panes/src/ui/unit/command_palette_agent_tests.rs
-assertion_line: 313
 expression: text
 ---
-╭ Agent info · Timeline ─────────────────────────────────────────────╮
-│ codex · idle                                                       │
-│ Task: Agent task                                                   │
-│ session · /work                                                    │
-│ Started 2026-10-09 10:00 UTC                                       │
-│ session abc123                                                     │
-│ > Type to search this run                                          │
+╭ Agent info ────────────────────────────────────────────────────────╮
+│ codex · idle                                  │  Usage unavailable │
+│ Task: Agent task                              │                  — │
+│ Project: —                                    │            5hr · — │
+│ Location: session · /work                     │            Reset — │
+│ Started: 2026-10-09 10:00 UTC                 │          Updated — │
+│ Session: abc123                               │                  — │
+│ [ Search ]                                                         │
 │ ────────────────────────────────────────────────────────────────── │
-│     Event 1                                                        │
-│     • first                                                        │
-│     • second                                                       │
-│     … more                                                         │
+│      Event 1                                                       │
+│      • first                                                       │
+│      • second                                                      │
+│      … more                                                        │
+│      Event 2                                                       │
+│      • first                                                       │
+│      • second                                                      │
+│      … more                                                        │
+│      Event 3                                                       │
+│      • first                                                       │
+│      • second                                                      │
+│      … more                                                        │
 │                                                                    │
-│     Event 2                                                        │
-│     • first                                                        │
-│     • second                                                       │
-│     … more                                                         │
 │                                                                    │
-│     Event 3                                                        │
-│     • first                                                        │
-│     • second                                                       │
-│     … more                                                         │
 │                                                                    │
-│ · Focus                                                            │
-│ · Latest / Refresh                                                 │
-│ · Details                                                          │
-│ ↑↓ Events · Enter Read · PgUp/Dn Scroll · Tab Actions · Esc Back   │
+│ Prompt unavailable                                                 │
+│  Focus    Latest / Refresh    Details                        │
+│ Tab Next · j/k Move · Enter Read · Esc Back                        │
 ╰────────────────────────────────────────────────────────────────────╯

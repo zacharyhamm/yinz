@@ -335,7 +335,9 @@ impl Screen {
         let Some(state) = self.command_palettes.get_mut(&client_id) else {
             return false;
         };
-        let layout = state.widget.layout(surface);
+        let layout = state
+            .widget
+            .layout_with_arrow_fonts(surface, self.arrow_fonts);
         if (event.wheel_up || event.wheel_down) && state.widget.scroll_agent(event.wheel_down) {
             self.render().non_fatal();
             return true;
@@ -349,7 +351,11 @@ impl Screen {
                 self.close_command_palette(client_id);
                 self.command_palette_mouse_captures.insert(client_id);
             } else if event.left && !state.widget.busy {
-                state.widget.click(&layout, event.position);
+                let outcome = state.widget.click(&layout, event.position);
+                self.handle_palette_outcome(client_id, outcome);
+                if !self.command_palettes.contains_key(&client_id) {
+                    self.command_palette_mouse_captures.insert(client_id);
+                }
             }
             self.refresh_theme_preview(client_id);
             self.render().non_fatal();
@@ -376,7 +382,13 @@ impl Screen {
             .iter()
             .filter_map(|(client, state)| {
                 let surface = self.command_palette_surface(*client)?;
-                Some((*client, state.widget.layout(surface).rect))
+                Some((
+                    *client,
+                    state
+                        .widget
+                        .layout_with_arrow_fonts(surface, self.arrow_fonts)
+                        .rect,
+                ))
             })
             .collect();
         for (client, rect) in layouts {
@@ -433,7 +445,9 @@ impl Screen {
             let Some(state) = self.command_palettes.get_mut(&client) else {
                 continue;
             };
-            let mut layout = state.widget.layout(surface);
+            let mut layout = state
+                .widget
+                .layout_with_arrow_fonts(surface, self.arrow_fonts);
             let cell = if !watcher
                 && self
                     .kitty_host_capabilities

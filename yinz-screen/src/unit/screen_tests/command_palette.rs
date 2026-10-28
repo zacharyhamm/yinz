@@ -349,6 +349,81 @@ fn palette_paste_resize_and_outside_click_repaint_without_changing_focus() {
 }
 
 #[test]
+fn palette_focus_click_captures_release_before_terminal_mouse_reporting() {
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+
+    let mut screen = create_non_mirrored_screen(SIZE);
+    let (pty_writer_tx, pty_writer_rx) =
+        channels::unbounded::<(PtyWriteInstruction, ErrorContext)>();
+    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
+    new_tab(&mut screen, 1, TabId::new(0));
+    let terminal = TerminalId::new(1);
+    let pane = PaneId::Terminal(terminal);
+    let tab = screen.get_active_tab_mut(CLIENT).unwrap();
+    tab.handle_pty_bytes(terminal, b"\x1b[?1002h\x1b[?1006h".to_vec())
+        .unwrap();
+    tab.set_pane_agent(
+        pane,
+        Some(AgentInfo {
+            kind: "claude".into(),
+            state: AgentState::Waiting,
+            source: AgentSource::Reported,
+            detail: None,
+            waiting_on: Some("permission".into()),
+            wait_needs_a_person: true,
+            cwd: None,
+            session_id: None,
+            run_id: None,
+        }),
+    );
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    palette_search(&mut screen, "state:waiting");
+    palette_key(&mut screen, BareKey::Enter);
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    let (row, col) = grid
+        .as_character_lines()
+        .iter()
+        .enumerate()
+        .find_map(|(row, cells)| {
+            let line = cells.iter().map(|cell| cell.character).collect::<String>();
+            line.find("Focus")
+                .map(|byte| (row, line[..byte].chars().count()))
+        })
+        .expect("agent info has a Focus button");
+    pty_writer_rx.try_iter().for_each(drop);
+    screen.handle_mouse_event(
+        MouseEvent::new_left_press_event(Position::new(row as i32, col as u16)),
+        CLIENT,
+    );
+    assert!(!screen.command_palettes.contains_key(&CLIENT));
+    assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
+    assert!(screen.command_palette_mouse_captures.contains(&CLIENT));
+    let position = Position::new(5, 5);
+    screen.handle_mouse_event(MouseEvent::new_left_motion_event(position), CLIENT);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(position), CLIENT);
+    assert!(pty_writer_rx.try_recv().is_err());
+    assert!(!screen.command_palette_mouse_captures.contains(&CLIENT));
+
+    // Capture ends at release, so the next click reaches the mouse-reporting app.
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(position), CLIENT);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(position), CLIENT);
+    let writes = pty_writer_rx
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PtyWriteInstruction::Write(bytes, id, _) => Some((bytes, id)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(writes.len(), 2);
+    assert!(writes
+        .iter()
+        .all(|(bytes, id)| { *id == terminal && bytes.starts_with(b"\x1b[<") }));
+    assert!(writes[0].0.ends_with(b"M"));
+    assert!(writes[1].0.ends_with(b"m"));
+}
+
+#[test]
 fn opening_palette_closes_context_menu_and_toggle_key_closes_palette() {
     let mut screen = screen();
     screen.open_context_menu(
@@ -3872,7 +3947,7 @@ fn agent_info_keeps_missing_history_readable_and_rejects_replaced_identity() {
         info.contains("No recorded history") && info.contains("Focus"),
         "{info}"
     );
-    assert!(info.contains("┃ ! codex  needs input"), "{info}");
+    assert!(info.contains("! codex  needs input"), "{info}");
     let mut busy = agent.clone();
     busy.state = AgentState::Busy;
     screen
@@ -3881,7 +3956,7 @@ fn agent_info_keeps_missing_history_readable_and_rejects_replaced_identity() {
         .unwrap()
         .set_pane_agent(pane, Some(busy));
     let updated = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(updated.contains("┃ ● codex  working"), "{updated}");
+    assert!(updated.contains("● codex  working"), "{updated}");
     assert!(updated.contains("No recorded history"), "{updated}");
     let mut replacement = agent;
     replacement.session_id = Some("replacement".into());
@@ -3892,9 +3967,13 @@ fn agent_info_keeps_missing_history_readable_and_rejects_replaced_identity() {
         .set_pane_agent(pane, Some(replacement));
     screen.command_palette_handles_input(&enter, b"\r", false, CLIENT);
     let timeline = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(timeline.contains("Agent info · Timeline"), "{timeline}");
+    assert!(timeline.contains("Agent info"), "{timeline}");
     assert!(!timeline.contains("changed identity"), "{timeline}");
-    // Focus is an action: Enter on the empty timeline must not invoke it.
+    // Search -> empty messages: Enter must not invoke Focus.
+    palette_key(&mut screen, BareKey::Tab);
+    palette_key(&mut screen, BareKey::Enter);
+    // Messages -> prompt -> Focus.
+    palette_key(&mut screen, BareKey::Tab);
     screen.command_palette_handles_input(
         &Some(KeyWithModifier::new(BareKey::Tab)),
         b"\t",
@@ -3910,6 +3989,7 @@ fn agent_info_keeps_missing_history_readable_and_rejects_replaced_identity() {
         false,
         CLIENT,
     );
+    palette_key(&mut screen, BareKey::Esc); // After collapsing the expanded search, return.
     let restored = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(restored.contains("state:waiting"), "{restored}");
 }
@@ -4000,7 +4080,8 @@ fn archive_queries_discard_stale_replies_and_resume_cannot_be_submitted_twice() 
             },
         }]))),
     });
-    palette_key(&mut screen, BareKey::Tab);
+    palette_key(&mut screen, BareKey::Tab); // Search -> messages.
+    palette_key(&mut screen, BareKey::Tab); // Messages -> Resume.
     screen.command_palette_handles_input(&enter, b"", false, CLIENT);
     let submitted = next();
     screen.command_palette_handles_input(&enter, b"", false, CLIENT);
@@ -4088,6 +4169,7 @@ fn history_live_run_id_updates_retarget_reads_and_reset_pagination() {
                 }]))),
             });
         }
+        palette_key(&mut screen, BareKey::Enter); // Expand Search.
         screen.command_palette_handles_input(&None, b"needle", false, CLIENT);
         let query = next();
         screen.plugin_palette_instruction(Instruction::AgentReply {
@@ -4123,6 +4205,17 @@ fn history_live_run_id_updates_retarget_reads_and_reset_pagination() {
         let updated = next();
         assert!(
             matches!(&updated.action, AgentAction::History(HistoryAction::Run { id, from: None, query }) if id == "explicit-run" && query == "needle")
+        );
+        screen.plugin_palette_instruction(Instruction::AgentReply {
+            client: CLIENT,
+            opening: updated.opening,
+            step: updated.step,
+            reply: Ok(AgentReply::History(history_run(vec![]))),
+        });
+        palette_key(&mut screen, BareKey::Esc);
+        let cleared = next();
+        assert!(
+            matches!(&cleared.action, AgentAction::History(HistoryAction::Run { id, query, .. }) if id == "explicit-run" && query.is_empty())
         );
     }
 }
@@ -4314,26 +4407,14 @@ fn history_poll_generations_reject_ticks_after_search_refresh_and_event_return()
     let mut obsolete = vec![next_tick()];
     for operation in ["search", "refresh", "event"] {
         if operation == "search" {
+            palette_key(&mut screen, BareKey::Enter); // Expand Search.
             screen.command_palette_handles_input(&None, b"needle", false, CLIENT);
         } else {
-            // Timeline -> Actions for refresh; refreshed pages focus the timeline.
             if operation == "refresh" {
-                screen.command_palette_handles_input(
-                    &Some(KeyWithModifier::new(BareKey::Tab)),
-                    b"",
-                    false,
-                    CLIENT,
-                );
-            }
-            if operation == "refresh" {
-                // Skip Focus and Send prompt to select Latest / Refresh.
-                palette_key(&mut screen, BareKey::Down);
-                screen.command_palette_handles_input(
-                    &Some(KeyWithModifier::new(BareKey::Down)),
-                    b"",
-                    false,
-                    CLIENT,
-                );
+                // Search -> messages -> prompt -> Focus -> Latest / Refresh.
+                for key in [BareKey::Tab, BareKey::Tab, BareKey::Tab, BareKey::Right] {
+                    palette_key(&mut screen, key);
+                }
             }
             screen.command_palette_handles_input(&enter, b"", false, CLIENT);
         }
@@ -4886,6 +4967,7 @@ fn history_following_requests_newest_but_scrolling_back_keeps_revision_page() {
         AgentAction::History(HistoryAction::Run { from: None, .. })
     ));
     // The response was requested while following, but arrives after scrolling back.
+    palette_key(&mut screen, BareKey::Tab); // Search -> messages.
     palette_key(&mut screen, BareKey::Up);
     screen.plugin_palette_instruction(reply(&latest, 51));
     let pinned = next();
@@ -4928,7 +5010,7 @@ fn history_following_requests_newest_but_scrolling_back_keeps_revision_page() {
         response
     };
     screen.plugin_palette_instruction(with_page(&anchored, 50, "Older", Some(20)));
-    for key in [BareKey::Tab, BareKey::Down, BareKey::Down, BareKey::Enter] {
+    for key in [BareKey::Tab, BareKey::Tab, BareKey::Right, BareKey::Enter] {
         palette_key(&mut screen, key);
     }
     let older = next();
@@ -4937,7 +5019,7 @@ fn history_following_requests_newest_but_scrolling_back_keeps_revision_page() {
         AgentAction::History(HistoryAction::Run { from: Some(20), .. })
     ));
     screen.plugin_palette_instruction(with_page(&older, 20, "Newer", Some(50)));
-    for key in [BareKey::Tab, BareKey::Down, BareKey::Down, BareKey::Enter] {
+    for key in [BareKey::Tab, BareKey::Tab, BareKey::Right, BareKey::Enter] {
         palette_key(&mut screen, key);
     }
     let newer = next();
@@ -4980,6 +5062,13 @@ fn history_following_requests_newest_but_scrolling_back_keeps_revision_page() {
 
     // Latest overrides a search begun while scrolled back; Older overrides one begun following.
     for (name, from, start) in [("Latest", None, 80), ("Older", Some(20), 20)] {
+        screen.command_palette_handles_input(
+            &Some(KeyWithModifier::new(BareKey::Tab).with_shift_modifier()),
+            b"",
+            false,
+            CLIENT,
+        );
+        palette_key(&mut screen, BareKey::Enter); // Expand Search.
         screen.command_palette_handles_input(&None, b"needle", false, CLIENT);
         let search = next();
         assert!(matches!(
@@ -4989,9 +5078,9 @@ fn history_following_requests_newest_but_scrolling_back_keeps_revision_page() {
         screen.plugin_palette_instruction(with_page(&search, 50, name, from));
         for key in [
             BareKey::Tab,
-            BareKey::Home,
-            BareKey::Down,
-            BareKey::Down,
+            BareKey::Tab,
+            BareKey::Tab,
+            BareKey::Right,
             BareKey::Enter,
         ] {
             palette_key(&mut screen, key);
@@ -5006,7 +5095,7 @@ fn history_following_requests_newest_but_scrolling_back_keeps_revision_page() {
         let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         let visible = if from.is_none() { start + 29 } else { start };
         assert!(frame.contains(&format!("Event {visible}")), "{frame}");
-        assert!(frame.contains("Type to search this run"), "{frame}");
+        assert!(frame.contains("[ Search ]"), "{frame}");
     }
 }
 
@@ -5963,6 +6052,14 @@ fn peer_agent_quota_is_unavailable_without_local_usage_collection() {
         let receiver = screen_wired_to_server(&mut screen);
         let mut grid = grid_for_render_snapshot(SIZE);
         let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(frame.contains("Usage unavailable"), "{frame}");
+        assert!(frame.contains("Quota unavailable…"), "{frame}");
+        // The two-column header clips the explanation; the compact header has room for it.
+        screen
+            .resize_to_screen(Size { cols: 80, rows: 11 })
+            .unwrap();
+        grid.change_size(11, 80);
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert!(
             frame.contains("Quota unavailable for peer-session agents"),
             "{frame}"
@@ -6042,11 +6139,10 @@ fn agent_info_usage_and_prompt_are_scoped_to_the_selected_agent() {
         });
         let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert!(frame.contains("Weekly") && frame.contains("75%"), "{frame}");
-        for key in [BareKey::Tab, BareKey::Down, BareKey::Enter] {
+        for key in [BareKey::Tab, BareKey::Tab] {
             palette_key(&mut screen, key);
         }
         screen.command_palette_handles_input(&None, b"continue\nwith tests", false, CLIENT);
-        palette_key(&mut screen, BareKey::Tab);
         palette_key(&mut screen, BareKey::Enter);
         let prompt_request = loop {
             let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -6057,7 +6153,7 @@ fn agent_info_usage_and_prompt_are_scoped_to_the_selected_agent() {
         assert!(
             matches!(&prompt_request.action, AgentAction::Prompt { pane_id, session_id, submission_id, target_session: None } if *pane_id == pane && session_id.as_deref() == conversation && !submission_id.is_empty())
         );
-        assert_eq!(prompt_request.values, vec!["continue\nwith tests"]);
+        assert_eq!(prompt_request.values, vec!["continue with tests"]);
         screen.plugin_palette_instruction(Instruction::AgentReply {
             client: CLIENT,
             opening: prompt_request.opening,
@@ -6073,14 +6169,206 @@ fn agent_info_usage_and_prompt_are_scoped_to_the_selected_agent() {
         });
         let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         if conversation.is_some() {
-            assert!(frame.contains("Agent info · Actions"), "{frame}");
+            assert!(!frame.contains("continue"), "{frame}");
+            assert!(frame.contains("Agent info"), "{frame}");
             assert!(frame.contains("Weekly") && frame.contains("75%"), "{frame}");
         } else {
-            assert!(frame.contains("Send prompt"), "{frame}");
+            assert!(frame.contains("Prompt:"), "{frame}");
             assert!(frame.contains("no conversation ID"), "{frame}");
             assert!(frame.contains("continue"), "{frame}");
             assert!(frame.contains("with tests"), "{frame}");
+            // A provider-level rejection also retains the draft, and a later success clears it.
+            for outcome in [AgentOutcome::Rejected, AgentOutcome::Ok] {
+                palette_key(&mut screen, BareKey::Enter);
+                let retry = loop {
+                    let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    if let PluginInstruction::PaletteAgent(request) = instruction {
+                        break request;
+                    }
+                };
+                assert!(
+                    matches!((&retry.action, &prompt_request.action), (AgentAction::Prompt { submission_id: retry, .. }, AgentAction::Prompt { submission_id: original, .. }) if retry == original)
+                );
+                assert_eq!(retry.values, vec!["continue with tests"]);
+                screen.plugin_palette_instruction(Instruction::AgentReply {
+                    client: CLIENT,
+                    opening: retry.opening,
+                    step: retry.step,
+                    reply: Ok(AgentReply::Prompted(AgentResponse::new(outcome))),
+                });
+                let retried = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+                assert!(retried.contains("Agent info"), "{retried}");
+                assert_eq!(
+                    retried.contains("continue"),
+                    outcome != AgentOutcome::Ok,
+                    "{retried}"
+                );
+                if outcome == AgentOutcome::Rejected {
+                    assert!(retried.contains("Rejected"), "{retried}");
+                }
+            }
         }
+    }
+}
+
+#[test]
+fn agent_prompt_retries_keep_identity_and_unsuccessful_submissions_restart_polling() {
+    use std::sync::atomic::Ordering;
+    use yinz_bus::command_palette::{AgentAction, AgentReply, AgentRequest, Instruction};
+    use yinz_types::agent::control::{AgentOutcome, AgentResponse};
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+
+    for failure in ["error", "rejected", "cancelled", "dispatch"] {
+        let mut screen = screen();
+        screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
+            PaneId::Terminal(TerminalId::new(1)),
+            Some(AgentInfo {
+                kind: "codex".into(),
+                state: AgentState::Idle,
+                source: AgentSource::Reported,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                session_id: Some("conversation".into()),
+                run_id: Some("run".into()),
+            }),
+        );
+        let (tx, rx) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+        let next = || loop {
+            let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if let PluginInstruction::PaletteAgent(request) = instruction
+                && !matches!(request.action, AgentAction::Usage { .. })
+            {
+                break *request;
+            }
+        };
+        let (tx, ticks) = channels::unbounded();
+        screen.bus.senders.to_screen = Some(SenderWithContext::new(tx));
+        let next_tick = || loop {
+            let (instruction, _) = ticks.recv_timeout(Duration::from_secs(5)).unwrap();
+            if let ScreenInstruction::CommandPalette(tick @ Instruction::HistoryTick { .. }) =
+                instruction
+            {
+                break tick;
+            }
+        };
+        let reply = |request: &AgentRequest, reply| Instruction::AgentReply {
+            client: CLIENT,
+            opening: request.opening,
+            step: request.step,
+            reply,
+        };
+        let id = |request: &AgentRequest| {
+            let AgentAction::Prompt { submission_id, .. } = &request.action else {
+                panic!("expected prompt, got {:?}", request.action);
+            };
+            submission_id.clone()
+        };
+        palette_search(&mut screen, "provider:codex");
+        palette_key(&mut screen, BareKey::Enter);
+        screen.plugin_palette_instruction(reply(
+            &next(),
+            Ok(AgentReply::History(history_run(vec![]))),
+        ));
+        let old_tick = next_tick();
+        screen.plugin_palette_instruction(old_tick.clone());
+        let poll = next();
+        assert!(matches!(poll.action, AgentAction::History(_)));
+        for _ in 0..2 {
+            palette_key(&mut screen, BareKey::Tab);
+        }
+        screen.command_palette_handles_input(&None, b"continue", false, CLIENT);
+        let original = if failure == "dispatch" {
+            let saved = screen.bus.senders.to_plugin.clone();
+            let (tx, disconnected) = channels::unbounded();
+            drop(disconnected);
+            screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+            screen.bus.senders.should_silently_fail = false;
+            palette_key(&mut screen, BareKey::Enter);
+            screen.bus.senders.should_silently_fail = true;
+            screen.bus.senders.to_plugin = saved;
+            None
+        } else {
+            palette_key(&mut screen, BareKey::Enter);
+            let request = next();
+            if failure == "cancelled" {
+                palette_key(&mut screen, BareKey::Esc);
+                assert!(!request.active.load(Ordering::Acquire));
+                // A late success after cancelling the wait must not clear the draft.
+                screen.plugin_palette_instruction(reply(
+                    &request,
+                    Ok(AgentReply::Prompted(AgentResponse::new(AgentOutcome::Ok))),
+                ));
+            } else {
+                let response = if failure == "error" {
+                    Err("Uncertain peer reply".into())
+                } else {
+                    Ok(AgentReply::Prompted(AgentResponse::new(
+                        AgentOutcome::Rejected,
+                    )))
+                };
+                screen.plugin_palette_instruction(reply(&request, response));
+            }
+            Some(request)
+        };
+        assert!(!poll.active.load(Ordering::Acquire));
+        screen
+            .plugin_palette_instruction(reply(&poll, Ok(AgentReply::History(history_run(vec![])))));
+        screen.plugin_palette_instruction(old_tick);
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        let before = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(before.contains("continue"), "{failure}: {before}");
+        let error = match failure {
+            "error" => "Uncertain peer reply",
+            "rejected" => "Rejected",
+            "dispatch" => "Could not request agent action",
+            _ => "",
+        };
+        assert!(before.contains(error), "{failure}: {before}");
+        // Only the re-armed timer can restart history: the cancelled reply and
+        // previously consumed tick above cannot schedule or start another poll.
+        screen.plugin_palette_instruction(next_tick());
+        let refreshed = next();
+        assert!(matches!(refreshed.action, AgentAction::History(_)));
+        screen.plugin_palette_instruction(reply(
+            &refreshed,
+            Ok(AgentReply::History(history_run(vec![]))),
+        ));
+        let after = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(
+            after.contains("continue") && after.contains(error),
+            "{failure}: {after}"
+        );
+        palette_key(&mut screen, BareKey::Enter);
+        let retry = next();
+        if let Some(original) = original {
+            assert_eq!(id(&retry), id(&original));
+        }
+        assert_eq!(retry.values, vec!["continue"]);
+        palette_key(&mut screen, BareKey::Esc);
+        screen.command_palette_handles_input(&None, b" again", false, CLIENT);
+        palette_key(&mut screen, BareKey::Enter);
+        let edited = next();
+        assert_ne!(id(&edited), id(&retry));
+        assert_eq!(edited.values, vec!["continue again"]);
+        screen.plugin_palette_instruction(reply(
+            &edited,
+            Ok(AgentReply::Prompted(AgentResponse::new(AgentOutcome::Ok))),
+        ));
+        let cleared = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(!cleared.contains("continue"), "{cleared}");
+        screen.plugin_palette_instruction(reply(
+            &next(),
+            Ok(AgentReply::History(history_run(vec![]))),
+        ));
+        screen.command_palette_handles_input(&None, b"continue again", false, CLIENT);
+        palette_key(&mut screen, BareKey::Enter);
+        let fresh = next();
+        assert_ne!(id(&fresh), id(&edited));
+        assert_eq!(fresh.values, edited.values);
     }
 }
 

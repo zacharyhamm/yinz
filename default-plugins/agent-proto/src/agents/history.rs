@@ -368,7 +368,18 @@ impl EntryPresentation {
             return rows.clone();
         }
         let mut rows = cap_rows(
-            labelled_blocks(&self.blocks, kind, gutter.width(), width, LABEL_STYLE).0,
+            labelled_blocks(
+                &self.blocks,
+                kind,
+                gutter.width(),
+                width,
+                if kind == "summary" {
+                    SUMMARY_LABEL_STYLE
+                } else {
+                    LABEL_STYLE
+                },
+            )
+            .0,
             gutter.width(),
             self.complete,
         );

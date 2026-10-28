@@ -117,6 +117,9 @@ impl State {
     pub(super) fn pending(&self) -> bool {
         self.pending.is_some()
     }
+    fn prompt_pending(&self) -> bool {
+        matches!(self.pending, Some((_, _, AgentAction::Prompt { .. })))
+    }
     pub(super) fn cancel(&mut self) {
         if let Some((_, active, _)) = self.pending.take() {
             active.store(false, Ordering::Release);
@@ -156,7 +159,11 @@ impl Screen {
         let active = Arc::new(AtomicBool::new(true));
         state.agents.pending = Some((state.widget.view, active.clone(), action.clone()));
         state.widget.busy = !matches!(action, AgentAction::History(ref a) if !matches!(a, yinz_bus::command_palette::HistoryAction::Resume { .. }));
-        state.widget.clear_error();
+        // Background history polls must leave submission errors visible.
+        if state.widget.busy {
+            state.widget.clear_error();
+        }
+        let prompt = state.agents.prompt_pending();
         let request = AgentRequest {
             client,
             opening: state.agents.opening,
@@ -207,6 +214,9 @@ impl Screen {
             state
                 .widget
                 .set_error(format!("Could not request agent action: {error}"));
+            if prompt {
+                self.schedule_palette_history_tick(client);
+            }
         }
     }
 
@@ -215,6 +225,7 @@ impl Screen {
             return false;
         };
         if *outcome == Outcome::Cancel && state.agents.pending() {
+            let prompt = state.agents.prompt_pending();
             state.agents.cancel();
             state.widget.busy = false;
             if state.agents.submitted {
@@ -222,6 +233,9 @@ impl Screen {
                     "Stopped waiting; launch may still complete. Inspect agents before retrying."
                         .into(),
                 );
+            }
+            if prompt {
+                self.schedule_palette_history_tick(client);
             }
             return true;
         }
@@ -275,12 +289,18 @@ impl Screen {
             Some(AgentAction::Prompt { .. }) => "Send prompt",
             _ => "Launch agent",
         };
+        let prompt = state.agents.prompt_pending();
         state.agents.cancel();
         state.widget.busy = false;
         match reply {
             Ok(AgentReply::Prompted(response)) => {
                 if response.outcome == AgentOutcome::Ok {
-                    state.widget.back();
+                    if let Some(browser) = state.agents.browsers.get_mut(&state.widget.view) {
+                        browser.clear_prompt();
+                    }
+                    if !state.widget.agent_prompt_sent() {
+                        state.widget.back();
+                    }
                     super::notify(&self.bus.senders, "Prompt sent".into());
                     self.refresh_palette_history(client, false);
                 } else {
@@ -289,6 +309,7 @@ impl Screen {
                             .message
                             .unwrap_or_else(|| format!("Prompt: {:?}", response.outcome)),
                     );
+                    self.schedule_palette_history_tick(client);
                 }
             },
             Err(error) => {
@@ -305,6 +326,9 @@ impl Screen {
                 }
                 state.agents.submitted = false;
                 state.widget.set_error(error);
+                if prompt {
+                    self.schedule_palette_history_tick(client);
+                }
             },
             Ok(AgentReply::History(reply)) => {
                 self.palette_history_reply(client, reply, history_action);

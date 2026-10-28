@@ -76,6 +76,25 @@ fn run_action(id: &str, from: Option<u64>) -> HistoryAction {
     }
 }
 
+// Collapse only the loaded page, keeping every revision for the full-content reader.
+fn collapse_tools(events: Vec<HistoryEvent>) -> Vec<HistoryEvent> {
+    let mut grouped: Vec<HistoryEvent> = Vec::new();
+    for mut event in events {
+        if matches!(event.kind.as_str(), "tool_call" | "tool_result") {
+            if let Some(previous) = grouped.last_mut().filter(|e| e.kind == "tools") {
+                previous.revisions.extend(event.revisions);
+                previous.tool_calls += event.tool_calls;
+                continue;
+            }
+            event.kind = "tools".into();
+            event.markdown.clear();
+            event.truncated = false;
+        }
+        grouped.push(event);
+    }
+    grouped
+}
+
 pub(super) fn execute(
     request: &AgentRequest,
     action: &HistoryAction,
@@ -288,7 +307,7 @@ pub(super) fn execute(
                         run_action(id, Some(next)),
                     ));
                 }
-                status = format!("{} retained events · type to search this run · previews may be shortened; Enter expands", page.total);
+                status = format!("{} retained events · Search filters this run · previews may be shortened; Enter expands", page.total);
                 for e in page.entries {
                     events.push(HistoryEvent {
                         revision: e.revision,
@@ -302,14 +321,25 @@ pub(super) fn execute(
                         truncated: page.truncated_revisions.contains(&e.revision),
                         markdown: e.text.clone(),
                     });
-                    rows.push(row(
-                        format!("event:{}", e.revision),
-                        format!("{} · {}", e.revision, e.kind.label()),
-                        String::new(),
+                }
+                events = collapse_tools(events);
+                for event in &events {
+                    let action = if event.kind == "tools" {
+                        HistoryAction::Tools {
+                            id: id.clone(),
+                            revisions: event.revisions.clone(),
+                        }
+                    } else {
                         HistoryAction::Event {
                             id: id.clone(),
-                            revision: e.revision,
-                        },
+                            revision: event.revision,
+                        }
+                    };
+                    rows.push(row(
+                        format!("event:{}", event.revision),
+                        format!("{} · {}", event.revision, event.kind),
+                        String::new(),
+                        action,
                     ));
                 }
             } else {
@@ -352,31 +382,6 @@ pub(super) fn execute(
                 }
             }
             events.sort_by_key(|event| event.revision);
-            if query.is_empty() {
-                let mut collapsed: Vec<HistoryEvent> = Vec::new();
-                for event in events {
-                    if matches!(event.kind.as_str(), "tool_call" | "tool_result")
-                        && let Some(group) = collapsed.last_mut().filter(|e| e.kind == "tool_call")
-                    {
-                        group.revisions.push(event.revision);
-                        group.tool_calls += event.tool_calls;
-                        continue;
-                    }
-                    collapsed.push(event);
-                }
-                events = collapsed;
-                for event in events.iter().filter(|e| e.kind == "tool_call") {
-                    if let Some(row) = rows
-                        .iter_mut()
-                        .find(|r| r.id == format!("event:{}", event.revision))
-                    {
-                        row.action = HistoryAction::Tools {
-                            id: id.clone(),
-                            revisions: event.revisions.clone(),
-                        };
-                    }
-                }
-            }
             HistoryReply::Run {
                 header: HistoryHeader {
                     name: if h.title.is_empty() {

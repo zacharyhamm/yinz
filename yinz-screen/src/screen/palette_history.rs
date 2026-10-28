@@ -115,6 +115,41 @@ pub(super) struct Browser {
     generation: u64,
     usage_checked: Option<std::time::Instant>,
     usage: Option<yinz_types::agent::control::ProviderUsage>,
+    prompt: Option<PromptSubmission>,
+}
+
+struct PromptSubmission {
+    live: LiveAgent,
+    action: AgentAction,
+    values: Vec<String>,
+}
+
+impl Browser {
+    fn prompt_action(&mut self, session: &SessionName, values: &[String]) -> Option<AgentAction> {
+        let live = self.live.as_ref()?;
+        if let Some(prompt) = &self.prompt
+            && prompt.live.same(live)
+            && prompt.values == values
+        {
+            return Some(prompt.action.clone());
+        }
+        let action = AgentAction::Prompt {
+            pane_id: live.pane.id,
+            session_id: live.pane.agent.as_ref().and_then(|a| a.session_id.clone()),
+            target_session: (live.session != *session).then(|| live.session.clone()),
+            submission_id: uuid::Uuid::new_v4().to_string(),
+        };
+        self.prompt = Some(PromptSubmission {
+            live: live.clone(),
+            action: action.clone(),
+            values: values.to_vec(),
+        });
+        Some(action)
+    }
+
+    pub(super) fn clear_prompt(&mut self) {
+        self.prompt = None;
+    }
 }
 
 impl Screen {
@@ -306,6 +341,7 @@ impl Screen {
                 generation: 0,
                 usage_checked: None,
                 usage: None,
+                prompt: None,
             },
         );
         if missing {
@@ -489,27 +525,38 @@ impl Screen {
                 }]);
             },
         }
-        if browser.live.is_some() {
-            browser.generation += 1;
-            let generation = browser.generation;
-            let senders = self.bus.senders.clone();
-            let opening = state.agents.opening;
-            let view = state.widget.view;
-            crate::global_async_runtime::get_tokio_runtime().spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                senders
-                    .send_to_screen(yinz_bus::screen::ScreenInstruction::CommandPalette(
-                        Instruction::HistoryTick {
-                            client,
-                            opening,
-                            view,
-                            generation,
-                        },
-                    ))
-                    .non_fatal();
-            });
-        }
+        self.schedule_palette_history_tick(client);
         self.refresh_palette_usage(client);
+    }
+
+    pub(super) fn schedule_palette_history_tick(&mut self, client: ClientId) {
+        let Some(state) = self.command_palettes.get_mut(&client) else {
+            return;
+        };
+        let view = state.widget.view;
+        let Some(browser) = state.agents.browsers.get_mut(&view) else {
+            return;
+        };
+        if browser.live.is_none() {
+            return;
+        }
+        browser.generation += 1;
+        let generation = browser.generation;
+        let senders = self.bus.senders.clone();
+        let opening = state.agents.opening;
+        crate::global_async_runtime::get_tokio_runtime().spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            senders
+                .send_to_screen(yinz_bus::screen::ScreenInstruction::CommandPalette(
+                    Instruction::HistoryTick {
+                        client,
+                        opening,
+                        view,
+                        generation,
+                    },
+                ))
+                .non_fatal();
+        });
     }
 
     fn refresh_palette_usage(&mut self, client: ClientId) {
@@ -637,6 +684,7 @@ impl Screen {
             }
             return;
         }
+        state.widget.clear_error();
         browser.rows.clear();
         state.widget.set_sections(vec![]);
         match &mut browser.action {
@@ -692,7 +740,7 @@ impl Screen {
             {
                 *id = current.run().unwrap_or_default();
                 *from = None;
-                state.widget.agent_page_request(true);
+                state.widget.agent_retarget_run();
             }
             browser.live = Some(current);
         } else {
@@ -843,6 +891,21 @@ impl Screen {
             }
             return true;
         }
+        if let Outcome::Submit { id, values } = outcome
+            && id == "history-prompt"
+        {
+            if let Some(action) = state
+                .agents
+                .browsers
+                .get_mut(&state.widget.view)
+                .and_then(|browser| browser.prompt_action(&self.session_name, values))
+            {
+                // A background history request may still be pending while composing.
+                state.agents.cancel();
+                self.request_palette_agent(client, action, values.clone());
+            }
+            return true;
+        }
         let Outcome::Activate(id) = outcome else {
             return false;
         };
@@ -857,39 +920,6 @@ impl Screen {
         let Some(browser) = state.agents.browsers.get_mut(&state.widget.view) else {
             return false;
         };
-        if id == "history-prompt" {
-            if let Some(live) = &browser.live {
-                let action = AgentAction::Prompt {
-                    pane_id: live.pane.id,
-                    session_id: live.pane.agent.as_ref().and_then(|a| a.session_id.clone()),
-                    target_session: (live.session != self.session_name)
-                        .then(|| live.session.clone()),
-                    submission_id: uuid::Uuid::new_v4().to_string(),
-                };
-                state.agents.cancel();
-                state.agents.step += 1;
-                let view = (1 << 63) + state.agents.step;
-                let id = format!("native-agent:{view}:prompt");
-                state.agents.actions.insert(id.clone(), action);
-                state.widget.push_view(view, "Send prompt".into());
-                let mut field = Field::text("Prompt", "");
-                field.input_options = Some(yinz_types::command_palette::InputOptions {
-                    kind: "multiline".into(),
-                    help: "".into(),
-                    error: "".into(),
-                    minimum: None,
-                    maximum: None,
-                });
-                state.widget.open_form(Form::new(
-                    id,
-                    "Send prompt".into(),
-                    vec![field],
-                    "Send",
-                    false,
-                ));
-            }
-            return true;
-        }
         if id == "history-focus" {
             if let Some(live) = browser.live.clone() {
                 self.focus_palette_agent(client, live);
@@ -911,6 +941,7 @@ impl Screen {
                     .agent_page_request(matches!(action, HistoryAction::Run { from: None, .. }));
                 browser.action = action.clone();
                 state.widget.set_query(String::new());
+                state.widget.clear_error();
                 state.agents.cancel();
                 self.request_palette_agent(client, AgentAction::History(action), vec![]);
             },

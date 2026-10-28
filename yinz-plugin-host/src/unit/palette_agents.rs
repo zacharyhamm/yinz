@@ -943,7 +943,7 @@ fn palette_history_run_search_orders_events_and_keeps_time_and_hit_navigation() 
 }
 
 #[test]
-fn palette_history_tool_groups_keep_all_revisions_and_open_full_retained_tools() {
+fn palette_history_keeps_panel_tool_entries_and_opens_full_retained_tools() {
     use agent_proto::agents::{RunEntry, RunEntryKind};
     use yinz_bus::command_palette::{HistoryAction, HistoryReply};
     use yinz_types::agent::tool_capture::{Payload, ToolCapture};
@@ -955,6 +955,10 @@ fn palette_history_tool_groups_keep_all_revisions_and_open_full_retained_tools()
         RunEntryKind::ToolResult,
         RunEntryKind::ToolCall,
         RunEntryKind::Message,
+        RunEntryKind::ToolResult,
+        RunEntryKind::ToolResult,
+        RunEntryKind::Message,
+        RunEntryKind::ToolCall,
     ]
     .into_iter()
     .enumerate()
@@ -1018,15 +1022,26 @@ fn palette_history_tool_groups_keep_all_revisions_and_open_full_retained_tools()
         panic!("expected conversation");
     };
     assert!(header.session_id.contains(&recorded.session_id));
-    assert_eq!(events.len(), 3);
-    assert_eq!(events[1].revisions, vec![2, 3, 4]);
+    assert_eq!(events.len(), 6);
+    assert_eq!(events[3].kind, "tools");
+    assert_eq!(events[3].tool_calls, 0);
+    assert_eq!(events[3].revisions, vec![6, 7]);
+    assert_eq!(events[5].kind, "tools");
+    assert_eq!(events[5].tool_calls, 1);
+    assert_eq!(events[5].revisions, vec![9]);
+    assert_eq!(events[1].kind, "tools");
     assert_eq!(events[1].tool_calls, 2);
+    assert_eq!(events[1].revisions, vec![2, 3, 4]);
+    assert!(events[1].markdown.is_empty());
     let action = rows
         .iter()
-        .find(|r| matches!(r.action, HistoryAction::Tools { .. }))
+        .find(|row| row.id == "event:2")
         .unwrap()
         .action
         .clone();
+    assert!(
+        matches!(&action, HistoryAction::Tools { revisions, .. } if revisions == &vec![2, 3, 4])
+    );
     let expected = |entry: &RunEntry| {
         format!(
             "{} · revision {}:\n{}\n\n{}",
