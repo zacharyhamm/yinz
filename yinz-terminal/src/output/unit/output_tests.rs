@@ -3178,3 +3178,185 @@ fn serializers_omit_empty_clients_but_preserve_control_only_output() {
         assert_eq!(frames[&notified], "\x1b]9;hello\x1b\\");
     }
 }
+
+#[test]
+fn overlay_kitty_updates_preserve_unpainted_pane_images_and_release_placements() {
+    let parts = create_test_kitty_parts();
+    let pane_image = store_test_kitty_image(&parts.0, 30, 40);
+    let overlay_image = store_test_kitty_image(&parts.0, 30, 40);
+    run_kitty_frame(&parts, vec![kitty_chunk(pane_image, 1, 0, 0)], None);
+    let frame = |image| {
+        let mut output = create_test_kitty_output(&parts);
+        output.add_clients(
+            &create_test_clients(1),
+            Rc::new(RefCell::new(LinkHandler::new())),
+            None,
+        );
+        if let Some(image) = image {
+            output.add_overlay_kitty_image(
+                ClientId::new(1),
+                PaneId::Terminal(TerminalId::new(1)),
+                kitty_chunk(image, 2, 5, 5),
+                SizeInPixels {
+                    width: 10,
+                    height: 20,
+                },
+            );
+        }
+        output.serialize().unwrap()
+    };
+    frame(Some(overlay_image));
+    assert_eq!(parts.2.borrow()[&ClientId::new(1)].live_placements.len(), 2);
+    frame(Some(overlay_image));
+    assert_eq!(parts.2.borrow()[&ClientId::new(1)].live_placements.len(), 2);
+    parts.0.borrow_mut().free(overlay_image);
+    let cleared = frame(None);
+    assert!(cleared[&ClientId::new(1)].contains("a=d"));
+    let host = parts.2.borrow();
+    let retained = &host[&ClientId::new(1)].live_placements;
+    assert_eq!(retained.len(), 1);
+    assert!(retained.keys().all(|key| key.placement_uid == 1));
+}
+
+#[test]
+fn overlay_kitty_notifications_clip_and_reconcile_each_clients_retained_fragments() {
+    use crate::ui::damage::CellRect;
+    use std::collections::{BTreeMap, BTreeSet};
+    let parts = create_test_kitty_parts();
+    let clients = [ClientId::new(1), ClientId::new(2)];
+    parts.1.borrow_mut().insert(clients[1], true);
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    let other_pane = PaneId::Terminal(TerminalId::new(2));
+    let pane_image = store_test_kitty_image(&parts.0, 30, 40);
+    let overlay_image = store_test_kitty_image(&parts.0, 100, 80);
+    let cells = [
+        SizeInPixels {
+            width: 10,
+            height: 20,
+        },
+        SizeInPixels {
+            width: 20,
+            height: 10,
+        },
+    ];
+    let mut output = create_test_kitty_output(&parts);
+    output.add_clients(
+        &clients.into_iter().collect(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        None,
+    );
+    for client in clients {
+        for (pane, uid) in [(pane, 1), (other_pane, 3)] {
+            output.add_kitty_image_chunks_to_client(
+                client,
+                pane,
+                vec![kitty_chunk(pane_image, uid, 0, 0)],
+                None,
+            );
+        }
+    }
+    output.serialize().unwrap();
+    let retained = |client| {
+        parts.2.borrow()[&client]
+            .live_placements
+            .iter()
+            .filter(|(key, _)| key.placement_uid != 2)
+            .map(|(key, record)| {
+                (
+                    key.clone(),
+                    (
+                        record.host_image_id,
+                        record.host_placement_id,
+                        record.geometry,
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let unrelated = clients.map(retained);
+    let rect = |x, y, cols, rows| CellRect { x, y, cols, rows };
+    let middle = rect(7, 6, 1, 2);
+    let second_middle = rect(6, 7, 2, 1);
+    let phases = [
+        [vec![], vec![]],
+        [vec![middle], vec![second_middle]],
+        [vec![middle], vec![second_middle]],
+        [vec![rect(4, 4, 12, 12)], vec![rect(5, 10, 4, 2)]],
+        [vec![rect(5, 5, 2, 2), rect(6, 6, 2, 2)], vec![]],
+        [vec![], vec![]],
+    ];
+    for (phase, coverage) in phases.into_iter().enumerate() {
+        let mut output = create_test_kitty_output(&parts);
+        output.add_clients(
+            &clients.into_iter().collect(),
+            Rc::new(RefCell::new(LinkHandler::new())),
+            None,
+        );
+        output.set_notification_rects(clients.into_iter().zip(coverage.clone()).collect());
+        for (client, cell) in clients.into_iter().zip(cells) {
+            let mut chunk = kitty_chunk(overlay_image, 2, 5, 5);
+            chunk.source_px_width = 100;
+            chunk.source_px_height = 80;
+            chunk.dest_cells = ((100 / cell.width) as u16, (80 / cell.height) as u16);
+            chunk.z_index = 1;
+            output.add_overlay_kitty_image(client, pane, chunk, cell);
+        }
+        // Full notification coverage still requires a frame to delete old placements.
+        assert!(output.is_dirty());
+        let serialized = output.serialize().unwrap();
+        for (index, client) in clients.into_iter().enumerate() {
+            assert_eq!(retained(client), unrelated[index], "phase {phase}");
+            let cell = cells[index];
+            let origin = (5 * cell.width, 5 * cell.height);
+            let expected: BTreeSet<_> = (0..100)
+                .flat_map(|x| (0..80).map(move |y| (x, y)))
+                .filter(|&(x, y)| {
+                    !coverage[index].iter().any(|rect| {
+                        let (x, y) = (x + origin.0, y + origin.1);
+                        (rect.x * cell.width..(rect.x + rect.cols) * cell.width).contains(&x)
+                            && (rect.y * cell.height..(rect.y + rect.rows) * cell.height)
+                                .contains(&y)
+                    })
+                })
+                .collect();
+            let mut actual = BTreeSet::new();
+            for (key, record) in &parts.2.borrow()[&client].live_placements {
+                if key.placement_uid != 2 {
+                    continue;
+                }
+                let chunk = record.geometry;
+                assert_eq!(key.pane_id, pane);
+                assert_eq!(chunk.internal_image_id, overlay_image);
+                assert_eq!(chunk.z_index, 1);
+                assert_eq!(chunk.cell_x * cell.width, origin.0 + chunk.source_px_x);
+                assert_eq!(chunk.cell_y * cell.height, origin.1 + chunk.source_px_y);
+                for x in chunk.source_px_x..chunk.source_px_x + chunk.source_px_width {
+                    for y in chunk.source_px_y..chunk.source_px_y + chunk.source_px_height {
+                        assert!(actual.insert((x, y)), "overlapping retained fragments");
+                    }
+                }
+            }
+            assert_eq!(actual, expected, "client {client:?}, phase {phase}");
+            let wire = serialized
+                .get(&client)
+                .map(String::as_str)
+                .unwrap_or_default();
+            if phase == 2 {
+                assert!(!wire.contains("_Ga="), "unchanged fragments: {wire}");
+            }
+            if phase == 3 && index == 0 {
+                assert!(
+                    wire.contains("a=d,q=2,d=i"),
+                    "full coverage must delete placements"
+                );
+                assert!(!wire.contains("a=p"));
+            }
+            if (phase == 4 && index == 1) || (phase == 5 && index == 0) {
+                assert!(
+                    wire.contains("w=100,h=80"),
+                    "dismissal must restore the complete image"
+                );
+            }
+        }
+    }
+}

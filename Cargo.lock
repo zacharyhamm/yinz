@@ -21,6 +21,8 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 name = "agent-proto"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "png",
  "project-data",
  "regex",
  "serde",
@@ -5166,7 +5168,6 @@ dependencies = [
  "hegeltest",
  "libc",
  "miette 7.6.0",
- "png",
  "rand 0.10.2",
  "regex",
  "serde",

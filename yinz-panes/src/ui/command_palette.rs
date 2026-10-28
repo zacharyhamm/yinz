@@ -8,7 +8,10 @@ use yinz_tile_markdown::{self as md, MdLine, MdStyle, Options};
 mod agent;
 #[path = "command_palette_live_agent.rs"]
 mod live_agent;
+#[path = "command_palette_quota.rs"]
+mod quota;
 pub use live_agent::AgentPresentation;
+pub use quota::QuotaImage;
 
 use nucleo_matcher::{
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
@@ -218,6 +221,14 @@ pub struct CommandPalette {
     error: Option<String>,
 }
 
+/// An optional quota raster, in absolute terminal cells. Text remains the fallback.
+#[derive(Clone, Debug)]
+pub struct QuotaPlacement {
+    pub rect: CellRect,
+    pub display: agent_proto::quota::Display,
+    line: usize,
+}
+
 pub struct CommandPaletteLayout {
     pub rect: CellRect,
     border: usize,
@@ -234,6 +245,26 @@ pub struct CommandPaletteLayout {
     description_y: usize,
     metadata_y: usize,
     agent: Option<agent::AgentLayout>,
+}
+
+impl CommandPaletteLayout {
+    pub fn quota_image(&self) -> Option<&QuotaPlacement> {
+        self.agent.as_ref()?.quota.as_ref()
+    }
+    /// Hide the ordinary percentage only after the managed image was prepared successfully.
+    pub fn use_quota_image(&mut self) {
+        use unicode_width::UnicodeWidthStr;
+        if let Some(agent) = &mut self.agent
+            && let Some(quota) = &agent.quota
+        {
+            let line = &mut agent.lines[quota.line];
+            let width = self
+                .rect
+                .cols
+                .saturating_sub(self.border * 2 + agent.padding * 2 + quota.rect.cols);
+            *line = agent::clipped(line, width.min(line.text.width()));
+        }
+    }
 }
 
 enum ResultRow {
@@ -260,6 +291,36 @@ impl CommandPalette {
         agent.get_mut().newest =
             self.input.get_text().is_empty() && !actions.iter().any(|a| a.id.ends_with(":newer"));
         agent.get_mut().update(header, events, actions, status);
+    }
+    pub fn refresh_agent_title(
+        &mut self,
+        pane: yinz_types::data::PaneInfo,
+        project: String,
+        branch: String,
+    ) {
+        if let Some(agent) = &mut self.agent {
+            let header = &mut agent.get_mut().header;
+            header.task.clone_from(&pane.title);
+            if let Some(presentation) = AgentPresentation::from_pane(&pane) {
+                header.status = format!(
+                    "[{}] · {} · {}",
+                    presentation.pane_id,
+                    presentation.provider,
+                    match presentation.state {
+                        yinz_types::agent::AgentState::Busy => "working",
+                        yinz_types::agent::AgentState::Waiting => "needs input",
+                        yinz_types::agent::AgentState::Idle => "idle",
+                        yinz_types::agent::AgentState::Exited => "exited",
+                    }
+                );
+            }
+            if let Some(session) = pane.agent.as_ref().and_then(|a| a.session_id.as_ref()) {
+                header.session_id = format!("session {session}");
+            }
+            header.live = Some(pane);
+            header.project = project;
+            header.branch = branch;
+        }
     }
     pub fn set_agent_usage(&mut self, usage: yinz_types::agent::control::ProviderUsage) {
         if let Some(agent) = &mut self.agent {
@@ -1933,10 +1994,6 @@ fn wrap_inline(line: &MdLine, width: usize) -> Vec<MdLine> {
         ..Default::default()
     };
     md::render_block(&block, width)
-}
-
-fn paint_markdown(base: RcCharacterStyles, md: MdStyle, style: &Style) -> RcCharacterStyles {
-    paint_markdown_with_selection(base, md, style, false)
 }
 
 fn paint_markdown_with_selection(

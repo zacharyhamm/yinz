@@ -383,7 +383,8 @@ fn pinned_details_and_quota_leave_room_for_chat_at_small_sizes() {
         "Task: Agent task",
         "session abc123",
         "yinz · command-palette",
-        "Weekly · 75%",
+        "Weekly",
+        "75%",
         "Event 1",
     ] {
         assert!(text.contains(expected), "{text}");
@@ -404,14 +405,16 @@ fn pinned_details_and_quota_leave_room_for_chat_at_small_sizes() {
         for height in [1, 4, 8, 12, 30] {
             let shown = layout(&mut view, width, height);
             assert!(shown.lines.len() <= height);
-            assert!(header_lines(&view.header, width, height / 2)
-                .iter()
-                .all(|l| l.text.width() <= width));
+            assert!(
+                header_lines(&view.header, width, height / 2, width >= 44 && height >= 10)
+                    .iter()
+                    .all(|l| l.text.width() <= width)
+            );
             assert!(view.page > 0);
         }
     }
     view.header.usage.as_mut().unwrap().status = ProviderUsageStatus::Error;
-    assert!(header_lines(&view.header, 90, 8)
+    assert!(header_lines(&view.header, 90, 8, true)
         .iter()
         .any(|l| l.text.contains("stale")));
 }
@@ -689,4 +692,181 @@ fn folded_reader_reuses_parsing_and_wrapping_and_keeps_hit_targets() {
     assert!(reader.starts.is_empty());
     assert!(!reader.raw);
     assert_ne!(cache(&view).0, resized.0);
+}
+
+#[test]
+fn expanded_live_title_matches_list_and_stays_above_scrolled_history() {
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+    use yinz_types::data::PaneInfo;
+    for state in [AgentState::Busy, AgentState::Waiting, AgentState::Idle] {
+        let mut view = view(30);
+        view.header.project = "project".into();
+        view.header.branch = "branch".into();
+        view.header.live = Some(PaneInfo {
+            title: "task".into(),
+            target: yinz_types::command::PaneTarget::ssh("user@host").unwrap(),
+            agent: Some(AgentInfo {
+                kind: "codex".into(),
+                state,
+                source: AgentSource::Reported,
+                detail: Some("doing work".into()),
+                waiting_on: Some("permission".into()),
+                wait_needs_a_person: true,
+                cwd: None,
+                session_id: None,
+                run_id: None,
+            }),
+            ..Default::default()
+        });
+        let mut presentation =
+            AgentPresentation::from_pane(view.header.live.as_ref().unwrap()).unwrap();
+        presentation.project = "project".into();
+        presentation.branch = "branch".into();
+        view.header.status = format!(
+            "[0] · codex · {}",
+            match state {
+                AgentState::Busy => "working",
+                AgentState::Waiting => "needs input",
+                _ => "idle",
+            }
+        );
+        let details = header_lines(&view.header, 86, 8, false);
+        assert!(details[0].styles[0].bold);
+        assert_eq!(details[0].styles[0].color, Some(0));
+        assert_eq!(
+            details[0].styles.last().unwrap().color,
+            (state == AgentState::Waiting).then_some(1)
+        );
+        assert!(!details[0].styles.last().unwrap().bold);
+        let expected = presentation.lines(86, 3);
+        let first = layout(&mut view, 90, 30);
+        for (actual, expected) in first.lines.iter().zip(&expected) {
+            assert_eq!(actual.text, format!("┃ {}", expected.text));
+        }
+        view.scroll(false, 12);
+        let scrolled = layout(&mut view, 90, 30);
+        assert_eq!(
+            &first.lines[..expected.len()],
+            &scrolled.lines[..expected.len()]
+        );
+        assert!(scrolled.lines.iter().any(|l| l.text.contains("@user@host")));
+    }
+}
+
+#[test]
+fn quota_placement_respects_spacious_threshold_and_keeps_text_fallback() {
+    use yinz_types::agent::control::{ProviderUsage, ProviderUsageStatus, ProviderUsageWindow};
+    let mut palette = CommandPalette::default();
+    let mut header = header();
+    header.usage = Some(ProviderUsage {
+        provider: "codex".into(),
+        status: ProviderUsageStatus::Ok,
+        observed_at_ms: None,
+        plan: None,
+        message: None,
+        windows: vec![ProviderUsageWindow {
+            label: "7d".into(),
+            used_percent: 75.0,
+            resets_at_ms: None,
+        }],
+    });
+    palette.set_agent_history(header, events(2), vec![], String::new());
+    for (cols, rows, image) in [
+        (48, 24, true),
+        (47, 24, false),
+        (90, 14, false),
+        (90, 30, true),
+    ] {
+        let mut layout = palette.layout(Viewport {
+            x: 0,
+            y: 0,
+            cols,
+            rows,
+        });
+        assert_eq!(layout.quota_image().is_some(), image, "{cols}x{rows}");
+        assert!(layout
+            .agent
+            .as_ref()
+            .unwrap()
+            .lines
+            .iter()
+            .any(|l| l.text.contains("25%")));
+        if let Some(quota) = layout.quota_image() {
+            assert_eq!((quota.rect.cols, quota.rect.rows), (18, 2));
+            assert!(quota.rect.x + 18 <= layout.rect.x + layout.rect.cols);
+            layout.use_quota_image();
+            assert!(!layout
+                .agent
+                .as_ref()
+                .unwrap()
+                .lines
+                .iter()
+                .any(|l| l.text.contains("25%")));
+        }
+    }
+}
+
+#[test]
+fn quota_custom_windows_remain_visible_in_compact_and_graphical_palette_headers() {
+    use yinz_types::agent::control::{ProviderUsage, ProviderUsageStatus, ProviderUsageWindow};
+    for weekly in [false, true] {
+        let mut header = header();
+        let mut windows = vec![
+            ProviderUsageWindow {
+                label: "Daily limit".into(),
+                used_percent: 30.0,
+                resets_at_ms: Some(0),
+            },
+            ProviderUsageWindow {
+                label: "Custom quota".into(),
+                used_percent: 40.0,
+                resets_at_ms: None,
+            },
+        ];
+        if weekly {
+            windows.push(ProviderUsageWindow {
+                label: "7d".into(),
+                used_percent: 75.0,
+                resets_at_ms: None,
+            });
+        }
+        header.usage = Some(ProviderUsage {
+            provider: "codex".into(),
+            status: ProviderUsageStatus::Error,
+            observed_at_ms: Some(0),
+            plan: None,
+            message: None,
+            windows,
+        });
+        let mut palette = CommandPalette::default();
+        palette.set_agent_history(header, events(2), vec![], String::new());
+        for rows in [14, 40] {
+            let mut layout = palette.layout(Viewport {
+                x: 0,
+                y: 0,
+                cols: 90,
+                rows,
+            });
+            assert_eq!(layout.quota_image().is_some(), weekly && rows == 40);
+            layout.use_quota_image();
+            let text = layout
+                .agent
+                .as_ref()
+                .unwrap()
+                .lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            for label in [
+                "Daily limit · 70%",
+                "Custom quota · 60%",
+                "stale",
+                "reset due",
+            ] {
+                assert!(text.contains(label), "{label}: {text}");
+            }
+            assert_eq!(text.contains("Weekly"), weekly, "{text}");
+        }
+    }
 }

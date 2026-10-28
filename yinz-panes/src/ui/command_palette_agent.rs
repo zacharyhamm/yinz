@@ -125,11 +125,12 @@ pub(super) struct AgentView {
 }
 
 pub(super) struct AgentLayout {
-    lines: Vec<MdLine>,
+    pub(super) lines: Vec<MdLine>,
     hits: Vec<Option<Hit>>,
     selected: Vec<bool>,
-    padding: usize,
+    pub(super) padding: usize,
     title: String,
+    pub(super) quota: Option<super::QuotaPlacement>,
 }
 #[derive(Clone, Copy)]
 enum Hit {
@@ -451,6 +452,7 @@ impl AgentView {
             hits: vec![],
             selected: vec![],
             padding,
+            quota: None,
             title: format!(
                 " Agent info · {} ",
                 if self.reader.is_some() {
@@ -465,7 +467,7 @@ impl AgentView {
         if height == 0 || width == 0 {
             return layout;
         }
-        let mut add = |line: MdLine, hit: Option<Hit>, selected: bool| {
+        let add = |layout: &mut AgentLayout, line: MdLine, hit: Option<Hit>, selected: bool| {
             layout.lines.push(line);
             layout.hits.push(hit);
             layout.selected.push(selected);
@@ -473,6 +475,7 @@ impl AgentView {
         let reader = self.reader.is_some();
         if reader && height >= 3 {
             add(
+                &mut layout,
                 MdLine::plain(
                     self.reader
                         .as_ref()
@@ -483,16 +486,64 @@ impl AgentView {
                 false,
             );
         } else if !reader {
-            for line in header_lines(
-                &self.header,
-                width,
-                height.saturating_sub(7).min(height / 2),
-            ) {
-                add(line, None, false);
+            if let Some(mut presentation) = self
+                .header
+                .live
+                .as_ref()
+                .and_then(AgentPresentation::from_pane)
+            {
+                presentation.project.clone_from(&self.header.project);
+                presentation.branch.clone_from(&self.header.branch);
+                for line in presentation.lines(
+                    width.saturating_sub(2),
+                    height.saturating_sub(8).clamp(1, 3),
+                ) {
+                    add(
+                        &mut layout,
+                        line.prepend("┃ ", MdStyle::default()),
+                        None,
+                        true,
+                    );
+                }
+            }
+            let top = layout.lines.len();
+            let available = height.saturating_sub(top + 4);
+            let full = width >= 44 && available.saturating_sub(1) >= 10;
+            let budget = if full {
+                available.saturating_sub(3)
+            } else {
+                available.saturating_sub(3).min(height / 2)
+            };
+            for line in header_lines(&self.header, width, budget, full) {
+                layout.lines.push(line);
+                layout.hits.push(None);
+                layout.selected.push(false);
+            }
+            if full
+                && let Some(quota) = self.header.usage.as_ref().map(|usage| {
+                    agent_proto::quota::Display::new(
+                        usage,
+                        agent_proto::agents::now_ms().max(0) as u64,
+                    )
+                })
+                && quota.value.is_some()
+                && budget >= 5
+            {
+                layout.quota = Some(super::QuotaPlacement {
+                    rect: CellRect {
+                        x: rect.x + border + padding + width - 18,
+                        y: rect.y + border + top + 1,
+                        cols: 18,
+                        rows: 2,
+                    },
+                    display: quota,
+                    line: top + 1,
+                });
             }
         }
         if height >= 8 && !reader {
             add(
+                &mut layout,
                 dim(if query.is_empty() {
                     "> Type to search this run".into()
                 } else {
@@ -503,7 +554,7 @@ impl AgentView {
             );
         }
         if height >= 10 {
-            add(dim("─".repeat(width)), None, false);
+            add(&mut layout, dim("─".repeat(width)), None, false);
         }
         let footer = usize::from(height >= 5);
         let action_rows = if reader {
@@ -665,7 +716,7 @@ impl AgentView {
     }
 }
 
-fn clipped(line: &MdLine, width: usize) -> MdLine {
+pub(super) fn clipped(line: &MdLine, width: usize) -> MdLine {
     let text = take_columns(&line.text, width);
     let styles = line
         .styles
@@ -676,86 +727,157 @@ fn clipped(line: &MdLine, width: usize) -> MdLine {
     MdLine { text, styles }
 }
 
-fn header_lines(header: &HistoryHeader, width: usize, budget: usize) -> Vec<MdLine> {
+fn header_lines(header: &HistoryHeader, width: usize, budget: usize, full: bool) -> Vec<MdLine> {
     use unicode_width::UnicodeWidthStr;
     if budget == 0 {
         return vec![];
     }
-    let now = agent_proto::agents::now_ms().max(0) as u64;
-    let mut quota = vec![];
-    if let Some(usage) = &header.usage {
-        let stale = usage.status != yinz_types::agent::control::ProviderUsageStatus::Ok
-            || usage
-                .observed_at_ms
-                .is_some_and(|at| now.saturating_sub(at) >= 120_000);
-        for window in &usage.windows {
-            let remaining = (100.0 - window.used_percent).clamp(0.0, 100.0).round();
-            let label = match window.label.as_str() {
-                "Weekly limit" | "7d" => "Weekly".to_owned(),
-                "5-hour limit" | "5-hour" | "5h" => "5hr".to_owned(),
-                label => take_columns(label, 8),
+    let quota = header.usage.as_ref().map(|usage| {
+        agent_proto::quota::Display::new(usage, agent_proto::agents::now_ms().max(0) as u64)
+    });
+    let full = full
+        && quota
+            .as_ref()
+            .is_some_and(|q| q.value.is_some() || !q.short.is_empty());
+    let left_width = width.saturating_sub(if full { 20 } else { 0 });
+    let normal = |text: String, color| {
+        let styles = vec![
+            MdStyle {
+                color,
+                ..Default::default()
             };
-            quota.push(dim(format!(
-                "{} · {remaining}%{}",
-                label,
-                if stale { " · stale" } else { "" }
-            )));
-            if let Some(reset) = window.resets_at_ms {
-                quota.push(dim(if reset <= now {
-                    "reset due".into()
-                } else {
-                    format!("{}m left", reset.saturating_sub(now).div_ceil(60_000))
-                }));
-            }
-        }
-        if quota.is_empty() {
-            quota.push(dim(usage.message.as_deref().unwrap_or("Quota unavailable")));
+            text.chars().count()
+        ];
+        MdLine { text, styles }
+    };
+    let mut identity = normal(header.status.clone(), Some(3));
+    if let Some(agent) = header.live.as_ref().and_then(|pane| pane.agent.as_ref()) {
+        let status_start = header
+            .status
+            .rfind(" · ")
+            .map(|at| header.status[..at + " · ".len()].chars().count())
+            .unwrap_or(0);
+        for (index, style) in identity.styles.iter_mut().enumerate() {
+            style.bold = index < status_start;
+            style.color = if index < status_start {
+                Some(0)
+            } else if agent.state == yinz_types::agent::AgentState::Waiting {
+                Some(1)
+            } else {
+                None
+            };
         }
     }
-    let wide = !quota.is_empty()
-        && quota.iter().all(|line| line.text.width() <= 24)
-        && width >= 60
-        && budget >= 5;
-    let quota_width = if wide { 24 } else { 0 };
-    let left_width = width.saturating_sub(quota_width + if wide { 2 } else { 0 });
-    let mut details = vec![MdLine::plain(&header.status)];
+    let mut details = vec![identity];
     if !header.task.is_empty() {
-        details.push(MdLine::plain(format!("Task: {}", header.task)));
+        let mut line = MdLine::plain(format!("Task: {}", header.task));
+        line.styles = vec![
+            MdStyle {
+                bold: true,
+                ..Default::default()
+            };
+            line.text.chars().count()
+        ];
+        details.push(line);
     }
     if !header.project.is_empty() {
-        details.push(dim(&header.project));
+        details.push(normal(
+            format!(
+                "{}{}{}",
+                header.project,
+                if header.branch.is_empty() { "" } else { " · " },
+                header.branch
+            ),
+            Some(2),
+        ));
     }
     if !header.location.is_empty() {
-        details.push(dim(&header.location));
+        details.push(normal(header.location.clone(), Some(3)));
     }
     if !header.started.is_empty() {
-        details.push(dim(format!("Started {}", header.started)));
+        details.push(normal(format!("Started {}", header.started), Some(3)));
     }
-    let session = dim(&header.session_id);
-    let room = budget.saturating_sub(usize::from(!header.session_id.is_empty()));
-    details.truncate(if wide {
-        room
-    } else {
-        room.saturating_sub(quota.len().min(2))
-    });
+    let bottom =
+        !header.session_id.is_empty() || quota.as_ref().is_some_and(|q| !q.reset.is_empty());
+    let room = budget.saturating_sub(usize::from(bottom));
+    let other_rows = quota
+        .as_ref()
+        .filter(|_| full)
+        .map(|q| {
+            q.other.len().min(room.saturating_sub(if q.value.is_some() {
+                4
+            } else {
+                1 + usize::from(q.stale)
+            }))
+        })
+        .unwrap_or(0);
+    let detail_room = room.saturating_sub(other_rows);
+    details.truncate(detail_room.saturating_sub(usize::from(quota.is_some() && !full)));
     for line in &mut details {
         *line = clipped(line, left_width);
     }
-    if wide {
-        for (i, quota) in quota.into_iter().take(room).enumerate() {
-            while details.len() <= i {
-                details.push(MdLine::blank());
+    if let Some(quota) = &quota {
+        if full {
+            let right = if let Some(value) = quota.value {
+                vec![
+                    quota.weekly_label.clone(),
+                    format!("{value}%"),
+                    String::new(),
+                    quota.short.clone(),
+                ]
+            } else {
+                let mut right = vec![quota.short.clone()];
+                if quota.stale {
+                    right.push("stale".into());
+                }
+                right
+            };
+            for (i, text) in right.into_iter().take(detail_room).enumerate() {
+                while details.len() <= i {
+                    details.push(MdLine::blank());
+                }
+                let text = take_columns(&text, 18);
+                let line = &mut details[i];
+                append(
+                    line,
+                    &MdLine::plain(
+                        " ".repeat(width.saturating_sub(line.text.width() + text.width())),
+                    ),
+                );
+                append(line, &normal(text, None));
             }
-            let line = &mut details[i];
-            let gap = width.saturating_sub(quota_width + line.text.width());
-            append(line, &MdLine::plain(" ".repeat(gap)));
-            append(line, &clipped(&quota, quota_width));
+            details.extend(
+                quota
+                    .other
+                    .iter()
+                    .take(other_rows)
+                    .map(|text| clipped(&normal(text.clone(), None), width)),
+            );
+        } else if room > 0 {
+            details.push(clipped(&normal(quota.compact.clone(), None), width));
         }
-    } else {
-        details.extend(quota.into_iter().take(2).map(|l| clipped(&l, width)));
     }
-    if !header.session_id.is_empty() {
-        details.push(clipped(&session, width));
+    if bottom {
+        let reset = quota
+            .as_ref()
+            .map(|q| take_columns(&q.reset, width))
+            .unwrap_or_default();
+        let mut line = clipped(
+            &normal(header.session_id.clone(), Some(3)),
+            width.saturating_sub(reset.width() + usize::from(!reset.is_empty())),
+        );
+        let label_end = if header.session_id.starts_with("session ") {
+            7
+        } else {
+            4
+        };
+        for style in line.styles.iter_mut().skip(label_end) {
+            style.color = None;
+        }
+        let gap = width.saturating_sub(line.text.width() + reset.width());
+        append(&mut line, &MdLine::plain(" ".repeat(gap)));
+        append(&mut line, &normal(reset, None));
+        details.push(line);
     }
     details.truncate(budget);
     details
@@ -835,7 +957,7 @@ pub(super) fn chunks(
                         .unwrap_or_default();
                     chars.push(TerminalCharacter::new_styled(
                         c,
-                        super::paint_markdown(base.into(), md, style),
+                        super::paint_markdown_with_selection(base.into(), md, style, selected),
                     ));
                 }
                 if layout.border == 1 {

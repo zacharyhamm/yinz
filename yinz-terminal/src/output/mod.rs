@@ -480,6 +480,7 @@ impl Default for HostKittyState {
 pub struct KittyFrameInput<'a> {
     pub chunks_by_pane: HashMap<PaneId, Vec<KittyImageChunk>>,
     pub rendered_panes: HashSet<PaneId>,
+    pub updated_placements: HashSet<(PaneId, u64)>,
     pub visible_panes: Option<&'a HashSet<PaneId>>,
     pub kitty_image_store: &'a mut KittyImageStore,
     pub host_state: &'a mut HostKittyState,
@@ -534,6 +535,7 @@ fn serialize_kitty_frame(kitty_input: KittyFrameInput, out: &mut String) -> Resu
     let KittyFrameInput {
         mut chunks_by_pane,
         rendered_panes,
+        updated_placements,
         visible_panes,
         kitty_image_store,
         host_state,
@@ -586,7 +588,15 @@ fn serialize_kitty_frame(kitty_input: KittyFrameInput, out: &mut String) -> Resu
             host_state.live_placements.remove(&key);
         }
     }
-    let mut rendered: Vec<PaneId> = rendered_panes.into_iter().collect();
+    // Overlay placements update independently of their owning pane, even when fully covered.
+    let mut rendered: Vec<PaneId> = rendered_panes
+        .iter()
+        .copied()
+        .chain(chunks_by_pane.keys().copied())
+        .chain(updated_placements.iter().map(|(pane, _)| *pane))
+        .collect();
+    rendered.sort_unstable();
+    rendered.dedup();
     rendered.sort_by_key(|pane_id| pane_sort_key(*pane_id));
     for pane_id in rendered {
         let chunks = chunks_by_pane.remove(&pane_id).unwrap_or_default();
@@ -611,7 +621,12 @@ fn serialize_kitty_frame(kitty_input: KittyFrameInput, out: &mut String) -> Resu
         let mut stale: Vec<(KittyChunkKey, u32, u32)> = host_state
             .live_placements
             .iter()
-            .filter(|(key, _)| key.pane_id == pane_id && !current.contains_key(key))
+            .filter(|(key, _)| {
+                key.pane_id == pane_id
+                    && (rendered_panes.contains(&pane_id)
+                        || updated_placements.contains(&(pane_id, key.placement_uid)))
+                    && !current.contains_key(key)
+            })
             .map(|(key, record)| (key.clone(), record.host_image_id, record.host_placement_id))
             .collect();
         stale.sort_by_key(|(key, _, _)| (key.placement_uid, key.sub_index));
@@ -744,6 +759,7 @@ pub struct Output {
     sixel_chunks: HashMap<ClientId, Vec<SixelImageChunk>>,
     client_kitty_chunks: HashMap<ClientId, HashMap<PaneId, Vec<KittyImageChunk>>>,
     client_rendered_kitty_panes: HashMap<ClientId, HashSet<PaneId>>,
+    client_updated_kitty_placements: HashMap<ClientId, HashSet<(PaneId, u64)>>,
     client_kitty_visible_panes: HashMap<ClientId, HashSet<PaneId>>,
     clients_with_cleared_host_display: HashSet<ClientId>,
     client_link_handlers: HashMap<ClientId, Rc<RefCell<LinkHandler>>>,
@@ -1169,6 +1185,42 @@ impl Output {
             }
         }
     }
+    /// Append an overlay image beneath this client's notifications. Reconcile all fragments of
+    /// this placement, including full coverage, without implying that its owning pane repainted.
+    pub fn add_overlay_kitty_image(
+        &mut self,
+        client: ClientId,
+        pane: PaneId,
+        chunk: KittyImageChunk,
+        cell_size: SizeInPixels,
+    ) {
+        self.client_updated_kitty_placements
+            .entry(client)
+            .or_default()
+            .insert((pane, chunk.placement_uid));
+        let clip = FloatingPanesStack {
+            layers: self
+                .notification_rects
+                .get(&client)
+                .into_iter()
+                .flatten()
+                .map(|rect| PaneGeom {
+                    x: rect.x,
+                    y: rect.y,
+                    cols: yinz_types::pane_size::Dimension::fixed(rect.cols),
+                    rows: yinz_types::pane_size::Dimension::fixed(rect.rows),
+                    ..Default::default()
+                })
+                .collect(),
+        };
+        let mut chunks = clip.visible_kitty_image_chunks(vec![chunk], None, &cell_size);
+        self.client_kitty_chunks
+            .entry(client)
+            .or_default()
+            .entry(pane)
+            .or_default()
+            .append(&mut chunks);
+    }
     pub fn add_kitty_image_chunks_to_client(
         &mut self,
         client_id: ClientId,
@@ -1253,6 +1305,7 @@ impl Output {
 
             let kitty_chunks_by_pane = self.client_kitty_chunks.remove(&client_id);
             let kitty_rendered_panes = self.client_rendered_kitty_panes.remove(&client_id);
+            let kitty_updated_placements = self.client_updated_kitty_placements.remove(&client_id);
             let kitty_visible_panes = self.client_kitty_visible_panes.remove(&client_id);
             let client_host_is_kitty_capable = self
                 .kitty_host_capabilities
@@ -1274,6 +1327,7 @@ impl Output {
                 Some(KittyFrameInput {
                     chunks_by_pane: kitty_chunks_by_pane.unwrap_or_default(),
                     rendered_panes: kitty_rendered_panes.unwrap_or_default(),
+                    updated_placements: kitty_updated_placements.unwrap_or_default(),
                     visible_panes: kitty_visible_panes.as_ref(),
                     kitty_image_store: &mut kitty_image_store,
                     host_state: kitty_host_state_map.entry(client_id).or_default(),
@@ -1408,6 +1462,10 @@ impl Output {
                 .values()
                 .any(|chunks_by_pane| chunks_by_pane.values().any(|c| !c.is_empty()))
             || self.has_pending_kitty_host_deletes()
+            || self
+                .client_updated_kitty_placements
+                .values()
+                .any(|placements| !placements.is_empty())
     }
     /// Whether a client in this frame still has a freed image on its host. Only those clients'
     /// deletes are serialized; a client held back from this frame pays its own with the next

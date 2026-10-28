@@ -219,6 +219,8 @@ pub struct HistoryRow {
 
 #[derive(Clone, Debug, Default)]
 pub struct HistoryHeader {
+    pub live: Option<yinz_types::data::PaneInfo>,
+    pub branch: String,
     pub name: String,
     pub status: String,
     pub location: String,

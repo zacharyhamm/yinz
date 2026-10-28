@@ -41,6 +41,8 @@ pub(super) struct CommandPaletteState {
     backing: TranslucentOverlayBacking,
     watcher_backing: TranslucentOverlayBacking,
     backing_style: yinz_types::style::Style,
+    quota_image: Option<crate::ui::command_palette::QuotaImage>,
+    quota_view: u64,
     shortcut_keybinds: KeybindsVec,
     shortcuts: HashMap<String, CachedShortcut>,
     #[cfg(test)]
@@ -157,6 +159,8 @@ impl Screen {
                 backing: TranslucentOverlayBacking::default(),
                 watcher_backing: TranslucentOverlayBacking::default(),
                 backing_style: self.style,
+                quota_image: None,
+                quota_view: 0,
                 shortcut_keybinds: Vec::new(),
                 shortcuts: HashMap::new(),
                 #[cfg(test)]
@@ -207,6 +211,7 @@ impl Screen {
         state.backing = TranslucentOverlayBacking::default();
         state.watcher_backing = TranslucentOverlayBacking::default();
         state.painted = None;
+        state.quota_image = None;
         state.agents.cancel();
         self.dismiss_plugin_palette(client_id, &mut state);
         self.release_palette_input(client_id);
@@ -365,6 +370,7 @@ impl Screen {
     pub(super) fn prepare_command_palette_render(&mut self) {
         self.remove_unavailable_palette_providers();
         self.refresh_command_palettes();
+        self.refresh_palette_history_titles();
         let layouts: Vec<_> = self
             .command_palettes
             .iter()
@@ -427,7 +433,42 @@ impl Screen {
             let Some(state) = self.command_palettes.get_mut(&client) else {
                 continue;
             };
-            let layout = state.widget.layout(surface);
+            let mut layout = state.widget.layout(surface);
+            let cell = if !watcher
+                && self
+                    .kitty_host_capabilities
+                    .borrow()
+                    .get(&client)
+                    .copied()
+                    .unwrap_or(false)
+            {
+                self.client_cell_pixel_sizes.get(&client).copied().flatten()
+            } else {
+                None
+            };
+            if state.quota_view != state.widget.view {
+                state.quota_image = None;
+                state.quota_view = state.widget.view;
+            }
+            let quota = if watcher {
+                None
+            } else {
+                crate::ui::command_palette::QuotaImage::prepare(
+                    &mut state.quota_image,
+                    layout.quota_image(),
+                    self.style,
+                    cell,
+                    self.kitty_image_store.clone(),
+                )
+                .context("preparing palette quota image")
+                .unwrap_or_else(|error| {
+                    Err::<(), _>(error).non_fatal();
+                    None
+                })
+            };
+            if quota.is_some() {
+                layout.use_quota_image();
+            }
             if layout.rect.is_empty() {
                 continue;
             }
@@ -452,6 +493,9 @@ impl Screen {
                     },
                 )
                 .context("failed to render command palette")?;
+            if let Some((quota, cell)) = quota.zip(cell) {
+                output.add_overlay_kitty_image(client, state.context.pane_id, quota, cell);
+            }
             if let Some((x, y)) = cursor {
                 output.add_post_vte_instruction_to_client(
                     client,

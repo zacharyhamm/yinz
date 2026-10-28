@@ -769,3 +769,56 @@ fn agents_quota_images_reuse_ids_and_cache_each_clients_value_theme_and_geometry
         }
     }
 }
+
+#[test]
+fn agents_quota_native_display_and_png_match_steel_panel() {
+    let mut panel = Panel::new();
+    panel.show();
+    for value in [0, 10, 25, 100] {
+        for stale in [false, true] {
+            let mut observation = usage("codex", 68.0);
+            observation["windows"][1]["used_percent"] = json!(100 - value);
+            observation["windows"][1]["resets_at_ms"] = json!(3_690_000);
+            let mut result = observation.clone();
+            if stale {
+                result["status"] = json!("error");
+            }
+            panel.set("usage_pending", json!({}));
+            panel.set(
+                "usage_cache",
+                json!({"codex":{"observation":observation,"result":result}}),
+            );
+            let native: yinz_types::agent::control::ProviderUsage =
+                serde_json::from_value(result).unwrap();
+            let native = agent_proto::quota::Display::new(&native, 90_000);
+            let steel = panel
+                .plugin
+                .runtime
+                .invoke("a-usage-display", vec![])
+                .unwrap();
+            assert_eq!(steel["value"], native.value.unwrap());
+            assert_eq!(steel["compact"], native.compact);
+            assert_eq!(steel["weekly-label"], native.weekly_label);
+            assert_eq!(steel["short"], native.short);
+            assert_eq!(steel["reset"], native.reset);
+            let style = Style::default();
+            let color = native.color(&style);
+            let actual = panel
+                .plugin
+                .runtime
+                .invoke(
+                    "a-panel",
+                    vec![
+                        json!("QuotaImage"),
+                        json!([value, color, style.terminal, 144, 36]),
+                    ],
+                )
+                .unwrap();
+            let png = agent_proto::quota::render(value, color, style.terminal, 144, 36).unwrap();
+            assert_eq!(
+                actual,
+                yinz_tile::ui_components::png_transmit_sequence(1, &png)
+            );
+        }
+    }
+}
