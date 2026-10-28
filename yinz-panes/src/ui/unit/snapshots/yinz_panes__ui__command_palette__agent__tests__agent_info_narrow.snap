@@ -1,0 +1,32 @@
+---
+source: yinz-panes/src/ui/unit/command_palette_agent_tests.rs
+expression: text
+---
+╭ Agent info ────────────────╮
+│ codex · idle               │
+│ Task: Agent task           │
+│ Project: —                 │
+│ Location: session · /work  │
+│ Started: 2026-10-09 10:00… │
+│ Session: abc123            │
+│ [ Search ]                 │
+│ ────────────────────────── │
+│      Event 1               │
+│      • first               │
+│      • second              │
+│      … more                │
+│      Event 2               │
+│      • first               │
+│      • second              │
+│      … more                │
+│      Event 3               │
+│      • first               │
+│      • second              │
+│      … more                │
+│                            │
+│ Prompt: [ Type a message ] │
+│  Focus                   │
+│  Latest / Refresh        │
+│  Details                 │
+│ Tab · ←/→ · Enter · Esc    │
+╰────────────────────────────╯

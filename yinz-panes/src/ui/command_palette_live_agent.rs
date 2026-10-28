@@ -89,29 +89,39 @@ impl AgentPresentation {
             );
         }
         let tag = format!("[{}]", self.pane_id);
+        let tag_style = MdStyle {
+            color: Some(3),
+            ..Default::default()
+        };
+        let max_lines = max_lines.clamp(1, 5);
+        if max_lines == 1 {
+            // Reserve the ID before truncating the identity; wrapping could drop it.
+            let identity_width = width.saturating_sub(tag.width() + 2);
+            if identity_width == 0 {
+                main = MdLine::plain("");
+            } else if main.text.width() > identity_width {
+                ellipsize(&mut main, identity_width);
+            }
+            let tag = take_columns(&tag, width);
+            let gap = width.saturating_sub(main.text.width() + tag.width());
+            append(&mut main, &MdLine::plain(" ".repeat(gap)));
+            append(&mut main, &styled(&tag, tag_style));
+            return vec![main];
+        }
         let gap = width.saturating_sub(main.text.width() + tag.width());
         // Keep at least two columns between the status/host and the right-aligned ID.
         append(
             &mut main,
             &MdLine::plain(" ".repeat(if gap >= 2 { gap } else { 2 })),
         );
-        append(
-            &mut main,
-            &styled(
-                &tag,
-                MdStyle {
-                    color: Some(3),
-                    ..Default::default()
-                },
-            ),
-        );
+        append(&mut main, &styled(&tag, tag_style));
 
-        let max_lines = max_lines.clamp(1, 5);
         let mut lines = Vec::new();
         let project = self.project.trim().replace(char::is_control, " ");
         let branch = self.branch.trim().replace(char::is_control, " ");
         let branch = if branch == "no branch" { "" } else { &branch };
-        if !project.is_empty() || !branch.is_empty() {
+        // A single row must retain the identity, including the right-aligned pane ID.
+        if max_lines > 1 && (!project.is_empty() || !branch.is_empty()) {
             let mut metadata = styled(
                 &project,
                 MdStyle {
@@ -139,7 +149,7 @@ impl AgentPresentation {
         }
         // One extra row tells us whether the final visible row needs an ellipsis.
         lines.extend(wrap(&main, width, 0, max_lines + 1 - lines.len()));
-        if lines.len() <= max_lines && !self.activity.is_empty() {
+        if max_lines > 1 && lines.len() <= max_lines && !self.activity.is_empty() {
             let waiting = self.state == AgentState::Waiting;
             let activity = styled(
                 &self.activity,

@@ -137,7 +137,52 @@ fn live_agent_metadata_omits_missing_labels_and_truncates_one_unicode_row() {
     }
     assert_eq!(presentation.lines(5, 5)[0].text, "雪e\u{301}…");
     presentation.project = "雪山川海".into();
-    assert_eq!(presentation.lines(4, 1)[0].text, "雪…");
+    let single = presentation.lines(4, 1);
+    assert_eq!(single[0].text, "[42]");
+    assert!(single[0].text.width() <= 4);
+    assert_eq!(single[0].styles.len(), single[0].text.chars().count());
+}
+
+#[test]
+fn live_agent_single_line_reserves_styled_id_at_every_width() {
+    let mut presentation = AgentPresentation::from_pane(&pane(AgentState::Waiting)).unwrap();
+    presentation.provider = "雪e\u{301} Claude".into();
+    presentation.host = Some("user@雪-long-ssh-host.example.com".into());
+    for width in 0..80 {
+        let lines = presentation.lines(width, 1);
+        assert_eq!(lines.len(), 1);
+        let line = &lines[0];
+        assert_eq!(line.text.width(), width, "{width}: {line:?}");
+        assert_eq!(line.styles.len(), line.text.chars().count());
+        let tag = take_columns("[42]", width);
+        assert!(line.text.ends_with(&tag), "{width}: {line:?}");
+        let tag_start = line.styles.len() - tag.chars().count();
+        assert!(line.styles[tag_start..].iter().all(|style| *style
+            == MdStyle {
+                color: Some(3),
+                ..Default::default()
+            }));
+        if width <= 6 {
+            assert_eq!(line.text.trim_start(), tag);
+        } else {
+            let identity = line.text.strip_suffix("[42]").unwrap();
+            assert!(identity.ends_with("  "));
+            if width >= 8 {
+                assert_eq!(line.styles[0].color, Some(1));
+                assert!(line.styles[0].bold);
+            }
+            if let Some(ellipsis) = line.text.find('…') {
+                let index = line.text[..ellipsis].chars().count();
+                assert_eq!(
+                    line.styles[index],
+                    index
+                        .checked_sub(1)
+                        .map(|i| line.styles[i])
+                        .unwrap_or_default()
+                );
+            }
+        }
+    }
 }
 
 #[test]

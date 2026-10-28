@@ -1,0 +1,32 @@
+---
+source: yinz-panes/src/ui/unit/command_palette_agent_tests.rs
+expression: text
+---
+╭ Agent info ────────────────────────────────────────────────────────╮
+│ codex · idle                                  │  Usage unavailable │
+│ Task: Agent task                              │                  — │
+│ Project: —                                    │            5hr · — │
+│ Location: session · /work                     │            Reset — │
+│ Started: 2026-10-09 10:00 UTC                 │          Updated — │
+│ Session: abc123                               │                  — │
+│ [ Search ]                                                         │
+│ ────────────────────────────────────────────────────────────────── │
+│      Event 1                                                       │
+│      • first                                                       │
+│      • second                                                      │
+│      … more                                                        │
+│      Event 2                                                       │
+│      • first                                                       │
+│      • second                                                      │
+│      … more                                                        │
+│      Event 3                                                       │
+│      • first                                                       │
+│      • second                                                      │
+│      … more                                                        │
+│                                                                    │
+│                                                                    │
+│                                                                    │
+│ Prompt: [ Type a message…                                        ] │
+│  Focus    Latest / Refresh    Details                        │
+│ Tab Next · ←/→ Move · Enter Choose · Esc Back                      │
+╰────────────────────────────────────────────────────────────────────╯

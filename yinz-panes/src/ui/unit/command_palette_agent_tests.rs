@@ -49,6 +49,7 @@ fn view(count: u64) -> AgentView {
         vec![action("Focus"), action("history-details")],
         String::new(),
     );
+    view.focus = Focus::Messages;
     view
 }
 fn layout(view: &mut AgentView, cols: usize, rows: usize) -> AgentLayout {
@@ -63,11 +64,11 @@ fn layout(view: &mut AgentView, cols: usize, rows: usize) -> AgentLayout {
         &TextInput::default(),
         None,
         false,
+        true,
     )
 }
 fn key(view: &mut AgentView, key: BareKey) -> Outcome {
-    view.key(&KeyWithModifier::new(key), 42)
-        .unwrap_or(Outcome::None)
+    view.key(&KeyWithModifier::new(key), 42, &mut TextInput::default())
 }
 
 #[test]
@@ -75,17 +76,23 @@ fn previews_wrap_limit_and_keep_styles_and_mouse_geometry() {
     let mut view = view(3);
     let shown = layout(&mut view, 32, 30);
     assert_eq!(view.selected, 2);
-    assert!(shown.lines.iter().any(|l| l.text.trim() == "… more"));
-    assert!(shown.lines.iter().any(|l| l.text.trim() == "Event 3"
-        && l.text
-            .chars()
-            .zip(&l.styles)
-            .filter(|(ch, _)| !ch.is_whitespace())
-            .all(|(_, s)| s.bold)));
+    assert!(shown
+        .lines
+        .iter()
+        .any(|l| l.text.trim_start_matches(['┃', ' ']) == "… more"));
+    assert!(shown
+        .lines
+        .iter()
+        .any(|l| l.text.trim_start_matches(['┃', ' ']) == "Event 3"
+            && l.text
+                .chars()
+                .zip(&l.styles)
+                .filter(|(ch, _)| !ch.is_whitespace() && *ch != '┃')
+                .all(|(_, s)| s.bold)));
     assert!(!shown.lines.iter().any(|l| l.text.contains("fourth")));
     for (row, hit) in shown.hits.iter().enumerate() {
         if let Some(Hit::Event(i)) = hit {
-            view.click(&shown, row);
+            view.click(&shown, 0, row, &mut TextInput::default());
             assert_eq!(view.selected, *i);
             assert_eq!(
                 key(&mut view, BareKey::Enter),
@@ -147,7 +154,7 @@ fn scroll_anchors_survive_updates_resize_and_details() {
         .lines
         .iter()
         .any(|l| l.text.contains("**metadata**")));
-    assert!(view.back());
+    assert!(view.back(&mut TextInput::default()));
     layout(&mut view, 25, 20);
     assert_eq!(view.anchor, anchor);
     view.page_request(true);
@@ -210,7 +217,7 @@ fn empty_timeline_focus_boundaries_and_small_layouts() {
     );
     key(&mut view, BareKey::Down);
     key(&mut view, BareKey::Down);
-    assert_eq!(view.action, 1);
+    assert_eq!(view.focus, Focus::Action(1));
     key(&mut view, BareKey::Tab);
     assert_eq!(key(&mut view, BareKey::Char('x')), Outcome::None);
     for cols in 0..12 {
@@ -322,6 +329,8 @@ fn agent_timeline_render_snapshot() {
 #[test]
 fn agent_search_shows_the_cursor_end_of_a_long_unicode_query() {
     let mut view = view(1);
+    view.search_expanded = true;
+    view.focus = Focus::Search;
     let mut input = TextInput::default();
     input.insert_text(&format!("{} tail", "世界 ".repeat(30)));
     let layout = view.layout(
@@ -335,11 +344,12 @@ fn agent_search_shows_the_cursor_end_of_a_long_unicode_query() {
         &input,
         None,
         false,
+        true,
     );
     let query = layout
         .lines
         .iter()
-        .find(|l| l.text.starts_with("> "))
+        .find(|l| l.text.starts_with("Search: [ "))
         .unwrap();
     assert!(query.text.contains("tail"));
     assert!(query.text.width() <= 28);
@@ -350,7 +360,7 @@ fn a_single_available_row_shows_event_content_instead_of_a_separator() {
     let mut view = view(1);
     let shown = layout(&mut view, 30, 1);
     assert_eq!(shown.lines.len(), 1);
-    assert_eq!(shown.lines[0].text.trim(), "… more");
+    assert_eq!(shown.lines[0].text.trim_start_matches(['┃', ' ']), "… more");
 }
 
 #[test]
@@ -381,7 +391,7 @@ fn pinned_details_and_quota_leave_room_for_chat_at_small_sizes() {
         .join("\n");
     for expected in [
         "Task: Agent task",
-        "session abc123",
+        "Session: abc123",
         "yinz · command-palette",
         "Weekly",
         "75%",
@@ -393,7 +403,7 @@ fn pinned_details_and_quota_leave_room_for_chat_at_small_sizes() {
         shown
             .lines
             .iter()
-            .position(|l| l.text.contains("session abc123"))
+            .position(|l| l.text.contains("Session: abc123"))
             .unwrap()
             < shown
                 .lines
@@ -406,7 +416,8 @@ fn pinned_details_and_quota_leave_room_for_chat_at_small_sizes() {
             let shown = layout(&mut view, width, height);
             assert!(shown.lines.len() <= height);
             assert!(
-                header_lines(&view.header, width, height / 2, width >= 44 && height >= 10)
+                agent_header(&view.header, width, height / 2, width >= 44 && height >= 10)
+                    .lines
                     .iter()
                     .all(|l| l.text.width() <= width)
             );
@@ -414,22 +425,23 @@ fn pinned_details_and_quota_leave_room_for_chat_at_small_sizes() {
         }
     }
     view.header.usage.as_mut().unwrap().status = ProviderUsageStatus::Error;
-    assert!(header_lines(&view.header, 90, 8, true)
+    assert!(agent_header(&view.header, 90, 8, true)
+        .lines
         .iter()
         .any(|l| l.text.contains("stale")));
 }
 
 #[test]
-fn tools_collapse_and_prompt_envelopes_open_with_panel_folds() {
+fn tools_and_prompt_envelopes_use_panel_presentation() {
     let mut view = view(0);
     let mut tools = events(1).remove(0);
-    tools.kind = "tool_call".into();
+    tools.kind = "tools".into();
     tools.revisions = vec![1, 2, 3];
     tools.tool_calls = 2;
     tools.markdown = "secret tool output".into();
     view.update(header(), vec![tools], vec![], String::new());
     let shown = layout(&mut view, 80, 25);
-    assert!(shown.lines.iter().any(|l| l.text.contains("tool call x2")));
+    assert!(shown.lines.iter().any(|l| l.text.contains("tools x2")));
     assert!(!shown
         .lines
         .iter()
@@ -551,6 +563,33 @@ fn explicit_page_navigation_overrides_saved_search_position() {
 }
 
 #[test]
+fn tool_groups_stay_compact_and_preserve_member_selection_on_refresh() {
+    let mut view = view(3);
+    view.select_revision(2);
+    let mut group = events(1).remove(0);
+    group.kind = "tools".into();
+    group.revisions = vec![1, 2, 3];
+    group.tool_calls = 1;
+    view.update(header(), vec![group.clone()], vec![], String::new());
+    assert_eq!(view.selected, 0);
+    assert!(!view.following);
+    assert!(
+        matches!(key(&mut view, BareKey::Enter), Outcome::Activate(id) if id == "history:42:event:1")
+    );
+    group.revisions.push(4);
+    group.tool_calls = 0;
+    view.update(header(), vec![group], vec![], String::new());
+    let shown = layout(&mut view, 80, 25);
+    assert!(shown
+        .lines
+        .iter()
+        .any(|line| line.text.contains("tools x4")));
+    assert_eq!(view.spans[0].len(), 1);
+    layout(&mut view, 6, 25);
+    assert_eq!(view.spans[0].len(), 1);
+}
+
+#[test]
 fn tool_search_results_show_distinct_snippets() {
     let mut view = view(0);
     let mut matches = events(3);
@@ -660,7 +699,7 @@ fn folded_reader_reuses_parsing_and_wrapping_and_keeps_hit_targets() {
         .iter()
         .position(|hit| matches!(hit, Some(Hit::Fold(i)) if *i == target))
         .unwrap();
-    view.click(&shown, click);
+    view.click(&shown, 0, click, &mut TextInput::default());
     assert_eq!(view.reader.as_ref().unwrap().width, None);
     let shown = layout(&mut view, 24, 20);
     assert_hits(&view, &shown);
@@ -695,7 +734,7 @@ fn folded_reader_reuses_parsing_and_wrapping_and_keeps_hit_targets() {
 }
 
 #[test]
-fn expanded_live_title_matches_list_and_stays_above_scrolled_history() {
+fn live_header_deduplicates_details_and_stays_above_scrolled_history() {
     use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
     use yinz_types::data::PaneInfo;
     for state in [AgentState::Busy, AgentState::Waiting, AgentState::Idle] {
@@ -718,10 +757,6 @@ fn expanded_live_title_matches_list_and_stays_above_scrolled_history() {
             }),
             ..Default::default()
         });
-        let mut presentation =
-            AgentPresentation::from_pane(view.header.live.as_ref().unwrap()).unwrap();
-        presentation.project = "project".into();
-        presentation.branch = "branch".into();
         view.header.status = format!(
             "[0] · codex · {}",
             match state {
@@ -730,18 +765,45 @@ fn expanded_live_title_matches_list_and_stays_above_scrolled_history() {
                 _ => "idle",
             }
         );
-        let details = header_lines(&view.header, 86, 8, false);
-        assert!(details[0].styles[0].bold);
-        assert_eq!(details[0].styles[0].color, Some(0));
-        assert_eq!(
-            details[0].styles.last().unwrap().color,
-            (state == AgentState::Waiting).then_some(1)
-        );
-        assert!(!details[0].styles.last().unwrap().bold);
-        let expected = presentation.lines(86, 3);
+        let expected = agent_header(&view.header, 88, 20, true).lines;
         let first = layout(&mut view, 90, 30);
         for (actual, expected) in first.lines.iter().zip(&expected) {
-            assert_eq!(actual.text, format!("┃ {}", expected.text));
+            assert_eq!(actual, expected);
+        }
+        assert!(first.selected[..expected.len()]
+            .iter()
+            .all(|selected| !selected));
+        let text = first
+            .lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for label in ["project", "branch", "codex", "[0]", "@user@host"] {
+            assert_eq!(text.matches(label).count(), 1, "{label}: {text}");
+        }
+        assert_eq!(text.matches("Task:").count(), 1, "{text}");
+        for label in ["session · /work", "Started", "Session: abc123", "Event 30"] {
+            assert!(text.contains(label), "{label}: {text}");
+        }
+
+        let mut palette = CommandPalette::default();
+        palette.set_agent_history(view.header.clone(), events(1), vec![], String::new());
+        let palette_layout = palette.layout(Viewport {
+            cols: 90,
+            rows: 30,
+            ..Default::default()
+        });
+        let style = Style::default();
+        let painted = palette.chunks(&palette_layout, &style);
+        for row in painted
+            .iter()
+            .skip(palette_layout.border)
+            .take(expected.len())
+        {
+            assert!(row.terminal_characters.iter().all(|cell| {
+                cell.styles.background != Some(style.colors.text_selected.background.into())
+            }));
         }
         view.scroll(false, 12);
         let scrolled = layout(&mut view, 90, 30);
@@ -750,6 +812,86 @@ fn expanded_live_title_matches_list_and_stays_above_scrolled_history() {
             &scrolled.lines[..expected.len()]
         );
         assert!(scrolled.lines.iter().any(|l| l.text.contains("@user@host")));
+    }
+}
+
+#[test]
+fn constrained_live_header_keeps_provider_state_and_pane_id() {
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+    use yinz_types::command::PaneTarget;
+    use yinz_types::data::{PaneId, PaneInfo};
+    use yinz_types::internal_ids::TerminalId;
+
+    for (state, status) in [
+        (AgentState::Busy, "working"),
+        (AgentState::Waiting, "needs input"),
+        (AgentState::Idle, "idle"),
+    ] {
+        let mut palette = CommandPalette::default();
+        palette.set_agent_history(
+            HistoryHeader {
+                project: "project".into(),
+                branch: "branch".into(),
+                live: Some(PaneInfo {
+                    id: PaneId::Terminal(TerminalId::new(42)),
+                    title: "agent activity".into(),
+                    agent: Some(AgentInfo {
+                        kind: "codex".into(),
+                        state,
+                        source: AgentSource::Reported,
+                        detail: None,
+                        waiting_on: None,
+                        wait_needs_a_person: false,
+                        cwd: None,
+                        session_id: None,
+                        run_id: None,
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            events(1),
+            vec![],
+            String::new(),
+        );
+        let layout = palette.layout(Viewport {
+            cols: 90,
+            rows: 11,
+            ..Default::default()
+        });
+        let identity = &layout.agent.as_ref().unwrap().lines[0];
+        for label in ["codex", status, "[42]"] {
+            assert!(identity.text.contains(label), "{label}: {identity:?}");
+        }
+        for host in [None, Some("user@雪-very-long-ssh-host.example.com")] {
+            let view = palette.agent.as_mut().unwrap().get_mut();
+            let pane = view.header.live.as_mut().unwrap();
+            pane.agent.as_mut().unwrap().kind = "claude".into();
+            pane.target = host
+                .map(|host| PaneTarget::ssh(host).unwrap())
+                .unwrap_or(PaneTarget::Local);
+            let layout = palette.layout(Viewport {
+                cols: 48,
+                rows: 24,
+                ..Default::default()
+            });
+            let agent = layout.agent.as_ref().unwrap();
+            let identity = &agent.lines[0];
+            assert!(identity.text.contains("claude"), "{identity:?}");
+            assert!(identity.text.contains("[42]"), "{identity:?}");
+            for line in &agent.lines {
+                assert!(
+                    line.text.width() <= layout.rect.cols - 2 * layout.border,
+                    "{line:?}"
+                );
+                assert!(line.styles.is_empty() || line.styles.len() == line.text.chars().count());
+            }
+            let id_start = identity.text.find("[42]").unwrap();
+            let id_index = identity.text[..id_start].chars().count();
+            assert!(identity.styles[id_index..id_index + 4]
+                .iter()
+                .all(|style| style.color == Some(3) && !style.bold));
+        }
     }
 }
 
@@ -818,7 +960,7 @@ fn quota_custom_windows_remain_visible_in_compact_and_graphical_palette_headers(
                 resets_at_ms: Some(0),
             },
             ProviderUsageWindow {
-                label: "Custom quota".into(),
+                label: "Weekly Fable".into(),
                 used_percent: 40.0,
                 resets_at_ms: None,
             },
@@ -860,13 +1002,774 @@ fn quota_custom_windows_remain_visible_in_compact_and_graphical_palette_headers(
                 .join("\n");
             for label in [
                 "Daily limit · 70%",
-                "Custom quota · 60%",
+                "Weekly Fable · 60%",
                 "stale",
                 "reset due",
             ] {
                 assert!(text.contains(label), "{label}: {text}");
             }
-            assert_eq!(text.contains("Weekly"), weekly, "{text}");
+            assert_eq!(
+                text.contains(if rows == 40 {
+                    "Weekly remaining"
+                } else {
+                    "Weekly ·"
+                }),
+                weekly || rows == 40,
+                "{text}"
+            );
+            let line = layout
+                .agent
+                .as_ref()
+                .unwrap()
+                .lines
+                .iter()
+                .find(|line| line.text.contains("Weekly Fable"))
+                .unwrap();
+            let width =
+                layout.rect.cols - layout.border * 2 - layout.agent.as_ref().unwrap().padding * 2;
+            assert_eq!(line.text.width(), width, "{text}");
+            if weekly && rows == 40 {
+                assert!(line.text.ends_with("Weekly Fable · 60%"), "{text}");
+            }
+        }
+    }
+}
+
+#[test]
+fn custom_quota_percentages_survive_graphical_header_clipping() {
+    use yinz_types::agent::control::{ProviderUsage, ProviderUsageStatus, ProviderUsageWindow};
+    for (label, expected) in [
+        ("Weekly Sonnet", "Weekly Sonn · 100%"),
+        (
+            "Weekly Fable with a very long quota label",
+            "Weekly Fabl · 100%",
+        ),
+        ("Weekly 界界界界 quota label", "Weekly 界界 · 100%"),
+    ] {
+        let mut header = header();
+        header.usage = Some(ProviderUsage {
+            provider: "claude".into(),
+            status: ProviderUsageStatus::Ok,
+            observed_at_ms: None,
+            plan: None,
+            message: None,
+            windows: vec![
+                ProviderUsageWindow {
+                    label: "7d".into(),
+                    used_percent: 25.0,
+                    resets_at_ms: None,
+                },
+                ProviderUsageWindow {
+                    label: label.into(),
+                    used_percent: 0.0,
+                    resets_at_ms: None,
+                },
+            ],
+        });
+        let mut palette = CommandPalette::default();
+        palette.set_agent_history(header, events(2), vec![], String::new());
+        let mut layout = palette.layout(Viewport {
+            cols: 90,
+            rows: 40,
+            ..Default::default()
+        });
+        assert!(layout.quota_image().is_some());
+        layout.use_quota_image();
+        let agent = layout.agent.as_ref().unwrap();
+        let custom = agent
+            .lines
+            .iter()
+            .find(|line| line.text.ends_with(expected))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{label}: {:?}",
+                    agent
+                        .lines
+                        .iter()
+                        .map(|line| &line.text)
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            custom.text.width(),
+            layout.rect.cols - layout.border * 2 - agent.padding * 2
+        );
+        assert_eq!(custom.styles.len(), custom.text.chars().count());
+    }
+}
+
+#[test]
+fn long_custom_quota_labels_stay_within_the_header() {
+    use yinz_types::agent::control::{ProviderUsage, ProviderUsageStatus, ProviderUsageWindow};
+    let mut header = header();
+    header.usage = Some(ProviderUsage {
+        provider: "codex".into(),
+        status: ProviderUsageStatus::Ok,
+        observed_at_ms: None,
+        plan: None,
+        message: None,
+        windows: vec![
+            ProviderUsageWindow {
+                label: "7d".into(),
+                used_percent: 25.0,
+                resets_at_ms: None,
+            },
+            ProviderUsageWindow {
+                label: "Weekly Fable with a very long 界 quota label".into(),
+                used_percent: 40.0,
+                resets_at_ms: None,
+            },
+        ],
+    });
+    for width in [1, 12, 28, 44, 90] {
+        for full in [false, true] {
+            let lines = agent_header(&header, width, 10, full && width >= 44).lines;
+            assert!(lines.iter().all(|line| line.text.width() <= width));
+            assert!(lines
+                .iter()
+                .all(|line| line.styles.len() == line.text.chars().count()));
+            if full && width >= 44 {
+                let custom = lines
+                    .iter()
+                    .find(|line| line.text.contains("Weekly Fable"))
+                    .unwrap();
+                assert_eq!(custom.text.width(), width);
+                assert!(custom.text.contains(" │ "));
+                assert!(custom.text.ends_with(" · 60%"), "{custom:?}");
+            }
+        }
+    }
+}
+
+fn controls_palette(prompt: bool) -> CommandPalette {
+    let mut palette = CommandPalette::default();
+    palette.push_view(42, "Agent".into());
+    let mut actions = vec![
+        action("Focus"),
+        action("Latest / Refresh"),
+        action("history-details"),
+    ];
+    if prompt {
+        actions.push(action("history-prompt"));
+    }
+    palette.set_agent_history(header(), events(3), actions, String::new());
+    palette
+}
+
+fn focus(palette: &CommandPalette) -> Focus {
+    palette.agent.as_ref().unwrap().borrow().focus
+}
+
+fn press(palette: &mut CommandPalette, key: BareKey) -> Outcome {
+    palette.handle_key(KeyWithModifier::new(key))
+}
+
+#[test]
+fn search_expands_by_keyboard_or_click_and_escape_clears_before_back() {
+    for activation in [BareKey::Enter, BareKey::Char(' ')] {
+        let mut palette = controls_palette(true);
+        assert_eq!(focus(&palette), Focus::Search);
+        palette.insert_text("ignored");
+        assert_eq!(palette.query(), "");
+        press(&mut palette, activation);
+        assert!(palette.agent.as_ref().unwrap().borrow().search_expanded);
+        for ch in "jk".chars() {
+            press(&mut palette, BareKey::Char(ch));
+        }
+        palette.insert_text(" needle");
+        assert_eq!(palette.query(), "jk needle");
+        // History filtering uses the ordinary query, even after Tab leaves the field.
+        press(&mut palette, BareKey::Tab);
+        assert_eq!(focus(&palette), Focus::Messages);
+        palette.set_agent_history(
+            header(),
+            events(1),
+            vec![action("history-prompt")],
+            "Matching retained events".into(),
+        );
+        assert_eq!(palette.query(), "jk needle");
+        assert_eq!(
+            press(&mut palette, BareKey::Enter),
+            Outcome::Activate("history:42:event:1".into())
+        );
+        assert_eq!(press(&mut palette, BareKey::Esc), Outcome::None);
+        assert_eq!(palette.query(), "");
+        assert_eq!(focus(&palette), Focus::Search);
+        assert!(!palette.agent.as_ref().unwrap().borrow().search_expanded);
+        assert_eq!(press(&mut palette, BareKey::Esc), Outcome::None);
+        assert!(palette.is_root());
+    }
+    let mut palette = controls_palette(true);
+    let layout = palette.layout(Viewport {
+        x: 3,
+        y: 2,
+        cols: 80,
+        rows: 28,
+    });
+    let widget = &layout.agent.as_ref().unwrap().widgets[0];
+    let position = Position::new(
+        (layout.rect.y + layout.border + widget.rect.y) as i32,
+        (layout.rect.x + layout.border + layout.agent.as_ref().unwrap().padding + widget.rect.x)
+            as u16,
+    );
+    assert_eq!(palette.click(&layout, position), Outcome::None);
+    assert!(palette.agent.as_ref().unwrap().borrow().search_expanded);
+    assert!(palette
+        .cursor(&palette.layout(Viewport {
+            cols: 80,
+            rows: 28,
+            ..Default::default()
+        }))
+        .is_some());
+}
+
+#[test]
+fn automatic_run_retarget_preserves_search_and_focus() {
+    for tabs in 0..=2 {
+        let mut palette = controls_palette(true);
+        press(&mut palette, BareKey::Enter);
+        palette.insert_text("needle");
+        for _ in 0..tabs {
+            press(&mut palette, BareKey::Tab);
+        }
+        let old_focus = focus(&palette);
+        palette.agent_retarget_run();
+        palette.set_agent_history(
+            header(),
+            events(1),
+            vec![action("history-prompt")],
+            String::new(),
+        );
+        assert_eq!(focus(&palette), old_focus);
+        assert_eq!(palette.query(), "needle");
+        assert!(palette.agent.as_ref().unwrap().borrow().search_expanded);
+        assert_eq!(press(&mut palette, BareKey::Esc), Outcome::None);
+        assert_eq!(palette.query(), "");
+        assert_eq!(palette.view, 42);
+        assert_eq!(focus(&palette), Focus::Search);
+        press(&mut palette, BareKey::Esc);
+        assert!(palette.is_root());
+    }
+}
+
+#[test]
+fn tab_order_visits_every_control_and_reverses_with_unavailable_prompt_skipped() {
+    for prompt in [true, false] {
+        let mut palette = controls_palette(prompt);
+        let mut targets = vec![Focus::Search, Focus::Messages];
+        if prompt {
+            targets.push(Focus::Prompt);
+        }
+        targets.extend([Focus::Action(0), Focus::Action(1), Focus::Action(2)]);
+        for expected in targets.iter().cycle().skip(1).take(targets.len()) {
+            press(&mut palette, BareKey::Tab);
+            assert_eq!(focus(&palette), *expected);
+        }
+        for expected in targets.iter().rev() {
+            palette.handle_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier());
+            assert_eq!(focus(&palette), *expected);
+        }
+    }
+}
+
+#[test]
+fn message_navigation_aliases_and_text_inputs_do_not_interfere() {
+    for (up, down) in [
+        (
+            KeyWithModifier::new(BareKey::Up),
+            KeyWithModifier::new(BareKey::Down),
+        ),
+        (
+            KeyWithModifier::new(BareKey::Char('k')),
+            KeyWithModifier::new(BareKey::Char('j')),
+        ),
+        (
+            KeyWithModifier::new(BareKey::Char('p')).with_ctrl_modifier(),
+            KeyWithModifier::new(BareKey::Char('n')).with_ctrl_modifier(),
+        ),
+    ] {
+        let mut palette = controls_palette(true);
+        press(&mut palette, BareKey::Enter);
+        palette.insert_text("search");
+        press(&mut palette, BareKey::Char('j'));
+        press(&mut palette, BareKey::Char('k'));
+        assert_eq!(palette.query(), "searchjk");
+        press(&mut palette, BareKey::Tab);
+        palette.handle_key(up);
+        assert_eq!(
+            press(&mut palette, BareKey::Enter),
+            Outcome::Activate("history:42:event:2".into())
+        );
+        palette.insert_text("ignored");
+        press(&mut palette, BareKey::Char('x'));
+        palette.handle_key(down);
+        assert_eq!(
+            press(&mut palette, BareKey::Enter),
+            Outcome::Activate("history:42:event:3".into())
+        );
+        press(&mut palette, BareKey::Tab);
+        press(&mut palette, BareKey::Char('j'));
+        press(&mut palette, BareKey::Char('k'));
+        palette.insert_text(" prompt\nline");
+        assert_eq!(palette.query(), "searchjk");
+        let expected = Outcome::Submit {
+            id: "history-prompt".into(),
+            values: vec!["jk prompt line".into()],
+        };
+        assert_eq!(press(&mut palette, BareKey::Enter), expected);
+        palette.set_error("Send failed".into());
+        assert_eq!(press(&mut palette, BareKey::Enter), expected);
+        assert!(palette.agent_prompt_sent());
+        assert_eq!(press(&mut palette, BareKey::Enter), Outcome::None);
+        assert!(palette.error.is_none());
+        assert_eq!(palette.view, 42);
+    }
+}
+
+#[test]
+fn horizontal_buttons_have_separate_hits_and_focus_styles() {
+    let mut palette = controls_palette(true);
+    let surface = Viewport {
+        x: 5,
+        y: 4,
+        cols: 80,
+        rows: 28,
+    };
+    let layout = palette.layout(surface);
+    let agent = layout.agent.as_ref().unwrap();
+    let buttons: Vec<_> = agent
+        .widgets
+        .iter()
+        .filter(|w| matches!(w.hit, Hit::Action(_)))
+        .collect();
+    assert_eq!(buttons.len(), 3);
+    assert_eq!(buttons[0].rect.y, buttons[1].rect.y);
+    for (index, button) in buttons[..2].iter().enumerate() {
+        let x = layout.rect.x + layout.border + agent.padding + button.rect.x;
+        let y = layout.rect.y + layout.border + button.rect.y;
+        assert_eq!(
+            palette.click(&layout, Position::new(y as i32, x as u16)),
+            Outcome::Activate(["Focus", "Latest / Refresh"][index].into())
+        );
+        let painted = palette.chunks(&palette.layout(surface), &Style::default());
+        let row = painted.iter().find(|row| row.y == y).unwrap();
+        assert_eq!(
+            row.terminal_characters[x - layout.rect.x].styles.background,
+            Some(Style::default().colors.ribbon_selected.background.into())
+        );
+        let other = buttons[1 - index];
+        assert_ne!(
+            row.terminal_characters[layout.border + agent.padding + other.rect.x]
+                .styles
+                .background,
+            Some(Style::default().colors.ribbon_selected.background.into())
+        );
+    }
+    press(&mut palette, BareKey::Left);
+    assert_eq!(focus(&palette), Focus::Action(0));
+    assert_eq!(
+        press(&mut palette, BareKey::Char(' ')),
+        Outcome::Activate("Focus".into())
+    );
+    press(&mut palette, BareKey::Right);
+    assert_eq!(
+        press(&mut palette, BareKey::Enter),
+        Outcome::Activate("Latest / Refresh".into())
+    );
+    // A gap between adjacent buttons is not a hit on either button.
+    assert_eq!(
+        palette.click(
+            &layout,
+            Position::new(
+                (layout.rect.y + layout.border + buttons[0].rect.y) as i32,
+                (layout.rect.x + layout.border + agent.padding + buttons[0].rect.cols) as u16
+            )
+        ),
+        Outcome::None
+    );
+}
+
+#[test]
+fn palette_messages_match_panel_text_spacing_and_styles() {
+    use agent_proto::agents::{AgentRun, ParsedRun, RunEntry, RunEntryKind};
+    let now = agent_proto::agents::now_ms();
+    let entries: Vec<_> = [
+        RunEntryKind::Prompt,
+        RunEntryKind::Message,
+        RunEntryKind::ToolCall,
+        RunEntryKind::ToolResult,
+        RunEntryKind::Summary,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, kind)| RunEntry {
+        kind,
+        revision: i as u64 + 1,
+        created_at_ms: Some(now - 120_000),
+        text: "**hello** 界\n\n- first\n- second".into(),
+        event_id: None,
+        tool: None,
+    })
+    .collect();
+    let mut run = AgentRun {
+        id: "codex:test".into(),
+        pane_id: 1,
+        kind: "codex".into(),
+        started_at_ms: 0,
+        yinz_session_name: Default::default(),
+        host_id: Default::default(),
+        session_id: "test".into(),
+        origin_run_id: None,
+        previous_run_id: None,
+        cwd: None,
+        host: None,
+        bubblewrap: None,
+        ended_at_ms: None,
+        outcome: Default::default(),
+        revision: 5,
+        summarized_revision: 0,
+        summary: None,
+        entries: vec![],
+        omitted_entries: 0,
+    };
+    run.entries = entries.clone();
+    for width in [30, 60, 90] {
+        let expected = ParsedRun::new(&run).lines(width + 1, now, 0, None);
+        let mut view = view(0);
+        view.update(
+            header(),
+            entries
+                .iter()
+                .map(|entry| HistoryEvent {
+                    revision: entry.revision,
+                    revisions: vec![entry.revision],
+                    tool_calls: 0,
+                    kind: entry.kind.label().into(),
+                    created_at_ms: entry.created_at_ms,
+                    markdown: entry.text.clone(),
+                    time: String::new(),
+                    truncated: false,
+                })
+                .collect(),
+            vec![],
+            String::new(),
+        );
+        view.focus = Focus::Search;
+        // Layout's content width is width, with one column for the panel selection marker.
+        let shown = layout(&mut view, width + 2, 80);
+        let actual: Vec<_> = shown
+            .lines
+            .iter()
+            .zip(&shown.hits)
+            .filter(|(_, hit)| matches!(hit, Some(Hit::Event(_))))
+            .map(|(line, _)| line.clone())
+            .collect();
+        let expected: Vec<_> = expected
+            .entries
+            .into_iter()
+            .map(|line| line.prepend(" ", MdStyle::default()))
+            .collect();
+        assert_eq!(actual, expected, "width {width}");
+    }
+}
+
+#[test]
+fn agent_info_control_render_snapshots() {
+    for (name, tabs, expanded, cols) in [
+        ("collapsed", 0, false, 70),
+        ("expanded", 0, true, 70),
+        ("messages", 1, false, 70),
+        ("prompt", 2, false, 70),
+        ("buttons", 4, false, 70),
+        ("narrow", 4, false, 30),
+    ] {
+        let mut palette = controls_palette(true);
+        if expanded {
+            press(&mut palette, BareKey::Enter);
+            palette.insert_text("controls");
+        }
+        for _ in 0..tabs {
+            press(&mut palette, BareKey::Tab);
+        }
+        let layout = palette.layout(Viewport {
+            cols,
+            rows: 28,
+            ..Default::default()
+        });
+        let text = palette
+            .chunks(&layout, &Style::default())
+            .iter()
+            .map(|row| {
+                row.terminal_characters
+                    .iter()
+                    .map(|c| c.character)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        insta::assert_snapshot!(format!("agent_info_{name}"), text);
+    }
+}
+
+#[test]
+fn input_cursors_and_wrapped_buttons_stay_inside_constrained_windows() {
+    for cols in [1, 4, 8, 12, 20, 30, 50, 80] {
+        for rows in [1, 4, 8, 12, 20] {
+            let mut palette = controls_palette(true);
+            palette.agent.as_mut().unwrap().get_mut().header.live =
+                Some(yinz_types::data::PaneInfo {
+                    title: "task".into(),
+                    agent: Some(yinz_types::agent::AgentInfo {
+                        kind: "codex".into(),
+                        state: yinz_types::agent::AgentState::Idle,
+                        source: yinz_types::agent::AgentSource::Reported,
+                        detail: None,
+                        waiting_on: None,
+                        wait_needs_a_person: false,
+                        cwd: None,
+                        session_id: None,
+                        run_id: None,
+                    }),
+                    ..Default::default()
+                });
+            let surface = Viewport {
+                x: 3,
+                y: 2,
+                cols,
+                rows,
+            };
+            press(&mut palette, BareKey::Enter);
+            palette.insert_text(&"界jk ".repeat(30));
+            for _ in 0..6 {
+                let layout = palette.layout(surface);
+                let agent = layout.agent.as_ref().unwrap();
+                assert!(
+                    agent.lines.len() <= rows.saturating_sub(layout.border * 2),
+                    "{cols}x{rows}"
+                );
+                if rows >= 8 {
+                    assert!(palette.agent.as_ref().unwrap().borrow().page > 0);
+                }
+                if let Some((x, y)) = palette.cursor(&layout) {
+                    assert!(layout.rect.contains(x, y));
+                }
+                for chunk in palette.chunks(&layout, &Style::default()) {
+                    let text: String = chunk
+                        .terminal_characters
+                        .iter()
+                        .map(|c| c.character)
+                        .collect();
+                    assert!(text.width() <= cols);
+                }
+                press(&mut palette, BareKey::Tab);
+                palette.insert_text("jk");
+            }
+        }
+    }
+}
+
+#[test]
+fn balanced_header_keeps_usage_in_one_column_with_no_duplicate_values() {
+    use yinz_types::agent::control::{ProviderUsage, ProviderUsageStatus, ProviderUsageWindow};
+    let mut data = header();
+    data.project = "yinz".into();
+    data.branch = "command-palette".into();
+    data.usage = Some(ProviderUsage {
+        provider: "codex".into(),
+        status: ProviderUsageStatus::Ok,
+        observed_at_ms: None,
+        plan: None,
+        message: None,
+        windows: vec![
+            ProviderUsageWindow {
+                label: "7d".into(),
+                used_percent: 58.0,
+                resets_at_ms: Some(0),
+            },
+            ProviderUsageWindow {
+                label: "5h".into(),
+                used_percent: 82.0,
+                resets_at_ms: None,
+            },
+        ],
+    });
+    let grid = agent_header(&data, 78, 12, true);
+    assert_eq!(grid.lines.len(), 6);
+    let graphical = grid.graphical.as_ref().unwrap();
+    assert_eq!(graphical.len(), 6);
+    for lines in [&grid.lines, graphical] {
+        for (row, line) in lines.iter().enumerate() {
+            let (left, right) = line.text.split_once(" │ ").unwrap();
+            assert_eq!(left.width(), 57);
+            assert_eq!(right.width(), 18);
+            assert!(!left.trim().is_empty());
+            assert_eq!(line.styles.len(), line.text.chars().count());
+            assert_eq!(
+                right.trim().is_empty(),
+                std::ptr::eq(lines, graphical) && (1..=2).contains(&row)
+            );
+        }
+    }
+    let text = grid
+        .lines
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for value in [
+        "codex",
+        "Agent task",
+        "command-palette",
+        "abc123",
+        "42%",
+        "18%",
+        "reset due",
+        "Updated",
+    ] {
+        assert_eq!(text.matches(value).count(), 1, "{value}: {text}");
+    }
+    assert!(grid.lines[2].text.ends_with("5hr · 18%"));
+    assert!(graphical[3].text.ends_with("5hr · 18%"));
+    insta::assert_snapshot!("agent_header_balanced_text", text);
+    insta::assert_snapshot!(
+        "agent_header_balanced_graphic_cells",
+        graphical
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+#[test]
+fn balanced_header_missing_fields_and_unicode_stay_bounded() {
+    for data in [
+        HistoryHeader::default(),
+        HistoryHeader {
+            task: "界🦀 long task ".repeat(20),
+            location: "/界/🦀/very-long-directory".repeat(20),
+            session_id: "run archived-123".into(),
+            ..header()
+        },
+    ] {
+        for width in [0, 1, 12, 43, 44, 78] {
+            for budget in [0, 1, 3, 6, 10] {
+                let grid = agent_header(&data, width, budget, true);
+                assert!(grid.lines.len() <= budget);
+                assert!(grid.quota.is_none());
+                for line in &grid.lines {
+                    assert!(line.text.width() <= width, "{line:?}");
+                    assert_eq!(line.styles.len(), line.text.chars().count());
+                }
+                if width >= 44 && budget >= 6 {
+                    assert_eq!(grid.lines.len(), 6);
+                    assert!(grid.lines[0].text.contains("Usage unavailable"));
+                    assert!(grid.lines.iter().all(|l| l.text.contains(" │ ")));
+                    if data.session_id.starts_with("run ") {
+                        assert!(grid.lines[5].text.contains("Run: archived-123"));
+                        assert!(grid.lines[1]
+                            .text
+                            .split_once(" │ ")
+                            .unwrap()
+                            .0
+                            .trim_end()
+                            .ends_with('…'));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn ribbon_buttons_follow_font_mode_and_theme_with_unicode_labels() {
+    for arrow_fonts in [false, true] {
+        let mut palette = controls_palette(true);
+        let view = palette.agent.as_mut().unwrap().get_mut();
+        view.actions = vec![action("界 Focus"), action("Details")];
+        view.focus = Focus::Action(0);
+        let surface = Viewport {
+            cols: 80,
+            rows: 28,
+            ..Default::default()
+        };
+        let layout = palette.layout_with_arrow_fonts(surface, arrow_fonts);
+        let agent = layout.agent.as_ref().unwrap();
+        let style = Style::default();
+        let chunks = palette.chunks(&layout, &style);
+        for widget in agent
+            .widgets
+            .iter()
+            .filter(|w| matches!(w.hit, Hit::Action(_)))
+        {
+            let row = &chunks[layout.border + widget.rect.y];
+            let start = layout.border + agent.padding + widget.rect.x;
+            let mut column = 0;
+            let cells: Vec<_> = row
+                .terminal_characters
+                .iter()
+                .filter(|c| {
+                    let inside = (start..start + widget.rect.cols).contains(&column);
+                    column += c.character.width().unwrap_or(0);
+                    inside
+                })
+                .collect();
+            let label = if widget.focused {
+                "界 Focus"
+            } else {
+                "Details"
+            };
+            let expected = if arrow_fonts {
+                format!(" {label} ")
+            } else {
+                format!(" {label} ")
+            };
+            assert_eq!(
+                cells.iter().map(|c| c.character).collect::<String>(),
+                expected
+            );
+            assert_eq!(widget.rect.cols, expected.width());
+            let declaration = if widget.focused {
+                style.colors.ribbon_selected
+            } else {
+                style.colors.ribbon_unselected
+            };
+            let label_cell = cells[if arrow_fonts { 2 } else { 1 }];
+            assert_eq!(label_cell.styles.foreground, Some(declaration.base.into()));
+            assert_eq!(
+                label_cell.styles.background,
+                Some(declaration.background.into())
+            );
+            if arrow_fonts {
+                assert_eq!(
+                    cells[0].styles.foreground,
+                    Some(style.colors.text_unselected.background.into())
+                );
+                assert_eq!(
+                    cells.last().unwrap().styles.foreground,
+                    Some(declaration.background.into())
+                );
+                assert_eq!(
+                    cells.last().unwrap().styles.background,
+                    Some(style.colors.text_unselected.background.into())
+                );
+            }
+            let index = match widget.hit {
+                Hit::Action(index) => index,
+                _ => unreachable!(),
+            };
+            for x in 0..widget.rect.cols {
+                assert_eq!(
+                    palette.click(
+                        &layout,
+                        Position::new(
+                            (layout.rect.y + layout.border + widget.rect.y) as i32,
+                            (layout.rect.x + start + x) as u16
+                        )
+                    ),
+                    Outcome::Activate(["界 Focus", "Details"][index].into())
+                );
+            }
         }
     }
 }

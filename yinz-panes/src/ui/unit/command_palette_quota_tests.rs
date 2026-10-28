@@ -19,7 +19,6 @@ fn client_quota_caches_reuse_and_release_rasters_on_theme_geometry_value_and_fal
             cols: 18,
             rows: 2,
         },
-        line: 1,
         display: agent_proto::quota::Display::new(
             &ProviderUsage {
                 provider: "codex".into(),
