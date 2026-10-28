@@ -236,14 +236,7 @@ impl Tab {
         if self.floating_panes.panes_are_visible() {
             self.swap_layouts.floating_layout_info()
         } else {
-            let selectable_tiled_panes =
-                self.tiled_panes.get_panes().filter(|(_, p)| p.selectable());
-            if selectable_tiled_panes.count() + self.suppressed_stack_list_members().count() > 1 {
-                self.swap_layouts.tiled_layout_info()
-            } else {
-                // no layout for single pane
-                (None, false)
-            }
+            self.swap_layouts.tiled_layout_info()
         }
     }
     pub(super) fn relayout_floating_panes(&mut self, search_backwards: bool) -> Result<()> {

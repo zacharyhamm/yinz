@@ -1,6 +1,54 @@
 use super::*;
 
 #[test]
+fn single_pane_reports_active_swap_layout_and_dirty_state() {
+    let layout = yinz_config::kdl::layout::from_kdl(
+        r#"
+        layout {
+            pane
+            swap_tiled_layout name="single" {
+                tab { pane; }
+            }
+        }
+        "#,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let mut tab = create_new_tab_with_swap_layouts(
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        ModeInfo::default(),
+        (layout.swap_tiled_layouts, layout.swap_floating_layouts),
+        None,
+        true,
+        true,
+    );
+    assert_eq!(
+        tab.tiled_panes
+            .get_panes()
+            .filter(|(_, p)| p.selectable())
+            .count(),
+        1
+    );
+    assert_eq!(tab.swap_layout_info(), (Some("BASE".into()), false));
+
+    tab.next_swap_layout().unwrap();
+    assert_eq!(tab.swap_layout_info(), (Some("single".into()), false));
+
+    tab.swap_layouts.set_is_tiled_damaged();
+    assert_eq!(tab.swap_layout_info(), (Some("single".into()), true));
+
+    tab.previous_swap_layout().unwrap();
+    assert_eq!(tab.swap_layout_info(), (Some("single".into()), false));
+    tab.previous_swap_layout().unwrap();
+    assert_eq!(tab.swap_layout_info(), (Some("BASE".into()), false));
+}
+
+#[test]
 fn pending_pane_insertion_preserves_title_borderless_and_swap_layout() {
     let layout = yinz_config::kdl::layout::from_kdl(
         r#"
