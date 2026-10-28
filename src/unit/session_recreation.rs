@@ -578,6 +578,14 @@ fn force_delete_waits_for_completion_and_preserves_checkpoint_on_failure() {
 
 impl Session {
     fn remote_bootstrap(&self, create: bool) -> Command {
+        let mut command = self.remote_bootstrap_without_name();
+        if create {
+            command.arg("--create");
+        }
+        command.arg(NAME);
+        command
+    }
+    fn remote_bootstrap_without_name(&self) -> Command {
         let mut command = self.command();
         command.env("YINZ_CONFIG_FILE", self.0.path().join("config.kdl"));
         command.env("YINZ_CONFIG_DIR", self.0.path().join("config"));
@@ -590,10 +598,6 @@ impl Session {
             "--bootstrap-version",
             &yinz_runtime::consts::REMOTE_BOOTSTRAP_VERSION.to_string(),
         ]);
-        if create {
-            command.arg("--create");
-        }
-        command.arg(NAME);
         command
     }
     fn remote_endpoint(&self, create: bool) -> serde_json::Value {
@@ -698,6 +702,53 @@ fn remote_bootstrap_missing_existing_create_and_resurrection() {
             .to_string_lossy()
             .starts_with("yinz-")
     }));
+}
+
+#[test]
+fn remote_bootstrap_new_names_a_session_and_refuses_taken_names() {
+    let session = Session::new();
+    session.remote_layout();
+    let new = |name: Option<&str>| {
+        let mut command = session.remote_bootstrap_without_name();
+        command.arg("--new");
+        if let Some(name) = name {
+            command.args(["--", name]);
+        }
+        command.output().unwrap()
+    };
+    let refused = |out: Output| {
+        assert!(!out.status.success(), "{out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("YINZ_REMOTE_ERROR \"session_exists\"")
+                && stderr.contains(&format!("remote session {NAME:?} already exists")),
+            "{stderr}"
+        );
+    };
+
+    let out = new(Some(NAME));
+    assert!(out.status.success(), "{out:?}");
+    let endpoint: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(endpoint["session_name"], NAME);
+    session.wait_for_panes(false);
+    let pid = server_pid(&session);
+    refused(new(Some(NAME)));
+    assert_eq!(pid, server_pid(&session));
+
+    let out = new(None);
+    assert!(out.status.success(), "{out:?}");
+    let endpoint: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let generated = endpoint["session_name"].as_str().unwrap().to_owned();
+    // Only NAME is cleaned up on drop, so stop the generated session before asserting.
+    session.success(&["kill-session", &generated]);
+    assert_ne!(generated, NAME);
+    assert!(yinz_client::remote_sessions::validate_name(&generated).is_ok());
+
+    // A resurrectable session's name is taken too.
+    session.success(&["--session", NAME, "action", "save-session"]);
+    session.success(&["kill-session", NAME]);
+    refused(new(Some(NAME)));
+    assert!(!session.socket().exists());
 }
 
 #[test]
@@ -939,6 +990,31 @@ fn simultaneous_remote_bootstraps_share_one_session() {
         let second = scope.spawn(|| session.remote_endpoint(true));
         assert_eq!(first.join().unwrap(), second.join().unwrap());
     });
+    session.wait_for_panes(false);
+}
+
+#[test]
+fn simultaneous_new_bootstraps_create_one_session() {
+    let session = Session::new();
+    session.remote_layout();
+    let outputs = std::thread::scope(|scope| {
+        let bootstraps = [(); 2].map(|_| {
+            scope.spawn(|| {
+                session
+                    .remote_bootstrap_without_name()
+                    .args(["--new", NAME])
+                    .output()
+                    .unwrap()
+            })
+        });
+        bootstraps.map(|bootstrap| bootstrap.join().unwrap())
+    });
+    let (created, refused): (Vec<_>, Vec<_>) = outputs.iter().partition(|out| out.status.success());
+    assert_eq!((created.len(), refused.len()), (1, 1), "{outputs:?}");
+    let endpoint: serde_json::Value = serde_json::from_slice(&created[0].stdout).unwrap();
+    assert_eq!(endpoint["session_name"], NAME);
+    let error = String::from_utf8_lossy(&refused[0].stderr);
+    assert!(error.contains("already exists"), "{error}");
     session.wait_for_panes(false);
 }
 

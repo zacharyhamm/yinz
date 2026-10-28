@@ -1,5 +1,7 @@
 /// Persistent claims are kept separate from discoverable session sockets.
 pub const SESSION_OWNERSHIP_DIR: &str = ".session-locks";
+/// Remote bootstraps that may create a session serialize on a per-name file here.
+pub const SESSION_CREATION_LOCK_DIR: &str = ".session-creation-locks";
 
 #[cfg(unix)]
 pub fn is_ipc_socket(file_type: &std::fs::FileType) -> bool {

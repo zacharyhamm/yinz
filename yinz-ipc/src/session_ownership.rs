@@ -16,25 +16,52 @@ struct State {
     shutting_down: bool,
 }
 
-fn claim(path: &Path) -> Result<Option<File>> {
-    let directory = path
+/// The lock file for the session at `socket` in the sibling `directory`.
+fn open_lock_file(socket: &Path, directory: &str) -> Result<File> {
+    let directory = socket
         .parent()
         .context("session socket has no parent")?
-        .join(crate::consts::SESSION_OWNERSHIP_DIR);
-    std::fs::create_dir_all(&directory).context("create session ownership directory")?;
-    let name = path.file_name().context("session socket has no name")?;
+        .join(directory);
+    std::fs::create_dir_all(&directory)
+        .with_context(|| format!("create session lock directory {directory:?}"))?;
+    let name = socket.file_name().context("session socket has no name")?;
     // Never unlink: all contenders must lock the same inode, including after a crash.
-    let file = OpenOptions::new()
+    OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
         .open(directory.join(name))
-        .context("open session ownership file")?;
+        .context("open session lock file")
+}
+
+fn claim(path: &Path) -> Result<Option<File>> {
+    let file = open_lock_file(path, crate::consts::SESSION_OWNERSHIP_DIR)?;
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),
         Err(TryLockError::WouldBlock) => Ok(None),
         Err(TryLockError::Error(error)) => Err(error).context("lock session ownership file"),
+    }
+}
+
+/// Serialize bootstraps that may create the session at `socket`, so each decides whether the
+/// name is taken after the previous creator finished. Kept apart from ownership claims, which
+/// the created server takes; dropping the file releases the lock.
+pub fn lock_creation(socket: &Path, deadline: Instant) -> Result<File> {
+    let file = open_lock_file(socket, crate::consts::SESSION_CREATION_LOCK_DIR)?;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::WouldBlock) => {},
+            Err(TryLockError::Error(error)) => return Err(error).context("lock session creation"),
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        anyhow::ensure!(
+            !remaining.is_zero(),
+            "another bootstrap is still creating session {:?}",
+            socket.file_name().unwrap_or_default()
+        );
+        std::thread::sleep(remaining.min(Duration::from_millis(50)));
     }
 }
 

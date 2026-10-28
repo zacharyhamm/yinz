@@ -9,6 +9,13 @@ use std::os::unix::process::CommandExt;
 use yinz_test_support::{default_timeout, Watched};
 
 fn discovery_command(session: &Session, names: &[&str]) -> Command {
+    let mut command = fake_ssh_command(session, names);
+    command.args(["attach", "--remote", "user@example"]);
+    command
+}
+
+/// A client whose SSH lists `names` and fails any session bootstrap after recording it.
+fn fake_ssh_command(session: &Session, names: &[&str]) -> Command {
     let root = session.0.path();
     yinz_test_support::write_warm_script(
         &root.join("ssh"),
@@ -46,15 +53,17 @@ esac"#,
                 "sessions": sessions,
             })
             .to_string(),
-        )
-        .args(["attach", "--remote", "user@example"]);
+        );
     command
 }
 
 #[test]
 fn remote_attach_without_a_name_discovers_before_selecting_or_reporting_sessions() {
     for (names, expected) in [
-        (vec![], "No active yinz sessions found on user@example."),
+        (
+            vec![],
+            "No active yinz sessions found on user@example. Start one with `yinz --remote user@example`.",
+        ),
         (vec!["remote work"], "selected-session-bootstrap"),
         (
             vec!["one", "two"],
@@ -159,6 +168,108 @@ fn remote_attach_discovery_picker_selects_only_from_the_requested_host() {
     drop(slave);
     drop(master);
     capture.join().unwrap();
+}
+
+#[test]
+fn bare_remote_start_asks_the_host_for_a_new_session() {
+    for (extra, expected) in [
+        (&[][..], "'remote-session' '--client-version'"),
+        (
+            &["--session", "remote work"][..],
+            "'--new' '--' 'remote work'",
+        ),
+    ] {
+        let session = Session::new();
+        let output = fake_ssh_command(&session, &[])
+            .args(["--remote", "user@example"])
+            .args(extra)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(stderr.contains("selected-session-bootstrap"), "{stderr}");
+        let args = fs::read_to_string(session.0.path().join("ssh-args")).unwrap();
+        assert!(!args.contains("remote-sessions"), "{args}");
+        assert!(args.contains(expected), "{args}");
+        let bootstrap = args.lines().last().unwrap();
+        assert!(bootstrap.contains("'--new'"), "{bootstrap}");
+        assert!(!bootstrap.contains("'--create'"), "{bootstrap}");
+        assert_eq!(bootstrap.contains("'--'"), !extra.is_empty(), "{bootstrap}");
+    }
+    let session = Session::new();
+    let output = fake_ssh_command(&session, &[])
+        .args(["--remote", "user@example", "attach", "work"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("takes no subcommand"),
+        "{output:?}"
+    );
+    assert!(!session.0.path().join("ssh-args").exists());
+}
+
+#[test]
+fn remote_attach_offers_a_new_session_when_the_host_has_none() {
+    use std::io::Write;
+
+    for (answer, code) in [(b"y", 1), (b"n", 0)] {
+        let session = Session::new();
+        let pty = nix::pty::openpty(None, None).unwrap();
+        let slave = fs::File::from(pty.slave);
+        let mut master = fs::File::from(pty.master);
+        let mut reader = master.try_clone().unwrap();
+        let screen = Watched::new(Vec::new());
+        let captured = screen.clone();
+        let capture = std::thread::spawn(move || {
+            let mut buffer = [0; 4096];
+            while let Ok(count) = reader.read(&mut buffer) {
+                if count == 0 {
+                    break;
+                }
+                captured.lock().extend_from_slice(&buffer[..count]);
+            }
+        });
+        let child = discovery_command(&session, &[])
+            .stdin(slave.try_clone().unwrap())
+            .stdout(slave.try_clone().unwrap())
+            .stderr(slave.try_clone().unwrap())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let output = Watched::new(None);
+        let completed = output.clone();
+        let waiter = std::thread::spawn(move || {
+            *completed.lock() = Some(child.wait_with_output().unwrap());
+        });
+        screen.wait_until("new session question", default_timeout(), |bytes| {
+            String::from_utf8_lossy(bytes)
+                .contains("No active yinz sessions found on user@example. Create a new session?")
+                .then_some(())
+        });
+        master.write_all(answer).unwrap();
+        output.wait_until("remote attach exit", default_timeout(), |output| {
+            output
+                .as_ref()
+                .map(|output| assert_eq!(output.status.code(), Some(code), "{output:?}"))
+        });
+        waiter.join().unwrap();
+        let args = fs::read_to_string(session.0.path().join("ssh-args")).unwrap();
+        assert_eq!(args.matches("remote-sessions").count(), 1, "{args}");
+        let bootstrap = args.lines().find(|line| line.contains("'remote-session'"));
+        if answer == b"y" {
+            let bootstrap = bootstrap.unwrap();
+            assert!(
+                bootstrap.contains("'--new'") && !bootstrap.contains("'--'"),
+                "{bootstrap}"
+            );
+        } else {
+            assert_eq!(bootstrap, None, "{args}");
+        }
+        drop(slave);
+        drop(master);
+        capture.join().unwrap();
+    }
 }
 
 #[test]

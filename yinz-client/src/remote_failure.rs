@@ -11,6 +11,7 @@ const MARKER: &str = "YINZ_REMOTE_ERROR ";
 #[serde(rename_all = "snake_case")]
 pub enum BootstrapCategory {
     SessionMissing,
+    SessionExists,
     Permission,
     Compatibility,
     Configuration,
@@ -81,18 +82,34 @@ impl ConnectionFailure {
     }
 }
 
+/// The category a line of a remote bootstrap's stderr, or of a diagnostic quoting it, reports.
+fn line_category(line: &str) -> Option<BootstrapCategory> {
+    line.split_once(MARKER)
+        .and_then(|(_, category)| serde_json::from_str(category.trim()).ok())
+}
+
+/// The first category a remote bootstrap reported on stderr, with the `Error: ` line that
+/// [`report_bootstrap_error`] printed after it. Earlier lines, such as a login script's
+/// output, are not the remote's diagnosis.
+pub(crate) fn reported_error(stderr: &str) -> Option<(BootstrapCategory, &str)> {
+    let mut lines = stderr.lines().map(str::trim);
+    let category = lines.by_ref().find_map(line_category)?;
+    lines
+        .find_map(|line| line.strip_prefix("Error: "))
+        .map(|error| (category, error))
+}
+
 pub(crate) fn permanent_diagnostic(diagnostic: &str) -> bool {
-    if diagnostic.lines().any(|line| {
-        line.split_once(MARKER)
-            .map(|(_, category)| category)
-            .and_then(|category| serde_json::from_str::<BootstrapCategory>(category).ok())
-            .is_some_and(|category| {
-                !matches!(
-                    category,
-                    BootstrapCategory::Unresponsive | BootstrapCategory::Other
-                )
-            })
-    }) {
+    if diagnostic
+        .lines()
+        .filter_map(line_category)
+        .any(|category| {
+            !matches!(
+                category,
+                BootstrapCategory::Unresponsive | BootstrapCategory::Other
+            )
+        })
+    {
         return true;
     }
     let diagnostic = diagnostic.to_ascii_lowercase();

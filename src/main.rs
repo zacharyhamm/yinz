@@ -116,6 +116,16 @@ fn main() {
     }
 
     let opts = CliArgs::parse();
+    if let Some(host) = &opts.remote {
+        configure_logger();
+        match remote_session::start(&opts, host) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("Error: {error:#}");
+                std::process::exit(1);
+            },
+        }
+    }
     if let Some(Command::RemoteSessions {
         client_version,
         contract_version,
@@ -135,6 +145,7 @@ fn main() {
         contract_version,
         bootstrap_version,
         create,
+        new,
         configuration_options,
         client_termios,
         terminal_window_size,
@@ -142,8 +153,9 @@ fn main() {
     }) = &opts.command
     {
         let result = remote_session::bootstrap(
-            session_name,
+            session_name.as_deref(),
             *create,
+            *new,
             client_version,
             *contract_version,
             *bootstrap_version,

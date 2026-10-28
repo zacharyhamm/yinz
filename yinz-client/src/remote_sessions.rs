@@ -92,9 +92,24 @@ pub fn check_versions(version: &str, contract: usize, bootstrap: usize) -> Resul
 /// Explain a failed remote bootstrap or discovery from its stderr. A remote that rejects
 /// `--bootstrap-version` or the subcommand predates [`REMOTE_BOOTSTRAP_VERSION`]; one that
 /// rejects another flag is older but versioned; one that parsed it but disagrees says so.
+/// A missing or already existing session is reported in the remote's own words.
 pub fn bootstrap_failure(host: &str, stderr: &[u8]) -> Option<anyhow::Error> {
+    use crate::remote_failure::{reported_error, BootstrapCategory, BootstrapError};
     let stderr = String::from_utf8_lossy(stderr);
     let mut lines = stderr.lines().map(str::trim);
+    if let Some((
+        category @ (BootstrapCategory::SessionMissing | BootstrapCategory::SessionExists),
+        reported,
+    )) = reported_error(&stderr)
+    {
+        return Some(
+            BootstrapError {
+                category,
+                diagnostic: anyhow!("{host} reported: {reported}"),
+            }
+            .into(),
+        );
+    }
     if let Some(reported) = lines
         .clone()
         .find(|line| line.contains("Yinz compatibility mismatch"))
@@ -134,7 +149,8 @@ pub fn validate_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn parse_endpoint(bytes: &[u8], name: &str) -> Result<Endpoint> {
+/// `name` is the session asked for; without one, the remote named it.
+pub fn parse_endpoint(bytes: &[u8], name: Option<&str>) -> Result<Endpoint> {
     anyhow::ensure!(
         bytes.len() <= ENDPOINT_LIMIT,
         "remote endpoint response exceeds {ENDPOINT_LIMIT} bytes"
@@ -147,10 +163,14 @@ pub fn parse_endpoint(bytes: &[u8], name: &str) -> Result<Endpoint> {
         endpoint.contract_version,
         endpoint.bootstrap_version,
     )?;
-    anyhow::ensure!(
-        endpoint.session_name == name,
-        "remote endpoint returned a different session name"
-    );
+    match name {
+        Some(name) => anyhow::ensure!(
+            endpoint.session_name == name,
+            "remote endpoint returned a different session name"
+        ),
+        None => validate_name(&endpoint.session_name)
+            .context("remote endpoint returned an invalid session name")?,
+    }
     let socket = endpoint
         .socket
         .to_str()
@@ -197,6 +217,9 @@ fn probe_until(socket: &Path, cancelled: &AtomicBool, deadline: Instant) -> Resu
     Ok(())
 }
 
+/// One budget for a first attachment's bootstrap, forwarding and probing.
+const CONNECT_BUDGET: Duration = Duration::from_secs(85);
+
 pub fn connect(
     host: &str,
     name: &str,
@@ -208,7 +231,22 @@ pub fn connect(
         name,
         create,
         cancelled,
-        Instant::now() + Duration::from_secs(85),
+        Instant::now() + CONNECT_BUDGET,
+    )
+}
+
+/// Create a new session on `host`, named by the remote when `name` is absent, and return
+/// its forward with the session's name.
+pub fn connect_new(
+    host: &str,
+    name: Option<&str>,
+    cancelled: &AtomicBool,
+) -> Result<(HostForward, String)> {
+    bootstrap_until(
+        host,
+        Request::New(name),
+        cancelled,
+        Instant::now() + CONNECT_BUDGET,
     )
 }
 
@@ -220,8 +258,52 @@ pub(crate) fn connect_until(
     cancelled: &AtomicBool,
     deadline: Instant,
 ) -> Result<HostForward> {
+    let request = if create {
+        Request::Create(name)
+    } else {
+        Request::Attach(name)
+    };
+    bootstrap_until(host, request, cancelled, deadline).map(|(forward, _)| forward)
+}
+
+/// What the remote bootstrap is asked to do with the session.
+#[derive(Clone, Copy)]
+enum Request<'a> {
+    Attach(&'a str),
+    /// Attach, creating or resurrecting the session when it is absent.
+    Create(&'a str),
+    /// A session under an untaken name, which the remote picks when none is given.
+    New(Option<&'a str>),
+}
+
+impl<'a> Request<'a> {
+    fn flag(self) -> Option<&'static str> {
+        match self {
+            Request::Attach(_) => None,
+            Request::Create(_) => Some("--create"),
+            Request::New(_) => Some("--new"),
+        }
+    }
+
+    fn name(self) -> Option<&'a str> {
+        match self {
+            Request::Attach(name) | Request::Create(name) => Some(name),
+            Request::New(name) => name,
+        }
+    }
+}
+
+fn bootstrap_until(
+    host: &str,
+    request: Request,
+    cancelled: &AtomicBool,
+    deadline: Instant,
+) -> Result<(HostForward, String)> {
     ssh::validate_ssh_host(host)?;
-    validate_name(name)?;
+    let name = request.name();
+    if let Some(name) = name {
+        validate_name(name)?;
+    }
     let mut args = vec![
         "yinz".to_owned(),
         "remote-session".to_owned(),
@@ -232,10 +314,10 @@ pub(crate) fn connect_until(
         "--bootstrap-version".to_owned(),
         REMOTE_BOOTSTRAP_VERSION.to_string(),
     ];
-    if create {
-        args.push("--create".to_owned());
+    args.extend(request.flag().map(str::to_owned));
+    if let Some(name) = name {
+        args.extend(["--".to_owned(), name.to_owned()]);
     }
-    args.extend(["--".to_owned(), name.to_owned()]);
     let remote_command = args
         .iter()
         .map(|s| ssh::shell_argument(s))
@@ -262,6 +344,7 @@ pub(crate) fn connect_until(
             diagnostic,
         })
         .with_context(|| format!("read endpoint from {host}"))?;
+    let name = endpoint.session_name;
     let socket = client_socket(&YINZ_SOCK_DIR)?;
     let mut forward = HostForward::start_until(
         host,
@@ -273,7 +356,9 @@ pub(crate) fn connect_until(
             .context("remote socket is not UTF-8")?,
         Some(cancelled),
         deadline,
-    )?;
+    )
+    // A session the remote just created and named is otherwise left behind unnamed.
+    .with_context(|| format!("forward remote session {name:?} on {host}"))?;
     ssh::check_cancelled(Some(cancelled))?;
     let probed = probe_until(forward.socket(), cancelled, deadline);
     ssh::check_cancelled(Some(cancelled))?;
@@ -283,7 +368,7 @@ pub(crate) fn connect_until(
             forward.diagnostics()?
         );
     }
-    Ok(forward)
+    Ok((forward, name))
 }
 
 pub(crate) fn remaining(deadline: Instant) -> Result<Duration> {

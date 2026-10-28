@@ -112,6 +112,12 @@ pub struct CliArgs {
     #[clap(long, overrides_with = "config_dir", env = YINZ_CONFIG_DIR_ENV, value_parser)]
     pub config_dir: Option<PathBuf>,
 
+    /// Start a new session on this host or SSH config alias through OpenSSH and attach to it.
+    /// The remote host names the session unless --session names it; a name that is already
+    /// taken there, running or resurrectable, is refused. Configure the session on the remote host.
+    #[clap(long, value_name = "HOST", overrides_with = "remote")]
+    pub remote: Option<String>,
+
     #[clap(subcommand)]
     pub command: Option<Command>,
 
@@ -449,13 +455,18 @@ pub enum Command {
         bootstrap_version: usize,
         #[clap(long)]
         create: bool,
+        /// Create a new session, refusing a name that is taken; the remote names it when no
+        /// name is given.
+        #[clap(long, conflicts_with = "create")]
+        new: bool,
         #[clap(long, hide = true)]
         configuration_options: Option<String>,
         #[clap(long, hide = true)]
         client_termios: Option<String>,
         #[clap(long, hide = true)]
         terminal_window_size: Option<String>,
-        session_name: String,
+        #[clap(required_unless_present = "new")]
+        session_name: Option<String>,
     },
     /// Evaluate Steel Scheme in a running session, interactively, from stdin, or with --eval.
     ///
@@ -1041,7 +1052,8 @@ pub enum Sessions {
 
         /// Attach through OpenSSH to this host or SSH config alias. Without a session name,
         /// discover sessions on this host, attaching to the only running session or opening
-        /// a picker on a terminal. --create requires a session name.
+        /// a picker on a terminal. When the host has no sessions, offer to create one on a
+        /// terminal. --create requires a session name.
         /// Successful attachments remember the host for interactive session discovery.
         #[clap(long, value_name = "HOST", conflicts_with_all = ["index", "create_background", "force_run_commands"])]
         remote: Option<String>,

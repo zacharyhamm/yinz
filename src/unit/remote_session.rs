@@ -32,7 +32,7 @@ fn endpoint() -> Endpoint {
 #[test]
 fn remote_endpoint_requires_bounded_matching_identity_and_versions() {
     let mut e = endpoint();
-    let parse = |e: &Endpoint| parse_endpoint(&serde_json::to_vec(e).unwrap(), "remote work");
+    let parse = |e: &Endpoint| parse_endpoint(&serde_json::to_vec(e).unwrap(), Some("remote work"));
     assert!(parse(&e).is_ok());
     e.yinz_version = "different".into();
     let error = parse(&e).unwrap_err().to_string();
@@ -51,8 +51,8 @@ fn remote_endpoint_requires_bounded_matching_identity_and_versions() {
         e.socket = path.into();
         assert!(parse(&e).is_err());
     }
-    assert!(parse_endpoint(&vec![b' '; ENDPOINT_LIMIT + 1], "remote work").is_err());
-    assert!(parse_endpoint(b"login banner\n{}", "remote work").is_err());
+    assert!(parse_endpoint(&vec![b' '; ENDPOINT_LIMIT + 1], Some("remote work")).is_err());
+    assert!(parse_endpoint(b"login banner\n{}", Some("remote work")).is_err());
 }
 
 #[test]
@@ -64,7 +64,7 @@ fn endpoint_from_a_remote_without_bootstrap_versioning_is_a_mismatch() {
         "yinz_version": VERSION,
         "contract_version": CLIENT_SERVER_CONTRACT_VERSION,
     });
-    let error = parse_endpoint(&serde_json::to_vec(&older).unwrap(), "remote work")
+    let error = parse_endpoint(&serde_json::to_vec(&older).unwrap(), Some("remote work"))
         .unwrap_err()
         .to_string();
     assert!(error.starts_with("Yinz compatibility mismatch"), "{error}");
@@ -152,6 +152,39 @@ fn remote_command_line_rejections_are_compatibility_mismatches() {
         "host reported: Yinz compatibility mismatch: this machine has Yinz 9; peer has Yinz 1."
     );
     assert!(bootstrap_failure("host", b"Permission denied (publickey).\n").is_none());
+}
+
+#[test]
+fn missing_and_existing_sessions_are_reported_in_the_remote_words() {
+    use yinz_client::remote_failure::{BootstrapCategory, BootstrapError};
+    use yinz_client::remote_sessions::bootstrap_failure;
+    for (category, message) in [
+        (
+            "session_missing",
+            "remote session \"work\" does not exist; use --create to create or resurrect it",
+        ),
+        (
+            "session_exists",
+            "remote session \"work\" already exists; attach to it or choose another name",
+        ),
+    ] {
+        let stderr =
+            format!("Warning: banner\nYINZ_REMOTE_ERROR \"{category}\"\nError: {message}\n");
+        let error = bootstrap_failure("user@host", stderr.as_bytes()).unwrap();
+        assert_eq!(error.to_string(), format!("user@host reported: {message}"));
+        let reported = error.downcast_ref::<BootstrapError>().unwrap().category;
+        assert_eq!(
+            serde_json::to_string(&reported).unwrap(),
+            format!("\"{category}\"")
+        );
+        assert_ne!(reported, BootstrapCategory::Other);
+    }
+    // Other categories keep the full SSH diagnostic.
+    assert!(bootstrap_failure(
+        "host",
+        b"YINZ_REMOTE_ERROR \"configuration\"\nError: load remote configuration\n"
+    )
+    .is_none());
 }
 
 #[test]
@@ -261,6 +294,50 @@ fn remote_attach_cli_combinations() {
 }
 
 #[test]
+fn remote_start_cli_combinations() {
+    // The derived CLI builder needs the same stack as the existing CLI tests.
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            for args in [
+                vec!["yinz", "--remote", "host"],
+                vec!["yinz", "--remote", "user@host", "--session", "work"],
+                vec![
+                    "yinz",
+                    "--config",
+                    "/local/terminal.kdl",
+                    "--remote",
+                    "host",
+                ],
+            ] {
+                let opts = CliArgs::try_parse_from(args).unwrap();
+                validate_options(&opts).unwrap();
+            }
+            for args in [
+                vec!["yinz", "--remote", "host", "--layout", "/local/layout.kdl"],
+                vec!["yinz", "--remote", "host", "--data-dir", "/local/data"],
+                vec!["yinz", "--remote", "host", "--max-panes", "2"],
+                vec![
+                    "yinz",
+                    "--remote",
+                    "host",
+                    "options",
+                    "--mouse-mode",
+                    "false",
+                ],
+                vec!["yinz", "--remote", "host", "attach", "work"],
+                vec!["yinz", "--remote", "host", "attach", "--remote", "other"],
+                vec!["yinz", "--remote", "host", "list-sessions"],
+            ] {
+                assert!(validate_options(&CliArgs::try_parse_from(args).unwrap()).is_err());
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
 fn remote_discovery_selects_the_only_running_session_among_unreachable_entries() {
     use yinz_cli::sessions::SessionListing::{Denied, Running, Unresponsive};
 
@@ -277,10 +354,10 @@ fn remote_discovery_selects_the_only_running_session_among_unreachable_entries()
         ] {
             assert_eq!(
                 select_discovered_session("host", discovery_rows(&sessions), interactive).unwrap(),
-                Outcome::Picked(Destination::Remote {
+                Some(Outcome::Picked(Destination::Remote {
                     host: "host".into(),
                     name: "work".into(),
-                })
+                }))
             );
         }
     }
@@ -292,7 +369,15 @@ fn remote_discovery_reports_empty_ambiguous_and_unreachable_sessions() {
     let error = select_discovered_session("host", Vec::new(), false)
         .unwrap_err()
         .to_string();
-    assert_eq!(error, "No active yinz sessions found on host.");
+    assert_eq!(
+        error,
+        "No active yinz sessions found on host. Start one with `yinz --remote host`."
+    );
+    // A person at a terminal is offered a new session instead.
+    assert_eq!(
+        select_discovered_session("host", Vec::new(), true).unwrap(),
+        None
+    );
     for sessions in [
         vec![("one", Running), ("two", Running)],
         vec![("busy", Unresponsive)],

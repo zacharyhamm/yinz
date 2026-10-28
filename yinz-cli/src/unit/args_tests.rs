@@ -190,7 +190,43 @@ fn remote_bootstrap_accepts_startup_state_and_defaults_to_omitted_flags() {
         assert_eq!(terminal_window_size.as_deref(), explicit.then_some(size));
         // Older clients omit it; 0 then fails the version check with a mismatch error.
         assert_eq!(bootstrap_version, usize::from(explicit));
-        assert_eq!(session_name, "saved session");
+        assert_eq!(session_name.as_deref(), Some("saved session"));
+    }
+}
+
+#[test]
+fn remote_bootstrap_names_are_optional_only_for_new_sessions() {
+    let parse = |extra: &[&str]| {
+        let mut args = vec![
+            "yinz",
+            "remote-session",
+            "--client-version",
+            "test",
+            "--contract-version",
+            "1",
+        ];
+        args.extend(extra);
+        try_parse_cli(args)
+    };
+    for (extra, expected) in [
+        (&["--new"][..], (true, None)),
+        (&["--new", "--", "work"][..], (true, Some("work"))),
+        (&["--create", "--", "work"][..], (false, Some("work"))),
+    ] {
+        let Some(Command::RemoteSession {
+            new, session_name, ..
+        }) = parse(extra).unwrap().command
+        else {
+            panic!("expected remote session bootstrap");
+        };
+        assert_eq!((new, session_name.as_deref()), expected);
+    }
+    for extra in [
+        &[][..],
+        &["--create"][..],
+        &["--new", "--create", "--", "work"][..],
+    ] {
+        assert!(parse(extra).is_err(), "{extra:?}");
     }
 }
 
