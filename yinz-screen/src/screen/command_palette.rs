@@ -894,6 +894,19 @@ impl Screen {
                             .cloned()
                             .collect::<Vec<_>>()
                             .join(" "),
+                        // Label changes must rebuild matches even when pane metadata is unchanged.
+                        state
+                            .agents
+                            .labels
+                            .get(&agent.id())
+                            .map(|labels| labels.project.clone())
+                            .unwrap_or_default(),
+                        state
+                            .agents
+                            .labels
+                            .get(&agent.id())
+                            .map(|labels| labels.branch.clone())
+                            .unwrap_or_default(),
                     ],
                     kind: EntryKind::Agent,
                 },

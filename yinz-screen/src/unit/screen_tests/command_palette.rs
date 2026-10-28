@@ -3975,10 +3975,21 @@ fn live_agent_results_refresh_panel_presentation_in_root_and_picker() {
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         let moved = next_labels();
         assert_eq!(moved.sources[0].cwd.as_deref(), Some("/work/other"));
-        screen.plugin_palette_instruction(reply(&moved, "other", ""));
+        screen.plugin_palette_instruction(reply(&moved, "other", "resolved-worktree"));
         let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert!(frame.contains("› other"), "{frame}");
         assert!(!frame.contains("wrong checkout"), "{frame}");
+        // Resolved labels are searchable even when absent from the pane metadata.
+        assert!(screen.command_palette_handles_input(
+            &Some(KeyWithModifier::new(BareKey::Char('u')).with_ctrl_modifier()),
+            &[],
+            false,
+            CLIENT,
+        ));
+        assert!(screen.command_palette_handles_input(&None, b"resolved-worktree", false, CLIENT));
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(frame.contains("other · resolved-worktree"), "{frame}");
+        assert!(frame.contains("[1]"), "{frame}");
     }
 }
 

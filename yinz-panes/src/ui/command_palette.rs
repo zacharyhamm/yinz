@@ -713,6 +713,13 @@ impl CommandPalette {
                 };
                 std::iter::once(&inline(&entry.label).text)
                     .chain(entry.aliases.iter())
+                    .chain(
+                        self.agent_presentations
+                            .get(&entry.id)
+                            .filter(|_| entry.kind == EntryKind::Agent)
+                            .into_iter()
+                            .flat_map(|agent| [&agent.project, &agent.branch]),
+                    )
                     .chain(section.filter(|_| ranked_root_search).map(|s| &s.title))
                     .filter_map(|text| {
                         pattern.score(Utf32Str::new(text, &mut buffer), &mut self.matcher)
@@ -722,13 +729,24 @@ impl CommandPalette {
                     .map(|score| (index, score))
             })
             .collect();
-        // Matching decides eligibility; live agents retain panel order. Keep the
-        // ranked agent slots so other kinds retain their existing ranking and placement.
-        let ordered_agents: Vec<_> = matches
+        // Search agents by relevance, with exact project/worktree matches in a
+        // separate tier above every fuzzy score. Stable ties retain panel order.
+        // Keep the agent slots so other kinds retain their ranking and placement.
+        let mut ordered_agents: Vec<_> = matches
             .iter()
             .filter(|(index, _)| self.entries[*index].kind == EntryKind::Agent)
-            .map(|(index, _)| *index)
+            .copied()
             .collect();
+        if let Ok(query) = &agent_query
+            && !query.text.trim().is_empty()
+        {
+            ordered_agents.sort_by_cached_key(|(index, score)| {
+                std::cmp::Reverse((
+                    self.agent_exact_location_match(&self.entries[*index], &query.text),
+                    *score,
+                ))
+            });
+        }
         matches.sort_by_key(|(index, score)| {
             let section = self.entry_sections[*index];
             let group = match self.entries[*index].kind {
@@ -748,7 +766,7 @@ impl CommandPalette {
             .into_iter()
             .map(|(index, _)| {
                 if self.entries[index].kind == EntryKind::Agent {
-                    ordered_agents.next().unwrap_or(index)
+                    ordered_agents.next().map_or(index, |(index, _)| index)
                 } else {
                     index
                 }
@@ -762,6 +780,27 @@ impl CommandPalette {
         } else {
             None
         };
+    }
+
+    fn agent_exact_location_match(&self, entry: &Entry, query: &str) -> bool {
+        let query = query.trim().to_lowercase();
+        let metadata = self.agent_metadata.get(&entry.id);
+        let presentation = self.agent_presentations.get(&entry.id);
+        metadata
+            .into_iter()
+            .flat_map(|metadata| [metadata.get("project"), metadata.get("directory")])
+            .flatten()
+            .map(String::as_str)
+            .chain(
+                presentation
+                    .into_iter()
+                    .flat_map(|agent| [agent.project.as_str(), agent.branch.as_str()]),
+            )
+            .any(|value| value.to_lowercase() == query)
+            || metadata
+                .and_then(|metadata| metadata.get("directory"))
+                .and_then(|directory| directory.trim_end_matches('/').rsplit('/').next())
+                .is_some_and(|name| name.to_lowercase() == query)
     }
 
     pub fn open_picker(&mut self, kind: EntryKind) {
