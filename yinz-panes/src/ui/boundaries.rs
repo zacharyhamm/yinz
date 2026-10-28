@@ -494,6 +494,57 @@ impl Boundaries {
             boundary_characters: HashMap::new(),
         }
     }
+    /// Paint only the vertical edges exposed by width-limit gutters. These cells lie
+    /// outside the pane, so the terminal keeps its full configured content width.
+    pub fn add_gutter_edges(
+        &mut self,
+        rect: &dyn Pane,
+        outer: Viewport,
+        color: Option<(PaletteColor, usize)>,
+        chrome_colors: Option<(PaletteColor, PaletteColor)>,
+    ) {
+        if rect.borderless() || rect.max_content_width() == 0 {
+            return;
+        }
+        let geom = rect.render_geom();
+        let original = rect.current_geom();
+        let (original_x, original_cols) = rect
+            .render_width()
+            .unwrap_or((original.x, original.cols.as_usize()));
+        let right = geom.x + geom.cols.as_usize();
+        let left_gutter = geom.x > outer.x && (geom.x == self.viewport.x || geom.x > original_x);
+        let right_gutter = right < outer.x + outer.cols
+            && (right == self.viewport.x + self.viewport.cols
+                || right < original_x + original_cols);
+        for x in [
+            left_gutter.then(|| geom.x - 1),
+            right_gutter.then_some(right),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            for y in geom.y..geom.y + geom.rows.as_usize() {
+                // Packing fallback can already have a shared right boundary inside
+                // the pane. Keep that symbol (including corners) instead of adding
+                // an adjacent gutter border.
+                if x == right
+                    && right.checked_sub(1).is_some_and(|boundary_x| {
+                        self.boundary_characters
+                            .contains_key(&Coordinates::new(boundary_x, y))
+                    })
+                {
+                    continue;
+                }
+                // Gutter edges only fill gaps; preserve shared corners and their colors.
+                self.boundary_characters
+                    .entry(Coordinates::new(x, y))
+                    .or_insert_with(|| {
+                        BoundarySymbol::new(boundary_type::VERTICAL).color(color, chrome_colors)
+                    });
+            }
+        }
+    }
+
     pub fn add_rect(
         &mut self,
         rect: &dyn Pane,

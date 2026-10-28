@@ -1,6 +1,74 @@
 use super::*;
 
 #[test]
+fn gutter_edges_preserve_existing_symbols_and_colors() {
+    use crate::panes::terminal_pane::TerminalPane;
+    use yinz_types::internal_ids::TerminalId;
+    use yinz_types::pane_size::{Dimension, PaneGeom};
+
+    let outer = Viewport {
+        x: 0,
+        y: 0,
+        cols: 100,
+        rows: 10,
+    };
+    let mut pane = TerminalPane::new(
+        TerminalId::new(0),
+        PaneGeom {
+            cols: Dimension::fixed(100),
+            rows: Dimension::fixed(10),
+            ..Default::default()
+        },
+        Default::default(),
+        0,
+        String::new(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        None,
+        None,
+        false,
+        true,
+        true,
+        true,
+        false,
+        None,
+    );
+    pane.set_max_content_width(80);
+    let geom = pane.render_geom();
+    let left = geom.x - 1;
+    let right = geom.x + geom.cols.as_usize();
+    let existing = BoundarySymbol {
+        boundary_type: boundary_type::BOTTOM_LEFT,
+        invisible: true,
+        color: Some((PaletteColor::Rgb((100, 150, 200)), 8)),
+        background: Some(PaletteColor::Rgb((20, 25, 30))),
+    };
+    let chrome = Some((PaletteColor::EightBit(1), PaletteColor::EightBit(2)));
+    let gutter = BoundarySymbol::new(boundary_type::VERTICAL).color(None, chrome);
+    let mut boundaries = Boundaries::new(outer);
+    for x in [left, right] {
+        boundaries
+            .boundary_characters
+            .insert(Coordinates::new(x, 9), existing);
+    }
+    boundaries.add_gutter_edges(&pane, outer, None, chrome);
+    for x in [left, right] {
+        assert_eq!(
+            boundaries.boundary_characters[&Coordinates::new(x, 9)],
+            existing
+        );
+        assert_eq!(
+            boundaries.boundary_characters[&Coordinates::new(x, 0)],
+            gutter
+        );
+    }
+}
+
+#[test]
 fn shared_boundaries_repaint_when_either_chrome_color_changes() {
     let foreground = PaletteColor::Rgb((30, 40, 50));
     let background = PaletteColor::Rgb((240, 245, 250));

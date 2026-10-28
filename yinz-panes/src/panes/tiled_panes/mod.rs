@@ -1535,6 +1535,22 @@ impl TiledPanes {
                             pane_is_on_bottom_of_stack,
                         );
                     }
+                    if !self.pane_frame_style.draws_full_frames() {
+                        let boundaries = client_id_to_boundaries
+                            .entry(*client_id)
+                            .or_insert_with(|| Boundaries::new(boundary_viewport));
+                        pane_contents_and_ui.render_gutter_edges(
+                            *client_id,
+                            client_mode,
+                            boundaries,
+                            if pane_is_no_ui_fullscreen {
+                                (*self.display_area.borrow()).into()
+                            } else {
+                                *self.viewport.borrow()
+                            },
+                            self.session_is_mirrored,
+                        );
+                    }
                     pane_contents_and_ui.render_terminal_title_if_needed(
                         *client_id,
                         client_mode,
@@ -3165,7 +3181,7 @@ impl TiledPanes {
     pub fn invalidate_boundaries(&mut self, client_id: ClientId) {
         self.client_id_to_boundaries.remove(&client_id);
     }
-    fn reset_boundaries(&mut self) {
+    pub fn reset_boundaries(&mut self) {
         self.client_id_to_boundaries.clear();
     }
     pub fn get_plugin_pane_id(&self, run_plugin_or_alias: &RunPluginOrAlias) -> Option<PaneId> {

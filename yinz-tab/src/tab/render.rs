@@ -264,23 +264,9 @@ impl Tab {
 
         let current_pane_group: HashMap<ClientId, Vec<PaneId>> =
             { self.current_pane_group.borrow().clone_inner() };
-        if self.tiled_panes.has_panes() {
-            self.tiled_panes
-                .render(
-                    output,
-                    self.floating_panes.panes_are_visible(),
-                    &self.mouse_hover_pane_id,
-                    current_pane_group,
-                    client_id_override,
-                    &self.mouse_help_text_visible,
-                    self.mouse_scroll_resize,
-                    &same_worktree_panes,
-                )
-                .with_context(err_context)?;
-            self.render_stack_list_headers(output, client_id_override, false)
-                .with_context(err_context)?;
-        }
         if !self.pending_render_damage.is_empty() {
+            // Margin clearing also covers gutter borders outside the pane geometry.
+            self.tiled_panes.reset_boundaries();
             let rect = |geom: PaneGeom| CellRect {
                 x: geom.x,
                 y: geom.y,
@@ -372,6 +358,22 @@ impl Tab {
                     .extend_from_slice(&self.pending_render_damage);
             }
             self.pending_render_damage.clear();
+        }
+        if self.tiled_panes.has_panes() {
+            self.tiled_panes
+                .render(
+                    output,
+                    self.floating_panes.panes_are_visible(),
+                    &self.mouse_hover_pane_id,
+                    current_pane_group,
+                    client_id_override,
+                    &self.mouse_help_text_visible,
+                    self.mouse_scroll_resize,
+                    &same_worktree_panes,
+                )
+                .with_context(err_context)?;
+            self.render_stack_list_headers(output, client_id_override, false)
+                .with_context(err_context)?;
         }
         // the floating panes are *not* rendered here - they draw over the tiled ones, see
         // `render_floating_panes_and_overlays`

@@ -36,6 +36,24 @@ fn assert_surround(tab: &Tab, id: PaneId, grid: &Grid) {
             .chain(inner.x + inner.cols.as_usize()..outer.x + outer.cols.as_usize())
         {
             let cell = grid.get_character_at(x, y).unwrap();
+            // Width-limited tiled panes and fullscreen floating panes expose side
+            // borders in their gutters; the remaining surround stays blank.
+            let side = x + 1 == inner.x || x == inner.x + inner.cols.as_usize();
+            let has_side_borders = !tab.pane_frame_style.draws_full_frames()
+                && !pane.borderless()
+                && (tab.tiled_panes.panes_contain(&id)
+                    || (tab.floating_panes.panes_contain(&id) && pane.geom_override().is_some()));
+            if side && has_side_borders {
+                assert_eq!(
+                    cell.character,
+                    '│',
+                    "border at {x},{y}: style={:?} tiled={} floating={} geom={inner:?}",
+                    tab.pane_frame_style,
+                    tab.tiled_panes.panes_contain(&id),
+                    tab.floating_panes.panes_contain(&id)
+                );
+                continue;
+            }
             assert_eq!(cell.character, ' ', "margin at {x},{y}");
             assert_eq!(
                 cell.styles.background,
@@ -3268,7 +3286,7 @@ fn centered_agent_multipane_movement_keeps_requested_size() {
 }
 
 #[test]
-fn centered_agent_waiting_pulse_has_no_boundary_in_the_packed_margin() {
+fn centered_agent_waiting_pulse_remains_visible_in_the_packed_margin() {
     let mut tab = create_new_tab_with_layout(
         Size {
             cols: 600,
@@ -3326,7 +3344,278 @@ fn centered_agent_waiting_pulse_has_no_boundary_in_the_packed_margin() {
     .unwrap();
     draw(&mut tab);
     assert!(
-        !tab.has_visible_waiting_pulse(None),
-        "the only shared boundary is covered; the left margin has no border"
+        tab.has_visible_waiting_pulse(None),
+        "the shared boundary is covered but the left gutter border remains visible"
     );
+}
+
+#[test]
+fn width_limit_gutter_preserves_fallback_bottom_junction() {
+    let size = Size {
+        cols: 200,
+        rows: 20,
+    };
+    for style in [PaneFrameStyle::None, PaneFrameStyle::Titles] {
+        let mut tab = create_new_tab_with_layout(
+            size,
+            ModeInfo::default(),
+            r#"layout { pane; pane split_direction="vertical" { pane; pane; }; }"#,
+        );
+        let agent = PaneId::Terminal(TerminalId::new(0));
+        tab.set_pane_selectable(PaneId::Terminal(TerminalId::new(1)), false);
+        tab.set_pane_frames(style);
+        tab.max_agent_width = 80;
+        mark_agent(&mut tab, agent);
+        let mut grid = host_grid(size);
+        render_into(&mut tab, &mut grid);
+        let pane = tab.get_pane_with_id(agent).unwrap();
+        let geom = pane.render_geom();
+        assert!(geom.x > pane.current_geom().x);
+        assert_eq!(pane.get_content_columns(), 80);
+        assert_eq!(
+            grid.get_character_at(geom.x - 1, geom.y + geom.rows.as_usize() - 1)
+                .unwrap()
+                .character,
+            '┴',
+            "style={style:?}",
+        );
+    }
+}
+
+#[test]
+fn width_limit_gutter_does_not_duplicate_fallback_right_boundary() {
+    let size = Size {
+        cols: 200,
+        rows: 20,
+    };
+    let id = PaneId::Terminal(TerminalId::new(1));
+    for style in [PaneFrameStyle::None, PaneFrameStyle::Titles] {
+        let mut tab = create_new_tab_with_layout(
+            size,
+            ModeInfo::default(),
+            r#"
+            layout {
+                pane split_direction="vertical" {
+                    pane size=20 borderless=true
+                    pane
+                    pane size=20 borderless=true
+                }
+            }
+            "#,
+        );
+        for side in [0, 2] {
+            tab.set_pane_selectable(PaneId::Terminal(TerminalId::new(side)), false);
+        }
+        tab.set_pane_frames(style);
+        tab.max_agent_width = 80;
+        mark_agent(&mut tab, id);
+        let mut grid = host_grid(size);
+        render_into(&mut tab, &mut grid);
+        let pane = tab.get_pane_with_id(id).unwrap();
+        assert_eq!(pane.get_content_columns(), 80);
+        let geom = pane.render_geom();
+        let right = geom.x + geom.cols.as_usize();
+        assert_eq!(grid.get_character_at(right - 1, 10).unwrap().character, '│');
+        assert_eq!(grid.get_character_at(right, 10).unwrap().character, ' ');
+        let borders: Vec<_> = (20..180)
+            .filter(|&x| grid.get_character_at(x, 10).unwrap().character == '│')
+            .collect();
+        assert_eq!(borders, vec![geom.x - 1, right - 1], "style={style:?}");
+    }
+}
+
+#[test]
+fn width_limit_gutter_borders_follow_geometry_and_fullscreen() {
+    let id = PaneId::Terminal(TerminalId::new(1));
+    for style in [PaneFrameStyle::None, PaneFrameStyle::Titles] {
+        for fullscreen in [false, true] {
+            for cols in [80, 81, 82, 121] {
+                let size = Size { cols, rows: 20 };
+                let mut tab = create_new_tab(size, ModeInfo::default());
+                tab.set_pane_frames(style);
+                tab.max_agent_width = 80;
+                mark_agent(&mut tab, id);
+                if fullscreen {
+                    tab.toggle_pane_no_ui_fullscreen(id);
+                }
+                let mut grid = host_grid(size);
+                render_into(&mut tab, &mut grid);
+                let pane = tab.get_pane_with_id(id).unwrap();
+                let geom = pane.render_geom();
+                assert_eq!(pane.get_content_columns(), 80);
+                for x in [
+                    geom.x.checked_sub(1),
+                    (geom.x + geom.cols.as_usize() < cols).then_some(geom.x + geom.cols.as_usize()),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    assert_eq!(
+                        grid.get_character_at(x, 10).unwrap().character,
+                        '│',
+                        "style={style:?}, fullscreen={fullscreen}, cols={cols}, x={x}"
+                    );
+                }
+                tab.max_agent_width = 0;
+                render_into(&mut tab, &mut grid);
+                for x in 0..cols {
+                    assert_ne!(grid.get_character_at(x, 10).unwrap().character, '│');
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn fullscreen_gutters_and_waiting_pulses_respect_side_ui_and_occlusion() {
+    let size = Size {
+        cols: 120,
+        rows: 20,
+    };
+    for floating in [false, true] {
+        for no_ui in [false, true] {
+            for style in [
+                PaneFrameStyle::None,
+                PaneFrameStyle::Titles,
+                PaneFrameStyle::Full,
+            ] {
+                let mut tab = create_new_tab_with_layout(
+                    size,
+                    ModeInfo::default(),
+                    r#"
+                    layout {
+                        pane split_direction="vertical" {
+                            pane size=30 borderless=true
+                            pane
+                            pane size=30 borderless=true
+                        }
+                    }
+                "#,
+                );
+                for chrome in [0, 2] {
+                    tab.set_pane_selectable(PaneId::Terminal(TerminalId::new(chrome)), false);
+                }
+                assert_eq!(tab.viewport.borrow().x, 30);
+                assert_eq!(tab.viewport.borrow().cols, 60);
+                tab.set_pane_frames(style);
+                let id = PaneId::Terminal(TerminalId::new(if floating { 3 } else { 1 }));
+                if floating {
+                    tab.new_pane(
+                        id,
+                        None,
+                        None,
+                        false,
+                        true,
+                        NewPanePlacement::Floating(None),
+                        Some(ClientId::new(1)),
+                        None,
+                    )
+                    .unwrap();
+                }
+                tab.max_agent_width = 80;
+                mark_agent(&mut tab, id);
+                let mut info = tab
+                    .get_pane_with_id(id)
+                    .unwrap()
+                    .agent_info()
+                    .unwrap()
+                    .clone();
+                info.state = AgentState::Waiting;
+                info.wait_needs_a_person = true;
+                tab.set_pane_agent(id, Some(info));
+                if no_ui {
+                    tab.toggle_pane_no_ui_fullscreen(id);
+                } else {
+                    tab.toggle_pane_fullscreen(id);
+                }
+                let mut grid = host_grid(size);
+                render_into(&mut tab, &mut grid);
+                if no_ui {
+                    let expected = if style == PaneFrameStyle::Full {
+                        ' '
+                    } else {
+                        '│'
+                    };
+                    for x in [19, 100] {
+                        assert_eq!(
+                            grid.get_character_at(x, 10).unwrap().character,
+                            expected,
+                            "floating={floating}, style={style:?}"
+                        );
+                    }
+                    assert_eq!(
+                        tab.has_visible_waiting_pulse(None),
+                        style != PaneFrameStyle::Full
+                    );
+                } else if floating {
+                    for x in [29, 90] {
+                        assert_ne!(grid.get_character_at(x, 10).unwrap().character, '│');
+                    }
+                }
+            }
+        }
+    }
+
+    // Zero-offset floating panes can pulse only their gutter cells. Cover the
+    // body and right gutter first, then cover the remaining left gutter too.
+    for no_ui in [false, true] {
+        let mut tab = create_new_tab(size, ModeInfo::default());
+        tab.set_pane_frames(PaneFrameStyle::None);
+        let id = PaneId::Terminal(TerminalId::new(2));
+        tab.new_pane(
+            id,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Floating(None),
+            Some(ClientId::new(1)),
+            None,
+        )
+        .unwrap();
+        tab.max_agent_width = 80;
+        mark_agent(&mut tab, id);
+        let mut info = tab
+            .get_pane_with_id(id)
+            .unwrap()
+            .agent_info()
+            .unwrap()
+            .clone();
+        info.state = AgentState::Waiting;
+        info.wait_needs_a_person = true;
+        tab.set_pane_agent(id, Some(info));
+        if no_ui {
+            tab.toggle_pane_no_ui_fullscreen(id);
+        } else {
+            tab.toggle_pane_fullscreen(id);
+        }
+        draw(&mut tab);
+        assert!(tab.has_visible_waiting_pulse(None));
+        let cover = PaneId::Terminal(TerminalId::new(3));
+        let coordinates = |x| FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(x)),
+            y: Some(PercentOrFixed::Fixed(0)),
+            width: Some(PercentOrFixed::Fixed(120 - x)),
+            height: Some(PercentOrFixed::Fixed(20)),
+            ..Default::default()
+        };
+        tab.new_pane(
+            cover,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(coordinates(20)))),
+            Some(ClientId::new(1)),
+            None,
+        )
+        .unwrap();
+        draw(&mut tab);
+        assert!(tab.has_visible_waiting_pulse(None));
+        tab.overlay_panes
+            .change_pane_coordinates(cover, coordinates(19), true)
+            .unwrap();
+        draw(&mut tab);
+        assert!(!tab.has_visible_waiting_pulse(None));
+    }
 }
