@@ -395,9 +395,11 @@ pub(super) fn execute(
             }
         },
         HistoryAction::Tools { id, revisions } => {
-            let fetched = store::Backend::fetch(
+            // Merged groups can exceed one fetch's byte budget. Paginate in row-ID
+            // order; entries_from_rows restores revision order for the reader.
+            let fetched = store::fetch_all(
                 &backend,
-                &FetchRequest::entity(agent_proto::agents::rows::ENTRY_ENTITY)
+                FetchRequest::entity(agent_proto::agents::rows::ENTRY_ENTITY)
                     .filter(Pred::eq("run_id", id.as_str()))
                     .filter(Pred::is_in(
                         "revision",
@@ -405,13 +407,8 @@ pub(super) fn execute(
                             .iter()
                             .map(|r| DataValue::Int(*r as i64))
                             .collect::<Vec<_>>(),
-                    ))
-                    .sort_by("revision", SortDir::Asc)
-                    .limit(30),
+                    )),
             )?;
-            if fetched.truncated {
-                return Err("Retained tools exceed the store read limit".into());
-            }
             let entries = agent_proto::agents::rows::entries_from_rows(&fetched)
                 .remove(id)
                 .unwrap_or_default();
