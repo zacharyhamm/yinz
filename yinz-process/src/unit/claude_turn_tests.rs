@@ -209,6 +209,7 @@ fn missing_transcripts_and_exited_processes_are_unavailable() {
         },
         process: Some((std::process::id(), started)),
         conversation_file: None,
+        claude_status: None,
     };
     assert!(follow(&observation).is_err());
     let dir = tempfile::tempdir().unwrap();
@@ -267,7 +268,88 @@ fn observation(path: &std::path::Path, marker: Option<PathBuf>) -> Observation {
             system.process(pid).unwrap().start_time(),
         )),
         conversation_file: marker,
+        claude_status: None,
     }
+}
+
+#[test]
+fn claude_idle_registry_requires_fresh_status_and_matching_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let status = ClaudeStatusObservation {
+        path: dir.path().join("status.json"),
+        after_ms: 100,
+    };
+    let idle = json!({"pid":123,"sessionId":"conversation","kind":"interactive",
+        "status":"idle","statusUpdatedAt":101});
+    assert!(!status.idle(123, "conversation"));
+    for change in [
+        json!({"pid":124}),
+        json!({"sessionId":"other"}),
+        json!({"kind":"background"}),
+        json!({"status":"busy"}),
+        json!({"status":"waiting"}),
+        json!({"statusUpdatedAt":99,"updatedAt":102}),
+        json!({"statusUpdatedAt":100}),
+        json!({"statusUpdatedAt":null}),
+        json!({"statusUpdatedAt":"101"}),
+    ] {
+        let mut record = idle.clone();
+        record
+            .as_object_mut()
+            .unwrap()
+            .extend(change.as_object().unwrap().clone());
+        std::fs::write(&status.path, record.to_string()).unwrap();
+        assert!(!status.idle(123, "conversation"), "{change}");
+    }
+    for malformed in ["{", &" ".repeat(64 * 1024 + 1)] {
+        std::fs::write(&status.path, malformed).unwrap();
+        assert!(!status.idle(123, "conversation"));
+    }
+    std::fs::write(&status.path, idle.to_string()).unwrap();
+    assert!(status.idle(123, "conversation"));
+}
+
+#[test]
+fn claude_early_interruption_uses_idle_registry_without_a_transcript_boundary() {
+    let dir = tempfile::tempdir().unwrap();
+    let transcript = dir.path().join("turn.jsonl");
+    let mut observation = observation(&transcript, None);
+    let status_path = dir.path().join("status.json");
+    std::fs::write(
+        &status_path,
+        json!({"pid":std::process::id(),
+        "sessionId":"conversation","kind":"interactive","status":"idle",
+        "statusUpdatedAt":101})
+        .to_string(),
+    )
+    .unwrap();
+    observation.claude_status = Some(ClaudeStatusObservation {
+        path: status_path,
+        after_ms: 100,
+    });
+    // Early Esc restores the draft without writing an interruption or duration record.
+    let prompt = json!({"type":"user","sessionId":"conversation",
+        "promptId":"prompt","uuid":"user"});
+    std::fs::write(&transcript, format!("{prompt}\n")).unwrap();
+    let turn = follow(&observation).unwrap();
+    assert!(turn.last_text.is_none());
+    assert!(turn.background_tasks.is_empty());
+
+    let next = json!({"type":"user","sessionId":"conversation",
+        "promptId":"next","uuid":"new-user"});
+    std::fs::write(&transcript, format!("{prompt}\n{next}\n")).unwrap();
+    assert_eq!(
+        follow(&observation).err().unwrap().to_string(),
+        "Claude prompt replaced"
+    );
+
+    // A reused PID cannot be confirmed by a registry left by its previous process.
+    std::fs::write(&transcript, format!("{prompt}\n")).unwrap();
+    observation.process.as_mut().unwrap().1 += 1;
+    assert_eq!(
+        follow(&observation).err().unwrap().to_string(),
+        "claude process exited"
+    );
 }
 
 #[test]
