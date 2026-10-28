@@ -23,6 +23,7 @@ fn only_confirmed_ssh_failures_are_permanent() {
         "bash: yinz: command not found",
         "Yinz compatibility mismatch",
         "YINZ_REMOTE_ERROR \"session_missing\"",
+        "YINZ_REMOTE_ERROR \"session_exists\"",
         "YINZ_REMOTE_ERROR \"permission\"",
         "YINZ_REMOTE_ERROR \"configuration\"",
     ] {
@@ -47,6 +48,24 @@ fn cancellation_wins_over_permanent_diagnostics_and_unknown_diagnostics_are_reta
 #[test]
 fn bootstrap_categories_survive_the_ssh_error_context_prefix() {
     assert!(permanent_diagnostic("SSH bootstrap failed: YINZ_REMOTE_ERROR \"session_missing\"\nError: session does not exist"));
+    // Any permanent category counts, not only the first one quoted.
+    assert!(permanent_diagnostic(
+        "YINZ_REMOTE_ERROR \"unresponsive\"\nYINZ_REMOTE_ERROR \"session_missing\""
+    ));
+}
+
+#[test]
+fn the_reported_error_is_the_line_after_the_category() {
+    assert_eq!(
+        reported_error(
+            "Error: from a login script\nYINZ_REMOTE_ERROR \"session_exists\"\nError: taken\n"
+        ),
+        Some((BootstrapCategory::SessionExists, "taken"))
+    );
+    assert_eq!(
+        reported_error("Error: from a login script\nYINZ_REMOTE_ERROR \"session_exists\"\n"),
+        None
+    );
 }
 
 #[test]

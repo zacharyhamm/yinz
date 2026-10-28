@@ -472,7 +472,7 @@ fn prepare(
                 "Session resurrection failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            remote_sessions::parse_endpoint(&output.stdout, &name)?;
+            remote_sessions::parse_endpoint(&output.stdout, Some(&name))?;
         }
         socket
     };

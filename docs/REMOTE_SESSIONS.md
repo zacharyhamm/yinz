@@ -6,9 +6,13 @@ Run the terminal client on your machine and keep the session server on an SSH ho
 yinz attach --remote user@host
 yinz attach --remote user@host work
 yinz attach --remote build-box work --create
+yinz --remote user@host
+yinz --remote user@host --session work
 ```
 
-Without a session name, Yinz discovers sessions on the specified host. It attaches to the only running session, or opens a picker on a terminal when there are several. The picker only shows sessions from that host. If no sessions are active, Yinz reports that and exits. Noninteractive callers must supply a name when discovery returns several sessions.
+Without a session name, Yinz discovers sessions on the specified host. It attaches to the only running session, or opens a picker on a terminal when there are several. The picker only shows sessions from that host. If no sessions are active, Yinz asks on a terminal whether to create a new session, which the remote host names; noninteractive callers get an error instead. Noninteractive callers must supply a name when discovery returns several sessions.
+
+`yinz --remote HOST` always starts a new session on the host and attaches to it. The remote host names the session unless `--session` names it. It refuses a name that is already taken on the host, whether the session is running or can be resurrected. It takes no subcommand and rejects the same local overrides as remote attach.
 
 `--create` requires a session name. It attaches to an existing session, restores an exited session, or creates a new session. It refuses to replace an unresponsive server. Restored commands retain the normal suspended state.
 

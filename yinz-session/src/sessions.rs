@@ -506,7 +506,11 @@ pub fn validate_session_name(name: &str) -> Result<(), String> {
             "Session name cannot be empty. Please provide a specific session name.".to_string(),
         );
     }
-    if name == "." || name == ".." || name == yinz_ipc::consts::SESSION_OWNERSHIP_DIR {
+    if name == "."
+        || name == ".."
+        || name == yinz_ipc::consts::SESSION_OWNERSHIP_DIR
+        || name == yinz_ipc::consts::SESSION_CREATION_LOCK_DIR
+    {
         return Err(format!("Invalid session name: \"{}\".", name));
     }
     if name.contains('/') {

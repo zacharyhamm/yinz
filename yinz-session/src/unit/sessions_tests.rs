@@ -41,6 +41,7 @@ fn the_pty_broker_socket_name_is_reserved() {
     assert!(validate_session_name("pty-broker-v8").is_ok());
     assert!(validate_session_name("my-session").is_ok());
     assert!(validate_session_name(yinz_ipc::consts::SESSION_OWNERSHIP_DIR).is_err());
+    assert!(validate_session_name(yinz_ipc::consts::SESSION_CREATION_LOCK_DIR).is_err());
 }
 
 #[test]

@@ -107,6 +107,23 @@ fn simultaneous_claims_have_one_owner() {
 }
 
 #[test]
+fn creation_lock_excludes_until_released() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("session");
+    let creator = lock_creation(&path, Instant::now()).unwrap();
+    let error = lock_creation(&path, Instant::now()).unwrap_err();
+    assert!(error.to_string().contains("still creating"), "{error:#}");
+    // The server the creator starts must still be able to claim the name.
+    assert!(SessionOwnership::acquire(&path).unwrap().is_some());
+    drop(creator);
+    let _next = lock_creation(&path, Instant::now()).unwrap();
+    assert!(root
+        .path()
+        .join(".session-creation-locks/session")
+        .is_file());
+}
+
+#[test]
 fn refuses_live_unclaimed_socket_and_recovers_stale_socket() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("session");
