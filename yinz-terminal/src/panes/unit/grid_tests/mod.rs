@@ -1339,6 +1339,7 @@ mod kitty_unicode_placeholders;
 mod notifications;
 mod osc133_navigation;
 mod osc133_selection;
+mod redraw_scrollback;
 mod scroll_region_and_forwarding;
 mod sixel_and_ui;
 mod vttest;
