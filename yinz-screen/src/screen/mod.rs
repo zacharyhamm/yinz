@@ -986,6 +986,7 @@ impl Screen {
     pub(crate) fn animation_clock_period(&self, now: Instant) -> Option<Duration> {
         if self.notifications_are_animating(now)
             || self.palette_hook_flashes_are_visible(now)
+            || self.pane_title_hook_flashes_are_visible(now)
             || !self.fading_frame_panes.is_empty()
             || self.tabs.values().any(|tab| tab.overlay_ripple_is_live())
         {

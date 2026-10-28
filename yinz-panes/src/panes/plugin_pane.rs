@@ -77,6 +77,7 @@ pub struct PluginPane {
     pub pid: PluginId,
     pane_tabs_transfer: Option<crate::pane_tabs::PaneTabsTransfer>,
     pane_tabs_views: HashMap<ClientId, crate::pane_tabs::PaneTabsView>,
+    pane_tab_titles: Vec<crate::ui::agent_title::AgentTitle>,
     pane_tabs: Option<yinz_types::pane_tabs::PaneTabsInfo>,
     pub pending_pane_tabs: Option<yinz_types::pane_tabs::PaneTabsLayout>,
     pub should_render: HashMap<ClientId, bool>,
@@ -161,6 +162,7 @@ impl PluginPane {
             pid,
             pane_tabs: None,
             pane_tabs_views: HashMap::new(),
+            pane_tab_titles: Vec::new(),
             pane_tabs_transfer: None,
             pending_pane_tabs: None,
             should_render: HashMap::new(),
@@ -587,6 +589,7 @@ impl Pane for PluginPane {
                 tabs.bar_focused.contains(&client_id),
                 columns,
                 &self.style,
+                &self.pane_tab_titles,
             );
             rendered
                 .0
@@ -1021,11 +1024,26 @@ impl Pane for PluginPane {
     fn take_pane_tabs_layout(&mut self) -> Option<yinz_types::pane_tabs::PaneTabsLayout> {
         self.pending_pane_tabs.take()
     }
+    fn set_pane_tab_titles(&mut self, titles: Vec<crate::ui::agent_title::AgentTitle>) {
+        if self.pane_tab_titles != titles {
+            self.pane_tab_titles = titles;
+            self.set_should_render(true);
+        }
+    }
+    fn pane_tab_titles(&self) -> &[crate::ui::agent_title::AgentTitle] {
+        &self.pane_tab_titles
+    }
     fn set_pane_tabs_views(&mut self, views: HashMap<ClientId, crate::pane_tabs::PaneTabsView>) {
         if self.pane_tabs_views != views {
             self.pane_tabs_views = views;
             self.set_should_render(true);
         }
+    }
+    fn pane_tabs_view(&self, client: ClientId) -> crate::pane_tabs::PaneTabsView {
+        self.pane_tabs_views
+            .get(&client)
+            .copied()
+            .unwrap_or_default()
     }
     fn set_pane_tabs(&mut self, tabs: Option<yinz_types::pane_tabs::PaneTabsInfo>) {
         if self.pane_tabs != tabs {

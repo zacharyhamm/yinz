@@ -2,6 +2,7 @@
 //! `Tab` hit-tests, and the opaque carrier that holds a pane's pane tabs while the pane is out of
 //! a `Tab`.
 
+use crate::ui::agent_title::AgentTitle;
 use yinz_types::pane_tabs::PaneTabsInfo;
 
 /// A pane's pane tabs and their hidden children, set on the pane when a `Tab` extracts it and
@@ -34,13 +35,27 @@ pub fn bar_cells(
     focused: bool,
     width: usize,
 ) -> Vec<yinz_types::tab_bar::TabCell<yinz_types::tab_bar::TabTarget>> {
+    bar_cells_with_titles(info, view, focused, width, &[])
+}
+
+pub fn bar_cells_with_titles(
+    info: &PaneTabsInfo,
+    view: PaneTabsView,
+    focused: bool,
+    width: usize,
+    titles: &[AgentTitle],
+) -> Vec<yinz_types::tab_bar::TabCell<yinz_types::tab_bar::TabTarget>> {
     let labels: Vec<_> = info
         .tabs
         .iter()
-        .map(|slot| {
+        .enumerate()
+        .map(|(index, slot)| {
             let label =
                 yinz_types::text::clean_string_from_control_and_linebreak(&slot.descriptor.label);
-            format!(" {label} │")
+            match titles.get(index).and_then(|title| title.marker()) {
+                Some(marker) => format!("{marker} {label} │"),
+                None => format!(" {label} │"),
+            }
         })
         .collect();
     let focus = focused.then_some(view.highlight);
@@ -55,9 +70,10 @@ pub fn render_bar(
     focused: bool,
     columns: usize,
     style: &yinz_types::style::Style,
+    titles: &[AgentTitle],
 ) -> Vec<crate::panes::TerminalCharacter> {
     use crate::panes::terminal_character::{AnsiCode, EMPTY_TERMINAL_CHARACTER, RESET_STYLES};
-    let mut characters: Vec<_> = crate::pane_tabs::bar_cells(info, view, focused, columns)
+    let mut characters: Vec<_> = bar_cells_with_titles(info, view, focused, columns, titles)
         .into_iter()
         .flat_map(|cell| {
             let colors = if cell.focused {
@@ -77,11 +93,27 @@ pub fn render_bar(
                 } else {
                     AnsiCode::Reset
                 }));
+            let title = match cell.target {
+                yinz_types::tab_bar::TabTarget::Tab(index) => {
+                    titles.get(index).copied().unwrap_or_default()
+                },
+                _ => AgentTitle::default(),
+            };
             cell.text
                 .chars()
-                .map(|ch| {
+                .enumerate()
+                .map(|(index, ch)| {
                     let mut character = crate::panes::TerminalCharacter::new(ch);
-                    character.styles = styles.into();
+                    let color = if index == 0 && title.marker().is_some() {
+                        Some(title.marker_color(colors))
+                    } else if ch != '│' {
+                        title.title_color(colors)
+                    } else {
+                        None
+                    };
+                    character.styles = color
+                        .map_or(styles, |color| styles.foreground(Some(color.into())))
+                        .into();
                     character
                 })
                 .collect::<Vec<_>>()
@@ -99,3 +131,7 @@ pub fn render_bar(
 
     characters
 }
+
+#[cfg(test)]
+#[path = "unit/pane_tab_title_tests.rs"]
+mod tests;

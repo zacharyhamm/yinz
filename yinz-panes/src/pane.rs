@@ -719,6 +719,17 @@ pub trait Pane {
     fn take_pane_tabs_layout(&mut self) -> Option<yinz_types::pane_tabs::PaneTabsLayout> {
         None
     }
+    fn set_agent_hook_flash(&mut self, _flash: bool) {}
+    fn agent_title(&self) -> crate::ui::agent_title::AgentTitle {
+        crate::ui::agent_title::AgentTitle {
+            state: self.agent_info().map(|agent| agent.state),
+            hook_flash: false,
+        }
+    }
+    fn set_pane_tab_titles(&mut self, _titles: Vec<crate::ui::agent_title::AgentTitle>) {}
+    fn pane_tab_titles(&self) -> &[crate::ui::agent_title::AgentTitle] {
+        &[]
+    }
     fn set_pane_tabs_views(
         &mut self,
         _views: std::collections::HashMap<ClientId, crate::pane_tabs::PaneTabsView>,

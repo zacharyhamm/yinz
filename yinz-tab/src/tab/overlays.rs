@@ -648,6 +648,105 @@ impl Tab {
         !overlay_damage(&rects, &covered).is_empty()
     }
 
+    pub fn agent_title_is_visible(
+        &self,
+        pane_id: PaneId,
+        client_id_override: Option<ClientId>,
+    ) -> bool {
+        if let Some(list) = self
+            .stack_list_id_of_member(&pane_id)
+            .and_then(|id| self.stack_lists.get(&id))
+            && self.title_surface_is_visible(list.visible)
+            && let Some((visible, rank)) = self
+                .get_pane_with_id(list.visible)
+                .zip(list.rank_of(&pane_id))
+        {
+            let headers_visible = if self.floating_panes.panes_contain(&list.visible) {
+                self.floating_stack_headers_visible(list)
+            } else {
+                !self.tiled_panes.fullscreen_is_active()
+            };
+            let header = Self::stack_list_header_geom(
+                visible.render_geom(),
+                visible.get_content_offset(),
+                rank,
+            );
+            if headers_visible && self.waiting_border_is_uncovered(list.visible, &[header]) {
+                return true;
+            }
+        }
+        if let Some(info) = self
+            .pane_tabs_of(pane_id)
+            .and_then(|id| self.pane_tabs_info(id))
+            && let Some(pane) = self.get_pane_with_id(info.pane_id)
+            && self.title_surface_is_visible(info.pane_id)
+            && pane.get_content_y() > pane.y()
+            && pane.get_content_rows() > 0
+        {
+            let titles = self.pane_tab_title_presentations(&info);
+            let visible = self
+                .connected_clients
+                .borrow()
+                .iter()
+                .copied()
+                .chain(client_id_override)
+                .any(|client| {
+                    yinz_panes::pane_tabs::bar_cells_with_titles(
+                        &info,
+                        pane.pane_tabs_view(client),
+                        info.bar_focused.contains(&client),
+                        pane.get_content_columns(),
+                        &titles,
+                    )
+                    .iter()
+                    .any(|cell| {
+                        matches!(cell.target, yinz_types::tab_bar::TabTarget::Tab(index)
+                        if info.tabs[index].pane_id() == Some(pane_id))
+                    })
+                });
+            let mut bar = pane.render_geom();
+            bar.y = pane.get_content_y() - 1;
+            bar.rows = Dimension::fixed(1);
+            if visible && self.waiting_border_is_uncovered(info.pane_id, &[bar]) {
+                return true;
+            }
+        }
+        let Some(pane) = self.get_pane_with_id(pane_id) else {
+            return false;
+        };
+        let stacked = pane.current_geom().is_stacked();
+        if self.tiled_panes.panes_contain(&pane_id)
+            && ((!self.pane_frame_style.draws_full_frames()
+                && !self.pane_frame_style.draws_titles()
+                && !stacked)
+                || (self.single_pane_titles() && pane.subtitle().is_none()))
+        {
+            return false;
+        }
+        if !self.title_surface_is_visible(pane_id)
+            || pane.borderless()
+            || pane.render_geom().cols.as_usize() <= 2
+            || pane.rows() == 0
+            || (pane.get_content_y() == pane.y() && !stacked)
+        {
+            return false;
+        }
+        let mut title = pane.render_geom();
+        title.rows = Dimension::fixed(1);
+        self.waiting_border_is_uncovered(pane_id, &[title])
+    }
+
+    fn title_surface_is_visible(&self, pane_id: PaneId) -> bool {
+        if self.tiled_panes.panes_contain(&pane_id) {
+            !self.tiled_panes.panes_to_hide_contains(pane_id)
+                && !self.tiled_panes.fullscreen_covers_ui()
+        } else {
+            (self.has_floating_panes_to_render()
+                && self.floating_panes.rendered_pane_ids().contains(&pane_id))
+                || self.overlay_panes.rendered_pane_ids().contains(&pane_id)
+        }
+    }
+
     pub fn has_visible_waiting_pulse(&self, client_id_override: Option<ClientId>) -> bool {
         self.get_all_pane_ids().into_iter().any(|id| {
             self.get_pane_with_id(id)

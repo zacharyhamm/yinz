@@ -44,18 +44,13 @@ impl AgentPresentation {
     }
 
     pub(super) fn lines(&self, width: usize, max_lines: usize) -> Vec<MdLine> {
-        let (glyph, status, color) = match self.state {
-            AgentState::Busy => ("●", "working", Some(2)),
-            AgentState::Waiting => ("!", "needs input", Some(1)),
-            AgentState::Idle => ("○", "idle", None),
-            AgentState::Exited => ("×", "exited", None),
-        };
+        let (glyph, status, color) = crate::ui::agent_title::status(self.state);
         let mut main = styled(
             glyph,
             MdStyle {
                 bold: true,
                 color: if self.state == AgentState::Busy && self.hook_flash {
-                    Some(0)
+                    Some(crate::ui::agent_title::FLASH_COLOR)
                 } else {
                     color
                 },

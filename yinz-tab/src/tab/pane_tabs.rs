@@ -1,6 +1,6 @@
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
-use yinz_panes::pane_tabs::{bar_cells, PaneTabsTransfer, PaneTabsView};
+use yinz_panes::pane_tabs::{bar_cells_with_titles, PaneTabsTransfer, PaneTabsView};
 use yinz_types::keys::BareKey;
 use yinz_types::pane_tabs::*;
 
@@ -492,6 +492,38 @@ impl Tab {
         self.pane_tabs.values().map(|tabs| tabs.info.clone())
     }
 
+    pub(super) fn pane_tab_title_presentations(
+        &self,
+        info: &PaneTabsInfo,
+    ) -> Vec<yinz_panes::ui::agent_title::AgentTitle> {
+        info.tabs
+            .iter()
+            .map(|slot| {
+                slot.pane_id()
+                    .and_then(|id| self.get_pane_with_id(id))
+                    .map(|pane| pane.agent_title())
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    pub(super) fn sync_pane_tab_titles(&mut self) {
+        let infos: Vec<_> = self.pane_tabs_infos().collect();
+        for info in infos {
+            let titles = self.pane_tab_title_presentations(&info);
+            for member in info
+                .tabs
+                .iter()
+                .filter_map(PaneTabInfo::pane_id)
+                .chain([info.pane_id])
+            {
+                if let Some(pane) = self.get_pane_with_id_mut(member) {
+                    pane.set_pane_tab_titles(titles.clone());
+                }
+            }
+        }
+    }
+
     pub(super) fn sync_pane_tabs(&mut self) -> Result<()> {
         let ids: Vec<_> = self
             .pane_tabs
@@ -700,11 +732,13 @@ impl Tab {
             .get(&client)
             .copied()
             .unwrap_or_default();
-        let cells = bar_cells(
+        let titles = self.pane_tab_title_presentations(&info);
+        let cells = bar_cells_with_titles(
             &info,
             view,
             info.bar_focused.contains(&client),
             pane.get_content_columns(),
+            &titles,
         );
         let target = cells
             .iter()

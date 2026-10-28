@@ -208,6 +208,7 @@ impl<'a> PaneContentsAndUi<'a> {
                     tabs.bar_focused.contains(&client),
                     self.pane.get_content_columns(),
                     &self.style,
+                    self.pane.pane_tab_titles(),
                 );
                 self.output
                     .add_character_chunks_to_client(

@@ -114,10 +114,12 @@ pub struct TerminalPane {
     selection_scrolled_at: time::Instant,
     content_offset: Offset,
     detected_agent: bool,
+    agent_hook_flash: bool,
     max_content_width: usize,
     render_width: Option<(usize, usize)>,
     pane_tabs: Option<yinz_types::pane_tabs::PaneTabsInfo>,
     pane_tabs_views: HashMap<ClientId, crate::pane_tabs::PaneTabsView>,
+    pane_tab_titles: Vec<crate::ui::agent_title::AgentTitle>,
     pane_tabs_transfer: Option<crate::pane_tabs::PaneTabsTransfer>,
     subtitle: Option<String>,
     subtitle_enabled: bool,
@@ -719,6 +721,11 @@ impl Pane for TerminalPane {
             pane_title = self.title_with_agent_indicator(pane_title, frame_params.same_worktree);
         }
 
+        let agent_title = if frame_params.blank_title {
+            Default::default()
+        } else {
+            self.agent_title()
+        };
         let frame_geom = frame_params
             .frame_geom_override
             .unwrap_or_else(|| self.render_geom());
@@ -731,6 +738,7 @@ impl Pane for TerminalPane {
         )
         .is_pinned(is_pinned);
         frame.subtitle = subtitle;
+        frame.agent_title = agent_title;
         if self.suspended {
             frame.indicate_suspended();
         }
@@ -1161,6 +1169,15 @@ impl Pane for TerminalPane {
     fn set_pane_tabs_transfer(&mut self, transfer: crate::pane_tabs::PaneTabsTransfer) {
         self.pane_tabs_transfer = Some(transfer);
     }
+    fn set_pane_tab_titles(&mut self, titles: Vec<crate::ui::agent_title::AgentTitle>) {
+        if self.pane_tab_titles != titles {
+            self.pane_tab_titles = titles;
+            self.set_should_render(true);
+        }
+    }
+    fn pane_tab_titles(&self) -> &[crate::ui::agent_title::AgentTitle] {
+        &self.pane_tab_titles
+    }
     fn set_pane_tabs_views(&mut self, views: HashMap<ClientId, crate::pane_tabs::PaneTabsView>) {
         if self.pane_tabs_views != views {
             self.pane_tabs_views = views;
@@ -1471,6 +1488,15 @@ impl Pane for TerminalPane {
             self.set_should_render(true);
         }
     }
+    fn set_agent_hook_flash(&mut self, flash: bool) {
+        self.agent_hook_flash = flash;
+    }
+    fn agent_title(&self) -> crate::ui::agent_title::AgentTitle {
+        crate::ui::agent_title::AgentTitle {
+            state: self.agent.as_ref().map(|agent| agent.state),
+            hook_flash: self.agent_hook_flash,
+        }
+    }
     fn agent_info(&self) -> Option<&AgentInfo> {
         self.agent.as_ref()
     }
@@ -1519,6 +1545,17 @@ impl Pane for TerminalPane {
         // Before the equality check: a record that repeats itself still says this is an agent
         // pane, and the memory is set once and never taken back.
         self.was_an_agent |= agent.is_some();
+        if agent.is_none()
+            || self
+                .agent
+                .as_ref()
+                .map(|agent| (&agent.kind, &agent.session_id, &agent.run_id))
+                != agent
+                    .as_ref()
+                    .map(|agent| (&agent.kind, &agent.session_id, &agent.run_id))
+        {
+            self.agent_hook_flash = false;
+        }
         if agent.is_none()
             || self.agent.as_ref().map(|a| (&a.kind, &a.session_id))
                 != agent.as_ref().map(|a| (&a.kind, &a.session_id))
@@ -2130,10 +2167,12 @@ impl TerminalPane {
             frame: HashMap::new(),
             content_offset: Offset::default(),
             detected_agent: false,
+            agent_hook_flash: false,
             max_content_width: 0,
             render_width: None,
             pane_tabs: None,
             pane_tabs_views: HashMap::new(),
+            pane_tab_titles: Vec::new(),
             pane_tabs_transfer: None,
             subtitle: None,
             subtitle_enabled: true,
