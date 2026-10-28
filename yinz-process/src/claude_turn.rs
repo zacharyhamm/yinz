@@ -8,7 +8,7 @@ use std::{
     os::unix::{fs::MetadataExt, process::CommandExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use yinz_runtime::errors::prelude::*;
@@ -45,6 +45,64 @@ struct Observation {
     process: Option<(u32, u64)>,
     #[serde(default)]
     conversation_file: Option<PathBuf>,
+    #[serde(default)]
+    claude_status: Option<ClaudeStatusObservation>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ClaudeStatusObservation {
+    path: PathBuf,
+    after_ms: u64,
+}
+
+impl ClaudeStatusObservation {
+    fn new(pid: u32) -> Option<Self> {
+        let root = std::env::var_os("CLAUDE_CONFIG_DIR")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")))?;
+        Some(Self {
+            path: root.join("sessions").join(format!("{pid}.json")),
+            after_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()?
+                .as_millis()
+                .try_into()
+                .ok()?,
+        })
+    }
+
+    fn idle(&self, pid: u32, session: &str) -> bool {
+        // Claude 2.1.312 publishes status even when an early Esc writes no transcript
+        // boundary. Missing/older registries simply leave transcript observation in charge.
+        // Bound reads and reject special files; this optional signal must never block hooks.
+        let read = || -> Option<Value> {
+            use std::os::unix::fs::OpenOptionsExt;
+            let file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&self.path)
+                .ok()?;
+            if !file.metadata().ok()?.is_file() {
+                return None;
+            }
+            let mut bytes = Vec::new();
+            file.take(64 * 1024 + 1).read_to_end(&mut bytes).ok()?;
+            if bytes.len() > 64 * 1024 {
+                return None;
+            }
+            serde_json::from_slice(&bytes).ok()
+        };
+        read().is_some_and(|status| {
+            status["pid"].as_u64() == Some(u64::from(pid))
+                && status["sessionId"].as_str() == Some(session)
+                && status["kind"] == "interactive"
+                && status["status"] == "idle"
+                && status["statusUpdatedAt"]
+                    .as_u64()
+                    .is_some_and(|updated| updated > self.after_ms)
+        })
+    }
 }
 
 /// Start only after the prompt report is delivered, so confirmation cannot overtake it.
@@ -80,6 +138,9 @@ pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
             route: route.clone(),
             process,
             conversation_file,
+            claude_status: process
+                .filter(|_| kind == "claude")
+                .and_then(|(pid, _)| ClaudeStatusObservation::new(pid)),
         };
         let mut command =
             Command::new(std::env::current_exe().context("resolve turn observer binary")?);
@@ -383,6 +444,26 @@ fn follow_with_api(observation: &Observation, api: Option<AgyApi>) -> Result<Tur
                 .context("inspect AGY transcript after Idle")?
                 .len()
                 == offset
+            {
+                return Ok(turn);
+            }
+        }
+        if kind == "claude"
+            && turn.found
+            && line.is_empty()
+            && observation
+                .claude_status
+                .as_ref()
+                .is_some_and(|status| status.idle(process_id, &turn.session))
+        {
+            // Read all records first: a newer prompt invalidates this observation. Recheck
+            // process/conversation identity and transcript stability after the status read.
+            alive(&mut system)?;
+            let current =
+                std::fs::metadata(path).context("inspect Claude transcript after Idle")?;
+            if current.ino() == metadata.ino()
+                && current.dev() == metadata.dev()
+                && current.len() == offset
             {
                 return Ok(turn);
             }
