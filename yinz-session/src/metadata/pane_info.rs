@@ -130,6 +130,7 @@ pub fn decode_from_kdl(
         is_held,
         restart_error: None,
         last_agent_session_id: None,
+        last_hook_at_ms: optional_int_node!("last_hook_at_ms", i64),
         pane_x,
         pane_content_x,
         pane_y,
@@ -191,6 +192,9 @@ pub fn encode_to_kdl(value: &PaneInfo) -> anyhow::Result<KdlDocument> {
         int_node!("exit_status", exit_status);
     }
     bool_node!("is_held", value.is_held);
+    if let Some(at) = value.last_hook_at_ms {
+        int_node!("last_hook_at_ms", at);
+    }
     int_node!("pane_x", value.pane_x);
     int_node!("pane_content_x", value.pane_content_x);
     int_node!("pane_y", value.pane_y);

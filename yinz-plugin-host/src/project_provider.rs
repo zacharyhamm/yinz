@@ -1,4 +1,4 @@
-//! Host validation and the service-owned local project snapshot.
+//! Host validation and service-owned checkout snapshots for control and presentation.
 use crate::plugin_map::PluginEnv;
 use project_data::{
     location::Location,
@@ -76,6 +76,14 @@ pub(crate) fn invalidate() {
 }
 
 pub(crate) fn snapshot() -> Probed {
+    presentation_snapshot()
+        .into_iter()
+        .filter(|(location, repository)| location.host.is_none() && repository.host.is_none())
+        .collect()
+}
+
+/// Includes remote checkouts for display; project control uses the local-only snapshot.
+pub(crate) fn presentation_snapshot() -> Probed {
     LOCATIONS
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -191,10 +199,7 @@ pub(crate) fn publish(generation: u64, value: Value) -> Result<bool, String> {
     if publication.providers != yinz_types::project_provider::providers() {
         return Err("project provider snapshot changed before publication".into());
     }
-    let mut locations = publication.locations;
-    locations.retain(|location: &Location, repository| {
-        location.host.is_none() && repository.host.is_none()
-    });
+    let locations = publication.locations;
     let changed = cache.0 != Some(generation) || cache.1 != locations;
     *cache = (Some(generation), locations);
     Ok(changed)

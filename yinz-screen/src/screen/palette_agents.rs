@@ -2,12 +2,14 @@ use super::Screen;
 use crate::ui::command_palette::{
     escape_literal, Entry, EntryKind, Field, Form, Outcome, PluginSection,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
-use yinz_bus::command_palette::{AgentAction, AgentReply, AgentRequest};
+use yinz_bus::command_palette::{
+    AgentAction, AgentLabelSource, AgentLabels, AgentLabelsRequest, AgentReply, AgentRequest,
+};
 use yinz_bus::plugins::PluginInstruction;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::{agent::control::AgentOutcome, data::PaneInfo, internal_ids::ClientId};
@@ -24,6 +26,11 @@ pub(super) struct State {
     pub(super) browsers: HashMap<u64, super::history::Browser>,
     submitted: bool,
     pub(super) values: HashMap<String, Vec<String>>,
+    pub(super) labels: BTreeMap<String, AgentLabels>,
+    label_sources: Vec<AgentLabelSource>,
+    label_revision: u64,
+    labels_dirty: bool,
+    labels_inflight: Option<u64>,
 }
 
 impl State {
@@ -37,8 +44,66 @@ impl State {
             browsers: HashMap::new(),
             submitted: false,
             values: HashMap::new(),
+            labels: BTreeMap::new(),
+            label_sources: Vec::new(),
+            label_revision: 0,
+            labels_dirty: true,
+            labels_inflight: None,
         }
     }
+    pub(super) fn refresh_labels(
+        &mut self,
+        sources: Vec<AgentLabelSource>,
+        client: ClientId,
+        senders: &yinz_bus::thread_bus::ThreadSenders,
+    ) {
+        if self.label_sources != sources {
+            self.label_sources = sources;
+            self.labels.clear();
+            self.invalidate_labels();
+        }
+        if self.labels_dirty && self.labels_inflight.is_none() {
+            self.labels_dirty = false;
+            if self.label_sources.is_empty() {
+                return;
+            }
+            let revision = self.label_revision;
+            senders
+                .send_to_plugin(PluginInstruction::PaletteAgentLabels(AgentLabelsRequest {
+                    client,
+                    opening: self.opening,
+                    revision,
+                    sources: self.label_sources.clone(),
+                }))
+                .context("requesting palette agent labels")
+                .non_fatal();
+            self.labels_inflight = Some(revision);
+        }
+    }
+
+    pub(super) fn invalidate_labels(&mut self) {
+        self.label_revision += 1;
+        self.labels_dirty = true;
+    }
+
+    pub(super) fn apply_labels(
+        &mut self,
+        opening: u64,
+        revision: u64,
+        labels: Result<BTreeMap<String, AgentLabels>, String>,
+    ) {
+        if self.opening != opening || self.labels_inflight != Some(revision) {
+            return;
+        }
+        self.labels_inflight = None;
+        if self.label_revision == revision {
+            match labels {
+                Ok(labels) => self.labels = labels,
+                Err(error) => log::error!("Could not read palette agent labels: {error}"),
+            }
+        }
+    }
+
     pub(super) fn save_form(&mut self, widget: &crate::ui::command_palette::CommandPalette) {
         if let Some((id, values)) = widget.form_values()
             && let Some(action) = self.actions.get(id)

@@ -9,6 +9,89 @@ use yinz_types::agent::control::AgentOutcome;
 use yinz_types::input::command::{RunCommand, TerminalAction};
 use yinz_types::internal_ids::{ClientId, HostId, TabId};
 
+#[test]
+fn live_agent_labels_use_panel_project_and_checkout_metadata() {
+    use project_data::{
+        location::Location,
+        projects::{self, Repository, WorktreeStatus},
+    };
+    use yinz_bus::command_palette::{AgentLabelSource, AgentLabels};
+
+    let mut project = projects::validate("project", "/work/root").unwrap();
+    project.remote = Some("git@example.com:team/repo.git".into());
+    let mut registry = [(project.name.clone(), project)].into();
+    let local = Location::local("/work/linked");
+    let remote = Location::new(Some("builder"), "/work/linked");
+    let repository = Repository {
+        root: local.path.clone(),
+        remote: Some("git@example.com:team/repo.git".into()),
+        worktree_status: Some(WorktreeStatus::Linked),
+        branch: Some("topic/雪".into()),
+        ..Default::default()
+    };
+    let mut repositories = [
+        (local.clone(), repository.clone()),
+        (
+            remote.clone(),
+            Repository {
+                host: remote.host.clone(),
+                branch: Some("remote-topic".into()),
+                ..repository
+            },
+        ),
+    ]
+    .into();
+    let sources = || {
+        [
+            ("local", Some(local.clone())),
+            ("peer-session", Some(local.clone())),
+            ("remote", Some(remote.clone())),
+            ("unknown", Some(Location::local("/unknown"))),
+            ("no-cwd", None),
+        ]
+        .into_iter()
+        .map(|(id, location)| AgentLabelSource {
+            id: id.into(),
+            host: location.as_ref().and_then(|location| location.host.clone()),
+            cwd: location.map(|location| location.path),
+        })
+        .collect()
+    };
+    let labels = resolve_labels(sources(), &registry, &repositories);
+    assert_eq!(
+        labels["local"],
+        AgentLabels {
+            project: "project".into(),
+            branch: "topic/雪".into()
+        }
+    );
+    assert_eq!(labels["peer-session"], labels["local"]);
+    assert_eq!(
+        labels["remote"],
+        AgentLabels {
+            project: "project".into(),
+            branch: "remote-topic".into()
+        }
+    );
+    assert_eq!(labels["unknown"], AgentLabels::default());
+    assert!(!labels.contains_key("no-cwd"));
+
+    registry.get_mut("project").unwrap().name = "renamed".into();
+    repositories.get_mut(&local).unwrap().branch = Some("new-branch".into());
+    let labels = resolve_labels(sources(), &registry, &repositories);
+    assert_eq!(
+        labels["local"],
+        AgentLabels {
+            project: "renamed".into(),
+            branch: "new-branch".into()
+        }
+    );
+    registry.clear();
+    let labels = resolve_labels(sources(), &registry, &repositories);
+    assert_eq!(labels["local"].project, "");
+    assert_eq!(labels["local"].branch, "new-branch");
+}
+
 fn repository() -> (tempfile::TempDir, DataAccess) {
     let temp = tempfile::tempdir().unwrap();
     git(temp.path(), &["init", "-b", "main"]);

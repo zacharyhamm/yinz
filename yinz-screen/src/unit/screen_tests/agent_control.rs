@@ -9545,3 +9545,61 @@ fn suppressed_agents_support_status_list_prompts_reads_keys_recovery_and_restart
         assert!(screen.get_pane_info(PANE).unwrap().is_suppressed);
     }
 }
+
+#[test]
+fn live_hook_recency_is_shared_repeated_and_excludes_replay_and_display_updates() {
+    let (mut screen, _, _) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    let first = screen.get_pane_info(PANE).unwrap().last_hook_at_ms.unwrap();
+    for name in [
+        "UserPromptSubmit",
+        "UserPromptSubmit",
+        "PreCompact",
+        "SubagentStart",
+    ] {
+        // A sentinel avoids relying on clock resolution or sleeping between identical hooks.
+        screen.with_pane(PANE, |pane| pane.set_last_hook_at_ms(1));
+        report(&mut screen, hook(name));
+        let info = screen.get_pane_info(PANE).unwrap();
+        let at = info.last_hook_at_ms.unwrap();
+        assert!(at >= first);
+        let cached = screen.peer_sessions_cache[&screen.session_name]
+            .panes
+            .panes
+            .values()
+            .flatten()
+            .find(|pane| pane.id == PANE)
+            .unwrap();
+        assert_eq!(cached.last_hook_at_ms, Some(at));
+    }
+    let at = screen.get_pane_info(PANE).unwrap().last_hook_at_ms;
+    report(
+        &mut screen,
+        HookEvent {
+            archive_only: true,
+            ..hook("PreCompact")
+        },
+    );
+    screen.with_pane(PANE, |pane| {
+        pane.update_name("changed title");
+    });
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(7), b"ordinary output".to_vec())
+        .unwrap();
+    screen.render().unwrap();
+    assert_eq!(screen.get_pane_info(PANE).unwrap().last_hook_at_ms, at);
+    let mut replacement = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+    replacement.session_id = Some("replacement".into());
+    crate::screen::apply_pane_agent_report(&mut screen, PANE, Some(replacement)).unwrap();
+    assert_eq!(screen.get_pane_info(PANE).unwrap().last_hook_at_ms, None);
+    report(&mut screen, hook("PreCompact"));
+    assert!(screen
+        .get_pane_info(PANE)
+        .unwrap()
+        .last_hook_at_ms
+        .is_some());
+    crate::screen::apply_pane_agent_report(&mut screen, PANE, None).unwrap();
+    assert_eq!(screen.get_pane_info(PANE).unwrap().last_hook_at_ms, None);
+}

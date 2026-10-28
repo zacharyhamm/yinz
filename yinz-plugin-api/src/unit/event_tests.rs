@@ -852,6 +852,7 @@ fn serialize_session_update_event_with_non_default_values() {
             exit_status: None,
             restart_error: Some("Cannot restart agent: unsupported print option".into()),
             last_agent_session_id: Some("ended-session".into()),
+            last_hook_at_ms: Some(123),
             is_held: false,
             pane_x: yinz_types::position::Column::new(0),
             pane_content_x: yinz_types::position::Column::new(1),
@@ -888,6 +889,7 @@ fn serialize_session_update_event_with_non_default_values() {
             exit_status: None,
             restart_error: None,
             last_agent_session_id: None,
+            last_hook_at_ms: None,
             is_held: false,
             pane_x: yinz_types::position::Column::new(0),
             pane_content_x: yinz_types::position::Column::new(1),
@@ -1109,5 +1111,17 @@ fn notification_events_and_decisions_round_trip_through_plugin_wire() {
         };
         let wire: crate::plugin_command::ProtobufNotificationInfo = info.clone().into();
         assert_eq!(yinz_types::data::NotificationInfo::from(wire), info);
+    }
+}
+
+#[test]
+fn pane_hook_recency_roundtrips_through_plugin_manifest() {
+    for stamp in [None, Some(123)] {
+        let pane = PaneInfo {
+            last_hook_at_ms: stamp,
+            ..Default::default()
+        };
+        let wire = ProtobufPaneInfo::try_from(pane.clone()).unwrap();
+        assert_eq!(PaneInfo::try_from(wire).unwrap(), pane);
     }
 }

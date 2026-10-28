@@ -587,6 +587,13 @@ impl CommandPalette {
                     .map(|score| (index, score))
             })
             .collect();
+        // Matching decides eligibility; live agents retain panel order. Keep the
+        // ranked agent slots so other kinds retain their existing ranking and placement.
+        let ordered_agents: Vec<_> = matches
+            .iter()
+            .filter(|(index, _)| self.entries[*index].kind == EntryKind::Agent)
+            .map(|(index, _)| *index)
+            .collect();
         matches.sort_by_key(|(index, score)| {
             let section = self.entry_sections[*index];
             let group = match self.entries[*index].kind {
@@ -601,7 +608,17 @@ impl CommandPalette {
                 std::cmp::Reverse(if self.theme_picker() { 0 } else { *score }),
             )
         });
-        self.matches = matches.into_iter().map(|(index, _)| index).collect();
+        let mut ordered_agents = ordered_agents.into_iter();
+        self.matches = matches
+            .into_iter()
+            .map(|(index, _)| {
+                if self.entries[index].kind == EntryKind::Agent {
+                    ordered_agents.next().unwrap_or(index)
+                } else {
+                    index
+                }
+            })
+            .collect();
         self.selected = self.selected.min(self.matches.len().saturating_sub(1));
         self.selected_status = if self.matches.is_empty() && self.picker.is_none() {
             self.sections
@@ -1207,7 +1224,7 @@ impl CommandPalette {
     fn entry_line_limit(&self, index: usize, capacity: usize) -> usize {
         let heading = usize::from(self.entry_heading(index).is_some());
         let limit = if self.agent_presentation(index).is_some() {
-            4
+            5
         } else {
             2
         };

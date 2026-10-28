@@ -777,15 +777,44 @@ impl Screen {
                 Builtin::Project(name.clone()),
             ));
         }
-        let live = self.live_palette_agents();
+        let mut live = self.live_palette_agents();
+        state.agents.refresh_labels(
+            live.iter()
+                .map(|agent| yinz_bus::command_palette::AgentLabelSource {
+                    id: agent.id(),
+                    host: agent.pane.host.clone(),
+                    cwd: agent
+                        .pane
+                        .agent
+                        .as_ref()
+                        .and_then(|agent| agent.cwd.as_ref())
+                        .filter(|cwd| !cwd.is_empty())
+                        .or(agent.pane.cwd.as_ref())
+                        .cloned(),
+                })
+                .collect(),
+            client,
+            &self.bus.senders,
+        );
         state.widget.agent_metadata = live.iter().map(|a| (a.id(), a.metadata.clone())).collect();
         state.widget.agent_presentations = live
             .iter()
             .filter_map(|agent| {
-                crate::ui::command_palette::AgentPresentation::from_pane(&agent.pane)
-                    .map(|presentation| (agent.id(), presentation))
+                crate::ui::command_palette::AgentPresentation::from_pane(&agent.pane).map(
+                    |mut presentation| {
+                        if let Some(labels) = state.agents.labels.get(&agent.id()) {
+                            presentation.project.clone_from(&labels.project);
+                            presentation.branch.clone_from(&labels.branch);
+                        }
+                        (agent.id(), presentation)
+                    },
+                )
             })
             .collect();
+        live.sort_by(|left, right| {
+            left.order(&state.agents.labels)
+                .cmp(&right.order(&state.agents.labels))
+        });
         entries.extend(live.into_iter().map(|agent| {
             (
                 Entry {
@@ -1113,6 +1142,12 @@ impl Screen {
                 ))
                 .context("failed to report palette warp worker failure")
                 .non_fatal();
+        }
+    }
+
+    pub(super) fn invalidate_palette_agent_labels(&mut self) {
+        for state in self.command_palettes.values_mut() {
+            state.agents.invalidate_labels();
         }
     }
 

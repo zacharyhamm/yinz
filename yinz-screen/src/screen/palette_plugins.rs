@@ -555,6 +555,17 @@ impl Screen {
 
     pub(crate) fn plugin_palette_instruction(&mut self, instruction: Instruction) -> bool {
         match instruction {
+            Instruction::AgentLabels {
+                client,
+                opening,
+                revision,
+                labels,
+            } => {
+                if let Some(state) = self.command_palettes.get_mut(&client) {
+                    state.agents.apply_labels(opening, revision, labels);
+                }
+                true
+            },
             Instruction::Refresh { client, scope } => {
                 if self.command_palettes.get(&client).is_some_and(|state| {
                     state.plugins.opening == scope.opening

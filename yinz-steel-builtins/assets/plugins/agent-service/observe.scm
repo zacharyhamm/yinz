@@ -14,11 +14,7 @@
   (define now (yinz-wall-clock-ms))
   (as-call "record-event" id kind event now)
   (unless (as-field event "archive_only" #f)
-    ;; Receipt time is independent of phase: repeated hooks and hooks without a state
-    ;; still move an agent within its activity group. Historical replay must not do so.
-    (when (as-pane id)
-      (as-map-set! "last-hooks" id now)
-      (as-update-pane! id (lambda (pane) (hash-insert pane "last_hook_at_ms" now))))
+    ;; Recency comes from the host manifest published before this event.
     (if (equal? (hash-ref event "hook_event_name") "SessionEnd")
       (begin
         (as-map-remove! "prompts" id) (remove-id "event-fed" id)

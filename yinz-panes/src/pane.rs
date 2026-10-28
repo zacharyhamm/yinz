@@ -391,6 +391,10 @@ pub trait Pane {
     }
     /// Whether this pane has ever held an agent record. Sticky, unlike the record itself,
     /// which a `SessionEnd` hook clears just before the agent's process exits.
+    fn last_hook_at_ms(&self) -> Option<i64> {
+        None
+    }
+    fn set_last_hook_at_ms(&mut self, _at: i64) {}
     fn last_agent_cwd(&self) -> Option<&str> {
         None
     }
@@ -1010,6 +1014,7 @@ pub fn pane_info_for_pane(
         is_held: pane.is_held(),
         restart_error: pane.restart_error(),
         last_agent_session_id: pane.last_agent_session_id().map(str::to_owned),
+        last_hook_at_ms: pane.last_hook_at_ms(),
         index_in_pane_group,
         default_fg,
         default_bg,

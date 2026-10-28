@@ -2608,6 +2608,7 @@ fn same_command_fresh_replacement_clears_remembered_agent_session() {
         pane.set_agent_info(Some(reported.clone()));
         pane.hold(Some(0), false, command.clone());
         assert_eq!(pane.last_agent_session_id(), Some("old"));
+        pane.set_last_hook_at_ms(123);
         assert_eq!(
             pane.respawn(Some(command.clone()), false),
             Some(command.clone())
@@ -2615,6 +2616,7 @@ fn same_command_fresh_replacement_clears_remembered_agent_session() {
         assert_eq!(pane.agent_info().unwrap().source, AgentSource::Spawned);
         assert_eq!(pane.agent_info().unwrap().session_id, None);
         assert_eq!(pane.last_agent_session_id(), None);
+        assert_eq!(pane.last_hook_at_ms(), None);
 
         pane.hold(Some(1), false, command);
         assert_eq!(

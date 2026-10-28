@@ -2287,6 +2287,7 @@ impl TryFrom<ProtobufPaneInfo> for PaneInfo {
             is_held: protobuf_pane_info.is_held,
             restart_error: protobuf_pane_info.restart_error,
             last_agent_session_id: protobuf_pane_info.last_agent_session_id,
+            last_hook_at_ms: protobuf_pane_info.last_hook_at_ms,
             pane_x: Column::try_from(protobuf_pane_info.pane_x)
                 .map_err(|_| "pane_x exceeds usize")?,
             pane_content_x: Column::try_from(protobuf_pane_info.pane_content_x)
@@ -2360,6 +2361,7 @@ impl TryFrom<PaneInfo> for ProtobufPaneInfo {
             is_held: pane_info.is_held,
             restart_error: pane_info.restart_error,
             last_agent_session_id: pane_info.last_agent_session_id,
+            last_hook_at_ms: pane_info.last_hook_at_ms,
             pane_x: u32::try_from(pane_info.pane_x).map_err(|_| "pane_x exceeds u32")?,
             pane_content_x: u32::try_from(pane_info.pane_content_x)
                 .map_err(|_| "pane_content_x exceeds u32")?,
