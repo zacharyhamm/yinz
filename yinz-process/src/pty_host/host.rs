@@ -990,23 +990,13 @@ fn attach(
     let child_pid = session.child_pid;
     let child_exited = session.exit_status;
 
-    // Re-key before building the status, so `pty-host list` names the session
-    // that owns the pane now rather than the one it came from.
-    ctx.terminal_id = terminal_id;
-    ctx.session_name = session_name;
-    ctx.label = match ctx.session_name.as_ref() {
-        Some(name) => format!("{name}/{terminal_id}"),
-        None => terminal_id.to_string(),
-    };
-    ctx.state = State::Attached;
-    let (buffered, dropped_bytes) = ctx.ring.take();
-    if dropped_bytes > 0 {
-        log::warn!(
-            "pty-host {} dropped {dropped_bytes} bytes while detached; \
-             the adopted pane is missing the middle of its output",
-            ctx.host_id
-        );
-    }
+    // Publish the proposed owner in the reply, but commit only after both sends succeed.
+    let mut status = ctx.status();
+    status.terminal_id = terminal_id.get();
+    status.session_name = session_name.clone();
+    status.attached = true;
+    status.buffered_bytes = 0;
+    let dropped_bytes = ctx.ring.dropped;
 
     // `cmd` travels for `hold_on_close`; its `originating_plugin` names a plugin
     // in the session this pane is leaving, so it must not follow it.
@@ -1020,8 +1010,8 @@ fn attach(
         host_pid: ctx.host_pid,
         child_pid,
         cmd,
-        status: ctx.status(),
-        buffered_base64: protocol::encode_buffered(&buffered),
+        status,
+        buffered_base64: protocol::encode_buffered(ctx.ring.buf.make_contiguous()),
         dropped_bytes,
     };
     if let Err(e) = write_msg(&mut stream, &ack) {
@@ -1029,14 +1019,30 @@ fn attach(
             "pty-host {} could not send an AttachAck: {e:#}",
             ctx.host_id
         );
-        return abandon_attach(ctx, buffered);
+        return CliOutcome::Done;
     }
     if let Err(e) = send_fd(&stream, master_fd) {
         log::warn!(
             "pty-host {} could not hand the pty master over: {e:#}",
             ctx.host_id
         );
-        return abandon_attach(ctx, buffered);
+        return CliOutcome::Done;
+    }
+
+    ctx.terminal_id = terminal_id;
+    ctx.session_name = session_name;
+    ctx.label = match ctx.session_name.as_ref() {
+        Some(name) => format!("{name}/{terminal_id}"),
+        None => terminal_id.to_string(),
+    };
+    ctx.state = State::Attached;
+    ctx.ring.take();
+    if dropped_bytes > 0 {
+        log::warn!(
+            "pty-host {} dropped {dropped_bytes} bytes while detached; \
+             the adopted pane is missing the middle of its output",
+            ctx.host_id
+        );
     }
 
     // Back to blocking: these timeouts exist so a wedged `pty-host list` cannot
@@ -1063,14 +1069,6 @@ fn attach(
         ctx.label
     );
     CliOutcome::Attached(stream)
-}
-
-/// Undo a half-finished attach: go back to draining, and keep the output we had
-/// already taken out of the ring so the next attacher still gets it.
-fn abandon_attach(ctx: &mut HostContext, buffered: Vec<u8>) -> CliOutcome {
-    ctx.state = State::Detached;
-    ctx.ring.push(&buffered);
-    CliOutcome::Done
 }
 
 fn kill_current_child(ctx: &mut HostContext, event_rx: &Receiver<HostEvent>) -> Result<()> {

@@ -53,6 +53,7 @@ const TERMINATION_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from
 /// remote pane takes, so a wedged broker must cost a bounded wait and let the script exit 0
 /// on its own terms, rather than stalling every tool call until the agent kills the hook.
 const AGENT_REPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const WIRE_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// How often to look, given how long a pane is allowed to sit unclaimed.
 ///
@@ -67,19 +68,78 @@ fn reap_interval(orphan_timeout: std::time::Duration) -> std::time::Duration {
 }
 
 pub fn send(wire: &Wire, msg: &BrokerToServerMsg) -> Result<()> {
-    let mut sock = wire
-        .lock()
-        .to_anyhow()
-        .context("failed to lock a remote pane's wire")?;
-    protocol::write_control(&mut *sock, msg)
+    write_wire(wire, |writer| protocol::write_control(writer, msg))
 }
 
 fn send_output(wire: &Wire, bytes: &[u8]) -> Result<()> {
+    // Replay can span megabytes; bound each frame without timing out healthy bulk transfers.
+    for chunk in bytes.chunks(MAX_STREAM_PAYLOAD) {
+        write_wire(wire, |writer| protocol::write_output(writer, chunk))?;
+    }
+    Ok(())
+}
+
+struct WireWriter<'a> {
+    socket: &'a mut UnixStream,
+    deadline: std::time::Instant,
+}
+
+impl Write for WireWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        use nix::errno::Errno;
+        use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+        use nix::sys::socket::{send, MsgFlags};
+        use std::os::fd::{AsFd, AsRawFd};
+
+        // Per-call nonblocking keeps the cloned control reader blocking.
+        let flags = MsgFlags::MSG_DONTWAIT;
+        #[cfg(not(target_vendor = "apple"))]
+        let flags = flags | MsgFlags::MSG_NOSIGNAL;
+        loop {
+            let remaining = self
+                .deadline
+                .saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(std::io::ErrorKind::TimedOut.into());
+            }
+            match send(self.socket.as_raw_fd(), bytes, flags) {
+                Ok(written) => return Ok(written),
+                Err(Errno::EINTR) => continue,
+                Err(Errno::EAGAIN) => {
+                    let mut ready = [PollFd::new(self.socket.as_fd(), PollFlags::POLLOUT)];
+                    let timeout =
+                        PollTimeout::try_from(remaining).map_err(std::io::Error::other)?;
+                    match poll(&mut ready, timeout) {
+                        Ok(_) | Err(Errno::EINTR) => {},
+                        Err(error) => return Err(error.into()),
+                    }
+                },
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.socket.flush()
+    }
+}
+
+fn write_wire(wire: &Wire, write: impl FnOnce(&mut WireWriter<'_>) -> Result<()>) -> Result<()> {
     let mut sock = wire
         .lock()
         .to_anyhow()
         .context("failed to lock a remote pane's wire")?;
-    protocol::write_output(&mut *sock, bytes)
+    let result = write(&mut WireWriter {
+        socket: &mut sock,
+        deadline: std::time::Instant::now() + WIRE_WRITE_TIMEOUT,
+    });
+    if result.is_err() {
+        // A partial frame cannot be reused; shutdown also wakes the control reader to detach.
+        sock.shutdown(std::net::Shutdown::Both)
+            .context("failed to shut down a remote pane's broken wire")
+            .non_fatal();
+    }
+    result
 }
 
 /// A `File` view of a descriptor owned by someone else. Never closes it.
@@ -1072,9 +1132,10 @@ fn relay_agent_report(
             .context("no pane for remote report")?;
         let wire = session.wire().context("no owner for remote report")?;
         trace.enter("relay_lock");
-        let mut socket = wire.lock().map_err(|_| anyhow!("remote wire poisoned"))?;
-        trace.enter("relay_write");
-        protocol::write_control(&mut *socket, &BrokerToServerMsg::AgentReport { kind, json })
+        write_wire(&wire, |writer| {
+            trace.enter("relay_write");
+            protocol::write_control(writer, &BrokerToServerMsg::AgentReport { kind, json })
+        })
     })();
     trace.finish(result.is_ok());
     result.is_ok()
