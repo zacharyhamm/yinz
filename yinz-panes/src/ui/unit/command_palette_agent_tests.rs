@@ -1773,3 +1773,55 @@ fn ribbon_buttons_follow_font_mode_and_theme_with_unicode_labels() {
         }
     }
 }
+
+#[test]
+fn backfill_preserves_tail_and_manual_anchor() {
+    let mut view = view(0);
+    view.update(
+        header(),
+        events(90).into_iter().skip(60).collect(),
+        vec![],
+        String::new(),
+    );
+    layout(&mut view, 80, 25);
+    assert_eq!(view.offset, view.total.saturating_sub(view.page));
+    view.scroll(false, 10);
+    let anchor = view.anchor;
+    view.update(header(), events(100), vec![], String::new());
+    layout(&mut view, 80, 25);
+    assert_eq!(view.anchor, anchor);
+    assert!(!view.following);
+    view.scroll(true, usize::MAX);
+    view.update(header(), events(101), vec![], String::new());
+    layout(&mut view, 60, 20);
+    assert!(view.following);
+    assert_eq!(view.offset, view.total.saturating_sub(view.page));
+}
+
+#[test]
+fn mouse_selection_survives_background_history_updates() {
+    let mut view = view(0);
+    view.update(
+        header(),
+        events(4).into_iter().skip(1).collect(),
+        vec![],
+        String::new(),
+    );
+    let shown = layout(&mut view, 80, 40);
+    assert!(view.following);
+    let row = shown
+        .hits
+        .iter()
+        .position(|hit| matches!(hit, Some(Hit::Event(1))))
+        .unwrap();
+    view.click(&shown, 20, row, &mut TextInput::default());
+    assert!(!view.following);
+    for count in [4, 5, 5] {
+        view.update(header(), events(count), vec![], String::new());
+        layout(&mut view, 80, 40);
+        assert_eq!(
+            key(&mut view, BareKey::Enter),
+            Outcome::Activate("history:42:event:3".into())
+        );
+    }
+}

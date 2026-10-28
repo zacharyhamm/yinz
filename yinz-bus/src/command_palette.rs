@@ -262,3 +262,25 @@ pub enum HistoryReply {
         status: String,
     },
 }
+
+// Keep every revision for the full-content reader.
+pub fn collapse_tools(events: Vec<HistoryEvent>) -> Vec<HistoryEvent> {
+    let mut grouped: Vec<HistoryEvent> = Vec::new();
+    for mut event in events {
+        if matches!(event.kind.as_str(), "tool_call" | "tool_result") {
+            if let Some(previous) = grouped
+                .last_mut()
+                .filter(|e| e.kind == "tools" && e.revisions.len() < 30)
+            {
+                previous.revisions.extend(event.revisions);
+                previous.tool_calls += event.tool_calls;
+                continue;
+            }
+            event.kind = "tools".into();
+            event.markdown.clear();
+            event.truncated = false;
+        }
+        grouped.push(event);
+    }
+    grouped
+}

@@ -205,12 +205,15 @@ impl AgentView {
         status: String,
     ) {
         let revision = self.events.get(self.selected).map(|e| e.data.revision);
-        let mut old = std::mem::take(&mut self.events);
+        let mut old: std::collections::BTreeMap<_, _> = std::mem::take(&mut self.events)
+            .into_iter()
+            .map(|event| (event.data.revision, event))
+            .collect();
         self.events = events
             .into_iter()
             .map(|data| {
-                if let Some(i) = old.iter().position(|e| e.data == data) {
-                    old.remove(i)
+                if let Some(event) = old.remove(&data.revision).filter(|e| e.data == data) {
+                    event
                 } else {
                     let document = agent_proto::agents::EntryPresentation::new(
                         &data.kind,
@@ -584,9 +587,9 @@ impl AgentView {
                 }
             },
             Some(Hit::Event(i)) => {
+                self.following = false;
                 self.selected = i;
                 self.focus = Focus::Messages;
-                self.following = false;
             },
             Some(Hit::Action(i)) => {
                 self.focus = Focus::Action(i);

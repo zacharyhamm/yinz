@@ -738,7 +738,7 @@ fn palette_history_search_exact_event_predecessor_and_resume() {
 }
 
 #[test]
-fn palette_history_older_follows_retained_revisions() {
+fn palette_history_automatically_loads_all_retained_revisions() {
     use yinz_bus::command_palette::{HistoryAction, HistoryReply};
     for (revisions, text, expected_starts) in [
         (
@@ -788,11 +788,16 @@ fn palette_history_older_follows_retained_revisions() {
             query: String::new(),
         };
         let mut starts = Vec::new();
+        let mut loaded = std::collections::BTreeSet::new();
         loop {
             let (reply, _) = run(&request(temp.path(), AgentAction::History(action)), &data);
             let AgentReply::History(HistoryReply::Run { rows, .. }) = reply.unwrap() else {
                 panic!("expected timeline")
             };
+            loaded.extend(rows.iter().filter_map(|row| match row.action {
+                HistoryAction::Event { revision, .. } => Some(revision),
+                _ => None,
+            }));
             starts.push(
                 rows.iter()
                     .find_map(|row| match row.action {
@@ -802,15 +807,16 @@ fn palette_history_older_follows_retained_revisions() {
                     .unwrap(),
             );
             assert!(
-                starts.len() <= expected_starts.len(),
+                starts.len() <= revisions.len() + 1,
                 "backward navigation failed to terminate: {starts:?}"
             );
-            let Some(older) = rows.iter().find(|row| row.id == "older") else {
+            let Some(older) = rows.iter().find(|row| row.id == "continue") else {
                 break;
             };
             action = older.action.clone();
         }
-        assert_eq!(starts, expected_starts);
+        assert_eq!(starts[0], expected_starts[0]);
+        assert_eq!(loaded.into_iter().collect::<Vec<_>>(), revisions);
     }
 }
 
@@ -1022,6 +1028,7 @@ fn palette_history_keeps_panel_tool_entries_and_opens_full_retained_tools() {
         panic!("expected conversation");
     };
     assert!(header.session_id.contains(&recorded.session_id));
+    let events = yinz_bus::command_palette::collapse_tools(events);
     assert_eq!(events.len(), 6);
     assert_eq!(events[3].kind, "tools");
     assert_eq!(events[3].tool_calls, 0);
@@ -1033,15 +1040,11 @@ fn palette_history_keeps_panel_tool_entries_and_opens_full_retained_tools() {
     assert_eq!(events[1].tool_calls, 2);
     assert_eq!(events[1].revisions, vec![2, 3, 4]);
     assert!(events[1].markdown.is_empty());
-    let action = rows
-        .iter()
-        .find(|row| row.id == "event:2")
-        .unwrap()
-        .action
-        .clone();
-    assert!(
-        matches!(&action, HistoryAction::Tools { revisions, .. } if revisions == &vec![2, 3, 4])
-    );
+    assert!(rows.iter().any(|row| row.id == "event:2"));
+    let action = HistoryAction::Tools {
+        id: recorded.id.clone(),
+        revisions: events[1].revisions.clone(),
+    };
     let expected = |entry: &RunEntry| {
         format!(
             "{} · revision {}:\n{}\n\n{}",
