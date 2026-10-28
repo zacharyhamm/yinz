@@ -446,10 +446,10 @@ impl Turn {
             if !self.found {
                 return Ok(false);
             }
-            let linked = record["promptId"].as_str() == Some(&self.prompt)
-                || record["parentUuid"]
-                    .as_str()
-                    .is_some_and(|parent| self.ancestors.contains(parent));
+            let parent_in_turn = record["parentUuid"]
+                .as_str()
+                .is_some_and(|parent| self.ancestors.contains(parent));
+            let linked = record["promptId"].as_str() == Some(&self.prompt) || parent_in_turn;
             if !linked {
                 return Ok(false);
             }
@@ -475,7 +475,26 @@ impl Turn {
                     self.last_text = Some(text);
                 }
             }
-            return Ok(record["type"] == "system" && record["subtype"] == "turn_duration");
+            // Cancellation can end a turn without a turn_duration record. A prompt ID
+            // alone is insufficient: the interruption must descend from this turn.
+            let interrupted = record["type"] == "user"
+                && parent_in_turn
+                && record["interruptedMessageId"]
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty())
+                && {
+                    let content = &record["message"]["content"];
+                    content == "[Request interrupted by user]"
+                        || content.as_array().is_some_and(|parts| {
+                            parts.iter().any(|part| {
+                                part["type"] == "text"
+                                    && part["text"] == "[Request interrupted by user]"
+                            })
+                        })
+                };
+            return Ok(
+                interrupted || (record["type"] == "system" && record["subtype"] == "turn_duration")
+            );
         }
 
         if self.kind == "agy" {

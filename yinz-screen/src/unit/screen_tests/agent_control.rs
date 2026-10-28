@@ -4941,6 +4941,40 @@ fn claude_blocking_stop_and_stale_confirmations_cannot_finish_a_prompt() {
 }
 
 #[test]
+fn claude_interruption_confirmation_clears_busy_but_cannot_clear_a_newer_turn() {
+    for target in pane_targets() {
+        let (mut screen, _messages, _writes) = setup_on_target("claude", target);
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        assert_eq!(pane_state(&screen), AgentState::Busy);
+
+        // The transcript observer reports cancellation through the same confirmed Stop
+        // path as a turn_duration boundary, preserving any assistant text collected.
+        let interrupted = claude_stop("prompt", "Work so far.", &[]);
+        report_kind(&mut screen, "claude", interrupted.clone());
+        assert_eq!(pane_state(&screen), AgentState::Idle);
+
+        report_kind(
+            &mut screen,
+            "claude",
+            HookEvent {
+                prompt_id: Some("next".into()),
+                ..hook("UserPromptSubmit")
+            },
+        );
+        assert_eq!(pane_state(&screen), AgentState::Busy);
+        report_kind(&mut screen, "claude", interrupted);
+        assert_eq!(pane_state(&screen), AgentState::Busy);
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_stop("next", "Next turn.", &[]),
+        );
+        assert_eq!(pane_state(&screen), AgentState::Idle);
+    }
+}
+
+#[test]
 fn claude_confirmation_failure_retains_the_uncertain_submission_claim() {
     let (mut screen, messages, writes) = setup("claude");
     report_kind(&mut screen, "claude", hook("SessionStart"));
