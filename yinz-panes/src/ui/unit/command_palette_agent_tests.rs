@@ -233,6 +233,49 @@ fn empty_timeline_focus_boundaries_and_small_layouts() {
 }
 
 #[test]
+fn wheel_scrolls_history_and_readers_independently_of_focus() {
+    let mut palette = CommandPalette::default();
+    palette.push_view(42, "Agent".into());
+    palette.set_agent_history(header(), events(30), vec![action("Focus")], String::new());
+    let surface = Viewport {
+        cols: 60,
+        rows: 25,
+        ..Default::default()
+    };
+    palette.layout(surface);
+    palette.agent.as_ref().unwrap().borrow_mut().focus = Focus::Search;
+    palette.scroll(false);
+    let history_anchor = palette.agent.as_ref().unwrap().borrow().anchor;
+    assert!(!palette.agent_following());
+    for title in ["Message", "tool_call", "tool_result", "Details"] {
+        palette.open_agent_reader(title.into(), "line\n\n".repeat(100), String::new());
+        palette.layout(surface);
+        palette.scroll(true);
+        let agent = palette.agent.as_ref().unwrap().borrow();
+        assert_eq!(agent.reader.as_ref().unwrap().offset, 3);
+        assert_eq!(agent.anchor, history_anchor);
+        drop(agent);
+        palette.scroll(false);
+        assert_eq!(
+            palette
+                .agent
+                .as_ref()
+                .unwrap()
+                .borrow()
+                .reader
+                .as_ref()
+                .unwrap()
+                .offset,
+            0
+        );
+    }
+    palette.agent.as_ref().unwrap().borrow_mut().reader = None;
+    palette.layout(surface);
+    palette.scroll(true);
+    assert!(palette.agent_following());
+}
+
+#[test]
 fn reader_back_restores_palette_timeline_and_render_is_bounded() {
     let mut palette = CommandPalette::default();
     palette.push_view(42, "Agent".into());
@@ -243,12 +286,12 @@ fn reader_back_restores_palette_timeline_and_render_is_bounded() {
         ..Default::default()
     };
     palette.layout(surface);
-    palette.scroll_agent(false);
+    palette.scroll(false);
     let before = palette.agent.as_ref().unwrap().borrow().anchor;
     palette.push_view(43, "Event".into());
     palette.open_agent_reader("Message".into(), "paragraph\n\n".repeat(100), String::new());
     palette.layout(surface);
-    palette.handle_key(KeyWithModifier::new(BareKey::End));
+    palette.scroll(true);
     assert!(
         palette
             .agent

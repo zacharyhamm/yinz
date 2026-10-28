@@ -7,6 +7,37 @@ use yinz_types::keys::{BareKey, KeyWithModifier};
 const CLIENT: ClientId = ClientId::new(1);
 const SIZE: Size = Size { cols: 80, rows: 24 };
 
+#[test]
+fn palette_wheel_moves_selection_without_scrolling_terminal() {
+    let mut screen = screen();
+    screen
+        .get_active_tab_mut(CLIENT)
+        .unwrap()
+        .get_active_pane_mut(CLIENT)
+        .unwrap()
+        .handle_pty_bytes(b"scrollback\r\n".repeat(100));
+    screen.toggle_command_palette(CLIENT);
+    screen.command_palette_handles_input(&None, b" ", false, CLIENT);
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let before = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    screen.handle_mouse_event(
+        MouseEvent::new_scroll_down_event(Position::new(10, 30)),
+        CLIENT,
+    );
+    let after = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert_ne!(before, after);
+    screen.handle_mouse_event(
+        MouseEvent::new_scroll_up_event(Position::new(10, 30)),
+        CLIENT,
+    );
+    assert_eq!(
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+        before
+    );
+    assert!(!screen.active_pane_is_scrolled(CLIENT));
+}
+
 fn screen() -> Screen {
     let mut screen = create_non_mirrored_screen(SIZE);
     new_tab(&mut screen, 1, TabId::new(0));
@@ -6625,4 +6656,89 @@ fn history_hit_merges_and_archived_backfill_resumes_after_reader() {
             ));
         }
     }
+}
+
+#[test]
+fn history_hit_prefix_backfill_preserves_selection_and_backward_navigation() {
+    use yinz_bus::command_palette::{
+        AgentAction, AgentReply, AgentRequest, HistoryAction, HistoryRow, Instruction,
+    };
+    let mut screen = screen();
+    let (tx, rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let next = || loop {
+        let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let PluginInstruction::PaletteAgent(request) = instruction {
+            break *request;
+        }
+    };
+    let reply = |request: &AgentRequest, rows| Instruction::AgentReply {
+        client: CLIENT,
+        opening: request.opening,
+        step: request.step,
+        reply: Ok(AgentReply::History(history_run(rows))),
+    };
+    let event = |revision| HistoryRow {
+        id: format!("event:{revision}"),
+        label: format!("Event {revision}"),
+        description: String::new(),
+        action: HistoryAction::Event {
+            id: "run".into(),
+            revision,
+        },
+    };
+    screen.toggle_command_palette(CLIENT);
+    screen.open_palette_history(
+        CLIENT,
+        None,
+        Some(HistoryAction::Hit {
+            id: "run".into(),
+            revision: 100,
+        }),
+    );
+    let initial = next();
+    let mut rows: Vec<_> = (98..=102).map(event).collect();
+    rows.push(HistoryRow {
+        id: "continue".into(),
+        label: String::new(),
+        description: String::new(),
+        action: HistoryAction::Run {
+            id: "run".into(),
+            from: Some(1),
+            query: String::new(),
+        },
+    });
+    screen.plugin_palette_instruction(reply(&initial, rows));
+    let backfill = next();
+    assert!(matches!(
+        backfill.action,
+        AgentAction::History(HistoryAction::Run { from: Some(1), .. })
+    ));
+    screen.plugin_palette_instruction(reply(&backfill, (1..=102).map(event).collect()));
+    palette_key(&mut screen, BareKey::Tab);
+    palette_key(&mut screen, BareKey::Enter);
+    let selected = next();
+    assert!(matches!(
+        selected.action,
+        AgentAction::History(HistoryAction::Event { revision: 100, .. })
+    ));
+    screen.plugin_palette_instruction(Instruction::AgentReply {
+        client: CLIENT,
+        opening: selected.opening,
+        step: selected.step,
+        reply: Ok(AgentReply::History(
+            yinz_bus::command_palette::HistoryReply::Reader {
+                header: "Event".into(),
+                markdown: "Event 100".into(),
+                tool: String::new(),
+            },
+        )),
+    });
+    palette_key(&mut screen, BareKey::Esc);
+    palette_key(&mut screen, BareKey::Home);
+    palette_key(&mut screen, BareKey::Enter);
+    assert!(matches!(
+        next().action,
+        AgentAction::History(HistoryAction::Event { revision: 1, .. })
+    ));
 }

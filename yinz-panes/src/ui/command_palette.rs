@@ -369,15 +369,22 @@ impl CommandPalette {
             agent.get_mut().select_revision(revision);
         }
     }
-    pub fn scroll_agent(&mut self, down: bool) -> bool {
+    pub fn scroll(&mut self, down: bool) {
         if self.busy {
-            return self.agent.is_some();
+            return;
         }
         if let Some(agent) = &mut self.agent {
             agent.get_mut().scroll(down, 3);
-            return true;
+            return;
         }
-        false
+        // Wheel input must not edit form fields or capture a key binding.
+        if self.form.is_some() {
+            return;
+        }
+        let key = KeyWithModifier::new(if down { BareKey::Down } else { BareKey::Up });
+        for _ in 0..3 {
+            self.handle_key(key.clone());
+        }
     }
 
     pub fn action_label(&self, id: &str) -> String {

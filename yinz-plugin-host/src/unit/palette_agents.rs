@@ -821,6 +821,69 @@ fn palette_history_automatically_loads_all_retained_revisions() {
 }
 
 #[test]
+fn palette_history_hit_backfills_prefix_and_finishes_forward_pagination() {
+    use yinz_bus::command_palette::{HistoryAction, HistoryReply};
+    for (revisions, hit) in [
+        ((1..=160).collect::<Vec<_>>(), 100),
+        ((1..=65).collect(), 2),
+        ((10..20).chain(98..105).chain(200..240).collect(), 100),
+    ] {
+        let (temp, data) = repository();
+        let mut recorded = recorded_run(temp.path());
+        let entry = recorded.entries[0].clone();
+        recorded.entries = revisions
+            .iter()
+            .map(|revision| {
+                let mut entry = entry.clone();
+                entry.revision = *revision;
+                entry.text = format!("Event {revision}");
+                entry
+            })
+            .collect();
+        recorded.revision = *revisions.last().unwrap();
+        data.plugin_data()
+            .apply(
+                project_data::store::SHARED,
+                &agent_proto::agents::rows::run_mutations(&recorded),
+            )
+            .unwrap();
+        let mut action = HistoryAction::Hit {
+            id: recorded.id.clone(),
+            revision: hit,
+        };
+        let mut loaded = std::collections::BTreeSet::new();
+        let mut pages = 0;
+        loop {
+            let (reply, _) = run(&request(temp.path(), AgentAction::History(action)), &data);
+            let AgentReply::History(HistoryReply::Run { rows, events, .. }) = reply.unwrap() else {
+                panic!("expected timeline")
+            };
+            pages += 1;
+            assert!(pages <= revisions.len() + 1, "backfill must terminate");
+            if pages == 1 {
+                assert!(events.iter().any(|event| event.revision == hit));
+                assert_eq!(
+                    events[0].revision,
+                    agent_proto::run_history::anchored_from(hit)
+                );
+            }
+            loaded.extend(events.iter().map(|event| event.revision));
+            let Some(next) = rows.iter().find(|row| row.id == "continue") else {
+                break;
+            };
+            if pages == 1 {
+                assert!(matches!(
+                    next.action,
+                    HistoryAction::Run { from: Some(1), .. }
+                ));
+            }
+            action = next.action.clone();
+        }
+        assert_eq!(loaded.into_iter().collect::<Vec<_>>(), revisions);
+    }
+}
+
+#[test]
 fn palette_history_filters_match_the_same_runs_with_or_without_text() {
     use yinz_bus::command_palette::{
         query::{AgentQuery, ARCHIVE_FIELDS},
