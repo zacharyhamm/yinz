@@ -5246,6 +5246,43 @@ fn complete_with_background(
 }
 
 #[test]
+fn a_notification_after_adoption_can_confirm_its_completed_turn() {
+    for target in pane_targets() {
+        let (mut screen, _messages, _writes) = setup_on_target("claude", target);
+        let HookOutcome::Reported(agent) = hook_outcome("claude", &hook("UserPromptSubmit")) else {
+            panic!("the adopted pane has a reported agent");
+        };
+        // Adoption carries the visible record, but not the old server's lifecycle.
+        crate::screen::apply_pane_agent_report(&mut screen, PANE, Some(agent)).unwrap();
+        assert!(!screen.has_agent_lifecycle(PANE, "claude", "conversation"));
+
+        report_kind(
+            &mut screen,
+            "claude",
+            task_notification("notification", &["bash"]),
+        );
+        assert!(screen.has_agent_lifecycle(PANE, "claude", "conversation"));
+        report_kind(
+            &mut screen,
+            "claude",
+            HookEvent {
+                claude_turn_complete: None,
+                ..claude_stop("notification", "Finished after restart.", &[])
+            },
+        );
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_stop("notification", "Finished after restart.", &[]),
+        );
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+        assert!(!screen.claude_background_pending_for_test());
+    }
+}
+
+#[test]
 fn background_work_is_reported_and_an_idle_wait_returns_its_final_answer() {
     for target in pane_targets() {
         let (mut screen, messages, writes) = setup_on_target("claude", target);
