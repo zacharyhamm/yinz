@@ -331,8 +331,8 @@ impl Screen {
         })
     }
 
-    /// Track Claude background tasks and the final text of completed turns before pending
-    /// operations are answered, so their replies carry both.
+    /// Track Claude background tasks and completed turn text. Completions must be tracked
+    /// before pending operations are answered; notifications need an initialized lifecycle.
     fn track_agent_turn(&mut self, pane: PaneId, event: &AgentEvent, hook: &HookEvent) {
         let notification = self.agent_task_notification(pane, &event.kind, hook);
         let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane).filter(|lifecycle| {
@@ -2510,11 +2510,11 @@ impl Screen {
         if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
             lifecycle.last_report = Instant::now();
         }
-        if let Some(hook) = hook.filter(|_| parent) {
-            self.track_agent_turn(pane, event, hook);
-        }
         let notification = parent
             && hook.is_some_and(|hook| self.agent_task_notification(pane, &event.kind, hook));
+        if let Some(hook) = hook.filter(|_| parent && !notification) {
+            self.track_agent_turn(pane, event, hook);
+        }
         if parent
             && event.hook == "SessionStart"
             && hook.is_some_and(|hook| hook.source.as_deref() != Some("compact"))
@@ -2905,6 +2905,11 @@ impl Screen {
                     },
                 },
             );
+        }
+        // An adopted pane has no lifecycle until its first stateful hook. Register a
+        // notification after creating that lifecycle so its confirmation can be matched.
+        if let Some(hook) = hook.filter(|_| notification) {
+            self.track_agent_turn(pane, event, hook);
         }
     }
 
