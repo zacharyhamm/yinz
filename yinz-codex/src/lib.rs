@@ -504,6 +504,28 @@ impl Conversations {
             self.current_turn = active_turn;
         }
         if resumed_work {
+            if let Some(parent) = self
+                .review
+                .as_ref()
+                .and_then(|review| review.turn.as_deref())
+                && let Some(turns) = thread["turns"].as_array()
+                && let Some(index) = turns
+                    .iter()
+                    .position(|turn| turn["id"].as_str() == Some(parent))
+                && turns.iter().skip(index + 1).any(|turn| {
+                    turn["id"]
+                        .as_str()
+                        .is_some_and(|id| !id.is_empty() && id != parent)
+                        && matches!(
+                            turn["status"].as_str(),
+                            Some("inProgress" | "completed" | "interrupted" | "failed")
+                        )
+                        && turn["rootTurnId"].as_str() != Some(parent)
+                })
+            {
+                // Another client may have superseded this review while disconnected.
+                self.review = None;
+            }
             if self
                 .review
                 .as_ref()
