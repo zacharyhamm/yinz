@@ -86,6 +86,7 @@ fn enclosing_local_session_is_rejected_before_preparation_even_from_a_remote_ses
         None,
         &Default::default(),
         Default::default(),
+        &Default::default(),
     )
     .err()
     .unwrap();
@@ -96,7 +97,8 @@ fn enclosing_local_session_is_rejected_before_preparation_even_from_a_remote_ses
             target("stale-owner"),
             None,
             &Default::default(),
-            Default::default()
+            Default::default(),
+            &Default::default(),
         )
         .unwrap(),
         crate::ClientInfo::New(..)
@@ -106,6 +108,7 @@ fn enclosing_local_session_is_rejected_before_preparation_even_from_a_remote_ses
         Some("host-a".into()),
         &Default::default(),
         Default::default(),
+        &Default::default(),
     )
     .err()
     .unwrap();
@@ -236,8 +239,9 @@ fn resurrection_preserves_optional_and_explicit_missing_config() {
             ..Default::default()
         };
         let options = Default::default();
-        let assets = crate::startup::StartupContext::detached(&cli_args, &options)
-            .build_cli_assets(&options, None, false, None);
+        let assets =
+            crate::startup::StartupContext::detached(&cli_args, &options, &Default::default())
+                .build_cli_assets(&options, None, false, None);
         assert_eq!(assets.config_file_path.as_ref(), Some(&config_path));
         let command =
             resurrection_command("saved", &assets, cli_args.config.as_deref(), &None).unwrap();
@@ -295,8 +299,10 @@ fn client_loop_rename_updates_current_identity_without_cancelling_preparation() 
         let tx = SenderWithContext::new(tx);
         tx.send(ClientInstruction::RenamedSession("beta".into()))
             .unwrap();
-        tx.send(ClientInstruction::Exit(yinz_ipc::ipc::ExitReason::Normal))
-            .unwrap();
+        tx.send(ClientInstruction::Exit(
+            yinz_ipc::ipc::ExitReason::Disconnect,
+        ))
+        .unwrap();
         let (input_tx, _input_rx) = channels::unbounded();
         let nested = NestedReannounce::spawn(Box::new(os.clone()), "rename-test".into());
         nested.stop();
@@ -318,6 +324,12 @@ fn client_loop_rename_updates_current_identity_without_cancelling_preparation() 
         }
         .run(&rx);
         assert_eq!(outcome.exit_status, 0);
+        assert!(
+            outcome.exit_msg.contains("`yinz attach beta`"),
+            "{}",
+            outcome.exit_msg
+        );
+        assert!(!outcome.exit_msg.contains("`yinz attach alpha`"));
         assert_eq!(sessions.machine, machine);
         assert_eq!(sessions.preparation.as_ref().unwrap().id, "pending");
         assert!(!cancelled.load(Ordering::Acquire));
@@ -1427,11 +1439,13 @@ fn local_switch_options_exclude_the_source_layout_and_reload_without_losing_cli_
             None,
             &local.options,
             Default::default(),
+            &Default::default(),
         )
         .unwrap();
         let mut os: Box<dyn ClientOsApi> = Box::new(FakeClientOsApi::new());
-        let (message, _) = crate::startup::StartupContext::detached(&args, &local.options)
-            .first_message(&mut os, info, Default::default());
+        let (message, _) =
+            crate::startup::StartupContext::detached(&args, &local.options, &local.config.env)
+                .first_message(&mut os, info, Default::default());
         let ClientToServerMsg::AttachClient { cli_assets, .. } = message else {
             panic!("expected legacy attachment")
         };
@@ -1495,6 +1509,7 @@ fn legacy_remote_bootstrap_signals_restore_the_terminal_and_clean_up_children() 
             Some("host".into()),
             &Default::default(),
             &os,
+            &Default::default(),
         )
         .err()
         .unwrap();

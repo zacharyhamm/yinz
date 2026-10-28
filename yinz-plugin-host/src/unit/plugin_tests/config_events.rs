@@ -522,6 +522,8 @@ pub fn get_session_environment_variables_plugin_command() {
             .unwrap(),
     )
     .unwrap();
+    test_env_vars.insert("YINZ".into(), "0".into());
+    test_env_vars.insert("YINZ_SESSION_NAME".into(), "yinz-test".into());
     assert_eq!(variables, test_env_vars);
 }
 

@@ -151,7 +151,10 @@ fn accept_agent_report(
     reply: impl FnOnce(ServerToClientMsg) -> Result<()>,
 ) -> Result<()> {
     let accepted_at = std::time::Instant::now();
-    let trace = yinz_runtime::agent::report::report_diagnostics(&report);
+    let session_name = senders
+        .map(|senders| senders.session.current())
+        .unwrap_or_default();
+    let trace = yinz_runtime::agent::report::report_diagnostics(&report, &session_name);
     if trace.enabled {
         trace.record("acceptance", Duration::ZERO, "enter");
     }

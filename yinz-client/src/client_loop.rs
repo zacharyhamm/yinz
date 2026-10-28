@@ -282,7 +282,7 @@ impl ClientLoop<'_, '_> {
                 if let ExitReason::Error(_) = reason {
                     self.fail(reason.to_string());
                 }
-                outcome.exit_msg = reason.to_string();
+                outcome.exit_msg = reason.message(Some(self.sessions.name()));
                 return true;
             },
             ClientInstruction::SessionRequest(request) => {

@@ -431,7 +431,7 @@ fn execute(
                 ..Default::default()
             };
             launch(request, senders, spec, |spec| {
-                prepare_agent(spec, cwd, None, data)
+                prepare_agent(spec, cwd, None, data, &senders.session.current())
             })
         },
         Current { kind } => {

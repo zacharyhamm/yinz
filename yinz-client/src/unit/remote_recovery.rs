@@ -70,7 +70,7 @@ fn failed_transport_unblocks_input_and_generations_reject_stale_failures() {
 #[test]
 fn recovery_waits_for_the_current_routers_drain_marker_before_disconnect() {
     let os = crate::test_support::FakeClientOsApi::new();
-    let mut recovery = Recovery::new("host".into(), CommandIsExecuting::new());
+    let mut recovery = Recovery::new("host".into(), CommandIsExecuting::new(), Default::default());
     recovery.rendered = true;
     recovery.control.replacing();
     recovery.control.repainted();
@@ -125,7 +125,7 @@ fn recovery_reannounces_after_repaint_even_when_the_host_recently_pinged() {
     let nested = NestedReannounce::spawn(Box::new(os.clone()), "original".into());
     nested.stop();
     nested.note_host_contact();
-    let mut recovery = Recovery::new("host".into(), CommandIsExecuting::new());
+    let mut recovery = Recovery::new("host".into(), CommandIsExecuting::new(), Default::default());
     recovery.first_render(&os, "original", Instant::now());
     assert!(os.stdout_bytes().is_empty());
 
@@ -286,6 +286,7 @@ esac
                 Default::default(),
                 &cancelled,
                 Instant::now() + Duration::from_millis(500),
+                &Default::default(),
             ))
             .unwrap();
         });
@@ -331,7 +332,7 @@ fn queued_stale_frames_and_session_switches_do_not_affect_the_replacement() {
     use yinz_runtime::channels::{self, SenderWithContext};
     let os = crate::test_support::FakeClientOsApi::new().capturing_stdout();
     let mut command = CommandIsExecuting::new();
-    let mut recovery = Recovery::new("host".into(), command.clone());
+    let mut recovery = Recovery::new("host".into(), command.clone(), Default::default());
     recovery.rendered = true;
     recovery.control.replacing();
     recovery.control.repainted();
@@ -427,7 +428,7 @@ fn eof_starts_remote_recovery_but_explicit_detach_does_not() {
 fn recovery_status_uses_current_terminal_geometry_and_permanent_failures_do_not_spawn_attempts() {
     let os = crate::test_support::FakeClientOsApi::new().capturing_stdout();
     let now = Instant::now();
-    let mut recovery = Recovery::new("host".into(), CommandIsExecuting::new());
+    let mut recovery = Recovery::new("host".into(), CommandIsExecuting::new(), Default::default());
     recovery.rendered = true;
     recovery.control.lost(0, "EOF".into());
     recovery.next_retry = Some(now + Duration::from_secs(10));
@@ -460,7 +461,7 @@ fn recovery_status_uses_current_terminal_geometry_and_permanent_failures_do_not_
 #[test]
 fn recovery_status_clears_old_dialog_on_resize_and_blinks_without_other_changes() {
     let os = crate::test_support::FakeClientOsApi::new().capturing_stdout();
-    let mut recovery = Recovery::new("host".into(), CommandIsExecuting::new());
+    let mut recovery = Recovery::new("host".into(), CommandIsExecuting::new(), Default::default());
     recovery.control.lost(0, "outage".into());
     let now = Instant::now();
     for rows in [24, 40, 50, 12, 30] {

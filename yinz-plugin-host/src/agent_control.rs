@@ -48,7 +48,14 @@ pub(super) fn spawn_agent_for_control(
     data_access: &DataAccess,
 ) -> Result<SpawnedAgent, AgentSpawnError> {
     spawn_agent_prepared(placement, spec, client_id, senders, |spec| {
-        prepare_automation_agent(spec, cwd, project, remote_host, data_access)
+        prepare_automation_agent(
+            spec,
+            cwd,
+            project,
+            remote_host,
+            data_access,
+            &senders.session.current(),
+        )
     })
 }
 
@@ -361,7 +368,14 @@ fn spawn_new_project(
             .non_fatal();
         // Creating a new project explicitly selects its main checkout.
         spec.allow_outside_worktree = Some(true);
-        prepare_automation_agent(spec, Some(root), None, None, data)
+        prepare_automation_agent(
+            spec,
+            Some(root),
+            None,
+            None,
+            data,
+            &senders.session.current(),
+        )
     });
     let mut response = finish_spawn(result, senders);
     if response.outcome != AgentOutcome::Ok
@@ -536,6 +550,7 @@ pub(super) fn prepare_automation_agent(
     project: Option<String>,
     remote_host: Option<String>,
     data: &DataAccess,
+    session_name: &yinz_types::internal_ids::SessionName,
 ) -> Result<PreparedAgent, AgentSpawnError> {
     if spec.bubblewrap && remote_host.is_some() {
         return Err("Bubblewrap cannot be combined with SSH".into());
@@ -613,7 +628,7 @@ pub(super) fn prepare_automation_agent(
     if !source.is_dir() {
         return Err("agent cwd is not a directory".into());
     }
-    prepare_agent(spec, source, None, data)
+    prepare_agent(spec, source, None, data, session_name)
 }
 
 /// Other live agents whose folder is the one a reused worktree put this agent in.

@@ -106,7 +106,7 @@ pub fn plugin_thread_main(
     // on session start when we need to load the background plugins, and so we must have an
     // explicit client_id that has started the session
     initiating_client_id: ClientId,
-    // How plugins learn the session's name. The server passes `ServerSession::Process`, so a
+    // How plugins learn the session's name. The server passes `ServerSession::Shared`, so a
     // rename reaches plugins loaded after it.
     server_session: ServerSession,
 ) -> Result<()> {

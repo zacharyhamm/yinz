@@ -307,8 +307,13 @@ pub(super) fn get_user_plugin_dir(env: &mut PluginEnv) {
 pub(super) fn get_session_environment_variables(env: &mut PluginEnv) {
     use yinz_plugin_api::plugin_command::EnvVariable as ProtobufEnvVariable;
 
-    let env_vars: Vec<ProtobufEnvVariable> = env
-        .session_env_vars
+    let mut session_env_vars = env.session_env_vars.clone();
+    session_env_vars.insert("YINZ".into(), "0".into());
+    session_env_vars.insert(
+        "YINZ_SESSION_NAME".into(),
+        env.server_session.current().to_string(),
+    );
+    let env_vars: Vec<ProtobufEnvVariable> = session_env_vars
         .iter()
         .map(|(name, value)| ProtobufEnvVariable {
             name: name.clone(),

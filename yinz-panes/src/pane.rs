@@ -288,7 +288,11 @@ pub trait Pane {
         cursor_color: PaletteColor,
         text_color: PaletteColor,
     ) -> Option<String>;
-    fn render_terminal_title(&mut self, _input_mode: InputMode) -> String;
+    fn render_terminal_title(
+        &mut self,
+        input_mode: InputMode,
+        session_name: Option<&SessionName>,
+    ) -> String;
     fn update_name(&mut self, name: &str);
     fn pid(&self) -> PaneId;
     fn reduce_height(&mut self, percent: f64);

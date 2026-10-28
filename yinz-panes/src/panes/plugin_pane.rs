@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::Instant;
 use yinz_runtime::shared::make_terminal_title;
-use yinz_types::internal_ids::PluginId;
+use yinz_types::internal_ids::{PluginId, SessionName};
 use yinz_types::mouse::{MouseEvent, MouseEventType};
 
 use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
@@ -704,7 +704,11 @@ impl Pane for PluginPane {
     ) -> Option<String> {
         None
     }
-    fn render_terminal_title(&mut self, input_mode: InputMode) -> String {
+    fn render_terminal_title(
+        &mut self,
+        input_mode: InputMode,
+        session_name: Option<&SessionName>,
+    ) -> String {
         let pane_title = if self.pane_name.is_empty() && input_mode == InputMode::RenamePane {
             "Enter name..."
         } else if self.pane_name.is_empty() {
@@ -712,7 +716,7 @@ impl Pane for PluginPane {
         } else {
             &self.pane_name
         };
-        make_terminal_title(pane_title)
+        make_terminal_title(pane_title, session_name)
     }
     fn update_name(&mut self, name: &str) {
         match name {

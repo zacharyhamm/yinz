@@ -59,6 +59,7 @@ use yinz_runtime::channels::Shutdown;
 use yinz_runtime::envs;
 use yinz_runtime::errors::ErrorInstruction;
 use yinz_types::diagnostics::ClientContext;
+use yinz_types::envs::EnvironmentVariables;
 use yinz_types::keys::{KeyModifier, KeyWithModifier};
 use {
     yinz_config::config::Config, yinz_ipc::ipc::ClientToServerMsg, yinz_ipc::ipc::ExitReason,
@@ -315,18 +316,25 @@ impl Drop for OutputProcessingRestored {
 ///
 /// On Unix the server daemonizes (double-fork) inside start_server(), so
 /// the intermediate child exits immediately and `cmd.status()` returns.
-pub fn spawn_server(socket_path: &Path, debug: bool) -> io::Result<()> {
-    spawn_server_with_termios(socket_path, debug, None)
+pub fn spawn_server(
+    socket_path: &Path,
+    debug: bool,
+    session_name: &SessionName,
+    env: &EnvironmentVariables,
+) -> io::Result<()> {
+    spawn_server_with_termios(socket_path, debug, session_name, env, None)
 }
 
 /// Spawn with a same-platform terminal snapshot; `Some(&None)` explicitly selects defaults.
 pub fn spawn_server_with_termios(
     socket_path: &Path,
     debug: bool,
+    session_name: &SessionName,
+    env: &EnvironmentVariables,
     termios: Option<&Option<yinz_runtime::termios::WireTermios>>,
 ) -> io::Result<()> {
     let mut cmd = startup_stage("client.server_command", || {
-        server_command(socket_path, debug, termios)
+        server_command(socket_path, debug, session_name, env, termios)
     })?;
     let status = {
         let _output_processing = OutputProcessingRestored::around_a_child();
@@ -353,10 +361,15 @@ pub fn spawn_server_with_termios(
 fn server_command(
     socket_path: &Path,
     debug: bool,
+    session_name: &SessionName,
+    env: &EnvironmentVariables,
     termios: Option<&Option<yinz_runtime::termios::WireTermios>>,
 ) -> io::Result<Command> {
     let mut cmd = Command::new(current_exe()?);
     cmd.arg("--server").arg(socket_path);
+    cmd.envs(env.inner())
+        .env(envs::YINZ_ENV_KEY, "0")
+        .env(envs::SESSION_NAME_ENV_KEY, session_name.as_str());
     if let Some(termios) = termios {
         cmd.arg("--server-termios")
             .arg(serde_json::to_string(termios).map_err(io::Error::other)?);
@@ -545,6 +558,7 @@ pub fn start_client(
             remote_host,
             &local_config.options,
             &*os_input,
+            &local_config.config.env,
         ) {
             Ok((next, guard)) => {
                 info = next;
@@ -648,8 +662,6 @@ fn run_client(
             is_a_reconnect,
         )
     });
-    envs::set_yinz("0".to_string());
-    yinz_runtime::envs::set_vars(&config.env);
 
     let full_screen_ws = startup_stage("client.terminal_size", || os_input.get_terminal_size());
     let splash_deadline = if is_a_reconnect {
@@ -664,6 +676,7 @@ fn run_client(
     let startup = crate::startup::StartupContext::attached(
         &cli_args,
         &config_options,
+        &config.env,
         full_screen_ws,
         terminal_teardown,
     );
@@ -674,7 +687,6 @@ fn run_client(
     }
     let mut initial_messages = std::collections::VecDeque::new();
     if let Some(mut connection) = prepared.take() {
-        envs::set_session_name(own_session_name.clone());
         os_input.update_session_name(own_session_name.clone());
         let receiver = connection.receiver.take().expect("prepared receiver");
         if let Err(error) = os_input.install_session_connection(
@@ -713,9 +725,9 @@ fn run_client(
     }
 
     let mut command_is_executing = CommandIsExecuting::new();
-    let recovery = remote_host
-        .clone()
-        .map(|host| remote_recovery::Recovery::new(host, command_is_executing.clone()));
+    let recovery = remote_host.clone().map(|host| {
+        remote_recovery::Recovery::new(host, command_is_executing.clone(), config.env.clone())
+    });
     if let Err(error) =
         os_input.set_remote_recovery(recovery.as_ref().map(|recovery| recovery.control.clone()))
     {
@@ -925,7 +937,14 @@ fn run_client(
     // is recognised from TERM alone and never reaches the server the way a probe reply does. The
     // client loop tells the server what this comes to, and tells it again if a probe reply later
     // changes the answer - see `ClientLoop::announce_synchronised_output`.
-    let synchronised_output = match os_input.env_variable("TERM").as_deref() {
+    let synchronised_output = match config
+        .env
+        .inner()
+        .get("TERM")
+        .cloned()
+        .or_else(|| os_input.env_variable("TERM"))
+        .as_deref()
+    {
         Some("alacritty") => Some(SyncOutput::Dcs),
         _ => None,
     };
@@ -1032,9 +1051,6 @@ pub fn start_server_detached(
     config_options: Options,
     info: ClientInfo,
 ) {
-    envs::set_yinz("0".to_string());
-    yinz_runtime::envs::set_vars(&config.env);
-
     // Only a session that does not exist yet can be started detached;
     // attaching needs a controlling terminal to attach to.
     if matches!(
@@ -1045,7 +1061,7 @@ pub fn start_server_detached(
         std::process::exit(1);
     }
 
-    let startup = crate::startup::StartupContext::detached(&cli_args, &config_options);
+    let startup = crate::startup::StartupContext::detached(&cli_args, &config_options, &config.env);
     let (first_msg, ipc_pipe) = startup_stage("client.first_message", || {
         startup.first_message(&mut os_input, info, Default::default())
     });

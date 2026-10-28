@@ -662,10 +662,6 @@ fn command_palette_switches_to_a_live_session() {
     destination_pane.output(b"DESTINATION_SESSION\r\n$ ");
 
     source.wait_until("source ready", |snapshot| snapshot.contains("$"));
-    // Production servers each have their own process environment.
-    yinz_runtime::envs::set_session_name(yinz_types::internal_ids::SessionName::new(
-        source.session_name(),
-    ));
     palette_query(&source, "Switch session…");
     source.wait_until("session picker ready", |s| {
         s.contains("Esc Back") && !s.contains("Working")
@@ -1705,10 +1701,6 @@ fn session_palette_cross_session_destination(command: &str) {
     let target = destination.expect_pty_spawn();
     target.output(b"CROSS SESSION TARGET");
     destination.wait_until("destination ready", |s| s.contains("$"));
-    // Production servers each have their own process environment.
-    yinz_runtime::envs::set_session_name(yinz_types::internal_ids::SessionName::new(
-        source.session_name(),
-    ));
     palette_query(&source, command);
     source.wait_until("destination picker ready", |s| {
         s.contains("Esc Back") && !s.contains("Working")
@@ -1769,9 +1761,6 @@ fn session_palette_confirms_killing_others_and_deleting_their_saved_state() {
         0
     );
     destination.wait_for_serialized_session();
-    yinz_runtime::envs::set_session_name(yinz_types::internal_ids::SessionName::new(
-        source.session_name(),
-    ));
     palette_query(&source, "Kill all other sessions…");
     source.wait_until("kill targets and consequences", |s| {
         s.contains(destination.session_name())

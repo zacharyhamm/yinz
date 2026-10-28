@@ -82,6 +82,7 @@ pub fn screen_thread_main(
         },
         &config.keybinds,
         default_mode,
+        Some(bus.senders.session.current()),
     );
     let thread_senders = bus.senders.clone();
     let mut screen = Screen::new(

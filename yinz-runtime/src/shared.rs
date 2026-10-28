@@ -19,8 +19,8 @@ pub fn set_permissions(_path: &std::path::Path, _mode: u32) -> std::io::Result<(
     Ok(())
 }
 
-use crate::envs::get_session_name;
 use crate::errors::prelude::*;
+use yinz_types::internal_ids::SessionName;
 
 /// Create `path` with any missing parents, then make it accessible to its owner only.
 pub fn ensure_secure_dir(path: &std::path::Path) -> Result<()> {
@@ -33,12 +33,11 @@ pub fn ensure_secure_dir(path: &std::path::Path) -> Result<()> {
 ///
 /// Always leads with this machine's hostname — the same name the tab bar prints in its top-left
 /// corner — so a window attached to a session over SSH says which machine it is on.
-pub fn make_terminal_title(pane_title: &str) -> String {
+pub fn make_terminal_title(pane_title: &str, session_name: Option<&SessionName>) -> String {
     let hostname = crate::host_identity::host_display_name();
-    let session_name = get_session_name().ok();
     format_terminal_title(
         &hostname,
-        session_name.as_ref().map(|name| name.as_str()),
+        session_name.map(|name| name.as_str()),
         pane_title,
     )
 }

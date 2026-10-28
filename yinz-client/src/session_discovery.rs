@@ -19,7 +19,9 @@ fn host_status(host: &str, status: &str) -> Vec<PickerRow> {
 
 impl Discovery {
     pub fn start(hosts: Vec<String>) -> Self {
-        Self::start_with(hosts, crate::remote_sessions::discover)
+        Self::start_with(hosts, |host, cancelled| {
+            crate::remote_sessions::discover(host, cancelled, &Default::default())
+        })
     }
 
     pub fn start_with(

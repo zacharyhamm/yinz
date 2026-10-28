@@ -9,6 +9,19 @@ fn make_server() -> ServerOsInputOutput {
     get_server_os_input().expect("failed to create server os input")
 }
 
+#[test]
+fn command_discovery_hook_receives_current_session_identity() {
+    let original = std::env::var_os("YINZ_SESSION_NAME");
+    let result = run_command_hook(
+        "original command",
+        "printf '%s|%s|%s' \"$YINZ\" \"$YINZ_SESSION_NAME\" \"$RESURRECT_COMMAND\"",
+        &"renamed-session".into(),
+    )
+    .unwrap();
+    assert_eq!(result, "0|renamed-session|original command");
+    assert_eq!(std::env::var_os("YINZ_SESSION_NAME"), original);
+}
+
 fn codex_command(with_env: bool) -> RunCommand {
     let (command, _) = yinz_runtime::agent::launch::plan(&yinz_runtime::agent::launch::Spec {
         kind: Some("codex".into()),

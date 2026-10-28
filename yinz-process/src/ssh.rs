@@ -317,6 +317,7 @@ impl HostForward {
             remote_socket,
             cancelled,
             Instant::now() + FORWARD_READY_TIMEOUT,
+            &Default::default(),
         )
     }
 
@@ -328,6 +329,7 @@ impl HostForward {
         remote_socket: &str,
         cancelled: Option<&AtomicBool>,
         deadline: Instant,
+        env: &yinz_types::envs::EnvironmentVariables,
     ) -> Result<Self> {
         check_cancelled(cancelled)?;
         anyhow::ensure!(Instant::now() < deadline, "SSH forwarding deadline expired");
@@ -342,6 +344,7 @@ impl HostForward {
             ),
         }
         let ssh = Command::new("ssh")
+            .envs(env.inner())
             .args(ssh_forward_args(options))
             .args(["-o", "StdinNull=no"])
             .arg("-T")

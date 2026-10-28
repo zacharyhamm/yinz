@@ -110,6 +110,7 @@ impl Screen {
             }
 
             // update state
+            self.bus.senders.session.set(name.clone());
             self.session_name = name.clone();
             self.default_mode_info.session_name = Some(name.clone());
             for mode_info in self.mode_info.values_mut() {

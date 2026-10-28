@@ -3,6 +3,7 @@ use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 
+use yinz_runtime::envs::{SessionState, SESSION_NAME_ENV_KEY};
 use yinz_runtime::errors::prelude::*;
 
 type TransferCompletion = Arc<Mutex<mpsc::Receiver<()>>>;
@@ -13,15 +14,17 @@ static LAST_TRANSFER: Mutex<Option<TransferCompletion>> = Mutex::new(None);
 pub struct CopyCommand {
     command: String,
     args: Vec<String>,
+    session: SessionState,
 }
 
 impl CopyCommand {
-    pub fn new(command: String) -> Self {
+    pub fn new(command: String, session: SessionState) -> Self {
         let mut command_with_args = command.split(' ').map(String::from);
 
         Self {
             command: command_with_args.next().expect("missing command"),
             args: command_with_args.collect(),
+            session,
         }
     }
 
@@ -32,6 +35,7 @@ impl CopyCommand {
     ) -> Result<JoinHandle<()>> {
         let command = self.command.clone();
         let args = self.args.clone();
+        let session = self.session.clone();
         let mut last_transfer = LAST_TRANSFER
             .lock()
             .map_err(|_| anyhow!("clipboard transfer queue poisoned"))?;
@@ -46,6 +50,7 @@ impl CopyCommand {
                 }
                 let mut process = match Command::new(&command)
                     .args(args)
+                    .env(SESSION_NAME_ENV_KEY, session.current().as_str())
                     .stdin(Stdio::piped())
                     .spawn()
                     .with_context(|| format!("couldn't spawn {command}"))

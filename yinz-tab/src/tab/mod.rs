@@ -539,7 +539,12 @@ impl Tab {
         let viewport = Rc::new(RefCell::new(viewport));
         let display_area = Rc::new(RefCell::new(display_area));
         let connected_clients = Rc::new(RefCell::new(connected_clients));
-        let mode_info = Rc::new(RefCell::new(HashMap::new()));
+        let mode_info = Rc::new(RefCell::new(
+            client_id
+                .map(|client_id| (client_id, default_mode_info.clone()))
+                .into_iter()
+                .collect(),
+        ));
         let reserved_top_rows: Rc<RefCell<HashMap<PaneId, usize>>> =
             Rc::new(RefCell::new(HashMap::new()));
         let fullscreen_covers_ui = Rc::new(RefCell::new(false));
@@ -591,7 +596,9 @@ impl Tab {
         );
 
         let clipboard_provider = match copy_options.command {
-            Some(command) => ClipboardProvider::Command(CopyCommand::new(command)),
+            Some(command) => {
+                ClipboardProvider::Command(CopyCommand::new(command, senders.session.clone()))
+            },
             None => ClipboardProvider::Osc52(copy_options.clipboard),
         };
         let swap_layouts = SwapLayouts::new(swap_layouts, display_area.clone());
@@ -3701,7 +3708,10 @@ impl Tab {
     }
     pub fn update_copy_options(&mut self, copy_options: &CopyOptions) {
         self.clipboard_provider = match &copy_options.command {
-            Some(command) => ClipboardProvider::Command(CopyCommand::new(command.clone())),
+            Some(command) => ClipboardProvider::Command(CopyCommand::new(
+                command.clone(),
+                self.senders.session.clone(),
+            )),
             None => ClipboardProvider::Osc52(copy_options.clipboard),
         };
         self.copy_on_select = copy_options.copy_on_select;

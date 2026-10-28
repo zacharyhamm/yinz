@@ -16,7 +16,7 @@ use yinz_bus::{
     os_input_output::ClientTransport, plugins::PluginInstruction, pty::PtyInstruction,
     screen::ScreenInstruction, PaneId, ServerInstruction,
 };
-use yinz_runtime::{envs, errors::prelude::*};
+use yinz_runtime::errors::prelude::*;
 use yinz_types::geometry::{Direction, ResizeStrategy};
 use {
     yinz_types::data::Event, yinz_types::data::InputMode, yinz_types::data::NewPanePlacement,
@@ -1145,7 +1145,7 @@ pub fn route_action(
                 &senders,
                 client_id,
                 pane_id,
-                &yinz_bus::warp::current_session_name(),
+                &senders.session.current(),
                 &to_session,
                 placement,
                 yinz_bus::warp::WARP_TIMEOUT,
@@ -1182,7 +1182,7 @@ pub fn route_action(
                 &senders,
                 client_id,
                 tab_id,
-                &yinz_bus::warp::current_session_name(),
+                &senders.session.current(),
                 &to_session,
                 yinz_bus::warp::WARP_TIMEOUT,
             ) {
@@ -1216,7 +1216,7 @@ pub fn route_action(
             // including connecting back into this server to deliver the tab,
             // which our own route and pty threads then handle.
             match yinz_bus::warp::warp_tab_from_session(
-                &yinz_bus::warp::current_session_name(),
+                &senders.session.current(),
                 &from_session,
                 tab_id,
                 yinz_bus::warp::WARP_PULL_TIMEOUT,
@@ -1234,8 +1234,7 @@ pub fn route_action(
             layout,
             cwd,
         } => {
-            let current_session_name =
-                envs::get_session_name().unwrap_or_else(|_| String::new().into());
+            let current_session_name = senders.session.current();
             if name != current_session_name {
                 let connect_to_session = SessionConnection {
                     name: Some(name.clone()),

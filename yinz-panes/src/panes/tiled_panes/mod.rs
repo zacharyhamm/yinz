@@ -1463,12 +1463,10 @@ impl TiledPanes {
                             .get(client_id)
                             .is_some_and(|panes| panes.contains(kind)),
                     );
-                    let client_mode = self
-                        .mode_info
-                        .borrow()
-                        .get(client_id)
-                        .unwrap_or(&self.default_mode_info)
-                        .mode;
+                    let mode_info = self.mode_info.borrow();
+                    let client_mode_info =
+                        mode_info.get(client_id).unwrap_or(&self.default_mode_info);
+                    let client_mode = client_mode_info.mode;
                     let err_context =
                         || format!("failed to render tiled panes for client {client_id}");
                     if let PaneId::Plugin(..) = kind
@@ -1539,6 +1537,7 @@ impl TiledPanes {
                     pane_contents_and_ui.render_terminal_title_if_needed(
                         *client_id,
                         client_mode,
+                        client_mode_info.session_name.as_ref(),
                         &mut self.window_title,
                     );
                     // this is done for panes that don't have their own cursor (eg. panes of

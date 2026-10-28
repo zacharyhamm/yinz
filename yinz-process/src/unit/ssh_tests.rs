@@ -1,6 +1,45 @@
 use super::*;
 
 #[test]
+fn forwarding_uses_configured_child_environment_without_mutating_parent() {
+    let dir = tempfile::Builder::new()
+        .prefix("yssh-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let output = dir.path().join("env");
+    yinz_test_support::write_warm_script(
+        &dir.path().join("ssh"),
+        "printf '%s' \"$YINZ_TEST_SSH_VALUE\" > \"$YINZ_TEST_SSH_OUTPUT\"\nexit 1",
+    );
+    let env = yinz_types::envs::EnvironmentVariables::from_data(
+        [
+            ("PATH".into(), dir.path().to_str().unwrap().into()),
+            (
+                "YINZ_TEST_SSH_OUTPUT".into(),
+                output.to_str().unwrap().into(),
+            ),
+            ("YINZ_TEST_SSH_VALUE".into(), "configured".into()),
+        ]
+        .into(),
+    );
+    let parent_path = std::env::var_os("PATH");
+    let parent_value = std::env::var_os("YINZ_TEST_SSH_VALUE");
+    assert!(HostForward::start_until(
+        "host",
+        &SshOptions::default(),
+        &dir.path().join("socket"),
+        "/remote/socket",
+        None,
+        Instant::now() + Duration::from_secs(10),
+        &env,
+    )
+    .is_err());
+    assert_eq!(std::fs::read_to_string(output).unwrap(), "configured");
+    assert_eq!(std::env::var_os("PATH"), parent_path);
+    assert_eq!(std::env::var_os("YINZ_TEST_SSH_VALUE"), parent_value);
+}
+
+#[test]
 fn pending_cancellation_prevents_ssh_spawning() {
     let cancelled = AtomicBool::new(true);
     let error = bootstrap_output(

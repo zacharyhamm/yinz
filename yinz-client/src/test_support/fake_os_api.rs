@@ -291,7 +291,13 @@ impl ServerConnection for FakeClientOsApi {
         self.recovery.lock().unwrap().clone()
     }
 
-    fn spawn_server(&self, _socket_path: &Path, _debug: bool) -> io::Result<()> {
+    fn spawn_server(
+        &self,
+        _socket_path: &Path,
+        _debug: bool,
+        _session_name: &yinz_types::internal_ids::SessionName,
+        _env: &yinz_types::envs::EnvironmentVariables,
+    ) -> io::Result<()> {
         Ok(())
     }
 

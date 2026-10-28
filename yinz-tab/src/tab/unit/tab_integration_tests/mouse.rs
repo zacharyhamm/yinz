@@ -3548,8 +3548,10 @@ fn clipboard_without_terminal_bytes_still_reports_completion() {
         let (sender, server_rx) = channels::unbounded();
         tab.senders.to_server = Some(SenderWithContext::new(sender));
         let destination = if command {
-            tab.clipboard_provider =
-                ClipboardProvider::Command(CopyCommand::new("/usr/bin/true".into()));
+            tab.clipboard_provider = ClipboardProvider::Command(CopyCommand::new(
+                "/usr/bin/true".into(),
+                tab.senders.session.clone(),
+            ));
             CopyDestination::Command
         } else {
             tab.remove_client(ClientId::new(1));
@@ -3648,8 +3650,10 @@ fn clipboard_command_failures_report_failure_without_success() {
     for command in [dir.path().join("missing"), closes_stdin] {
         let (mut tab, plugin_rx) =
             create_new_tab_with_plugin_receiver(Size { cols: 80, rows: 24 }, ModeInfo::default());
-        tab.clipboard_provider =
-            ClipboardProvider::Command(CopyCommand::new(command.display().to_string()));
+        tab.clipboard_provider = ClipboardProvider::Command(CopyCommand::new(
+            command.display().to_string(),
+            tab.senders.session.clone(),
+        ));
         tab.write_selection_to_clipboard(&"x".repeat(4 * 1024 * 1024))
             .unwrap();
         let deadline = std::time::Instant::now() + default_timeout();

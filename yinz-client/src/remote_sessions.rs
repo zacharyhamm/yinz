@@ -18,6 +18,7 @@ use yinz_runtime::{
     errors::prelude::*,
 };
 use yinz_session::sessions::validate_session_name;
+use yinz_types::envs::EnvironmentVariables;
 use yinz_types::internal_ids::SessionName;
 pub struct StartupCancellation {
     pub cancelled: Arc<AtomicBool>,
@@ -225,6 +226,7 @@ pub fn connect(
     name: &str,
     create: bool,
     cancelled: &AtomicBool,
+    env: &EnvironmentVariables,
 ) -> Result<HostForward> {
     connect_until(
         host,
@@ -232,6 +234,7 @@ pub fn connect(
         create,
         cancelled,
         Instant::now() + CONNECT_BUDGET,
+        env,
     )
 }
 
@@ -241,12 +244,14 @@ pub fn connect_new(
     host: &str,
     name: Option<&str>,
     cancelled: &AtomicBool,
+    env: &EnvironmentVariables,
 ) -> Result<(HostForward, String)> {
     bootstrap_until(
         host,
         Request::New(name),
         cancelled,
         Instant::now() + CONNECT_BUDGET,
+        env,
     )
 }
 
@@ -257,13 +262,14 @@ pub(crate) fn connect_until(
     create: bool,
     cancelled: &AtomicBool,
     deadline: Instant,
+    env: &EnvironmentVariables,
 ) -> Result<HostForward> {
     let request = if create {
         Request::Create(name)
     } else {
         Request::Attach(name)
     };
-    bootstrap_until(host, request, cancelled, deadline).map(|(forward, _)| forward)
+    bootstrap_until(host, request, cancelled, deadline, env).map(|(forward, _)| forward)
 }
 
 /// What the remote bootstrap is asked to do with the session.
@@ -298,6 +304,7 @@ fn bootstrap_until(
     request: Request,
     cancelled: &AtomicBool,
     deadline: Instant,
+    env: &EnvironmentVariables,
 ) -> Result<(HostForward, String)> {
     ssh::validate_ssh_host(host)?;
     let name = request.name();
@@ -326,6 +333,7 @@ fn bootstrap_until(
     let options = SshOptions::default();
     let output = ssh::bootstrap_output(
         Command::new("ssh")
+            .envs(env.inner())
             .args(ssh::ssh_forward_args(&options))
             .args(["-T", "--", host, &remote_command]),
         remaining(deadline)?.min(Duration::from_secs(60)),
@@ -356,6 +364,7 @@ fn bootstrap_until(
             .context("remote socket is not UTF-8")?,
         Some(cancelled),
         deadline,
+        env,
     )
     // A session the remote just created and named is otherwise left behind unnamed.
     .with_context(|| format!("forward remote session {name:?} on {host}"))?;
@@ -404,6 +413,7 @@ struct SessionList {
 pub fn discover(
     host: &str,
     cancelled: &AtomicBool,
+    env: &EnvironmentVariables,
 ) -> Result<Vec<yinz_cli::session_picker::PickerRow>> {
     ssh::validate_ssh_host(host)?;
     let args = [
@@ -423,6 +433,7 @@ pub fn discover(
         .join(" ");
     let output = ssh::bootstrap_output(
         Command::new("ssh")
+            .envs(env.inner())
             .args(ssh::ssh_forward_args(&SshOptions::default()))
             .args(["-T", "--", host, &command]),
         Duration::from_secs(10),

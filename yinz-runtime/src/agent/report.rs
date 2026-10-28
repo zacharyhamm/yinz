@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use yinz_types::agent::report::{AgentReport, AgentReportState};
-use yinz_types::internal_ids::ProcessId;
+use yinz_types::internal_ids::{ProcessId, SessionName};
 use yinz_types::pane_id::PaneId;
 
 pub const REPORT_DEADLINE: Duration = Duration::from_secs(1);
@@ -67,16 +67,14 @@ pub fn validate_report(report: &AgentReport) -> Result<()> {
     Ok(())
 }
 
-pub fn report_diagnostics(report: &AgentReport) -> ReportTrace {
+pub fn report_diagnostics(report: &AgentReport, session_name: &SessionName) -> ReportTrace {
     let mut trace = ReportTrace::new(Instant::now());
     trace.report_id = report.report_id.clone();
     trace.process_id = report.process_id;
     trace.enabled = report.trace;
     trace.kind = report.kind.clone();
     trace.pane = format!("{:?}", report.pane_id);
-    trace.session = crate::envs::get_session_name()
-        .unwrap_or_default()
-        .into_string();
+    trace.session = session_name.to_string();
     if let AgentReportState::Set(agent) = &report.state {
         trace.kind = agent.kind.clone();
     }

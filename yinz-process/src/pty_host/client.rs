@@ -46,8 +46,8 @@ pub struct SpawnParams<'a> {
     /// See `ServerToHostMsg::Spawn::arg0`. `None` everywhere but the remote
     /// broker, which uses it to start a login shell.
     pub arg0: Option<String>,
-    /// See `ServerToHostMsg::Spawn::env`. Empty everywhere but the remote broker:
-    /// a local pane inherits the server's environment, as it always has.
+    /// Overrides for the inherited environment, including the current local session
+    /// identity or the remote broker's composed environment.
     pub env: Vec<(String, String)>,
     /// See `ServerToHostMsg::Spawn::login_session`. Only the remote broker sets
     /// it - a local pane is not a login and must not grow an `SSH_TTY`.
