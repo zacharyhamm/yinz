@@ -381,11 +381,7 @@ fn agent_title_marker_and_flash_colors_leave_the_border_unchanged() {
                     state: Some(state),
                     hook_flash: false,
                 };
-                let colors = if focused {
-                    frame.style.colors.text_selected
-                } else {
-                    frame.style.colors.text_unselected
-                };
+                let colors = frame.style.colors.text_unselected;
                 let (glyph, _, emphasis) = crate::ui::agent_title::status(state);
                 let before = frame.render_title().unwrap();
                 let marker = before
@@ -507,6 +503,42 @@ fn agent_title_stack_list_marker_survives_truncation_and_flash_preserves_borders
                 assert_eq!(
                     new.styles.foreground,
                     Some(frame.style.colors.text_unselected.emphasis_0.into())
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn focused_idle_agent_title_marker_uses_normal_background_palette() {
+    for (name, source) in [
+        (
+            "ansi",
+            include_str!("../../../../yinz-config/assets/themes/ansi.kdl"),
+        ),
+        (
+            "catppuccin-macchiato",
+            include_str!("../../../../yinz-config/assets/themes/catppuccin-macchiato.kdl"),
+        ),
+    ] {
+        let themes = yinz_config::theme::Themes::from_string(source, false).unwrap();
+        let theme = themes.get_theme(name).unwrap();
+        for focused in [false, true] {
+            for full in [false, true] {
+                let mut frame = pane_frame_with(false, false, 40);
+                frame.style.colors = theme.palette;
+                frame.focused_client = focused.then_some(ClientId::new(1));
+                frame.should_draw_pane_frames = full;
+                frame.agent_title.state = Some(yinz_types::agent::AgentState::Idle);
+                let characters = frame.render_one_line_title().unwrap();
+                let marker = characters.iter().find(|ch| ch.character == '○').unwrap();
+                assert_eq!(
+                    marker.styles.foreground,
+                    Some(frame.style.colors.text_unselected.base.into())
+                );
+                assert_ne!(
+                    marker.styles.foreground,
+                    Some(frame.style.colors.text_unselected.background.into())
                 );
             }
         }
