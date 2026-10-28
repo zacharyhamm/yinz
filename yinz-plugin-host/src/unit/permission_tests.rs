@@ -841,6 +841,103 @@ fn layout_permissions_ignore_non_startup_work() {
     assert!(layout_run_permissions(&layout).is_empty());
 }
 
+#[test]
+fn override_layout_checks_run_permissions_before_dispatch() {
+    use crate::PluginInstruction;
+    use std::time::Duration;
+    use yinz_bus::screen::ScreenInstruction;
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    use yinz_types::data::{Event, LayoutInfo};
+
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(directory.path().join("saved.kdl"), "layout { pane; }").unwrap();
+    let mut cases = vec![(
+        LayoutInfo::File("saved".into(), Default::default()),
+        LAYOUT_FILE_PERMISSIONS.to_vec(),
+    )];
+    for (pane, permission) in [
+        (
+            r#"pane command="/usr/bin/true";"#,
+            PermissionType::RunCommands,
+        ),
+        (r#"pane edit="notes.txt";"#, PermissionType::OpenFiles),
+        (
+            r#"pane { plugin location="file:test.scm"; };"#,
+            PermissionType::OpenTerminalsOrPlugins,
+        ),
+    ] {
+        for contents in [
+            pane.to_owned(),
+            format!("pane {{ {pane} }};"),
+            format!("tab {{ {pane} }};"),
+            format!("pane; floating_panes {{ {pane} }};"),
+            format!("tab {{ pane; floating_panes {{ {pane} }}; }};"),
+        ] {
+            cases.push((
+                LayoutInfo::Stringified(format!("layout {{ {contents} }}")),
+                vec![permission],
+            ));
+        }
+    }
+
+    for (layout, required) in cases {
+        let mut env = crate::test_env::test_env();
+        assert!(!env.plugin_config.is_builtin());
+        env.layout_dir = Some(directory.path().to_owned());
+        let (to_screen, screen) = unbounded();
+        let (to_pty, pty) = unbounded();
+        let (to_plugin, plugin) = unbounded();
+        env.senders.to_screen = Some(SenderWithContext::new(to_screen));
+        env.senders.to_pty = Some(SenderWithContext::new(to_pty));
+        env.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        let command =
+            PluginCommand::OverrideLayout(layout.clone(), false, false, true, BTreeMap::new());
+        for missing in &required {
+            *env.permissions.lock().unwrap() = Some(
+                [PermissionType::ChangeApplicationState]
+                    .into_iter()
+                    .chain(required.iter().copied().filter(|grant| grant != missing))
+                    .collect(),
+            );
+            let error = run_plugin_command(&mut env, command.clone()).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("layout needs permissions this plugin has not been granted: {missing}"),
+                "{layout:?}"
+            );
+            assert!(screen.is_empty());
+            assert!(pty.is_empty());
+            assert!(plugin.is_empty());
+        }
+
+        *env.permissions.lock().unwrap() = Some(
+            [PermissionType::ChangeApplicationState]
+                .into_iter()
+                .chain(required)
+                .collect(),
+        );
+        run_plugin_command(&mut env, command).unwrap();
+        let (instruction, _) = screen.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert!(matches!(instruction, ScreenInstruction::OverrideLayout(..)));
+        drop(instruction);
+        // Releasing the screen completion lets this action's worker finish before the next case.
+        let (instruction, _) = plugin.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert!(matches!(
+            instruction,
+            PluginInstruction::Update(events)
+                if matches!(events.as_slice(), [(_, _, Event::InputReceived)])
+        ));
+        let (instruction, _) = plugin.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert!(matches!(
+            instruction,
+            PluginInstruction::Update(events)
+                if matches!(events.as_slice(), [(_, _, Event::ActionComplete(..))])
+        ));
+        assert!(screen.is_empty());
+        assert!(pty.is_empty());
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn plugin_layout_paths_cannot_escape_the_layout_directory() {
@@ -961,6 +1058,7 @@ fn project_worktree_defaults_apply_from_primary_and_external_checkouts() {
             linked.to_str().unwrap(),
         ],
         "link",
+        None,
     )
     .unwrap();
     let mut a = projects::validate("a", resolved(first.path()).to_str().unwrap()).unwrap();
@@ -1040,6 +1138,7 @@ fn project_worktree_linked_defaults_follow_repository_membership() {
             repo.path(),
             &["worktree", "add", "-b", branch, path.to_str().unwrap()],
             "link",
+            None,
         )
         .unwrap();
     }

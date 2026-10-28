@@ -373,26 +373,25 @@ pub enum ExitReason {
     Error(String),
 }
 
-impl Display for ExitReason {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
+impl ExitReason {
+    /// Format a client exit using the attachment's current identity.
+    pub fn message(&self, session_name: Option<&str>) -> String {
         match self {
-            Self::Normal => write!(f, "Bye from Yinz!"),
-            Self::NormalDetached => write!(f, "Session detached"),
-            Self::ForceDetached => write!(
-                f,
+            Self::Normal => "Bye from Yinz!".into(),
+            Self::NormalDetached => "Session detached".into(),
+            Self::ForceDetached => {
                 "Session was detached from this client (possibly because another client connected)"
-            ),
-            Self::CannotAttach => write!(
-                f,
-                "Session attached to another client. Use --force flag to force connect."
-            ),
+                    .into()
+            },
+            Self::CannotAttach => {
+                "Session attached to another client. Use --force flag to force connect.".into()
+            },
             Self::Disconnect => {
-                let session_tip = match yinz_runtime::envs::get_session_name() {
-                    Ok(name) => format!("`yinz attach {}`", name),
-                    Err(_) => "see `yinz ls` and `yinz attach`".to_string(),
+                let session_tip = match session_name {
+                    Some(name) => format!("`yinz attach {}`", name),
+                    None => "see `yinz ls` and `yinz attach`".to_string(),
                 };
-                write!(
-                    f,
+                format!(
                     "
 Your yinz client lost connection to the yinz server.
 
@@ -410,10 +409,16 @@ There are a few things you can try now:
     "
                 )
             },
-            Self::KickedByHost => write!(f, "Disconnected by host"),
-            Self::CustomExitStatus(exit_status) => write!(f, "Exit {}", exit_status),
-            Self::Error(e) => write!(f, "Error occurred in server:\n{}", e),
+            Self::KickedByHost => "Disconnected by host".into(),
+            Self::CustomExitStatus(exit_status) => format!("Exit {}", exit_status),
+            Self::Error(e) => format!("Error occurred in server:\n{}", e),
         }
+    }
+}
+
+impl Display for ExitReason {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
+        write!(f, "{}", self.message(None))
     }
 }
 

@@ -1477,7 +1477,15 @@ pub fn start_server_impl(
     install_panic_hook: bool,
 ) {
     use yinz_runtime::logging::startup_stage;
-    envs::set_yinz("0".to_string());
+    let session_identity = envs::SessionState::new(
+        socket_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+            .into(),
+    );
+    os_input.set_session_state(session_identity.clone());
     // Here rather than in `start_server`, so every way in - daemonized or not - says it once,
     // and a debug install, whose own code runs unoptimized, is one grep away when a session
     // feels wrong.
@@ -1820,6 +1828,7 @@ pub fn start_server_impl(
                         to_server.clone(),
                         shutdown.clone(),
                         ownership.clone(),
+                        session_identity.clone(),
                         client_attributes.clone(),
                         runtime_config_options.clone(),
                         layout.clone(),
@@ -2483,8 +2492,8 @@ pub fn start_server_impl(
                 }
             },
             ServerInstruction::SwitchSession(mut connect_to_session, client_id, completion_tx) => {
-                let current_session_name = envs::get_session_name();
-                if connect_to_session.name == current_session_name.ok() {
+                let current_session_name = session_identity.current();
+                if connect_to_session.name.as_ref() == Some(&current_session_name) {
                     log::error!("Cannot attach to same session");
                 } else {
                     let layout_dir = with_session(&session_data, |session| {
@@ -2890,9 +2899,7 @@ pub fn start_server_impl(
         shutdown_started.elapsed()
     );
     let cleanup = if kill_session {
-        envs::get_session_name()
-            .context("missing session name during shutdown")
-            .and_then(|name| os_input.terminate_orphaned_pty_hosts(name.as_str(), &mut progress))
+        os_input.terminate_orphaned_pty_hosts(session_identity.current().as_str(), &mut progress)
     } else {
         Ok(())
     };
@@ -2937,6 +2944,7 @@ fn init_session(
     to_server: SenderWithContext<ServerInstruction>,
     shutdown: Shutdown,
     ownership: Arc<yinz_ipc::session_ownership::SessionOwnership>,
+    session_identity: envs::SessionState,
     client_attributes: ClientAttributes,
     config_options: Options,
     layout: Layout,
@@ -3041,6 +3049,7 @@ fn init_session(
                 Some(&to_background_jobs),
                 Some(os_input.clone()),
             );
+            bus.senders.session = session_identity.clone();
             bus.senders.session_checkpoint = session_checkpoint.clone();
             let pty = Pty::new(
                 bus,
@@ -3071,6 +3080,7 @@ fn init_session(
                 Some(&to_background_jobs),
                 Some(os_input.clone()),
             );
+            screen_bus.senders.session = session_identity.clone();
             screen_bus.senders.session_checkpoint = session_checkpoint.clone();
             screen_bus.senders.session_ownership = Some(Arc::downgrade(&ownership));
             let max_panes = cli_assets.max_panes;
@@ -3100,8 +3110,14 @@ fn init_session(
         .unwrap();
 
     let yinz_cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let mut session_env_vars: std::collections::BTreeMap<String, String> =
-        std::env::vars().collect();
+    let mut session_env_vars: std::collections::BTreeMap<String, String> = std::env::vars_os()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+        .collect();
+    session_env_vars.insert("YINZ".into(), "0".into());
+    session_env_vars.insert(
+        "YINZ_SESSION_NAME".into(),
+        session_identity.current().to_string(),
+    );
     // CLI paths are not necessarily present in the server's inherited environment.
     // Expose them to plugins so their child CLI commands use this session's config.
     for (key, path) in [
@@ -3139,7 +3155,7 @@ fn init_session(
     let plugin_thread = thread::Builder::new()
         .name("plugins".to_string())
         .spawn({
-            let plugin_bus = Bus::new(
+            let mut plugin_bus = Bus::new(
                 vec![plugin_receiver],
                 Some(&to_screen_bounded),
                 Some(&to_pty),
@@ -3149,6 +3165,8 @@ fn init_session(
                 Some(&to_background_jobs),
                 None,
             );
+            plugin_bus.senders.session = session_identity.clone();
+            let plugin_session = plugins::ServerSession::Shared(session_identity.clone());
             // A plugin worker can outlive its bounded shutdown wait.
             let ownership = ownership.clone();
 
@@ -3197,9 +3215,7 @@ fn init_session(
                     hooks,
                     context_menu,
                     client_id,
-                    // `Process`, not the name as it is now: a rename republishes the variable,
-                    // and plugins loaded afterwards must see the new name.
-                    plugins::ServerSession::Process,
+                    plugin_session,
                 )
                 .fatal()
             }
@@ -3246,6 +3262,7 @@ fn init_session(
                 Some(&to_background_jobs),
                 Some(os_input.clone()),
             );
+            background_jobs_bus.senders.session = session_identity.clone();
             background_jobs_bus.senders.session_checkpoint = session_checkpoint.clone();
             move || {
                 background_jobs_main(
@@ -3275,6 +3292,7 @@ fn init_session(
         shutdown,
         data_access,
         senders: ThreadSenders {
+            session: session_identity,
             to_screen: Some(to_screen),
             to_pty: Some(to_pty),
             to_plugin: Some(to_plugin),

@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use yinz_types::internal_ids::SessionName;
 use yinz_types::internal_ids::TabId;
 
-use yinz_runtime::{envs, errors::prelude::*};
+use yinz_runtime::errors::prelude::*;
 use {
     yinz_ipc::ipc::ClientToServerMsg, yinz_ipc::ipc::IpcReceiverWithContext,
     yinz_ipc::ipc::IpcSenderWithContext, yinz_ipc::ipc::ServerToClientMsg,
@@ -381,16 +381,6 @@ fn send_pane_to_session(
         .context("failed to send the pane to the other session")?;
 
     read_cli_reply(sender).map(|_| ())
-}
-
-/// What this server calls itself, for the two directions that need to tell
-/// themselves apart from the session at the other end.
-///
-/// Read here rather than inside the warp functions so those stay free of
-/// process-global state and can be tested without racing every other test that
-/// touches `YINZ_SESSION_NAME`.
-pub fn current_session_name() -> SessionName {
-    envs::get_session_name().unwrap_or_default()
 }
 
 /// Move a pane out of this session and into another one.

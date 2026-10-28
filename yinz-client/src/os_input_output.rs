@@ -382,8 +382,14 @@ pub trait ServerConnection {
         ))
     }
     fn update_session_name(&mut self, new_session_name: SessionName);
-    fn spawn_server(&self, socket_path: &Path, debug: bool) -> Result<(), std::io::Error> {
-        crate::spawn_server(socket_path, debug)
+    fn spawn_server(
+        &self,
+        socket_path: &Path,
+        debug: bool,
+        session_name: &SessionName,
+        env: &yinz_types::envs::EnvironmentVariables,
+    ) -> Result<(), std::io::Error> {
+        crate::spawn_server(socket_path, debug, session_name, env)
     }
 }
 
@@ -626,8 +632,20 @@ impl ServerConnection for ClientOsInputOutput {
             })
             .unwrap_or(IpcRecv::Eof)
     }
-    fn spawn_server(&self, socket_path: &Path, debug: bool) -> io::Result<()> {
-        crate::spawn_server_with_termios(socket_path, debug, Some(&self.orig_termios))
+    fn spawn_server(
+        &self,
+        socket_path: &Path,
+        debug: bool,
+        session_name: &SessionName,
+        env: &yinz_types::envs::EnvironmentVariables,
+    ) -> io::Result<()> {
+        crate::spawn_server_with_termios(
+            socket_path,
+            debug,
+            session_name,
+            env,
+            Some(&self.orig_termios),
+        )
     }
 
     fn update_session_name(&mut self, _new_session_name: SessionName) {

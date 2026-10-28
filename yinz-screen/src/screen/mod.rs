@@ -1394,6 +1394,7 @@ impl Screen {
             copy_on_select,
         );
         let session_name = mode_info.session_name.clone().unwrap_or_default();
+        bus.senders.session.set(session_name.clone());
         let session_info = SessionInfo::new(session_name.clone());
         let mut peer_sessions_cache = BTreeMap::new();
         let resurrectable_sessions_cache = BTreeMap::new();

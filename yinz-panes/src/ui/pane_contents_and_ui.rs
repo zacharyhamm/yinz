@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use yinz_runtime::errors::prelude::*;
 use yinz_types::animation::blend;
 use yinz_types::data::{InputMode, PaletteColor};
+use yinz_types::internal_ids::SessionName;
 use yinz_types::multiplayer::{ColorSlot, MultiplayerSlots};
 use yinz_types::pane_size::PaneGeom;
 use yinz_types::style::Style;
@@ -362,12 +363,13 @@ impl<'a> PaneContentsAndUi<'a> {
         &mut self,
         client_id: ClientId,
         client_mode: InputMode,
+        session_name: Option<&SessionName>,
         previous_title: &mut Option<String>,
     ) {
         if !self.focused_clients.contains(&client_id) {
             return;
         }
-        let vte_output = self.pane.render_terminal_title(client_mode);
+        let vte_output = self.pane.render_terminal_title(client_mode, session_name);
         if let Some(previous_title) = previous_title
             && *previous_title == vte_output
         {

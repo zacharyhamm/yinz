@@ -37,6 +37,7 @@ fn failed_in_process_spawns_report_errors_and_close_the_pty() {
             Box::new(|_, _, _| panic!("a failed spawn cannot produce a child exit")),
             None,
             terminal_id,
+            &"test".into(),
         );
         let error = result.expect_err("a failed spawn must reach the caller");
         match (error.downcast_ref::<YinzError>(), expected_errno) {
@@ -108,6 +109,7 @@ fn in_process_pane_exit_reports_status_after_reaping_the_child() {
             }),
             None,
             terminal_id,
+            &"test".into(),
         )
         .unwrap();
         assert_ne!(
@@ -148,7 +150,6 @@ fn termios_supervisor_entry() {
 fn a_spawn_overlapping_rename_is_registered_before_the_new_name_is_published() {
     use std::io::Write;
     use std::os::unix::net::UnixListener;
-    use yinz_runtime::envs;
     let dir = tempfile::tempdir().unwrap();
     let socket_root = dir.path().join("sock");
     let gate_path = dir.path().join("gate");
@@ -159,9 +160,9 @@ fn a_spawn_overlapping_rename_is_registered_before_the_new_name_is_published() {
             "YINZ_SOCKET_DIR='{}' YINZ_TEST_SPAWN_GATE='{}' YINZ_TEST_TERMIOS_SUPERVISOR=1 exec '{}' --exact os_input_output_unix::tests::termios_supervisor_entry --nocapture\n",
             socket_root.display(), gate_path.display(), exe.display(),
         ));
-    let previous_name = envs::get_session_name().ok();
-    envs::set_session_name("spawn-old".into());
+    let previous_name = yinz_runtime::envs::get_session_name().ok();
     let mut backend = UnixPtyBackend::with_termios(None).unwrap();
+    backend.set_session_state(SessionState::new("spawn-old".into()));
     backend.host_bin = Some(wrapper);
     backend.pty_host_enabled.store(true, Ordering::SeqCst);
     let spawning = backend.clone();
@@ -199,7 +200,7 @@ fn a_spawn_overlapping_rename_is_registered_before_the_new_name_is_published() {
         )
     });
     barrier.wait();
-    assert_eq!(envs::get_session_name().unwrap().as_str(), "spawn-old");
+    assert_eq!(backend.session_name().as_str(), "spawn-old");
     gate.write_all(b"go").unwrap();
     let (_reader, child) = spawn.join().unwrap().unwrap();
     let result = rename.join().unwrap();
@@ -221,18 +222,86 @@ fn a_spawn_overlapping_rename_is_registered_before_the_new_name_is_published() {
     backend.begin_confirmed_pty_host_shutdown().unwrap();
     backend.shutdown_pty_hosts();
     backend.confirm_pty_host_shutdown().unwrap();
-    let published = envs::get_session_name().unwrap();
-    match previous_name {
-        Some(name) => envs::set_session_name(name),
-        // FIXME: Audit that the environment access only happens in single-threaded code.
-        None => unsafe { std::env::remove_var(envs::SESSION_NAME_ENV_KEY) },
-    }
+    let published = backend.session_name();
+    assert_eq!(yinz_runtime::envs::get_session_name().ok(), previous_name);
     result.unwrap();
     assert!(rejected.is_err(), "a stale old name must reject rename");
     assert_eq!(published.as_str(), "spawn-new");
     assert_eq!(status.session_name.unwrap(), published);
     assert_eq!(status.child_pid, Some(child));
     assert!(status.attached);
+}
+
+#[test]
+fn both_local_pane_paths_use_current_session_without_mutating_parent_environment() {
+    let inherited_name = std::env::var_os("YINZ_SESSION_NAME");
+    let inherited_yinz = std::env::var_os("YINZ");
+    let dir = tempfile::tempdir().unwrap();
+    let supervisor = dir.path().join("supervisor");
+    let exe = std::env::current_exe().unwrap();
+    yinz_test_support::write_warm_script(&supervisor, &format!(
+        "YINZ_SOCKET_DIR='{}' YINZ_TEST_TERMIOS_SUPERVISOR=1 exec '{}' --exact os_input_output_unix::tests::termios_supervisor_entry --nocapture\n",
+        dir.path().join("sock").display(),
+        exe.display().to_string().replace('\'', "'\"'\"'")
+    ));
+    for detachable in [false, true] {
+        let mut backend = UnixPtyBackend::with_termios(None).unwrap();
+        let state = SessionState::new("before-rename".into());
+        backend.set_session_state(state.clone());
+        backend.host_bin = Some(supervisor.clone());
+        backend.pty_host_enabled.store(detachable, Ordering::SeqCst);
+        state.set("after-rename".into());
+        for launch_override in [false, true] {
+            let expected = if launch_override {
+                "launch-override"
+            } else {
+                "after-rename"
+            };
+            let mut cmd = RunCommand {
+                command: "/bin/sh".into(),
+                args: vec![
+                    "-c".into(),
+                    "[ \"$YINZ\" = 0 ] && [ \"$YINZ_SESSION_NAME\" = \"$1\" ]".into(),
+                    "check-session".into(),
+                    expected.into(),
+                ],
+                ..Default::default()
+            };
+            if launch_override {
+                cmd.command = "/usr/bin/env".into();
+                cmd.args.splice(
+                    0..0,
+                    ["YINZ_SESSION_NAME=launch-override".into(), "/bin/sh".into()],
+                );
+            }
+            let (exited, exit) = std::sync::mpsc::channel();
+            let id = TerminalId::new(0);
+            let (_reader, _) = backend
+                .spawn_terminal(
+                    cmd,
+                    Box::new(move |_, status, _| exited.send(status).unwrap()),
+                    id,
+                )
+                .unwrap();
+            assert_eq!(
+                backend
+                    .terminal_id_to_host
+                    .lock()
+                    .unwrap()
+                    .contains_key(&id),
+                detachable
+            );
+            let status = exit.recv_timeout(Duration::from_secs(30));
+            backend.clear_terminal_id(id).unwrap();
+            assert_eq!(
+                status.unwrap(),
+                Some(0),
+                "detachable={detachable}, launch_override={launch_override}"
+            );
+        }
+    }
+    assert_eq!(std::env::var_os("YINZ_SESSION_NAME"), inherited_name);
+    assert_eq!(std::env::var_os("YINZ"), inherited_yinz);
 }
 
 #[tokio::test]

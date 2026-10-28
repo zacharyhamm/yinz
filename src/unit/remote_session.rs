@@ -3,6 +3,32 @@ use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[test]
+fn remote_server_term_uses_config_before_inheritance_and_falls_back_only_when_empty() {
+    for (configured, inherited, expected_override) in [
+        (None, None, Some("xterm-256color")),
+        (None, Some(""), Some("xterm-256color")),
+        (None, Some("screen"), None),
+        (Some(""), Some("screen"), Some("xterm-256color")),
+        (Some("xterm-kitty"), None, Some("xterm-kitty")),
+        (Some("xterm-kitty"), Some("screen"), Some("xterm-kitty")),
+    ] {
+        let configured = yinz_types::envs::EnvironmentVariables::from_data(
+            configured
+                .map(|term| ("TERM".into(), term.into()))
+                .into_iter()
+                .collect(),
+        );
+        let parent = std::env::var_os("TERM");
+        let env = remote_server_env(&configured, inherited.map(Into::into));
+        assert_eq!(
+            env.inner().get("TERM").map(String::as_str),
+            expected_override
+        );
+        assert_eq!(std::env::var_os("TERM"), parent);
+    }
+}
+
+#[test]
 fn startup_cancellation_unregisters_handlers_on_scope_exit() {
     if yinz_test_support::reexec_test() {
         return;
@@ -536,11 +562,22 @@ fn discovery_deadline_kills_and_reaps_ssh() {
     path.extend(std::env::split_paths(
         &std::env::var_os("PATH").unwrap_or_default(),
     ));
-    unsafe {
-        std::env::set_var("PATH", std::env::join_paths(path).unwrap());
-        std::env::set_var("YINZ_TEST_QUERY_PID", &pid_file);
-    }
-    let error = discover("host", &AtomicBool::new(false)).unwrap_err();
+    let env = yinz_types::envs::EnvironmentVariables::from_data(
+        [
+            (
+                "PATH".into(),
+                std::env::join_paths(path).unwrap().into_string().unwrap(),
+            ),
+            (
+                "YINZ_TEST_QUERY_PID".into(),
+                pid_file.to_str().unwrap().into(),
+            ),
+        ]
+        .into(),
+    );
+    let parent_path = std::env::var_os("PATH");
+    let error = discover("host", &AtomicBool::new(false), &env).unwrap_err();
+    assert_eq!(std::env::var_os("PATH"), parent_path);
     assert!(format!("{error:#}").contains("timed out"));
     let pid: i32 = std::fs::read_to_string(pid_file).unwrap().parse().unwrap();
     assert_eq!(

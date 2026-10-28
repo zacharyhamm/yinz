@@ -279,14 +279,8 @@ fn create_session(
             .context("load remote configuration and layout")?;
         (config, layout, options)
     };
-    yinz_runtime::envs::set_vars(&config.env);
-    // SSH without a PTY does not supply TERM for the server's pane processes.
-    if std::env::var_os("TERM").is_none_or(|term| term.is_empty()) {
-        unsafe { std::env::set_var("TERM", "xterm-256color") };
-    }
-    yinz_runtime::envs::set_session_name(name.clone());
-    yinz_runtime::envs::set_yinz("0".to_owned());
-    yinz_client::spawn_server_with_termios(socket, opts.debug, client_termios.as_ref())
+    let env = remote_server_env(&config.env, std::env::var_os("TERM"));
+    yinz_client::spawn_server_with_termios(socket, opts.debug, name, &env, client_termios.as_ref())
         .context("start remote session server")?;
     let stream = connect_with_deadline(socket, READY_TIMEOUT, Duration::from_millis(50))
         .context("connect to new remote session")?;
@@ -333,6 +327,22 @@ fn create_session(
         .send_client_msg(ClientToServerMsg::ClientExited)
         .context("detach remote bootstrap client")?;
     Ok(())
+}
+
+fn remote_server_env(
+    configured: &yinz_types::envs::EnvironmentVariables,
+    inherited_term: Option<std::ffi::OsString>,
+) -> yinz_types::envs::EnvironmentVariables {
+    let mut env = configured.inner().clone();
+    let term = env
+        .get("TERM")
+        .map(std::ffi::OsString::from)
+        .or(inherited_term);
+    // SSH without a PTY may omit TERM; set the fallback on the server child only.
+    if term.is_none_or(|term| term.is_empty()) {
+        env.insert("TERM".into(), "xterm-256color".into());
+    }
+    yinz_types::envs::EnvironmentVariables::from_data(env)
 }
 
 fn cleanup_forward() {
@@ -487,7 +497,7 @@ pub(crate) fn attach(opts: &CliArgs, host: &str, name: Option<&str>, create: boo
             create,
         },
         None => {
-            let rows = discover(host, &cancellation.cancelled);
+            let rows = discover(host, &cancellation.cancelled, &Default::default());
             if cancellation.is_cancelled() {
                 return Ok(yinz_client::INTERRUPTED_EXIT_STATUS);
             }
@@ -539,9 +549,12 @@ fn run(
     loop {
         let connected = match target {
             Target::Named { name, create } => {
-                connect(host, &name, create, &cancellation.cancelled).map(|forward| (forward, name))
+                connect(host, &name, create, &cancellation.cancelled, &config.env)
+                    .map(|forward| (forward, name))
             },
-            Target::New(name) => connect_new(host, name.as_deref(), &cancellation.cancelled),
+            Target::New(name) => {
+                connect_new(host, name.as_deref(), &cancellation.cancelled, &config.env)
+            },
         };
         if cancellation.is_cancelled() {
             return Ok(yinz_client::INTERRUPTED_EXIT_STATUS);

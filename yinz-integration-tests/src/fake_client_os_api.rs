@@ -340,7 +340,13 @@ impl ServerConnection for FakeClientOsApi {
         *self.receive_instructions_from_server.lock().unwrap() = Some(ipc_receiver);
         Ok(())
     }
-    fn spawn_server(&self, socket_path: &Path, _debug: bool) -> Result<(), std::io::Error> {
+    fn spawn_server(
+        &self,
+        socket_path: &Path,
+        _debug: bool,
+        _session_name: &yinz_types::internal_ids::SessionName,
+        _env: &yinz_types::envs::EnvironmentVariables,
+    ) -> Result<(), std::io::Error> {
         if let Some(server_spawner) = self.server_spawner.lock().unwrap().take() {
             server_spawner(socket_path.to_path_buf());
         }

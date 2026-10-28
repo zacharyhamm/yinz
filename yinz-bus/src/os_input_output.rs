@@ -208,9 +208,10 @@ pub trait TerminalSupervision: Send + Sync {
     fn confirm_pty_host_shutdown(&self) -> Result<()> {
         Ok(())
     }
+    /// Install this server's identity before workers clone the backend.
+    fn set_session_state(&mut self, _state: yinz_runtime::envs::SessionState) {}
     /// Relabel local supervisors before publishing a session rename.
-    fn rename_pty_host_session(&self, _old: &SessionName, new: &SessionName) -> Result<()> {
-        yinz_runtime::envs::set_session_name(new.clone());
+    fn rename_pty_host_session(&self, _old: &SessionName, _new: &SessionName) -> Result<()> {
         Ok(())
     }
     /// Terminate the unattached supervisors labelled with `session`, on the way

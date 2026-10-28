@@ -14,6 +14,7 @@ use std::time::Instant;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::geometry::SplitDirection;
 use yinz_types::input::layout::Run as LayoutRun;
+use yinz_types::internal_ids::SessionName;
 use yinz_types::pane_size::Offset;
 use yinz_types::pane_size::{Dimension, PaneGeom};
 use {yinz_types::data::InputMode, yinz_types::data::PaletteColor, yinz_types::data::PaneContents};
@@ -243,7 +244,11 @@ impl Pane for MockPane {
     ) -> Option<String> {
         unimplemented!()
     }
-    fn render_terminal_title(&mut self, _input_mode: InputMode) -> String {
+    fn render_terminal_title(
+        &mut self,
+        _input_mode: InputMode,
+        _session_name: Option<&SessionName>,
+    ) -> String {
         unimplemented!()
     }
     fn update_name(&mut self, _name: &str) {

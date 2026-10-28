@@ -12,10 +12,10 @@ use crate::terminal_escapes::ClientTeardown;
 use crate::{ipc_pipe_for_session, spawn_server_error_message, ClientInfo};
 use std::path::{Path, PathBuf};
 use yinz_cli::args::CliArgs;
-use yinz_runtime::envs;
-use yinz_runtime::host_terminal_env::host_terminal_env;
+use yinz_runtime::host_terminal_env::host_terminal_env_with_overrides;
 use yinz_types::internal_ids::TabNumber;
 use yinz_types::pane_size::Size;
+use yinz_types::{envs::EnvironmentVariables, internal_ids::SessionName};
 use {
     yinz_config::config::Config, yinz_ipc::ipc::ClientToServerMsg, yinz_types::data::LayoutInfo,
     yinz_types::data::LayoutMetadata, yinz_types::input::cli_assets::CliAssets,
@@ -31,6 +31,7 @@ const DETACHED_WINDOW_SIZE: Size = Size { cols: 50, rows: 50 };
 pub(crate) struct StartupContext<'a> {
     pub cli_args: &'a CliArgs,
     pub config_options: &'a Options,
+    pub env: &'a EnvironmentVariables,
     /// The size to claim for the session's window.
     pub terminal_window_size: Size,
     /// How to hand the terminal back if startup fails. `None` when there is
@@ -43,22 +44,29 @@ impl<'a> StartupContext<'a> {
     pub fn attached(
         cli_args: &'a CliArgs,
         config_options: &'a Options,
+        env: &'a EnvironmentVariables,
         terminal_window_size: Size,
         teardown: ClientTeardown,
     ) -> Self {
         Self {
             cli_args,
             config_options,
+            env,
             terminal_window_size,
             teardown: Some(teardown),
         }
     }
 
     /// Context for spawning a server with no client attached to it.
-    pub fn detached(cli_args: &'a CliArgs, config_options: &'a Options) -> Self {
+    pub fn detached(
+        cli_args: &'a CliArgs,
+        config_options: &'a Options,
+        env: &'a EnvironmentVariables,
+    ) -> Self {
         Self {
             cli_args,
             config_options,
+            env,
             terminal_window_size: DETACHED_WINDOW_SIZE,
             teardown: None,
         }
@@ -117,7 +125,7 @@ impl<'a> StartupContext<'a> {
             max_panes: self.cli_args.max_panes,
             force_run_layout_commands,
             cwd,
-            host_terminal_env: host_terminal_env(),
+            host_terminal_env: host_terminal_env_with_overrides(self.env),
             timezone: yinz_runtime::client_time::capture_timezone(),
             supports_session_requests: true,
         }
@@ -126,8 +134,14 @@ impl<'a> StartupContext<'a> {
     /// Fork the server process for a session that does not have one yet, and
     /// Does not return if the server cannot be spawned — there is no session
     /// to attach to.
-    fn spawn_server(&self, os_input: &dyn ClientOsApi, ipc_pipe: &Path) {
-        if let Err(e) = os_input.spawn_server(ipc_pipe, self.cli_args.debug) {
+    fn spawn_server(
+        &self,
+        os_input: &dyn ClientOsApi,
+        ipc_pipe: &Path,
+        session_name: &SessionName,
+    ) {
+        if let Err(e) = os_input.spawn_server(ipc_pipe, self.cli_args.debug, session_name, self.env)
+        {
             ClientTeardown::exit_after_startup_error(self.teardown, spawn_server_error_message(e));
         }
     }
@@ -145,13 +159,12 @@ impl<'a> StartupContext<'a> {
     ) -> (ClientToServerMsg, PathBuf) {
         match info {
             ClientInfo::Remote { name, socket, .. } => {
-                envs::set_session_name(name.clone());
                 os_input.update_session_name(name);
                 (
                     ClientToServerMsg::AttachClient {
                         cli_assets: CliAssets {
                             terminal_window_size: self.terminal_window_size,
-                            host_terminal_env: host_terminal_env(),
+                            host_terminal_env: host_terminal_env_with_overrides(self.env),
                             timezone: yinz_runtime::client_time::capture_timezone(),
                             supports_session_requests: true,
                             ..Default::default()
@@ -163,7 +176,6 @@ impl<'a> StartupContext<'a> {
                 )
             },
             ClientInfo::Attach(name, config_options) => {
-                envs::set_session_name(name.clone());
                 let ipc_pipe = ipc_pipe_for_session(&name, self.teardown);
                 os_input.update_session_name(name);
 
@@ -187,7 +199,6 @@ impl<'a> StartupContext<'a> {
                 )
             },
             ClientInfo::Watch(name, _config_options) => {
-                envs::set_session_name(name.clone());
                 let ipc_pipe = ipc_pipe_for_session(&name, self.teardown);
                 os_input.update_session_name(name);
 
@@ -199,7 +210,6 @@ impl<'a> StartupContext<'a> {
                 )
             },
             ClientInfo::Resurrect(name, path_to_layout, force_run_commands, cwd) => {
-                envs::set_session_name(name.clone());
                 let cli_assets = self.build_cli_assets(
                     self.config_options,
                     Some(LayoutInfo::File(
@@ -211,8 +221,8 @@ impl<'a> StartupContext<'a> {
                 );
 
                 let ipc_pipe = ipc_pipe_for_session(&name, self.teardown);
-                os_input.update_session_name(name);
-                self.spawn_server(&**os_input, &ipc_pipe);
+                os_input.update_session_name(name.clone());
+                self.spawn_server(&**os_input, &ipc_pipe, &name);
 
                 (
                     ClientToServerMsg::FirstClientConnected { cli_assets },
@@ -220,7 +230,6 @@ impl<'a> StartupContext<'a> {
                 )
             },
             ClientInfo::New(name, layout_info, layout_cwd) => {
-                envs::set_session_name(name.clone());
                 let cli_assets = self.build_cli_assets(
                     self.config_options,
                     self.resolve_layout(layout_info, self.config_options),
@@ -229,8 +238,8 @@ impl<'a> StartupContext<'a> {
                 );
 
                 let ipc_pipe = ipc_pipe_for_session(&name, self.teardown);
-                os_input.update_session_name(name);
-                self.spawn_server(&**os_input, &ipc_pipe);
+                os_input.update_session_name(name.clone());
+                self.spawn_server(&**os_input, &ipc_pipe, &name);
 
                 (
                     ClientToServerMsg::FirstClientConnected { cli_assets },

@@ -20,6 +20,7 @@ use yinz_runtime::{
     errors::prelude::*,
     termios::WireTermios,
 };
+use yinz_types::envs::EnvironmentVariables;
 use yinz_types::{diagnostics::ErrorContext, input::cli_assets::CliAssets, session_destination::*};
 
 const STARTUP_OUTPUT_BUDGET: usize = 2 * 1024 * 1024;
@@ -181,11 +182,12 @@ impl<'a> Sessions<'a> {
             self.inventory = None;
             let mut hosts = self.hosts();
             hosts.insert(0, String::new());
+            let env = self.local_config.config.env.clone();
             self.inventory = Some((
                 id,
-                Discovery::start_with(hosts, |host, cancelled| {
+                Discovery::start_with(hosts, move |host, cancelled| {
                     if !host.is_empty() {
-                        return remote_sessions::discover(host, cancelled);
+                        return remote_sessions::discover(host, cancelled, &env);
                     }
                     yinz_cli::sessions::collect_sessions(false)
                         .map_err(std::io::Error::from)
@@ -314,6 +316,7 @@ impl<'a> Sessions<'a> {
                     crate::startup::StartupContext::detached(
                         self.cli_args,
                         &self.local_config.options,
+                        &self.local_config.config.env,
                     )
                     .build_cli_assets(
                         &self.local_config.options,
@@ -328,10 +331,14 @@ impl<'a> Sessions<'a> {
                     }
                 };
                 assets.terminal_window_size = os.get_terminal_size();
+                assets.host_terminal_env =
+                    yinz_runtime::host_terminal_env::host_terminal_env_with_overrides(
+                        &self.local_config.config.env,
+                    );
                 assets.timezone = yinz_runtime::client_time::capture_timezone();
-                assets.host_terminal_env = yinz_runtime::host_terminal_env::host_terminal_env();
                 let config = self.cli_args.config.clone();
                 let termios = os.original_termios();
+                let env = self.local_config.config.env.clone();
                 let (sender, receiver) = mpsc::channel();
                 let worker = std::thread::Builder::new()
                     .name("session-prepare".into())
@@ -344,6 +351,7 @@ impl<'a> Sessions<'a> {
                             config.as_deref(),
                             termios,
                             &stop,
+                            &env,
                         );
                         let _ = sender.send(result);
                     })
@@ -449,10 +457,11 @@ fn prepare(
     config: Option<&std::path::Path>,
     termios: Option<WireTermios>,
     cancelled: &AtomicBool,
+    env: &EnvironmentVariables,
 ) -> Result<PreparedConnection> {
     let forward = if let Destination::Remote(host) = &machine {
         Some(remote_sessions::own_forward(remote_sessions::connect(
-            host, &name, saved, cancelled,
+            host, &name, saved, cancelled, env,
         )?))
     } else {
         None
@@ -463,7 +472,7 @@ fn prepare(
         let socket = YINZ_SOCK_DIR.join(&name);
         if saved {
             let output = yinz_process::ssh::bootstrap_output(
-                &mut resurrection_command(&name, &assets, config, &termios)?,
+                resurrection_command(&name, &assets, config, &termios)?.envs(env.inner()),
                 Duration::from_secs(60),
                 Some(cancelled),
             )
@@ -543,10 +552,11 @@ pub(crate) fn prepare_recovery(
     assets: CliAssets,
     cancelled: &AtomicBool,
     deadline: Instant,
+    env: &EnvironmentVariables,
 ) -> Result<PreparedConnection> {
     // Recovery never creates or resurrects, including after an original --create.
     let forward = remote_sessions::own_forward(remote_sessions::connect_until(
-        &host, &name, false, cancelled, deadline,
+        &host, &name, false, cancelled, deadline, env,
     )?);
     let socket = forward.socket().to_owned();
     attach_socket(
@@ -646,6 +656,7 @@ pub(crate) fn legacy_reconnect(
     host: Option<String>,
     options: &yinz_types::input::options::Options,
     os: &dyn ClientOsApi,
+    env: &EnvironmentVariables,
 ) -> Result<
     (
         crate::ClientInfo,
@@ -665,7 +676,7 @@ pub(crate) fn legacy_reconnect(
         } else {
             Arc::new(AtomicBool::new(false))
         };
-        legacy_target(target, host, options, cancelled)
+        legacy_target(target, host, options, cancelled, env)
     })();
     match next {
         Ok(info) => Ok((info, cancellation)),
@@ -703,6 +714,7 @@ fn legacy_target(
     host: Option<String>,
     options: &yinz_types::input::options::Options,
     cancelled: Arc<AtomicBool>,
+    env: &EnvironmentVariables,
 ) -> Result<crate::ClientInfo> {
     use yinz_types::internal_ids::SessionName;
     if let Some(host) = host {
@@ -713,7 +725,7 @@ fn legacy_target(
         let name = target
             .name
             .context("Remote switching requires a session name")?;
-        let forward = remote_sessions::connect(&host, name.as_str(), true, &cancelled)?;
+        let forward = remote_sessions::connect(&host, name.as_str(), true, &cancelled, env)?;
         let socket = forward.socket().to_owned();
         remote_sessions::set_forward(Some(forward));
         return Ok(crate::ClientInfo::Remote {

@@ -941,6 +941,7 @@ impl MockScreen {
                 to_pty_writer: Some(to_pty_writer.clone()),
                 to_background_jobs: Some(to_background_jobs.clone()),
                 to_server: Some(to_server.clone()),
+                session: Default::default(),
                 session_checkpoint: Default::default(),
                 session_ownership: None,
                 should_silently_fail: true,

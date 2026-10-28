@@ -17,6 +17,18 @@ pub fn host_terminal_env() -> BTreeMap<String, String> {
     host_terminal_env_from(|name| std::env::var(name).ok())
 }
 
+pub fn host_terminal_env_with_overrides(
+    overrides: &yinz_types::envs::EnvironmentVariables,
+) -> BTreeMap<String, String> {
+    host_terminal_env_from(|name| {
+        overrides
+            .inner()
+            .get(name)
+            .cloned()
+            .or_else(|| std::env::var(name).ok())
+    })
+}
+
 pub fn host_terminal_env_from<F: Fn(&str) -> Option<String>>(
     lookup: F,
 ) -> BTreeMap<String, String> {

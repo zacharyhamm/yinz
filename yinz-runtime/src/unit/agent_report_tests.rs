@@ -4,6 +4,29 @@ use std::ffi::OsStr;
 use std::path::Path;
 
 #[test]
+fn report_diagnostics_uses_the_supplied_session_identity() {
+    let report = AgentReport {
+        report_id: "00000000-0000-4000-8000-000000000001".into(),
+        pane_id: PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(1)),
+        state: AgentReportState::Clear,
+        event: None,
+        trace: false,
+        process_id: ProcessId::new(42),
+        kind: "claude".into(),
+    };
+    let session = crate::envs::SessionState::new("original".into());
+    assert_eq!(
+        report_diagnostics(&report, &session.current()).session,
+        "original"
+    );
+    session.set("renamed".into());
+    assert_eq!(
+        report_diagnostics(&report, &session.current()).session,
+        "renamed"
+    );
+}
+
+#[test]
 fn forwarding_uses_only_the_bound_routing_environment() {
     for (token, remote) in [
         (None, false),

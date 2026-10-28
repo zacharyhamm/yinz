@@ -22,7 +22,6 @@ use yinz_types::multiplayer::AttachedClients;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use yinz_runtime::channels::Receiver;
-use yinz_runtime::envs::set_session_name;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::diagnostics::ErrorContext;
 use yinz_types::geometry::Direction;
@@ -228,14 +227,16 @@ impl MockPtyInstructionBus {
 }
 
 fn create_new_tab(size: Size, default_mode: ModeInfo) -> Tab {
-    set_session_name("test".into());
     let index = 0;
     let position = 0;
     let name = String::new();
     let os_api = Box::new(FakeInputOutput::default());
     let senders = ThreadSenders::default().silently_fail_on_send();
     let max_panes = None;
-    let mode_info = default_mode;
+    let mode_info = ModeInfo {
+        session_name: Some("test".into()),
+        ..default_mode
+    };
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
@@ -322,14 +323,16 @@ fn create_new_tab_with_stacked_pane_list(
     stacked_pane_list: bool,
     base_layout_and_ids: Option<BaseLayoutAndIds>,
 ) -> Tab {
-    set_session_name("test".into());
     let index = 0;
     let position = 0;
     let name = String::new();
     let os_api = Box::new(FakeInputOutput::default());
     let senders = ThreadSenders::default().silently_fail_on_send();
     let max_panes = None;
-    let mode_info = default_mode;
+    let mode_info = ModeInfo {
+        session_name: Some("test".into()),
+        ..default_mode
+    };
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
@@ -415,14 +418,16 @@ fn create_new_tab_with_stacked_pane_list(
 }
 
 fn create_new_tab_without_pane_frames(size: Size, default_mode: ModeInfo) -> Tab {
-    set_session_name("test".into());
     let index = 0;
     let position = 0;
     let name = String::new();
     let os_api = Box::new(FakeInputOutput::default());
     let senders = ThreadSenders::default().silently_fail_on_send();
     let max_panes = None;
-    let mode_info = default_mode;
+    let mode_info = ModeInfo {
+        session_name: Some("test".into()),
+        ..default_mode
+    };
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::None;
     let auto_layout = true;
@@ -518,7 +523,6 @@ fn create_new_tab_with_swap_layouts(
     draw_pane_frames: bool,
     stacked_resize: bool,
 ) -> Tab {
-    set_session_name("test".into());
     let index = 0;
     let position = 0;
     let name = String::new();
@@ -528,7 +532,10 @@ fn create_new_tab_with_swap_layouts(
         channels::unbounded();
     senders.replace_to_plugin(SenderWithContext::new(mock_plugin_sender));
     let max_panes = None;
-    let mode_info = default_mode;
+    let mode_info = ModeInfo {
+        session_name: Some("test".into()),
+        ..default_mode
+    };
     let style = Style::default();
     let auto_layout = true;
     let client_id = ClientId::new(1);
@@ -622,14 +629,16 @@ fn create_new_tab_with_swap_layouts(
 }
 
 fn create_new_tab_with_os_api(size: Size, default_mode: ModeInfo, os_api: &FakeInputOutput) -> Tab {
-    set_session_name("test".into());
     let index = 0;
     let position = 0;
     let name = String::new();
     let os_api = Box::new(os_api.clone());
     let senders = ThreadSenders::default().silently_fail_on_send();
     let max_panes = None;
-    let mode_info = default_mode;
+    let mode_info = ModeInfo {
+        session_name: Some("test".into()),
+        ..default_mode
+    };
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
@@ -708,14 +717,16 @@ fn create_new_tab_with_os_api(size: Size, default_mode: ModeInfo, os_api: &FakeI
 }
 
 fn create_new_tab_with_layout(size: Size, default_mode: ModeInfo, layout: &str) -> Tab {
-    set_session_name("test".into());
     let index = 0;
     let position = 0;
     let name = String::new();
     let os_api = Box::new(FakeInputOutput::default());
     let senders = ThreadSenders::default().silently_fail_on_send();
     let max_panes = None;
-    let mode_info = default_mode;
+    let mode_info = ModeInfo {
+        session_name: Some("test".into()),
+        ..default_mode
+    };
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
@@ -812,7 +823,6 @@ fn create_new_tab_with_mock_pty_writer(
     default_mode: ModeInfo,
     mock_pty_writer: SenderWithContext<PtyWriteInstruction>,
 ) -> Tab {
-    set_session_name("test".into());
     let index = 0;
     let position = 0;
     let name = String::new();
@@ -820,7 +830,10 @@ fn create_new_tab_with_mock_pty_writer(
     let mut senders = ThreadSenders::default().silently_fail_on_send();
     senders.replace_to_pty_writer(mock_pty_writer);
     let max_panes = None;
-    let mode_info = default_mode;
+    let mode_info = ModeInfo {
+        session_name: Some("test".into()),
+        ..default_mode
+    };
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
@@ -904,14 +917,16 @@ fn create_new_tab_with_sixel_support(
 ) -> Tab {
     // this is like the create_new_tab function but includes stuff needed for sixel,
     // eg. character_cell_size
-    set_session_name("test".into());
     let index = 0;
     let position = 0;
     let name = String::new();
     let os_api = Box::new(FakeInputOutput::default());
     let senders = ThreadSenders::default().silently_fail_on_send();
     let max_panes = None;
-    let mode_info = ModeInfo::default();
+    let mode_info = ModeInfo {
+        session_name: Some("test".into()),
+        ..Default::default()
+    };
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
@@ -1143,6 +1158,37 @@ fn setup_tab_with_focused_floating_pane(
     tab
 }
 
+#[test]
+fn terminal_titles_follow_session_rename_for_tiled_and_floating_panes() {
+    let size = Size { cols: 80, rows: 24 };
+    let client_id = ClientId::new(1);
+    for floating in [false, true] {
+        let mut tab = if floating {
+            setup_tab_with_focused_floating_pane(size, client_id, PaneFrameStyle::Full)
+        } else {
+            create_new_tab(size, ModeInfo::default())
+        };
+        for name in ["test", "renamed"] {
+            let name: yinz_types::internal_ids::SessionName = name.into();
+            tab.rename_session(name.clone()).unwrap();
+            tab.set_force_render();
+            let mut output = Output::default();
+            tab.render(&mut output, None).unwrap();
+            let rendered = output.serialize().unwrap();
+            let expected = yinz_runtime::shared::make_terminal_title("", Some(&name));
+            assert!(
+                rendered[&client_id].contains(&expected),
+                "floating={floating}, session={name}, expected={expected:?}, titles={:?}",
+                rendered[&client_id]
+                    .split("\x1b]0;")
+                    .skip(1)
+                    .map(|title| title.split('\x07').next().unwrap())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
 fn two_adjacent_stacks_layout() -> (TiledPaneLayout, Vec<(TerminalId, Option<RunCommand>)>) {
     let base_layout = r#"
         layout {
@@ -1204,7 +1250,6 @@ fn create_new_tab_with_plugin_receiver_and_os(
     default_mode: ModeInfo,
     os_api: Box<FakeInputOutput>,
 ) -> (Tab, Receiver<(PluginInstruction, ErrorContext)>) {
-    set_session_name("test".into());
     let index = 0;
     let position = 0;
     let name = String::new();
@@ -1213,7 +1258,10 @@ fn create_new_tab_with_plugin_receiver_and_os(
         channels::unbounded();
     senders.replace_to_plugin(SenderWithContext::new(mock_plugin_sender));
     let max_panes = None;
-    let mode_info = default_mode;
+    let mode_info = ModeInfo {
+        session_name: Some("test".into()),
+        ..default_mode
+    };
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
@@ -1303,7 +1351,6 @@ fn create_new_tab_with_screen_receiver(
     size: Size,
     default_mode: ModeInfo,
 ) -> (Tab, Receiver<(ScreenInstruction, ErrorContext)>) {
-    set_session_name("test".into());
     let index = 0;
     let position = 0;
     let name = String::new();
@@ -1341,7 +1388,10 @@ fn create_new_tab_with_screen_receiver(
         senders,
         max_panes,
         Style::default(),
-        default_mode,
+        ModeInfo {
+            session_name: Some("test".into()),
+            ..default_mode
+        },
         PaneFrameStyle::Full,
         true, // auto_layout
         connected_clients,

@@ -134,6 +134,72 @@ fn streaming_spawn_failure_returns_one_correlated_completion() {
 }
 
 #[test]
+fn background_commands_use_current_session_and_preserve_explicit_overrides() {
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+
+    let inherited_name = std::env::var_os("YINZ_SESSION_NAME");
+    let (jobs, receiver) = unbounded();
+    let jobs = SenderWithContext::new(jobs);
+    let (events, received) = unbounded();
+    let events = SenderWithContext::new(events);
+    let mut bus = Bus::new(
+        vec![receiver],
+        None,
+        None,
+        Some(&events),
+        None,
+        None,
+        None,
+        None,
+    );
+    bus.senders.should_silently_fail = true;
+    let state = bus.senders.session.clone();
+    let worker = std::thread::spawn(move || background_jobs_main(bus, None, true));
+    for (session, override_name) in [
+        ("original-session", None),
+        ("renamed-session", None),
+        ("renamed-session", Some("explicit-session")),
+    ] {
+        state.set(session.into());
+        let variables = override_name
+            .map(|name| BTreeMap::from([("YINZ_SESSION_NAME".into(), name.into())]))
+            .unwrap_or_default();
+        jobs.send(BackgroundJob::RunCommand(
+            PluginId::new(1),
+            ClientId::new(1),
+            "/bin/sh".into(),
+            vec![
+                "-c".into(),
+                "printf '%s|%s' \"$YINZ\" \"$YINZ_SESSION_NAME\"".into(),
+            ],
+            variables,
+            std::env::current_dir().unwrap(),
+            BTreeMap::new(),
+            None,
+            None,
+            None,
+        ))
+        .unwrap();
+        let (event, _) = received.recv_timeout(Duration::from_secs(30)).unwrap();
+        let PluginInstruction::Update(events) = event else {
+            panic!("expected command completion, got {event:?}");
+        };
+        assert_eq!(events.len(), 1);
+        let Event::RunCommandResult(Some(0), stdout, stderr, _) = &events[0].2 else {
+            panic!("expected successful command, got {:?}", events[0].2);
+        };
+        assert!(stderr.is_empty());
+        assert_eq!(
+            stdout,
+            format!("0|{}", override_name.unwrap_or(session)).as_bytes()
+        );
+    }
+    jobs.send(BackgroundJob::Exit).unwrap();
+    worker.join().unwrap().unwrap();
+    assert_eq!(std::env::var_os("YINZ_SESSION_NAME"), inherited_name);
+}
+
+#[test]
 fn real_command_streams_before_exit_with_generation_and_drains_beyond_cap() {
     use std::io::Write;
     use std::os::unix::ffi::OsStrExt;

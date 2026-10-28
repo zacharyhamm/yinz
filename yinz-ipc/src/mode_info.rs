@@ -1,5 +1,4 @@
 use crate::ipc::ClientAttributes;
-use yinz_runtime::envs;
 use yinz_types::{
     data::{InputMode, ModeInfo, PluginCapabilities},
     input::keybinds::Keybinds,
@@ -12,9 +11,9 @@ pub fn get_mode_info(
     capabilities: PluginCapabilities,
     keybinds: &Keybinds,
     base_mode: Option<InputMode>,
+    session_name: Option<yinz_types::internal_ids::SessionName>,
 ) -> ModeInfo {
     let keybinds = keybinds.to_keybinds_vec();
-    let session_name = envs::get_session_name().ok();
 
     ModeInfo {
         max_agent_width: None,

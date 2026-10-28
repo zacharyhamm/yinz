@@ -1290,6 +1290,9 @@ impl TerminalProcesses for ServerOsInputOutput {
 }
 
 impl TerminalSupervision for ServerOsInputOutput {
+    fn set_session_state(&mut self, state: yinz_runtime::envs::SessionState) {
+        self.pty_backend.set_session_state(state);
+    }
     fn set_child_state_callback(&self, cb: ChildStateCb) {
         self.pty_backend.set_child_state_callback(cb)
     }
@@ -1599,7 +1602,8 @@ impl ServerEnvironment for ServerOsInputOutput {
             if command.is_empty() {
                 continue;
             }
-            let command = apply_post_command_hook(command, post_hook);
+            let command =
+                apply_post_command_hook(command, post_hook, &self.pty_backend.session_name());
             cmds.insert(terminal_id, command);
         }
         cmds
@@ -1659,12 +1663,16 @@ fn server_os_input_with_backend(
     })
 }
 
-fn apply_post_command_hook(command: Vec<String>, post_hook: &Option<String>) -> Vec<String> {
+fn apply_post_command_hook(
+    command: Vec<String>,
+    post_hook: &Option<String>,
+    session_name: &SessionName,
+) -> Vec<String> {
     let Some(post_hook) = post_hook else {
         return command;
     };
     let stringified = command.join(" ");
-    let cmd = match run_command_hook(&stringified, post_hook) {
+    let cmd = match run_command_hook(&stringified, post_hook, session_name) {
         Ok(command) => command,
         Err(e) => {
             Err::<(), _>(anyhow!("post command discovery hook failed to run: {e}")).non_fatal();
@@ -1680,11 +1688,14 @@ fn apply_post_command_hook(command: Vec<String>, post_hook: &Option<String>) -> 
 fn run_command_hook(
     original_command: &str,
     hook_script: &str,
+    session_name: &SessionName,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let output = Command::new("sh")
         .arg("-c")
         .arg(hook_script)
         .env("RESURRECT_COMMAND", original_command)
+        .env("YINZ", "0")
+        .env("YINZ_SESSION_NAME", session_name.as_str())
         .output()?;
 
     if !output.status.success() {

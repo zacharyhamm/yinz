@@ -88,7 +88,8 @@ fn text_area_reports_carry_the_grid_observed_by_the_reporting_client() {
 fn offline_and_stale_keyboard_paste_and_mouse_input_are_discarded_after_replacement() {
     let os = FakeClientOsApi::new();
     let command = CommandIsExecuting::new();
-    let recovery = crate::remote_recovery::Recovery::new("host".into(), command.clone());
+    let recovery =
+        crate::remote_recovery::Recovery::new("host".into(), command.clone(), Default::default());
     os.set_remote_recovery(Some(recovery.control.clone()))
         .unwrap();
     let (client_tx, _client_rx) = channels::unbounded();
@@ -166,7 +167,11 @@ fn offline_focus_changes_survive_recovery_and_queued_generation_changes() {
         ] {
             let os = FakeClientOsApi::new();
             let command = CommandIsExecuting::new();
-            let recovery = crate::remote_recovery::Recovery::new("host".into(), command.clone());
+            let recovery = crate::remote_recovery::Recovery::new(
+                "host".into(),
+                command.clone(),
+                Default::default(),
+            );
             os.set_remote_recovery(Some(recovery.control.clone()))
                 .unwrap();
             os.send_to_server(ClientToServerMsg::HostTerminalFocusChanged { focused: true });
@@ -242,7 +247,8 @@ fn offline_focus_changes_survive_recovery_and_queued_generation_changes() {
 fn fresh_keyboard_paste_and_ctrl_c_after_recovery_reach_the_healthy_server() {
     let os = FakeClientOsApi::new();
     let command = CommandIsExecuting::new();
-    let recovery = crate::remote_recovery::Recovery::new("host".into(), command.clone());
+    let recovery =
+        crate::remote_recovery::Recovery::new("host".into(), command.clone(), Default::default());
     os.set_remote_recovery(Some(recovery.control.clone()))
         .unwrap();
     recovery.control.lost(0, "outage".into());
@@ -303,7 +309,8 @@ fn ctrl_c_during_recovery_cancels_locally_and_is_not_sent_to_the_server() {
     }
     let os = FakeClientOsApi::new();
     let command = CommandIsExecuting::new();
-    let recovery = crate::remote_recovery::Recovery::new("host".into(), command.clone());
+    let recovery =
+        crate::remote_recovery::Recovery::new("host".into(), command.clone(), Default::default());
     os.set_remote_recovery(Some(recovery.control.clone()))
         .unwrap();
     recovery.control.lost(0, "EOF".into());

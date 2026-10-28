@@ -26,6 +26,7 @@ use yinz_types::data::{
 };
 use yinz_types::input::command::{RunCommand, RunCommandAction, TerminalAction};
 use yinz_types::input::layout::Run;
+use yinz_types::internal_ids::SessionName;
 
 /// Start a coding agent near this plugin: the launch planner every agent launcher uses, the
 /// checkout the spec asks for, the pane, and the agent record - one road for agent's
@@ -60,8 +61,14 @@ pub(super) fn spawn_agent(
                 translate_plugin_path(env, path)
             }
         });
-        let prepared = prepare_agent(&spec, source, cwd, &env.data_access)
-            .map_err(|error| error.to_string())?;
+        let prepared = prepare_agent(
+            &spec,
+            source,
+            cwd,
+            &env.data_access,
+            &env.server_session.current(),
+        )
+        .map_err(|error| error.to_string())?;
         let resources = prepared.resources();
         let kind = yinz_types::agent::agent_kind_of(&prepared.command.path, &prepared.command.args)
             .unwrap_or_else(|| "true".to_owned());
@@ -151,6 +158,7 @@ pub(super) fn prepare_agent(
     source: PathBuf,
     cwd: Option<PathBuf>,
     data_access: &DataAccess,
+    session_name: &SessionName,
 ) -> Result<PreparedAgent, AgentSpawnError> {
     let (mut command, mut checkout) = yinz_runtime::agent::launch::plan(spec)?;
     let bubblewrap = if spec.bubblewrap {
@@ -212,6 +220,7 @@ pub(super) fn prepare_agent(
         bubblewrap
             .as_ref()
             .map(|(environment, _)| environment.root()),
+        session_name,
     )
     .map_err(|error| match attempted {
         Some(resources) => AgentSpawnError::failed(error, Some(resources)),
@@ -611,7 +620,16 @@ pub(super) fn agent_folder(
     reuse: bool,
     guard: WorktreeGuard,
 ) -> Result<PreparedCheckout, String> {
-    agent_folder_tracked(checkout, cwd, source, reuse, guard, &mut None, None)
+    agent_folder_tracked(
+        checkout,
+        cwd,
+        source,
+        reuse,
+        guard,
+        &mut None,
+        None,
+        &Default::default(),
+    )
 }
 
 fn validate_checkout_root(path: &Path, root: Option<&Path>) -> Result<(), String> {
@@ -635,6 +653,7 @@ pub(super) fn agent_folder_tracked(
     guard: WorktreeGuard,
     attempted: &mut Option<AgentLaunchResources>,
     bubblewrap_root: Option<&Path>,
+    session_name: &SessionName,
 ) -> Result<PreparedCheckout, String> {
     match (checkout, cwd) {
         (GitCheckout::Current, Some(cwd)) => {
@@ -660,6 +679,7 @@ pub(super) fn agent_folder_tracked(
             guard,
             attempted,
             bubblewrap_root,
+            session_name,
         ),
     }
 }
@@ -700,8 +720,16 @@ pub(super) fn prepare_git_checkout(
     // at. Only `spawn_agent` asks for the other thing, and it says so.
     // No guard: this command has never had one. It puts a *plugin's* command pane in a
     // checkout rather than leaving an agent loose in one.
-    prepare_git_checkout_in(source_directory, checkout, true, WorktreeGuard::Waived)
-        .map(|prepared| prepared.path)
+    prepare_git_checkout_in_tracked(
+        source_directory,
+        checkout,
+        true,
+        WorktreeGuard::Waived,
+        &mut None,
+        None,
+        &env.server_session.current(),
+    )
+    .map(|prepared| prepared.path)
 }
 
 /// A checkout the host has made or found: the folder to run in, and the branch it holds when
@@ -739,13 +767,22 @@ impl PreparedCheckout {
 /// `<branch>-2`, `<branch>-3`, and the worktree renamed with it, so the two never come
 /// apart. Two agents asked for the same branch by two different people is the case this
 /// is for: joining them silently is how one of them loses work.
+#[cfg(test)]
 pub(super) fn prepare_git_checkout_in(
     source_directory: PathBuf,
     checkout: GitCheckout,
     reuse: bool,
     guard: WorktreeGuard,
 ) -> Result<PreparedCheckout, String> {
-    prepare_git_checkout_in_tracked(source_directory, checkout, reuse, guard, &mut None, None)
+    prepare_git_checkout_in_tracked(
+        source_directory,
+        checkout,
+        reuse,
+        guard,
+        &mut None,
+        None,
+        &Default::default(),
+    )
 }
 
 pub(super) fn prepare_git_checkout_in_tracked(
@@ -755,6 +792,7 @@ pub(super) fn prepare_git_checkout_in_tracked(
     guard: WorktreeGuard,
     attempted: &mut Option<AgentLaunchResources>,
     bubblewrap_root: Option<&Path>,
+    session_name: &SessionName,
 ) -> Result<PreparedCheckout, String> {
     let mut before_git_write = |path: &Path, branch: &str, requested: &str| {
         validate_checkout_root(path, bubblewrap_root)?;
@@ -808,7 +846,12 @@ pub(super) fn prepare_git_checkout_in_tracked(
             guard.check(&root)?;
             if reuse && branch_exists(&root, &branch) {
                 before_git_write(&root, &branch, &branch)?;
-                run_git(&root, &["switch", &branch], "switch to the branch")?;
+                run_git(
+                    &root,
+                    &["switch", &branch],
+                    "switch to the branch",
+                    Some(session_name),
+                )?;
                 return Ok(PreparedCheckout {
                     reused_worktree: false,
                     path: root,
@@ -826,6 +869,7 @@ pub(super) fn prepare_git_checkout_in_tracked(
                 &root,
                 &["switch", "-c", &branch, &base],
                 "create and switch to the branch",
+                Some(session_name),
             )?;
             Ok(PreparedCheckout {
                 reused_worktree: false,
@@ -879,7 +923,7 @@ pub(super) fn prepare_git_checkout_in_tracked(
                     vec!["worktree", "add", "-b", &branch, "--", &path_string, &base]
                 };
                 before_git_write(&path, &branch, &branch)?;
-                run_git(&root, &args, "create the worktree")?;
+                run_git(&root, &args, "create the worktree", Some(session_name))?;
                 exclude_nested_worktree(&root, &path);
                 return Ok(PreparedCheckout {
                     reused_worktree: false,
@@ -897,6 +941,7 @@ pub(super) fn prepare_git_checkout_in_tracked(
                 &root,
                 &["worktree", "add", "-b", &branch, "--", &path_string, &base],
                 "create the worktree",
+                Some(session_name),
             )?;
             exclude_nested_worktree(&root, &path);
             Ok(PreparedCheckout {
@@ -1210,6 +1255,7 @@ fn validate_git_names(root: &std::path::Path, branch: &str, base: &str) -> Resul
         root,
         &["check-ref-format", "--branch", branch],
         "validate the branch",
+        None,
     )
 }
 
@@ -1217,8 +1263,15 @@ pub(super) fn run_git(
     root: &std::path::Path,
     args: &[&str],
     operation: &str,
+    session_name: Option<&SessionName>,
 ) -> Result<(), String> {
-    let output = process::Command::new("git")
+    let mut command = process::Command::new("git");
+    if let Some(session_name) = session_name {
+        command
+            .env("YINZ", "0")
+            .env("YINZ_SESSION_NAME", session_name.as_str());
+    }
+    let output = command
         .arg("-C")
         .arg(root)
         .args(args)

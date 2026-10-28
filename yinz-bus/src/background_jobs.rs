@@ -520,6 +520,8 @@ fn background_jobs_with_runtime(
                         let output = async {
                             let mut child = tokio::process::Command::new(&command)
                                 .args(&args)
+                                .env("YINZ", "0")
+                                .env("YINZ_SESSION_NAME", senders.session.current().as_str())
                                 .envs(env_variables)
                                 .current_dir(cwd)
                                 .stdin(std::process::Stdio::null())

@@ -55,6 +55,63 @@ fn launch_failure_repository() -> (tempfile::TempDir, PathBuf, DataAccess) {
 }
 
 #[test]
+fn checkout_hooks_receive_current_session_for_plugin_and_agent_launches() {
+    let inherited_name = std::env::var_os("YINZ_SESSION_NAME");
+    let (_directory, root, data) = launch_failure_repository();
+    let hook_dir = root.join("hooks");
+    std::fs::create_dir(&hook_dir).unwrap();
+    let configured = process::Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["config", "core.hooksPath"])
+        .arg(&hook_dir)
+        .status()
+        .unwrap();
+    assert!(configured.success());
+    let record = root.join("hook-environment");
+    yinz_test_support::write_warm_script(
+        &hook_dir.join("post-checkout"),
+        &format!(
+            "if [ \"$#\" -eq 3 ]; then printf '%s|%s\\n' \"$YINZ\" \"$YINZ_SESSION_NAME\" >> '{}'; fi\n",
+            record.display().to_string().replace('\'', "'\"'\"'")
+        ),
+    );
+    let state = yinz_runtime::envs::SessionState::new("startup-session".into());
+    let mut env = crate::test_env::test_env();
+    env.plugin_cwd = root.clone();
+    env.server_session = crate::ServerSession::Shared(state.clone());
+    state.set("plugin-renamed".into());
+    super::agent_launch::prepare_git_checkout(
+        &env,
+        "/host".into(),
+        yinz_types::command::GitCheckout::NewBranch {
+            branch: "plugin-branch".into(),
+            base: "main".into(),
+        },
+    )
+    .unwrap();
+    state.set("agent-renamed".into());
+    super::agent_launch::prepare_agent(
+        &AgentSpawnSpec {
+            command: Some("/usr/bin/true".into()),
+            branch: Some("agent-branch".into()),
+            base: Some("main".into()),
+            ..Default::default()
+        },
+        root,
+        None,
+        &data,
+        &state.current(),
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(record).unwrap(),
+        "0|plugin-renamed\n0|agent-renamed\n"
+    );
+    assert_eq!(std::env::var_os("YINZ_SESSION_NAME"), inherited_name);
+}
+
+#[test]
 fn failed_spawn_retains_checkout_created_before_the_pane_request() {
     let (_directory, root, data) = launch_failure_repository();
     let response = agent_control::control_agent(
@@ -870,7 +927,8 @@ fn automation_spawn_rejects_prompts_and_local_options_for_ssh_before_opening_a_p
             Some("/remote".into()),
             None,
             Some("server".into()),
-            &data
+            &data,
+            &Default::default()
         )
         .is_err());
     }
@@ -884,7 +942,8 @@ fn automation_spawn_rejects_prompts_and_local_options_for_ssh_before_opening_a_p
         Some("relative".into()),
         None,
         Some("server".into()),
-        &data
+        &data,
+        &Default::default()
     )
     .is_err());
     let prepared = agent_control::prepare_automation_agent(
@@ -893,6 +952,7 @@ fn automation_spawn_rejects_prompts_and_local_options_for_ssh_before_opening_a_p
         None,
         Some("server".into()),
         &data,
+        &Default::default(),
     )
     .unwrap();
     assert!(prepared.command.target.is_remote());

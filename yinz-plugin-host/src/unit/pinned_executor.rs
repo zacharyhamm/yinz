@@ -38,6 +38,7 @@ fn create_test_dependencies() -> JobDependencies {
         to_server: Some(to_server),
         to_pty_writer: Some(to_pty_writer),
         to_background_jobs: Some(to_background_jobs),
+        session: Default::default(),
         session_checkpoint: Default::default(),
         session_ownership: None,
         should_silently_fail: false,

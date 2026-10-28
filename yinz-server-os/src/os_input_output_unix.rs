@@ -33,6 +33,7 @@ use std::{
     time::Duration,
 };
 
+use yinz_runtime::envs::SessionState;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::input::command::RunCommand;
 
@@ -180,6 +181,7 @@ fn handle_openpty(
     quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     child_state_cb: Option<ChildStateCb>,
     terminal_id: TerminalId,
+    session_name: &yinz_types::internal_ids::SessionName,
 ) -> Result<(OwnedFd, ProcessId)> {
     let err_context = |cmd: &RunCommand| {
         format!(
@@ -214,6 +216,8 @@ fn handle_openpty(
             .env_remove(crate::pty_host::remote::broker::PANE_TOKEN_ENV)
             // Structured launches set this again through their env wrapper.
             .env_remove("YINZ_CLAUDE_INLINE_HOOKS")
+            .env("YINZ", "0")
+            .env("YINZ_SESSION_NAME", session_name.as_str())
             .env("YINZ_PANE_ID", format!("{}", terminal_id))
             .pre_exec(move || crate::pty_host::terminal::prepare_child(pid_secondary, false))
             .spawn()
@@ -245,13 +249,21 @@ fn handle_terminal(
     quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     child_state_cb: Option<ChildStateCb>,
     terminal_id: TerminalId,
+    session_name: &yinz_types::internal_ids::SessionName,
 ) -> Result<(OwnedFd, ProcessId)> {
     let open_pty_res = crate::pty_host::terminal::open(None, orig_termios.as_ref())
         .with_context(|| format!("failed to open PTY for command '{}'", cmd.command.display()))
         .context("failed to start pty")
         .context("failed to spawn child terminal")
         .to_log()?;
-    handle_openpty(open_pty_res, cmd, quit_cb, child_state_cb, terminal_id)
+    handle_openpty(
+        open_pty_res,
+        cmd,
+        quit_cb,
+        child_state_cb,
+        terminal_id,
+        session_name,
+    )
 }
 
 /// How a pane's pty is reached.
@@ -303,6 +315,7 @@ impl PaneTransport {
 pub(crate) struct UnixPtyBackend {
     // Serialize ownership changes through publication of a renamed session.
     ownership: Arc<Mutex<()>>,
+    session_state: SessionState,
     orig_termios: Arc<Mutex<Option<termios::Termios>>>,
     terminal_id_to_transport: Arc<Mutex<BTreeMap<TerminalId, PaneTransport>>>,
     next_terminal_id_counter: Arc<AtomicU32>,
@@ -369,6 +382,9 @@ impl UnixPtyBackend {
         let host_bin = server_binary().cloned();
         Ok(Self {
             ownership: Arc::new(Mutex::new(())),
+            session_state: SessionState::new(
+                yinz_runtime::envs::get_session_name().unwrap_or_default(),
+            ),
             orig_termios: Arc::new(Mutex::new(current_termios)),
             terminal_id_to_transport: Arc::new(Mutex::new(BTreeMap::new())),
             next_terminal_id_counter: Arc::new(AtomicU32::new(0)),
@@ -380,6 +396,14 @@ impl UnixPtyBackend {
             child_state_cb: Arc::new(Mutex::new(None)),
             agent_report_cb: Arc::new(Mutex::new(None)),
         })
+    }
+
+    pub fn set_session_state(&mut self, session_state: SessionState) {
+        self.session_state = session_state;
+    }
+
+    pub fn session_name(&self) -> yinz_types::internal_ids::SessionName {
+        self.session_state.current()
     }
 
     /// Called once at session init, when config is finally available. Env
@@ -503,7 +527,7 @@ impl UnixPtyBackend {
         crate::pty_host::cli::relabel_session_in(dir, &owned, old, new)?;
         // Spawn and adoption read this under the same lock. Publishing later on
         // the screen thread would leave a gap for a pane with the old name.
-        yinz_runtime::envs::set_session_name(new.clone());
+        self.session_state.set(new.clone());
         Ok(())
     }
 
@@ -527,7 +551,7 @@ impl UnixPtyBackend {
         pty_host_client::spawn(SpawnParams {
             host_bin,
             terminal_id,
-            session_name: yinz_runtime::envs::get_session_name().ok(),
+            session_name: Some(self.session_name()),
             cmd: cmd.clone(),
             termios: self.wire_termios.clone(),
             // Left unset on purpose: today's `openpty(None, ..)` means a pane
@@ -537,10 +561,14 @@ impl UnixPtyBackend {
             // A local pane execs its command under its own name, as it always
             // has. Only the remote broker asks for a login shell's argv[0].
             arg0: None,
-            // A local pane inherits this server's environment, which is where its
-            // TERM and locale have always come from. Only a remote pane needs one
-            // composed for it, because only a remote pane cannot inherit ours.
-            env: vec![],
+            // The inherited environment keeps its startup name after a rename.
+            env: vec![
+                ("YINZ".to_owned(), "0".to_owned()),
+                (
+                    "YINZ_SESSION_NAME".to_owned(),
+                    self.session_name().to_string(),
+                ),
+            ],
             login_session: false,
             // This server listens for the stops job control makes possible and
             // can send `SIGCONT` back, so a pane that suspends is recoverable.
@@ -631,6 +659,7 @@ impl UnixPtyBackend {
             quit_cb,
             self.child_state_cb(),
             terminal_id,
+            &self.session_name(),
         )?;
         let pid_primary = Arc::new(pid_primary);
         let async_reader = Box::new(
@@ -1167,7 +1196,7 @@ impl UnixPtyBackend {
         let pending = pty_host_client::attach(pty_host_client::AttachParams {
             control_socket,
             terminal_id,
-            session_name: yinz_runtime::envs::get_session_name().ok(),
+            session_name: Some(self.session_name()),
         })?;
         let attached = pending.finish(terminal_exit_callback(quit_cb), self.child_state_cb());
         let master_fd = Arc::new(attached.master);

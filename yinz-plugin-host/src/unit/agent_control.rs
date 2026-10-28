@@ -296,9 +296,15 @@ fn project_containment_uses_canonical_paths() {
                 allow_outside_worktree: Some(true),
                 ..Default::default()
             };
-            let prepared =
-                prepare_automation_agent(&mut spec, Some(cwd), Some("work".into()), None, &data)
-                    .unwrap();
+            let prepared = prepare_automation_agent(
+                &mut spec,
+                Some(cwd),
+                Some("work".into()),
+                None,
+                &data,
+                &Default::default(),
+            )
+            .unwrap();
             assert_eq!(prepared.cwd, root.join("src"));
         }
         for (cwd, error) in [
@@ -311,8 +317,14 @@ fn project_containment_uses_canonical_paths() {
                 allow_outside_worktree: Some(true),
                 ..Default::default()
             };
-            let result =
-                prepare_automation_agent(&mut spec, Some(cwd), Some("work".into()), None, &data);
+            let result = prepare_automation_agent(
+                &mut spec,
+                Some(cwd),
+                Some("work".into()),
+                None,
+                &data,
+                &Default::default(),
+            );
             assert!(result.err().unwrap().to_string().contains(error));
         }
     }
@@ -498,11 +510,17 @@ fn spawn_guidance_lists_recognized_kinds_before_any_checkout_work() {
             branch: Some("must-not-exist".into()),
             ..Default::default()
         };
-        let error =
-            prepare_automation_agent(&mut spec, Some(directory.path().into()), None, None, &data)
-                .err()
-                .unwrap()
-                .to_string();
+        let error = prepare_automation_agent(
+            &mut spec,
+            Some(directory.path().into()),
+            None,
+            None,
+            &data,
+            &Default::default(),
+        )
+        .err()
+        .unwrap()
+        .to_string();
         for kind in yinz_types::agent::KINDS {
             assert!(error.contains(kind), "{error}");
         }
@@ -529,7 +547,8 @@ fn spawn_guidance_lists_recognized_kinds_before_any_checkout_work() {
             Some(directory.path().into()),
             None,
             None,
-            &data
+            &data,
+            &Default::default()
         )
         .is_ok());
     }
@@ -553,7 +572,15 @@ fn spawn_reports_renamed_and_reused_worktrees_and_keeps_them_out_of_git_status()
             reuse: reuse.then_some(true),
             ..Default::default()
         };
-        prepare_automation_agent(&mut spec, Some(root.clone()), None, None, &data).unwrap()
+        prepare_automation_agent(
+            &mut spec,
+            Some(root.clone()),
+            None,
+            None,
+            &data,
+            &Default::default(),
+        )
+        .unwrap()
     };
 
     let first = spawn(false);
@@ -606,6 +633,7 @@ fn a_nested_worktree_dir_excludes_only_the_worktree() {
         None,
         None,
         &DataAccess::sqlite(&base.join("data")),
+        &Default::default(),
     )
     .unwrap();
     assert_eq!(prepared.cwd, root.join("src/worktrees/topic"));
@@ -646,6 +674,7 @@ fn a_worktree_ignored_by_the_project_adds_no_exclude_entry() {
         None,
         None,
         &DataAccess::sqlite(&base.join("data")),
+        &Default::default(),
     )
     .unwrap();
     let after = std::fs::read_to_string(root.join(".git/info/exclude")).unwrap_or_default();
@@ -737,6 +766,7 @@ fn bubblewrap_rejects_remote_targets_before_checkout_changes() {
         None,
         Some("host".into()),
         &data,
+        &Default::default(),
     );
     assert!(result
         .unwrap_err()
@@ -820,7 +850,8 @@ fn bubblewrap_checkout_rejections_leave_git_and_paths_unchanged() {
             false,
             WorktreeGuard::Required,
             &mut attempted,
-            Some(&root)
+            Some(&root),
+            &Default::default()
         )
         .is_err());
         assert!(attempted.is_none());
@@ -841,7 +872,8 @@ fn bubblewrap_checkout_rejections_leave_git_and_paths_unchanged() {
         false,
         WorktreeGuard::Required,
         &mut attempted,
-        Some(&root)
+        Some(&root),
+        &Default::default()
     )
     .is_err());
     assert!(attempted.is_none());
@@ -866,7 +898,8 @@ fn bubblewrap_checkout_rejections_leave_git_and_paths_unchanged() {
                 reuse,
                 WorktreeGuard::Required,
                 &mut attempted,
-                Some(&root)
+                Some(&root),
+                &Default::default()
             )
             .is_err());
             assert!(attempted.is_none());
@@ -888,6 +921,7 @@ fn bubblewrap_checkout_rejections_leave_git_and_paths_unchanged() {
         WorktreeGuard::Required,
         &mut attempted,
         Some(&root),
+        &Default::default(),
     )
     .unwrap();
     assert_eq!(prepared.path, root.join("new/parents/inside"));
@@ -934,6 +968,7 @@ fn bubblewrap_checks_reused_and_collision_suffixed_destinations() {
             WorktreeGuard::Required,
             &mut attempted,
             Some(&root),
+            &Default::default(),
         )
         .unwrap();
         assert!(reused.reused_worktree);
@@ -960,6 +995,7 @@ fn bubblewrap_checks_reused_and_collision_suffixed_destinations() {
         WorktreeGuard::Required,
         &mut attempted,
         Some(&root),
+        &Default::default(),
     )
     .unwrap();
     assert!(prepared.path.starts_with(&root));
@@ -976,6 +1012,7 @@ fn bubblewrap_checks_reused_and_collision_suffixed_destinations() {
         WorktreeGuard::Required,
         &mut attempted,
         Some(&root),
+        &Default::default(),
     )
     .unwrap();
     assert_eq!(contained.path, root.join("trees/from-linked"));
@@ -988,6 +1025,7 @@ fn bubblewrap_checks_reused_and_collision_suffixed_destinations() {
         WorktreeGuard::Waived,
         &mut None,
         Some(&root),
+        &Default::default(),
     )
     .unwrap();
     assert_eq!(current.path, outside);
@@ -1039,7 +1077,8 @@ fn bubblewrap_preparation_validates_each_distinct_checkout_once() {
                 allow_outside_worktree: Some(true),
                 ..Default::default()
             };
-            let prepared = prepare_agent(&spec, root.clone(), Some(cwd), &data).unwrap();
+            let prepared =
+                prepare_agent(&spec, root.clone(), Some(cwd), &data, &Default::default()).unwrap();
             assert!(prepared.command.target.is_bubblewrap());
             assert_eq!(
                 std::fs::read_to_string(directory.join("calls"))
@@ -1320,8 +1359,15 @@ fn project_launch_uses_worktree_defaults_collision_names_and_reuse() {
             reuse: Some(reuse),
             ..Default::default()
         };
-        let prepared =
-            prepare_automation_agent(&mut spec, None, Some("work".into()), None, &data).unwrap();
+        let prepared = prepare_automation_agent(
+            &mut spec,
+            None,
+            Some("work".into()),
+            None,
+            &data,
+            &Default::default(),
+        )
+        .unwrap();
         assert_eq!(prepared.cwd, root.join("custom-trees").join(branch));
         assert_eq!(prepared.branch.as_deref(), Some(branch));
     }

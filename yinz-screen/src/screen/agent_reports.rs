@@ -239,8 +239,7 @@ pub(super) fn apply_queued_agent_report(
         return Ok(true);
     }
     screen.refresh_agent_controls();
-    let mut trace = yinz_runtime::agent::report::report_diagnostics(report);
-    trace.session = screen.session_name.to_string();
+    let trace = yinz_runtime::agent::report::report_diagnostics(report, &screen.session_name);
     trace.record("screen_queue", accepted_at.elapsed(), "ok");
     let started = std::time::Instant::now();
     trace.record("state", Duration::ZERO, "enter");

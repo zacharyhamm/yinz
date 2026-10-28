@@ -2,25 +2,17 @@
 use yinz_runtime::errors::prelude::*;
 use yinz_types::internal_ids::SessionName;
 
-/// Where the plugin runtime learns this server's session name.
-///
-/// The name changes while plugins run: a rename republishes `YINZ_SESSION_NAME` from
-/// `OsApi::rename_pty_host_session`, and a plugin instance created after it, or a warp started
-/// after it, must use the new name. So the server passes [`ServerSession::Process`], which asks
-/// the environment on every call. Tests pass [`ServerSession::Fixed`] instead of writing the
-/// variable, which every test in a threaded runner shares.
+/// Where the plugin runtime learns this server's current session name.
 #[derive(Clone, Debug)]
 pub enum ServerSession {
-    /// `YINZ_SESSION_NAME` at the moment of the call; empty when it is unset.
-    Process,
-    /// A name no rename can change.
+    Shared(yinz_runtime::envs::SessionState),
     Fixed(SessionName),
 }
 
 impl ServerSession {
     pub fn current(&self) -> SessionName {
         match self {
-            ServerSession::Process => yinz_runtime::envs::get_session_name().unwrap_or_default(),
+            ServerSession::Shared(state) => state.current(),
             ServerSession::Fixed(name) => name.clone(),
         }
     }

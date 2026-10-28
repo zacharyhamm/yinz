@@ -94,6 +94,7 @@ impl Drop for PluginReplies {
 /// A container for senders to the different threads in yinz on the server side
 #[derive(Default, Clone)]
 pub struct ThreadSenders {
+    pub session: yinz_runtime::envs::SessionState,
     pub to_screen: Option<SenderWithContext<ScreenInstruction>>,
     pub to_pty: Option<SenderWithContext<PtyInstruction>>,
     pub to_plugin: Option<SenderWithContext<PluginInstruction>>,
@@ -413,6 +414,7 @@ impl<T> Bus<T> {
         Bus {
             receivers,
             senders: ThreadSenders {
+                session: Default::default(),
                 to_screen: to_screen.cloned(),
                 to_pty: to_pty.cloned(),
                 to_plugin: to_plugin.cloned(),
@@ -438,6 +440,7 @@ impl<T> Bus<T> {
         Bus {
             receivers: vec![],
             senders: ThreadSenders {
+                session: Default::default(),
                 to_screen: None,
                 to_pty: None,
                 to_plugin: None,

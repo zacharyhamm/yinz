@@ -1935,13 +1935,9 @@ impl OverlayPanes {
         let client_modes: HashMap<ClientId, _> = connected_clients
             .iter()
             .map(|client_id| {
-                let mode = self
-                    .mode_info
-                    .borrow()
-                    .get(client_id)
-                    .unwrap_or(&default_mode_info)
-                    .mode;
-                (*client_id, mode)
+                let mode_info = self.mode_info.borrow();
+                let mode = mode_info.get(client_id).unwrap_or(&default_mode_info);
+                (*client_id, (mode.mode, mode.session_name.clone()))
             })
             .collect();
         active_panes.retain(|c_id, _| self.connected_clients.borrow().contains(c_id));
@@ -2009,10 +2005,13 @@ impl OverlayPanes {
                             .get(client_id)
                             .is_some_and(|panes| panes.contains(&pane_id)),
                     );
-                    let client_mode = client_modes
+                    let (client_mode, session_name) = client_modes
                         .get(client_id)
-                        .copied()
-                        .unwrap_or(default_mode_info.mode);
+                        .map(|(mode, session)| (*mode, session.as_ref()))
+                        .unwrap_or((
+                            default_mode_info.mode,
+                            default_mode_info.session_name.as_ref(),
+                        ));
                     let is_floating = true;
                     if outer.cols.as_usize() > 0
                         && outer.rows.as_usize() > 0
@@ -2049,6 +2048,7 @@ impl OverlayPanes {
                     pane_contents_and_ui.render_terminal_title_if_needed(
                         *client_id,
                         client_mode,
+                        session_name,
                         &mut self.window_title,
                     );
                     pane_contents_and_ui

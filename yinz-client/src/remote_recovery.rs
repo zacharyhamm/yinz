@@ -244,6 +244,7 @@ impl Drop for Attempt {
 pub(crate) struct Recovery {
     pub control: RecoveryControl,
     host: String,
+    env: yinz_types::envs::EnvironmentVariables,
     attempt: Option<Attempt>,
     next_retry: Option<Instant>,
     backoff: Backoff,
@@ -256,10 +257,15 @@ pub(crate) struct Recovery {
     pub routers: Vec<JoinHandle<()>>,
 }
 impl Recovery {
-    pub fn new(host: String, command: CommandIsExecuting) -> Self {
+    pub fn new(
+        host: String,
+        command: CommandIsExecuting,
+        env: yinz_types::envs::EnvironmentVariables,
+    ) -> Self {
         Self {
             control: RecoveryControl::new(command),
             host,
+            env,
             attempt: None,
             next_retry: None,
             backoff: Backoff::default(),
@@ -374,10 +380,12 @@ impl Recovery {
             let assets = CliAssets {
                 terminal_window_size: os.get_terminal_size(),
                 supports_session_requests: true,
-                host_terminal_env: yinz_runtime::host_terminal_env::host_terminal_env(),
+                host_terminal_env:
+                    yinz_runtime::host_terminal_env::host_terminal_env_with_overrides(&self.env),
                 timezone: yinz_runtime::client_time::capture_timezone(),
                 ..Default::default()
             };
+            let env = self.env.clone();
             let (sender, result) = mpsc::channel();
             let worker = std::thread::Builder::new()
                 .name("remote-reconnect".into())
@@ -388,6 +396,7 @@ impl Recovery {
                         assets,
                         &stop,
                         Instant::now() + ATTEMPT_TIMEOUT,
+                        &env,
                     )
                     .map_err(|error| ConnectionFailure::classify(error, &stop));
                     let _ = sender.send(prepared);

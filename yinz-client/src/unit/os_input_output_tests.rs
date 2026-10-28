@@ -514,6 +514,8 @@ fn original_termios_survives_startup_raw_mode_and_cloning() {
         let command = crate::server_command(
             Path::new("test.sock"),
             false,
+            &"test".into(),
+            &Default::default(),
             Some(&cloned.original_termios()),
         )
         .unwrap();
@@ -561,6 +563,45 @@ fn original_termios_survives_startup_raw_mode_and_cloning() {
         "{}",
         String::from_utf8_lossy(&output.stdout)
     );
+}
+
+#[test]
+fn server_command_sets_child_configuration_and_identity_without_mutating_parent() {
+    let before: Vec<_> = ["PATH", "TERM", "YINZ", "YINZ_SESSION_NAME"]
+        .map(|key| (key, std::env::var_os(key)))
+        .into();
+    let env = yinz_types::envs::EnvironmentVariables::from_data(
+        [
+            ("PATH".into(), "/configured/bin".into()),
+            ("TERM".into(), "xterm-kitty".into()),
+            ("YINZ".into(), "configured".into()),
+            ("YINZ_SESSION_NAME".into(), "configured".into()),
+        ]
+        .into(),
+    );
+    let command = crate::server_command(
+        Path::new("test.sock"),
+        false,
+        &"selected".into(),
+        &env,
+        None,
+    )
+    .unwrap();
+    let child: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+    for (key, expected) in [
+        ("PATH", "/configured/bin"),
+        ("TERM", "xterm-kitty"),
+        ("YINZ", "0"),
+        ("YINZ_SESSION_NAME", "selected"),
+    ] {
+        assert_eq!(
+            child[std::ffi::OsStr::new(key)],
+            Some(std::ffi::OsStr::new(expected))
+        );
+    }
+    for (key, value) in before {
+        assert_eq!(std::env::var_os(key), value);
+    }
 }
 
 /// The branch nothing else exercises: a socket that never appears. The
