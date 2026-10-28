@@ -747,6 +747,7 @@ impl Screen {
     }
 
     pub(super) fn invalidate_agent_event_projects(&mut self) {
+        self.invalidate_palette_agent_labels();
         self.agent_events.project_version += 1;
         self.agent_events.project_ready = false;
         self.refresh_agent_event_projects();

@@ -5,6 +5,8 @@ use yinz_types::{agent::AgentState, data::PaneInfo};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentPresentation {
+    pub project: String,
+    pub branch: String,
     pub provider: String,
     pub state: AgentState,
     pub host: Option<String>,
@@ -25,6 +27,8 @@ impl AgentPresentation {
         .filter(|text| !text.is_empty())
         .unwrap_or_else(|| one_line(&pane.title));
         Some(Self {
+            project: String::new(),
+            branch: String::new(),
             provider: if provider.is_empty() {
                 "agent".into()
             } else {
@@ -102,9 +106,39 @@ impl AgentPresentation {
             ),
         );
 
-        let max_lines = max_lines.clamp(1, 4);
+        let max_lines = max_lines.clamp(1, 5);
+        let mut lines = Vec::new();
+        let project = self.project.trim().replace(char::is_control, " ");
+        let branch = self.branch.trim().replace(char::is_control, " ");
+        let branch = if branch == "no branch" { "" } else { &branch };
+        if !project.is_empty() || !branch.is_empty() {
+            let mut metadata = styled(
+                &project,
+                MdStyle {
+                    bold: true,
+                    color: Some(0),
+                    ..Default::default()
+                },
+            );
+            let separator = if project.is_empty() || branch.is_empty() {
+                ""
+            } else {
+                " · "
+            };
+            append(
+                &mut metadata,
+                &styled(
+                    &format!("{separator}{branch}"),
+                    MdStyle {
+                        color: Some(2),
+                        ..Default::default()
+                    },
+                ),
+            );
+            lines.push(metadata);
+        }
         // One extra row tells us whether the final visible row needs an ellipsis.
-        let mut lines = wrap(&main, width, 0, max_lines + 1);
+        lines.extend(wrap(&main, width, 0, max_lines + 1 - lines.len()));
         if lines.len() <= max_lines && !self.activity.is_empty() {
             let waiting = self.state == AgentState::Waiting;
             let activity = styled(
@@ -119,13 +153,13 @@ impl AgentPresentation {
         }
         let truncated = lines.len() > max_lines;
         lines.truncate(max_lines);
+        if truncated && let Some(last) = lines.last_mut() {
+            ellipsize(last, width);
+        }
         for line in &mut lines {
             if line.text.width() > width {
                 ellipsize(line, width);
             }
-        }
-        if truncated && let Some(last) = lines.last_mut() {
-            ellipsize(last, width);
         }
         lines
     }

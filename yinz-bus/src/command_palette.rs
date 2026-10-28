@@ -22,6 +22,12 @@ pub struct Delivery {
 
 #[derive(Clone, Debug)]
 pub enum Instruction {
+    AgentLabels {
+        client: ClientId,
+        opening: u64,
+        revision: u64,
+        labels: Result<std::collections::BTreeMap<String, AgentLabels>, String>,
+    },
     UsageReply {
         client: ClientId,
         opening: u64,
@@ -64,6 +70,27 @@ pub enum Instruction {
         client: ClientId,
         scope: Scope,
     },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentLabels {
+    pub project: String,
+    pub branch: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct AgentLabelsRequest {
+    pub client: ClientId,
+    pub opening: u64,
+    pub revision: u64,
+    pub sources: Vec<AgentLabelSource>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentLabelSource {
+    pub id: String,
+    pub host: Option<String>,
+    pub cwd: Option<String>,
 }
 
 /// Native palette requests never cross the plugin wire boundary.

@@ -3860,6 +3860,7 @@ pub fn screen_thread_main(
                 },
                 ScreenInstruction::InvalidateAgentEventProjects => {
                     screen.invalidate_agent_event_projects();
+                    screen.render()?;
                 },
                 ScreenInstruction::AgentEventProjects(version, result) => {
                     screen.apply_agent_event_projects(version, result);

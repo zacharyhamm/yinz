@@ -31,6 +31,20 @@ impl LiveAgent {
             self.pane.id
         )
     }
+    pub(super) fn order<'a>(
+        &'a self,
+        labels: &'a BTreeMap<String, yinz_bus::command_palette::AgentLabels>,
+    ) -> yinz_types::agent::LiveAgentOrder<'a> {
+        let labels = labels.get(&self.id());
+        yinz_types::agent::LiveAgentOrder::new(
+            self.pane.agent.as_ref().map(|agent| agent.state),
+            self.pane.last_hook_at_ms,
+            labels.map(|labels| labels.project.as_str()),
+            labels.map(|labels| labels.branch.as_str()),
+            self.pane.id,
+            self.session.as_str(),
+        )
+    }
     pub(super) fn description(&self) -> String {
         ["provider", "state", "session", "directory"]
             .iter()

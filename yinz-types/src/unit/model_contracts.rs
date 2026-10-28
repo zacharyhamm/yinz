@@ -292,3 +292,84 @@ fn agent_specs_reject_retired_vm_fields_regardless_of_permissions() {
         }
     }
 }
+
+#[test]
+fn live_agent_order_uses_state_recency_names_pane_and_session() {
+    use crate::{agent::LiveAgentOrder, pane_id::PaneId};
+    let key = |state, stamp, project, branch, pane, session| {
+        LiveAgentOrder::new(
+            state,
+            stamp,
+            project,
+            branch,
+            PaneId::from_legacy(pane, false),
+            session,
+        )
+    };
+    let ordered = [
+        key(Some(AgentState::Waiting), None, None, None, 9, "z"),
+        key(Some(AgentState::Busy), Some(20), None, None, 9, "z"),
+        key(
+            Some(AgentState::Busy),
+            Some(10),
+            Some("a"),
+            Some("a"),
+            1,
+            "a",
+        ),
+        key(
+            Some(AgentState::Busy),
+            Some(10),
+            Some("a"),
+            Some("a"),
+            1,
+            "b",
+        ),
+        key(
+            Some(AgentState::Busy),
+            Some(10),
+            Some("a"),
+            Some("a"),
+            2,
+            "a",
+        ),
+        key(
+            Some(AgentState::Busy),
+            Some(10),
+            Some("a"),
+            Some("b"),
+            1,
+            "a",
+        ),
+        key(Some(AgentState::Busy), Some(10), Some("a"), None, 1, "a"),
+        key(Some(AgentState::Busy), Some(10), Some("b"), None, 1, "a"),
+        key(Some(AgentState::Busy), Some(10), None, None, 1, "a"),
+        key(Some(AgentState::Busy), None, Some("a"), Some("a"), 1, "a"),
+        key(
+            Some(AgentState::Idle),
+            Some(30),
+            Some("a"),
+            Some("a"),
+            1,
+            "a",
+        ),
+    ];
+    assert!(ordered.windows(2).all(|pair| pair[0] < pair[1]));
+}
+
+#[test]
+fn pane_hook_recency_is_optional_and_roundtrips() {
+    use crate::data::PaneInfo;
+    let mut value = serde_json::to_value(PaneInfo::default()).unwrap();
+    assert!(value.get("last_hook_at_ms").is_none());
+    assert_eq!(
+        serde_json::from_value::<PaneInfo>(value.clone())
+            .unwrap()
+            .last_hook_at_ms,
+        None
+    );
+    value["last_hook_at_ms"] = serde_json::json!(123);
+    let pane: PaneInfo = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(pane.last_hook_at_ms, Some(123));
+    assert_eq!(serde_json::to_value(pane).unwrap(), value);
+}

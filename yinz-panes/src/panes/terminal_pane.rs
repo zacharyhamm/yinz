@@ -153,6 +153,7 @@ pub struct TerminalPane {
     last_agent_kind: Option<String>,
     last_agent_cwd: Option<String>,
     last_agent_session_id: Option<String>,
+    last_hook_at_ms: Option<i64>,
     pending_agent_escape_clients: HashSet<ClientId>,
     frame: HashMap<ClientId, PaneFrame>,
     borderless: bool,
@@ -1492,6 +1493,12 @@ impl Pane for TerminalPane {
         }
         self.agent_input_at = Some(Instant::now());
     }
+    fn last_hook_at_ms(&self) -> Option<i64> {
+        self.last_hook_at_ms
+    }
+    fn set_last_hook_at_ms(&mut self, at: i64) {
+        self.last_hook_at_ms = Some(at);
+    }
     fn last_agent_cwd(&self) -> Option<&str> {
         self.last_agent_cwd.as_deref()
     }
@@ -1499,6 +1506,7 @@ impl Pane for TerminalPane {
         self.last_agent_session_id.as_deref()
     }
     fn clear_agent_session_id(&mut self) {
+        self.last_hook_at_ms = None;
         self.last_agent_session_id = None;
     }
     fn last_agent_kind(&self) -> Option<&str> {
@@ -1511,6 +1519,12 @@ impl Pane for TerminalPane {
         // Before the equality check: a record that repeats itself still says this is an agent
         // pane, and the memory is set once and never taken back.
         self.was_an_agent |= agent.is_some();
+        if agent.is_none()
+            || self.agent.as_ref().map(|a| (&a.kind, &a.session_id))
+                != agent.as_ref().map(|a| (&a.kind, &a.session_id))
+        {
+            self.last_hook_at_ms = None;
+        }
         if let Some(agent) = &agent {
             if self.last_agent_kind.as_deref() != Some(agent.kind.as_str()) {
                 self.last_agent_session_id = None;
@@ -1711,6 +1725,7 @@ impl Pane for TerminalPane {
         // Explicit resumes restore their selected session in Screen::restart_agent_pane.
         let fresh_agent = cleaned.is_some() || replacement.is_some();
         if fresh_agent {
+            self.last_hook_at_ms = None;
             self.last_agent_session_id = None;
         }
         self.is_held.take().map(|(_, _, mut run_command)| {
@@ -2142,6 +2157,7 @@ impl TerminalPane {
             was_an_agent: agent.is_some(),
             last_agent_kind: agent.as_ref().map(|agent| agent.kind.clone()),
             last_agent_cwd: agent.as_ref().and_then(|agent| agent.cwd.clone()),
+            last_hook_at_ms: None,
             last_agent_session_id: agent.as_ref().and_then(|agent| agent.session_id.clone()),
             agent,
             waiting_pulse_started_at: None,

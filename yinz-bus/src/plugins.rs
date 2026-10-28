@@ -170,6 +170,7 @@ pub enum PluginInstruction {
     PluginTick(PluginId, ClientId, u64),
     PluginPalette(crate::command_palette::Delivery),
     PaletteAgent(Box<crate::command_palette::AgentRequest>),
+    PaletteAgentLabels(crate::command_palette::AgentLabelsRequest),
     PluginEvent(PluginId, ClientId, u64, Event),
     PluginReply(
         PluginId,
@@ -465,9 +466,9 @@ impl From<&PluginInstruction> for PluginContext {
             PluginInstruction::DataRequest { .. }
             | PluginInstruction::RefreshDataWatches { .. } => PluginContext::Update,
             PluginInstruction::InputBarrier(..) => PluginContext::Update,
-            PluginInstruction::PaletteAgent(..) | PluginInstruction::PluginPalette(..) => {
-                PluginContext::Update
-            },
+            PluginInstruction::PaletteAgent(..)
+            | PluginInstruction::PaletteAgentLabels(..)
+            | PluginInstruction::PluginPalette(..) => PluginContext::Update,
             PluginInstruction::PluginTick(..) => PluginContext::Update,
             PluginInstruction::PluginEvent(..) | PluginInstruction::PluginReply(..) => {
                 PluginContext::Update

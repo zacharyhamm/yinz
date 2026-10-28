@@ -189,3 +189,15 @@ fn a_plugin_pane_is_never_the_focused_pane() {
 
     assert_eq!(focused_pane(&manifest, &[tab(0, true, false)]), None);
 }
+
+#[test]
+fn pane_hook_recency_comes_from_the_host_manifest() {
+    let pane = PaneInfo {
+        last_hook_at_ms: Some(123),
+        ..Default::default()
+    };
+    assert_eq!(
+        crate::panes::agent_pane(&pane, None).last_hook_at_ms,
+        Some(123)
+    );
+}

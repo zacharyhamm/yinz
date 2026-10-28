@@ -49,6 +49,48 @@ impl AgentState {
     }
 }
 
+/// Shared panel/palette ordering, after each caller resolves the displayed state.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LiveAgentOrder<'a> {
+    priority: u8,
+    last_hook: std::cmp::Reverse<Option<i64>>,
+    missing_project: bool,
+    project: Option<&'a str>,
+    missing_branch: bool,
+    branch: Option<&'a str>,
+    pane: PaneId,
+    session: &'a str,
+}
+
+impl<'a> LiveAgentOrder<'a> {
+    pub fn new(
+        state: Option<AgentState>,
+        last_hook_at_ms: Option<i64>,
+        project: Option<&'a str>,
+        branch: Option<&'a str>,
+        pane: PaneId,
+        session: &'a str,
+    ) -> Self {
+        let project = project.filter(|name| !name.is_empty());
+        let branch = branch.filter(|name| !name.is_empty());
+        Self {
+            priority: match state {
+                Some(AgentState::Waiting) => 0,
+                Some(AgentState::Busy) => 1,
+                Some(AgentState::Idle) => 2,
+                _ => 3,
+            },
+            last_hook: std::cmp::Reverse(last_hook_at_ms),
+            missing_project: project.is_none(),
+            project,
+            missing_branch: branch.is_none(),
+            branch,
+            pane,
+            session,
+        }
+    }
+}
+
 /// Who wrote a pane's agent record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumString)]
 pub enum AgentSource {

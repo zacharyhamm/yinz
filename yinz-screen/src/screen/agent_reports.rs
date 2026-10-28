@@ -149,6 +149,16 @@ pub(super) fn apply_queued_agent_report(
         if result.is_ok() { "ok" } else { "error" },
     );
     result?;
+    if hook.as_ref().is_some_and(|hook| !hook.archive_only) {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        screen.with_pane(pane_id, |pane| pane.set_last_hook_at_ms(at));
+        // Publish even identical or stateless hooks, before the corresponding AgentEvent.
+        screen.report_pane_state()?;
+        screen.render()?;
+    }
     if let Some(event) = &report.event {
         screen.agent_control_event(event, hook.as_ref());
         if trace.enabled {

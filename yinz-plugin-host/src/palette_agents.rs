@@ -23,6 +23,60 @@ use yinz_types::data::{GetPaneCwdResponse, PaneInfo};
 #[path = "palette_history.rs"]
 mod history;
 
+pub(crate) fn labels(
+    request: yinz_bus::command_palette::AgentLabelsRequest,
+    senders: &ThreadSenders,
+    data: &DataAccess,
+) {
+    let labels = agent_control::projects(data).map(|rows| {
+        resolve_labels(
+            request.sources,
+            &project_data::projects::from_rows(&rows),
+            &crate::project_provider::presentation_snapshot(),
+        )
+    });
+    senders
+        .send_to_screen(ScreenInstruction::CommandPalette(
+            Instruction::AgentLabels {
+                client: request.client,
+                opening: request.opening,
+                revision: request.revision,
+                labels,
+            },
+        ))
+        .context("replying with palette agent labels")
+        .non_fatal();
+}
+
+fn resolve_labels(
+    sources: Vec<yinz_bus::command_palette::AgentLabelSource>,
+    registry: &project_data::projects::Registry,
+    repositories: &project_data::projects::Probed,
+) -> std::collections::BTreeMap<String, yinz_bus::command_palette::AgentLabels> {
+    sources
+        .into_iter()
+        .filter_map(|source| {
+            let location = agent_proto::agents::checkout_location(
+                source.host.as_deref(),
+                source.cwd.as_deref(),
+            )?;
+            // Match the agents panel's ProjectForCwd and exact checkout branch lookup.
+            let project =
+                project_data::projects::project_for_cwd(repositories, registry, &location)
+                    .map(|project| project.name.clone())
+                    .unwrap_or_default();
+            let branch = repositories
+                .get(&location)
+                .and_then(|repository| repository.branch.clone())
+                .unwrap_or_default();
+            Some((
+                source.id,
+                yinz_bus::command_palette::AgentLabels { project, branch },
+            ))
+        })
+        .collect()
+}
+
 pub(crate) fn handle(mut request: AgentRequest, senders: &ThreadSenders, data: &DataAccess) {
     if let AgentAction::Usage { provider } = &request.action {
         let usage = crate::provider_usage::collect(provider);

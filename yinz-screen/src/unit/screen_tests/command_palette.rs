@@ -3708,6 +3708,7 @@ fn native_agent_launch_replies_are_client_and_opening_scoped_and_errors_do_not_r
 
 #[test]
 fn live_agent_results_refresh_panel_presentation_in_root_and_picker() {
+    use yinz_bus::command_palette::{AgentLabels, AgentLabelsRequest, Instruction};
     use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
 
     for picker in [false, true] {
@@ -3720,7 +3721,7 @@ fn live_agent_results_refresh_panel_presentation_in_root_and_picker() {
             detail: Some("Run `cargo` **tests**".into()),
             waiting_on: Some("Choose [a] or *b*".into()),
             wait_needs_a_person: true,
-            cwd: None,
+            cwd: Some("/work/tree".into()),
             session_id: None,
             run_id: None,
         };
@@ -3733,6 +3734,33 @@ fn live_agent_results_refresh_panel_presentation_in_root_and_picker() {
             .unwrap()
             .set_pane_agent(pane, Some(agent.clone()));
         let receiver = screen_wired_to_server(&mut screen);
+        let (plugin_tx, plugin_rx) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+        let next_labels = || loop {
+            let (instruction, _) = plugin_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if let PluginInstruction::PaletteAgentLabels(request) = instruction {
+                break request;
+            }
+        };
+        let reply =
+            |request: &AgentLabelsRequest, project: &str, branch: &str| Instruction::AgentLabels {
+                client: request.client,
+                opening: request.opening,
+                revision: request.revision,
+                labels: Ok(request
+                    .sources
+                    .iter()
+                    .map(|source| {
+                        (
+                            source.id.clone(),
+                            AgentLabels {
+                                project: project.into(),
+                                branch: branch.into(),
+                            },
+                        )
+                    })
+                    .collect()),
+            };
         let mut grid = grid_for_render_snapshot(SIZE);
         palette_search(
             &mut screen,
@@ -3743,6 +3771,10 @@ fn live_agent_results_refresh_panel_presentation_in_root_and_picker() {
             // The filter action leads the picker; select the live pane explicitly.
             palette_key(&mut screen, BareKey::Down);
         }
+        let request = next_labels();
+        assert_eq!(request.sources.len(), 1);
+        assert_eq!(request.sources[0].cwd.as_deref(), Some("/work/tree"));
+        screen.plugin_palette_instruction(reply(&request, "**project**", "topic/雪"));
         for (state, main, activity) in [
             (
                 AgentState::Busy,
@@ -3763,10 +3795,41 @@ fn live_agent_results_refresh_panel_presentation_in_root_and_picker() {
                 .unwrap()
                 .set_pane_agent(pane, Some(agent.clone()));
             let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-            assert!(frame.contains(&format!("› {main}")), "{frame}");
+            assert!(frame.contains(main), "{frame}");
+            assert!(frame.contains("› **project** · topic/雪"), "{frame}");
             assert!(frame.contains(activity), "{frame}");
             assert!(frame.contains("[1]"), "{frame}");
         }
+        // Project renames and branch changes at the same cwd invalidate the labels.
+        screen.invalidate_agent_event_projects();
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        let refresh = next_labels();
+        assert!(refresh.revision > request.revision);
+        screen.plugin_palette_instruction(reply(&request, "stale", "old"));
+        screen.plugin_palette_instruction(reply(&refresh, "renamed", "new-branch"));
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(frame.contains("› renamed · new-branch"), "{frame}");
+        assert!(!frame.contains("stale"), "{frame}");
+
+        // A reply for the previous checkout cannot overwrite a new location.
+        screen.invalidate_agent_event_projects();
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        let previous = next_labels();
+        agent.cwd = Some("/work/other".into());
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .set_pane_agent(pane, Some(agent));
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        screen.plugin_palette_instruction(reply(&previous, "wrong checkout", "old"));
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        let moved = next_labels();
+        assert_eq!(moved.sources[0].cwd.as_deref(), Some("/work/other"));
+        screen.plugin_palette_instruction(reply(&moved, "other", ""));
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(frame.contains("› other"), "{frame}");
+        assert!(!frame.contains("wrong checkout"), "{frame}");
     }
 }
 
@@ -6007,5 +6070,89 @@ fn agent_info_usage_and_prompt_are_scoped_to_the_selected_agent() {
             assert!(frame.contains("continue"), "{frame}");
             assert!(frame.contains("with tests"), "{frame}");
         }
+    }
+}
+
+#[test]
+fn live_agent_order_uses_peer_timestamps_and_refreshes_root_and_picker() {
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+    for picker in [false, true] {
+        let mut screen = screen();
+        let pane_id = PaneId::Terminal(TerminalId::new(1));
+        screen.with_pane(pane_id, |pane| {
+            pane.set_agent_info(Some(AgentInfo {
+                kind: "codex".into(),
+                state: AgentState::Busy,
+                source: AgentSource::Reported,
+                detail: Some("local task".into()),
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                session_id: None,
+                run_id: None,
+            }));
+            pane.set_last_hook_at_ms(100);
+        });
+        screen.log_and_report_session_state().unwrap();
+        let older = warp_peer(&mut screen, "older");
+        let newer = warp_peer(&mut screen, "newer");
+        for (name, stamp) in [(&older, Some(50)), (&newer, Some(200))] {
+            for pane in screen
+                .peer_sessions_cache
+                .get_mut(name)
+                .unwrap()
+                .panes
+                .panes
+                .values_mut()
+                .flatten()
+            {
+                pane.last_hook_at_ms = stamp;
+                pane.agent.as_mut().unwrap().detail = Some(format!("{name} task"));
+            }
+        }
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        palette_search(
+            &mut screen,
+            if picker { "Agents" } else { "provider:codex" },
+        );
+        if picker {
+            palette_key(&mut screen, BareKey::Enter);
+        }
+        let assert_order = |frame: &str, names: [&str; 3]| {
+            let positions = names.map(|name| {
+                frame
+                    .find(name)
+                    .unwrap_or_else(|| panic!("missing {name}:\n{frame}"))
+            });
+            assert!(
+                positions.windows(2).all(|pair| pair[0] < pair[1]),
+                "{frame}"
+            );
+        };
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert_order(&frame, ["newer task", "local task", "older task"]);
+        screen.with_pane(pane_id, |pane| pane.set_last_hook_at_ms(300));
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert_order(&frame, ["local task", "newer task", "older task"]);
+        // State wins over recency, and equal pane IDs are ordered by session on a tie.
+        for name in [&older, &newer] {
+            for pane in screen
+                .peer_sessions_cache
+                .get_mut(name)
+                .unwrap()
+                .panes
+                .panes
+                .values_mut()
+                .flatten()
+            {
+                pane.last_hook_at_ms = None;
+                let agent = pane.agent.as_mut().unwrap();
+                agent.state = AgentState::Waiting;
+                agent.waiting_on = agent.detail.clone();
+            }
+        }
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert_order(&frame, ["newer task", "older task", "local task"]);
     }
 }

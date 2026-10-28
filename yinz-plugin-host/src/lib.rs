@@ -365,6 +365,15 @@ pub fn plugin_thread_main(
                     yinz_exports::palette_agents::handle(*request, &senders, &data);
                 });
             },
+            PluginInstruction::PaletteAgentLabels(request) => {
+                let senders = bus.senders.clone();
+                let data = palette_data.clone();
+                let shutdown = shutdown_send.clone();
+                yinz_bus::global_async_runtime::get_tokio_runtime().spawn_blocking(move || {
+                    let _shutdown = shutdown;
+                    yinz_exports::palette_agents::labels(request, &senders, &data);
+                });
+            },
             PluginInstruction::PluginPalette(delivery) => {
                 plugin_bridge.plugin_palette(delivery, shutdown_send.clone());
             },

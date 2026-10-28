@@ -584,6 +584,7 @@ message PaneInfo {
     optional string pane_tabs_json = 37;
     optional string display_title = 38;
     optional string last_agent_session_id = 39;
+    optional int64 last_hook_at_ms = 40;
 }
 
 message AgentInfo {

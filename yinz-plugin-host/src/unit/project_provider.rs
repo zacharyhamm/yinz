@@ -44,6 +44,21 @@ fn project_matches_validate_containment_namespaces_and_generation() {
     let publication = json!({"providers":yinz_types::project_provider::providers(), "locations": {root.to_str().unwrap():first}});
     assert!(publish(30, publication.clone()).unwrap());
     assert!(!publish(30, publication.clone()).unwrap());
+    let mut hosted = publication.clone();
+    let remote = Location::new(Some("builder"), "/work/repo");
+    let mut repository = snapshot().into_values().next().unwrap();
+    repository.host = Some("builder".into());
+    hosted["locations"][remote.key()] = json!(repository);
+    assert!(publish(30, hosted.clone()).unwrap());
+    assert!(!snapshot().contains_key(&remote));
+    assert!(presentation_snapshot().contains_key(&remote));
+    // A branch change on a remote checkout must also invalidate presentation data.
+    hosted["locations"][remote.key()]["branch"] = json!("new-branch");
+    assert!(publish(30, hosted).unwrap());
+    assert_eq!(
+        presentation_snapshot()[&remote].branch.as_deref(),
+        Some("new-branch")
+    );
     assert!(!clear(29));
     assert!(!snapshot().is_empty());
     unregister_owner(10);

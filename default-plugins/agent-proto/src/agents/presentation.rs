@@ -6,10 +6,10 @@ use super::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use unicode_width::UnicodeWidthStr;
 use yinz_tile::prelude::TabId;
+use yinz_types::agent::{AgentState, LiveAgentOrder};
 
 /// How many lines of a pane the model sees for each agent in one `agent_list`.
 pub(super) const PREVIEW_LINES: usize = 20;
@@ -220,15 +220,6 @@ pub struct Strip {
 /// Needs-input agents precede working agents, then idle agents and other states.
 /// Within each activity group, the most recently received hook comes first, with
 /// project, branch, and pane id breaking ties. Agents without hooks follow those with hooks.
-type SortableAgent<'a> = (
-    u8,
-    Reverse<Option<i64>>,
-    Option<&'a str>,
-    Option<&'a str>,
-    u32,
-    StripRow,
-);
-
 pub fn strip_rows(
     panes: &[AgentPane],
     manual: &BTreeMap<u32, String>,
@@ -238,7 +229,7 @@ pub fn strip_rows(
     summaries: &Summaries,
     hooks: &HookFeeds,
 ) -> Vec<StripRow> {
-    let mut agents: Vec<SortableAgent<'_>> = panes
+    let mut agents: Vec<_> = panes
         .iter()
         .filter_map(|pane| {
             let (kind, _) = classify(pane, manual)?;
@@ -263,19 +254,24 @@ pub fn strip_rows(
             };
             // Rank the same resolved state that supplies the visible marker, including
             // hook precedence and summary-based requests for input.
-            let priority = match symbol {
-                '!' => 0,
-                '●' => 1,
-                '○' => 2,
-                _ => 3,
+            let state = match symbol {
+                '!' => Some(AgentState::Waiting),
+                '●' => Some(AgentState::Busy),
+                '○' => Some(AgentState::Idle),
+                _ => None,
             };
             let row = format!("{} {cell} {symbol}", pane.pane_id);
             Some((
-                priority,
-                Reverse(pane.last_hook_at_ms),
+                LiveAgentOrder::new(
+                    state,
+                    pane.last_hook_at_ms,
+                    owners.get(&pane.pane_id).map(String::as_str),
+                    branches.get(&pane.pane_id).map(String::as_str),
+                    yinz_types::pane_id::PaneId::from_legacy(pane.pane_id, false),
+                    "",
+                ),
                 owners.get(&pane.pane_id).map(String::as_str),
                 branches.get(&pane.pane_id).map(String::as_str),
-                pane.pane_id,
                 StripRow::Agent {
                     pane_id: pane.pane_id,
                     text: row,
@@ -287,35 +283,14 @@ pub fn strip_rows(
             ))
         })
         .collect();
-    agents.sort_by(|left, right| {
-        // `None` sorts before `Some`, and the nameless go last on both keys, so
-        // each is preceded by "has nothing to name".
-        (
-            left.0,
-            left.1,
-            left.2.is_none(),
-            left.2,
-            left.3.is_none(),
-            left.3,
-            left.4,
-        )
-            .cmp(&(
-                right.0,
-                right.1,
-                right.2.is_none(),
-                right.2,
-                right.3.is_none(),
-                right.3,
-                right.4,
-            ))
-    });
+    agents.sort_by(|left, right| left.0.cmp(&right.0));
 
     // `None` is "no header written yet", which is not the same as a header for
     // an agent with no project — that one is written, and says so.
     let mut project: Option<Option<&str>> = None;
     let mut branch: Option<Option<&str>> = None;
     let mut rows = Vec::with_capacity(agents.len());
-    for (_, _, owner, checkout, _, row) in agents {
+    for (_, owner, checkout, row) in agents {
         if project != Some(owner) {
             rows.push(StripRow::Project(owner.unwrap_or(NO_PROJECT).to_owned()));
             project = Some(owner);

@@ -8,7 +8,7 @@ fn service_modules_compile_in_the_confined_graph() {
 }
 
 #[test]
-fn live_hook_receipt_times_are_published_and_survive_pane_updates() {
+fn host_hook_receipt_times_are_published_without_retimestamping() {
     let (mut runtime, host) = plugin_with_source(
         "agent-service",
         r#"
@@ -36,7 +36,7 @@ fn live_hook_receipt_times_are_published_and_survive_pane_updates() {
         terminal_command: Some("claude".to_owned()),
         ..Default::default()
     };
-    let manifest = json!({"panes":{"0":[pane(7), pane(8)]}});
+    let mut manifest = json!({"panes":{"0":[pane(7), pane(8)]}});
     runtime.invoke("rebuild", vec![manifest.clone()]).unwrap();
     assert_eq!(
         runtime.invoke("stamp", vec![json!(7)]).unwrap(),
@@ -67,10 +67,13 @@ fn live_hook_receipt_times_are_published_and_survive_pane_updates() {
         (8, "SubagentStart", 400),
         (7, "SessionEnd", 500),
     ] {
+        // The host delivers its manifest before the hook. The service clock can differ.
+        manifest["panes"]["0"][if id == 7 { 0 } else { 1 }]["last_hook_at_ms"] = json!(now);
+        runtime.invoke("rebuild", vec![manifest.clone()]).unwrap();
         runtime
             .invoke(
                 "hook",
-                vec![json!(id), json!(name), json!(now), json!(false)],
+                vec![json!(id), json!(name), json!(now + 9000), json!(false)],
             )
             .unwrap();
         assert_eq!(runtime.invoke("stamp", vec![json!(id)]).unwrap(), now);
@@ -107,15 +110,22 @@ fn live_hook_receipt_times_are_published_and_survive_pane_updates() {
     runtime
         .invoke("rebuild", vec![json!({"panes":{"0":[pane(8)]}})])
         .unwrap();
+    manifest["panes"]["0"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("last_hook_at_ms");
     runtime.invoke("rebuild", vec![manifest.clone()]).unwrap();
     assert_eq!(
         runtime.invoke("stamp", vec![json!(7)]).unwrap(),
         json!(null)
     );
+    // Old peer metadata has no recency; a held pane retains the host timestamp.
+    manifest["panes"]["0"][1]["last_hook_at_ms"] = json!(400);
     let mut held = manifest.clone();
     held["panes"]["0"][1]["is_held"] = json!(true);
     runtime.invoke("rebuild", vec![held]).unwrap();
     assert_eq!(runtime.invoke("stamp", vec![json!(8)]).unwrap(), 400);
+    manifest["panes"]["0"][1]["last_hook_at_ms"] = json!(null);
     runtime.invoke("rebuild", vec![manifest]).unwrap();
     assert_eq!(
         runtime.invoke("stamp", vec![json!(8)]).unwrap(),

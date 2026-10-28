@@ -66,6 +66,7 @@ fn serialize_and_deserialize_session_info_with_data() {
             exit_status: None,
             restart_error: None,
             last_agent_session_id: None,
+            last_hook_at_ms: None,
             is_held: false,
             pane_x: yinz_types::position::Column::new(0),
             pane_content_x: yinz_types::position::Column::new(1),
@@ -102,6 +103,7 @@ fn serialize_and_deserialize_session_info_with_data() {
             exit_status: None,
             restart_error: None,
             last_agent_session_id: None,
+            last_hook_at_ms: None,
             is_held: false,
             pane_x: yinz_types::position::Column::new(0),
             pane_content_x: yinz_types::position::Column::new(1),
@@ -325,4 +327,23 @@ mother_supervision "{{\"state\":\"watching\",\"pending\":2,\"blockers\":1}}"
     );
     let rewritten = session_info::to_string(&decoded).unwrap();
     assert!(!rewritten.contains("mother"));
+}
+
+#[test]
+fn pane_hook_recency_survives_peer_metadata_and_is_optional_for_old_peers() {
+    for stamp in [None, Some(123)] {
+        let pane = PaneInfo {
+            last_hook_at_ms: stamp,
+            ..Default::default()
+        };
+        let mut session = SessionInfo::new("peer".into());
+        session
+            .panes
+            .panes
+            .insert(yinz_types::internal_ids::TabPosition::new(0), vec![pane]);
+        let encoded = session_info::to_string(&session).unwrap();
+        let decoded = session_info::from_string(&encoded, &"current".into()).unwrap();
+        assert_eq!(decoded.panes, session.panes);
+        assert_eq!(encoded.contains("last_hook_at_ms"), stamp.is_some());
+    }
 }
