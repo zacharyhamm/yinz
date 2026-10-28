@@ -3872,6 +3872,17 @@ fn agent_info_keeps_missing_history_readable_and_rejects_replaced_identity() {
         info.contains("No recorded history") && info.contains("Focus"),
         "{info}"
     );
+    assert!(info.contains("┃ ! codex  needs input"), "{info}");
+    let mut busy = agent.clone();
+    busy.state = AgentState::Busy;
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .set_pane_agent(pane, Some(busy));
+    let updated = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(updated.contains("┃ ● codex  working"), "{updated}");
+    assert!(updated.contains("No recorded history"), "{updated}");
     let mut replacement = agent;
     replacement.session_id = Some("replacement".into());
     screen
@@ -6018,7 +6029,7 @@ fn agent_info_usage_and_prompt_are_scoped_to_the_selected_agent() {
             plan: None,
             message: None,
             windows: vec![ProviderUsageWindow {
-                label: "Weekly".into(),
+                label: "7d".into(),
                 used_percent: 25.0,
                 resets_at_ms: None,
             }],
@@ -6030,7 +6041,7 @@ fn agent_info_usage_and_prompt_are_scoped_to_the_selected_agent() {
             usage,
         });
         let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-        assert!(frame.contains("Weekly · 75%"), "{frame}");
+        assert!(frame.contains("Weekly") && frame.contains("75%"), "{frame}");
         for key in [BareKey::Tab, BareKey::Down, BareKey::Enter] {
             palette_key(&mut screen, key);
         }
@@ -6063,7 +6074,7 @@ fn agent_info_usage_and_prompt_are_scoped_to_the_selected_agent() {
         let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         if conversation.is_some() {
             assert!(frame.contains("Agent info · Actions"), "{frame}");
-            assert!(frame.contains("Weekly · 75%"), "{frame}");
+            assert!(frame.contains("Weekly") && frame.contains("75%"), "{frame}");
         } else {
             assert!(frame.contains("Send prompt"), "{frame}");
             assert!(frame.contains("no conversation ID"), "{frame}");
@@ -6155,4 +6166,151 @@ fn live_agent_order_uses_peer_timestamps_and_refreshes_root_and_picker() {
         let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert_order(&frame, ["newer task", "older task", "local task"]);
     }
+}
+
+#[test]
+fn expanded_palette_quota_clips_notifications_and_releases_rasters_with_the_view() {
+    use crate::screen::Notification;
+    use yinz_bus::command_palette::{AgentAction, Instruction};
+    use yinz_types::agent::control::{ProviderUsage, ProviderUsageStatus, ProviderUsageWindow};
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+    use yinz_types::pane_size::{SizeInPixels, Viewport};
+    use yinz_types::{
+        animation::Tween, input::options::NotificationPosition, internal_ids::NotificationId,
+    };
+    let mut screen = screen();
+    screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
+        PaneId::Terminal(TerminalId::new(1)),
+        Some(AgentInfo {
+            kind: "codex".into(),
+            state: AgentState::Idle,
+            source: AgentSource::Reported,
+            detail: None,
+            waiting_on: None,
+            wait_needs_a_person: false,
+            cwd: None,
+            session_id: None,
+            run_id: None,
+        }),
+    );
+    screen
+        .kitty_host_capabilities
+        .borrow_mut()
+        .insert(CLIENT, true);
+    screen.client_cell_pixel_sizes.insert(
+        CLIENT,
+        Some(SizeInPixels {
+            width: 8,
+            height: 18,
+        }),
+    );
+    let (tx, rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let open = |screen: &mut Screen| {
+        palette_search(screen, "provider:codex");
+        palette_key(screen, BareKey::Enter);
+        let request = loop {
+            let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if let PluginInstruction::PaletteAgent(request) = instruction
+                && matches!(request.action, AgentAction::Usage { .. })
+            {
+                break request;
+            }
+        };
+        screen.plugin_palette_instruction(Instruction::UsageReply {
+            client: CLIENT,
+            opening: request.opening,
+            view: request.step,
+            usage: ProviderUsage {
+                provider: "codex".into(),
+                status: ProviderUsageStatus::Ok,
+                observed_at_ms: None,
+                plan: None,
+                message: None,
+                windows: vec![ProviderUsageWindow {
+                    label: "7d".into(),
+                    used_percent: 75.0,
+                    resets_at_ms: None,
+                }],
+            },
+        });
+    };
+    open(&mut screen);
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert_eq!(screen.kitty_image_store.borrow().image_count(), 1);
+    let full = screen.client_kitty_host_state.borrow()[&CLIENT]
+        .live_placements
+        .values()
+        .next()
+        .unwrap()
+        .geometry;
+    assert_eq!((full.source_px_width, full.source_px_height), (144, 36));
+    let now = std::time::Instant::now();
+    screen.pinned_now = Some(now);
+    let id = NotificationId::new(99);
+    let mut notification = Notification::new(
+        id,
+        "Quota refresh finished; notification above the quota".into(),
+        None,
+        None,
+        now,
+    );
+    notification.reveal = Tween::settled(1.0);
+    screen.notifications.push(notification);
+    screen.notification_position = NotificationPosition::TopRight;
+    let surface = Viewport {
+        x: 0,
+        y: 0,
+        cols: SIZE.cols,
+        rows: SIZE.rows,
+    };
+    let settled_y = screen.notification_layout(surface, now, CLIENT)[0].y;
+    for (y, visible_rows) in [
+        (full.cell_y + 1, 1),
+        (full.cell_y, 0),
+        (full.cell_y + 3, 2),
+        (full.cell_y, 0),
+    ] {
+        screen.notifications[0].y_offset = Tween::settled(y as f32 - settled_y as f32);
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        let visible_pixels: usize = screen.client_kitty_host_state.borrow()[&CLIENT]
+            .live_placements
+            .values()
+            .filter(|record| record.geometry.internal_image_id == full.internal_image_id)
+            .map(|record| record.geometry.source_px_width * record.geometry.source_px_height)
+            .sum();
+        assert_eq!(visible_pixels, 144 * 18 * visible_rows);
+        assert_eq!(screen.kitty_image_store.borrow().image_count(), 1);
+    }
+    screen.dismiss_notification(id, now).unwrap();
+    screen.pinned_now = Some(now + Duration::from_secs(1));
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    let restored: Vec<_> = screen.client_kitty_host_state.borrow()[&CLIENT]
+        .live_placements
+        .values()
+        .map(|record| record.geometry)
+        .collect();
+    assert_eq!(restored, [full]);
+    screen
+        .resize_to_screen(Size { cols: 40, rows: 24 })
+        .unwrap();
+    grid.change_size(24, 40);
+    let compact = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert_eq!(screen.kitty_image_store.borrow().image_count(), 0);
+    assert!(compact.contains("Weekly · 25%"), "{compact}");
+    screen.resize_to_screen(SIZE).unwrap();
+    grid.change_size(SIZE.rows, SIZE.cols);
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert_eq!(screen.kitty_image_store.borrow().image_count(), 1);
+    palette_key(&mut screen, BareKey::Esc);
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert_eq!(screen.kitty_image_store.borrow().image_count(), 0);
+    screen.close_command_palette(CLIENT);
+    open(&mut screen);
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert_eq!(screen.kitty_image_store.borrow().image_count(), 1);
+    screen.close_command_palette(CLIENT);
+    assert_eq!(screen.kitty_image_store.borrow().image_count(), 0);
 }

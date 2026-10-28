@@ -20,3 +20,6 @@ serde_json = { workspace = true }
 unicode-width = { workspace = true }
 url = { workspace = true }
 regex = { workspace = true, features = ["unicode-case"] }
+
+anyhow = { workspace = true }
+png = { version = "0.17.16", default-features = false }

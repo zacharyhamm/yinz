@@ -398,8 +398,15 @@ pub(super) fn execute(
                     } else {
                         format!("session {}", h.session_id)
                     },
-                    project: String::new(),
+                    project: agent_proto::agents::checkout_location(
+                        h.host.as_deref(),
+                        h.cwd.as_deref(),
+                    )
+                    .and_then(|location| project_data::projects::for_cwd(&projects, &location))
+                    .map(|project| project.name.clone())
+                    .unwrap_or_default(),
                     usage: None,
+                    ..Default::default()
                 },
                 events,
                 rows,

@@ -2,7 +2,31 @@
 use anyhow::{ensure, Context, Result};
 use yinz_types::{colors::eightbit_to_rgb, data::PaletteColor, style::TerminalTheme};
 
-pub(super) fn render(
+pub fn render(
+    value: u64,
+    color: PaletteColor,
+    terminal: Option<TerminalTheme>,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>> {
+    let pixels = render_rgba(value, color, terminal, width, height)?;
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder
+            .write_header()
+            .context("encoding quota PNG header")?;
+        writer
+            .write_image_data(&pixels)
+            .context("encoding quota PNG pixels")?;
+    }
+    Ok(png)
+}
+
+/// The bounded RGBA raster underlying the panel PNG and native overlay image.
+pub fn render_rgba(
     value: u64,
     color: PaletteColor,
     terminal: Option<TerminalTheme>,
@@ -65,19 +89,7 @@ pub(super) fn render(
             ((0.5 - distance * scale).clamp(0.0, 1.0) * 255.0).round() as u8,
         ]);
     }
-    let mut png = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut png, width, height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder
-            .write_header()
-            .context("encoding quota PNG header")?;
-        writer
-            .write_image_data(&pixels)
-            .context("encoding quota PNG pixels")?;
-    }
-    Ok(png)
+    Ok(pixels)
 }
 
 fn capsule(x: f64, y: f64, a: (f64, f64), b: (f64, f64), radius: f64) -> f64 {
@@ -232,5 +244,117 @@ fn digit_strokes(digit: u8) -> Vec<(f64, f64)> {
 }
 
 #[cfg(test)]
-#[path = "../../unit/quota.rs"]
+#[path = "unit/quota.rs"]
 mod tests;
+
+/// Panel quota labels and colors, computed from the last retained observation.
+#[derive(Clone, Debug)]
+pub struct Display {
+    pub value: Option<u64>,
+    pub remaining: Option<f64>,
+    pub stale: bool,
+    pub weekly_label: String,
+    pub short: String,
+    pub other: Vec<String>,
+    pub compact: String,
+    pub reset: String,
+}
+impl Display {
+    pub fn new(usage: &yinz_types::agent::control::ProviderUsage, now: u64) -> Self {
+        use yinz_types::agent::control::ProviderUsageStatus;
+        let stale = usage.status != ProviderUsageStatus::Ok
+            || usage
+                .observed_at_ms
+                .is_some_and(|at| now.saturating_sub(at) >= 120_000);
+        let weekly = usage
+            .windows
+            .iter()
+            .find(|w| matches!(w.label.as_str(), "Weekly limit" | "7d"));
+        let short = usage
+            .windows
+            .iter()
+            .find(|w| matches!(w.label.as_str(), "5-hour limit" | "5-hour" | "5h"));
+        let remaining = weekly.map(|w| (100.0 - w.used_percent).clamp(0.0, 100.0));
+        let value = remaining.map(|n| n.round() as u64);
+        let short = short
+            .map(|w| {
+                format!(
+                    "5hr · {}%",
+                    (100.0 - w.used_percent).clamp(0.0, 100.0).round() as u64
+                )
+            })
+            .unwrap_or_default();
+        let mut parts = vec![];
+        if let Some(value) = value {
+            parts.push(format!("Weekly · {value}%"));
+        }
+        if !short.is_empty() {
+            parts.push(short.clone());
+        }
+        let other: Vec<_> = usage
+            .windows
+            .iter()
+            .filter(|w| {
+                !matches!(
+                    w.label.as_str(),
+                    "Weekly limit" | "7d" | "5-hour limit" | "5-hour" | "5h"
+                )
+            })
+            .map(|w| {
+                format!(
+                    "{} · {}%",
+                    w.label,
+                    (100.0 - w.used_percent).clamp(0.0, 100.0).round() as u64
+                )
+            })
+            .collect();
+        parts.extend(other.iter().cloned());
+        if stale && !parts.is_empty() {
+            parts.push("stale".into());
+        }
+        if parts.is_empty() {
+            parts.push(usage.message.clone().unwrap_or_else(|| {
+                match usage.status {
+                    ProviderUsageStatus::Expired => "Credentials expired",
+                    ProviderUsageStatus::Error => "Refresh failed",
+                    ProviderUsageStatus::Unsupported => "Unsupported",
+                    _ => "Unavailable",
+                }
+                .into()
+            }));
+        }
+        let reset = weekly
+            .and_then(|w| w.resets_at_ms)
+            .or_else(|| usage.windows.iter().find_map(|w| w.resets_at_ms))
+            .map(|reset| {
+                let left = reset.saturating_sub(now);
+                match left {
+                    0 => "reset due".into(),
+                    1..60_000 => "<1m left".into(),
+                    60_000..3_600_000 => format!("{}m left", left / 60_000),
+                    3_600_000..86_400_000 => format!("{}h left", left / 3_600_000),
+                    _ => format!("{}d left", left / 86_400_000),
+                }
+            })
+            .unwrap_or_default();
+        Self {
+            value,
+            remaining,
+            stale,
+            weekly_label: if stale { "Weekly · stale" } else { "Weekly" }.into(),
+            short,
+            other,
+            compact: parts.join(" · "),
+            reset,
+        }
+    }
+    pub fn color(&self, style: &yinz_types::style::Style) -> PaletteColor {
+        let colors = &style.colors;
+        match self.remaining.filter(|_| !self.stale) {
+            Some(n) if n > 25.0 => colors.exit_code_success.base,
+            Some(n) if n >= 10.0 => colors.text_unselected.emphasis_1,
+            Some(_) => colors.exit_code_error.base,
+            None => colors.text_unselected.base,
+        }
+    }
+}

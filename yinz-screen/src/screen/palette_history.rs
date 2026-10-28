@@ -118,6 +118,38 @@ pub(super) struct Browser {
 }
 
 impl Screen {
+    pub(super) fn refresh_palette_history_titles(&mut self) {
+        if !self.command_palettes.values().any(|state| {
+            state
+                .agents
+                .browsers
+                .get(&state.widget.view)
+                .is_some_and(|browser| browser.live.is_some())
+        }) {
+            return;
+        }
+        let live = self.live_palette_agents();
+        for state in self.command_palettes.values_mut() {
+            let Some(browser) = state.agents.browsers.get_mut(&state.widget.view) else {
+                continue;
+            };
+            let Some(old) = &browser.live else {
+                continue;
+            };
+            let Some(current) = live.iter().find(|agent| old.same(agent)) else {
+                continue;
+            };
+            let labels = state.agents.labels.get(&current.id());
+            state.widget.refresh_agent_title(
+                current.pane.clone(),
+                labels.map(|l| l.project.clone()).unwrap_or_else(|| {
+                    current.metadata.get("project").cloned().unwrap_or_default()
+                }),
+                labels.map(|l| l.branch.clone()).unwrap_or_default(),
+            );
+            // Leave run changes to the history tick, which also updates the query.
+        }
+    }
     pub(in crate::screen) fn live_palette_agents(&self) -> Vec<LiveAgent> {
         let mut agents = Vec::new();
         let mut add = |session: &SessionName, pane: PaneInfo| {
@@ -246,6 +278,7 @@ impl Screen {
         } else {
             state.widget.set_agent_history(
                 HistoryHeader {
+                    live: live.as_ref().map(|agent| agent.pane.clone()),
                     name: live
                         .as_ref()
                         .map(|live| live.pane.title.clone())
@@ -336,6 +369,11 @@ impl Screen {
                 status,
             } => {
                 if let Some(live) = &browser.live {
+                    header.live = Some(live.pane.clone());
+                    if let Some(labels) = state.agents.labels.get(&live.id()) {
+                        header.project.clone_from(&labels.project);
+                        header.branch.clone_from(&labels.branch);
+                    }
                     header.name = live.pane.title.clone();
                     header.status = ["provider", "state"]
                         .iter()
@@ -349,7 +387,9 @@ impl Screen {
                         .join(" · ");
                     header.details = format!("{}\n{}", live.text(), header.details);
                     header.task = live.pane.title.clone();
-                    header.project = live.metadata.get("project").cloned().unwrap_or_default();
+                    if header.project.is_empty() {
+                        header.project = live.metadata.get("project").cloned().unwrap_or_default();
+                    }
                     header.session_id = live
                         .metadata
                         .get("agent-session")

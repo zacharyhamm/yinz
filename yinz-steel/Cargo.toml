@@ -13,7 +13,6 @@ agent-proto = { path = "../default-plugins/agent-proto" }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 miette = { workspace = true }
-png = { version = "0.17.16", default-features = false }
 yinz-config = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true, features = ["unicode-case", "unicode-gencat"] }

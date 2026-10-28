@@ -5,7 +5,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use yinz_tile::ui_components::forms;
 
-mod quota;
+use agent_proto::quota;
 
 fn decode<T: DeserializeOwned>(args: Value) -> Result<T> {
     serde_json::from_value(args).context("invalid panel typography arguments")
