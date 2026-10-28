@@ -161,6 +161,8 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "yinz-tile",
             // The native agent palette shares the plugin Markdown parser and wrapping.
             "yinz-tile-markdown",
+            // It also shares agent timeline, envelope, and quota presentation.
+            "agent-proto",
         ],
     ),
     (

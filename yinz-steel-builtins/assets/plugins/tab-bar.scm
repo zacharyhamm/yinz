@@ -245,7 +245,10 @@
                   (range (string-length content))))))) (yinz-text-width content)))))
 (define (indicator active)
   (cond
-    ((and (not hide-swap-layout) (bar-present? (hash-ref active "active_swap_layout_name")))
+    ;; The default BASE layout must not hide the pane's scroll position. Explicit
+    ;; alternate layouts retain their indication, including their swap keys.
+    ((and (not hide-swap-layout) (bar-present? (hash-ref active "active_swap_layout_name"))
+        (or (not scroll) (not (equal? (string-upcase (hash-ref active "active_swap_layout_name")) "BASE"))))
       (define name (string-upcase (hash-ref active "active_swap_layout_name")))
       (bar-concat (swap-keys) (bar-line (yinz-ui-ribbon (hash "text" name "disabled" (bar-dimmed? mi)
               "selected" (and (not (bar-dimmed? mi)) (not (hash-ref active "is_swap_layout_dirty")))))

@@ -1161,6 +1161,7 @@ fn closing_a_menu_repaints_agent_margins_for_regular_clients_and_watchers() {
         NewPanePlacement::Floating(None),
         NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
     ] {
+        let placement_name = format!("{placement:?}");
         let mut screen = create_non_mirrored_screen(size);
         new_tab(&mut screen, 1, TabId::new(0));
         screen.context_menu = configured_menu();
@@ -1257,12 +1258,19 @@ fn closing_a_menu_repaints_agent_margins_for_regular_clients_and_watchers() {
         }
 
         // An idle frame must not replay the previous margin erase a second time.
-        let marker = format!("\u{1b}[{};{}HX", menu_row + 1, right + 1);
+        // Skip the gutter border at `right`, which fullscreen floating panes redraw.
+        let marker = format!("\u{1b}[{};{}HX", menu_row + 1, right + 2);
         for grid in &mut grids {
             take_snapshot_and_cursor_coordinates(&marker, grid);
         }
-        for snapshot in render(&mut screen, &mut grids) {
-            assert!(snapshot.contains('X'), "idle frame repainted the margin");
+        for (client, snapshot) in [followed, watcher]
+            .into_iter()
+            .zip(render(&mut screen, &mut grids))
+        {
+            assert!(
+                snapshot.contains('X'),
+                "idle frame repainted the margin for {client:?} in {placement_name}"
+            );
         }
     }
 }
