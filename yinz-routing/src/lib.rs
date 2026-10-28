@@ -1275,14 +1275,16 @@ pub fn route_action(
         Action::Confirm => {
             // no-op, these are deprecated and should be removed when we upgrade the server/client
             // contract
+            drop(completion_tx);
         },
         Action::Deny => {
             // no-op, these are deprecated and should be removed when we upgrade the server/client
             // contract
+            drop(completion_tx);
         },
         Action::SkipConfirm { action } => {
+            drop(completion_tx);
             if *action == Action::Quit {
-                drop(completion_tx);
                 senders
                     .send_to_server(ServerInstruction::ClientExit(client_id, None))
                     .with_context(err_context)?;
@@ -1330,7 +1332,7 @@ pub fn route_action(
                 .send_to_screen(instruction)
                 .with_context(err_context)?;
         },
-        Action::ToggleMouseMode => {}, // Handled client side
+        Action::ToggleMouseMode => drop(completion_tx), // Handled client side
         Action::PreviousSwapLayout => {
             senders
                 .send_to_screen(ScreenInstruction::PreviousSwapLayout(
@@ -1605,6 +1607,7 @@ pub fn route_action(
             senders
                 .send_to_plugin(PluginInstruction::ArrangePanesByProject)
                 .with_context(err_context)?;
+            drop(completion_tx);
         },
         Action::BreakPane => {
             senders

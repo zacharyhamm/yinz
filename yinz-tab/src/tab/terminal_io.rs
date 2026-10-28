@@ -318,9 +318,15 @@ impl Tab {
         let bracketed_paste_begin = vec![27, 91, 50, 48, 48, 126];
         let bracketed_paste_end = vec![27, 91, 50, 48, 49, 126];
 
-        self.write_to_pane_id(&None, bracketed_paste_begin, false, pane_id, None, None)?;
-        self.write_to_pane_id(&None, bytes, false, pane_id, None, None)?;
-        self.write_to_pane_id(&None, bracketed_paste_end, false, pane_id, None, completion)?;
+        self.write_pane_input(
+            &None,
+            [bracketed_paste_begin, bytes, bracketed_paste_end],
+            false,
+            pane_id,
+            None,
+            completion,
+            true,
+        )?;
         Ok(())
     }
 
@@ -378,7 +384,7 @@ impl Tab {
     ) -> Result<bool> {
         self.write_pane_input(
             key_with_modifier,
-            raw_input_bytes,
+            [raw_input_bytes],
             raw_input_bytes_are_kitty,
             pane_id,
             client_id,
@@ -393,17 +399,17 @@ impl Tab {
         pane_id: PaneId,
         client_id: Option<ClientId>,
     ) -> Result<bool> {
-        self.write_pane_input(&None, bytes, false, pane_id, client_id, None, false)
+        self.write_pane_input(&None, [bytes], false, pane_id, client_id, None, false)
     }
 
     fn write_pane_input(
         &mut self,
         key_with_modifier: &Option<KeyWithModifier>,
-        raw_input_bytes: Vec<u8>,
+        input_chunks: impl IntoIterator<Item = Vec<u8>>,
         raw_input_bytes_are_kitty: bool,
         pane_id: PaneId,
         client_id: Option<ClientId>,
-        completion_tx: Option<NotificationEnd>,
+        mut completion_tx: Option<NotificationEnd>,
         count_input: bool,
     ) -> Result<bool> {
         // returns true if we need to update the UI (eg. when a command pane is closed with ctrl-c)
@@ -468,142 +474,153 @@ impl Tab {
             }
         }
 
-        match pane_id {
-            PaneId::Terminal(active_terminal_id) => {
-                match active_pane.adjust_input_to_terminal(
+        // Preprocess paste markers separately, but keep their bytes and completion in one write.
+        let mut terminal_input: Option<Vec<u8>> = None;
+        for raw_input_bytes in input_chunks {
+            match pane_id {
+                PaneId::Terminal(active_terminal_id) => {
+                    match active_pane.adjust_input_to_terminal(
+                        key_with_modifier,
+                        raw_input_bytes,
+                        raw_input_bytes_are_kitty,
+                        client_id,
+                    ) {
+                        Some(AdjustedInput::WriteBytesToTerminal(adjusted_input)) => {
+                            if let Some(input) = &mut terminal_input {
+                                input.extend(adjusted_input);
+                            } else {
+                                terminal_input = Some(adjusted_input);
+                            }
+                        },
+                        Some(AdjustedInput::ReRunCommandInThisPane) => {
+                            // Through the screen, which re-runs it with
+                            // `rerun_terminal_pane_with_id` and reads the agent record around the
+                            // restart. The screen's channel is unbounded, so a tab may send to it
+                            // from the screen thread.
+                            self.senders
+                                .send_to_screen(ScreenInstruction::RerunCommandPane(
+                                    active_terminal_id,
+                                    completion_tx.take(),
+                                ))
+                                .with_context(err_context)?;
+                            should_update_ui = true;
+                        },
+                        Some(AdjustedInput::ResumeSuspendedProcessInThisPane) => {
+                            self.senders
+                                .send_to_pty(PtyInstruction::ResumeSuspendedPane(PaneId::Terminal(
+                                    active_terminal_id,
+                                )))
+                                .with_context(err_context)?;
+                        },
+                        Some(AdjustedInput::CloseThisPane) => {
+                            self.senders
+                                .send_to_screen(ScreenInstruction::CloseFocusWithPaneId(
+                                    PaneId::Terminal(active_terminal_id),
+                                    completion_tx.take(),
+                                ))
+                                .with_context(err_context)?;
+                            should_update_ui = true;
+                        },
+                        Some(AdjustedInput::DropToShellInThisPane { working_dir }) => {
+                            self.pids_waiting_resize.insert(active_terminal_id);
+                            self.senders
+                                .send_to_pty(PtyInstruction::DropToShellInPane {
+                                    pane_id: PaneId::Terminal(active_terminal_id),
+                                    shell: self.default_shell.clone(),
+                                    working_dir,
+                                    completion_tx: completion_tx.take(),
+                                })
+                                .with_context(err_context)?;
+                            should_update_ui = true;
+                        },
+                        Some(AdjustedInput::GuestModalSelectionChanged) => {
+                            should_update_ui = true;
+                        },
+                        Some(AdjustedInput::GuestModalZoom) => {
+                            if let Some(client_id) = client_id {
+                                let _ = self.senders.send_to_screen(
+                                    ScreenInstruction::GuestModalChoice {
+                                        client_id,
+                                        pane_id: PaneId::Terminal(active_terminal_id),
+                                        outcome: GuestModalOutcome::Zoom,
+                                    },
+                                );
+                            }
+                        },
+                        Some(AdjustedInput::GuestModalDescend) => {
+                            if let Some(client_id) = client_id {
+                                let _ = self.senders.send_to_screen(
+                                    ScreenInstruction::GuestModalChoice {
+                                        client_id,
+                                        pane_id: PaneId::Terminal(active_terminal_id),
+                                        outcome: GuestModalOutcome::Descend,
+                                    },
+                                );
+                            }
+                        },
+                        Some(_) => {},
+                        None => {},
+                    }
+                },
+                PaneId::Plugin(pid) => match active_pane.adjust_input_to_terminal(
                     key_with_modifier,
                     raw_input_bytes,
                     raw_input_bytes_are_kitty,
                     client_id,
                 ) {
+                    Some(AdjustedInput::WriteKeyToPlugin(key_with_modifier)) => {
+                        self.senders
+                            .send_to_plugin(PluginInstruction::Update(vec![(
+                                Some(pid),
+                                client_id,
+                                Event::Key(key_with_modifier),
+                            )]))
+                            .with_context(err_context)?;
+                        if wait_for_plugin_input
+                            && active_pane.pane_tabs().is_some()
+                            && let Some(completion) = completion_tx.take()
+                        {
+                            self.senders
+                                .send_to_plugin(PluginInstruction::InputBarrier(pid, completion))
+                                .with_context(err_context)?;
+                        }
+                    },
                     Some(AdjustedInput::WriteBytesToTerminal(adjusted_input)) => {
-                        let record_input = count_input && !adjusted_input.is_empty();
-                        self.senders
-                            .send_to_pty_writer(PtyWriteInstruction::Write(
-                                adjusted_input,
-                                active_terminal_id,
-                                completion_tx,
-                            ))
-                            .with_context(err_context)?;
-                        if record_input {
-                            active_pane.record_agent_input(key_with_modifier.as_ref().is_some_and(
-                                |key| key.is_key_without_modifier(yinz_types::keys::BareKey::Enter),
-                            ));
+                        let mut plugin_updates = vec![];
+                        for key in yinz_key_codec::keys::parse_keys(&adjusted_input) {
+                            plugin_updates.push((Some(pid), client_id, Event::Key(key)));
                         }
-                    },
-                    Some(AdjustedInput::ReRunCommandInThisPane) => {
-                        // Through the screen, which re-runs it with
-                        // `rerun_terminal_pane_with_id` and reads the agent record around the
-                        // restart. The screen's channel is unbounded, so a tab may send to it
-                        // from the screen thread.
                         self.senders
-                            .send_to_screen(ScreenInstruction::RerunCommandPane(
-                                active_terminal_id,
-                                completion_tx,
-                            ))
+                            .send_to_plugin(PluginInstruction::Update(plugin_updates))
                             .with_context(err_context)?;
-                        should_update_ui = true;
-                    },
-                    Some(AdjustedInput::ResumeSuspendedProcessInThisPane) => {
-                        self.senders
-                            .send_to_pty(PtyInstruction::ResumeSuspendedPane(PaneId::Terminal(
-                                active_terminal_id,
-                            )))
-                            .with_context(err_context)?;
-                    },
-                    Some(AdjustedInput::CloseThisPane) => {
-                        self.senders
-                            .send_to_screen(ScreenInstruction::CloseFocusWithPaneId(
-                                PaneId::Terminal(active_terminal_id),
-                                completion_tx,
-                            ))
-                            .with_context(err_context)?;
-                        should_update_ui = true;
-                    },
-                    Some(AdjustedInput::DropToShellInThisPane { working_dir }) => {
-                        self.pids_waiting_resize.insert(active_terminal_id);
-                        self.senders
-                            .send_to_pty(PtyInstruction::DropToShellInPane {
-                                pane_id: PaneId::Terminal(active_terminal_id),
-                                shell: self.default_shell.clone(),
-                                working_dir,
-                                completion_tx,
-                            })
-                            .with_context(err_context)?;
-                        should_update_ui = true;
-                    },
-                    Some(AdjustedInput::GuestModalSelectionChanged) => {
-                        should_update_ui = true;
-                    },
-                    Some(AdjustedInput::GuestModalZoom) => {
-                        if let Some(client_id) = client_id {
-                            let _ =
-                                self.senders
-                                    .send_to_screen(ScreenInstruction::GuestModalChoice {
-                                        client_id,
-                                        pane_id: PaneId::Terminal(active_terminal_id),
-                                        outcome: GuestModalOutcome::Zoom,
-                                    });
-                        }
-                    },
-                    Some(AdjustedInput::GuestModalDescend) => {
-                        if let Some(client_id) = client_id {
-                            let _ =
-                                self.senders
-                                    .send_to_screen(ScreenInstruction::GuestModalChoice {
-                                        client_id,
-                                        pane_id: PaneId::Terminal(active_terminal_id),
-                                        outcome: GuestModalOutcome::Descend,
-                                    });
+                        if wait_for_plugin_input
+                            && active_pane.pane_tabs().is_some()
+                            && let Some(completion) = completion_tx.take()
+                        {
+                            self.senders
+                                .send_to_plugin(PluginInstruction::InputBarrier(pid, completion))
+                                .with_context(err_context)?;
                         }
                     },
                     Some(_) => {},
                     None => {},
-                }
-            },
-            PaneId::Plugin(pid) => match active_pane.adjust_input_to_terminal(
-                key_with_modifier,
-                raw_input_bytes,
-                raw_input_bytes_are_kitty,
-                client_id,
-            ) {
-                Some(AdjustedInput::WriteKeyToPlugin(key_with_modifier)) => {
-                    self.senders
-                        .send_to_plugin(PluginInstruction::Update(vec![(
-                            Some(pid),
-                            client_id,
-                            Event::Key(key_with_modifier),
-                        )]))
-                        .with_context(err_context)?;
-                    if wait_for_plugin_input
-                        && active_pane.pane_tabs().is_some()
-                        && let Some(completion) = completion_tx
-                    {
-                        self.senders
-                            .send_to_plugin(PluginInstruction::InputBarrier(pid, completion))
-                            .with_context(err_context)?;
-                    }
                 },
-                Some(AdjustedInput::WriteBytesToTerminal(adjusted_input)) => {
-                    let mut plugin_updates = vec![];
-                    for key in yinz_key_codec::keys::parse_keys(&adjusted_input) {
-                        plugin_updates.push((Some(pid), client_id, Event::Key(key)));
-                    }
-                    self.senders
-                        .send_to_plugin(PluginInstruction::Update(plugin_updates))
-                        .with_context(err_context)?;
-                    if wait_for_plugin_input
-                        && active_pane.pane_tabs().is_some()
-                        && let Some(completion) = completion_tx
-                    {
-                        self.senders
-                            .send_to_plugin(PluginInstruction::InputBarrier(pid, completion))
-                            .with_context(err_context)?;
-                    }
-                },
-                Some(_) => {},
-                None => {},
-            },
+            }
+        }
+        if let (PaneId::Terminal(terminal_id), Some(input)) = (pane_id, terminal_input) {
+            let record_input = count_input && !input.is_empty();
+            self.senders
+                .send_to_pty_writer(PtyWriteInstruction::Write(
+                    input,
+                    terminal_id,
+                    completion_tx,
+                ))
+                .with_context(err_context)?;
+            if record_input {
+                active_pane.record_agent_input(key_with_modifier.as_ref().is_some_and(|key| {
+                    key.is_key_without_modifier(yinz_types::keys::BareKey::Enter)
+                }));
+            }
         }
         Ok(should_update_ui)
     }

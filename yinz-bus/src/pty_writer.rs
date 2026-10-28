@@ -72,7 +72,6 @@ impl Drop for PendingWrite {
 pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
     let err_context = || "failed to write to pty".to_string();
     let mut pending: HashMap<TerminalId, VecDeque<PendingWrite>> = HashMap::new();
-    let mut failed: HashMap<TerminalId, String> = HashMap::new();
 
     loop {
         // If we have pending writes, use a short timeout so we can keep
@@ -100,13 +99,6 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
             yinz_runtime::errors::add_call(&mut err_ctx, ContextType::PtyWrite((&event).into()));
             match event {
                 PtyWriteInstruction::Write(bytes, terminal_id, mut completion) => {
-                    // Preserve a failure across a multi-chunk paste until its final barrier.
-                    if let Some(error) = failed.get(&terminal_id)
-                        && let Some(completion) = &mut completion
-                    {
-                        completion.set_error_message(error.clone());
-                        failed.remove(&terminal_id);
-                    }
                     let queue = pending.entry(terminal_id).or_default();
                     let queued: usize = queue
                         .iter()
@@ -122,15 +114,11 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                             MAX_PENDING_BYTES,
                         );
                         let error = "PTY write queue overflow".to_owned();
-                        let has_barrier = completion.is_some();
                         for write in queue.iter_mut() {
                             write.fail(&error);
                         }
                         if let Some(completion) = &mut completion {
                             completion.set_error_message(error.clone());
-                        }
-                        if !has_barrier {
-                            failed.insert(terminal_id, error);
                         }
                         queue.clear();
                     } else {
@@ -214,14 +202,8 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                     Err(e) => {
                         // Terminal error (EBADF, EIO, etc) — clear its queue
                         let error = format!("PTY write failed: {e}");
-                        let has_barrier = queue
-                            .back()
-                            .is_some_and(|write| write._completion.is_some());
                         for write in queue.iter_mut() {
                             write.fail(&error);
-                        }
-                        if !has_barrier {
-                            failed.insert(tid, error);
                         }
                         Err::<(), _>(e).with_context(err_context).non_fatal();
                         queue.clear();
