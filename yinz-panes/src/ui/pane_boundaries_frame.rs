@@ -543,11 +543,9 @@ impl PaneFrame {
         }
     }
     fn render_title_left_side(&self, max_length: usize) -> Option<(Vec<TerminalCharacter>, usize)> {
-        let colors = if self.focused_client.is_some() {
-            self.style.colors.text_selected
-        } else {
-            self.style.colors.text_unselected
-        };
+        // Frames retain their normal background even when focused; selected text
+        // colors require a selected background and can otherwise become invisible.
+        let colors = self.style.colors.text_unselected;
         let title_color = self.agent_title.title_color(colors).or(self.color);
         let Some(marker) = self.agent_title.marker() else {
             return self.render_title_text(max_length, title_color);
@@ -941,11 +939,9 @@ impl PaneFrame {
             entry.border_color,
         ));
         line.extend(repeat_n(EMPTY_TERMINAL_CHARACTER, corner_padding));
-        let colors = if self.focused_client.is_some() {
-            self.style.colors.text_selected
-        } else {
-            self.style.colors.text_unselected
-        };
+        // Frames retain their normal background even when focused; selected text
+        // colors require a selected background and can otherwise become invisible.
+        let colors = self.style.colors.text_unselected;
         let mut text = style_entry_text(&content);
         for (index, character) in text.iter_mut().enumerate() {
             let color = if index == 0 && self.agent_title.marker().is_some() {
@@ -1066,11 +1062,9 @@ impl PaneFrame {
             truncated
         };
         let (mut part, mut length) = self.plain_title_part(&content);
-        let colors = if self.focused_client.is_some() {
-            self.style.colors.text_selected
-        } else {
-            self.style.colors.text_unselected
-        };
+        // Frames retain their normal background even when focused; selected text
+        // colors require a selected background and can otherwise become invisible.
+        let colors = self.style.colors.text_unselected;
         if let Some(color) = self.agent_title.title_color(colors) {
             for character in &mut part {
                 character
