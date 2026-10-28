@@ -804,6 +804,11 @@ impl Tab {
                                     .is_some_and(|panes| panes.contains(&pane.pid())),
                             )
                             .width()
+                                + if pane.agent_title().marker().is_some() {
+                                    2
+                                } else {
+                                    0
+                                }
                         })
                         .max()
                         .unwrap_or(0);

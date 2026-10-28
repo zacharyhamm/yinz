@@ -157,6 +157,7 @@ pub struct FrameParams {
 pub struct PaneFrame {
     pub geom: Viewport,
     pub title: String,
+    pub agent_title: crate::ui::agent_title::AgentTitle,
     /// Text and its screen row, after any stack headers.
     pub subtitle: Option<(String, usize)>,
     pub scroll_position: (usize, usize), // (position, length)
@@ -210,6 +211,7 @@ impl PaneFrame {
         PaneFrame {
             geom,
             title,
+            agent_title: Default::default(),
             subtitle: None,
             scroll_position,
             style: frame_params.style,
@@ -541,13 +543,58 @@ impl PaneFrame {
         }
     }
     fn render_title_left_side(&self, max_length: usize) -> Option<(Vec<TerminalCharacter>, usize)> {
+        let colors = if self.focused_client.is_some() {
+            self.style.colors.text_selected
+        } else {
+            self.style.colors.text_unselected
+        };
+        let title_color = self.agent_title.title_color(colors).or(self.color);
+        let Some(marker) = self.agent_title.marker() else {
+            return self.render_title_text(max_length, title_color);
+        };
+        if max_length == 0 {
+            return None;
+        }
+        // Reserve the status before truncating the title, including single-column frames.
+        let prefix = if max_length == 1 {
+            marker.to_owned()
+        } else {
+            format!(" {marker}")
+        };
+        let mut characters = foreground_color(&prefix, Some(self.agent_title.marker_color(colors)));
+        let mut length = prefix.width();
+        let remaining = max_length - length;
+        if remaining <= 6 {
+            let text = format!(" {} ", self.title);
+            let mut used = 0;
+            let text: String = text
+                .chars()
+                .take_while(|ch| {
+                    used += ch.width().unwrap_or(0);
+                    used <= remaining
+                })
+                .collect();
+            length += text.width();
+            characters.extend(foreground_color(&text, title_color));
+        } else if let Some((text, width)) = self.render_title_text(remaining, title_color) {
+            length += width;
+            characters.extend(text);
+        }
+        Some((characters, length))
+    }
+
+    fn render_title_text(
+        &self,
+        max_length: usize,
+        color: Option<PaletteColor>,
+    ) -> Option<(Vec<TerminalCharacter>, usize)> {
         let middle_truncated_sign = "[..]";
         let middle_truncated_sign_long = "[...]";
         let full_text = format!(" {} ", self.title);
         if max_length <= 6 || self.title.is_empty() {
             None
         } else if full_text.width() <= max_length {
-            Some((foreground_color(&full_text, self.color), full_text.width()))
+            Some((foreground_color(&full_text, color), full_text.width()))
         } else {
             let length_of_each_half = (max_length - middle_truncated_sign.width()) / 2;
 
@@ -588,7 +635,7 @@ impl PaneFrame {
                     first_part.width() + middle_truncated_sign.width() + second_part.width(),
                 )
             };
-            Some((foreground_color(&title_left_side, self.color), title_length))
+            Some((foreground_color(&title_left_side, color), title_length))
         }
     }
     fn three_part_title_line(
@@ -786,6 +833,9 @@ impl PaneFrame {
     ) -> Vec<TerminalCharacter> {
         let total_title_length = self.geom.cols.saturating_sub(2); // 2 for the left and right corners
         let length_of_each_side = total_title_length.saturating_sub(*middle_len + 2) / 2;
+        if length_of_each_side == 0 && self.agent_title.marker().is_some() {
+            return self.title_line_without_middle();
+        }
         let left_side = self.render_title_left_side(length_of_each_side);
         let right_side = self.render_title_right_side(length_of_each_side);
 
@@ -839,12 +889,18 @@ impl PaneFrame {
         let inner_width = entry
             .width
             .min(usable_cols.saturating_sub(marker_width + corner_overhead));
-        let content = if entry.label.width() <= inner_width {
-            entry.label.clone()
+        let label = self.agent_title.marker().map_or_else(
+            || entry.label.clone(),
+            |marker| format!("{marker} {}", entry.label),
+        );
+        let content = if inner_width == 1 && self.agent_title.marker().is_some() {
+            self.agent_title.marker().unwrap_or_default().to_owned()
+        } else if label.width() <= inner_width {
+            label.clone()
         } else {
             let truncation_budget = inner_width.saturating_sub(1);
             let mut truncated = String::new();
-            for character in entry.label.chars() {
+            for character in label.chars() {
                 if truncated.width() + character.width().unwrap_or(0) > truncation_budget {
                     break;
                 }
@@ -885,7 +941,26 @@ impl PaneFrame {
             entry.border_color,
         ));
         line.extend(repeat_n(EMPTY_TERMINAL_CHARACTER, corner_padding));
-        line.append(&mut style_entry_text(&content));
+        let colors = if self.focused_client.is_some() {
+            self.style.colors.text_selected
+        } else {
+            self.style.colors.text_unselected
+        };
+        let mut text = style_entry_text(&content);
+        for (index, character) in text.iter_mut().enumerate() {
+            let color = if index == 0 && self.agent_title.marker().is_some() {
+                Some(self.agent_title.marker_color(colors))
+            } else {
+                self.agent_title.title_color(colors)
+            };
+            if let Some(color) = color {
+                character.styles.update(|styles| {
+                    styles.foreground = Some(color.into());
+                    styles.dim = Some(AnsiCode::Reset);
+                });
+            }
+        }
+        line.append(&mut text);
         let content_padding = inner_width.saturating_sub(content.width());
         line.extend(repeat_n(EMPTY_TERMINAL_CHARACTER, content_padding));
         line.extend(repeat_n(EMPTY_TERMINAL_CHARACTER, corner_padding));
@@ -951,6 +1026,21 @@ impl PaneFrame {
         (foreground_color(&text, self.color), text.width())
     }
     fn bracketed_pane_title(&self, max_length: usize) -> Option<(Vec<TerminalCharacter>, usize)> {
+        if self.agent_title.state.is_some() {
+            let exit = self
+                .exit_status
+                .is_some()
+                .then(|| self.first_exited_held_title_part_full())
+                .filter(|(_, length)| *length < max_length);
+            let exit_length = exit.as_ref().map_or(0, |(_, length)| *length);
+            let (mut title, mut length) =
+                self.render_title_left_side(max_length.saturating_sub(exit_length))?;
+            if let Some((part, width)) = exit {
+                title.extend(part);
+                length += width;
+            }
+            return Some((title, length));
+        }
         let title_padding = 2;
         if self.title.is_empty() || max_length <= title_padding {
             return None;
@@ -976,6 +1066,18 @@ impl PaneFrame {
             truncated
         };
         let (mut part, mut length) = self.plain_title_part(&content);
+        let colors = if self.focused_client.is_some() {
+            self.style.colors.text_selected
+        } else {
+            self.style.colors.text_unselected
+        };
+        if let Some(color) = self.agent_title.title_color(colors) {
+            for character in &mut part {
+                character
+                    .styles
+                    .update(|styles| styles.foreground = Some(color.into()));
+            }
+        }
         if let Some((mut exit, exit_length)) = exit_part {
             part.append(&mut exit);
             length += exit_length;

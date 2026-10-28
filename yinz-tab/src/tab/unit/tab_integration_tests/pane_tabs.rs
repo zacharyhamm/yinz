@@ -483,6 +483,7 @@ fn pane_tabs_bar_keeps_active_label_reachable_at_every_width() {
             false,
             width,
             &Style::default(),
+            &[],
         );
         assert_eq!(rendered.iter().map(|ch| ch.width()).sum::<usize>(), width);
     }

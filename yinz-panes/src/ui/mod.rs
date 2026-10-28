@@ -1,3 +1,4 @@
+pub mod agent_title;
 pub mod boundaries;
 pub mod command_palette;
 pub mod context_menu;

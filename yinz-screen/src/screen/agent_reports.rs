@@ -15,11 +15,13 @@ pub(super) struct HookFlash {
     session: Option<String>,
     run: Option<String>,
     deadline: Instant,
+    cleared: bool,
+    palette_flash: bool,
 }
 
 impl HookFlash {
     fn matches(&self, agent: &AgentInfo) -> bool {
-        agent.state == AgentState::Busy
+        !self.cleared
             && self.kind == agent.kind
             && self.session == agent.session_id
             && self.run == agent.run_id
@@ -32,11 +34,50 @@ impl Screen {
         pane: &yinz_types::data::PaneInfo,
         now: Instant,
     ) -> bool {
+        pane.agent
+            .as_ref()
+            .is_some_and(|agent| agent.state == AgentState::Busy)
+            && self
+                .agent_hook_flashes
+                .get(&pane.id)
+                .is_some_and(|flash| flash.palette_flash)
+            && self.pane_title_hook_is_flashing(pane, now)
+    }
+
+    pub(super) fn pane_title_hook_is_flashing(
+        &self,
+        pane: &yinz_types::data::PaneInfo,
+        now: Instant,
+    ) -> bool {
         !pane.exited
-            && pane.agent.as_ref().is_some_and(|agent| {
-                self.agent_hook_flashes
-                    .get(&pane.id)
-                    .is_some_and(|flash| now < flash.deadline && flash.matches(agent))
+            && self.agent_hook_flashes.get(&pane.id).is_some_and(|flash| {
+                now < flash.deadline
+                    && match pane.agent.as_ref() {
+                        Some(agent) => flash.matches(agent),
+                        None => flash.cleared,
+                    }
+            })
+    }
+
+    pub(super) fn pane_title_hook_flashes_are_visible(&self, now: Instant) -> bool {
+        self.pane_animations
+            && self.agent_hook_flashes.keys().any(|id| {
+                self.get_pane_info(*id)
+                    .is_some_and(|pane| self.pane_title_hook_is_flashing(&pane, now))
+                    && self
+                        .active_tab_ids
+                        .values()
+                        .copied()
+                        .chain(self.watched_tab_id())
+                        .any(|tab_id| {
+                            self.tabs.get(&tab_id).is_some_and(|tab| {
+                                tab.agent_title_is_visible(
+                                    *id,
+                                    self.followed_client_id
+                                        .filter(|_| self.watched_tab_id() == Some(tab_id)),
+                                )
+                            })
+                        })
             })
     }
 
@@ -47,7 +88,7 @@ impl Screen {
             .copied()
             .filter(|pane| {
                 self.get_pane_info(*pane)
-                    .is_none_or(|pane| !self.agent_hook_is_flashing(&pane, now))
+                    .is_none_or(|pane| !self.pane_title_hook_is_flashing(&pane, now))
             })
             .collect();
         for pane in stale {
@@ -55,13 +96,19 @@ impl Screen {
         }
     }
 
-    fn flash_agent_hook(&mut self, pane: PaneId, kind: &str, hook: &yinz_types::agent::HookEvent) {
+    fn flash_agent_hook(
+        &mut self,
+        pane: PaneId,
+        kind: &str,
+        hook: &yinz_types::agent::HookEvent,
+        cleared_agent: Option<AgentInfo>,
+    ) {
         let Some(info) = self.get_pane_info(pane) else {
             return;
         };
-        let Some(agent) = info.agent.filter(|agent| {
+        let cleared = info.agent.is_none();
+        let Some(agent) = info.agent.or(cleared_agent).filter(|agent| {
             !info.exited
-                && agent.state == AgentState::Busy
                 && agent.kind == kind
                 && agent.session_id.as_deref().unwrap_or_default() == hook.session_id
         }) else {
@@ -70,10 +117,12 @@ impl Screen {
         self.agent_hook_flashes.insert(
             pane,
             HookFlash {
+                palette_flash: !cleared && agent.state == AgentState::Busy,
                 kind: agent.kind,
                 session: agent.session_id,
                 run: agent.run_id,
                 deadline: self.frame_now() + HOOK_FLASH_DURATION,
+                cleared,
             },
         );
     }
@@ -213,6 +262,12 @@ pub(super) fn apply_queued_agent_report(
             yinz_types::agent::hook_state_for(&report.kind, hook),
         );
     }
+    let cleared_agent = matches!(
+        report.state,
+        yinz_types::agent::report::AgentReportState::Clear
+    )
+    .then(|| screen.get_pane_info(pane_id).and_then(|pane| pane.agent))
+    .flatten();
     let result = screen.apply_agent_report_state(report, hook.as_ref());
     trace.record(
         "state",
@@ -221,7 +276,7 @@ pub(super) fn apply_queued_agent_report(
     );
     result?;
     if let Some(hook) = hook.as_ref().filter(|hook| !hook.archive_only) {
-        screen.flash_agent_hook(pane_id, &report.kind, hook);
+        screen.flash_agent_hook(pane_id, &report.kind, hook, cleared_agent);
         let at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -338,6 +393,14 @@ pub(crate) fn apply_pane_agent_report(
         .is_some_and(|flash| agent.as_ref().is_none_or(|agent| !flash.matches(agent)))
     {
         screen.agent_hook_flashes.remove(&pane_id);
+    }
+    if let Some(flash) = screen.agent_hook_flashes.get_mut(&pane_id)
+        && agent
+            .as_ref()
+            .is_none_or(|agent| agent.state != AgentState::Busy)
+    {
+        // A title flash survives a state transition; the palette's busy-only flash does not.
+        flash.palette_flash = false;
     }
     // A Muse pane verified at startup binds its conversation with its first turn:
     // the record moves from the bootstrap's empty session to the provider's, and

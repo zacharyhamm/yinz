@@ -206,8 +206,24 @@ impl Screen {
             );
         }
 
+        let flashing_titles: HashSet<_> = self
+            .agent_hook_flashes
+            .keys()
+            .copied()
+            .filter(|id| {
+                self.pane_animations
+                    && self
+                        .get_pane_info(*id)
+                        .is_some_and(|pane| self.pane_title_hook_is_flashing(&pane, now))
+            })
+            .collect();
         let watched_tab_id = self.watched_tab_id();
         for (tab_id, tab) in &mut self.tabs {
+            for id in tab.get_all_pane_ids() {
+                if let Some(pane) = tab.get_pane_with_id_mut(id) {
+                    pane.set_agent_hook_flash(flashing_titles.contains(&id));
+                }
+            }
             tab.sample_overlay_ripples(now, self.pane_animations);
             tab.sample_waiting_pulses(
                 now,

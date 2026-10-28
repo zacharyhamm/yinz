@@ -341,3 +341,155 @@ fn focus_emoji_is_part_of_the_title_and_fits_available_columns() {
         }
     }
 }
+
+#[test]
+fn agent_title_marker_and_flash_colors_leave_the_border_unchanged() {
+    use crate::ui::agent_title::AgentTitle;
+    use yinz_types::agent::AgentState;
+    for floating in [false, true] {
+        for focused in [false, true] {
+            for state in [
+                AgentState::Busy,
+                AgentState::Idle,
+                AgentState::Waiting,
+                AgentState::Exited,
+            ] {
+                let mut frame = pane_frame_with(false, floating, 80);
+                frame.focused_client = focused.then_some(ClientId::new(1));
+                frame.title = "🔔 👯 [7] work [!]".into();
+                frame.color = Some(PaletteColor::EightBit(99));
+                frame.agent_title = AgentTitle {
+                    state: Some(state),
+                    hook_flash: false,
+                };
+                let colors = if focused {
+                    frame.style.colors.text_selected
+                } else {
+                    frame.style.colors.text_unselected
+                };
+                let (glyph, _, emphasis) = crate::ui::agent_title::status(state);
+                let before = frame.render_title().unwrap();
+                let marker = before
+                    .iter()
+                    .find(|ch| ch.character.to_string() == glyph)
+                    .unwrap();
+                assert_eq!(
+                    marker.styles.foreground,
+                    Some(crate::ui::agent_title::color(colors, emphasis).into())
+                );
+                let saved_title = frame.title.clone();
+                let text = characters_to_string(&before);
+                assert!(text.contains(&saved_title));
+                frame.agent_title.hook_flash = true;
+                let after = frame.render_title().unwrap();
+                assert_eq!(frame.title, saved_title);
+                assert_eq!(before.first(), after.first());
+                assert_eq!(before.last(), after.last());
+                let highlight = Some(colors.emphasis_0.into());
+                for ch in after
+                    .iter()
+                    .filter(|ch| ch.character.to_string() == glyph || ch.character == 'w')
+                {
+                    assert_eq!(ch.styles.foreground, highlight);
+                }
+                frame.agent_title.state = None;
+                let cleared = characters_to_string(&frame.render_title().unwrap());
+                assert_eq!(
+                    cleared.matches(glyph).count(),
+                    saved_title.matches(glyph).count()
+                );
+                assert!(cleared.contains("work"));
+            }
+        }
+    }
+}
+
+#[test]
+fn agent_title_marker_survives_narrow_frames_and_participates_in_cache_equality() {
+    use crate::ui::agent_title::AgentTitle;
+    use yinz_types::agent::AgentState;
+    for full in [false, true] {
+        for width in 1..40 {
+            let mut frame = pane_frame_with(false, false, width + 2);
+            frame.should_draw_pane_frames = full;
+            frame.title = "long title with 界 and a tail".into();
+            frame.agent_title = AgentTitle {
+                state: Some(AgentState::Busy),
+                hook_flash: false,
+            };
+            let (chars, length) = if full {
+                frame.render_title_left_side(width)
+            } else {
+                frame.bracketed_pane_title(width)
+            }
+            .unwrap();
+            assert!(length <= width);
+            assert_eq!(
+                chars.iter().map(TerminalCharacter::width).sum::<usize>(),
+                length
+            );
+            assert!(characters_to_string(&chars).contains('●'));
+        }
+    }
+    for width in 1..40 {
+        let mut frame = pane_frame_with(false, false, width + 2);
+        frame.agent_title.state = Some(AgentState::Exited);
+        frame.add_exit_status(Some(1));
+        frame.pane_is_stacked_under = true;
+        assert!(characters_to_string(&frame.render_title().unwrap()).contains('×'));
+        let (characters, length) = frame.bracketed_pane_title(width).unwrap();
+        assert!(length <= width);
+        assert!(characters_to_string(&characters).contains('×'));
+    }
+    let frame = pane_frame_with(false, false, 80);
+    let mut changed = pane_frame_with(false, false, 80);
+    assert!(frame == changed);
+    changed.agent_title.state = Some(AgentState::Idle);
+    assert!(frame != changed);
+    changed.agent_title.state = None;
+    changed.agent_title.hook_flash = true;
+    assert!(frame != changed);
+}
+
+#[test]
+fn agent_title_stack_list_marker_survives_truncation_and_flash_preserves_borders() {
+    use crate::ui::agent_title::AgentTitle;
+    use yinz_types::agent::AgentState;
+    let mut frame = pane_frame_with(false, false, 40);
+    frame.agent_title = AgentTitle {
+        state: Some(AgentState::Busy),
+        hook_flash: false,
+    };
+    let mut entry = StackListEntry {
+        width: 24,
+        label: "agent with a long title".into(),
+        is_selected: false,
+        is_emphasized: false,
+        stack_is_focused: false,
+        border_color: Some(PaletteColor::EightBit(99)),
+    };
+    for width in 1..30 {
+        entry.width = width;
+        frame.agent_title.hook_flash = false;
+        let before = frame.render_stack_list_entry(&entry);
+        assert_eq!(
+            before.iter().map(TerminalCharacter::width).sum::<usize>(),
+            40
+        );
+        assert!(characters_to_string(&before).contains('●'));
+        frame.agent_title.hook_flash = true;
+        let after = frame.render_stack_list_entry(&entry);
+        assert_eq!(characters_to_string(&before), characters_to_string(&after));
+        for (old, new) in before.iter().zip(&after) {
+            if new.character == '│' {
+                assert_eq!(old, new);
+            }
+            if new.character == '●' || new.character == 'a' {
+                assert_eq!(
+                    new.styles.foreground,
+                    Some(frame.style.colors.text_unselected.emphasis_0.into())
+                );
+            }
+        }
+    }
+}

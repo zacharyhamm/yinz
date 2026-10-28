@@ -6905,6 +6905,7 @@ fn hook_flash_renders_matching_agent_in_both_views_and_clock_restores_dot() {
     );
     screen.close_command_palette(CLIENT);
     screen.sync_animation_clock(screen.frame_now()).unwrap();
+    // This fixture has no pane titles, so closing the palette removes the only flash surface.
     assert_eq!(screen.animation_clock_period(screen.frame_now()), None);
     palette_search(&mut screen, "provider:codex");
     render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);

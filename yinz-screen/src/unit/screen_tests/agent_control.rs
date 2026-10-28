@@ -9681,7 +9681,9 @@ fn hook_flash_restarts_for_identical_and_stateless_reports_and_expires_at_150_ms
     let start = Instant::now();
     screen.pinned_now = Some(start);
     report(&mut screen, hook("SessionStart"));
-    assert!(screen.agent_hook_flashes.is_empty());
+    let pane = screen.get_pane_info(PANE).unwrap();
+    assert!(screen.pane_title_hook_is_flashing(&pane, start));
+    assert!(!screen.agent_hook_is_flashing(&pane, start));
     for (offset, name) in [
         (0, "UserPromptSubmit"),
         (100, "UserPromptSubmit"),
@@ -9700,7 +9702,7 @@ fn hook_flash_restarts_for_identical_and_stateless_reports_and_expires_at_150_ms
 }
 
 #[test]
-fn hook_flash_excludes_nonworking_replay_ignored_and_mismatched_reports() {
+fn hook_flash_includes_all_title_states_but_excludes_replay_ignored_and_mismatched_reports() {
     for state in [AgentState::Idle, AgentState::Waiting, AgentState::Exited] {
         let (mut screen, _, _) = setup("codex");
         report(&mut screen, hook("UserPromptSubmit"));
@@ -9712,7 +9714,10 @@ fn hook_flash_excludes_nonworking_replay_ignored_and_mismatched_reports() {
             hook("PreCompact"),
             AgentReportState::Set(agent),
         );
-        assert!(screen.agent_hook_flashes.is_empty(), "{state:?}");
+        let now = screen.frame_now();
+        let pane = screen.get_pane_info(PANE).unwrap();
+        assert!(screen.pane_title_hook_is_flashing(&pane, now), "{state:?}");
+        assert!(!screen.agent_hook_is_flashing(&pane, now), "{state:?}");
     }
     let (mut screen, _, _) = setup("agy");
     let start = Instant::now();
@@ -9767,5 +9772,266 @@ fn hook_flash_is_cleared_on_replacement_clear_and_pane_removal() {
             .unwrap();
         }
         assert!(screen.agent_hook_flashes.is_empty(), "{change}");
+    }
+}
+
+#[test]
+fn hook_flash_clearing_hook_flashes_only_remaining_title_and_expires() {
+    let (mut screen, _, _) = setup("codex");
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .set_pane_frames(PaneFrameStyle::Full);
+    let start = Instant::now();
+    screen.pinned_now = Some(start);
+    report(&mut screen, hook("UserPromptSubmit"));
+    report(&mut screen, hook("SessionEnd"));
+    let pane = screen.get_pane_info(PANE).unwrap();
+    assert!(pane.agent.is_none());
+    assert!(screen.pane_title_hook_is_flashing(&pane, start));
+    assert!(!screen.agent_hook_is_flashing(&pane, start));
+    assert!(screen.pane_title_hook_flashes_are_visible(start));
+    screen.render_to_clients().unwrap();
+    let title = screen
+        .tab_containing_pane(PANE)
+        .unwrap()
+        .get_pane_with_id(PANE)
+        .unwrap()
+        .agent_title();
+    assert_eq!(title.state, None);
+    assert!(title.hook_flash);
+    let expired = start + Duration::from_millis(150);
+    screen.pinned_now = Some(expired);
+    screen.on_animation_tick(expired).unwrap();
+    screen.render_to_clients().unwrap();
+    assert!(screen.agent_hook_flashes.is_empty());
+    assert!(
+        !screen
+            .tab_containing_pane(PANE)
+            .unwrap()
+            .get_pane_with_id(PANE)
+            .unwrap()
+            .agent_title()
+            .hook_flash
+    );
+}
+
+#[test]
+fn hook_flash_title_clock_with_palette_closed_and_animations_disabled() {
+    use yinz_types::animation::FRAME_PERIOD;
+    for floating in [false, true] {
+        for enabled in [false, true] {
+            for focused in [false, true] {
+                let placement = if floating {
+                    NewPanePlacement::Floating(None)
+                } else {
+                    NewPanePlacement::default()
+                };
+                let size = Size { cols: 80, rows: 24 };
+                let (mut screen, _, _) =
+                    setup_with_placement("codex", PaneTarget::Local, size, placement);
+                let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+                tab.set_pane_frames(PaneFrameStyle::Full);
+                if !focused {
+                    let placement = if floating {
+                        NewPanePlacement::Floating(None)
+                    } else {
+                        NewPanePlacement::default()
+                    };
+                    tab.new_pane(
+                        PaneId::Terminal(TerminalId::new(8)),
+                        None,
+                        None,
+                        false,
+                        true,
+                        placement,
+                        Some(CLIENT),
+                        None,
+                    )
+                    .unwrap();
+                }
+                tab.settle_overlay_ripples();
+                screen.set_pane_animations(enabled);
+                let (sender, receiver) = channels::unbounded();
+                screen.bus.senders.to_server = Some(SenderWithContext::new(sender));
+                let mut grid = grid_for_render_snapshot(size);
+                let start = Instant::now();
+                screen.pinned_now = Some(start);
+                report(&mut screen, hook("SessionStart"));
+                assert!(screen.command_palettes.is_empty());
+                render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+                assert_eq!(
+                    screen.animation_clock_period(start),
+                    enabled.then_some(FRAME_PERIOD),
+                    "floating={floating}, focused={focused}, enabled={enabled}"
+                );
+                let colors = if focused {
+                    screen.style.colors.text_selected
+                } else {
+                    screen.style.colors.text_unselected
+                };
+                let marker_color = |grid: &crate::panes::grid::Grid| {
+                    grid.as_character_lines()
+                        .into_iter()
+                        .flatten()
+                        .find(|cell| cell.character == '○')
+                        .unwrap()
+                        .styles
+                        .foreground
+                };
+                assert_eq!(
+                    marker_color(&grid),
+                    Some(
+                        if enabled {
+                            colors.emphasis_0
+                        } else {
+                            colors.base
+                        }
+                        .into()
+                    )
+                );
+                screen.pinned_now = Some(start + Duration::from_millis(150));
+                screen.on_animation_tick(screen.frame_now()).unwrap();
+                render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+                assert_eq!(screen.animation_clock_period(screen.frame_now()), None);
+                assert_eq!(marker_color(&grid), Some(colors.base.into()));
+            }
+        }
+    }
+}
+
+#[test]
+fn hook_flash_pane_tab_repaints_when_terminal_is_hidden_behind_plugin_tab() {
+    use yinz_types::pane_tabs::{PaneTabDescriptor, PaneTabsLayout};
+    for plugin_selected in [false, true] {
+        let size = Size { cols: 80, rows: 24 };
+        let (mut screen, _, _) = setup("codex");
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        tab.set_pane_frames(PaneFrameStyle::Full);
+        let (sender, _plugins) = channels::unbounded();
+        tab.senders
+            .replace_to_plugin(SenderWithContext::new(sender));
+        let info = tab
+            .mount_pane_tabs(
+                PANE,
+                PaneTabsLayout {
+                    active: 0,
+                    tabs: ["Conversation", "Overview"]
+                        .map(|label| PaneTabDescriptor {
+                            label: label.into(),
+                            location: "yinz:fixture-plugin-for-tests".into(),
+                            configuration: BTreeMap::new(),
+                            initial_cwd: None,
+                        })
+                        .to_vec(),
+                },
+                0,
+                CLIENT,
+            )
+            .unwrap();
+        if plugin_selected {
+            tab.select_pane_tab(info.id, 1, CLIENT).unwrap();
+            let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+                "yinz:fixture-plugin-for-tests",
+                &None,
+                None,
+                None,
+            )
+            .unwrap();
+            tab.pane_tab_loaded(info.id, 1, 1, Ok((PluginId::new(100), run)))
+                .unwrap();
+        }
+        tab.settle_overlay_ripples();
+        let (sender, receiver) = channels::unbounded();
+        screen.bus.senders.to_server = Some(SenderWithContext::new(sender));
+        let mut grid = grid_for_render_snapshot(size);
+        let start = Instant::now();
+        screen.pinned_now = Some(start);
+        report(&mut screen, hook("SessionStart"));
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(screen.pane_title_hook_flashes_are_visible(start));
+        let color = |grid: &crate::panes::grid::Grid| {
+            grid.as_character_lines()
+                .into_iter()
+                .find(|row| {
+                    row.iter()
+                        .map(|ch| ch.character)
+                        .collect::<String>()
+                        .contains("Conversation")
+                })
+                .unwrap()
+                .into_iter()
+                .find(|ch| ch.character == '○')
+                .unwrap()
+                .styles
+                .foreground
+        };
+        assert_eq!(
+            color(&grid),
+            Some(screen.style.colors.text_unselected.emphasis_0.into())
+        );
+        screen.pinned_now = Some(start + Duration::from_millis(150));
+        screen.on_animation_tick(screen.frame_now()).unwrap();
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert_eq!(screen.animation_clock_period(screen.frame_now()), None);
+        assert_eq!(
+            color(&grid),
+            Some(screen.style.colors.text_unselected.base.into())
+        );
+        assert_eq!(
+            screen
+                .tab_containing_pane(PANE)
+                .unwrap()
+                .pane_tabs_info(info.id)
+                .unwrap()
+                .tabs[0]
+                .descriptor
+                .label,
+            "Conversation"
+        );
+    }
+}
+
+#[test]
+fn hook_flash_idle_hooks_restart_title_deadline_without_arming_palette() {
+    let (mut screen, _, _) = setup("codex");
+    let start = Instant::now();
+    screen.pinned_now = Some(start);
+    report(&mut screen, hook("SessionStart"));
+    for offset in [100, 200] {
+        let now = start + Duration::from_millis(offset);
+        screen.pinned_now = Some(now);
+        report_state(
+            &mut screen,
+            "codex",
+            hook("PreCompact"),
+            AgentReportState::Unchanged,
+        );
+        let pane = screen.get_pane_info(PANE).unwrap();
+        assert_eq!(pane.agent.as_ref().unwrap().state, AgentState::Idle);
+        assert!(screen.pane_title_hook_is_flashing(&pane, now + Duration::from_millis(149)));
+        assert!(!screen.pane_title_hook_is_flashing(&pane, now + Duration::from_millis(150)));
+        assert!(!screen.agent_hook_is_flashing(&pane, now));
+    }
+    let mut agent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+    agent.state = AgentState::Busy;
+    crate::screen::apply_pane_agent_report(&mut screen, PANE, Some(agent)).unwrap();
+    let pane = screen.get_pane_info(PANE).unwrap();
+    assert!(screen.pane_title_hook_is_flashing(&pane, screen.frame_now()));
+    assert!(!screen.agent_hook_is_flashing(&pane, screen.frame_now()));
+    report_state(
+        &mut screen,
+        "codex",
+        hook("PreCompact"),
+        AgentReportState::Unchanged,
+    );
+    assert!(screen.agent_hook_is_flashing(&screen.get_pane_info(PANE).unwrap(), screen.frame_now()));
+    for state in [AgentState::Idle, AgentState::Busy] {
+        let mut agent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+        agent.state = state;
+        crate::screen::apply_pane_agent_report(&mut screen, PANE, Some(agent)).unwrap();
+        let pane = screen.get_pane_info(PANE).unwrap();
+        assert!(screen.pane_title_hook_is_flashing(&pane, screen.frame_now()));
+        assert!(!screen.agent_hook_is_flashing(&pane, screen.frame_now()));
     }
 }

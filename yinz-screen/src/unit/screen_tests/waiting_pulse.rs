@@ -1025,3 +1025,76 @@ fn waiting_pulse_survives_floating_focus_and_watchers() {
     screen.render_to_clients().unwrap();
     assert_eq!(screen.animation_clock_period(start), None);
 }
+
+#[test]
+fn hook_flash_clock_repaints_collapsed_and_list_stack_titles() {
+    use crate::screen::thread_main::apply_queued_agent_report;
+    use yinz_types::agent::{
+        report::{AgentReport, AgentReportState},
+        AgentEvent, HookEvent,
+    };
+    for list in [false, true] {
+        for style in [PaneFrameStyle::Full, PaneFrameStyle::None] {
+            let (mut screen, _jobs) = pair(false, true, list, style);
+            let mut agent = waiting();
+            agent.state = AgentState::Busy;
+            agent.wait_needs_a_person = false;
+            apply_pane_agent_report(&mut screen, WAITING, Some(agent)).unwrap();
+            let start = Instant::now();
+            screen.pinned_now = Some(start);
+            let hook = HookEvent {
+                hook_event_name: "PreCompact".into(),
+                ..Default::default()
+            };
+            apply_queued_agent_report(
+                &mut screen,
+                &AgentReport {
+                    pane_id: WAITING,
+                    report_id: "flash".into(),
+                    process_id: ProcessId::new(1),
+                    kind: "claude".into(),
+                    state: AgentReportState::Unchanged,
+                    event: Some(AgentEvent::from_hook(
+                        "claude",
+                        TerminalId::new(1),
+                        &hook,
+                        serde_json::to_string(&hook).unwrap(),
+                    )),
+                    trace: false,
+                },
+                start,
+            )
+            .unwrap();
+            let (sender, receiver) = channels::unbounded();
+            screen.bus.senders.to_server = Some(SenderWithContext::new(sender));
+            let mut grid = grid_for_render_snapshot(SIZE);
+            render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+            assert_eq!(
+                screen.animation_clock_period(start),
+                Some(FRAME_PERIOD),
+                "list={list}, style={style:?}"
+            );
+            let color = |grid: &crate::panes::grid::Grid| {
+                grid.as_character_lines()
+                    .into_iter()
+                    .flatten()
+                    .find(|cell| cell.character == '●')
+                    .unwrap()
+                    .styles
+                    .foreground
+            };
+            assert_eq!(
+                color(&grid),
+                Some(screen.style.colors.text_unselected.emphasis_0.into())
+            );
+            screen.pinned_now = Some(start + Duration::from_millis(150));
+            screen.on_animation_tick(screen.frame_now()).unwrap();
+            render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+            assert_eq!(screen.animation_clock_period(screen.frame_now()), None);
+            assert_eq!(
+                color(&grid),
+                Some(screen.style.colors.text_unselected.emphasis_2.into())
+            );
+        }
+    }
+}

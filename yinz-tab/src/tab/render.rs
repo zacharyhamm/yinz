@@ -190,6 +190,7 @@ impl Tab {
         }
         self.update_agent_pane_widths()?;
         self.sync_pane_tabs()?;
+        self.sync_pane_tab_titles();
         self.render_tiled_panes_and_chrome(output, client_id_override)?;
         self.render_floating_panes_and_overlays(output, client_id_override)?;
         for client in self.clients_in_frame(client_id_override) {
