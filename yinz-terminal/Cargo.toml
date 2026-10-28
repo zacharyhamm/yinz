@@ -18,7 +18,7 @@ base64 = { version = "0.22", default-features = false, features = ["std"] }
 lazy_static = { workspace = true }
 log = { workspace = true }
 serde_json = { workspace = true }
-regex = { workspace = true }
+regex = { workspace = true, features = ["unicode-bool"] }
 unicode-width = { workspace = true }
 vte = { workspace = true }
 

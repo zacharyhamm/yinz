@@ -535,6 +535,49 @@ fn palette_cursor_is_opaque_on_query_idle_and_watcher_frames() {
 }
 
 #[test]
+fn palette_hides_covered_emoji_and_restores_them_on_dismissal() {
+    for opacity in [0, 50, 85, 100] {
+        let mut screen = screen();
+        let mut config = test_screen_config();
+        config.background_opacity = opacity;
+        screen
+            .reconfigure(config, Keybinds::default(), CLIENT)
+            .unwrap();
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        screen
+            .get_active_tab_mut(CLIENT)
+            .unwrap()
+            .handle_pty_bytes(
+                TerminalId::new(1),
+                "\x1b[4;40Hemoji:👇end\x1b[22;40Houtside:👇end"
+                    .as_bytes()
+                    .to_vec(),
+            )
+            .unwrap();
+        let before = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(before.contains("emoji:👇end"), "{before}");
+        screen.toggle_command_palette(CLIENT);
+        let expected = if opacity == 0 {
+            "emoji:👇end"
+        } else {
+            "emoji:  end"
+        };
+        let open = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(open.contains(expected), "opacity={opacity}:\n{open}");
+        assert!(open.contains("outside:👇end"), "{open}");
+        // A query-only frame reuses the backing without new pane output.
+        palette_key(&mut screen, BareKey::Left);
+        let idle = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(idle.contains(expected), "{idle}");
+        screen.close_command_palette(CLIENT);
+        let closed = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(closed.contains("emoji:👇end"), "{closed}");
+        assert!(closed.contains("outside:👇end"), "{closed}");
+    }
+}
+
+#[test]
 fn palette_repaints_its_background_on_frames_without_new_pane_output() {
     let mut screen = screen();
     let receiver = screen_wired_to_server(&mut screen);
