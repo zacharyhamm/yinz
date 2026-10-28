@@ -732,6 +732,21 @@ impl Tab {
             return false;
         }
         let mut title = pane.render_geom();
+        if !self.pane_frame_style.draws_full_frames() && self.tiled_panes.panes_contain(&pane_id) {
+            let geom = pane.position_and_size();
+            let stacked_under = geom.stacked.is_some()
+                && self.tiled_panes.get_panes().any(|(_, other)| {
+                    let other = other.position_and_size();
+                    other.stacked == geom.stacked
+                        && other.x == geom.x
+                        && other.cols == geom.cols
+                        && other.y < geom.y
+                        && other.rows.is_percent()
+                });
+            if stacked_under {
+                title.y = title.y.saturating_sub(pane.get_content_offset().bottom);
+            }
+        }
         title.rows = Dimension::fixed(1);
         self.waiting_border_is_uncovered(pane_id, &[title])
     }
