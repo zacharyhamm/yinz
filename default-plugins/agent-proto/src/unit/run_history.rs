@@ -1339,3 +1339,36 @@ fn a_snippet_matches_a_multi_word_query_by_its_first_word() {
     let snippet = snippet(&text, "parser rewrite");
     assert!(snippet.contains("parser"), "{snippet}");
 }
+
+#[test]
+fn search_run_pages_reach_all_matches_and_full_text() {
+    let backend = backend();
+    let mut recorded = run("claude:paged", "claude", "main", 1);
+    recorded.entries = (1..=95)
+        .map(|revision| {
+            entry(
+                revision,
+                RunEntryKind::Message,
+                &format!("{} needle", "x ".repeat(ENTRY_TEXT_CHARS)),
+                revision as i64,
+            )
+        })
+        .collect();
+    write(&backend, &recorded);
+    let mut from = 1;
+    let mut revisions = std::collections::BTreeSet::new();
+    loop {
+        let (hits, next) = search_run_page(&backend, &recorded.id, "needle", from).unwrap();
+        for hit in hits {
+            assert!(hit.snippet.contains("needle"));
+            assert!(revisions.insert(hit.revision));
+        }
+        let Some(next) = next else { break };
+        assert!(next > from);
+        from = next;
+    }
+    assert_eq!(
+        revisions.into_iter().collect::<Vec<_>>(),
+        (1..=95).collect::<Vec<_>>()
+    );
+}

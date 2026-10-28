@@ -76,25 +76,6 @@ fn run_action(id: &str, from: Option<u64>) -> HistoryAction {
     }
 }
 
-// Collapse only the loaded page, keeping every revision for the full-content reader.
-fn collapse_tools(events: Vec<HistoryEvent>) -> Vec<HistoryEvent> {
-    let mut grouped: Vec<HistoryEvent> = Vec::new();
-    for mut event in events {
-        if matches!(event.kind.as_str(), "tool_call" | "tool_result") {
-            if let Some(previous) = grouped.last_mut().filter(|e| e.kind == "tools") {
-                previous.revisions.extend(event.revisions);
-                previous.tool_calls += event.tool_calls;
-                continue;
-            }
-            event.kind = "tools".into();
-            event.markdown.clear();
-            event.truncated = false;
-        }
-        grouped.push(event);
-    }
-    grouped
-}
-
 pub(super) fn execute(
     request: &AgentRequest,
     action: &HistoryAction,
@@ -270,39 +251,15 @@ pub(super) fn execute(
             let status;
             if query.is_empty() {
                 let page = history::entry_page(&backend, id, *from, 30)?;
-                if page.earlier {
-                    let start = page
-                        .entries
-                        .first()
-                        .map(|e| e.revision)
-                        .or(*from)
-                        .unwrap_or(1);
-                    let earlier = store::Backend::fetch(
-                        &backend,
-                        &FetchRequest::entity(agent_proto::agents::rows::ENTRY_ENTITY)
-                            .select(["revision"])
-                            .filter(Pred::eq("run_id", id.as_str()))
-                            .filter(Pred::lt("revision", start as i64))
-                            .sort_by("revision", SortDir::Desc)
-                            .limit(30),
-                    )?;
-                    if let Some(DataValue::Int(revision)) = earlier
-                        .rows
-                        .last()
-                        .and_then(|row| earlier.get(row, "revision"))
-                    {
-                        rows.push(row(
-                            "older".into(),
-                            "Older",
-                            String::new(),
-                            run_action(id, Some(*revision as u64)),
-                        ));
-                    }
-                }
-                if let Some(next) = page.next_revision {
+                let next = if from.is_none() && page.earlier {
+                    Some(1)
+                } else {
+                    page.next_revision
+                };
+                if let Some(next) = next {
                     rows.push(row(
-                        "newer".into(),
-                        "Newer",
+                        "continue".into(),
+                        "Loading history…",
                         String::new(),
                         run_action(id, Some(next)),
                     ));
@@ -322,7 +279,7 @@ pub(super) fn execute(
                         markdown: e.text.clone(),
                     });
                 }
-                events = collapse_tools(events);
+
                 for event in &events {
                     let action = if event.kind == "tools" {
                         HistoryAction::Tools {
@@ -343,15 +300,22 @@ pub(super) fn execute(
                     ));
                 }
             } else {
-                let found =
-                    history::search(&backend, &Default::default(), Some(id), query, false, 50)?;
-                status = if found.truncated {
-                    "Partial results: search limit reached"
-                } else {
-                    "Matching retained events"
+                let (hits, next) =
+                    history::search_run_page(&backend, id, query, from.unwrap_or(1))?;
+                if let Some(next) = next {
+                    rows.push(row(
+                        "continue".into(),
+                        "Searching history…",
+                        String::new(),
+                        HistoryAction::Run {
+                            id: id.clone(),
+                            from: Some(next),
+                            query: query.clone(),
+                        },
+                    ));
                 }
-                .into();
-                for hit in found.hits {
+                status = "Matching retained events".into();
+                for hit in hits {
                     events.push(HistoryEvent {
                         revision: hit.revision,
                         revisions: vec![hit.revision],

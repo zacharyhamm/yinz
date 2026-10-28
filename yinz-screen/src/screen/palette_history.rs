@@ -113,6 +113,12 @@ pub(super) struct Browser {
     action: HistoryAction,
     rows: HashMap<String, HistoryAction>,
     generation: u64,
+    history_scope: Option<(String, String)>,
+    continuation: Option<HistoryAction>,
+    pages_since_tail: usize,
+    events: BTreeMap<u64, yinz_bus::command_palette::HistoryEvent>,
+    cached_history:
+        HashMap<(String, String), BTreeMap<u64, yinz_bus::command_palette::HistoryEvent>>,
     usage_checked: Option<std::time::Instant>,
     usage: Option<yinz_types::agent::control::ProviderUsage>,
     prompt: Option<PromptSubmission>,
@@ -249,7 +255,7 @@ impl Screen {
         agents
     }
 
-    pub(super) fn open_palette_history(
+    pub(in crate::screen) fn open_palette_history(
         &mut self,
         client: ClientId,
         live: Option<LiveAgent>,
@@ -339,6 +345,11 @@ impl Screen {
                 action: action.clone(),
                 rows: HashMap::new(),
                 generation: 0,
+                cached_history: HashMap::new(),
+                history_scope: None,
+                continuation: None,
+                pages_since_tail: 0,
+                events: BTreeMap::new(),
                 usage_checked: None,
                 usage: None,
                 prompt: None,
@@ -370,28 +381,23 @@ impl Screen {
         reply: HistoryReply,
         request: Option<HistoryAction>,
     ) {
+        // The host serves hits as anchored run pages. Merge them like any other
+        // page; browser.action retains the hit revision until selection below.
+        let request = request.map(|action| match action {
+            HistoryAction::Hit { id, revision } => HistoryAction::Run {
+                id,
+                from: Some(revision.saturating_sub(2).max(1)),
+                query: String::new(),
+            },
+            action => action,
+        });
         let Some(state) = self.command_palettes.get_mut(&client) else {
             return;
         };
         let Some(browser) = state.agents.browsers.get_mut(&state.widget.view) else {
             return;
         };
-        // A newest-page reply can arrive after the user has scrolled back.
-        if let HistoryReply::Run { events, .. } = &reply
-            && let HistoryAction::Run { from, .. } = &mut browser.action
-            && browser.live.is_some()
-            && matches!(request, Some(HistoryAction::Run { from: None, ref query, .. }) if query.is_empty())
-            && !state.widget.agent_following()
-            && let Some(first) = state
-                .widget
-                .agent_first_revision()
-                .filter(|first| events.first().is_some_and(|e| e.revision > *first))
-        {
-            *from = Some(first);
-            let action = browser.action.clone();
-            self.request_palette_agent(client, AgentAction::History(action), vec![]);
-            return;
-        }
+        let mut continuation = None;
         match reply {
             HistoryReply::Reader {
                 header,
@@ -404,6 +410,87 @@ impl Screen {
                 rows,
                 status,
             } => {
+                let mut rows = rows;
+                let mut events = events;
+                let mut status = status;
+                if let Some(HistoryAction::Run { id, query, .. }) = &request {
+                    let scope = (id.clone(), query.clone());
+                    if browser.history_scope.as_ref() != Some(&scope) {
+                        if let Some(old_scope) = browser.history_scope.take()
+                            && old_scope.1.is_empty()
+                        {
+                            browser
+                                .cached_history
+                                .insert(old_scope, std::mem::take(&mut browser.events));
+                        }
+                        browser.continuation = None;
+                        browser.events = browser.cached_history.remove(&scope).unwrap_or_default();
+                        browser.rows.clear();
+                        browser.history_scope = Some(scope);
+                    }
+                    for event in events {
+                        browser.events.insert(event.revision, event);
+                    }
+                    events = browser.events.values().cloned().collect();
+                    if query.is_empty() {
+                        events = yinz_bus::command_palette::collapse_tools(events);
+                    }
+                    rows.retain(|row| {
+                        if row.id == "continue" {
+                            continuation = Some(row.action.clone());
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    if matches!(request, Some(HistoryAction::Run { from: None, .. }))
+                        && browser.continuation.is_some()
+                    {
+                        continuation = browser.continuation.clone();
+                    }
+                    browser.continuation = continuation.clone();
+                    if continuation.is_some() {
+                        browser.pages_since_tail += 1;
+                        // Interleave newest-page reads with backfill so long histories
+                        // do not delay live output. Retain the forward cursor above.
+                        if query.is_empty() && browser.pages_since_tail >= 10 {
+                            browser.pages_since_tail = 0;
+                            continuation = Some(HistoryAction::Run {
+                                id: id.clone(),
+                                from: None,
+                                query: String::new(),
+                            });
+                        }
+                        status =
+                            format!("{} events loaded · Loading history…", browser.events.len());
+                    }
+                    // Rebuild event actions from the complete merged timeline, including
+                    // tool groups that cross page boundaries.
+                    rows.retain(|row| !row.id.starts_with("event:"));
+                    for event in &events {
+                        rows.push(yinz_bus::command_palette::HistoryRow {
+                            id: format!("event:{}", event.revision),
+                            label: String::new(),
+                            description: String::new(),
+                            action: if !query.is_empty() {
+                                HistoryAction::Hit {
+                                    id: id.clone(),
+                                    revision: event.revision,
+                                }
+                            } else if event.kind == "tools" {
+                                HistoryAction::Tools {
+                                    id: id.clone(),
+                                    revisions: event.revisions.clone(),
+                                }
+                            } else {
+                                HistoryAction::Event {
+                                    id: id.clone(),
+                                    revision: event.revision,
+                                }
+                            },
+                        });
+                    }
+                }
                 if let Some(live) = &browser.live {
                     header.live = Some(live.pane.clone());
                     if let Some(labels) = state.agents.labels.get(&live.id()) {
@@ -524,6 +611,9 @@ impl Screen {
                     status: Some(status),
                 }]);
             },
+        }
+        if let Some(action) = continuation {
+            self.request_palette_agent(client, AgentAction::History(action), vec![]);
         }
         self.schedule_palette_history_tick(client);
         self.refresh_palette_usage(client);
@@ -681,6 +771,8 @@ impl Screen {
                 let view = state.widget.view;
                 let generation = browser.generation;
                 self.palette_history_tick(client, opening, view, generation);
+            } else if let Some(action) = browser.continuation.clone() {
+                self.request_palette_agent(client, AgentAction::History(action), vec![]);
             }
             return;
         }
@@ -697,9 +789,13 @@ impl Screen {
                     },
                 }
             },
-            HistoryAction::Run { query, .. } => *query = state.widget.query().into(),
+            HistoryAction::Run { query, from, .. } => {
+                *query = state.widget.query().into();
+                *from = None;
+            },
             _ => return,
         }
+        browser.continuation = None;
         let action = browser.action.clone();
         browser.rows.clear();
         state.widget.set_sections(vec![PluginSection {
@@ -740,6 +836,10 @@ impl Screen {
             {
                 *id = current.run().unwrap_or_default();
                 *from = None;
+                browser.events.clear();
+                browser.cached_history.clear();
+                browser.continuation = None;
+                browser.history_scope = None;
                 state.widget.agent_retarget_run();
             }
             browser.live = Some(current);
@@ -770,12 +870,12 @@ impl Screen {
             if let HistoryAction::Run { from, query, .. } = &mut action
                 && query.is_empty()
             {
-                *from = if state.widget.agent_following() {
-                    None
-                } else {
-                    state.widget.agent_first_revision().or(*from)
-                };
+                *from = browser
+                    .events
+                    .last_key_value()
+                    .map(|(revision, _)| revision.saturating_add(1));
             }
+            let action = browser.continuation.clone().unwrap_or(action);
             self.request_palette_agent(client, AgentAction::History(action), vec![]);
         }
     }

@@ -995,6 +995,53 @@ pub fn search_runs_filtered(
 }
 
 /// The matching entries, FTS first and a substring pass behind it.
+/// Search a bounded revision window without the global search result/scan caps.
+pub fn search_run_page(
+    backend: &impl Backend,
+    run_id: &str,
+    query: &str,
+    from: u64,
+) -> Result<(Vec<Hit>, Option<u64>), String> {
+    let page = backend.fetch(
+        &FetchRequest::entity(rows::ENTRY_ENTITY)
+            .filter(Pred::eq("run_id", run_id))
+            .filter(Pred::gte("revision", from as i64))
+            .select(["revision"])
+            .sort_by("revision", SortDir::Asc)
+            .limit(30),
+    )?;
+    let Some(yinz_tile::prelude::DataValue::Int(last)) =
+        page.rows.last().and_then(|row| page.get(row, "revision"))
+    else {
+        return Ok((vec![], None));
+    };
+    let scope = Pred::eq("run_id", run_id)
+        .and(Pred::gte("revision", from as i64))
+        .and(Pred::lte("revision", *last));
+    let (mut hits, cut) = hits_for(backend, query, Some(scope), 30)?;
+    if cut {
+        // The store also bounds response bytes. Retry individual revisions rather
+        // than silently skipping matches beyond that bound.
+        hits.clear();
+        for row in &page.rows {
+            let Some(yinz_tile::prelude::DataValue::Int(revision)) = page.get(row, "revision")
+            else {
+                return Err("History entry has no revision".into());
+            };
+            let scope = Pred::eq("run_id", run_id).and(Pred::eq("revision", *revision));
+            let (found, cut) = hits_for(backend, query, Some(scope), 1)?;
+            if cut {
+                return Err("Retained search event exceeds the store read limit".into());
+            }
+            hits.extend(found);
+        }
+    }
+    Ok((
+        hits,
+        page.truncated.then_some((*last as u64).saturating_add(1)),
+    ))
+}
+
 fn hits_for(
     backend: &impl Backend,
     query: &str,
