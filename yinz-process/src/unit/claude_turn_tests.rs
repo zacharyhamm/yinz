@@ -30,6 +30,106 @@ fn a_blocking_stop_continues_until_the_matching_transcript_boundary() {
 }
 
 #[test]
+fn an_interruption_ends_the_turn_without_a_duration_record() {
+    for content in [
+        json!([{"type":"text","text":"[Request interrupted by user]"}]),
+        json!("[Request interrupted by user]"),
+    ] {
+        let mut turn = Turn::new("claude", &hook());
+        for record in [
+            json!({"type":"user","sessionId":"conversation","promptId":"prompt","uuid":"user"}),
+            json!({"type":"assistant","parentUuid":"user","uuid":"assistant","message":{"content":[{"type":"text","text":"Work so far."}]}}),
+            json!({"type":"user","parentUuid":"assistant","uuid":"tool-result","toolUseResult":{"backgroundTaskId":"background-task"}}),
+        ] {
+            assert!(!turn.record(&record).unwrap());
+        }
+        let mut interruption = interruption_record();
+        interruption["message"]["content"] = content;
+        assert!(turn.record(&interruption).unwrap());
+        assert_eq!(turn.last_text.as_deref(), Some("Work so far."));
+        assert_eq!(turn.background_tasks, ["background-task"]);
+    }
+}
+
+// Minimal sanitized shape of the interruption record, which has no promptId.
+fn interruption_record() -> Value {
+    json!({
+        "type": "user",
+        "sessionId": "conversation",
+        "isSidechain": false,
+        "uuid": "interruption",
+        "parentUuid": "tool-result",
+        "interruptedMessageId": "interrupted-message",
+        "message": {
+            "role": "user",
+            "content": [{"type": "text", "text": "[Request interrupted by user]"}]
+        }
+    })
+}
+
+#[test]
+fn interruption_requires_metadata_exact_text_and_an_existing_parent_in_the_turn() {
+    for change in [
+        json!({"isSidechain":true}),
+        json!({"type":"assistant"}),
+        json!({"parentUuid":"unrelated"}),
+        json!({"parentUuid":null}),
+        json!({"promptId":"prompt","parentUuid":"unrelated"}),
+        json!({"promptId":"prompt","parentUuid":"interruption"}),
+        json!({"interruptedMessageId":null}),
+        json!({"interruptedMessageId":""}),
+        json!({"interruptedMessageId":42}),
+        json!({"message":{"content":"Quoted: [Request interrupted by user]"}}),
+        json!({"message":{"content":[{"type":"text","text":"Quoted: [Request interrupted by user]"}]}}),
+        json!({"message":{"content":[{"type":"thinking","text":"[Request interrupted by user]"}]}}),
+        json!({"message":{"content":[]}}),
+        json!({"message":null}),
+    ] {
+        let mut turn = Turn::new("claude", &hook());
+        turn.record(&json!({"type":"user","promptId":"prompt","uuid":"tool-result"}))
+            .unwrap();
+        let mut record = interruption_record();
+        record
+            .as_object_mut()
+            .unwrap()
+            .extend(change.as_object().unwrap().clone());
+        assert!(!turn.record(&record).unwrap(), "{change}");
+    }
+    // An ordinary initial prompt quoting the exact marker cannot end itself.
+    let mut turn = Turn::new("claude", &hook());
+    assert!(!turn
+        .record(&json!({
+            "type":"user", "promptId":"prompt", "uuid":"user",
+            "message":{"content":"[Request interrupted by user]"}
+        }))
+        .unwrap());
+    let mut quoted = interruption_record();
+    quoted
+        .as_object_mut()
+        .unwrap()
+        .remove("interruptedMessageId");
+    quoted["parentUuid"] = json!("user");
+    assert!(!turn.record(&quoted).unwrap());
+}
+
+#[test]
+fn interruption_cannot_confirm_a_different_conversation_or_prompt() {
+    for change in [json!({"sessionId":"other"}), json!({"promptId":"other"})] {
+        let mut turn = Turn::new("claude", &hook());
+        turn.record(&json!({"type":"user","promptId":"prompt","uuid":"tool-result"}))
+            .unwrap();
+        let mut record = interruption_record();
+        record
+            .as_object_mut()
+            .unwrap()
+            .extend(change.as_object().unwrap().clone());
+        assert!(turn.record(&record).is_err(), "{change}");
+    }
+    let mut unseen = Turn::new("claude", &hook());
+    assert!(!unseen.record(&interruption_record()).unwrap());
+}
+
+#[test]
 fn background_launches_in_the_turn_are_reported_once_in_launch_order() {
     let mut turn = Turn::new("claude", &hook());
     for record in [
