@@ -2799,6 +2799,24 @@ impl Grid {
         let count_to_move = std::cmp::min(count, self.width.saturating_sub(self.cursor.x));
         self.cursor.x += count_to_move;
     }
+    /// Wrapping belongs to the right edge of the preceding row. Erasing
+    /// that edge removes the old continuation; only a later autowrap can restore it.
+    fn break_line_wraps_after(&mut self, first_row: usize, last_row: usize) {
+        let start = first_row.saturating_add(1);
+        let end = last_row.saturating_add(2).min(self.viewport.len());
+        if start >= end || self.viewport.range(start..end).all(|row| row.is_canonical) {
+            return;
+        }
+        if !self.plugin_highlights.is_empty() {
+            // Splitting a logical line can change matches on both sides of the erasure.
+            self.mark_logical_line_dirty(start);
+            self.mark_logical_line_dirty(end - 1);
+        }
+        for row in self.viewport.range_mut(start..end) {
+            row.is_canonical = true;
+        }
+        self.kitty_reanchor_all_from_pixels();
+    }
     pub fn replace_characters_in_line_after_cursor(&mut self, replace_with: TerminalCharacter) {
         if let Some(row) = self.viewport.get_mut(self.cursor.y) {
             row.writing(&self.agent_theme);
@@ -2807,6 +2825,9 @@ impl Grid {
                 .background
                 .filter(|bg| *bg != AnsiCode::Reset);
             row.replace_and_pad_end(self.cursor.x, self.width, replace_with);
+        }
+        if self.cursor.x < self.width {
+            self.break_line_wraps_after(self.cursor.y, self.cursor.y);
         }
         self.output_buffer.update_line(self.cursor.y);
     }
@@ -2821,6 +2842,9 @@ impl Grid {
                     .filter(|bg| *bg != AnsiCode::Reset);
             }
             row.replace_and_pad_beginning(self.cursor.x, replace_with);
+        }
+        if self.cursor.x >= self.width.saturating_sub(1) {
+            self.break_line_wraps_after(self.cursor.y, self.cursor.y);
         }
         self.output_buffer.update_line(self.cursor.y);
     }
@@ -2857,6 +2881,7 @@ impl Grid {
                     );
                 }
             }
+            self.break_line_wraps_after(self.cursor.y + 1, self.viewport.len().saturating_sub(1));
             self.output_buffer
                 .update_lines(self.cursor.y, self.viewport.len() - 1);
         }
@@ -2874,6 +2899,9 @@ impl Grid {
                 row.replace_columns(replace_with_columns.clone());
                 row.bg_color = erase_bg;
             }
+            if self.cursor.y > 0 {
+                self.break_line_wraps_after(0, self.cursor.y - 1);
+            }
             self.output_buffer.update_lines(0, self.cursor.y);
         }
     }
@@ -2888,6 +2916,7 @@ impl Grid {
                 .filter(|bg| *bg != AnsiCode::Reset);
             self.output_buffer.update_line(self.cursor.y);
         }
+        self.break_line_wraps_after(self.cursor.y, self.cursor.y);
     }
     pub fn clear_all(&mut self, replace_with: TerminalCharacter) {
         let erase_bg = replace_with
@@ -2901,6 +2930,7 @@ impl Grid {
             row.replace_columns(replace_with_columns.clone());
             row.bg_color = erase_bg;
         }
+        self.break_line_wraps_after(0, self.viewport.len().saturating_sub(1));
         self.output_buffer.update_all_lines();
     }
     fn line_wrap(&mut self) {
@@ -3138,6 +3168,9 @@ impl Grid {
             }
             self.output_buffer.update_line(self.cursor.y);
         }
+        if count > 0 && self.cursor.x < self.width && pad_until == self.width {
+            self.break_line_wraps_after(self.cursor.y, self.cursor.y);
+        }
     }
     fn erase_characters(&mut self, count: usize, empty_char_style: RcCharacterStyles) {
         let mut empty_character = EMPTY_TERMINAL_CHARACTER;
@@ -3163,6 +3196,9 @@ impl Grid {
                 current_row.push(empty_character.clone());
             }
             self.output_buffer.update_line(self.cursor.y);
+        }
+        if count > 0 && self.cursor.x < self.width {
+            self.break_line_wraps_after(self.cursor.y, self.cursor.y);
         }
     }
     fn add_newline(&mut self) {
