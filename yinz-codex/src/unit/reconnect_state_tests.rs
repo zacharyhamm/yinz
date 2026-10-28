@@ -112,6 +112,117 @@ fn reconnect_same_thread_resume_keeps_work_but_another_selection_invalidates_it(
 }
 
 #[test]
+fn reconnect_resume_supersedes_a_review_before_reporting_newer_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let registration = registration(root.path(), "aaaaaaaaaaaa");
+    let mut conversations = active_work(&registration, true);
+    conversations.reconnect();
+    conversations
+        .request(
+            &json!({"id":8,"method":"thread/resume","params":{"threadId":"selected"}}),
+            &registration,
+        )
+        .unwrap();
+    assert!(conversations
+        .response(
+            &json!({"id":8,"result":{"thread":{"id":"selected","turns":[
+                {"id":"parent","status":"completed"},
+                {"id":"child","rootTurnId":"parent","status":"completed"},
+                {"id":"newer","status":"inProgress"}
+            ]}}}),
+            &registration,
+        )
+        .unwrap()
+        .is_empty());
+    assert!(conversations.review.is_none());
+    assert_eq!(
+        conversations.outstanding_turn(),
+        Some(("selected", "newer"))
+    );
+    let stale = json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"parent","status":"failed"}}});
+    assert!(conversations
+        .response(&stale, &registration)
+        .unwrap()
+        .is_empty());
+    let failed = json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"newer","status":"failed","error":{"message":"newer failure"}}}});
+    assert_eq!(
+        conversations.response(&failed, &registration).unwrap(),
+        vec![
+            json!({"hook_event_name":"StopFailure","session_id":"selected","turn_id":"newer","last_assistant_message":"newer failure"})
+        ]
+    );
+    assert!(conversations.outstanding_turn().is_none());
+    for duplicate in [failed, stale] {
+        assert!(conversations
+            .response(&duplicate, &registration)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn reconnect_resume_preserves_a_review_without_proven_newer_work() {
+    for turns in [
+        json!([]),
+        json!([{"id":"newer","status":"inProgress"}]),
+        json!([
+            {"id":"older","status":"completed"},
+            {"id":"parent","status":"inProgress"}
+        ]),
+        json!([
+            {"id":"parent","status":"inProgress"},
+            {"id":"child","rootTurnId":"parent","status":"inProgress"}
+        ]),
+        json!([
+            {"id":"parent","status":"completed"},
+            {"id":"child","rootTurnId":"parent","status":"completed"}
+        ]),
+        json!([
+            {"id":"parent","status":"inProgress"},
+            {"id":"parent","status":"inProgress"}
+        ]),
+        json!([
+            {"id":"parent","status":"inProgress"},
+            {"id":"","status":"inProgress"},
+            {"id":17,"status":"inProgress"},
+            {"status":"inProgress"},
+            {"id":"unknown-status","status":"unknown"}
+        ]),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let registration = registration(root.path(), "aaaaaaaaaaaa");
+        let mut conversations = active_work(&registration, true);
+        conversations.reconnect();
+        conversations
+            .request(
+                &json!({"id":8,"method":"thread/resume","params":{"threadId":"selected"}}),
+                &registration,
+            )
+            .unwrap();
+        assert!(conversations
+            .response(
+                &json!({"id":8,"result":{"thread":{"id":"selected","turns":turns}}}),
+                &registration,
+            )
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            conversations.outstanding_turn(),
+            Some(("selected", "parent")),
+            "{turns}"
+        );
+        assert_eq!(
+            conversations.response(
+                &json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"parent","status":"completed"}}}),
+                &registration,
+            ).unwrap(),
+            vec![json!({"hook_event_name":"Stop","session_id":"selected","turn_id":"parent"})],
+            "{turns}"
+        );
+    }
+}
+
+#[test]
 fn reconnect_discards_transport_correlations_before_request_ids_are_reused() {
     let root = tempfile::tempdir().unwrap();
     let registration = registration(root.path(), "aaaaaaaaaaaa");
