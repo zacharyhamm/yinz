@@ -56,6 +56,7 @@ close_fds = "0.3.2"
 nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "signal", "socket", "term", "uio", "user"] }
 
 [dev-dependencies]
+interprocess = { workspace = true }
 flate2 = "1.1.9"
 png = "0.17.16"
 regex = { workspace = true }

@@ -292,6 +292,11 @@ pub(super) fn execute(
                 for e in page.entries {
                     events.push(HistoryEvent {
                         revision: e.revision,
+                        revisions: vec![e.revision],
+                        tool_calls: usize::from(
+                            e.kind == agent_proto::agents::RunEntryKind::ToolCall,
+                        ),
+                        created_at_ms: e.created_at_ms,
                         kind: e.kind.label().into(),
                         time: timestamp(e.created_at_ms),
                         truncated: page.truncated_revisions.contains(&e.revision),
@@ -319,9 +324,20 @@ pub(super) fn execute(
                 for hit in found.hits {
                     events.push(HistoryEvent {
                         revision: hit.revision,
+                        revisions: vec![hit.revision],
+                        tool_calls: 0,
+                        created_at_ms: hit.created_at_ms,
                         kind: hit.kind.label().into(),
                         time: timestamp(hit.created_at_ms),
-                        markdown: yinz_tile_markdown::escape_inline(&hit.snippet),
+                        markdown: if matches!(
+                            hit.kind,
+                            agent_proto::agents::RunEntryKind::ToolCall
+                                | agent_proto::agents::RunEntryKind::ToolResult
+                        ) {
+                            hit.snippet.clone()
+                        } else {
+                            yinz_tile_markdown::escape_inline(&hit.snippet)
+                        },
                         truncated: true,
                     });
                     rows.push(row(
@@ -336,6 +352,31 @@ pub(super) fn execute(
                 }
             }
             events.sort_by_key(|event| event.revision);
+            if query.is_empty() {
+                let mut collapsed: Vec<HistoryEvent> = Vec::new();
+                for event in events {
+                    if matches!(event.kind.as_str(), "tool_call" | "tool_result")
+                        && let Some(group) = collapsed.last_mut().filter(|e| e.kind == "tool_call")
+                    {
+                        group.revisions.push(event.revision);
+                        group.tool_calls += event.tool_calls;
+                        continue;
+                    }
+                    collapsed.push(event);
+                }
+                events = collapsed;
+                for event in events.iter().filter(|e| e.kind == "tool_call") {
+                    if let Some(row) = rows
+                        .iter_mut()
+                        .find(|r| r.id == format!("event:{}", event.revision))
+                    {
+                        row.action = HistoryAction::Tools {
+                            id: id.clone(),
+                            revisions: event.revisions.clone(),
+                        };
+                    }
+                }
+            }
             HistoryReply::Run {
                 header: HistoryHeader {
                     name: if h.title.is_empty() {
@@ -351,10 +392,66 @@ pub(super) fn execute(
                     ),
                     started: timestamp(Some(h.started_at_ms)),
                     details: metadata,
+                    task: h.title.clone(),
+                    session_id: if h.session_id.is_empty() {
+                        format!("run {}", h.id)
+                    } else {
+                        format!("session {}", h.session_id)
+                    },
+                    project: String::new(),
+                    usage: None,
                 },
                 events,
                 rows,
                 status,
+            }
+        },
+        HistoryAction::Tools { id, revisions } => {
+            let fetched = store::Backend::fetch(
+                &backend,
+                &FetchRequest::entity(agent_proto::agents::rows::ENTRY_ENTITY)
+                    .filter(Pred::eq("run_id", id.as_str()))
+                    .filter(Pred::is_in(
+                        "revision",
+                        revisions
+                            .iter()
+                            .map(|r| DataValue::Int(*r as i64))
+                            .collect::<Vec<_>>(),
+                    ))
+                    .sort_by("revision", SortDir::Asc)
+                    .limit(30),
+            )?;
+            if fetched.truncated {
+                return Err("Retained tools exceed the store read limit".into());
+            }
+            let entries = agent_proto::agents::rows::entries_from_rows(&fetched)
+                .remove(id)
+                .unwrap_or_default();
+            if entries.len() != revisions.len() {
+                return Err("Tool event no longer retained".into());
+            }
+            HistoryReply::Reader {
+                header: "tool_call".into(),
+                markdown: entries
+                    .iter()
+                    .map(|e| {
+                        let tool = e
+                            .tool
+                            .as_ref()
+                            .map(serde_json::to_string_pretty)
+                            .transpose()
+                            .map_err(|e| format!("Cannot format tool details: {e}"))?;
+                        let mut text =
+                            format!("{} · revision {}:\n{}", e.kind.label(), e.revision, e.text);
+                        if let Some(tool) = tool {
+                            text.push_str("\n\n");
+                            text.push_str(&tool);
+                        }
+                        Ok(text)
+                    })
+                    .collect::<Result<Vec<_>, String>>()?
+                    .join("\n\n"),
+                tool: String::new(),
             }
         },
         HistoryAction::Event { id, revision } => {
@@ -381,12 +478,7 @@ pub(super) fn execute(
                 .map_err(|e| format!("Cannot format tool details: {e}"))?
                 .unwrap_or_default();
             HistoryReply::Reader {
-                header: format!(
-                    "Revision: {} · {} · {}",
-                    entry.revision,
-                    entry.kind.label(),
-                    timestamp(entry.created_at_ms)
-                ),
+                header: entry.kind.label().into(),
                 markdown: entry.text,
                 tool,
             }

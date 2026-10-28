@@ -3853,6 +3853,12 @@ fn archive_queries_discard_stale_replies_and_resume_cannot_be_submitted_twice() 
     let next = || loop {
         let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         if let PluginInstruction::PaletteAgent(request) = instruction {
+            if matches!(
+                request.action,
+                yinz_bus::command_palette::AgentAction::Usage { .. }
+            ) {
+                continue;
+            }
             break *request;
         }
     };
@@ -3970,6 +3976,12 @@ fn history_live_run_id_updates_retarget_reads_and_reset_pagination() {
         let next = || loop {
             let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
             if let PluginInstruction::PaletteAgent(request) = instruction {
+                if matches!(
+                    request.action,
+                    yinz_bus::command_palette::AgentAction::Usage { .. }
+                ) {
+                    continue;
+                }
                 break *request;
             }
         };
@@ -4042,7 +4054,7 @@ fn history_live_run_id_updates_retarget_reads_and_reset_pagination() {
 }
 
 #[test]
-fn history_typing_preserves_pending_hit_and_event_replies() {
+fn history_typing_preserves_pending_hit_event_and_tools_replies() {
     use std::sync::atomic::Ordering;
     use yinz_bus::command_palette::{
         AgentReply, HistoryAction, HistoryReply, HistoryRow, Instruction,
@@ -4057,6 +4069,10 @@ fn history_typing_preserves_pending_hit_and_event_replies() {
             id: "recorded".into(),
             revision: 7,
         },
+        HistoryAction::Tools {
+            id: "recorded".into(),
+            revisions: vec![7, 8],
+        },
     ] {
         let mut screen = screen();
         let receiver = screen_wired_to_server(&mut screen);
@@ -4066,6 +4082,12 @@ fn history_typing_preserves_pending_hit_and_event_replies() {
         let next = || loop {
             let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
             if let PluginInstruction::PaletteAgent(request) = instruction {
+                if matches!(
+                    request.action,
+                    yinz_bus::command_palette::AgentAction::Usage { .. }
+                ) {
+                    continue;
+                }
                 break *request;
             }
         };
@@ -4097,10 +4119,18 @@ fn history_typing_preserves_pending_hit_and_event_replies() {
         let request = loop {
             let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
             if let PluginInstruction::PaletteAgent(request) = instruction {
+                if matches!(
+                    request.action,
+                    yinz_bus::command_palette::AgentAction::Usage { .. }
+                ) {
+                    continue;
+                }
                 break *request;
             }
         };
-        screen.command_palette_handles_input(&None, b"needle", false, CLIENT);
+        palette_key(&mut screen, BareKey::Char('n'));
+        assert!(request.active.load(Ordering::Acquire));
+        screen.command_palette_handles_input(&None, b"eedle", false, CLIENT);
         assert!(request.active.load(Ordering::Acquire));
         let loading = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert!(loading.contains("Loading"), "{loading}");
@@ -4128,6 +4158,7 @@ fn history_typing_preserves_pending_hit_and_event_replies() {
         });
         let loaded = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert!(loaded.contains("Loaded history content"), "{loaded}");
+        assert!(!loaded.contains("Loading"), "{loaded}");
     }
 }
 
@@ -4157,6 +4188,12 @@ fn history_poll_generations_reject_ticks_after_search_refresh_and_event_return()
     let next = || loop {
         let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         if let PluginInstruction::PaletteAgent(request) = instruction {
+            if matches!(
+                request.action,
+                yinz_bus::command_palette::AgentAction::Usage { .. }
+            ) {
+                continue;
+            }
             break *request;
         }
     };
@@ -4215,6 +4252,8 @@ fn history_poll_generations_reject_ticks_after_search_refresh_and_event_return()
                 );
             }
             if operation == "refresh" {
+                // Skip Focus and Send prompt to select Latest / Refresh.
+                palette_key(&mut screen, BareKey::Down);
                 screen.command_palette_handles_input(
                     &Some(KeyWithModifier::new(BareKey::Down)),
                     b"",
@@ -4285,6 +4324,12 @@ fn archive_filter_forms_preserve_literal_search_text() {
     let next = || loop {
         let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         if let PluginInstruction::PaletteAgent(request) = instruction {
+            if matches!(
+                request.action,
+                yinz_bus::command_palette::AgentAction::Usage { .. }
+            ) {
+                continue;
+            }
             break *request;
         }
     };
@@ -4665,6 +4710,9 @@ fn history_run(
         .filter_map(|row| match row.action {
             HistoryAction::Event { revision, .. } => Some(HistoryEvent {
                 revision,
+                revisions: vec![revision],
+                tool_calls: 0,
+                created_at_ms: None,
                 kind: "Message".into(),
                 time: String::new(),
                 markdown: row.label.clone(),
@@ -4710,6 +4758,12 @@ fn history_following_requests_newest_but_scrolling_back_keeps_revision_page() {
     let next = || loop {
         let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         if let PluginInstruction::PaletteAgent(request) = instruction {
+            if matches!(
+                request.action,
+                yinz_bus::command_palette::AgentAction::Usage { .. }
+            ) {
+                continue;
+            }
             break *request;
         }
     };
@@ -4778,7 +4832,7 @@ fn history_following_requests_newest_but_scrolling_back_keeps_revision_page() {
         AgentAction::History(HistoryAction::Run { from: Some(50), .. })
     ));
 
-    let with_page = |request, start, name: &str, from| {
+    let with_page = |request: &yinz_bus::command_palette::AgentRequest, start, name: &str, from| {
         let mut response = reply(request, start);
         if let Instruction::AgentReply {
             reply:
@@ -4792,15 +4846,15 @@ fn history_following_requests_newest_but_scrolling_back_keeps_revision_page() {
                 description: String::new(),
                 action: HistoryAction::Run {
                     id: "run".into(),
-                    from: Some(from),
+                    from,
                     query: String::new(),
                 },
             });
         }
         response
     };
-    screen.plugin_palette_instruction(with_page(&anchored, 50, "Older", 20));
-    for key in [BareKey::Tab, BareKey::Down, BareKey::Enter] {
+    screen.plugin_palette_instruction(with_page(&anchored, 50, "Older", Some(20)));
+    for key in [BareKey::Tab, BareKey::Down, BareKey::Down, BareKey::Enter] {
         palette_key(&mut screen, key);
     }
     let older = next();
@@ -4808,8 +4862,8 @@ fn history_following_requests_newest_but_scrolling_back_keeps_revision_page() {
         older.action,
         AgentAction::History(HistoryAction::Run { from: Some(20), .. })
     ));
-    screen.plugin_palette_instruction(with_page(&older, 20, "Newer", 50));
-    for key in [BareKey::Tab, BareKey::Down, BareKey::Enter] {
+    screen.plugin_palette_instruction(with_page(&older, 20, "Newer", Some(50)));
+    for key in [BareKey::Tab, BareKey::Down, BareKey::Down, BareKey::Enter] {
         palette_key(&mut screen, key);
     }
     let newer = next();
@@ -4849,6 +4903,37 @@ fn history_following_requests_newest_but_scrolling_back_keeps_revision_page() {
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
         before
     );
+
+    // Latest overrides a search begun while scrolled back; Older overrides one begun following.
+    for (name, from, start) in [("Latest", None, 80), ("Older", Some(20), 20)] {
+        screen.command_palette_handles_input(&None, b"needle", false, CLIENT);
+        let search = next();
+        assert!(matches!(
+            &search.action,
+            AgentAction::History(HistoryAction::Run { query, .. }) if query == "needle"
+        ));
+        screen.plugin_palette_instruction(with_page(&search, 50, name, from));
+        for key in [
+            BareKey::Tab,
+            BareKey::Home,
+            BareKey::Down,
+            BareKey::Down,
+            BareKey::Enter,
+        ] {
+            palette_key(&mut screen, key);
+        }
+        let navigation = next();
+        assert!(matches!(
+            &navigation.action,
+            AgentAction::History(HistoryAction::Run { from: actual, query, .. })
+                if *actual == from && query.is_empty()
+        ));
+        screen.plugin_palette_instruction(reply(&navigation, start));
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        let visible = if from.is_none() { start + 29 } else { start };
+        assert!(frame.contains(&format!("Event {visible}")), "{frame}");
+        assert!(frame.contains("Type to search this run"), "{frame}");
+    }
 }
 
 #[test]
@@ -5748,4 +5833,179 @@ fn project_picker_shows_literal_sources_and_current_marker() {
         .as_character_lines()
         .iter()
         .all(|line| line.len() <= 35));
+}
+
+#[test]
+fn peer_agent_quota_is_unavailable_without_local_usage_collection() {
+    use yinz_bus::command_palette::{AgentAction, AgentReply, HistoryReply, Instruction};
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+
+    for conversation in [None, Some("peer-conversation")] {
+        let mut screen = screen();
+        screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
+            PaneId::Terminal(TerminalId::new(1)),
+            Some(AgentInfo {
+                kind: "codex".into(),
+                state: AgentState::Idle,
+                source: AgentSource::Reported,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                session_id: conversation.map(str::to_owned),
+                run_id: None,
+            }),
+        );
+        warp_peer(&mut screen, "quota-peer");
+        let (tx, rx) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+        palette_search(&mut screen, "provider:codex session:quota-peer");
+        palette_key(&mut screen, BareKey::Enter);
+        if conversation.is_some() {
+            let request = loop {
+                let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                if let PluginInstruction::PaletteAgent(request) = instruction {
+                    assert!(matches!(request.action, AgentAction::History(_)));
+                    break request;
+                }
+            };
+            screen.plugin_palette_instruction(Instruction::AgentReply {
+                client: CLIENT,
+                opening: request.opening,
+                step: request.step,
+                reply: Ok(AgentReply::History(HistoryReply::Run {
+                    header: Default::default(),
+                    events: vec![],
+                    rows: vec![],
+                    status: "No recorded history".into(),
+                })),
+            });
+        }
+        assert!(!rx.try_iter().any(|(instruction, _)| matches!(
+            instruction,
+            PluginInstruction::PaletteAgent(request)
+                if matches!(request.action, AgentAction::Usage { .. })
+        )));
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(
+            frame.contains("Quota unavailable for peer-session agents"),
+            "{frame}"
+        );
+    }
+}
+
+#[test]
+fn agent_info_usage_and_prompt_are_scoped_to_the_selected_agent() {
+    use yinz_bus::command_palette::{AgentAction, AgentReply, HistoryReply, Instruction};
+    use yinz_types::agent::control::{
+        AgentOutcome, AgentResponse, ProviderUsage, ProviderUsageStatus, ProviderUsageWindow,
+    };
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+    for conversation in [None, Some("selected-conversation")] {
+        let mut screen = screen();
+        let pane = PaneId::Terminal(TerminalId::new(1));
+        screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
+            pane,
+            Some(AgentInfo {
+                kind: "codex".into(),
+                state: AgentState::Idle,
+                source: AgentSource::Reported,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                session_id: conversation.map(str::to_owned),
+                run_id: None,
+            }),
+        );
+        let (tx, rx) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+        palette_search(&mut screen, "provider:codex");
+        palette_key(&mut screen, BareKey::Enter);
+        let usage_request = loop {
+            let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if let PluginInstruction::PaletteAgent(request) = instruction {
+                if matches!(request.action, AgentAction::Usage { .. }) {
+                    break request;
+                }
+                assert!(matches!(request.action, AgentAction::History(_)));
+                // A pinned conversation loads its retained history before usage.
+                screen.plugin_palette_instruction(Instruction::AgentReply {
+                    client: CLIENT,
+                    opening: request.opening,
+                    step: request.step,
+                    reply: Ok(AgentReply::History(HistoryReply::Run {
+                        header: Default::default(),
+                        events: vec![],
+                        rows: vec![],
+                        status: "No recorded history".into(),
+                    })),
+                });
+            }
+        };
+        let view = usage_request.step;
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        let usage = ProviderUsage {
+            provider: "codex".into(),
+            status: ProviderUsageStatus::Ok,
+            observed_at_ms: None,
+            plan: None,
+            message: None,
+            windows: vec![ProviderUsageWindow {
+                label: "Weekly".into(),
+                used_percent: 25.0,
+                resets_at_ms: None,
+            }],
+        };
+        screen.plugin_palette_instruction(Instruction::UsageReply {
+            client: CLIENT,
+            opening: usage_request.opening,
+            view,
+            usage,
+        });
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(frame.contains("Weekly · 75%"), "{frame}");
+        for key in [BareKey::Tab, BareKey::Down, BareKey::Enter] {
+            palette_key(&mut screen, key);
+        }
+        screen.command_palette_handles_input(&None, b"continue\nwith tests", false, CLIENT);
+        palette_key(&mut screen, BareKey::Tab);
+        palette_key(&mut screen, BareKey::Enter);
+        let prompt_request = loop {
+            let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if let PluginInstruction::PaletteAgent(request) = instruction {
+                break request;
+            }
+        };
+        assert!(
+            matches!(&prompt_request.action, AgentAction::Prompt { pane_id, session_id, submission_id, target_session: None } if *pane_id == pane && session_id.as_deref() == conversation && !submission_id.is_empty())
+        );
+        assert_eq!(prompt_request.values, vec!["continue\nwith tests"]);
+        screen.plugin_palette_instruction(Instruction::AgentReply {
+            client: CLIENT,
+            opening: prompt_request.opening,
+            step: prompt_request.step,
+            reply: if conversation.is_some() {
+                Ok(AgentReply::Prompted(AgentResponse::new(AgentOutcome::Ok)))
+            } else {
+                Err(
+                    "Agent has no conversation ID; refresh agent info before sending a prompt"
+                        .into(),
+                )
+            },
+        });
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        if conversation.is_some() {
+            assert!(frame.contains("Agent info · Actions"), "{frame}");
+            assert!(frame.contains("Weekly · 75%"), "{frame}");
+        } else {
+            assert!(frame.contains("Send prompt"), "{frame}");
+            assert!(frame.contains("no conversation ID"), "{frame}");
+            assert!(frame.contains("continue"), "{frame}");
+            assert!(frame.contains("with tests"), "{frame}");
+        }
+    }
 }

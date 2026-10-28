@@ -4810,6 +4810,7 @@ dependencies = [
 name = "yinz-panes"
 version = "0.1.0"
 dependencies = [
+ "agent-proto",
  "ansi_term",
  "base64 0.22.1",
  "hegeltest",
@@ -4877,6 +4878,7 @@ dependencies = [
  "flate2",
  "hegeltest",
  "insta",
+ "interprocess",
  "isahc",
  "kdl",
  "lazy_static",

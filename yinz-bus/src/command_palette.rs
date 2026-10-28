@@ -22,6 +22,12 @@ pub struct Delivery {
 
 #[derive(Clone, Debug)]
 pub enum Instruction {
+    UsageReply {
+        client: ClientId,
+        opening: u64,
+        view: u64,
+        usage: yinz_types::agent::control::ProviderUsage,
+    },
     HistoryTick {
         client: ClientId,
         opening: u64,
@@ -74,6 +80,15 @@ pub struct AgentRequest {
 
 #[derive(Clone, Debug)]
 pub enum AgentAction {
+    Usage {
+        provider: String,
+    },
+    Prompt {
+        pane_id: yinz_types::pane_id::PaneId,
+        session_id: Option<String>,
+        target_session: Option<yinz_types::internal_ids::SessionName>,
+        submission_id: String,
+    },
     History(HistoryAction),
     NewProject {
         kind: String,
@@ -124,6 +139,7 @@ pub struct AgentChoice {
 
 #[derive(Clone, Debug)]
 pub enum AgentReply {
+    Prompted(yinz_types::agent::control::AgentResponse),
     History(HistoryReply),
     Choices {
         title: String,
@@ -143,6 +159,10 @@ pub mod query;
 
 #[derive(Clone, Debug)]
 pub enum HistoryAction {
+    Tools {
+        id: String,
+        revisions: Vec<u64>,
+    },
     Hit {
         id: String,
         revision: u64,
@@ -177,13 +197,20 @@ pub struct HistoryHeader {
     pub location: String,
     pub started: String,
     pub details: String,
+    pub task: String,
+    pub project: String,
+    pub session_id: String,
+    pub usage: Option<yinz_types::agent::control::ProviderUsage>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryEvent {
+    pub revisions: Vec<u64>,
+    pub tool_calls: usize,
     pub revision: u64,
     pub kind: String,
     pub time: String,
+    pub created_at_ms: Option<i64>,
     pub markdown: String,
     pub truncated: bool,
 }

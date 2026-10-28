@@ -99,6 +99,8 @@ pub(super) struct Browser {
     action: HistoryAction,
     rows: HashMap<String, HistoryAction>,
     generation: u64,
+    usage_checked: Option<std::time::Instant>,
+    usage: Option<yinz_types::agent::control::ProviderUsage>,
 }
 
 impl Screen {
@@ -255,6 +257,8 @@ impl Screen {
                 action: action.clone(),
                 rows: HashMap::new(),
                 generation: 0,
+                usage_checked: None,
+                usage: None,
             },
         );
         if missing {
@@ -330,6 +334,27 @@ impl Screen {
                         .collect::<Vec<_>>()
                         .join(" · ");
                     header.details = format!("{}\n{}", live.text(), header.details);
+                    header.task = live.pane.title.clone();
+                    header.project = live.metadata.get("project").cloned().unwrap_or_default();
+                    header.session_id = live
+                        .metadata
+                        .get("agent-session")
+                        .map(|id| format!("session {id}"))
+                        .unwrap_or(header.session_id);
+                    header.usage = browser.usage.clone();
+                    if let Some(agent) = &live.pane.agent {
+                        header.status = format!(
+                            "[{}] · {} · {}",
+                            live.pane.id.legacy_parts().0,
+                            agent.kind,
+                            match agent.state {
+                                yinz_types::agent::AgentState::Busy => "working",
+                                yinz_types::agent::AgentState::Waiting => "needs input",
+                                yinz_types::agent::AgentState::Idle => "idle",
+                                yinz_types::agent::AgentState::Exited => "exited",
+                            }
+                        );
+                    }
                 }
                 let entry = |id: String, label: String| Entry {
                     id,
@@ -342,13 +367,16 @@ impl Screen {
                 let mut actions = Vec::new();
                 if browser.live.is_some() {
                     actions.push(entry("history-focus".into(), "Focus".into()));
+                    actions.push(entry("history-prompt".into(), "Send prompt…".into()));
                 }
                 browser.rows.clear();
                 for row in rows {
                     let id = format!("history:{}:{}", state.widget.view, row.id);
                     if !matches!(
                         row.action,
-                        HistoryAction::Event { .. } | HistoryAction::Hit { .. }
+                        HistoryAction::Event { .. }
+                            | HistoryAction::Tools { .. }
+                            | HistoryAction::Hit { .. }
                     ) {
                         actions.push(entry(id.clone(), row.label));
                     }
@@ -427,6 +455,98 @@ impl Screen {
                     .non_fatal();
             });
         }
+        self.refresh_palette_usage(client);
+    }
+
+    fn refresh_palette_usage(&mut self, client: ClientId) {
+        let Some(state) = self.command_palettes.get_mut(&client) else {
+            return;
+        };
+        let view = state.widget.view;
+        let Some(browser) = state.agents.browsers.get_mut(&view) else {
+            return;
+        };
+        let Some(live) = &browser.live else {
+            return;
+        };
+        if browser
+            .usage_checked
+            .is_some_and(|at| at.elapsed().as_secs() < 60)
+        {
+            return;
+        }
+        browser.usage_checked = Some(std::time::Instant::now());
+        let Some(agent) = &live.pane.agent else {
+            return;
+        };
+        let provider = agent.kind.replace('◆', "");
+        let reason = match &live.pane.target {
+            _ if live.session != self.session_name => {
+                Some("Quota unavailable for peer-session agents")
+            },
+            yinz_types::command::PaneTarget::Ssh { .. } => Some("Quota unavailable for SSH agents"),
+            yinz_types::command::PaneTarget::Bubblewrap { .. } => {
+                Some("Quota unavailable for isolated agents")
+            },
+            _ => None,
+        };
+        if let Some(reason) = reason {
+            let usage = yinz_types::agent::control::ProviderUsage {
+                provider,
+                status: yinz_types::agent::control::ProviderUsageStatus::Unavailable,
+                observed_at_ms: None,
+                plan: None,
+                windows: vec![],
+                message: Some(reason.into()),
+            };
+            browser.usage = Some(usage.clone());
+            state.widget.set_agent_usage(usage);
+            return;
+        }
+        self.bus
+            .senders
+            .send_to_plugin(yinz_bus::plugins::PluginInstruction::PaletteAgent(
+                Box::new(yinz_bus::command_palette::AgentRequest {
+                    client,
+                    opening: state.agents.opening,
+                    step: view,
+                    source: live.pane.clone(),
+                    action: AgentAction::Usage { provider },
+                    values: vec![],
+                    active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                }),
+            ))
+            .context("requesting palette usage")
+            .non_fatal();
+    }
+
+    pub(super) fn palette_usage_reply(
+        &mut self,
+        client: ClientId,
+        opening: u64,
+        view: u64,
+        mut usage: yinz_types::agent::control::ProviderUsage,
+    ) {
+        let Some(state) = self
+            .command_palettes
+            .get_mut(&client)
+            .filter(|s| s.agents.opening == opening)
+        else {
+            return;
+        };
+        let Some(browser) = state.agents.browsers.get_mut(&view) else {
+            return;
+        };
+        if usage.status != yinz_types::agent::control::ProviderUsageStatus::Ok
+            && let Some(old) = &browser.usage
+        {
+            usage.windows = old.windows.clone();
+            usage.observed_at_ms = old.observed_at_ms;
+        }
+        browser.usage = Some(usage.clone());
+        if state.widget.view == view {
+            state.widget.set_agent_usage(usage);
+        }
     }
 
     pub(super) fn refresh_palette_history(&mut self, client: ClientId, query_changed: bool) {
@@ -441,7 +561,9 @@ impl Screen {
                 .is_some_and(|browser| {
                     matches!(
                         browser.action,
-                        HistoryAction::Hit { .. } | HistoryAction::Event { .. }
+                        HistoryAction::Hit { .. }
+                            | HistoryAction::Event { .. }
+                            | HistoryAction::Tools { .. }
                     )
                 })
         {
@@ -681,6 +803,39 @@ impl Screen {
         let Some(browser) = state.agents.browsers.get_mut(&state.widget.view) else {
             return false;
         };
+        if id == "history-prompt" {
+            if let Some(live) = &browser.live {
+                let action = AgentAction::Prompt {
+                    pane_id: live.pane.id,
+                    session_id: live.pane.agent.as_ref().and_then(|a| a.session_id.clone()),
+                    target_session: (live.session != self.session_name)
+                        .then(|| live.session.clone()),
+                    submission_id: uuid::Uuid::new_v4().to_string(),
+                };
+                state.agents.cancel();
+                state.agents.step += 1;
+                let view = (1 << 63) + state.agents.step;
+                let id = format!("native-agent:{view}:prompt");
+                state.agents.actions.insert(id.clone(), action);
+                state.widget.push_view(view, "Send prompt".into());
+                let mut field = Field::text("Prompt", "");
+                field.input_options = Some(yinz_types::command_palette::InputOptions {
+                    kind: "multiline".into(),
+                    help: "".into(),
+                    error: "".into(),
+                    minimum: None,
+                    maximum: None,
+                });
+                state.widget.open_form(Form::new(
+                    id,
+                    "Send prompt".into(),
+                    vec![field],
+                    "Send",
+                    false,
+                ));
+            }
+            return true;
+        }
         if id == "history-focus" {
             if let Some(live) = browser.live.clone() {
                 self.focus_palette_agent(client, live);

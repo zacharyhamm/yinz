@@ -1,29 +1,30 @@
 ---
 source: yinz-panes/src/ui/unit/command_palette_agent_tests.rs
+assertion_line: 313
 expression: text
 ---
 ╭ Agent info · Timeline ─────────────────────────────────────────────╮
-│ Agent · codex · idle                                               │
-│ session · /work · Started 2026-10-09 10:00 UTC                     │
+│ codex · idle                                                       │
+│ Task: Agent task                                                   │
+│ session · /work                                                    │
+│ Started 2026-10-09 10:00 UTC                                       │
+│ session abc123                                                     │
 │ > Type to search this run                                          │
 │ ────────────────────────────────────────────────────────────────── │
-│   Message · 10:00                                                  │
-│ Event 1                                                            │
+│     Event 1                                                        │
+│     • first                                                        │
+│     • second                                                       │
+│     … more                                                         │
 │                                                                    │
-│ • first                                                            │
-│ … more                                                             │
+│     Event 2                                                        │
+│     • first                                                        │
+│     • second                                                       │
+│     … more                                                         │
 │                                                                    │
-│   Message · 10:00                                                  │
-│ Event 2                                                            │
-│                                                                    │
-│ • first                                                            │
-│ … more                                                             │
-│                                                                    │
-│ › Message · 10:00                                                  │
-│ Event 3                                                            │
-│                                                                    │
-│ • first                                                            │
-│ … more                                                             │
+│     Event 3                                                        │
+│     • first                                                        │
+│     • second                                                       │
+│     … more                                                         │
 │                                                                    │
 │ · Focus                                                            │
 │ · Latest / Refresh                                                 │

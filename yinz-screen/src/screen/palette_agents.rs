@@ -20,7 +20,7 @@ pub(super) struct State {
     pub(super) step: u64,
     source: PaneInfo,
     pending: Option<(u64, Arc<AtomicBool>, AgentAction)>,
-    actions: HashMap<String, AgentAction>,
+    pub(super) actions: HashMap<String, AgentAction>,
     pub(super) browsers: HashMap<u64, super::history::Browser>,
     submitted: bool,
     pub(super) values: HashMap<String, Vec<String>>,
@@ -207,11 +207,25 @@ impl Screen {
             })) => "Resume agent",
             Some(AgentAction::Duplicate { .. }) => "Duplicate agent",
             Some(AgentAction::Fork) => "Fork agent",
+            Some(AgentAction::Prompt { .. }) => "Send prompt",
             _ => "Launch agent",
         };
         state.agents.cancel();
         state.widget.busy = false;
         match reply {
+            Ok(AgentReply::Prompted(response)) => {
+                if response.outcome == AgentOutcome::Ok {
+                    state.widget.back();
+                    super::notify(&self.bus.senders, "Prompt sent".into());
+                    self.refresh_palette_history(client, false);
+                } else {
+                    state.widget.set_error(
+                        response
+                            .message
+                            .unwrap_or_else(|| format!("Prompt: {:?}", response.outcome)),
+                    );
+                }
+            },
             Err(error) => {
                 if history_action.as_ref().is_none_or(|action| {
                     matches!(
