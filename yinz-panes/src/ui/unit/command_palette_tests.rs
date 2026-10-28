@@ -481,6 +481,90 @@ fn fuzzy_ranking_aliases_unicode_and_empty_queries() {
 }
 
 #[test]
+fn agent_search_prioritizes_exact_projects_and_worktrees_over_fuzzy_scores() {
+    for picker in [None, Some(EntryKind::Agent)] {
+        let mut palette = CommandPalette::default();
+        let mut entries = Vec::new();
+        for (id, title, project, directory) in [
+            ("weak", "s---w---a---m---p", "yinz", "/work/yinz"),
+            ("title", "swamp", "yinz", "/work/yinz"),
+            ("project", "Project agent", "SWAMP", "/work/other"),
+            ("worktree", "Worktree agent", "yinz", "/work/swamp/"),
+            ("path", "Path agent", "yinz", "swamp"),
+            ("branch", "Branch agent", "yinz", "/work/other"),
+            (
+                "display-project",
+                "Display project agent",
+                "yinz",
+                "/work/other",
+            ),
+        ] {
+            let mut entry = entry(id, title, EntryKind::Agent);
+            entry.aliases = vec![format!("{project} {directory}")];
+            entries.push(entry);
+            palette.agent_metadata.insert(
+                id.into(),
+                std::collections::BTreeMap::from([
+                    ("project".into(), project.into()),
+                    ("directory".into(), directory.into()),
+                    ("state".into(), "idle".into()),
+                ]),
+            );
+        }
+        for (id, project, branch) in [
+            ("branch", "yinz", "swamp"),
+            ("display-project", "swamp", "feature"),
+        ] {
+            palette.agent_presentations.insert(
+                id.into(),
+                AgentPresentation {
+                    project: project.into(),
+                    branch: branch.into(),
+                    provider: "codex".into(),
+                    state: yinz_types::agent::AgentState::Idle,
+                    host: None,
+                    pane_id: id.into(),
+                    activity: String::new(),
+                    hook_flash: false,
+                },
+            );
+        }
+        palette.set_entries(entries);
+        palette.picker = picker;
+        for query in ["swamp", " SwAmP ", "swamp state:idle"] {
+            palette.set_query(query.into());
+            let found = ids(&palette);
+            assert_eq!(found.len(), 7);
+            for id in ["project", "worktree", "path", "branch", "display-project"] {
+                assert!(found[..5].contains(&id), "{query}: {found:?}");
+            }
+            assert_eq!(&found[5..], ["title", "weak"]);
+        }
+        // Full paths also qualify, and structured filters still restrict eligibility.
+        palette.set_query("/work/swamp/".into());
+        assert_eq!(ids(&palette).first(), Some(&"worktree"));
+        palette.set_query("swamp state:busy".into());
+        assert!(ids(&palette).is_empty());
+        // Without free text, keep the panel order, even with structured filters.
+        for query in ["", "state:idle"] {
+            palette.set_query(query.into());
+            assert_eq!(
+                ids(&palette),
+                [
+                    "weak",
+                    "title",
+                    "project",
+                    "worktree",
+                    "path",
+                    "branch",
+                    "display-project"
+                ]
+            );
+        }
+    }
+}
+
+#[test]
 fn picker_restores_search_and_updates_preserve_stable_selection() {
     let mut palette = palette();
     palette.insert_text("new");

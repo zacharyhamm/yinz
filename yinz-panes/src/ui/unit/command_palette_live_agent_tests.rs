@@ -801,7 +801,7 @@ fn live_agent_continuations_share_click_navigation_scroll_and_refresh_identity()
 }
 
 #[test]
-fn live_agents_keep_panel_order_despite_fuzzy_scores_and_structured_filters() {
+fn live_agents_rank_by_relevance_and_preserve_selection_across_refreshes() {
     for picker in [false, true] {
         let mut palette = palette(3);
         if !picker {
@@ -843,7 +843,7 @@ fn live_agents_keep_panel_order_despite_fuzzy_scores_and_structured_filters() {
                 .map(str::to_owned)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(ids(&palette), ["agent:0", "agent:1", "agent:2"]);
+        assert_eq!(ids(&palette), ["agent:2", "agent:1", "agent:0"]);
         if picker {
             assert_eq!(palette.entries[palette.matches[0]].id, "agent-filters");
         }
@@ -851,7 +851,7 @@ fn live_agents_keep_panel_order_despite_fuzzy_scores_and_structured_filters() {
         let mut entries = palette.native_entries.clone();
         entries.swap(0, 1);
         palette.set_entries(entries);
-        assert_eq!(ids(&palette), ["agent:1", "agent:0", "agent:2"]);
+        assert_eq!(ids(&palette), ["agent:2", "agent:1", "agent:0"]);
         assert_eq!(palette.selected_entry().unwrap().id, "agent:1");
         let layout = palette.layout(Viewport {
             cols: 40,
