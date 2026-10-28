@@ -7,8 +7,8 @@ expression: text
 │ Task: Agent task                              │                  — │
 │ Project: —                                    │            5hr · — │
 │ Location: session · /work                     │            Reset — │
-│ Started: 2026-10-09 10:00 UTC                 │          Updated — │
-│ Session: abc123                               │                  — │
+│ Started: 2026-10-09 10:00 UTC                 │                    │
+│ Session: abc123                               │                    │
 │ Search: [ controls                                               ] │
 │ ────────────────────────────────────────────────────────────────── │
 │      Event 1                                                       │

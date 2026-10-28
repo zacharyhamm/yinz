@@ -85,6 +85,227 @@ fn rendered_lines(palette: &CommandPalette, layout: &CommandPaletteLayout) -> Ve
         .collect()
 }
 
+fn footer(palette: &CommandPalette, layout: &CommandPaletteLayout) -> String {
+    rendered_lines(palette, layout)[layout.footer_y.unwrap() - layout.rect.y].clone()
+}
+
+fn overflow_palette(count: usize) -> CommandPalette {
+    let mut palette = CommandPalette::default();
+    palette.set_entries(
+        (0..count)
+            .map(|i| entry(&i.to_string(), &format!("Item {i:02}"), EntryKind::Command))
+            .collect(),
+    );
+    palette.set_query("Item".into());
+    palette
+}
+
+#[test]
+fn overflow_footer_tracks_navigation_in_root_picker_and_nested_lists() {
+    let surface = Viewport {
+        cols: 80,
+        rows: 20,
+        ..Default::default()
+    };
+    for (view, hidden) in [("root", 13), ("picker", 13), ("nested", 14)] {
+        let mut palette = overflow_palette(20);
+        if view == "picker" {
+            let mut entries = palette.native_entries.clone();
+            for entry in &mut entries {
+                entry.kind = EntryKind::Pane;
+            }
+            palette.set_entries(entries);
+            palette.open_picker(EntryKind::Pane);
+        } else if view == "nested" {
+            let mut entries = palette.native_entries.clone();
+            for entry in &mut entries {
+                entry.kind = EntryKind::Plugin;
+            }
+            palette.push_view(42, "Choose item".into());
+            palette.set_sections(vec![PluginSection {
+                title: String::new(),
+                entries,
+                semantic: true,
+                status: None,
+            }]);
+        }
+        let layout = palette.layout(surface);
+        assert_eq!(layout.options_rows, 7);
+        assert!(footer(&palette, &layout).contains(&format!("↑ 0 above · ↓ {hidden} below · ↑↓")));
+        key(&mut palette, BareKey::PageDown);
+        let layout = palette.layout(surface);
+        assert!(footer(&palette, &layout).contains(&format!("↑ 1 above · ↓ {} below", hidden - 1)));
+        palette.scroll(true);
+        let layout = palette.layout(surface);
+        assert!(footer(&palette, &layout).contains(&format!("↑ 4 above · ↓ {} below", hidden - 4)));
+        palette.select_id("19");
+        let layout = palette.layout(surface);
+        assert!(footer(&palette, &layout).contains(&format!("↑ {hidden} above · ↓ 0 below")));
+        palette.select_id("0");
+        let layout = palette.layout(surface);
+        assert!(footer(&palette, &layout).contains(&format!("↑ 0 above · ↓ {hidden} below")));
+    }
+}
+
+#[test]
+fn overflow_footer_refreshes_after_filter_updates_and_resize() {
+    let mut palette = overflow_palette(20);
+    let mut surface = Viewport {
+        cols: 80,
+        rows: 20,
+        ..Default::default()
+    };
+    let mut entries = palette.native_entries.clone();
+    for entry in &mut entries[..10] {
+        entry.aliases.push("keep".into());
+    }
+    palette.set_entries(entries.clone());
+    palette.set_query("keep".into());
+    let layout = palette.layout(surface);
+    assert!(footer(&palette, &layout).contains("↑ 0 above · ↓ 3 below"));
+    surface.rows = 40;
+    let layout = palette.layout(surface);
+    assert_eq!(layout.result_overflow, None);
+    assert!(!footer(&palette, &layout).contains("above"));
+    surface.rows = 20;
+    palette.set_entries(entries[..3].to_vec());
+    assert_eq!(palette.layout(surface).result_overflow, None);
+    palette.set_entries(entries);
+    let layout = palette.layout(surface);
+    assert!(footer(&palette, &layout).contains("↑ 0 above · ↓ 3 below"));
+    palette.set_query("missing".into());
+    assert_eq!(palette.layout(surface).result_overflow, None);
+}
+
+#[test]
+fn overflow_footer_counts_wrapped_and_partial_entries_once() {
+    let mut palette = wrapped_palette(&["A long title that wraps onto two lines"; 6]);
+    let mut surface = Viewport {
+        cols: 32,
+        rows: 19,
+        ..Default::default()
+    };
+    let layout = palette.layout(surface);
+    assert_eq!(layout.options_rows, 6);
+    assert!(matches!(
+        layout.result_rows.last(),
+        Some(ResultRow::Entry(2, 0))
+    ));
+    assert!(footer(&palette, &layout).contains("↑ 0 above · ↓ 3 below"));
+    palette.select_id("5");
+    let layout = palette.layout(surface);
+    assert!(matches!(
+        layout.result_rows.first(),
+        Some(ResultRow::Heading(_))
+    ));
+    assert!(footer(&palette, &layout).contains("↑ 4 above · ↓ 0 below"));
+    palette.select_id("0");
+    surface.cols = 80;
+    let layout = palette.layout(surface);
+    assert!(footer(&palette, &layout).contains("↑ 0 above · ↓ 1 below"));
+    surface.rows = 24;
+    assert_eq!(palette.layout(surface).result_overflow, None);
+}
+
+#[test]
+fn overflow_footer_excludes_headings_and_provider_statuses() {
+    let mut palette = CommandPalette::default();
+    palette.push_view(42, "Providers".into());
+    palette.set_sections(
+        (0..8)
+            .map(|i| PluginSection {
+                title: format!("Provider {i}"),
+                entries: vec![entry(&i.to_string(), "Item", EntryKind::Plugin)],
+                semantic: true,
+                status: Some("Loading…".into()),
+            })
+            .collect(),
+    );
+    let surface = Viewport {
+        cols: 80,
+        rows: 20,
+        ..Default::default()
+    };
+    let layout = palette.layout(surface);
+    // The trailing heading is suppressed; only two entries are visible.
+    assert_eq!(layout.result_rows.len(), 6);
+    assert!(footer(&palette, &layout).contains("↑ 0 above · ↓ 6 below"));
+    palette.selected = 4;
+    let layout = palette.layout(surface);
+    assert!(footer(&palette, &layout).contains("↑ 3 above · ↓ 3 below"));
+    palette.selected_status = Some(7);
+    let layout = palette.layout(Viewport { rows: 9, ..surface });
+    assert!(layout
+        .result_rows
+        .iter()
+        .all(|row| !matches!(row, ResultRow::Entry(_, _))));
+    assert_eq!(layout.result_overflow, None);
+    assert!(!footer(&palette, &layout).contains("above"));
+}
+
+#[test]
+fn overflow_footer_prioritizes_counts_then_description_and_keyboard_hints() {
+    let mut palette = overflow_palette(20);
+    palette.description = "Detail  \n".repeat(20);
+    let surface = Viewport {
+        cols: 110,
+        rows: 20,
+        ..Default::default()
+    };
+    let layout = palette.layout(surface);
+    assert!(
+        footer(&palette, &layout).contains("↑ 0 above · ↓ 17 below · Alt+PgUp/Dn Desc 1–4/20 · ↑↓")
+    );
+    let narrow = palette.layout(Viewport {
+        cols: 24,
+        ..surface
+    });
+    assert!(footer(&palette, &narrow).contains("↑ 0 above · ↓ 17 below"));
+    assert!(!footer(&palette, &narrow).contains("Alt+"));
+    let narrower = palette.layout(Viewport {
+        cols: 12,
+        ..surface
+    });
+    assert!(footer(&palette, &narrower).contains("↑ 0 above"));
+    palette.busy = true;
+    assert!(footer(&palette, &layout).contains("Working…  Esc Cancel"));
+    assert!(!footer(&palette, &layout).contains("above"));
+    palette.set_error("Validation error".into());
+    assert!(footer(&palette, &layout).contains("Validation error"));
+    assert!(!footer(&palette, &layout).contains("Working"));
+    assert!(!footer(&palette, &layout).contains("above"));
+}
+
+#[test]
+fn overflow_footer_is_absent_without_a_footer_and_in_forms_and_text_readers() {
+    let mut palette = overflow_palette(20);
+    let surface = Viewport {
+        cols: 80,
+        rows: 24,
+        ..Default::default()
+    };
+    for rows in 0..9 {
+        let layout = palette.layout(Viewport { rows, ..surface });
+        assert_eq!(layout.footer_y, None);
+        assert_eq!(layout.result_overflow, None);
+    }
+    palette.open_form(Form::new(
+        "form".into(),
+        "Form".into(),
+        vec![],
+        "Submit",
+        false,
+    ));
+    let layout = palette.layout(surface);
+    assert_eq!(layout.result_overflow, None);
+    assert!(!footer(&palette, &layout).contains("above"));
+    palette.form = None;
+    palette.text = Some("Text  \n".repeat(40));
+    let layout = palette.layout(surface);
+    assert_eq!(layout.result_overflow, None);
+    assert!(!footer(&palette, &layout).contains("above"));
+}
+
 #[test]
 fn picker_headings_remain_visible_with_no_matches() {
     for (kind, label) in [
@@ -164,6 +385,7 @@ fn grouped_results_preserve_order_and_share_scrolled_click_geometry() {
                     assert_eq!(palette.selected, selected);
                 },
                 ResultRow::Status(_, _) => panic!("native entries have no plugin status"),
+                ResultRow::Divider => panic!("non-agent entries have no divider"),
                 ResultRow::Entry(index, _) => {
                     let kind = palette.entries[palette.matches[*index]].kind;
                     if let Some(label) = kind.parent_label() {
@@ -945,6 +1167,7 @@ fn session_picker_groups_search_results_and_keeps_selection_on_refresh() {
                     );
                     palette.selected = selected;
                 },
+                ResultRow::Divider => panic!("session entries have no divider"),
             }
         }
     }
@@ -1191,7 +1414,7 @@ fn provider_status_focus_shares_mouse_geometry_and_survives_view_history() {
                 assert_eq!(palette.selected_status, Some(*section));
                 key(&mut palette, BareKey::Enter);
             },
-            ResultRow::Heading(_) => {},
+            ResultRow::Heading(_) | ResultRow::Divider => {},
         }
     }
     assert_eq!(palette.selected_status, Some(1));
@@ -2482,7 +2705,11 @@ fn overflowing_view_descriptions_scroll_without_changing_actions_or_forms() {
         let first = rendered_lines(&palette, &palette.layout(surface)).join("\n");
         assert!(first.contains("Allow any pane program"));
         assert!(!first.contains("without asking."));
-        assert!(first.contains("Alt+PgUp/Dn Desc 1–3/4"));
+        if form {
+            assert!(first.contains("Alt+PgUp/Dn Desc 1–3/4"));
+        } else {
+            assert!(first.contains("↑ 0 above · ↓ 1 below · Alt+"));
+        }
 
         for _ in 0..3 {
             assert_eq!(
@@ -2492,7 +2719,12 @@ fn overflowing_view_descriptions_scroll_without_changing_actions_or_forms() {
             let layout = palette.layout(surface);
             let text = rendered_lines(&palette, &layout).join("\n");
             assert!(text.contains("without asking."));
-            assert!(text.contains("Alt+PgUp/Dn Desc 2–4/4"));
+            if form {
+                assert!(text.contains("Alt+PgUp/Dn Desc 2–4/4"));
+            } else {
+                assert!(text.contains("↑ 0 above · ↓ 1 below · Alt+"));
+                assert_eq!(palette.description_offset.get(), 1);
+            }
             assert!(layout.options_rows > 0);
         }
         if form {
