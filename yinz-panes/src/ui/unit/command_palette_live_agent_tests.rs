@@ -881,3 +881,76 @@ fn live_agents_keep_panel_order_despite_fuzzy_scores_and_structured_filters() {
         assert_eq!(ids(&palette), ["agent:1", "agent:0"]);
     }
 }
+
+#[test]
+fn hook_flash_changes_only_the_busy_dot_in_list_and_header() {
+    for state in [
+        AgentState::Busy,
+        AgentState::Idle,
+        AgentState::Waiting,
+        AgentState::Exited,
+    ] {
+        let mut presentation = AgentPresentation::from_pane(&pane(state)).unwrap();
+        let ordinary = presentation.lines(80, 1).remove(0);
+        presentation.hook_flash = true;
+        let flashed = presentation.lines(80, 1).remove(0);
+        assert_eq!(ordinary.text, flashed.text);
+        assert_eq!(&ordinary.styles[1..], &flashed.styles[1..]);
+        assert_eq!(
+            flashed.styles[0].color,
+            if state == AgentState::Busy {
+                Some(0)
+            } else {
+                ordinary.styles[0].color
+            }
+        );
+
+        let mut palette = CommandPalette::default();
+        palette.set_agent_history(
+            yinz_bus::command_palette::HistoryHeader {
+                live: Some(pane(state)),
+                ..Default::default()
+            },
+            vec![],
+            vec![],
+            String::new(),
+        );
+        palette.set_agent_header_flash(Some("agent".into()), true);
+        let layout = palette.layout(Viewport {
+            x: 0,
+            y: 0,
+            cols: 100,
+            rows: 40,
+        });
+        let line = &layout.agent.unwrap().lines[0];
+        assert_eq!(line.styles[0].color, flashed.styles[0].color);
+        palette.set_agent_header_flash(Some("agent".into()), false);
+        let layout = palette.layout(Viewport {
+            x: 0,
+            y: 0,
+            cols: 100,
+            rows: 40,
+        });
+        assert_eq!(
+            layout.agent.unwrap().lines[0].styles[0].color,
+            ordinary.styles[0].color
+        );
+    }
+}
+
+#[test]
+fn hook_flash_clock_ignores_filtered_and_scrolled_agents() {
+    let mut palette = palette(20);
+    let surface = Viewport {
+        x: 0,
+        y: 0,
+        cols: 80,
+        rows: 24,
+    };
+    let first = std::collections::HashSet::from(["agent:0".into()]);
+    let last = std::collections::HashSet::from(["agent:19".into()]);
+    assert!(palette.has_visible_flashing_agent(surface, true, &first));
+    assert!(!palette.has_visible_flashing_agent(surface, true, &last));
+    palette.set_query("no matching agents".into());
+    assert!(!palette.has_visible_flashing_agent(surface, true, &first));
+}

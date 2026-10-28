@@ -9674,3 +9674,98 @@ fn live_hook_recency_is_shared_repeated_and_excludes_replay_and_display_updates(
     crate::screen::apply_pane_agent_report(&mut screen, PANE, None).unwrap();
     assert_eq!(screen.get_pane_info(PANE).unwrap().last_hook_at_ms, None);
 }
+
+#[test]
+fn hook_flash_restarts_for_identical_and_stateless_reports_and_expires_at_150_ms() {
+    let (mut screen, _, _) = setup("codex");
+    let start = Instant::now();
+    screen.pinned_now = Some(start);
+    report(&mut screen, hook("SessionStart"));
+    assert!(screen.agent_hook_flashes.is_empty());
+    for (offset, name) in [
+        (0, "UserPromptSubmit"),
+        (100, "UserPromptSubmit"),
+        (200, "PreCompact"),
+    ] {
+        let now = start + Duration::from_millis(offset);
+        screen.pinned_now = Some(now);
+        report(&mut screen, hook(name));
+        let pane = screen.get_pane_info(PANE).unwrap();
+        assert!(screen.agent_hook_is_flashing(&pane, now));
+        assert!(screen.agent_hook_is_flashing(&pane, now + Duration::from_millis(149)));
+        assert!(!screen.agent_hook_is_flashing(&pane, now + Duration::from_millis(150)));
+    }
+    screen.reap_agent_hook_flashes(start + Duration::from_millis(350));
+    assert!(screen.agent_hook_flashes.is_empty());
+}
+
+#[test]
+fn hook_flash_excludes_nonworking_replay_ignored_and_mismatched_reports() {
+    for state in [AgentState::Idle, AgentState::Waiting, AgentState::Exited] {
+        let (mut screen, _, _) = setup("codex");
+        report(&mut screen, hook("UserPromptSubmit"));
+        let mut agent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+        agent.state = state;
+        report_state(
+            &mut screen,
+            "codex",
+            hook("PreCompact"),
+            AgentReportState::Set(agent),
+        );
+        assert!(screen.agent_hook_flashes.is_empty(), "{state:?}");
+    }
+    let (mut screen, _, _) = setup("agy");
+    let start = Instant::now();
+    screen.pinned_now = Some(start);
+    report_kind(&mut screen, "agy", hook("UserPromptSubmit"));
+    screen.pinned_now = Some(start + Duration::from_millis(100));
+    for event in [
+        HookEvent {
+            archive_only: true,
+            ..hook("PreCompact")
+        },
+        HookEvent {
+            prompt_id: Some("stale".into()),
+            ..hook("Stop")
+        },
+        HookEvent {
+            session_id: "other".into(),
+            ..hook("PreCompact")
+        },
+    ] {
+        if event.hook_event_name == "Stop" {
+            assert!(screen.ignore_agy_confirmation(PANE, &event));
+        }
+        report_state(&mut screen, "agy", event, AgentReportState::Unchanged);
+        let pane = screen.get_pane_info(PANE).unwrap();
+        assert!(screen.agent_hook_is_flashing(&pane, start + Duration::from_millis(149)));
+        assert!(!screen.agent_hook_is_flashing(&pane, start + Duration::from_millis(150)));
+    }
+}
+
+#[test]
+fn hook_flash_is_cleared_on_replacement_clear_and_pane_removal() {
+    for change in ["kind", "session", "run", "clear", "pane"] {
+        let (mut screen, _, _) = setup("codex");
+        screen.pinned_now = Some(Instant::now());
+        report(&mut screen, hook("UserPromptSubmit"));
+        assert!(!screen.agent_hook_flashes.is_empty());
+        let mut agent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+        match change {
+            "kind" => agent.kind = "claude".into(),
+            "session" => agent.session_id = Some("replacement".into()),
+            "run" => agent.run_id = Some("replacement".into()),
+            "pane" => screen.close_pane_explicitly(PANE, None),
+            _ => {},
+        }
+        if change != "pane" {
+            crate::screen::apply_pane_agent_report(
+                &mut screen,
+                PANE,
+                (change != "clear").then_some(agent),
+            )
+            .unwrap();
+        }
+        assert!(screen.agent_hook_flashes.is_empty(), "{change}");
+    }
+}

@@ -6742,3 +6742,123 @@ fn history_hit_prefix_backfill_preserves_selection_and_backward_navigation() {
         AgentAction::History(HistoryAction::Event { revision: 1, .. })
     ));
 }
+
+#[test]
+fn hook_flash_renders_matching_agent_in_both_views_and_clock_restores_dot() {
+    use crate::screen::thread_main::apply_queued_agent_report;
+    use yinz_types::agent::report::{AgentReport, AgentReportState};
+    use yinz_types::agent::{AgentEvent, HookEvent};
+    use yinz_types::animation::FRAME_PERIOD;
+    let start = std::time::Instant::now();
+    let (mut screen, jobs) = screen_with_background_jobs(SIZE);
+    for colors in [
+        &mut screen.style.colors.text_unselected,
+        &mut screen.style.colors.text_selected,
+    ] {
+        colors.emphasis_0 = yinz_types::colors::PaletteColor::Rgb((17, 80, 190));
+        colors.emphasis_2 = yinz_types::colors::PaletteColor::Rgb((40, 170, 50));
+    }
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.pinned_now = Some(start);
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    let busy = yinz_types::agent::AgentInfo {
+        kind: "codex".into(),
+        state: yinz_types::agent::AgentState::Busy,
+        source: yinz_types::agent::AgentSource::Reported,
+        detail: None,
+        waiting_on: None,
+        wait_needs_a_person: false,
+        cwd: None,
+        session_id: None,
+        run_id: None,
+    };
+    crate::screen::apply_pane_agent_report(&mut screen, pane, Some(busy)).unwrap();
+    // A peer with the same pane ID must retain its ordinary dot.
+    warp_peer(&mut screen, "peer");
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    palette_search(&mut screen, "provider:codex");
+    let dots = |grid: &crate::panes::grid::Grid| {
+        grid.as_character_lines()
+            .into_iter()
+            .flatten()
+            .filter(|cell| cell.character == '●')
+            .map(|cell| cell.styles.foreground)
+            .collect::<Vec<_>>()
+    };
+    let send_hook = |screen: &mut Screen| {
+        let hook = HookEvent {
+            hook_event_name: "PreCompact".into(),
+            ..Default::default()
+        };
+        apply_queued_agent_report(
+            screen,
+            &AgentReport {
+                report_id: "flash".into(),
+                process_id: ProcessId::new(1),
+                pane_id: pane,
+                kind: "codex".into(),
+                state: AgentReportState::Unchanged,
+                event: Some(AgentEvent::from_hook(
+                    "codex",
+                    TerminalId::new(1),
+                    &hook,
+                    serde_json::to_string(&hook).unwrap(),
+                )),
+                trace: false,
+            },
+            start,
+        )
+        .unwrap();
+    };
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert_eq!(dots(&grid).len(), 2);
+    send_hook(&mut screen);
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    let accent = Some(screen.style.colors.text_unselected.emphasis_0.into());
+    let ordinary = Some(screen.style.colors.text_unselected.emphasis_2.into());
+    assert_eq!(dots(&grid), vec![accent, ordinary]);
+    assert_eq!(screen.animation_clock_period(start), Some(FRAME_PERIOD));
+    drain_background_jobs(&jobs);
+    let expired = start + Duration::from_millis(150);
+    screen.pinned_now = Some(expired);
+    screen.on_animation_tick(expired).unwrap();
+    let sent = drain_background_jobs(&jobs);
+    assert!(sent.contains(&BackgroundJob::RenderToClients));
+    assert!(sent.contains(&BackgroundJob::StopAnimationClock));
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert_eq!(dots(&grid), vec![ordinary, ordinary]);
+
+    // The most recent local agent remains selected when its info view opens.
+    palette_key(&mut screen, BareKey::Enter);
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("Agent info"), "{frame}");
+    send_hook(&mut screen);
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert_eq!(dots(&grid), vec![accent]);
+    assert_eq!(screen.animation_clock_period(expired), Some(FRAME_PERIOD));
+    screen.pinned_now = Some(expired + Duration::from_millis(150));
+    screen.on_animation_tick(screen.frame_now()).unwrap();
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert_eq!(dots(&grid), vec![ordinary]);
+    assert_eq!(screen.animation_clock_period(screen.frame_now()), None);
+
+    send_hook(&mut screen);
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert_eq!(
+        screen.animation_clock_period(screen.frame_now()),
+        Some(FRAME_PERIOD)
+    );
+    screen.close_command_palette(CLIENT);
+    screen.sync_animation_clock(screen.frame_now()).unwrap();
+    assert_eq!(screen.animation_clock_period(screen.frame_now()), None);
+    palette_search(&mut screen, "provider:codex");
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert_eq!(
+        screen.animation_clock_period(screen.frame_now()),
+        Some(FRAME_PERIOD)
+    );
+    screen.close_pane_explicitly(pane, None);
+    screen.sync_animation_clock(screen.frame_now()).unwrap();
+    assert_eq!(screen.animation_clock_period(screen.frame_now()), None);
+}

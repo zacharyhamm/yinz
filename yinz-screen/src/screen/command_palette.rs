@@ -862,6 +862,8 @@ impl Screen {
             .filter_map(|agent| {
                 crate::ui::command_palette::AgentPresentation::from_pane(&agent.pane).map(
                     |mut presentation| {
+                        presentation.hook_flash = agent.session == self.session_name
+                            && self.agent_hook_is_flashing(&agent.pane, self.frame_now());
                         if let Some(labels) = state.agents.labels.get(&agent.id()) {
                             presentation.project.clone_from(&labels.project);
                             presentation.branch.clone_from(&labels.branch);
@@ -1802,5 +1804,41 @@ fn new_tab(tab_name: Option<String>, cwd: Option<std::path::PathBuf>) -> Action 
         cwd,
         initial_panes: None,
         first_pane_unblock_condition: None,
+    }
+}
+
+impl Screen {
+    pub(super) fn flashing_palette_agent_ids(
+        &self,
+        now: std::time::Instant,
+    ) -> std::collections::HashSet<String> {
+        if self.agent_hook_flashes.is_empty() {
+            return Default::default();
+        }
+        self.live_palette_agents()
+            .iter()
+            .filter(|agent| {
+                agent.session == self.session_name && self.agent_hook_is_flashing(&agent.pane, now)
+            })
+            .map(|agent| agent.id())
+            .collect()
+    }
+
+    pub(super) fn palette_hook_flashes_are_visible(&self, now: std::time::Instant) -> bool {
+        if self.command_palettes.is_empty() || self.agent_hook_flashes.is_empty() {
+            return false;
+        }
+        let flashing = self.flashing_palette_agent_ids(now);
+        !flashing.is_empty()
+            && self.command_palettes.iter().any(|(client, state)| {
+                self.command_palette_surface(*client)
+                    .is_some_and(|surface| {
+                        state.widget.has_visible_flashing_agent(
+                            surface,
+                            self.arrow_fonts,
+                            &flashing,
+                        )
+                    })
+            })
     }
 }

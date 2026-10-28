@@ -458,17 +458,21 @@ fn pinned_details_and_quota_leave_room_for_chat_at_small_sizes() {
         for height in [1, 4, 8, 12, 30] {
             let shown = layout(&mut view, width, height);
             assert!(shown.lines.len() <= height);
-            assert!(
-                agent_header(&view.header, width, height / 2, width >= 44 && height >= 10)
-                    .lines
-                    .iter()
-                    .all(|l| l.text.width() <= width)
-            );
+            assert!(agent_header(
+                &view.header,
+                width,
+                height / 2,
+                width >= 44 && height >= 10,
+                false
+            )
+            .lines
+            .iter()
+            .all(|l| l.text.width() <= width));
             assert!(view.page > 0);
         }
     }
     view.header.usage.as_mut().unwrap().status = ProviderUsageStatus::Error;
-    assert!(agent_header(&view.header, 90, 8, true)
+    assert!(agent_header(&view.header, 90, 8, true, false)
         .lines
         .iter()
         .any(|l| l.text.contains("stale")));
@@ -808,7 +812,7 @@ fn live_header_deduplicates_details_and_stays_above_scrolled_history() {
                 _ => "idle",
             }
         );
-        let expected = agent_header(&view.header, 88, 20, true).lines;
+        let expected = agent_header(&view.header, 88, 20, true, false).lines;
         let first = layout(&mut view, 90, 30);
         for (actual, expected) in first.lines.iter().zip(&expected) {
             assert_eq!(actual, expected);
@@ -1157,7 +1161,7 @@ fn long_custom_quota_labels_stay_within_the_header() {
     });
     for width in [1, 12, 28, 44, 90] {
         for full in [false, true] {
-            let lines = agent_header(&header, width, 10, full && width >= 44).lines;
+            let lines = agent_header(&header, width, 10, full && width >= 44, false).lines;
             assert!(lines.iter().all(|line| line.text.width() <= width));
             assert!(lines
                 .iter()
@@ -1627,7 +1631,7 @@ fn balanced_header_keeps_usage_in_one_column_with_no_duplicate_values() {
             },
         ],
     });
-    let grid = agent_header(&data, 78, 12, true);
+    let grid = agent_header(&data, 78, 12, true, false);
     assert_eq!(grid.lines.len(), 6);
     let graphical = grid.graphical.as_ref().unwrap();
     assert_eq!(graphical.len(), 6);
@@ -1692,7 +1696,7 @@ fn balanced_header_missing_fields_and_unicode_stay_bounded() {
     ] {
         for width in [0, 1, 12, 43, 44, 78] {
             for budget in [0, 1, 3, 6, 10] {
-                let grid = agent_header(&data, width, budget, true);
+                let grid = agent_header(&data, width, budget, true, false);
                 assert!(grid.lines.len() <= budget);
                 assert!(grid.quota.is_none());
                 for line in &grid.lines {

@@ -277,6 +277,56 @@ impl ResultRow {
 }
 
 impl CommandPalette {
+    /// Transient UI state, separate from the history reply and pane manifest.
+    pub fn set_agent_header_flash(&mut self, live_id: Option<String>, flash: bool) {
+        if let Some(agent) = &mut self.agent {
+            agent.get_mut().live_id = live_id;
+            agent.get_mut().hook_flash = flash;
+        }
+    }
+
+    pub fn has_visible_flashing_agent(
+        &self,
+        surface: Viewport,
+        arrow_fonts: bool,
+        flashing_ids: &std::collections::HashSet<String>,
+    ) -> bool {
+        let layout = self.layout_with_arrow_fonts(surface, arrow_fonts);
+        if let Some(agent_layout) = &layout.agent {
+            return self.agent.as_ref().is_some_and(|agent| {
+                let agent = agent.borrow();
+                agent.shows_header()
+                    && agent
+                        .live_id
+                        .as_ref()
+                        .is_some_and(|id| flashing_ids.contains(id))
+                    && agent_layout
+                        .lines
+                        .first()
+                        .is_some_and(|line| line.text.starts_with('●'))
+            });
+        }
+        if self.form.is_some() || self.text.is_some() {
+            return false;
+        }
+        layout.result_rows.iter().any(|row| {
+            let ResultRow::Entry(index, line) = row else {
+                return false;
+            };
+            let entry = &self.entries[self.matches[*index]];
+            flashing_ids.contains(&entry.id)
+                && self.agent_presentation(*index).is_some_and(|agent| {
+                    agent
+                        .lines(
+                            self.result_width.get(),
+                            self.entry_line_limit(*index, layout.options_rows),
+                        )
+                        .get(*line)
+                        .is_some_and(|line| line.text.starts_with('●'))
+                })
+        })
+    }
+
     pub fn set_agent_history(
         &mut self,
         header: yinz_bus::command_palette::HistoryHeader,

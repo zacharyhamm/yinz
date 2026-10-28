@@ -114,6 +114,8 @@ enum Focus {
 
 pub(super) struct AgentView {
     pub(super) header: HistoryHeader,
+    pub(super) live_id: Option<String>,
+    pub(super) hook_flash: bool,
     events: Vec<Event>,
     actions: Vec<Entry>,
     status: String,
@@ -162,9 +164,15 @@ enum Hit {
 }
 
 impl AgentView {
+    pub(super) fn shows_header(&self) -> bool {
+        self.reader.is_none()
+    }
+
     pub fn new(header: HistoryHeader) -> Self {
         Self {
             header,
+            live_id: None,
+            hook_flash: false,
             events: vec![],
             actions: vec![],
             status: String::new(),
@@ -681,7 +689,7 @@ impl AgentView {
             } else {
                 available.saturating_sub(message_rows).min(height / 2)
             };
-            let header = agent_header(&self.header, width, budget, full);
+            let header = agent_header(&self.header, width, budget, full, self.hook_flash);
             for line in header.lines {
                 add(&mut layout, line, None, false);
             }
@@ -992,7 +1000,13 @@ struct HeaderLayout {
 }
 
 /// Both render modes share one grid, so changing graphics support cannot move hit targets.
-fn agent_header(header: &HistoryHeader, width: usize, budget: usize, full: bool) -> HeaderLayout {
+fn agent_header(
+    header: &HistoryHeader,
+    width: usize,
+    budget: usize,
+    full: bool,
+    hook_flash: bool,
+) -> HeaderLayout {
     let now = agent_proto::agents::now_ms().max(0) as u64;
     let quota = header
         .usage
@@ -1000,7 +1014,14 @@ fn agent_header(header: &HistoryHeader, width: usize, budget: usize, full: bool)
         .map(|usage| agent_proto::quota::Display::new(usage, now));
     let full = full && width >= 44 && budget >= 6;
     let left_width = if full { width - 21 } else { width };
-    let live = header.live.as_ref().and_then(AgentPresentation::from_pane);
+    let live = header
+        .live
+        .as_ref()
+        .and_then(AgentPresentation::from_pane)
+        .map(|mut live| {
+            live.hook_flash = hook_flash;
+            live
+        });
     let field = |label: &str, value: &str| {
         let value = value.trim().replace(char::is_control, " ");
         MdLine::plain(format!(
