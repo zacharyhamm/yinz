@@ -1,5 +1,6 @@
 //! Per-frame text composition, restricted to translucent overlay rectangles.
 use super::*;
+use std::sync::LazyLock;
 use yinz_types::{
     animation::blend,
     colors::{eightbit_to_rgb, PaletteColor},
@@ -12,6 +13,39 @@ struct Cell {
     start: usize,
     layer: usize,
     transparent: bool,
+}
+
+impl Cell {
+    fn has_color_emoji(&self) -> bool {
+        // Text presentation must still receive the ordinary foreground tint. Keycaps and
+        // text-default emoji need an emoji selector (or the enclosing keycap) to be hidden.
+        let suffix = self.combining.first().map(|c| c.character);
+        if suffix == Some('\u{fe0e}')
+            || (self.character.character.is_ascii()
+                && !matches!(suffix, Some('\u{fe0f}' | '\u{20e3}')))
+        {
+            return false;
+        }
+        static EMOJI: LazyLock<Option<regex::Regex>> = LazyLock::new(|| {
+            match regex::Regex::new(r"\A(?:\p{Emoji_Presentation}|\p{Emoji}[\x{FE0F}\x{20E3}])")
+                .context("failed to compile compositor emoji matcher")
+            {
+                Ok(regex) => Some(regex),
+                Err(error) => {
+                    Err::<(), _>(error).non_fatal();
+                    None
+                },
+            }
+        });
+        let Some(emoji) = EMOJI.as_ref() else {
+            return false;
+        };
+        let mut bytes = [0; 8];
+        let len = self.character.character.encode_utf8(&mut bytes).len();
+        let len = len + suffix.map_or(0, |c| c.encode_utf8(&mut bytes[len..]).len());
+        // Both slices were written by encode_utf8, so the prefix is valid UTF-8.
+        str::from_utf8(&bytes[..len]).is_ok_and(|text| emoji.is_match(text))
+    }
 }
 
 // Rows stay ordered; columns use direct indexing instead of a tree lookup for every cell.
@@ -420,6 +454,15 @@ impl Composition {
                         if cell.character.character == PLACEHOLDER {
                             cell.character = EMPTY_TERMINAL_CHARACTER;
                             cell.combining.clear();
+                        }
+                        // Color fonts ignore the blended foreground. Hide covered emoji instead
+                        // of letting them shine through the panel. Each occupied column gets its
+                        // own blank, preserving wide glyph spacing and partial occlusion.
+                        if opacity > 0 && cell.has_color_emoji() {
+                            cell.character =
+                                TerminalCharacter::new_styled(' ', cell.character.styles.clone());
+                            cell.combining.clear();
+                            cell.start = index + self.left;
                         }
                         let blended = match &blended_run {
                             Some((source, blended))

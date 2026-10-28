@@ -32,6 +32,134 @@ fn compose(opacity: u8, under: CharacterChunk, over: CharacterChunk) -> Vec<Char
 }
 
 #[test]
+fn covered_color_emoji_become_blended_spaces_without_shifting_following_text() {
+    use yinz_types::animation::blend;
+
+    for (glyph, hidden) in [
+        ("👇", true),
+        ("👇🏻", true),
+        ("👩\u{200d}💻", true),
+        ("🇺🇸", true),
+        ("❤\u{fe0f}", true),
+        ("1\u{fe0f}\u{20e3}", true),
+        ("#\u{20e3}", true),
+        ("👇\u{fe0e}", false),
+        ("❤", false),
+        ("界", false),
+        ("e\u{301}", false),
+        ("1#*", false),
+    ] {
+        for opacity in [0, 1, 50, 85, 100] {
+            let original = format!("a{glyph}b");
+            let under = chunk(&original, 0);
+            let width = under.width();
+            let mut composition = translucency::Composition::new(
+                vec![(1, rect(0, width), opacity)],
+                FG,
+                BG,
+                TINT,
+                [None; 256],
+            );
+            composition.add(&[under], 0);
+            composition.add(&[chunk(&" ".repeat(width), 0)], 1);
+            let result = composition.finish();
+            let expected = if hidden && opacity > 0 {
+                format!("a{}b", " ".repeat(width - 2))
+            } else {
+                original
+            };
+            assert_eq!(text(&result), expected, "{glyph:?}, opacity {opacity}");
+            assert_eq!(
+                result.iter().map(CharacterChunk::width).sum::<usize>(),
+                width
+            );
+            let expected_bg = blend(BG, TINT, f32::from(opacity) / 100.0);
+            for cell in &result[0].terminal_characters {
+                assert_eq!(cell.styles.background, Some(expected_bg.into()));
+            }
+        }
+    }
+}
+
+#[test]
+fn emoji_on_the_panel_remain_visible_until_covered_by_another_panel() {
+    assert_eq!(
+        text(&compose(85, chunk("abcde", 0), chunk(" 👇  ", 0))),
+        "a👇de"
+    );
+    let mut composition = translucency::Composition::new(
+        vec![(1, rect(0, 5), 85), (2, rect(1, 2), 50)],
+        FG,
+        BG,
+        TINT,
+        [None; 256],
+    );
+    composition.add(&[chunk("abcde", 0)], 0);
+    composition.add(&[chunk(" 👇  ", 0)], 1);
+    composition.add(&[chunk("  ", 1)], 2);
+    assert_eq!(text(&composition.finish()), "a  de");
+}
+
+#[test]
+fn hiding_emoji_does_not_erase_the_screen_overlays_cached_backing() {
+    let mut backing = TranslucentOverlayBacking::default();
+    backing.prepare(
+        rect(0, 2),
+        85,
+        yinz_types::style::Palette {
+            fg: FG,
+            bg: BG,
+            ..Default::default()
+        },
+        TINT,
+        &HashMap::new(),
+    );
+    for under in [vec![chunk("👇", 0)], vec![]] {
+        let mut composition = backing.update(&under, false).unwrap();
+        composition.add(&[chunk("  ", 0)], 1);
+        assert_eq!(text(&composition.finish()), "  ");
+    }
+    let uncovered = backing.update(&[], false).unwrap().finish();
+    assert_eq!(text(&uncovered), "👇");
+    assert_eq!(
+        uncovered[0].terminal_characters[0].styles.foreground,
+        Some(FG.into())
+    );
+}
+
+#[test]
+fn emoji_clipping_preserves_columns_at_translucent_panel_edges() {
+    let client = ClientId::new(1);
+    let clients = HashSet::from([client]);
+    // The first and last emoji are outside; the middle ones straddle each panel edge.
+    for (x, cols, expected) in [(4, 4, "👇    x   👇"), (4, 2, "👇    x👇 👇")] {
+        let mut output = Output::default();
+        output.add_clients(&clients, Rc::new(RefCell::new(LinkHandler::new())), None);
+        output.begin_translucent_composition(
+            &clients,
+            vec![(1, rect(x, cols), 85)],
+            FG,
+            BG,
+            TINT,
+            &HashMap::new(),
+        );
+        output
+            .add_character_chunks_to_client(client, vec![chunk("👇 👇 x👇 👇", 0)], None)
+            .unwrap();
+        output
+            .add_character_chunks_to_client(client, vec![chunk(&" ".repeat(cols), x)], Some(1))
+            .unwrap();
+        output.finish_translucent_composition();
+        let cells =
+            serialize_and_parse_row(output.client_character_chunks.remove(&client).unwrap(), 12);
+        assert_eq!(
+            cells.iter().map(|c| c.character).collect::<String>(),
+            expected
+        );
+    }
+}
+
+#[test]
 fn cursor_cell_preserves_foreground_and_clips_underlying_wide_characters() {
     for (under, over, cursor, expected) in [
         ("abcde", "     ", 2, "ab de"),
