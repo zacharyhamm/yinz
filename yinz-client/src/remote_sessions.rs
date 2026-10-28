@@ -500,16 +500,19 @@ impl ClientForward {
     }
 }
 extern "C" fn cleanup_forwards() {
-    for forward in FORWARDS
+    let forwards: Vec<_> = FORWARDS
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .iter()
         .filter_map(std::sync::Weak::upgrade)
-    {
-        forward
+        .collect();
+    for forward in forwards {
+        let owned = forward
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .take();
+        // Killing SSH and joining its output reader must not hold ownership locks.
+        drop(owned);
     }
 }
 pub(crate) fn own_forward(forward: HostForward) -> ClientForward {
@@ -528,9 +531,13 @@ pub(crate) fn own_forward(forward: HostForward) -> ClientForward {
     }
 }
 pub(crate) fn set_owned_forward(forward: Option<ClientForward>) {
-    *CLIENT_FORWARD
-        .lock()
-        .unwrap_or_else(|error| error.into_inner()) = forward;
+    let previous = std::mem::replace(
+        &mut *CLIENT_FORWARD
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()),
+        forward,
+    );
+    drop(previous);
 }
 pub fn set_forward(forward: Option<HostForward>) {
     set_owned_forward(forward.map(own_forward));
@@ -544,15 +551,19 @@ pub(crate) fn release_forward() -> String {
         .take();
     forward
         .and_then(|forward| {
-            forward
+            let owned = forward
                 ._forward
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
-                .take()
-                .and_then(|mut owned| owned.diagnostics().ok())
+                .take();
+            owned.and_then(|mut owned| owned.diagnostics().ok())
         })
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+#[path = "unit/remote_forward_cleanup.rs"]
+mod cleanup_tests;
 
 pub(crate) fn attachment_rejected(reason: yinz_ipc::ipc::ExitReason) -> anyhow::Error {
     crate::remote_failure::BootstrapError {

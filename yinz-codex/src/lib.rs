@@ -3,7 +3,8 @@ mod usage;
 use futures_util::{future::OptionFuture, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
@@ -45,6 +46,9 @@ struct Registration {
     /// The yinz binary that announces selected conversations to the pane, if any.
     reporter: Option<PathBuf>,
     backend_socket: Option<PathBuf>,
+    // A transport replacement does not end the UI's selected work or an interrupted report.
+    conversations: RefCell<Conversations>,
+    reports: RefCell<VecDeque<Value>>,
 }
 
 impl Registration {
@@ -53,14 +57,16 @@ impl Registration {
             registry: registry::Registration::new(root, "ui-", env).context("register Codex UI")?,
             reporter: None,
             backend_socket: sandboxed().then(|| PathBuf::from(PRIVATE_BACKEND)),
+            conversations: RefCell::default(),
+            reports: RefCell::default(),
         })
     }
 
     /// Codex runs `SessionStart` hooks only when a conversation's first turn begins, so the
     /// pane would otherwise stay unverified until someone types into it.
-    async fn announce(&self, mut hook: Value, program: &Path) {
+    async fn announce(&self, mut hook: Value, program: &Path) -> Result<()> {
         if self.reporter.is_none() {
-            return;
+            return Ok(());
         }
         let ready = match tokio::time::timeout(
             std::time::Duration::from_secs(10),
@@ -79,18 +85,117 @@ impl Registration {
             },
         };
         hook["_yinz_codex_hooks_ready"] = ready.into();
-        self.report(hook).await;
+        self.report(hook).await
     }
 
-    async fn report(&self, hook: Value) {
+    async fn report(&self, hook: Value) -> Result<()> {
         let Some(yinz) = &self.reporter else {
-            return;
+            return Ok(());
         };
         // Finish reporting before the UI sees the selection or any later request is forwarded.
         forward(yinz, &self.registry.env, hook.to_string().as_bytes())
             .await
             .context("report Codex lifecycle to its pane")
-            .non_fatal();
+    }
+
+    async fn flush_reports(&self, program: &Path) {
+        loop {
+            let Some(hook) = self.reports.borrow().front().cloned() else {
+                break;
+            };
+            let result = if hook["hook_event_name"] == "SessionStart" {
+                self.announce(hook, program).await
+            } else {
+                self.report(hook).await
+            };
+            // Cancellation keeps this hook for the replacement, before it accepts new work.
+            self.reports.borrow_mut().pop_front();
+            result.non_fatal();
+        }
+    }
+
+    async fn reconnect(&self, program: &Path) -> Result<()> {
+        self.conversations.borrow_mut().reconnect();
+        let pending = self.reports.borrow().front().cloned();
+        if let Some(hook) = pending
+            && let (Some(thread), Some(turn)) =
+                (hook["session_id"].as_str(), hook["turn_id"].as_str())
+        {
+            let current = match self.recovered_turn(program, thread, turn).await {
+                Ok(recovered) => recovered.is_some(),
+                Err(error) => {
+                    Err::<(), _>(error)
+                        .context(
+                            "could not validate cancelled Codex report; leaving work unresolved",
+                        )
+                        .non_fatal();
+                    false
+                },
+            };
+            if !current {
+                // Newer native work or unavailable history makes replay unsafe, not successful.
+                self.reports.borrow_mut().pop_front();
+            }
+        }
+        self.flush_reports(program).await;
+        let outstanding = self
+            .conversations
+            .borrow()
+            .outstanding_turn()
+            .map(|(thread, turn)| (thread.to_owned(), turn.to_owned()));
+        if let Some((thread, turn)) = outstanding {
+            match self.recovered_turn(program, &thread, &turn).await {
+                Ok(Some(recovered)) => {
+                    let mut conversations = self.conversations.borrow_mut();
+                    if conversations.outstanding_turn() == Some((thread.as_str(), turn.as_str())) {
+                        let hooks = conversations.response(
+                            &serde_json::json!({
+                                "method": "turn/completed",
+                                "params": {"threadId": thread, "turn": recovered},
+                            }),
+                            self,
+                        )?;
+                        self.reports.borrow_mut().extend(hooks);
+                    }
+                },
+                Ok(None) => {},
+                Err(error) => Err::<(), _>(error)
+                    .context("Codex work remains unresolved after reconnect")
+                    .non_fatal(),
+            }
+            self.flush_reports(program).await;
+        }
+        Ok(())
+    }
+
+    async fn recovered_turn(
+        &self,
+        program: &Path,
+        thread: &str,
+        turn: &str,
+    ) -> Result<Option<Value>> {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let (_child, stream) = daemon_connection(program, self.backend_socket.as_deref())?;
+            let (mut ws, _) = tokio_tungstenite::client_async_with_config(
+                "ws://localhost",
+                stream,
+                Some(websocket_config()),
+            )
+            .await
+            .context("connect Codex reconciliation WebSocket")?;
+            let review = {
+                let conversations = self.conversations.borrow();
+                conversations
+                    .review_turns
+                    .contains(&(thread.to_owned(), turn.to_owned()))
+                    || conversations.review.as_ref().is_some_and(|review| {
+                        review.thread == thread && review.turn.as_deref() == Some(turn)
+                    })
+            };
+            read_recovered_turn(&mut ws, thread, turn, review).await
+        })
+        .await
+        .context("timed out reconciling Codex work")?
     }
 
     fn select(&self, thread_id: &str) -> Result<()> {
@@ -171,7 +276,7 @@ fn inject_pane_env(value: &mut Value, env: &HashMap<String, String>) -> bool {
 }
 
 struct Review {
-    request_id: Value,
+    request_id: Option<Value>,
     thread: String,
     turn: Option<String>,
 }
@@ -182,6 +287,7 @@ struct Conversations {
     /// for an ephemeral thread.
     pending: HashMap<String, (String, bool)>,
     /// Hidden helper threads, such as the TUI's title generator, which never own the pane.
+    // shortcut: retain helper identities for the UI lifetime until safe closure evidence is available.
     ephemeral: HashSet<String>,
     selected: Option<String>,
     current_turn: Option<String>,
@@ -191,6 +297,21 @@ struct Conversations {
 }
 
 impl Conversations {
+    fn reconnect(&mut self) {
+        self.pending.clear();
+        if let Some(review) = &mut self.review {
+            review.request_id = None;
+        }
+    }
+
+    fn outstanding_turn(&self) -> Option<(&str, &str)> {
+        let turn = match &self.review {
+            Some(review) => review.turn.as_deref(),
+            None => self.current_turn.as_deref(),
+        }?;
+        Some((self.selected.as_deref()?, turn))
+    }
+
     fn select(&mut self, thread: &str, registration: &Registration) -> Result<()> {
         registration.select(thread)?;
         if self.selected.as_deref() != Some(thread) {
@@ -209,7 +330,12 @@ impl Conversations {
             && let Some(id) = value.get("id")
         {
             let ephemeral = value["params"]["ephemeral"].as_bool() == Some(true);
-            if !ephemeral {
+            let same_thread_resume = method == "thread/resume"
+                && self
+                    .selected
+                    .as_deref()
+                    .is_some_and(|selected| value["params"]["threadId"].as_str() == Some(selected));
+            if !ephemeral && !same_thread_resume {
                 self.review = None;
             }
             self.pending
@@ -234,7 +360,7 @@ impl Conversations {
             self.select(thread, registration)?;
             self.current_turn = None;
             self.review = Some(Review {
-                request_id: id.clone(),
+                request_id: Some(id.clone()),
                 thread: thread.to_owned(),
                 turn: None,
             });
@@ -249,7 +375,10 @@ impl Conversations {
         // Keeping only the current request also invalidates replies from older selections/work.
         if value.get("method").is_none()
             && let Some(review) = &mut self.review
-            && value.get("id").is_some_and(|id| *id == review.request_id)
+            && review
+                .request_id
+                .as_ref()
+                .is_some_and(|id| value.get("id") == Some(id))
         {
             let result = &value["result"];
             if result["reviewThreadId"].as_str() == Some(review.thread.as_str())
@@ -357,10 +486,13 @@ impl Conversations {
             .selected
             .clone()
             .filter(|previous| method == "thread/start" && previous != id);
+        let resumed_work = method == "thread/resume"
+            && self.selected.as_deref() == Some(id)
+            && (self.current_turn.is_some() || self.review.is_some());
         // Publish before the UI sees the reply and can submit its first turn.
         self.select(id, registration)?;
         // Resuming an active thread may not replay its turn/started notification.
-        self.current_turn = thread["turns"].as_array().and_then(|turns| {
+        let active_turn = thread["turns"].as_array().and_then(|turns| {
             turns
                 .iter()
                 .rev()
@@ -368,6 +500,54 @@ impl Conversations {
                 .and_then(|turn| turn["id"].as_str())
                 .map(str::to_owned)
         });
+        if active_turn.is_some() {
+            self.current_turn = active_turn;
+        }
+        if resumed_work {
+            if self
+                .review
+                .as_ref()
+                .is_some_and(|review| review.turn.is_none() && review.request_id.is_none())
+                && let Some(turns) = thread["turns"].as_array()
+            {
+                // shortcut: recover only active review markers, extend when request-time identity is available.
+                let mut parents = turns.iter().enumerate().filter_map(|(index, turn)| {
+                    let parent = turn["id"].as_str().filter(|id| !id.is_empty())?;
+                    (turn["status"] == "inProgress"
+                        && !self
+                            .review_turns
+                            .contains(&(id.to_owned(), parent.to_owned()))
+                        && turn["items"].as_array().is_some_and(|items| {
+                            items.iter().any(|item| item["type"] == "enteredReviewMode")
+                        }))
+                    .then_some((index, parent))
+                });
+                let parent = match (parents.next(), parents.next()) {
+                    (Some((index, parent)), None)
+                        if turns
+                            .iter()
+                            .skip(index + 1)
+                            .all(|turn| turn["rootTurnId"].as_str() == Some(parent)) =>
+                    {
+                        Some(parent)
+                    },
+                    _ => None,
+                };
+                if let Some(parent) = parent {
+                    return self.response(
+                        &serde_json::json!({
+                            "method": "item/started",
+                            "params": {
+                                "threadId": id, "turnId": parent,
+                                "item": {"type": "enteredReviewMode"},
+                            },
+                        }),
+                        registration,
+                    );
+                }
+            }
+            return Ok(Vec::new());
+        }
         let source = match method.as_str() {
             "thread/resume" => "resume",
             "thread/fork" => "fork",
@@ -510,6 +690,91 @@ async fn capability_request<S: AsyncRead + AsyncWrite + Unpin>(
         }
     }
     Err(anyhow!("Codex capability connection ended"))
+}
+
+async fn read_recovered_turn<S: AsyncRead + AsyncWrite + Unpin>(
+    ws: &mut tokio_tungstenite::WebSocketStream<S>,
+    thread: &str,
+    turn: &str,
+    review: bool,
+) -> Result<Option<Value>> {
+    capability_request(
+        ws,
+        0,
+        "initialize",
+        serde_json::json!({
+            "clientInfo": {"name": "yinz-reconnect", "version": env!("CARGO_PKG_VERSION")},
+            "capabilities": {"experimentalApi": true},
+        }),
+    )
+    .await?
+    .as_object()
+    .context("malformed Codex reconciliation initialization")?;
+    ws.send(Message::text(r#"{"method":"initialized"}"#))
+        .await
+        .context("initialize Codex reconciliation")?;
+    let mut request_id = 1;
+    let mut params = serde_json::json!({
+        "threadId": thread, "limit": if review { 50 } else { 1 },
+        "sortDirection": "desc", "itemsView": "notLoaded",
+    });
+    let mut cursors = HashSet::new();
+    let recovered = 'pages: loop {
+        let history =
+            capability_request(ws, request_id, "thread/turns/list", params.clone()).await?;
+        request_id += 1;
+        let turns = history["data"]
+            .as_array()
+            .context("malformed Codex turn history")?;
+        for candidate in turns {
+            let id = candidate["id"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .context("Codex turn history has no turn id")?;
+            let status = candidate["status"]
+                .as_str()
+                .context("Codex turn history has no turn status")?;
+            if !matches!(status, "completed" | "interrupted" | "failed") {
+                return Ok(None);
+            }
+            if id == turn {
+                break 'pages candidate.clone();
+            }
+            // Only completed children of this review may precede its parent, never newer work.
+            if !review || candidate["rootTurnId"].as_str() != Some(turn) {
+                return Ok(None);
+            }
+        }
+        if !review || history["nextCursor"].is_null() {
+            return Ok(None);
+        }
+        let cursor = history["nextCursor"]
+            .as_str()
+            .filter(|cursor| !cursor.is_empty())
+            .context("malformed Codex turn history cursor")?;
+        anyhow::ensure!(
+            cursors.insert(cursor.to_owned()),
+            "Codex turn history repeated its cursor"
+        );
+        params["cursor"] = cursor.into();
+    };
+    let metadata = capability_request(
+        ws,
+        request_id,
+        "thread/read",
+        serde_json::json!({
+            "threadId": thread,
+        }),
+    )
+    .await?;
+    anyhow::ensure!(
+        metadata["thread"]["id"].as_str() == Some(thread),
+        "Codex reconciliation returned a different thread"
+    );
+    let status = metadata["thread"]["status"]["type"]
+        .as_str()
+        .context("Codex reconciliation has no thread status")?;
+    Ok((status == "idle").then_some(recovered))
 }
 
 async fn verify_capability(program: &Path, hook: &Value, socket: Option<&Path>) -> Result<()> {
@@ -665,7 +930,7 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin>(
     .await
     .context("timed out establishing Codex daemon WebSocket connection")?
     .context("establish Codex daemon WebSocket connection")?;
-    let mut conversations = Conversations::default();
+    registration.reconnect(program).await?;
     loop {
         tokio::select! {
             message = ui.next() => {
@@ -676,7 +941,7 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin>(
                 match message.context("read Codex UI message")? {
                     Message::Text(text) => {
                         let mut value: Value = serde_json::from_str(&text).context("parse Codex UI message")?;
-                        conversations.request(&value, registration)?;
+                        registration.conversations.borrow_mut().request(&value, registration)?;
                         let text = if inject_pane_env(&mut value, &registration.registry.env) {
                             value.to_string().into()
                         } else {
@@ -704,13 +969,9 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin>(
                 match message.context("read Codex daemon reply")? {
                     Message::Text(text) => {
                         let value: Value = serde_json::from_str(&text).context("parse Codex daemon reply")?;
-                        for hook in conversations.response(&value, registration)? {
-                            if hook["hook_event_name"] == "SessionStart" {
-                                registration.announce(hook, program).await;
-                            } else {
-                                registration.report(hook).await;
-                            }
-                        }
+                        let hooks = registration.conversations.borrow_mut().response(&value, registration)?;
+                        registration.reports.borrow_mut().extend(hooks);
+                        registration.flush_reports(program).await;
                         ui.send(Message::Text(text)).await.context("forward Codex daemon reply")?;
                     },
                     Message::Close(frame) => {
@@ -1147,21 +1408,41 @@ async fn forward(yinz: &Path, env: &HashMap<String, String>, raw: &[u8]) -> Resu
     .kill_on_drop(true)
     .spawn()
     .context("forward Codex hook to its pane")?;
-    let mut input = child.stdin.take().context("open Codex report input")?;
-    input
-        .write_all(raw)
-        .await
-        .context("write Codex hook to its pane")?;
-    drop(input);
-    if !child
-        .wait()
-        .await
-        .context("wait for Codex hook report")?
-        .success()
-    {
-        return Err(anyhow!("Codex pane did not accept its hook report"));
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(yinz_types::agent::CODEX_HOOK_TIMEOUT_SECONDS),
+        async {
+            let mut input = child.stdin.take().context("open Codex report input")?;
+            input
+                .write_all(raw)
+                .await
+                .context("write Codex hook to its pane")?;
+            drop(input);
+            if !child
+                .wait()
+                .await
+                .context("wait for Codex hook report")?
+                .success()
+            {
+                return Err(anyhow!("Codex pane did not accept its hook report"));
+            }
+            Ok(())
+        },
+    )
+    .await
+    .context("timed out forwarding Codex hook to its pane")
+    .and_then(|result| result);
+    if result.is_err() {
+        child
+            .start_kill()
+            .context("stop failed Codex hook reporter")
+            .non_fatal();
+        tokio::time::timeout(std::time::Duration::from_secs(1), child.wait())
+            .await
+            .context("timed out reaping Codex hook reporter")
+            .and_then(|result| result.context("reap Codex hook reporter"))
+            .non_fatal();
     }
-    Ok(())
+    result
 }
 
 fn owned_by_ancestor(env: &HashMap<String, String>) -> bool {

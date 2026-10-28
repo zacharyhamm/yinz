@@ -1985,6 +1985,7 @@ async fn capability_timeout_still_announces_an_unverified_selection() {
         ),
     )
     .await
+    .unwrap()
     .unwrap();
     assert!(started.elapsed() >= std::time::Duration::from_secs(10));
     let hook: Value = serde_json::from_slice(&std::fs::read(output).unwrap()).unwrap();
@@ -2980,7 +2981,10 @@ fn review_requires_valid_inline_parent_identity() {
                 &registration,
             )
             .unwrap();
-        assert_eq!(conversations.review.as_ref().unwrap().request_id, json!(2));
+        assert_eq!(
+            conversations.review.as_ref().unwrap().request_id,
+            Some(json!(2))
+        );
     }
     for result in [
         json!({"reviewThreadId":"detached","turn":{"id":"parent"}}),
@@ -3044,3 +3048,18 @@ fn a_new_review_rejects_old_replies_and_replayed_entry_items() {
         vec![json!({"hook_event_name":"Stop","session_id":"selected","turn_id":"new"})]
     );
 }
+
+#[path = "report_timeout_tests.rs"]
+mod report_timeout_tests;
+
+#[path = "reconnect_state_tests.rs"]
+mod reconnect_state_tests;
+
+#[path = "reconcile_tests.rs"]
+mod reconcile_tests;
+
+#[path = "reconnect_relay_tests.rs"]
+mod reconnect_relay_tests;
+
+#[path = "recovery_delivery_tests.rs"]
+mod recovery_delivery_tests;
