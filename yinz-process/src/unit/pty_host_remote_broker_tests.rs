@@ -871,6 +871,158 @@ fn a_connection_that_just_ends_is_not_a_terminate() {
 }
 
 #[test]
+fn stalled_output_and_control_writes_close_the_wire_and_wake_its_reader() {
+    use nix::sys::socket::{setsockopt, sockopt::SndBuf};
+    use std::time::{Duration, Instant};
+
+    for output in [true, false] {
+        let (peer, socket) = UnixStream::pair().unwrap();
+        setsockopt(&socket, SndBuf, &4096).unwrap();
+        let mut reader = socket.try_clone().unwrap();
+        let wire: Wire = Arc::new(Mutex::new(socket));
+        let (read_tx, read_rx) = std::sync::mpsc::channel();
+        let reading = thread::spawn(move || read_tx.send(reader.read(&mut [0])).unwrap());
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let writing = thread::spawn(move || {
+            let started = Instant::now();
+            let result = if output {
+                send_output(&wire, &vec![b'x'; MAX_STREAM_PAYLOAD * 4])
+            } else {
+                send(
+                    &wire,
+                    &BrokerToServerMsg::AgentReport {
+                        kind: "codex".to_owned(),
+                        json: "x".repeat(MAX_STREAM_PAYLOAD * 4),
+                    },
+                )
+            };
+            let elapsed = started.elapsed();
+            // A failed partial frame must never be followed by another frame.
+            let next = send(&wire, &BrokerToServerMsg::Released);
+            done_tx.send((result, elapsed, next)).unwrap();
+        });
+        let done = done_rx.recv_timeout(Duration::from_secs(8));
+        let read = read_rx.recv_timeout(Duration::from_secs(2));
+        // Also release an unbounded writer on regression, so failure leaves no blocked thread.
+        peer.shutdown(std::net::Shutdown::Both).unwrap();
+        writing.join().unwrap();
+        let (result, elapsed, next) = done.unwrap();
+        assert!(result.is_err());
+        assert!(elapsed < WIRE_WRITE_TIMEOUT + Duration::from_secs(2));
+        assert!(next.is_err());
+        assert_eq!(read.unwrap().unwrap(), 0);
+        reading.join().unwrap();
+    }
+}
+
+#[test]
+fn partial_progress_does_not_extend_a_remote_frames_write_deadline() {
+    use nix::sys::socket::{setsockopt, sockopt::SndBuf};
+    use std::time::{Duration, Instant};
+
+    let (mut peer, socket) = UnixStream::pair().unwrap();
+    let cleanup = peer.try_clone().unwrap();
+    setsockopt(&socket, SndBuf, &4096).unwrap();
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+    let reading = thread::spawn(move || {
+        let mut received = 0;
+        let mut buf = [0; 1024];
+        while let Ok(n) = peer.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            received += n;
+            // Deliberately trickle bytes: progress must not renew this frame's deadline.
+            if stop_rx.recv_timeout(Duration::from_millis(50)).is_ok() {
+                break;
+            }
+        }
+        received
+    });
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let writing = thread::spawn(move || {
+        let started = Instant::now();
+        let result = send_output(
+            &Arc::new(Mutex::new(socket)),
+            &vec![b'x'; MAX_STREAM_PAYLOAD],
+        );
+        done_tx.send((result, started.elapsed())).unwrap();
+    });
+    let done = done_rx.recv_timeout(Duration::from_secs(8));
+    let _ = stop_tx.send(());
+    cleanup.shutdown(std::net::Shutdown::Both).unwrap();
+    writing.join().unwrap();
+    let received = reading.join().unwrap();
+    let (result, elapsed) = done.unwrap();
+    assert!(received > 4096, "the peer never made partial progress");
+    assert!(result.is_err(), "slow progress renewed the write deadline");
+    assert!(elapsed < WIRE_WRITE_TIMEOUT + Duration::from_secs(2));
+}
+
+#[test]
+fn stalled_remote_output_detaches_keeps_draining_and_replays_on_resume() {
+    use crate::pty_host::client::PtyHostHandle;
+    use nix::sys::socket::{setsockopt, sockopt::SndBuf};
+    use std::time::Duration;
+
+    let pty = nix::pty::openpty(None, None).unwrap();
+    let (control, _control_peer) = UnixStream::pair().unwrap();
+    let (stalled_peer, socket) = UnixStream::pair().unwrap();
+    setsockopt(&socket, SndBuf, &4096).unwrap();
+    let session = Arc::new(PaneSession::new(
+        "token".to_owned(),
+        vec!["/bin/sh".to_owned()],
+        PtyHostHandle::for_test(control),
+        pty.master,
+        ProcessId::new(std::process::id()),
+    ));
+    let registry = Arc::new(PaneRegistry::new());
+    registry.insert(session.clone());
+    let old_generation = session.attach(Arc::new(Mutex::new(socket)));
+    start_output_pump(session.clone()).unwrap();
+    let bytes = vec![b'x'; MAX_STREAM_PAYLOAD * 8];
+    let output = bytes.clone();
+    let producing = thread::spawn(move || {
+        std::fs::File::from(pty.slave).write_all(&output).unwrap();
+    });
+    let drained = session.wait_for_output_drained(Duration::from_secs(8));
+    stalled_peer.shutdown(std::net::Shutdown::Both).unwrap();
+    producing.join().unwrap();
+    assert!(drained, "a stalled peer stopped the PTY from draining");
+    assert!(!session.is_attached());
+    assert_eq!(session.replay_from(0), (bytes.clone(), 0));
+
+    let (mut peer, socket) = UnixStream::pair().unwrap();
+    peer.set_read_timeout(Some(yinz_test_support::default_timeout()))
+        .unwrap();
+    let resuming =
+        thread::spawn(move || resume_pane(&registry, &Arc::new(Mutex::new(socket)), "token", 0));
+    assert_eq!(
+        protocol::read_frame(&mut peer)
+            .unwrap()
+            .unwrap()
+            .decode_control::<BrokerToServerMsg>()
+            .unwrap(),
+        BrokerToServerMsg::Resumed { dropped: 0 }
+    );
+    let mut replay = Vec::new();
+    while replay.len() < bytes.len() {
+        let Frame::Output(chunk) = protocol::read_frame(&mut peer).unwrap().unwrap() else {
+            panic!("expected buffered output before status");
+        };
+        replay.extend(chunk);
+    }
+    assert_eq!(replay, bytes);
+    let (_, generation) = resuming.join().unwrap().unwrap();
+    assert_ne!(generation, old_generation);
+    session.detach_if(old_generation);
+    assert!(
+        session.is_attached(),
+        "the old reader detached its successor"
+    );
+}
+
+#[test]
 fn an_overrun_during_catch_up_reports_the_gap_before_the_surviving_output() {
     use crate::pty_host::client::PtyHostHandle;
     use nix::sys::socket::{setsockopt, sockopt::SndBuf};

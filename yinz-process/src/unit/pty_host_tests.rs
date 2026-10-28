@@ -1436,6 +1436,103 @@ fn the_dropped_byte_count_never_decreases(tc: hegel::TestCase) {
 
 // ---- attach ----
 
+#[test]
+fn failed_attach_preserves_owner_output_and_loss_count_for_retry() {
+    let pty = openpty(None, None).unwrap();
+    let (_reaped_tx, child_reaped) = mpsc::channel();
+    let mut ctx = HostContext {
+        host_id: protocol::new_host_id(),
+        host_pid: ProcessId::new(std::process::id()),
+        label: "original/7".into(),
+        terminal_id: TerminalId::new(7),
+        session_name: Some("original".into()),
+        cmd: sh(""),
+        started_at_unix: UnixSeconds::new(unix_now()),
+        state: State::Detached,
+        ring: RingBuffer::new(),
+        session: Some(Session {
+            master: pty.master,
+            slave: Some(pty.slave),
+            child_pid: ProcessId::new(std::process::id()),
+            reap_child: None,
+            child_reaped,
+            exit_status: None,
+            drained: false,
+        }),
+    };
+    ctx.ring.push(&vec![b'x'; RING_CAPACITY]);
+    ctx.ring.push(b"tail");
+    let expected_output: Vec<_> = ctx.ring.buf.iter().copied().collect();
+
+    let (peer, host) = UnixStream::pair().unwrap();
+    peer.shutdown(std::net::Shutdown::Read).unwrap();
+    assert!(matches!(
+        attach(
+            &mut ctx,
+            host,
+            PROTOCOL_VERSION,
+            TerminalId::new(42),
+            Some("failed-owner".into()),
+        ),
+        CliOutcome::Done
+    ));
+    assert_eq!(ctx.state, State::Detached);
+    assert_eq!(ctx.terminal_id, TerminalId::new(7));
+    assert_eq!(ctx.session_name, Some("original".into()));
+    assert_eq!(ctx.label, "original/7");
+    assert_eq!(ctx.ring.dropped, 4);
+    assert!(ctx
+        .ring
+        .buf
+        .iter()
+        .copied()
+        .eq(expected_output.iter().copied()));
+
+    let (mut peer, host) = UnixStream::pair().unwrap();
+    peer.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+    host.set_write_timeout(Some(TEST_TIMEOUT)).unwrap();
+    let receiver = std::thread::spawn(move || {
+        let ack = read_msg::<HostToServerMsg, _>(&mut peer).unwrap().unwrap();
+        let master = recv_fd(&peer).unwrap();
+        (ack, master)
+    });
+    assert!(matches!(
+        attach(
+            &mut ctx,
+            host,
+            PROTOCOL_VERSION,
+            TerminalId::new(43),
+            Some("retry-owner".into()),
+        ),
+        CliOutcome::Attached(_)
+    ));
+    let (ack, _master) = receiver.join().unwrap();
+    let HostToServerMsg::AttachAck {
+        status,
+        buffered_base64,
+        dropped_bytes,
+        ..
+    } = ack
+    else {
+        panic!("expected attach acknowledgement")
+    };
+    assert_eq!(dropped_bytes, 4);
+    assert_eq!(
+        protocol::decode_buffered(&buffered_base64).unwrap(),
+        expected_output
+    );
+    assert_eq!(status.terminal_id, 43);
+    assert_eq!(status.session_name, Some("retry-owner".into()));
+    assert!(status.attached);
+    assert_eq!(status.buffered_bytes, 0);
+    assert_eq!(ctx.state, State::Attached);
+    assert_eq!(ctx.terminal_id, TerminalId::new(43));
+    assert_eq!(ctx.session_name, Some("retry-owner".into()));
+    assert_eq!(ctx.label, "retry-owner/43");
+    assert_eq!(ctx.ring.len(), 0);
+    assert_eq!(ctx.ring.dropped, 0);
+}
+
 /// Connect to a supervisor's named socket and ask it to hand the pane over,
 /// returning the reply and (on success) the pty master it sent with it.
 fn attach_over_socket(
