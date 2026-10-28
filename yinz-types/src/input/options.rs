@@ -127,10 +127,7 @@ impl PaneFrameStyle {
         if options.pane_frames == Some(false) {
             return PaneFrameStyle::None;
         }
-        match options.pane_frame_style {
-            Some(PaneFrameStyle::Full) => PaneFrameStyle::Full,
-            _ => PaneFrameStyle::Titles,
-        }
+        options.pane_frame_style.unwrap_or_default()
     }
 }
 

@@ -537,6 +537,54 @@ impl<'a> PaneContentsAndUi<'a> {
 
         Ok(())
     }
+    pub fn render_floating_gutter_edges(
+        &mut self,
+        client_id: ClientId,
+        client_mode: InputMode,
+        outer: yinz_types::pane_size::Viewport,
+        session_is_mirrored: bool,
+    ) -> Result<()> {
+        let geom = self.pane.render_geom();
+        let mut boundaries = Boundaries::new(yinz_types::pane_size::Viewport {
+            x: geom.x,
+            y: geom.y,
+            cols: geom.cols.as_usize(),
+            rows: geom.rows.as_usize(),
+        });
+        self.render_gutter_edges(
+            client_id,
+            client_mode,
+            &mut boundaries,
+            outer,
+            session_is_mirrored,
+        );
+        let mut chunks = boundaries
+            .render(None)
+            .context("failed to render gutter edges")?;
+        if self.dimmed_for_clients.contains(&client_id) {
+            dim_character_chunks(&mut chunks);
+        }
+        self.output
+            .add_character_chunks_to_client(client_id, chunks, self.z_index)
+            .context("failed to output gutter edges")
+    }
+
+    pub fn render_gutter_edges(
+        &self,
+        client_id: ClientId,
+        client_mode: InputMode,
+        boundaries: &mut Boundaries,
+        outer: yinz_types::pane_size::Viewport,
+        session_is_mirrored: bool,
+    ) {
+        boundaries.add_gutter_edges(
+            self.pane.as_ref(),
+            outer,
+            self.frame_color(client_id, client_mode, session_is_mirrored),
+            self.style.chrome_colors(),
+        );
+    }
+
     pub fn render_pane_boundaries(
         &self,
         client_id: ClientId,

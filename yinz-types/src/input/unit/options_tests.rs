@@ -100,3 +100,20 @@ fn an_unset_host_notification_protocol_does_not_clobber_the_configured_one() {
         Some(HostNotificationProtocol::Osc9)
     );
 }
+
+#[test]
+fn pane_frame_style_resolution_preserves_explicit_styles() {
+    for style in [
+        PaneFrameStyle::Full,
+        PaneFrameStyle::Titles,
+        PaneFrameStyle::None,
+    ] {
+        let mut options = Options {
+            pane_frame_style: Some(style),
+            ..Default::default()
+        };
+        assert_eq!(PaneFrameStyle::from_options(&options), style);
+        options.pane_frames = Some(false);
+        assert_eq!(PaneFrameStyle::from_options(&options), PaneFrameStyle::None);
+    }
+}

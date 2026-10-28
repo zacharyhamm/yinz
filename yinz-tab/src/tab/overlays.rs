@@ -417,16 +417,41 @@ impl Tab {
             }
         }
         let geom = pane.render_geom();
-        let viewport = self.tiled_panes.boundary_viewport();
+        let is_tiled = self.tiled_panes.panes_contain(&pane_id);
+        let floating_gutters = self.floating_panes.fullscreen_pane_id() == Some(pane_id)
+            && !self.pane_frame_style.draws_full_frames();
+        let viewport = if floating_gutters {
+            yinz_types::pane_size::Viewport {
+                x: geom.x,
+                y: geom.y,
+                cols: geom.cols.as_usize(),
+                rows: geom.rows.as_usize(),
+            }
+        } else {
+            self.tiled_panes.boundary_viewport()
+        };
+        let gutter_outer = if (is_tiled && self.tiled_panes.fullscreen_covers_ui())
+            || (floating_gutters && self.floating_panes.fullscreen_covers_ui())
+        {
+            (*self.display_area.borrow()).into()
+        } else {
+            *self.viewport.borrow()
+        };
+        let has_gutters = !self.pane_frame_style.draws_full_frames()
+            && pane.max_content_width() > 0
+            && !pane.borderless()
+            && (geom.x > pane.current_geom().x
+                || geom.cols.as_usize() < pane.current_geom().cols.as_usize());
         let visible = if self.tiled_panes.panes_contain(&pane_id) {
             !self.tiled_panes.panes_to_hide_contains(pane_id)
-                && !self.tiled_panes.fullscreen_covers_ui()
-                && (pane.get_content_offset() != Offset::default()
+                && (!self.tiled_panes.fullscreen_covers_ui() || has_gutters)
+                && (has_gutters
+                    || pane.get_content_offset() != Offset::default()
                     || geom.is_stacked()
                     || geom.x > viewport.x
                     || geom.y > viewport.y)
         } else {
-            pane.get_content_offset() != Offset::default()
+            (pane.get_content_offset() != Offset::default() || floating_gutters)
                 && ((self.has_floating_panes_to_render()
                     && self.floating_panes.rendered_pane_ids().contains(&pane_id))
                     || self.overlay_panes.rendered_pane_ids().contains(&pane_id))
@@ -434,7 +459,16 @@ impl Tab {
         if !visible {
             return false;
         }
-        if !self.tiled_panes.panes_contain(&pane_id) || self.pane_frame_style.draws_full_frames() {
+        if !is_tiled {
+            if pane.get_content_offset() != Offset::default()
+                && self.waiting_border_is_uncovered(pane_id, &[geom])
+            {
+                return true;
+            }
+            if !floating_gutters {
+                return false;
+            }
+        } else if self.pane_frame_style.draws_full_frames() {
             return self.waiting_border_is_uncovered(pane_id, &[geom]);
         }
 
@@ -460,8 +494,9 @@ impl Tab {
             (top, bottom, under)
         };
         // Titles and stack headers are rendered separately from shared boundaries.
-        if geom.is_stacked()
-            || (self.pane_frame_style.draws_titles() && pane.get_content_offset().top > 0)
+        if is_tiled
+            && (geom.is_stacked()
+                || (self.pane_frame_style.draws_titles() && pane.get_content_offset().top > 0))
         {
             let (_, _, under) = stack_flags(pane);
             let header = PaneGeom {
@@ -491,11 +526,15 @@ impl Tab {
                     .mode;
                 let mut unpulsed = Boundaries::new(viewport);
                 let mut pulsed = Boundaries::new(viewport);
-                for (id, other) in self
+                let panes = self
                     .tiled_panes
                     .get_panes()
-                    .filter(|(id, _)| !self.tiled_panes.panes_to_hide_contains(**id))
-                {
+                    .filter(|(id, _)| is_tiled && !self.tiled_panes.panes_to_hide_contains(**id));
+                let floating = self
+                    .floating_panes
+                    .get_panes()
+                    .filter(|(id, _)| floating_gutters && **id == pane_id);
+                for (id, other) in panes.chain(floating) {
                     let (top, bottom, under) = stack_flags(other.as_ref());
                     for (boundaries, pulse) in [(&mut unpulsed, false), (&mut pulsed, true)] {
                         let color = frame_color(
@@ -508,8 +547,13 @@ impl Tab {
                                 // Test a positive pulse, even at the cycle's zero point or before
                                 // its first sample. Otherwise visibility could stop its own clock.
                                 waiting_pulse: (pulse && *id == pane_id).then_some(0.4),
-                                pane_is_focused: !self.floating_panes.panes_are_visible()
-                                    && self.tiled_panes.get_active_pane_id(client_id) == Some(*id),
+                                pane_is_focused: if is_tiled {
+                                    !self.floating_panes.panes_are_visible()
+                                        && self.tiled_panes.get_active_pane_id(client_id)
+                                            == Some(*id)
+                                } else {
+                                    self.floating_panes.get_active_pane_id(client_id) == Some(*id)
+                                },
                                 pane_is_in_group: groups
                                     .get(&client_id)
                                     .is_some_and(|group| group.contains(id)),
@@ -530,13 +574,21 @@ impl Tab {
                             mode,
                             self.stack_list_session_is_mirrored,
                         );
-                        boundaries.add_rect(
+                        if is_tiled && !self.tiled_panes.fullscreen_covers_ui() {
+                            boundaries.add_rect(
+                                other.as_ref(),
+                                color,
+                                self.style.chrome_colors(),
+                                top,
+                                bottom,
+                                under,
+                            );
+                        }
+                        boundaries.add_gutter_edges(
                             other.as_ref(),
+                            gutter_outer,
                             color,
                             self.style.chrome_colors(),
-                            top,
-                            bottom,
-                            under,
                         );
                     }
                 }

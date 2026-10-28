@@ -803,6 +803,22 @@ impl FloatingPanes {
                         )
                         .with_context(err_context)?;
                 }
+                if (no_ui_fullscreen || pane_is_regular_fullscreen)
+                    && !pane_frame_style.draws_full_frames()
+                {
+                    pane_contents_and_ui
+                        .render_floating_gutter_edges(
+                            *client_id,
+                            client_mode,
+                            if no_ui_fullscreen {
+                                (*self.display_area.borrow()).into()
+                            } else {
+                                *self.viewport.borrow()
+                            },
+                            self.session_is_mirrored,
+                        )
+                        .with_context(err_context)?;
+                }
                 if let PaneId::Plugin(..) = kind {
                     pane_contents_and_ui
                         .render_pane_contents_for_client(*client_id)
