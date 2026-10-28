@@ -576,6 +576,7 @@ mod fullscreen;
 mod fullscreen_interaction;
 mod layout_rejection;
 mod pane_id_api;
+mod paste;
 mod renaming;
 mod resize_down;
 mod resize_left;

@@ -2,6 +2,71 @@ use super::*;
 use yinz_runtime::channels::SenderWithContext;
 
 #[test]
+fn actions_without_completion_owners_do_not_wait_for_timeout() {
+    for action in [
+        Action::Confirm,
+        Action::Deny,
+        Action::SkipConfirm {
+            action: Box::new(Action::NoOp),
+        },
+        Action::SkipConfirm {
+            action: Box::new(Action::Quit),
+        },
+        Action::ToggleMouseMode,
+        Action::ArrangePanesByProject,
+        Action::NoOp,
+    ] {
+        let (plugin_tx, plugin_rx) = yinz_runtime::channels::unbounded();
+        let (server_tx, server_rx) = yinz_runtime::channels::unbounded();
+        let started = std::time::Instant::now();
+        let (should_break, result) = route_action(
+            action.clone(),
+            ClientId::new(1),
+            None,
+            None,
+            ThreadSenders {
+                to_plugin: Some(SenderWithContext::new(plugin_tx)),
+                to_server: Some(SenderWithContext::new(server_tx)),
+                ..Default::default()
+            },
+            None,
+            None,
+            InputMode::Normal,
+            None,
+            true,
+            true,
+        )
+        .unwrap();
+        // Timing is the regression: these local no-op/dispatch paths used to wait a full second.
+        assert!(
+            started.elapsed() < crate::completion::ACTION_COMPLETION_TIMEOUT / 2,
+            "{action:?}"
+        );
+        assert!(
+            !result.unwrap().confirmed,
+            "dispatch must not claim downstream completion"
+        );
+        let quit = matches!(&action, Action::SkipConfirm { action } if **action == Action::Quit);
+        assert_eq!(should_break, quit);
+        assert_eq!(server_rx.len(), usize::from(quit));
+        if quit {
+            assert!(matches!(
+                server_rx.try_recv().unwrap().0,
+                ServerInstruction::ClientExit(_, None)
+            ));
+        }
+        let arrange = action == Action::ArrangePanesByProject;
+        assert_eq!(plugin_rx.len(), usize::from(arrange));
+        if arrange {
+            assert!(matches!(
+                plugin_rx.try_recv().unwrap().0,
+                PluginInstruction::ArrangePanesByProject
+            ));
+        }
+    }
+}
+
+#[test]
 fn keybind_pipe_forwards_in_place_intent_and_explicit_targets() {
     use yinz_types::internal_ids::TerminalId;
 

@@ -33,4 +33,5 @@ insta = "1.48"
 interprocess = { workspace = true }
 kdl = { workspace = true }
 tempfile = "3.2.0"
+tokio = { workspace = true, features = ["sync"] }
 vte = { workspace = true }

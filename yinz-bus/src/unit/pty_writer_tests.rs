@@ -34,6 +34,7 @@ enum WriteBehavior {
     AcceptNone,
     /// Return an error (simulates EBADF, EIO, etc).
     Error,
+    ErrorOnce,
 }
 
 /// Log of (terminal_id, bytes) for each successful write, shared with the test thread.
@@ -155,10 +156,15 @@ impl TerminalIo for MockServerOsApi {
                 Ok(n)
             },
             WriteBehavior::AcceptNone => Ok(0),
-            WriteBehavior::Error => Err(anyhow::anyhow!(
-                "simulated write error for terminal {}",
-                terminal_id
-            )),
+            WriteBehavior::Error | WriteBehavior::ErrorOnce => {
+                if matches!(behavior, WriteBehavior::ErrorOnce) {
+                    self.set_behavior(terminal_id, WriteBehavior::AcceptAll);
+                }
+                Err(anyhow::anyhow!(
+                    "simulated write error for terminal {}",
+                    terminal_id
+                ))
+            },
         }
     }
     fn tcdrain(&self, _id: TerminalId) -> Result<()> {
@@ -435,7 +441,7 @@ fn write_error_clears_terminal_queue() {
 }
 
 #[test]
-fn paste_barrier_reports_partial_write_failure_overflow_and_shutdown() {
+fn write_completion_reports_partial_write_failure_overflow_and_shutdown() {
     for (behavior, size, succeeds) in [
         (WriteBehavior::AcceptAtMost(2), 8, true),
         (WriteBehavior::Error, 8, false),
@@ -451,14 +457,11 @@ fn paste_barrier_reports_partial_write_failure_overflow_and_shutdown() {
         run_pty_writer(
             bus,
             sender,
-            vec![
-                PtyWriteInstruction::Write(vec![b'a'; size], terminal, None),
-                PtyWriteInstruction::Write(
-                    b"end".to_vec(),
-                    terminal,
-                    Some(NotificationEnd::new(tx)),
-                ),
-            ],
+            vec![PtyWriteInstruction::Write(
+                vec![b'a'; size],
+                terminal,
+                Some(NotificationEnd::new(tx)),
+            )],
         );
         assert_eq!(rx.try_recv().unwrap().error_message.is_none(), succeeds);
     }
@@ -481,8 +484,11 @@ fn overflowing_a_new_paste_after_an_older_barrier_fails_both_barriers() {
                 terminal,
                 Some(NotificationEnd::new(first)),
             ),
-            PtyWriteInstruction::Write(vec![b'x'; MAX_PENDING_BYTES], terminal, None),
-            PtyWriteInstruction::Write(Vec::new(), terminal, Some(NotificationEnd::new(last))),
+            PtyWriteInstruction::Write(
+                vec![b'x'; MAX_PENDING_BYTES],
+                terminal,
+                Some(NotificationEnd::new(last)),
+            ),
         ],
     );
     assert!(first_result
@@ -497,6 +503,34 @@ fn overflowing_a_new_paste_after_an_older_barrier_fails_both_barriers() {
         .error_message
         .unwrap()
         .contains("overflow"));
+}
+
+#[test]
+fn unacknowledged_write_failure_does_not_poison_a_later_write() {
+    for (behavior, size) in [
+        (WriteBehavior::ErrorOnce, 8),
+        (WriteBehavior::AcceptAll, MAX_PENDING_BYTES + 1),
+    ] {
+        let terminal = TerminalId::new(1);
+        let mock = MockServerOsApi::new();
+        mock.set_behavior(terminal, behavior);
+        let (bus, sender) = make_test_bus(mock.clone());
+        let (tx, mut result) = tokio::sync::oneshot::channel();
+        run_pty_writer(
+            bus,
+            sender,
+            vec![
+                PtyWriteInstruction::Write(vec![b'x'; size], terminal, None),
+                PtyWriteInstruction::Write(
+                    b"healthy".to_vec(),
+                    terminal,
+                    Some(NotificationEnd::new(tx)),
+                ),
+            ],
+        );
+        assert!(result.try_recv().unwrap().error_message.is_none());
+        assert_eq!(mock.get_written_bytes(terminal), b"healthy");
+    }
 }
 
 #[test]
