@@ -335,6 +335,51 @@ pub fn entry_blocks(kind: &str, text: &str) -> Vec<crate::markdown::MdBlock> {
         .collect()
 }
 
+/// Cached presentation of a retained entry for native conversation viewers.
+/// Uses the same labels, prompt envelopes, message alignment and row limits as the panel.
+pub struct EntryPresentation {
+    blocks: Vec<crate::markdown::MdBlock>,
+    complete: bool,
+    rows: Option<(usize, String, Vec<MdLine>)>,
+}
+impl EntryPresentation {
+    pub fn new(kind: &str, text: &str, truncated: bool) -> Self {
+        let digest = (kind == "prompt")
+            .then(|| crate::envelope::digest(text))
+            .flatten();
+        let source = digest.as_deref().unwrap_or(text);
+        let (blocks, complete) =
+            crate::markdown::parse_head(source, ENTRY_HEAD_BLOCKS, ENTRY_HEAD_BYTES);
+        Self {
+            blocks: if matches!(kind, "tool_call" | "tool_result") {
+                entry_blocks(kind, source)
+            } else {
+                blocks
+            },
+            complete: complete && !truncated,
+            rows: None,
+        }
+    }
+    pub fn lines(&mut self, kind: &str, width: usize, gutter: &str) -> Vec<MdLine> {
+        if let Some((held_width, held_gutter, rows)) = &self.rows
+            && *held_width == width
+            && held_gutter == gutter
+        {
+            return rows.clone();
+        }
+        let mut rows = cap_rows(
+            labelled_blocks(&self.blocks, kind, gutter.width(), width, LABEL_STYLE).0,
+            gutter.width(),
+            self.complete,
+        );
+        if let Some(first) = rows.first_mut() {
+            *first = first.clone().prepend(gutter, AGE_STYLE);
+        }
+        self.rows = Some((width, gutter.to_owned(), rows.clone()));
+        rows
+    }
+}
+
 impl ParsedEvent {
     fn new(
         revision: Option<u64>,

@@ -254,9 +254,17 @@ impl CommandPalette {
         let agent = self
             .agent
             .get_or_insert_with(|| RefCell::new(agent::AgentView::new(header.clone())));
+        agent
+            .get_mut()
+            .search_mode(!self.input.get_text().is_empty());
         agent.get_mut().newest =
             self.input.get_text().is_empty() && !actions.iter().any(|a| a.id.ends_with(":newer"));
         agent.get_mut().update(header, events, actions, status);
+    }
+    pub fn set_agent_usage(&mut self, usage: yinz_types::agent::control::ProviderUsage) {
+        if let Some(agent) = &mut self.agent {
+            agent.get_mut().header.usage = Some(usage);
+        }
     }
     pub fn open_agent_reader(&mut self, header: String, markdown: String, tool: String) {
         let agent = self.agent.get_or_insert_with(|| {
@@ -267,6 +275,7 @@ impl CommandPalette {
                     location: String::new(),
                     started: String::new(),
                     details: String::new(),
+                    ..Default::default()
                 },
             ))
         });

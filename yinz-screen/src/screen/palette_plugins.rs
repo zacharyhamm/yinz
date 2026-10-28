@@ -576,6 +576,15 @@ impl Screen {
                 self.agent_palette_reply(client, opening, step, reply);
                 true
             },
+            Instruction::UsageReply {
+                client,
+                opening,
+                view,
+                usage,
+            } => {
+                self.palette_usage_reply(client, opening, view, usage);
+                true
+            },
             Instruction::HistoryTick {
                 client,
                 opening,

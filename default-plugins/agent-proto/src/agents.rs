@@ -29,7 +29,8 @@ mod history;
 pub use history::{
     age_gutter, cut_to_width, entry_blocks, fit_hints, fit_hints_marked, fit_keys, fit_label,
     now_ms, run_history, run_payload_fingerprint, short_age, summary_history, wall_clock,
-    HistoryEvent, HistoryLines, ParsedRun, AGE_WIDTH, HISTORY_MIN_COLS, MAX_ENTRY_ROWS, NO_HISTORY,
+    EntryPresentation, HistoryEvent, HistoryLines, ParsedRun, AGE_WIDTH, HISTORY_MIN_COLS,
+    MAX_ENTRY_ROWS, NO_HISTORY,
 };
 mod presentation;
 pub use presentation::{

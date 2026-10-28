@@ -858,3 +858,327 @@ fn palette_history_run_search_orders_events_and_keeps_time_and_hit_navigation() 
         }
     }
 }
+
+#[test]
+fn palette_history_tool_groups_keep_all_revisions_and_open_full_retained_tools() {
+    use agent_proto::agents::{RunEntry, RunEntryKind};
+    use yinz_bus::command_palette::{HistoryAction, HistoryReply};
+    use yinz_types::agent::tool_capture::{Payload, ToolCapture};
+    let (temp, data) = repository();
+    let mut recorded = recorded_run(temp.path());
+    recorded.entries = [
+        RunEntryKind::Prompt,
+        RunEntryKind::ToolCall,
+        RunEntryKind::ToolResult,
+        RunEntryKind::ToolCall,
+        RunEntryKind::Message,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, kind)| RunEntry {
+        revision: i as u64 + 1,
+        kind,
+        text: format!(r"retained text {i}: [ERROR] C:\logs\output *literal* `code`"),
+        created_at_ms: Some(1234),
+        tool: matches!(kind, RunEntryKind::ToolCall | RunEntryKind::ToolResult).then(|| {
+            ToolCapture {
+                name: format!("tool {i}"),
+                call_id: Some(format!("call {i}")),
+                turn_id: None,
+                worker_id: None,
+                parent_call_id: None,
+                source_event: kind.label().into(),
+                status: "completed".into(),
+                arguments: None,
+                output: Some(Payload {
+                    text: format!("captured output {i}"),
+                    format: "text".into(),
+                    original_bytes: 1000 + i,
+                    redacted: true,
+                    truncated: true,
+                    attachments_omitted: true,
+                }),
+                error: None,
+                duration_ms: Some(100 + i as u64),
+                output_unavailable: false,
+                metadata_truncated: true,
+                metadata_redacted: true,
+                identity: None,
+                payload_omitted: false,
+            }
+        }),
+        event_id: None,
+    })
+    .collect();
+    data.plugin_data()
+        .apply(
+            project_data::store::SHARED,
+            &agent_proto::agents::rows::run_mutations(&recorded),
+        )
+        .unwrap();
+    let execute = |action| {
+        run(&request(temp.path(), AgentAction::History(action)), &data)
+            .0
+            .unwrap()
+    };
+    let AgentReply::History(HistoryReply::Run {
+        header,
+        events,
+        rows,
+        ..
+    }) = execute(HistoryAction::Run {
+        id: recorded.id.clone(),
+        from: None,
+        query: String::new(),
+    })
+    else {
+        panic!("expected conversation");
+    };
+    assert!(header.session_id.contains(&recorded.session_id));
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[1].revisions, vec![2, 3, 4]);
+    assert_eq!(events[1].tool_calls, 2);
+    let action = rows
+        .iter()
+        .find(|r| matches!(r.action, HistoryAction::Tools { .. }))
+        .unwrap()
+        .action
+        .clone();
+    let expected = |entry: &RunEntry| {
+        format!(
+            "{} · revision {}:\n{}\n\n{}",
+            entry.kind.label(),
+            entry.revision,
+            entry.text,
+            serde_json::to_string_pretty(entry.tool.as_ref().unwrap()).unwrap()
+        )
+    };
+    // A single tool and a group use the same retained captures, in revision order.
+    for (action, entries) in [
+        (action, &recorded.entries[1..4]),
+        (
+            HistoryAction::Tools {
+                id: recorded.id.clone(),
+                revisions: vec![4, 2, 3],
+            },
+            &recorded.entries[1..4],
+        ),
+        (
+            HistoryAction::Tools {
+                id: recorded.id.clone(),
+                revisions: vec![2],
+            },
+            &recorded.entries[1..2],
+        ),
+    ] {
+        let AgentReply::History(HistoryReply::Reader {
+            header,
+            markdown,
+            tool,
+        }) = execute(action)
+        else {
+            panic!("expected tools");
+        };
+        assert_eq!(header, "tool_call");
+        assert_eq!(
+            markdown,
+            entries
+                .iter()
+                .map(expected)
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        );
+        assert!(tool.is_empty());
+    }
+    for entry in &recorded.entries[1..4] {
+        let AgentReply::History(HistoryReply::Reader { markdown, tool, .. }) =
+            execute(HistoryAction::Event {
+                id: recorded.id.clone(),
+                revision: entry.revision,
+            })
+        else {
+            panic!("expected individual tool");
+        };
+        assert_eq!(markdown, entry.text);
+        assert_eq!(
+            serde_json::from_str::<ToolCapture>(&tool).unwrap(),
+            *entry.tool.as_ref().unwrap()
+        );
+    }
+    let AgentReply::History(HistoryReply::Run { events, .. }) = execute(HistoryAction::Run {
+        id: recorded.id.clone(),
+        from: None,
+        query: "retained".into(),
+    }) else {
+        panic!("expected search results");
+    };
+    assert_eq!(events.len(), recorded.entries.len());
+    for (event, entry) in events.iter().zip(&recorded.entries) {
+        assert_eq!(event.revisions, vec![entry.revision]);
+        assert_eq!(event.kind, entry.kind.label());
+        let expected = if matches!(
+            entry.kind,
+            RunEntryKind::ToolCall | RunEntryKind::ToolResult
+        ) {
+            entry.text.clone()
+        } else {
+            yinz_tile_markdown::escape_inline(&entry.text)
+        };
+        assert_eq!(event.markdown, expected);
+    }
+}
+
+#[test]
+fn palette_prompt_rejects_unpinned_conversations_before_local_or_peer_dispatch() {
+    let (temp, data) = repository();
+    let (tx, rx) = unbounded();
+    let senders = ThreadSenders {
+        to_screen: Some(SenderWithContext::new(tx)),
+        ..Default::default()
+    };
+    for session_id in [None, Some(String::new())] {
+        for target_session in [None, Some("unavailable-palette-peer".into())] {
+            let mut request = request(
+                temp.path(),
+                AgentAction::Prompt {
+                    pane_id: PaneId::Terminal(TerminalId::new(9)),
+                    session_id: session_id.clone(),
+                    target_session,
+                    submission_id: "palette-retry".into(),
+                },
+            );
+            request.values = vec!["continue\nwith tests".into()];
+            assert_eq!(
+                execute(&request, &senders, &data).unwrap_err(),
+                "Agent has no conversation ID; refresh agent info before sending a prompt"
+            );
+            assert!(rx.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn palette_prompt_routes_guarded_text_without_launching_an_agent() {
+    use yinz_types::agent::control::{AgentOutcome, AgentRequest as ControlRequest, AgentResponse};
+    let (temp, data) = repository();
+    let target = PaneId::Terminal(TerminalId::new(9));
+    let mut request = request(
+        temp.path(),
+        AgentAction::Prompt {
+            pane_id: target,
+            session_id: Some("expected-session".into()),
+            target_session: None,
+            submission_id: "palette-retry".into(),
+        },
+    );
+    request.values = vec!["continue\nwith tests".into()];
+    let (tx, rx) = unbounded();
+    let senders = ThreadSenders {
+        to_screen: Some(SenderWithContext::new(tx)),
+        ..Default::default()
+    };
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let ScreenInstruction::AgentControlReply(control, reply) = instruction else { panic!("expected prompt"); };
+            assert!(matches!(control, ControlRequest::Prompt { pane_id, expected_session_id: Some(session), submission_id: Some(submission), prompt, wait: false, .. }
+                if pane_id == target && session == "expected-session" && submission == "palette-retry" && prompt == "continue\nwith tests"));
+            reply.send(AgentResponse::new(AgentOutcome::Ok)).unwrap();
+        });
+        assert!(
+            matches!(execute(&request, &senders, &data).unwrap(), AgentReply::Prompted(response) if response.outcome == AgentOutcome::Ok)
+        );
+    });
+}
+
+#[test]
+fn palette_prompt_peer_uses_owning_session_socket_and_submission_identity() {
+    use interprocess::local_socket::prelude::*;
+    use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
+    use yinz_types::agent::control::{AgentOutcome, AgentRequest as ControlRequest, AgentResponse};
+    fs::create_dir_all(&*yinz_runtime::consts::YINZ_SOCK_DIR).unwrap();
+    let directory = tempfile::tempdir_in(&*yinz_runtime::consts::YINZ_SOCK_DIR).unwrap();
+    let name = format!(
+        "{}-prompt",
+        directory.path().file_name().unwrap().to_str().unwrap()
+    );
+    let socket = yinz_runtime::consts::YINZ_SOCK_DIR.join(&name);
+    let listener = yinz_ipc::consts::ipc_bind(&socket).unwrap();
+    let request = ControlRequest::Prompt {
+        pane_id: PaneId::Terminal(TerminalId::new(7)),
+        expected_session_id: Some("peer-agent".into()),
+        submission_id: Some("peer-retry".into()),
+        preserve_draft: false,
+        prompt: "continue".into(),
+        wait: false,
+        timeout_ms: 30_000,
+    };
+    thread::scope(|scope| {
+        let expected = request.clone();
+        scope.spawn(move || {
+            let connection = listener.accept().unwrap();
+            let mut sender = IpcSenderWithContext::<ServerToClientMsg>::new(connection);
+            let mut receiver = sender.get_receiver::<ClientToServerMsg>().unwrap();
+            receiver.set_recv_timeout(Some(Duration::from_secs(5))).unwrap();
+            assert!(matches!(receiver.recv_client_msg(), IpcRecv::Msg(ClientToServerMsg::AgentControl(control), _) if control == expected));
+            sender.send_server_msg(ServerToClientMsg::AgentControl(AgentResponse::new(AgentOutcome::Ok))).unwrap();
+            assert!(matches!(receiver.recv_client_msg(), IpcRecv::Msg(ClientToServerMsg::ClientExited, _)));
+        });
+        assert_eq!(
+            prompt_peer(&name.into(), request).unwrap().outcome,
+            AgentOutcome::Ok
+        );
+    });
+    if socket.exists() {
+        fs::remove_file(socket).unwrap();
+    }
+}
+
+#[test]
+fn palette_prompt_peer_bounds_sending_and_cleanup_when_peer_does_not_read() {
+    use interprocess::local_socket::prelude::*;
+    use std::time::Instant;
+    use yinz_types::agent::control::AgentRequest as ControlRequest;
+
+    fs::create_dir_all(&*yinz_runtime::consts::YINZ_SOCK_DIR).unwrap();
+    let directory = tempfile::tempdir_in(&*yinz_runtime::consts::YINZ_SOCK_DIR).unwrap();
+    let name = format!(
+        "{}-blocked-prompt",
+        directory.path().file_name().unwrap().to_str().unwrap()
+    );
+    let socket = yinz_runtime::consts::YINZ_SOCK_DIR.join(&name);
+    let listener = yinz_ipc::consts::ipc_bind(&socket).unwrap();
+    let request = ControlRequest::Prompt {
+        pane_id: PaneId::Terminal(TerminalId::new(7)),
+        expected_session_id: Some("peer-agent".into()),
+        submission_id: Some("peer-retry".into()),
+        preserve_draft: false,
+        // Larger than the Unix socket buffer, forcing transmission to wait.
+        prompt: "x".repeat(8 * 1024 * 1024),
+        wait: false,
+        timeout_ms: 30_000,
+    };
+    thread::scope(|scope| {
+        let (done, result) = crossbeam::channel::bounded(1);
+        scope.spawn(move || {
+            let budget = Duration::from_millis(500);
+            let started = Instant::now();
+            let response = prompt_peer_with_deadline(&name.into(), request, started + budget);
+            done.send((response, started.elapsed(), budget)).unwrap();
+        });
+        let connection = listener.accept().unwrap();
+        // Keep the socket open without reading until the complete call, including cleanup, ends.
+        let completed = result.recv_timeout(Duration::from_secs(3));
+        drop(connection);
+        let (response, elapsed, budget) = completed.expect("prompt call exceeded its deadline");
+        assert!(
+            response.unwrap_err().contains("Prompt outcome unknown"),
+            "sending a partial prompt must report an uncertain outcome"
+        );
+        // Allow socket timer granularity and scheduling, but not a second timeout for cleanup.
+        assert!(elapsed < budget + Duration::from_millis(250), "{elapsed:?}");
+    });
+    if socket.exists() {
+        fs::remove_file(socket).unwrap();
+    }
+}

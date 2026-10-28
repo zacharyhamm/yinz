@@ -9,6 +9,7 @@ description = "The yinz server's panes, pane managers, frames and layout applica
 workspace = true
 
 [dependencies]
+agent-proto = { path = "../default-plugins/agent-proto" }
 yinz-tile-markdown = { path = "../yinz-tile-markdown" }
 yinz-bus = { path = "../yinz-bus", version = "0.1.0" }
 yinz-ipc = { workspace = true }

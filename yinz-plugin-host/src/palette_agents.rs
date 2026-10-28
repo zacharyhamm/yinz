@@ -24,9 +24,27 @@ use yinz_types::data::{GetPaneCwdResponse, PaneInfo};
 mod history;
 
 pub(crate) fn handle(mut request: AgentRequest, senders: &ThreadSenders, data: &DataAccess) {
+    if let AgentAction::Usage { provider } = &request.action {
+        let usage = crate::provider_usage::collect(provider);
+        senders
+            .send_to_screen(ScreenInstruction::CommandPalette(Instruction::UsageReply {
+                client: request.client,
+                opening: request.opening,
+                view: request.step,
+                usage,
+            }))
+            .context("replying to palette usage query")
+            .non_fatal();
+        return;
+    }
     // A newly opened shell can precede the first cwd broadcast. Query the captured
     // pane, never whichever pane happens to be focused when this worker runs.
-    if request.source.cwd.is_none() && !matches!(request.action, AgentAction::History(_)) {
+    if request.source.cwd.is_none()
+        && !matches!(
+            request.action,
+            AgentAction::History(_) | AgentAction::Prompt { .. }
+        )
+    {
         let (tx, rx) = crossbeam::channel::bounded(1);
         if senders
             .send_to_pty(PtyInstruction::GetPaneCwd {
@@ -113,6 +131,39 @@ fn execute(
     use AgentAction::*;
     let source = match &request.action {
         History(action) => return history::execute(request, action, senders, data),
+        Prompt {
+            pane_id,
+            session_id,
+            target_session,
+            submission_id,
+        } => {
+            let prompt = request
+                .values
+                .first()
+                .filter(|v| !v.trim().is_empty())
+                .ok_or("Enter a prompt")?;
+            still_wanted(request)?;
+            // An absent pin makes agent control unguarded, so a stale form could
+            // replace the draft in a different conversation.
+            let session_id = session_id.as_ref().filter(|id| !id.is_empty()).ok_or(
+                "Agent has no conversation ID; refresh agent info before sending a prompt",
+            )?;
+            let prompt_request = yinz_types::agent::control::AgentRequest::Prompt {
+                pane_id: *pane_id,
+                expected_session_id: Some(session_id.clone()),
+                submission_id: Some(submission_id.clone()),
+                preserve_draft: false,
+                prompt: prompt.clone(),
+                wait: false,
+                timeout_ms: 30_000,
+            };
+            let response = if let Some(session) = target_session {
+                prompt_peer(session, prompt_request)?
+            } else {
+                agent_control::control_agent(prompt_request, request.client, senders, data)
+            };
+            return Ok(AgentReply::Prompted(response));
+        },
         _ => current_source(request, senders)?,
     };
     let choice = |label: String, description: String, action| AgentChoice {
@@ -122,7 +173,7 @@ fn execute(
     };
     let choices = |title: String, choices| Ok(AgentReply::Choices { title, choices });
     match &request.action {
-        History(_) => unreachable!("handled above"),
+        History(_) | Prompt { .. } | Usage { .. } => unreachable!("handled above"),
         NewProject { kind } => {
             if request.values.is_empty() {
                 return Ok(AgentReply::Form {
@@ -431,6 +482,77 @@ fn launch(
         Err(error) => error.into_response(),
     };
     Ok(AgentReply::Launched(response))
+}
+
+// A peer pane id is meaningful only inside its owning session. Send one guarded request
+// there, with the same submission identity on a retry after an uncertain reply.
+fn prompt_peer(
+    session: &yinz_types::internal_ids::SessionName,
+    request: yinz_types::agent::control::AgentRequest,
+) -> Result<yinz_types::agent::control::AgentResponse, String> {
+    prompt_peer_with_deadline(
+        session,
+        request,
+        std::time::Instant::now() + Duration::from_secs(32),
+    )
+}
+
+fn prompt_peer_with_deadline(
+    session: &yinz_types::internal_ids::SessionName,
+    request: yinz_types::agent::control::AgentRequest,
+    deadline: std::time::Instant,
+) -> Result<yinz_types::agent::control::AgentResponse, String> {
+    use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
+    const UNCERTAIN: &str = "Prompt outcome unknown; inspect agent before retrying";
+    let socket =
+        yinz_ipc::consts::ipc_connect(&yinz_runtime::consts::YINZ_SOCK_DIR.join(session.as_str()))
+            .map_err(|e| format!("Cannot connect to agent session: {e}"))?;
+    let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(socket);
+    let mut receiver = sender
+        .get_receiver::<ServerToClientMsg>()
+        .map_err(|e| e.to_string())?;
+    let result = (|| {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(UNCERTAIN.into());
+        }
+        sender
+            .set_send_timeout(Some(remaining))
+            .map_err(|e| e.to_string())?;
+        sender
+            .send_client_msg_until(ClientToServerMsg::AgentControl(request), deadline)
+            .map_err(|e| format!("{UNCERTAIN}: {e}"))?;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break Err(UNCERTAIN.into());
+            }
+            receiver
+                .set_recv_timeout(Some(remaining))
+                .map_err(|e| format!("{UNCERTAIN}: {e}"))?;
+            match receiver.recv_server_msg() {
+                IpcRecv::Msg(ServerToClientMsg::AgentControl(response), _) => break Ok(response),
+                IpcRecv::Msg(ServerToClientMsg::LogError { lines }, _) => {
+                    break Err(lines.join("\n"))
+                },
+                IpcRecv::Msg(ServerToClientMsg::Exit { .. }, _) | IpcRecv::Eof => {
+                    break Err("Agent session disconnected; prompt outcome unknown".into())
+                },
+                IpcRecv::Msg(_, _) => {},
+                _ => break Err(UNCERTAIN.into()),
+            }
+        }
+    })();
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    if !remaining.is_zero() {
+        sender
+            .set_send_timeout(Some(remaining))
+            .context("setting palette prompt cleanup timeout")
+            .and_then(|()| sender.send_client_msg_until(ClientToServerMsg::ClientExited, deadline))
+            .context("disconnecting palette prompt client")
+            .non_fatal();
+    }
+    result
 }
 
 #[cfg(test)]

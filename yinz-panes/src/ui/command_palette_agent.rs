@@ -52,16 +52,59 @@ impl Document {
 }
 struct Event {
     data: HistoryEvent,
-    document: Document,
+    document: agent_proto::agents::EntryPresentation,
 }
 struct Reader {
     header: String,
     document: Document,
     offset: usize,
+    sections: Vec<agent_proto::envelope::Section>,
+    section_blocks: Vec<Vec<MdBlock>>,
+    fold: usize,
+    width: Option<usize>,
+    lines: Vec<MdLine>,
+    starts: Vec<usize>,
+    raw: bool,
+}
+impl Reader {
+    fn new(
+        header: String,
+        document: Document,
+        sections: Vec<agent_proto::envelope::Section>,
+    ) -> Self {
+        let section_blocks = sections
+            .iter()
+            .map(agent_proto::envelope::section_blocks)
+            .collect();
+        Self {
+            header,
+            document,
+            offset: 0,
+            sections,
+            section_blocks,
+            fold: 0,
+            width: None,
+            lines: vec![],
+            starts: vec![],
+            raw: false,
+        }
+    }
+    fn toggle_fold(&mut self, index: usize) {
+        self.sections[index].open = !self.sections[index].open;
+        self.section_blocks[index] = agent_proto::envelope::section_blocks(&self.sections[index]);
+        self.width = None;
+    }
+}
+
+struct BrowsePosition {
+    revision: Option<u64>,
+    anchor: Option<(u64, usize)>,
+    offset: usize,
+    following: bool,
 }
 
 pub(super) struct AgentView {
-    header: HistoryHeader,
+    pub(super) header: HistoryHeader,
     events: Vec<Event>,
     actions: Vec<Entry>,
     status: String,
@@ -77,6 +120,8 @@ pub(super) struct AgentView {
     offset: usize,
     total: usize,
     page: usize,
+    searching: bool,
+    saved_position: Option<BrowsePosition>,
 }
 
 pub(super) struct AgentLayout {
@@ -90,6 +135,7 @@ pub(super) struct AgentLayout {
 enum Hit {
     Event(usize),
     Action(usize),
+    Fold(usize),
 }
 
 impl AgentView {
@@ -111,7 +157,20 @@ impl AgentView {
             offset: 0,
             total: 0,
             page: 1,
+            searching: false,
+            saved_position: None,
         }
+    }
+    pub fn search_mode(&mut self, searching: bool) {
+        if searching && !self.searching {
+            self.saved_position = Some(BrowsePosition {
+                revision: self.events.get(self.selected).map(|e| e.data.revision),
+                anchor: self.anchor,
+                offset: self.offset,
+                following: self.following,
+            });
+        }
+        self.searching = searching;
     }
     pub fn update(
         &mut self,
@@ -128,7 +187,11 @@ impl AgentView {
                 if let Some(i) = old.iter().position(|e| e.data == data) {
                     old.remove(i)
                 } else {
-                    let document = Document::markdown(&data.markdown);
+                    let document = agent_proto::agents::EntryPresentation::new(
+                        &data.kind,
+                        &data.markdown,
+                        data.truncated,
+                    );
                     Event { data, document }
                 }
             })
@@ -143,6 +206,30 @@ impl AgentView {
                     0
                 })
         };
+        if !self.searching
+            && let Some(saved) = self.saved_position.take()
+        {
+            self.following = saved.following;
+            self.anchor = saved.anchor;
+            self.offset = saved.offset;
+            self.reveal = false;
+            self.selected = if self.following {
+                self.events.len().saturating_sub(1)
+            } else {
+                saved
+                    .revision
+                    .and_then(|revision| {
+                        self.events.iter().position(|e| {
+                            e.data.revision == revision || e.data.revisions.contains(&revision)
+                        })
+                    })
+                    .unwrap_or_else(|| {
+                        self.anchor = None;
+                        self.reveal = true;
+                        0
+                    })
+            };
+        }
         self.header = header;
         self.action = self
             .actions
@@ -160,29 +247,39 @@ impl AgentView {
     }
     pub fn select_revision(&mut self, revision: u64) {
         self.following = false;
-        if let Some(i) = self.events.iter().position(|e| e.data.revision == revision) {
+        if let Some(i) = self
+            .events
+            .iter()
+            .position(|e| e.data.revision == revision || e.data.revisions.contains(&revision))
+        {
             self.selected = i;
             self.reveal = true;
         }
     }
     pub fn page_request(&mut self, following: bool) {
+        self.saved_position = None;
         self.following = following;
         self.anchor = None;
         self.reveal = true;
         self.actions_focused = false;
     }
     pub fn reader(&mut self, header: String, markdown: String, tool: String) {
-        let mut document = Document::markdown(&markdown);
+        let sections = if header == "prompt" {
+            agent_proto::envelope::sections(&markdown)
+        } else {
+            vec![]
+        };
+        let mut document = if matches!(header.as_str(), "tool_call" | "tool_result") {
+            Document::literal(&markdown, false)
+        } else {
+            Document::markdown(&markdown)
+        };
         if !tool.is_empty() {
             document
                 .blocks
                 .extend(Document::literal(&tool, true).blocks);
         }
-        self.reader = Some(Reader {
-            header,
-            document,
-            offset: 0,
-        });
+        self.reader = Some(Reader::new(header, document, sections));
     }
     pub fn back(&mut self) -> bool {
         // Details stays in this view; event readers have their own palette history entry.
@@ -227,7 +324,27 @@ impl AgentView {
     }
     pub fn key(&mut self, key: &KeyWithModifier, view: u64) -> Option<Outcome> {
         let bare = key.bare_key;
-        if self.reader.is_some() {
+        if let Some(reader) = &mut self.reader {
+            if key.has_no_modifiers() && !reader.sections.is_empty() {
+                match bare {
+                    BareKey::Char('j') => {
+                        reader.fold = (reader.fold + 1).min(reader.sections.len() - 1)
+                    },
+                    BareKey::Char('k') => reader.fold = reader.fold.saturating_sub(1),
+                    BareKey::Char('v') => {
+                        reader.raw = !reader.raw;
+                        reader.offset = 0;
+                    },
+                    BareKey::Enter => {
+                        reader.toggle_fold(reader.fold);
+                    },
+                    _ => {},
+                }
+                if matches!(bare, BareKey::Char('j' | 'k') | BareKey::Enter) {
+                    reader.offset = reader.starts.get(reader.fold).copied().unwrap_or(0);
+                    return Some(Outcome::None);
+                }
+            }
             match bare {
                 BareKey::Up | BareKey::Left => self.scroll(false, 1),
                 BareKey::Down | BareKey::Right => self.scroll(true, 1),
@@ -244,11 +361,11 @@ impl AgentView {
             BareKey::Enter if self.actions_focused => {
                 if let Some(action) = self.actions.get(self.action) {
                     if action.id == "history-details" {
-                        self.reader = Some(Reader {
-                            header: "Details".into(),
-                            document: Document::literal(&self.header.details, false),
-                            offset: 0,
-                        });
+                        self.reader = Some(Reader::new(
+                            "Details".into(),
+                            Document::literal(&self.header.details, false),
+                            vec![],
+                        ));
                     } else {
                         return Some(Outcome::Activate(action.id.clone()));
                     }
@@ -307,6 +424,12 @@ impl AgentView {
                 self.action = i;
                 self.actions_focused = true;
             },
+            Some(Hit::Fold(i)) => {
+                if let Some(reader) = &mut self.reader {
+                    reader.fold = i;
+                    reader.toggle_fold(i);
+                }
+            },
             None => {},
         }
     }
@@ -348,43 +471,25 @@ impl AgentView {
             layout.selected.push(selected);
         };
         let reader = self.reader.is_some();
-        if height >= 3 {
+        if reader && height >= 3 {
             add(
                 MdLine::plain(
                     self.reader
                         .as_ref()
                         .map(|r| r.header.clone())
-                        .unwrap_or_else(|| {
-                            use unicode_width::UnicodeWidthStr;
-                            format!(
-                                "{} · {}",
-                                take_columns(
-                                    &self.header.name,
-                                    width
-                                        .saturating_sub(self.header.status.width() + 3)
-                                        .max(width / 3)
-                                ),
-                                self.header.status
-                            )
-                        }),
+                        .unwrap_or_default(),
                 ),
                 None,
                 false,
             );
-        }
-        if height >= 12 && !reader {
-            add(
-                dim(format!(
-                    "{} · Started {}",
-                    take_columns(
-                        &self.header.location,
-                        width.saturating_sub(self.header.started.len() + 11)
-                    ),
-                    self.header.started
-                )),
-                None,
-                false,
-            );
+        } else if !reader {
+            for line in header_lines(
+                &self.header,
+                width,
+                height.saturating_sub(7).min(height / 2),
+            ) {
+                add(line, None, false);
+            }
         }
         if height >= 8 && !reader {
             add(
@@ -414,14 +519,33 @@ impl AgentView {
         let mut lines = vec![];
         self.spans.clear();
         if let Some(reader) = &mut self.reader {
-            lines.extend(
-                reader
-                    .document
-                    .lines(width)
-                    .iter()
-                    .cloned()
-                    .map(|l| (l, None, false)),
-            );
+            let wrapped = if !reader.raw && !reader.sections.is_empty() {
+                if reader.width != Some(width) {
+                    let folded = agent_proto::envelope::wrap_sections(
+                        reader.section_blocks.iter().map(Vec::as_slice),
+                        width,
+                    );
+                    reader.starts = folded.starts;
+                    reader.lines = folded.lines;
+                    reader.width = Some(width);
+                }
+                &reader.lines
+            } else {
+                reader.document.lines(width)
+            };
+            lines.extend(wrapped.iter().cloned().enumerate().map(|(row, l)| {
+                let fold = (!reader.raw && !reader.starts.is_empty()).then(|| {
+                    reader
+                        .starts
+                        .partition_point(|start| *start <= row)
+                        .saturating_sub(1)
+                });
+                (
+                    l,
+                    fold.map(Hit::Fold),
+                    fold == Some(reader.fold) && reader.starts.get(reader.fold) == Some(&row),
+                )
+            }));
             self.total = lines.len();
             reader.offset = reader.offset.min(self.total.saturating_sub(page));
             self.offset = reader.offset;
@@ -430,29 +554,26 @@ impl AgentView {
                 let start = lines.len();
                 let selected = i == self.selected && !self.actions_focused;
                 let hit = Some(Hit::Event(i));
-                lines.push((
-                    dim(format!(
-                        "{} {} · {}",
-                        if selected { "›" } else { " " },
-                        event.data.kind,
-                        event.data.time
-                    )),
-                    hit,
-                    selected,
-                ));
-                let preview = event.document.lines(width);
-                let more = preview.len() > 4 || event.data.truncated;
-                let keep = if more { 3 } else { 4 };
-                lines.extend(
-                    preview
-                        .iter()
-                        .take(keep)
-                        .cloned()
-                        .map(|l| (l, hit, selected)),
-                );
-                if more {
-                    lines.push((dim("… more"), hit, selected));
-                }
+                let preview = if !self.searching && event.data.kind == "tool_call" {
+                    vec![dim(format!(
+                        "{}tool call x{}",
+                        agent_proto::agents::age_gutter(
+                            agent_proto::agents::now_ms(),
+                            event.data.created_at_ms
+                        ),
+                        event.data.tool_calls.max(1)
+                    ))]
+                } else {
+                    event.document.lines(
+                        &event.data.kind,
+                        width,
+                        &agent_proto::agents::age_gutter(
+                            agent_proto::agents::now_ms(),
+                            event.data.created_at_ms,
+                        ),
+                    )
+                };
+                lines.extend(preview.into_iter().map(|l| (l, hit, selected)));
                 lines.push((MdLine::blank(), hit, false));
                 self.spans.push(start..lines.len());
             }
@@ -464,7 +585,9 @@ impl AgentView {
             if self.following {
                 self.offset = self.total.saturating_sub(page);
             } else if let Some((revision, line)) = self.anchor
-                && let Some(i) = self.events.iter().position(|e| e.data.revision == revision)
+                && let Some(i) = self.events.iter().position(|e| {
+                    e.data.revision == revision || e.data.revisions.contains(&revision)
+                })
             {
                 self.offset = self.spans[i].start + line.min(self.spans[i].len().saturating_sub(1));
             }
@@ -525,7 +648,7 @@ impl AgentView {
             layout.lines.push(dim(error.unwrap_or(if busy {
                 "Loading… · Esc Cancel"
             } else if reader {
-                "↑↓ Scroll · PgUp/PgDn · Home/End · Esc Back"
+                "↑↓ Scroll · j/k Folds · Enter Toggle · v Raw · Esc Back"
             } else if self.actions_focused {
                 "↑↓ Actions · Enter Choose · Tab Timeline · Esc Back"
             } else {
@@ -540,6 +663,102 @@ impl AgentView {
         }
         layout
     }
+}
+
+fn clipped(line: &MdLine, width: usize) -> MdLine {
+    let text = take_columns(&line.text, width);
+    let styles = line
+        .styles
+        .iter()
+        .copied()
+        .take(text.chars().count())
+        .collect();
+    MdLine { text, styles }
+}
+
+fn header_lines(header: &HistoryHeader, width: usize, budget: usize) -> Vec<MdLine> {
+    use unicode_width::UnicodeWidthStr;
+    if budget == 0 {
+        return vec![];
+    }
+    let now = agent_proto::agents::now_ms().max(0) as u64;
+    let mut quota = vec![];
+    if let Some(usage) = &header.usage {
+        let stale = usage.status != yinz_types::agent::control::ProviderUsageStatus::Ok
+            || usage
+                .observed_at_ms
+                .is_some_and(|at| now.saturating_sub(at) >= 120_000);
+        for window in &usage.windows {
+            let remaining = (100.0 - window.used_percent).clamp(0.0, 100.0).round();
+            let label = match window.label.as_str() {
+                "Weekly limit" | "7d" => "Weekly".to_owned(),
+                "5-hour limit" | "5-hour" | "5h" => "5hr".to_owned(),
+                label => take_columns(label, 8),
+            };
+            quota.push(dim(format!(
+                "{} · {remaining}%{}",
+                label,
+                if stale { " · stale" } else { "" }
+            )));
+            if let Some(reset) = window.resets_at_ms {
+                quota.push(dim(if reset <= now {
+                    "reset due".into()
+                } else {
+                    format!("{}m left", reset.saturating_sub(now).div_ceil(60_000))
+                }));
+            }
+        }
+        if quota.is_empty() {
+            quota.push(dim(usage.message.as_deref().unwrap_or("Quota unavailable")));
+        }
+    }
+    let wide = !quota.is_empty()
+        && quota.iter().all(|line| line.text.width() <= 24)
+        && width >= 60
+        && budget >= 5;
+    let quota_width = if wide { 24 } else { 0 };
+    let left_width = width.saturating_sub(quota_width + if wide { 2 } else { 0 });
+    let mut details = vec![MdLine::plain(&header.status)];
+    if !header.task.is_empty() {
+        details.push(MdLine::plain(format!("Task: {}", header.task)));
+    }
+    if !header.project.is_empty() {
+        details.push(dim(&header.project));
+    }
+    if !header.location.is_empty() {
+        details.push(dim(&header.location));
+    }
+    if !header.started.is_empty() {
+        details.push(dim(format!("Started {}", header.started)));
+    }
+    let session = dim(&header.session_id);
+    let room = budget.saturating_sub(usize::from(!header.session_id.is_empty()));
+    details.truncate(if wide {
+        room
+    } else {
+        room.saturating_sub(quota.len().min(2))
+    });
+    for line in &mut details {
+        *line = clipped(line, left_width);
+    }
+    if wide {
+        for (i, quota) in quota.into_iter().take(room).enumerate() {
+            while details.len() <= i {
+                details.push(MdLine::blank());
+            }
+            let line = &mut details[i];
+            let gap = width.saturating_sub(quota_width + line.text.width());
+            append(line, &MdLine::plain(" ".repeat(gap)));
+            append(line, &clipped(&quota, quota_width));
+        }
+    } else {
+        details.extend(quota.into_iter().take(2).map(|l| clipped(&l, width)));
+    }
+    if !header.session_id.is_empty() {
+        details.push(clipped(&session, width));
+    }
+    details.truncate(budget);
+    details
 }
 
 fn dim(text: impl Into<String>) -> MdLine {
