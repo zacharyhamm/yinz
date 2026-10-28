@@ -1244,6 +1244,9 @@ fn agents_follow_the_theme_on_startup_and_mode_updates() {
                 })));
             }
             let frame = h.panel.render(24, 90);
+            // PluginPane clears each complete render before parsing the next one.
+            grid.delete_viewport_and_scroll();
+            grid.reset_cursor_position();
             vte::Parser::new().advance(&mut grid, frame.as_bytes());
             let lines = grid.as_character_lines();
             for text in ["? claude", "codex", "Themed history", "Enter focus"] {
@@ -1256,7 +1259,7 @@ fn agents_follow_the_theme_on_startup_and_mode_updates() {
                             .contains(text)
                     })
                     .unwrap_or_else(|| panic!("missing {text}: {}", grid.dump_screen(false)));
-                // The waiting agent's glyph and status take the attention color; its kind does not.
+                // Agent glyphs and provider names are bold; secondary text stays unbolded.
                 // A cell index, not a byte offset: the glyphs before the kind are multibyte.
                 let chars: String = line.iter().map(|c| c.character).collect();
                 let start = chars[..chars.find(text).unwrap()].chars().count();
@@ -1265,7 +1268,11 @@ fn agents_follow_the_theme_on_startup_and_mode_updates() {
                     "codex" => &line[start..start + text.chars().count()],
                     _ => &line[..],
                 };
-                for cell in region.iter().filter(|cell| !cell.character.is_whitespace()) {
+                for (index, cell) in region
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, cell)| !cell.character.is_whitespace())
+                {
                     let selected = cell.styles.background
                         == Some(style.colors.text_selected.background.into());
                     let foreground = if selected {
@@ -1279,7 +1286,16 @@ fn agents_follow_the_theme_on_startup_and_mode_updates() {
                         "{text}: {cell:?}"
                     );
                     assert_ne!(cell.styles.dim, Some(AnsiCode::On), "{text}: {cell:?}");
-                    assert_ne!(cell.styles.bold, Some(AnsiCode::On), "{text}: {cell:?}");
+                    let bold = match text {
+                        "? claude" => (start..start + text.chars().count()).contains(&index),
+                        "codex" => true,
+                        _ => false,
+                    };
+                    assert_eq!(
+                        cell.styles.bold == Some(AnsiCode::On),
+                        bold,
+                        "{text}: {cell:?}"
+                    );
                 }
                 if text == "? claude" {
                     assert!(region.iter().all(|cell| cell.styles.background

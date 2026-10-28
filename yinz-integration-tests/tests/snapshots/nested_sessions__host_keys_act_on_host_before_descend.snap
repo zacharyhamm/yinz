@@ -4,7 +4,7 @@ expression: normalized(&host_focused_on_sibling)
 ---
  Yinz (test)  Tab #1  + 
                        [0] Yinz:test-1                     │                       👇 [1] Pane #2
- Yinz (test)  [0] Tab #1  +                          │$ █
+ Yinz (test)  [0] Tab #1  +        Alt <[]>  BASE  │$ █
                                                            │
                                                            │
                                                            │

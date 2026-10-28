@@ -92,6 +92,14 @@ fn ascended_single_blank_pane_guest_settled(guest_grid: &GridSnapshot) -> bool {
     guest_ascended_ui_settled(guest_grid) && prompt_count(guest_grid) == 0
 }
 
+fn guest_base_layout_settled(guest_grid: &GridSnapshot) -> bool {
+    // At the half-width used by these snapshots, the guest's layout hint fits and
+    // arrives separately from its pane and mode updates.
+    guest_grid
+        .tab_bar_line()
+        .is_some_and(|line| line.contains("Alt <[]>") && line.contains("BASE"))
+}
+
 fn ascended_two_pane_guest_settled(guest_grid: &GridSnapshot) -> bool {
     guest_ascended_ui_settled(guest_grid)
         && guest_grid.contains("Pane #1")
@@ -290,7 +298,7 @@ fn host_keys_act_on_host_until_focus_enters_the_guest_then_route_to_guest() {
     split_host_sibling(&nested);
     let host_focused_on_sibling = nested.wait_until_host_composites_settled_guest(
         "host acted on its own split keybind and created a sibling pane",
-        ascended_single_blank_pane_guest_settled,
+        |guest| ascended_single_blank_pane_guest_settled(guest) && guest_base_layout_settled(guest),
         |host_grid| {
             normal_mode_bar_settled(host_grid)
                 && host_grid.contains("Pane #2")
@@ -369,7 +377,7 @@ fn focus_host_session_binding_returns_control_to_host() {
 
     let host_ascended = nested.wait_until_host_composites_settled_guest(
         "host took control back from the guest",
-        ascended_single_blank_pane_guest_settled,
+        |guest| ascended_single_blank_pane_guest_settled(guest) && guest_base_layout_settled(guest),
         |host_grid| {
             normal_mode_bar_settled(host_grid)
                 && host_grid.contains("Pane #2")
@@ -417,7 +425,7 @@ fn clicking_a_host_pane_while_descended_refocuses_and_ascends() {
 
     let host_after_click = nested.wait_until_host_composites_settled_guest(
         "host focus moved onto the clicked host pane",
-        ascended_single_blank_pane_guest_settled,
+        |guest| ascended_single_blank_pane_guest_settled(guest) && guest_base_layout_settled(guest),
         |host_grid| {
             normal_mode_bar_settled(host_grid)
                 && host_grid.contains("Pane #2")
@@ -806,7 +814,7 @@ fn guest_going_away_clears_passthrough() {
     build_descended_state_with_host_sibling(&nested);
     nested.wait_until_host_composites_settled_guest(
         "host settled the descended guest view before the guest froze",
-        single_blank_pane_guest_settled,
+        |guest| single_blank_pane_guest_settled(guest) && guest_base_layout_settled(guest),
         |host_grid| {
             host_descended_bar_settled(host_grid)
                 && host_grid.contains("Pane #2")
@@ -1268,6 +1276,11 @@ fn move_focus_or_tab_wraps_tabs_without_bubbling_when_the_guest_has_multiple_tab
     let nested = NestedHarness::start(TERMINAL_SIZE);
 
     build_descended_state_with_host_sibling(&nested);
+    let first = nested.guest.expect_pty_spawn();
+    first.output(b"FIRST GUEST TAB\r\n");
+    nested.guest.wait_until("first guest tab ready", |grid| {
+        grid.contains("FIRST GUEST TAB")
+    });
 
     nested.host.send_stdin(&keys::ctrl('t'));
     nested.guest.wait_until(
@@ -1275,10 +1288,12 @@ fn move_focus_or_tab_wraps_tabs_without_bubbling_when_the_guest_has_multiple_tab
         guest_tab_mode_bar_settled,
     );
     nested.host.send_stdin(&keys::key('n'));
+    let second = nested.guest.expect_pty_spawn();
+    second.output(b"SECOND GUEST TAB\r\n");
     nested
         .guest
         .wait_until("guest opened a second tab and focused it", |guest_grid| {
-            guest_grid.contains("Tab #2") && guest_normal_mode_bar_settled(guest_grid)
+            guest_grid.contains("SECOND GUEST TAB") && guest_normal_mode_bar_settled(guest_grid)
         });
 
     let focus_host_before = nested
@@ -1288,9 +1303,9 @@ fn move_focus_or_tab_wraps_tabs_without_bubbling_when_the_guest_has_multiple_tab
     nested.guest.wait_until(
         "guest wrapped back to the first tab instead of bubbling",
         |guest_grid| {
-            guest_grid.tab_bar_line().is_some_and(|first_line| {
-                first_line.contains("Tab #1") && first_line.contains("Tab #2")
-            }) && guest_normal_mode_bar_settled(guest_grid)
+            // The narrow guest bar can collapse the inactive tab into an overflow hint.
+            // Pane content proves which tab is active regardless of that presentation.
+            guest_grid.contains("FIRST GUEST TAB") && guest_normal_mode_bar_settled(guest_grid)
         },
     );
     assert_eq!(

@@ -1039,9 +1039,10 @@ fn command_palette_agent_history_event_back_focus_and_archive_resume() {
     yinz.wait_until("agent timeline", |s| {
         s.contains("Unique retained palette conversation")
     });
+    yinz.send_stdin(b"\t"); // Search -> messages.
     yinz.send_stdin(b"\r");
     yinz.wait_until("expanded event", |s| {
-        s.contains("Reader-only final paragraph") && s.contains("Revision: 1")
+        s.contains("Reader-only final paragraph") && s.contains("Agent info · Reader")
     });
     yinz.send_stdin(&keys::ESC);
     yinz.wait_until("back to timeline", |s| {
@@ -1073,7 +1074,7 @@ fn command_palette_agent_history_event_back_focus_and_archive_resume() {
     yinz.wait_until("archive selection restored", |s| {
         s.contains("Resume") && s.contains("Latest / Refresh")
     });
-    yinz.send_stdin(b"\t"); // Timeline -> actions.
+    yinz.send_stdin(b"\t\t"); // Search -> messages -> actions (no prompt for an archived run).
     yinz.send_stdin(b"\r");
     let resumed = yinz.expect_pty_spawn();
     assert!(resumed

@@ -602,6 +602,8 @@ fn the_visible_members_scroll_state_shows_on_its_entry() {
             && !grid_snapshot.contains("SCROLL: 0/")
             && has_selected_entry(grid_snapshot, "Pane #2")
             && grid_snapshot.contains("PgDn|PgUp")
+            // The tab bar receives the scroll position separately from the pane frame.
+            && grid_snapshot.tab_bar_line().is_some_and(|line| line.contains("[ SCROLL 21/22 ]"))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();

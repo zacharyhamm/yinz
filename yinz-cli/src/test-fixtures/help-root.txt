@@ -58,6 +58,10 @@ Options:
           Change where yinz looks for the configuration file [env: YINZ_CONFIG_FILE=]
       --config-dir <CONFIG_DIR>
           Change where yinz looks for the configuration directory [env: YINZ_CONFIG_DIR=]
+      --remote <HOST>
+          Start a new session on this host or SSH config alias through OpenSSH and attach to it. The
+          remote host names the session unless --session names it; a name that is already taken
+          there, running or resurrectable, is refused. Configure the session on the remote host
   -d, --debug
           Specify emitting additional debug information
   -h, --help
