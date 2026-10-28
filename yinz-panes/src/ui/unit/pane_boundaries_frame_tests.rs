@@ -92,6 +92,25 @@ fn pin_hit_target_matches_the_visible_checkbox() {
 }
 
 #[test]
+fn narrow_agent_pin_hit_target_matches_multiplayer_title_fallback() {
+    let mut frame = pane_frame_with(false, true, 21);
+    frame.title = "[1] x".into();
+    frame.content_offset = Offset::frame(1);
+    frame.other_focused_clients = vec![None];
+    frame.agent_title.state = Some(yinz_types::agent::AgentState::Busy);
+    let rendered = characters_to_string(&frame.render_title().unwrap());
+    let pin = rendered.rfind(" PIN [").expect("pin must be visible");
+    let start = rendered[..pin].width() + 5 - frame.content_offset.left;
+    for column in 0..frame.geom.cols {
+        assert_eq!(
+            frame.clicked_on_pinned(Position::new(-1, column as u16)),
+            (start..start + 3).contains(&column),
+            "column {column} of {rendered:?}"
+        );
+    }
+}
+
+#[test]
 fn subtitle_fits_unicode_columns_without_touching_content_or_borders() {
     for full in [false, true] {
         for floating in [false, true] {

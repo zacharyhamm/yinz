@@ -1034,12 +1034,70 @@ fn hook_flash_clock_repaints_collapsed_and_list_stack_titles() {
         AgentEvent, HookEvent,
     };
     for list in [false, true] {
-        for style in [PaneFrameStyle::Full, PaneFrameStyle::None] {
+        for (style, cover_under) in [
+            (PaneFrameStyle::Full, false),
+            (PaneFrameStyle::None, false),
+            (PaneFrameStyle::None, true),
+        ] {
+            if list && cover_under {
+                continue;
+            }
             let (mut screen, _jobs) = pair(false, true, list, style);
+            let agent_pane = if cover_under { FOCUSED } else { WAITING };
+            if cover_under {
+                let tab = screen.tabs.get_mut(&TAB).unwrap();
+                tab.new_pane(
+                    PaneId::Terminal(TerminalId::new(3)),
+                    None,
+                    None,
+                    false,
+                    false,
+                    NewPanePlacement::Tiled {
+                        direction: Some(Direction::Down),
+                        borderless: None,
+                    },
+                    Some(CLIENT),
+                    None,
+                )
+                .unwrap();
+                tab.focus_pane_with_id(WAITING, false, false, CLIENT)
+                    .unwrap();
+                let pane = tab.get_pane_with_id(agent_pane).unwrap();
+                let mut cover_geom = pane.render_geom();
+                let title_y = cover_geom.y - pane.get_content_offset().bottom;
+                assert!(title_y < cover_geom.y);
+                cover_geom.rows = yinz_types::pane_size::Dimension::fixed(1);
+                let cover = PaneId::Terminal(TerminalId::new(4));
+                tab.new_pane(
+                    cover,
+                    None,
+                    None,
+                    false,
+                    true,
+                    NewPanePlacement::Floating(None),
+                    Some(CLIENT),
+                    None,
+                )
+                .unwrap();
+                // Set exact geometry to cover just the nominal row, leaving the title exposed.
+                tab.get_pane_with_id_mut(cover)
+                    .unwrap()
+                    .set_geom(cover_geom);
+                assert!(tab.agent_title_is_visible(agent_pane, Some(CLIENT)));
+                let mut hidden_geom = cover_geom;
+                hidden_geom.y = title_y;
+                tab.get_pane_with_id_mut(cover)
+                    .unwrap()
+                    .set_geom(hidden_geom);
+                assert!(!tab.agent_title_is_visible(agent_pane, Some(CLIENT)));
+                tab.get_pane_with_id_mut(cover)
+                    .unwrap()
+                    .set_geom(cover_geom);
+            }
             let mut agent = waiting();
             agent.state = AgentState::Busy;
             agent.wait_needs_a_person = false;
-            apply_pane_agent_report(&mut screen, WAITING, Some(agent)).unwrap();
+            apply_pane_agent_report(&mut screen, agent_pane, Some(agent)).unwrap();
             let start = Instant::now();
             screen.pinned_now = Some(start);
             let hook = HookEvent {
@@ -1049,7 +1107,7 @@ fn hook_flash_clock_repaints_collapsed_and_list_stack_titles() {
             apply_queued_agent_report(
                 &mut screen,
                 &AgentReport {
-                    pane_id: WAITING,
+                    pane_id: agent_pane,
                     report_id: "flash".into(),
                     process_id: ProcessId::new(1),
                     kind: "claude".into(),

@@ -1487,7 +1487,12 @@ impl PaneFrame {
         let right_side_space = match self.render_title_middle(total_title_length) {
             Some((_, middle_length)) => {
                 let side_space = total_title_length.saturating_sub(middle_length + 2) / 2;
-                self.render_title_left_side(side_space).map(|_| side_space)
+                if side_space == 0 && self.agent_title.marker().is_some() {
+                    self.render_title_left_side(total_title_length)
+                        .map(|(_, length)| total_title_length.saturating_sub(length + 1))
+                } else {
+                    self.render_title_left_side(side_space).map(|_| side_space)
+                }
             },
             None => self
                 .render_title_left_side(total_title_length)
