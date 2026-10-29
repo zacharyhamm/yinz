@@ -6917,3 +6917,55 @@ fn hook_flash_renders_matching_agent_in_both_views_and_clock_restores_dot() {
     screen.sync_animation_clock(screen.frame_now()).unwrap();
     assert_eq!(screen.animation_clock_period(screen.frame_now()), None);
 }
+
+#[test]
+fn native_worktree_search_launches_typed_branch_once_without_a_form() {
+    use yinz_bus::command_palette::{
+        AgentAction, AgentChoice, AgentProject, AgentReply, Instruction,
+    };
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    let mut screen = screen();
+    let (tx, rx) = unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let enter = Some(KeyWithModifier::new(BareKey::Enter));
+    let next = || {
+        rx.try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PluginInstruction::PaletteAgent(request) => Some(*request),
+                _ => None,
+            })
+            .unwrap()
+    };
+    screen.toggle_command_palette(CLIENT);
+    screen.command_palette_handles_input(&None, b"claude worktree", false, CLIENT);
+    screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+    let request = next();
+    screen.plugin_palette_instruction(Instruction::AgentReply {
+        client: CLIENT,
+        opening: request.opening,
+        step: request.step,
+        reply: Ok(AgentReply::Choices {
+            title: "project · Worktrees".into(),
+            choices: vec![AgentChoice {
+                label: "Create new worktree…".into(),
+                description: String::new(),
+                action: AgentAction::Checkout {
+                    kind: "claude".into(),
+                    project: AgentProject::Registered("project".into()),
+                    path: None,
+                },
+            }],
+        }),
+    });
+    screen.command_palette_handles_input(&None, b"feature/typed-branch", false, CLIENT);
+    screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+    let launch = next();
+    assert!(matches!(launch.action, AgentAction::Checkout {
+        kind, project: AgentProject::Registered(project), path: None,
+    } if kind == "claude" && project == "project"));
+    assert_eq!(launch.values, ["feature/typed-branch"]);
+    screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+    assert!(!rx
+        .try_iter()
+        .any(|(instruction, _)| matches!(instruction, PluginInstruction::PaletteAgent(_))));
+}

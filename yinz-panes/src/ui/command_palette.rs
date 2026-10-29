@@ -199,6 +199,7 @@ pub struct CommandPalette {
     history: Vec<CommandPalette>,
     native_entries: Vec<Entry>,
     sections: Vec<PluginSection>,
+    worktree_creation: Option<(String, String, Vec<String>)>,
     title: Option<String>,
     text: Option<String>,
     text_offset: usize,
@@ -640,7 +641,39 @@ impl CommandPalette {
         self.is_root() && !self.input.get_text().trim().is_empty()
     }
 
+    /// Configure the worktree view's creation row and navigation rows hidden during search.
+    pub fn set_worktree_creation(&mut self, id: String, navigation: Vec<String>) {
+        if let Some(entry) = self.entries.iter().find(|entry| entry.id == id) {
+            self.worktree_creation = Some((id, entry.label.clone(), navigation));
+            self.rematch();
+        }
+    }
+
+    pub fn worktree_creation_values(&self, id: &str) -> Vec<String> {
+        if self
+            .worktree_creation
+            .as_ref()
+            .is_some_and(|(create, _, _)| create == id)
+            && !self.query().trim().is_empty()
+        {
+            vec![self.query().to_owned()]
+        } else {
+            vec![]
+        }
+    }
+
     fn rematch(&mut self) {
+        let worktree_search = self.worktree_creation.is_some() && !self.query().trim().is_empty();
+        if let Some((id, label, _)) = &self.worktree_creation {
+            let label = if worktree_search {
+                escape_literal(&format!("Create worktree ‘{}’", self.query()))
+            } else {
+                label.clone()
+            };
+            if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == *id) {
+                entry.label = label;
+            }
+        }
         let agent_query = yinz_bus::command_palette::query::AgentQuery::parse(
             self.input.get_text(),
             yinz_bus::command_palette::query::LIVE_FIELDS,
@@ -690,6 +723,18 @@ impl CommandPalette {
                 )
             })
             .filter_map(|(index, entry)| {
+                if let Some((create, _, navigation)) = &self.worktree_creation {
+                    if worktree_search {
+                        if entry.id == *create {
+                            return Some((index, 0));
+                        }
+                        if navigation.contains(&entry.id) {
+                            return None;
+                        }
+                    } else {
+                        return Some((index, 0));
+                    }
+                }
                 if self.picker == Some(EntryKind::Agent) && entry.id == "agent-filters" {
                     return Some((index, u32::MAX));
                 }
@@ -772,6 +817,16 @@ impl CommandPalette {
                 }
             })
             .collect();
+        if worktree_search
+            && let Some((create, _, _)) = &self.worktree_creation
+            && let Some(position) = self
+                .matches
+                .iter()
+                .position(|i| self.entries[*i].id == *create)
+        {
+            let index = self.matches.remove(position);
+            self.matches.push(index);
+        }
         self.selected = self.selected.min(self.matches.len().saturating_sub(1));
         self.selected_status = if self.matches.is_empty() && self.picker.is_none() {
             self.sections

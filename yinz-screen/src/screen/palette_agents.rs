@@ -240,7 +240,7 @@ impl Screen {
             return true;
         }
         let (id, values) = match outcome {
-            Outcome::Activate(id) => (id, vec![]),
+            Outcome::Activate(id) => (id, state.widget.worktree_creation_values(id)),
             Outcome::Submit { id, values } => (id, values.clone()),
             _ => return false,
         };
@@ -336,11 +336,18 @@ impl Screen {
             Ok(AgentReply::Choices { title, choices }) => {
                 state.agents.submitted = false;
                 state.widget.push_view(FIRST_VIEW + step, title.clone());
+                let mut creation = None;
+                let mut navigation = Vec::new();
                 let entries = choices
                     .into_iter()
                     .enumerate()
                     .map(|(i, choice)| {
                         let id = format!("native-agent:{step}:{i}");
+                        match &choice.action {
+                            AgentAction::Checkout { path: None, .. } => creation = Some(id.clone()),
+                            AgentAction::Projects { .. } => navigation.push(id.clone()),
+                            _ => {},
+                        }
                         state.agents.actions.insert(id.clone(), choice.action);
                         Entry {
                             id,
@@ -360,6 +367,9 @@ impl Screen {
                     semantic: false,
                     status,
                 }]);
+                if let Some(id) = creation {
+                    state.widget.set_worktree_creation(id, navigation);
+                }
             },
             Ok(AgentReply::Form {
                 title,

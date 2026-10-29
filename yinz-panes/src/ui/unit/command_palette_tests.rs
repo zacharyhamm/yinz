@@ -3291,3 +3291,60 @@ fn inline_markdown_keeps_styles_aligned_across_many_blocks() {
     assert!(plain.styles[3..7].iter().all(|style| style.bold));
     assert_eq!(plain.styles[7], MdStyle::default());
 }
+
+#[test]
+fn worktree_search_offers_creation_after_matches_and_restores_navigation() {
+    let mut palette = CommandPalette::default();
+    palette.push_view(1, "Worktrees".into());
+    palette.set_sections(vec![PluginSection {
+        title: "Worktrees".into(),
+        entries: vec![
+            entry("create", "Create new worktree…", EntryKind::Plugin),
+            entry("main", "main", EntryKind::Plugin),
+            entry("topic", "topic", EntryKind::Plugin),
+            entry("project", "Change project…", EntryKind::Plugin),
+        ],
+        semantic: false,
+        status: None,
+    }]);
+    palette.set_worktree_creation("create".into(), vec!["project".into()]);
+    assert_eq!(ids(&palette), ["create", "main", "topic", "project"]);
+    for query in ["mai", "main"] {
+        palette.set_query(query.into());
+        assert_eq!(ids(&palette), ["main", "create"]);
+        assert_eq!(palette.selected_entry().unwrap().id, "main");
+    }
+    for query in ["new-branch", "project", " **literal** "] {
+        palette.set_query(query.into());
+        assert_eq!(ids(&palette), ["create"]);
+        let selected = palette.selected_entry().unwrap();
+        assert_eq!(
+            inline(&selected.label).text,
+            format!("Create worktree ‘{query}’")
+        );
+        assert_eq!(palette.worktree_creation_values(&selected.id), [query]);
+        assert_eq!(
+            palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+            Outcome::Activate("create".into())
+        );
+    }
+    palette.push_view(2, "Other view".into());
+    assert!(palette.worktree_creation.is_none());
+    assert_eq!(palette.back(), Outcome::None);
+    assert_eq!(ids(&palette), ["create"]);
+    assert_eq!(
+        palette.worktree_creation_values("create"),
+        [" **literal** "]
+    );
+    for query in ["", "   "] {
+        palette.set_query(query.into());
+        assert_eq!(ids(&palette), ["create", "main", "topic", "project"]);
+        assert_eq!(
+            palette.selected_entry().unwrap().label,
+            "Create new worktree…"
+        );
+        assert!(palette.worktree_creation_values("create").is_empty());
+    }
+    assert_eq!(palette.back(), Outcome::None);
+    assert!(palette.worktree_creation.is_none());
+}
