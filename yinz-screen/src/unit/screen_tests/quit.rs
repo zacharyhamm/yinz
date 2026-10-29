@@ -468,6 +468,48 @@ fn the_last_pane_closing_confirms_when_a_plugin_guards() {
     );
 }
 
+#[test]
+fn paste_into_an_empty_tab_completes_while_a_quit_guard_replacement_loads() {
+    let client = ClientId::new(1);
+    for paste_client in [client, CLIENT_2] {
+        let (mut screen, screen_receiver, server_receiver, plugin_receiver) =
+            screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[client]);
+        screen.set_quit_notice(AGENT_PLUGIN_ID, Some("agent is still working".into()), true);
+        close_pane(&mut screen, PaneId::Terminal(TerminalId::new(1)));
+        screen.settle_tabs().unwrap();
+
+        let requested = requested_tabs(&plugin_receiver);
+        assert_eq!(requested.len(), 1);
+        assert_eq!(screen.active_tab_ids[&client], TabId::new(1));
+        assert_eq!(screen.tabs[&TabId::new(1)].get_active_pane_id(client), None);
+        assert_eq!(screen.client_to_act_for(paste_client), Some(client));
+        // Unattached callers have no input mode, so paste exits before fallback delivery.
+        assert_eq!(
+            screen.get_client_input_mode(paste_client),
+            (paste_client == client).then_some(InputMode::Normal)
+        );
+        let (sender, mut completed) = tokio::sync::oneshot::channel();
+        screen
+            .paste_from_client(
+                "pasted text".into(),
+                paste_client,
+                Some(crate::NotificationEnd::new_client_input(sender)),
+            )
+            .expect("paste failure must not stop the screen loop");
+        assert!(completed.try_recv().is_ok(), "the caller is released");
+        screen.settle_tabs().unwrap();
+        assert!(requested_tabs(&plugin_receiver).is_empty());
+        assert_eq!(launches(&screen_receiver), 0);
+
+        load_replacement_tab(&mut screen, requested[0], 2);
+        screen.settle_tabs().unwrap();
+        assert_eq!(screen.active_tab_ids[&client], requested[0]);
+        assert_every_client_has_a_tab(&screen);
+        assert_eq!(launches(&screen_receiver), 1);
+        assert!(!session_ended(&server_receiver));
+    }
+}
+
 /// Several tabs can empty in one instruction. One replacement serves them all.
 #[test]
 fn closing_all_tabs_at_once_still_confirms_when_a_plugin_guards() {

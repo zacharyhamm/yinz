@@ -368,12 +368,17 @@ fn publishing_and_persistence_keep_long_histories_and_other_live_agents() {
 fn run_conflicts_merge_history_and_retry_without_losing_revision_guards() {
     // The mock store checks the actual emitted guards and commits metadata and entries together.
     // Each case schedules commits/failures explicitly; no threads or sleeps control the race.
-    for (retry_conflict, read_failure, completed, local_summary) in [
-        (false, false, false, false),
-        (true, false, false, true),
-        (false, true, true, false),
-        (false, true, false, false),
+    for (retry_conflict, read_fault, read_race, completed, local_summary) in [
+        (false, None, false, false, false),
+        (true, None, false, false, true),
+        (false, Some("entries"), false, true, false),
+        (false, Some("entries"), false, false, false),
+        (false, Some("metadata"), false, false, false),
+        (false, Some("validation"), false, false, false),
+        (false, Some("missing"), false, false, false),
+        (true, None, true, false, true),
     ] {
+        let read_failure = read_fault.is_some();
         let (mut runtime, host) = plugin_with_source(
             "agent-service",
             r#"
@@ -394,7 +399,7 @@ fn run_conflicts_merge_history_and_retry_without_losing_revision_guards() {
             (define (finish) (as-call "finish-run" 8 "Completed" 30))
             (define (persist-now) (as-call "persist"))
             (define (snapshot) (list stored store-rev attempts (as-get "dirty-runs") (as-get "adoptions") (as-get "runs")
-                (as-get "run-bases") (as-get "run-revisions") (as-get "persisted")))
+                (as-get "run-bases") (as-get "run-revisions") (as-get "persisted") (as-get "summaries")))
             (define (reload)
               (as-reset!) (as-set! "host" "host") (as-set! "session" "destination")
               (as-map-set! "runs" 8 (as-call "load-run" "claude:handoff")))
@@ -407,9 +412,10 @@ fn run_conflicts_merge_history_and_retry_without_losing_revision_guards() {
             BTreeMap::new(),
             r#"
             (define stored #f) (define store-rev 0) (define attempts '())
-            (define fail-read #f) (define race-retry #f)
+            (define fail-read #f) (define race-retry #f) (define race-read #f) (define metadata-reads 0)
             (define (set-store run rev) (set! stored run) (set! store-rev rev))
-            (define (faults read race) (set! fail-read read) (set! race-retry race))
+            (define (faults read race) (set! fail-read read) (set! race-retry race) (set! metadata-reads 0))
+            (define (commit-during-read run) (set! race-read run))
             (define (rows columns values) (hash "columns" columns "rows" values "truncated" #f "next_cursor" json-null))
             (define (entry-row entry)
               (map (lambda (key)
@@ -417,12 +423,19 @@ fn run_conflicts_merge_history_and_retry_without_losing_revision_guards() {
                   (cond ((json-null? value) "Null") ((number? value) (hash "Int" value)) (else (hash "Text" value))))
                 '("revision" "event_id" "kind" "text" "created_at_ms")))
             (define (yinz-data-fetch namespace request)
-              (when (and fail-read (equal? (hash-ref request "entity") "agent_run_entry")) (error "injected read failure"))
+              (when (and (equal? fail-read "entries") (equal? (hash-ref request "entity") "agent_run_entry")) (error "injected read failure"))
+              (when (and race-read (equal? (hash-ref request "entity") "agent_run_entry"))
+                (set-store race-read (+ store-rev 1)) (set! race-read #f))
               (if (equal? (hash-ref request "entity") "agent_run")
-                (rows '("uid" "rev" "payload" "host_id" "yinz_session_name")
-                  (list (list (hash "Text" "claude:handoff") (hash "Int" store-rev)
-                    (hash "Text" (yinz-json-string (hash-insert stored "entries" '())))
-                    (hash "Text" (hash-ref stored "host_id")) (hash "Text" (hash-ref stored "yinz_session_name")))))
+                (begin
+                  (set! metadata-reads (+ metadata-reads 1))
+                  (when (or (equal? fail-read "metadata") (and (equal? fail-read "validation") (= metadata-reads 2)))
+                    (error "injected metadata read failure"))
+                  (rows '("uid" "rev" "payload" "host_id" "yinz_session_name")
+                    (if (and (equal? fail-read "missing") (= metadata-reads 2)) '()
+                      (list (list (hash "Text" "claude:handoff") (hash "Int" store-rev)
+                        (hash "Text" (yinz-json-string (hash-insert stored "entries" '())))
+                        (hash "Text" (hash-ref stored "host_id")) (hash "Text" (hash-ref stored "yinz_session_name")))))))
                 (rows '("run_id" "revision" "event_id" "kind" "text" "created_at_ms")
                   (map (lambda (entry) (cons (hash "Text" "claude:handoff") (entry-row entry))) (hash-ref stored "entries")))))
             (define (yinz-data-fetch-all namespace request) (yinz-data-fetch namespace request))
@@ -454,7 +467,7 @@ fn run_conflicts_merge_history_and_retry_without_losing_revision_guards() {
             "host_id":"host", "yinz_session_name":"source", "started_at_ms":1,
             "ended_at_ms":if read_failure { json!(5) } else { json!(null) },
             "outcome":if read_failure { "completed" } else { "active" },
-            "revision":1, "summarized_revision":0,
+            "revision":1, "summarized_revision":0, "cwd":null, "host":null,
             "summary":null, "entries":[entry(1, "original", None)],
         });
         runtime.invoke("setup", vec![original.clone()]).unwrap();
@@ -485,12 +498,41 @@ fn run_conflicts_merge_history_and_retry_without_losing_revision_guards() {
             entry(3, "shared event", Some("shared"))
         ]);
         runtime
-            .invoke("set-store", vec![released, json!(11)])
+            .invoke("set-store", vec![released.clone(), json!(11)])
             .unwrap();
+        let mut concurrent = released;
+        if read_race {
+            concurrent["revision"] = json!(4);
+            concurrent["summarized_revision"] = json!(4);
+            concurrent["summary"] = summary("concurrent");
+            concurrent["entries"].as_array_mut().unwrap().push(entry(
+                4,
+                "concurrent summary",
+                None,
+            ));
+            runtime
+                .invoke("commit-during-read", vec![concurrent.clone()])
+                .unwrap();
+        }
         runtime
-            .invoke("faults", vec![json!(read_failure), json!(retry_conflict)])
+            .invoke("faults", vec![json!(read_fault), json!(retry_conflict)])
             .unwrap();
+        let before = runtime.invoke("snapshot", vec![]).unwrap();
         runtime.invoke("persist-now", vec![]).unwrap();
+        if read_race {
+            let pending = runtime.invoke("snapshot", vec![]).unwrap();
+            assert_eq!(pending[0], concurrent);
+            assert_eq!(pending[1], 12);
+            assert_eq!(pending[2], json!([10]));
+            assert_eq!(
+                pending.as_array().unwrap()[3..],
+                before.as_array().unwrap()[3..],
+                "an inconsistent read must leave every cached value unchanged"
+            );
+            // A consistent read now merges against rev 12, but a commit after validation
+            // must still conflict with that guard and leave the merged edit pending.
+            runtime.invoke("persist-now", vec![]).unwrap();
+        }
         if retry_conflict || read_failure {
             let pending = runtime.invoke("snapshot", vec![]).unwrap();
             assert_eq!(pending[0]["yinz_session_name"], "source");
@@ -498,12 +540,26 @@ fn run_conflicts_merge_history_and_retry_without_losing_revision_guards() {
             assert!(pending[4].get("claude:handoff").is_some());
             assert_eq!(
                 pending[2],
-                if read_failure {
+                if read_race {
+                    json!([10, 10, 12])
+                } else if read_failure {
                     json!([10])
                 } else {
                     json!([10, 11])
                 }
             );
+            if read_failure {
+                assert_eq!(
+                    pending.as_array().unwrap()[3..],
+                    before.as_array().unwrap()[3..]
+                );
+            }
+            if read_race {
+                assert_eq!(pending[4]["claude:handoff"], concurrent);
+                assert_eq!(pending[6]["claude:handoff"], concurrent);
+                assert_eq!(pending[7]["claude:handoff"], 12);
+                assert_eq!(pending[8]["claude:handoff"], 4);
+            }
             runtime
                 .invoke("faults", vec![json!(false), json!(false)])
                 .unwrap();
@@ -532,10 +588,17 @@ fn run_conflicts_merge_history_and_retry_without_losing_revision_guards() {
         );
         assert_eq!(
             stored["summarized_revision"],
-            if local_summary { 6 } else { 3 }
+            if local_summary {
+                6 + usize::from(read_race)
+            } else {
+                3
+            }
         );
         let entries = stored["entries"].as_array().unwrap();
         let mut texts = vec!["original", "source", "shared event"];
+        if read_race {
+            texts.push("concurrent summary");
+        }
         if retry_conflict {
             texts.push("racing source");
         }
@@ -552,7 +615,9 @@ fn run_conflicts_merge_history_and_retry_without_losing_revision_guards() {
         assert_eq!(state[4], json!({}));
         assert_eq!(
             state[2],
-            if retry_conflict {
+            if read_race {
+                json!([10, 10, 12, 12, 13])
+            } else if retry_conflict {
                 json!([10, 11, 11, 12])
             } else if read_failure {
                 json!([10, 10, 11])
@@ -581,7 +646,7 @@ fn run_conflicts_merge_history_and_retry_without_losing_revision_guards() {
                 .invoke("set-store", vec![archived.clone(), json!(expected + 1)])
                 .unwrap();
             runtime
-                .invoke("faults", vec![json!(read_failure), json!(retry_conflict)])
+                .invoke("faults", vec![json!(read_fault), json!(retry_conflict)])
                 .unwrap();
             runtime.invoke("persist-now", vec![]).unwrap();
             let mut attempts = state[2].as_array().unwrap().clone();

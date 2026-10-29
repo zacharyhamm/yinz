@@ -48,10 +48,14 @@ impl Screen {
                 self.close_context_menu(client_id);
                 let mut state_changed = false;
                 active_tab_and_connected_client_id!(
-                    self, client_id, |tab: &mut Tab, client_id: ClientId| {
-                        state_changed = tab.paste_from_client(bytes, client_id, completion)?;
-                        Ok::<(), anyhow::Error>(())
-                    }, ?
+                    self,
+                    client_id,
+                    |tab: &mut Tab, client_id: ClientId| {
+                        tab.paste_from_client(bytes, client_id, completion)
+                            .map(|changed| state_changed = changed)
+                            .context("failed to paste client input")
+                            .non_fatal();
+                    }
                 );
                 if state_changed {
                     self.log_and_report_session_state()?;
