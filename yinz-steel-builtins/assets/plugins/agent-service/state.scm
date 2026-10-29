@@ -63,7 +63,7 @@
       "manual" (hash) "assignments" (hash) "commands" (hash) "cwds" (hash) "hosts" (hash) "bubblewrap" (hash)
       "latched" (hash) "pending-release" '() "activity" (hash) "hooks" (hash) "event-fed" '() "prompts" (hash)
       "runs" (hash) "dirty-runs" (hash) "adoptions" (hash) "released-runs" (hash) "finished-runs" '() "observed-runs" '()
-      "predecessors" (hash) "pending-messages" (hash) "persisted" (hash) "run-revisions" (hash) "run-lookups" '()
+      "predecessors" (hash) "pending-messages" (hash) "persisted" (hash) "run-revisions" (hash) "run-bases" (hash) "run-lookups" '()
       "summaries" (hash) "summary-requests" (hash) "run-summary-requests" (hash) "summary-seq" 0
       "completions" (hash) "completion-seq" 0 "project-providers" '() "published-locations" #f "repositories" (hash) "git-probes" (hash) "probe-backoff" (hash)
       "git-seq" 0 "git-elapsed" 0 "remote-cursor" 0 "command-cursor" 0 "poll-window" 7500
