@@ -176,8 +176,112 @@ fn a_paste_after_a_selection_still_arrives_as_a_paste() {
     );
 
     assert!(adjusted.is_none(), "{adjusted:?}");
-    assert_eq!(pane.text_being_pasted, Some(vec![]));
+    assert_eq!(pane.text_being_pasted.get(&Some(client_id)), Some(&vec![]));
     assert!(!pane.grids[&client_id].has_selection());
+}
+
+#[test]
+fn plugin_pastes_keep_each_clients_bytes_and_destination_separate() {
+    let (mut pane, plugin_rx) =
+        test_plugin_pane_and_plugin_receiver(5, 40, Offset::default(), None);
+    let clients = [Some(ClientId::new(1)), Some(ClientId::new(2)), None];
+    let texts = ["first λ", "second paste", "programmatic paste"];
+    for (client, text) in clients.into_iter().zip(texts) {
+        for bytes in [BRACKETED_PASTE_BEGIN, &text.as_bytes()[..text.len() - 1]] {
+            assert!(pane
+                .adjust_input_to_terminal(&None, bytes.to_vec(), false, client)
+                .is_none());
+        }
+    }
+
+    let other = Some(ClientId::new(3));
+    assert!(matches!(
+        pane.adjust_input_to_terminal(&None, b"x".to_vec(), false, other),
+        Some(AdjustedInput::WriteBytesToTerminal(bytes)) if bytes == b"x"
+    ));
+    let key = KeyWithModifier::new(BareKey::Enter);
+    assert!(matches!(
+        pane.adjust_input_to_terminal(&Some(key.clone()), vec![13], false, other),
+        Some(AdjustedInput::WriteKeyToPlugin(actual)) if actual == key
+    ));
+    assert!(pane
+        .adjust_input_to_terminal(&None, BRACKETED_PASTE_END.to_vec(), false, other)
+        .is_none());
+    assert!(plugin_rx.try_recv().is_err());
+
+    for (client, text) in clients.into_iter().zip(texts).rev() {
+        for bytes in [&text.as_bytes()[text.len() - 1..], BRACKETED_PASTE_END] {
+            assert!(pane
+                .adjust_input_to_terminal(&None, bytes.to_vec(), false, client)
+                .is_none());
+        }
+        let (instruction, _) = plugin_rx.try_recv().unwrap();
+        assert!(matches!(instruction, PluginInstruction::Update(events)
+            if events == vec![(Some(pane.pid), client, Event::PastedText(text.into()))]));
+    }
+    assert!(pane.text_being_pasted.is_empty());
+    assert!(plugin_rx.try_recv().is_err());
+}
+
+#[test]
+fn removing_a_plugin_client_discards_only_its_unfinished_paste() {
+    let (mut pane, plugin_rx) =
+        test_plugin_pane_and_plugin_receiver(5, 40, Offset::default(), None);
+    let leaving = ClientId::new(1);
+    let staying = Some(ClientId::new(2));
+    for client in [Some(leaving), staying, None] {
+        for bytes in [BRACKETED_PASTE_BEGIN, b"pending"] {
+            pane.adjust_input_to_terminal(&None, bytes.to_vec(), false, client);
+        }
+    }
+    pane.remove_client(leaving);
+    pane.add_client(leaving);
+    pane.adjust_input_to_terminal(&None, BRACKETED_PASTE_END.to_vec(), false, Some(leaving));
+    assert!(plugin_rx.try_recv().is_err());
+    assert!(matches!(
+        pane.adjust_input_to_terminal(&None, b"fresh".to_vec(), false, Some(leaving)),
+        Some(AdjustedInput::WriteBytesToTerminal(bytes)) if bytes == b"fresh"
+    ));
+    for client in [staying, None] {
+        pane.adjust_input_to_terminal(&None, BRACKETED_PASTE_END.to_vec(), false, client);
+        let (instruction, _) = plugin_rx.try_recv().unwrap();
+        assert!(matches!(instruction, PluginInstruction::Update(events)
+            if events == vec![(Some(pane.pid), client, Event::PastedText("pending".into()))]));
+    }
+    assert!(pane.text_being_pasted.is_empty());
+}
+
+#[test]
+fn restarted_or_invalid_plugin_pastes_leave_other_clients_untouched() {
+    let (mut pane, plugin_rx) =
+        test_plugin_pane_and_plugin_receiver(5, 40, Offset::default(), None);
+    let first = Some(ClientId::new(1));
+    let second = Some(ClientId::new(2));
+    for client in [first, second] {
+        for bytes in [BRACKETED_PASTE_BEGIN, b"old"] {
+            pane.adjust_input_to_terminal(&None, bytes.to_vec(), false, client);
+        }
+    }
+    for bytes in [BRACKETED_PASTE_BEGIN, &[0xff], BRACKETED_PASTE_END] {
+        pane.adjust_input_to_terminal(&None, bytes.to_vec(), false, first);
+    }
+    assert!(plugin_rx.try_recv().is_err());
+    assert!(matches!(
+        pane.adjust_input_to_terminal(&None, b"key".to_vec(), false, first),
+        Some(AdjustedInput::WriteBytesToTerminal(bytes)) if bytes == b"key"
+    ));
+    pane.adjust_input_to_terminal(&None, BRACKETED_PASTE_END.to_vec(), false, second);
+    let (instruction, _) = plugin_rx.try_recv().unwrap();
+    assert!(matches!(instruction, PluginInstruction::Update(events)
+        if events == vec![(Some(pane.pid), second, Event::PastedText("old".into()))]));
+    for bytes in [BRACKETED_PASTE_BEGIN, b"new", BRACKETED_PASTE_END] {
+        pane.adjust_input_to_terminal(&None, bytes.to_vec(), false, first);
+    }
+    let (instruction, _) = plugin_rx.try_recv().unwrap();
+    assert!(matches!(instruction, PluginInstruction::Update(events)
+        if events == vec![(Some(pane.pid), first, Event::PastedText("new".into()))]));
+    assert!(pane.text_being_pasted.is_empty());
+    assert!(plugin_rx.try_recv().is_err());
 }
 
 #[test]

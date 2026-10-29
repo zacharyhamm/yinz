@@ -135,7 +135,7 @@ pub fn route_action(
                 NotificationEnd::new(completion_tx)
             };
             senders
-                .send_to_screen(ScreenInstruction::ClearScroll(client_id))
+                .send_to_screen(ScreenInstruction::ClearScroll(None, client_id))
                 .with_context(err_context)?;
             senders
                 .send_to_screen(ScreenInstruction::WriteCharacter(
@@ -154,7 +154,7 @@ pub fn route_action(
                 NotificationEnd::new(completion_tx)
             };
             senders
-                .send_to_screen(ScreenInstruction::ClearScroll(client_id))
+                .send_to_screen(ScreenInstruction::ClearScroll(None, client_id))
                 .with_context(err_context)?;
             let chars = chars.into_bytes();
             senders
@@ -169,7 +169,7 @@ pub fn route_action(
         },
         Action::WriteToPaneId { bytes, pane_id } => {
             senders
-                .send_to_screen(ScreenInstruction::ClearScroll(client_id))
+                .send_to_screen(ScreenInstruction::ClearScroll(Some(pane_id), client_id))
                 .with_context(err_context)?;
             senders
                 .send_to_screen(ScreenInstruction::WriteToPaneId(
@@ -181,7 +181,7 @@ pub fn route_action(
         },
         Action::WriteCharsToPaneId { chars, pane_id } => {
             senders
-                .send_to_screen(ScreenInstruction::ClearScroll(client_id))
+                .send_to_screen(ScreenInstruction::ClearScroll(Some(pane_id), client_id))
                 .with_context(err_context)?;
             let bytes = chars.into_bytes();
             senders
@@ -194,7 +194,7 @@ pub fn route_action(
         },
         Action::Paste { chars, pane_id } => {
             senders
-                .send_to_screen(ScreenInstruction::ClearScroll(client_id))
+                .send_to_screen(ScreenInstruction::ClearScroll(pane_id, client_id))
                 .with_context(err_context)?;
             let bytes = chars.into_bytes();
             senders

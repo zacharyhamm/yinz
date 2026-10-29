@@ -1238,10 +1238,15 @@ pub fn screen_thread_main(
                     screen.render()?;
                 },
                 // Writes captured by the palette must not scroll the underlying pane either.
-                ScreenInstruction::ClearScroll(client_id)
+                ScreenInstruction::ClearScroll(None, client_id)
                     if screen.palette_owns_input(client_id)
                         || screen.permission_modal_open(client_id) => {},
-                ScreenInstruction::ClearScroll(client_id) => {
+                ScreenInstruction::ClearScroll(Some(pane_id), _) => {
+                    if screen.clear_scroll_for_pane_id(pane_id)? {
+                        screen.render()?;
+                    }
+                },
+                ScreenInstruction::ClearScroll(None, client_id) => {
                     let was_scrolled = screen.active_pane_is_scrolled(client_id);
                     let mut scroll_was_cleared = was_scrolled;
                     active_tab_and_connected_client_id!(

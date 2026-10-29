@@ -1432,16 +1432,10 @@ impl OverlayPanes {
     }
     pub fn stop_moving_pane_with_mouse(&mut self, position: Position) -> bool {
         let mut never_moved = false;
-        if let Some((pane_id, initial_position, last_position)) =
-            self.pane_being_moved_with_mouse.take()
+        if let Some((_pane_id, initial_position, last_position)) = self.pane_being_moved_with_mouse
         {
-            if initial_position == position {
-                never_moved = true;
-            } else {
-                self.pane_being_moved_with_mouse = Some((pane_id, initial_position, last_position));
-                self.move_pane_to_position(&position);
-                self.pane_being_moved_with_mouse = None;
-            }
+            never_moved = initial_position == position && last_position == position;
+            self.move_pane_to_position(&position);
             self.set_force_render();
         }
         self.pane_being_moved_with_mouse = None;

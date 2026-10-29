@@ -124,7 +124,7 @@ pub struct PluginPane {
     arrow_fonts: bool,
     styled_underlines: bool,
     should_be_suppressed: bool,
-    text_being_pasted: Option<Vec<u8>>,
+    text_being_pasted: HashMap<Option<ClientId>, Vec<u8>>,
     supports_mouse_selection: bool,
 }
 
@@ -203,7 +203,7 @@ impl PluginPane {
             arrow_fonts,
             styled_underlines,
             should_be_suppressed: false,
-            text_being_pasted: None,
+            text_being_pasted: HashMap::new(),
             supports_mouse_selection: false,
         };
         for client_id in currently_connected_clients {
@@ -447,10 +447,10 @@ impl Pane for PluginPane {
         if let Some(key_with_modifier) = key_with_modifier {
             Some(AdjustedInput::WriteKeyToPlugin(key_with_modifier.clone()))
         } else if raw_input_bytes.as_slice() == BRACKETED_PASTE_BEGIN {
-            self.text_being_pasted = Some(vec![]);
+            self.text_being_pasted.insert(client_id, vec![]);
             None
         } else if raw_input_bytes.as_slice() == BRACKETED_PASTE_END {
-            if let Some(text_being_pasted) = self.text_being_pasted.take() {
+            if let Some(text_being_pasted) = self.text_being_pasted.remove(&client_id) {
                 match String::from_utf8(text_being_pasted) {
                     Ok(pasted_text) => {
                         let _ = self
@@ -467,7 +467,7 @@ impl Pane for PluginPane {
                 }
             }
             None
-        } else if let Some(pasted_text) = self.text_being_pasted.as_mut() {
+        } else if let Some(pasted_text) = self.text_being_pasted.get_mut(&client_id) {
             pasted_text.append(&mut raw_input_bytes);
             None
         } else {
@@ -492,6 +492,7 @@ impl Pane for PluginPane {
         }
     }
     fn remove_client(&mut self, client_id: ClientId) {
+        self.text_being_pasted.remove(&Some(client_id));
         self.grids.remove(&client_id);
         self.vte_parsers.remove(&client_id);
         self.kitty_interceptors.remove(&client_id);

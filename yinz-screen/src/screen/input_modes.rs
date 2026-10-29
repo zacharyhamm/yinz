@@ -15,6 +15,17 @@ use {
 };
 
 impl Screen {
+    pub(super) fn clear_scroll_for_pane_id(&mut self, pane_id: PaneId) -> Result<bool> {
+        let cleared = match self.tab_containing_pane_mut(pane_id) {
+            Some(tab) => tab.clear_terminal_scroll(pane_id)?,
+            None => false,
+        };
+        if cleared {
+            self.sync_scroll_mode_for_pane_id(pane_id)?;
+        }
+        Ok(cleared)
+    }
+
     pub(super) fn paste_from_client(
         &mut self,
         text: String,
