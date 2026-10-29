@@ -140,6 +140,36 @@ fn a_chain_of_eight_relative_placements_is_supported() {
 // so its parenthood is defined entirely in terms of the placeholder cells standing for it.
 
 #[test]
+fn replacing_a_virtual_parent_removes_its_relative_descendants() {
+    // The parent-deletion lifetime rule also applies when retransmission removes a prototype.
+    for (action, expected_code) in [("a=t", "OK"), ("a=T,x=2", "EINVAL")] {
+        let mut session = KittySession::new(10, 20);
+        session.ok("a=T,f=32,s=1,v=1,i=1,p=1,U=1,c=1,r=1", &[255; 4]);
+        session.feed(
+            placeholder_cells(
+                PlaceholderColor::Indexed(1),
+                Some(1),
+                &[PlaceholderCell::at(0, 0)],
+            )
+            .as_bytes(),
+        );
+        session.ok("a=T,f=32,s=1,v=1,i=2,p=2,P=1,Q=1", &[255; 4]);
+        session.ok("a=T,f=32,s=1,v=1,i=3,p=3,P=2,Q=2", &[255; 4]);
+        assert_eq!(session.grid.kitty_placement_count(), 3);
+        session.grid.should_render = false;
+        let reply = session.reply(&format!("{action},f=32,s=1,v=1,i=1"), &[0; 4]);
+        assert_eq!(reply.code, expected_code);
+        assert!(session.grid.should_render);
+        assert_eq!(session.grid.kitty_placement_count(), 0);
+        assert_eq!(session.store.borrow().image_count(), 1);
+        assert_eq!(session.store.borrow().total_bytes(), 4);
+        assert!(session.grid.read_changes(0, 0).2.is_empty());
+        assert_eq!(session.err("a=p,i=2", &[]).code, "ENOENT");
+        assert_eq!(session.err("a=p,i=3", &[]).code, "ENOENT");
+    }
+}
+
+#[test]
 fn relative_a_virtual_placement_cannot_also_be_relative() {
     // Spec, "Relative placements": "Virtual placements created for Unicode placeholder based
     // images cannot also be relative placements. [...] If a client attempts to make a virtual

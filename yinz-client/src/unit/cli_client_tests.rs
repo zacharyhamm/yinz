@@ -5,6 +5,16 @@ use yinz_cli::args::{EventsCli, SubscribeCli, SubscribeFormat};
 use yinz_ipc::ipc::{ClientToServerMsg, ExitReason, IpcRecv, ServerToClientMsg};
 use yinz_types::input::actions::Action;
 
+fn isolated_socket_dir() -> Option<tempfile::TempDir> {
+    if yinz_test_support::reexec_test() {
+        return None;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    // Even fake clients prepare the socket directory before connecting.
+    unsafe { std::env::set_var("YINZ_SOCKET_DIR", directory.path()) };
+    Some(directory)
+}
+
 fn pipe_action(payload: Option<String>) -> Action {
     Action::CliPipe {
         focus_plugin: false,
@@ -25,6 +35,9 @@ fn pipe_action(payload: Option<String>) -> Action {
 
 #[test]
 fn action_and_pipe_clients_fail_when_the_server_disconnects() {
+    let Some(_socket_dir) = isolated_socket_dir() else {
+        return;
+    };
     for action in [Action::NoOp, pipe_action(Some("input".into()))] {
         let os = FakeClientOsApi::default();
         os.queue_server_hangup();
@@ -40,6 +53,9 @@ fn action_and_pipe_clients_fail_when_the_server_disconnects() {
 
 #[test]
 fn streaming_clients_do_not_treat_a_malformed_message_as_eof() {
+    let Some(_socket_dir) = isolated_socket_dir() else {
+        return;
+    };
     for events in [true, false] {
         let os = FakeClientOsApi::default();
         os.queue_malformed_from_server();
@@ -75,6 +91,9 @@ fn streaming_clients_do_not_treat_a_malformed_message_as_eof() {
 
 #[test]
 fn invalid_pipe_input_is_an_error_not_end_of_input() {
+    let Some(_socket_dir) = isolated_socket_dir() else {
+        return;
+    };
     let os = FakeClientOsApi::default().with_stdin(vec![0xff]);
     assert_eq!(
         start_cli_client(
@@ -90,6 +109,9 @@ fn invalid_pipe_input_is_an_error_not_end_of_input() {
 
 #[test]
 fn pipe_output_accepts_closed_stdout_but_reports_other_write_errors() {
+    let Some(_socket_dir) = isolated_socket_dir() else {
+        return;
+    };
     for (error, expected) in [
         (std::io::ErrorKind::BrokenPipe, 0),
         (std::io::ErrorKind::PermissionDenied, 2),
@@ -116,6 +138,9 @@ fn pipe_output_accepts_closed_stdout_but_reports_other_write_errors() {
 
 #[test]
 fn action_and_pipe_logs_accept_closed_stdout_but_report_other_write_errors() {
+    let Some(_socket_dir) = isolated_socket_dir() else {
+        return;
+    };
     for action in [Action::NoOp, pipe_action(Some("input".into()))] {
         for (error, expected) in [
             (None, 0),
@@ -149,6 +174,9 @@ fn action_and_pipe_logs_accept_closed_stdout_but_report_other_write_errors() {
 /// unblock still follows it. The error decides the exit, not the unblock.
 #[test]
 fn a_pipe_error_before_its_unblock_exits_non_zero() {
+    let Some(_socket_dir) = isolated_socket_dir() else {
+        return;
+    };
     let os = FakeClientOsApi::default().capturing_stdout();
     os.queue_from_server(ServerToClientMsg::LogError {
         lines: vec!["too large".into()],
@@ -170,6 +198,9 @@ fn a_pipe_error_before_its_unblock_exits_non_zero() {
 
 #[test]
 fn pipe_input_eof_waits_for_the_final_response() {
+    let Some(_socket_dir) = isolated_socket_dir() else {
+        return;
+    };
     for input in ["", "input\n"] {
         let os = FakeClientOsApi::default()
             .with_stdin(input.as_bytes().to_vec())
@@ -216,6 +247,9 @@ fn pipe_input_eof_waits_for_the_final_response() {
 
 #[test]
 fn lifecycle_stream_shares_json_output_and_cleans_up_on_broken_stdout_or_eof() {
+    let Some(_socket_dir) = isolated_socket_dir() else {
+        return;
+    };
     for text in [false, true] {
         for broken in [false, true] {
             let mut os = FakeClientOsApi::default().capturing_stdout();
@@ -259,6 +293,9 @@ fn lifecycle_stream_shares_json_output_and_cleans_up_on_broken_stdout_or_eof() {
 
 #[test]
 fn pipe_focus_survives_explicit_payload_stdin_and_eof() {
+    let Some(_socket_dir) = isolated_socket_dir() else {
+        return;
+    };
     for focus in [false, true] {
         let os = FakeClientOsApi::default().with_stdin(b"chunk\n".to_vec());
         for _ in 0..3 {

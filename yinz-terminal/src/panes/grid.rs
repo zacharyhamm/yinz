@@ -3458,6 +3458,8 @@ impl Grid {
                     },
                 };
                 let frame_number = self.kitty_grid.transmit_frame(&command, image)?;
+                self.render_full_viewport();
+                self.mark_for_rerender();
                 Ok(KittyReplyData {
                     frame_number: Some(frame_number),
                     ..KittyReplyData::from_command(&command)
@@ -3489,18 +3491,26 @@ impl Grid {
                         });
                     },
                 };
+                let placements_before = self.kitty_grid.placement_count();
                 match self.kitty_grid.transmit(&command, image) {
-                    Ok(assigned_id) => Ok(KittyReplyData {
-                        image_id: Some(assigned_id),
-                        image_number: command.image_number,
-                        placement_id: command.placement_id,
-                        frame_number: None,
-                        quiet: command.quiet,
-                    }),
+                    Ok(assigned_id) => {
+                        if self.kitty_grid.placement_count() != placements_before {
+                            self.render_full_viewport();
+                            self.mark_for_rerender();
+                        }
+                        Ok(KittyReplyData {
+                            image_id: Some(assigned_id),
+                            image_number: command.image_number,
+                            placement_id: command.placement_id,
+                            frame_number: None,
+                            quiet: command.quiet,
+                        })
+                    },
                     Err(e) => Err(e),
                 }
             },
             KittyAction::TransmitAndDisplay | KittyAction::Display => {
+                let placements_before = self.kitty_grid.placement_count();
                 let resolved = if command.action == KittyAction::TransmitAndDisplay {
                     match command.image.clone() {
                         Some(image) => self.kitty_grid.transmit(&command, image).map(|id| {
@@ -3524,6 +3534,10 @@ impl Grid {
                     self.kitty_grid.resolve_display_target(&command)
                 };
                 let (pane_image_id, internal) = resolved?;
+                if self.kitty_grid.placement_count() != placements_before {
+                    self.render_full_viewport();
+                    self.mark_for_rerender();
+                }
                 // A relative placement can name a virtual parent, whose position exists only as
                 // the placeholder cells standing for it. Those are derived from the grid on
                 // demand, so they have to be up to date before the parent can be resolved.

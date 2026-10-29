@@ -13,6 +13,56 @@ fn parse_stdin_chunks(chunks: &[&[u8]]) -> Vec<InputInstruction> {
     parse_stdin_chunks_reporting_modifiers(chunks, false)
 }
 
+#[test]
+fn extended_kitty_function_keys_survive_every_input_split() {
+    for number in 13..=35 {
+        let sequence = format!("\x1b[{};16:2u", 57363 + number);
+        for split in 0..=sequence.len() {
+            let instructions = parse_stdin_chunks_reporting_modifiers(
+                &[&sequence.as_bytes()[..split], &sequence.as_bytes()[split..]],
+                true,
+            );
+            assert_eq!(instructions.len(), 1, "{instructions:?}");
+            match &instructions[0] {
+                InputInstruction::KeyWithModifierEvent(key, bytes, true) => {
+                    assert_eq!(
+                        *key,
+                        yinz_types::keys::KeyWithModifier::new(BareKey::F(number as u8))
+                            .with_shift_modifier()
+                            .with_alt_modifier()
+                            .with_ctrl_modifier()
+                            .with_super_modifier(),
+                    );
+                    assert_eq!(*bytes, format!("\x1b[{};16u", 57363 + number).into_bytes());
+                },
+                other => panic!("expected a function key, got {other:?}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn unsupported_kitty_functional_codes_do_not_leak_into_following_text() {
+    for code in [57344, 57416, 57427, 57455, 63743]
+        .into_iter()
+        .chain(57428..=57440)
+    {
+        let sequence = format!("\x1b[{code};5uX");
+        for split in 0..=sequence.len() {
+            let instructions =
+                parse_stdin_chunks(&[&sequence.as_bytes()[..split], &sequence.as_bytes()[split..]]);
+            assert_eq!(instructions.len(), 1, "{code}: {instructions:?}");
+            match &instructions[0] {
+                InputInstruction::KeyEvent(InputEvent::Key(key), bytes) => {
+                    assert_eq!(key.key, KeyCode::Char('X'));
+                    assert_eq!(bytes, b"X");
+                },
+                other => panic!("expected following text, got {other:?}"),
+            }
+        }
+    }
+}
+
 fn parse_stdin_chunks_reporting_modifiers(
     chunks: &[&[u8]],
     report_modifier_keys: bool,
