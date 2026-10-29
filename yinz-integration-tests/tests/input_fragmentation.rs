@@ -150,3 +150,30 @@ fn a_kitty_key_after_a_plain_key_in_the_same_read_is_not_swallowed() {
 
     yinz.quit();
 }
+
+#[test]
+fn extended_function_keys_cross_ipc_without_injecting_unsupported_functional_text() {
+    let mut yinz = start_yinz();
+    let terminal = claim_first_terminal_and_wait_for_prompt(&yinz);
+    terminal.disable_echo();
+    terminal.output(b"\x1b[>1u\x1b[?u");
+    let before = terminal.wait_for_stdin("the pane enabled Kitty keys", |bytes| {
+        bytes.ends_with(b"\x1b[?1u")
+    });
+
+    let function_keys: String = (57376..=57398)
+        .map(|code| format!("\x1b[{code};5u"))
+        .collect();
+    let sentinel = "\x1b[122;1u";
+    // Volume-up and an unsupported Hyper modifier must not become private-use text.
+    yinz.send_stdin(format!("{function_keys}\x1b[57438u\x1b[57445u{sentinel}").as_bytes());
+    let received = terminal.wait_for_stdin(
+        "all extended keys and the sentinel reached the pane",
+        |bytes| bytes.ends_with(sentinel.as_bytes()),
+    );
+    assert_eq!(
+        &received[before.len()..],
+        format!("{function_keys}{sentinel}").as_bytes()
+    );
+    yinz.quit();
+}

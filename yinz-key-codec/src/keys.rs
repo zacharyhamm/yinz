@@ -66,11 +66,12 @@ pub fn bare_key_from_bytes_with_u(bytes: &[u8]) -> Option<BareKey> {
         Ok("57424") => Some(BareKey::End),
         Ok("57425") => Some(BareKey::Insert),
         Ok("57426") => Some(BareKey::Delete),
-        Ok(num) => num
-            .parse::<u32>()
-            .ok()
-            .and_then(char::from_u32)
-            .map(BareKey::Char),
+        Ok(num) => match num.parse::<u32>().ok()? {
+            code @ 57376..=57398 => Some(BareKey::F((code - 57363) as u8)),
+            // Kitty reserves this PUA range for functional keys, not text.
+            57344..=63743 => None,
+            code => char::from_u32(code).map(BareKey::Char),
+        },
         _ => None,
     }
 }

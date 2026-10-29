@@ -522,6 +522,137 @@ fn kitty_placeholder_crops_share_a_raster_across_render_frames_and_drop_stale_re
 }
 
 #[test]
+fn editing_current_frames_repaints_explicit_and_placeholder_images_without_text() {
+    use crate::panes::grid::Grid;
+    use crate::panes::kitty_graphics::{KittyApcInterceptor, KittyCommandParser};
+    use crate::panes::kitty_test_support::{
+        apc_b64, feed_bytes, placeholder_cells, PlaceholderCell, PlaceholderColor,
+    };
+    use crate::panes::sixel::SixelImageStore;
+    use crate::panes::LinkHandler;
+    use std::{cell::RefCell, collections::HashMap, rc::Rc};
+    use yinz_types::{
+        data::{Palette, Style},
+        pane_size::SizeInPixels,
+    };
+
+    // Spec, r: "an existing frame is edited"; the current raster must reach the host immediately.
+    for virtual_placement in [false, true] {
+        for current in [1, 2] {
+            let parts = create_test_kitty_parts();
+            let cell = SizeInPixels {
+                width: 10,
+                height: 20,
+            };
+            let mut grid = Grid::new(
+                10,
+                20,
+                Rc::new(RefCell::new(Palette::default())),
+                Rc::new(RefCell::new(HashMap::new())),
+                Rc::new(RefCell::new(LinkHandler::new())),
+                Rc::new(RefCell::new(Some(cell))),
+                Rc::new(RefCell::new(SixelImageStore::default())),
+                parts.0.clone(),
+                Style::default(),
+                false,
+                true,
+                true,
+                true,
+                false,
+            );
+            let mut parser = vte::Parser::new();
+            let mut interceptor = KittyApcInterceptor::new();
+            let mut bytes = apc_b64(
+                &format!(
+                    "a=T,f=32,s=1,v=1,i=1,c=1,r=1,C=1,q=2,U={}",
+                    u8::from(virtual_placement)
+                ),
+                &[255; 4],
+            );
+            if virtual_placement {
+                bytes.extend_from_slice(
+                    placeholder_cells(
+                        PlaceholderColor::Indexed(1),
+                        None,
+                        &[PlaceholderCell::at(0, 0)],
+                    )
+                    .as_bytes(),
+                );
+            }
+            feed_bytes(&mut grid, &mut parser, &mut interceptor, &bytes);
+            let mut send = |grid: &mut Grid, control: &str, pixels: &[u8]| {
+                feed_bytes(
+                    grid,
+                    &mut parser,
+                    &mut interceptor,
+                    &apc_b64(control, pixels),
+                );
+            };
+            send(&mut grid, "a=f,f=32,s=1,v=1,i=1,q=2", &[255; 4]);
+            send(&mut grid, &format!("a=a,i=1,c={current},q=2"), &[]);
+            let render = |grid: &mut Grid| {
+                extract_kitty_commands(&run_kitty_frame_with_cell_size(
+                    &parts,
+                    grid.read_changes(0, 0).2,
+                    None,
+                    cell,
+                ))
+            };
+            let first = render(&mut grid);
+            assert!(first.iter().any(|command| action_of(command) == "t"));
+            grid.should_render = false;
+
+            send(
+                &mut grid,
+                &format!("a=f,f=32,s=1,v=1,i=1,r={},q=2", 3 - current),
+                &[10, 20, 30, 255],
+            );
+            assert!(
+                render(&mut grid).is_empty(),
+                "editing another frame keeps the host raster"
+            );
+            grid.should_render = false;
+            send(&mut grid, "a=f,f=32,s=1,v=1,i=1,r=7,q=2", &[0; 4]);
+            assert!(!grid.should_render, "a rejected edit cannot dirty the grid");
+            assert!(render(&mut grid).is_empty());
+
+            send(
+                &mut grid,
+                &format!("a=f,f=32,s=1,v=1,i=1,r={current},q=2"),
+                &[12, 34, 56, 255],
+            );
+            assert!(
+                grid.should_render,
+                "editing the current frame must schedule a render"
+            );
+            let commands = render(&mut grid);
+            assert_eq!(
+                commands
+                    .iter()
+                    .map(|command| action_of(command))
+                    .collect::<Vec<_>>(),
+                ["d", "t", "p"]
+            );
+            let mut decoder = KittyCommandParser::new();
+            let mut transmitted = None;
+            for command in commands.iter().filter(|command| action_of(command) == "t") {
+                if let Some(command) = decoder.parse(command) {
+                    transmitted = command.unwrap().image;
+                }
+            }
+            let image = transmitted.expect("the edited raster is transmitted");
+            let height = if virtual_placement { 10 } else { 20 };
+            assert_eq!((image.width, image.height), (10, height));
+            assert_eq!(image.bytes, [12, 34, 56, 255].repeat(10 * height as usize));
+            assert!(
+                render(&mut grid).is_empty(),
+                "the unchanged next render reuses the new raster"
+            );
+        }
+    }
+}
+
+#[test]
 fn compressed_transmissions_decode_to_exact_original_and_scaled_pixels() {
     use crate::panes::kitty_graphics::KittyCommandParser;
     for scaled in [false, true] {

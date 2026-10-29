@@ -4,6 +4,10 @@ use {
     yinz_runtime::errors::prelude::*, yinz_types::data::BareKey, yinz_types::data::KeyModifier,
 };
 
+#[cfg(test)]
+#[path = "unit/key_tests.rs"]
+mod tests;
+
 // BareKey conversions
 impl From<BareKey> for ProtoBareKey {
     fn from(key: BareKey) -> Self {
@@ -31,6 +35,29 @@ impl From<BareKey> for ProtoBareKey {
             BareKey::F(10) => ProtoBareKey::F10,
             BareKey::F(11) => ProtoBareKey::F11,
             BareKey::F(12) => ProtoBareKey::F12,
+            BareKey::F(13) => ProtoBareKey::F13,
+            BareKey::F(14) => ProtoBareKey::F14,
+            BareKey::F(15) => ProtoBareKey::F15,
+            BareKey::F(16) => ProtoBareKey::F16,
+            BareKey::F(17) => ProtoBareKey::F17,
+            BareKey::F(18) => ProtoBareKey::F18,
+            BareKey::F(19) => ProtoBareKey::F19,
+            BareKey::F(20) => ProtoBareKey::F20,
+            BareKey::F(21) => ProtoBareKey::F21,
+            BareKey::F(22) => ProtoBareKey::F22,
+            BareKey::F(23) => ProtoBareKey::F23,
+            BareKey::F(24) => ProtoBareKey::F24,
+            BareKey::F(25) => ProtoBareKey::F25,
+            BareKey::F(26) => ProtoBareKey::F26,
+            BareKey::F(27) => ProtoBareKey::F27,
+            BareKey::F(28) => ProtoBareKey::F28,
+            BareKey::F(29) => ProtoBareKey::F29,
+            BareKey::F(30) => ProtoBareKey::F30,
+            BareKey::F(31) => ProtoBareKey::F31,
+            BareKey::F(32) => ProtoBareKey::F32,
+            BareKey::F(33) => ProtoBareKey::F33,
+            BareKey::F(34) => ProtoBareKey::F34,
+            BareKey::F(35) => ProtoBareKey::F35,
             BareKey::F(_) => ProtoBareKey::Unspecified, // Unsupported F-key
             BareKey::Char(_) => ProtoBareKey::Char,     // Character stored separately
             BareKey::Tab => ProtoBareKey::Tab,
@@ -74,6 +101,29 @@ impl TryFrom<ProtoBareKey> for BareKey {
             ProtoBareKey::F10 => Ok(BareKey::F(10)),
             ProtoBareKey::F11 => Ok(BareKey::F(11)),
             ProtoBareKey::F12 => Ok(BareKey::F(12)),
+            ProtoBareKey::F13 => Ok(BareKey::F(13)),
+            ProtoBareKey::F14 => Ok(BareKey::F(14)),
+            ProtoBareKey::F15 => Ok(BareKey::F(15)),
+            ProtoBareKey::F16 => Ok(BareKey::F(16)),
+            ProtoBareKey::F17 => Ok(BareKey::F(17)),
+            ProtoBareKey::F18 => Ok(BareKey::F(18)),
+            ProtoBareKey::F19 => Ok(BareKey::F(19)),
+            ProtoBareKey::F20 => Ok(BareKey::F(20)),
+            ProtoBareKey::F21 => Ok(BareKey::F(21)),
+            ProtoBareKey::F22 => Ok(BareKey::F(22)),
+            ProtoBareKey::F23 => Ok(BareKey::F(23)),
+            ProtoBareKey::F24 => Ok(BareKey::F(24)),
+            ProtoBareKey::F25 => Ok(BareKey::F(25)),
+            ProtoBareKey::F26 => Ok(BareKey::F(26)),
+            ProtoBareKey::F27 => Ok(BareKey::F(27)),
+            ProtoBareKey::F28 => Ok(BareKey::F(28)),
+            ProtoBareKey::F29 => Ok(BareKey::F(29)),
+            ProtoBareKey::F30 => Ok(BareKey::F(30)),
+            ProtoBareKey::F31 => Ok(BareKey::F(31)),
+            ProtoBareKey::F32 => Ok(BareKey::F(32)),
+            ProtoBareKey::F33 => Ok(BareKey::F(33)),
+            ProtoBareKey::F34 => Ok(BareKey::F(34)),
+            ProtoBareKey::F35 => Ok(BareKey::F(35)),
             ProtoBareKey::Char => Err(anyhow!("Character key needs character data")),
             ProtoBareKey::Tab => Ok(BareKey::Tab),
             ProtoBareKey::Esc => Ok(BareKey::Esc),

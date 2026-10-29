@@ -180,6 +180,7 @@ pub struct KittyGrid {
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     pub kitty_image_store: Rc<RefCell<KittyImageStore>>,
     image_ids: HashMap<u32, InternalImageId>,
+    anonymous_image_ids: Vec<InternalImageId>,
     image_numbers: HashMap<u32, Vec<u32>>,
     placements: Vec<KittyPlacement>,
     virtual_placements: Vec<VirtualPlacement>,
@@ -267,6 +268,7 @@ impl KittyGrid {
             character_cell_size,
             kitty_image_store,
             image_ids: HashMap::new(),
+            anonymous_image_ids: Vec::new(),
             image_numbers: HashMap::new(),
             placements: Vec::new(),
             virtual_placements: Vec::new(),
@@ -303,7 +305,12 @@ impl KittyGrid {
         &mut self.placements
     }
     pub fn protect_completed_frame(&mut self, chunks: &[KittyImageChunk]) {
-        let owned: HashSet<_> = self.image_ids.values().copied().collect();
+        let owned: HashSet<_> = self
+            .image_ids
+            .values()
+            .chain(&self.anonymous_image_ids)
+            .copied()
+            .collect();
         self.completed_frame_keys.extend(
             chunks
                 .iter()
@@ -445,6 +452,7 @@ impl KittyGrid {
             drop(store);
             self.image_ids.remove(&pane_image_id);
             self.drop_image_number_references(pane_image_id);
+            self.cascade_relative_deletes(true);
         }
         if let Some(image_number) = command.image_number {
             self.image_numbers
@@ -453,7 +461,16 @@ impl KittyGrid {
                 .push(pane_image_id);
         }
         self.image_ids.insert(pane_image_id, internal);
-        self.kitty_image_store.borrow_mut().touch(internal);
+        let mut store = self.kitty_image_store.borrow_mut();
+        if pane_image_id == 0 {
+            // All anonymous images belong to this pane, even after its id=0 lookup is replaced.
+            if self.anonymous_image_ids.len() >= store.image_count().saturating_mul(2) {
+                self.anonymous_image_ids
+                    .retain(|id| store.get(*id).is_some());
+            }
+            self.anonymous_image_ids.push(internal);
+        }
+        store.touch(internal);
         Ok(pane_image_id)
     }
     pub fn resolve_display_target(
@@ -1812,6 +1829,9 @@ impl KittyGrid {
         self.remove_virtual_placements(|_| true);
         let mut store = self.kitty_image_store.borrow_mut();
         for (_, internal) in self.image_ids.drain() {
+            store.remove_entry(internal);
+        }
+        for internal in self.anonymous_image_ids.drain(..) {
             store.remove_entry(internal);
         }
         self.image_numbers.clear();

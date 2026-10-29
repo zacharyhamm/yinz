@@ -253,6 +253,92 @@ fn images_transmitted_without_an_id_coexist_instead_of_replacing_each_other() {
 }
 
 #[test]
+fn anonymous_images_are_released_on_teardown_without_touching_other_panes() {
+    // Spec: "there can exist multiple images with image id=0, placement id=0".
+    for control in ["a=t", "a=T"] {
+        let mut model = Model::new();
+        let command = model.parse("a=t,f=32,s=1,v=1,i=7", &[255; 4]).unwrap();
+        let mut other = KittyGrid::new(Rc::new(RefCell::new(Some(CELL))), model.store.clone());
+        other
+            .transmit(&command, command.image.clone().unwrap())
+            .unwrap();
+        let other_id = other.pane_image_id_map()[&7];
+        for explicit_zero in ["", ",i=0", ""] {
+            model.ok(&format!("{control},f=32,s=1,v=1{explicit_zero}"), &[255; 4]);
+        }
+        assert_eq!(model.image_count(), 4);
+        // Soft deletion retains pixels even when no placement still points at the old id=0.
+        model.ok("a=d,d=a", &[]);
+        assert_eq!(model.image_count(), 4);
+        model.kitty.teardown();
+        model.kitty.teardown();
+        assert_eq!(model.image_count(), 1);
+        assert_eq!(model.store.borrow().total_bytes(), 4);
+        assert!(model.store.borrow().get(other_id).is_some());
+        other.teardown();
+        assert_eq!(model.image_count(), 0);
+    }
+}
+
+#[test]
+fn anonymous_ownership_drops_evicted_ids_and_protects_older_completed_images() {
+    let mut model = Model::new();
+    *model.store.borrow_mut() = KittyImageStore::with_quota(8);
+    for _ in 0..20 {
+        model.ok("a=t,f=32,s=1,v=1", &[255; 4]);
+        assert!(model.kitty.anonymous_image_ids.len() <= 4);
+    }
+    model.kitty.teardown();
+    model.ok("a=T,f=32,s=1,v=1,C=1", &[255; 4]);
+    let first = model.kitty.pane_image_id_map()[&0];
+    model.ok("a=T,f=32,s=1,v=1,C=1", &[255; 4]);
+    let completed = model.kitty.viewport_kitty_chunks(10, 0, 20, 0, 0);
+    assert_eq!(completed.len(), 2);
+    model.kitty.protect_completed_frame(&completed);
+    model.ok("a=d,d=a", &[]);
+    assert_eq!(
+        model.err("a=t,f=32,s=1,v=1", &[0; 4]).code,
+        KittyErrorCode::Enospc
+    );
+    assert!(model.store.borrow().get(first).is_some());
+    assert_eq!(model.image_count(), 2);
+    model.kitty.release_completed_frame();
+    model.ok("a=t,f=32,s=1,v=1", &[0; 4]);
+    assert_eq!(model.image_count(), 2);
+    model.kitty.teardown();
+    assert_eq!(model.store.borrow().total_bytes(), 0);
+}
+
+#[test]
+fn replacing_an_image_cascades_relative_children_only_after_success() {
+    // Spec: "If its parent is deleted, it is deleted as well."
+    let mut model = Model::new();
+    *model.store.borrow_mut() = KittyImageStore::with_quota(4096);
+    model.ok("a=T,f=32,s=1,v=1,i=1,p=10", &[255; 4]);
+    model.ok("a=T,f=32,s=1,v=1,i=2,p=20,P=1,Q=10", &[255; 4]);
+    model.ok("a=T,f=32,s=1,v=1,i=3,p=30,P=2,Q=20", &[255; 4]);
+    model.ok("a=T,f=32,s=1,v=1,i=4,p=40", &[255; 4]);
+    let old = model.kitty.placements().to_vec();
+    let bytes = model.store.borrow().total_bytes();
+    assert_eq!(
+        model
+            .err("a=t,f=32,s=40,v=40,i=1", &rgba_block(40, 40))
+            .code,
+        KittyErrorCode::Enospc
+    );
+    assert_eq!(model.kitty.placements(), old);
+    assert_eq!(model.store.borrow().total_bytes(), bytes);
+    model.ok("a=t,f=32,s=1,v=1,i=1", &[0; 4]);
+    assert_eq!(model.placement_count(), 1);
+    assert_eq!(model.kitty.placements()[0].image_id, 4);
+    assert_eq!(model.image_count(), 2);
+    assert_eq!(model.store.borrow().total_bytes(), 8);
+    assert!(!model.can_still_display_by_placing_it(2));
+    assert!(!model.can_still_display_by_placing_it(3));
+    assert!(model.can_still_display_by_placing_it(1));
+}
+
+#[test]
 fn a_placement_id_is_ignored_for_an_image_with_no_id() {
     // Spec: "If you specify a placement id for an image that does not have an id (i.e. has id=0),
     // it will be ignored, i.e. the placement will not get an id." A placement is only addressable

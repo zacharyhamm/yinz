@@ -399,10 +399,18 @@ impl Tab {
         key: KeyWithModifier,
         completion_tx: Option<NotificationEnd>,
     ) -> Result<()> {
-        let bytes = yinz_key_codec::keys::serialize_non_kitty(&key)
-            .context("key has no terminal encoding")?
-            .into_bytes();
-        self.write_to_pane_id(&Some(key), bytes, false, pane_id, None, completion_tx)?;
+        let (bytes, is_kitty) = yinz_key_codec::keys::serialize_non_kitty(&key)
+            .map(|bytes| (bytes, false))
+            .or_else(|| yinz_key_codec::keys::serialize_kitty(&key).map(|bytes| (bytes, true)))
+            .context("key has no terminal encoding")?;
+        self.write_to_pane_id(
+            &Some(key),
+            bytes.into_bytes(),
+            is_kitty,
+            pane_id,
+            None,
+            completion_tx,
+        )?;
         Ok(())
     }
 

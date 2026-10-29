@@ -271,7 +271,7 @@ pub enum KeyCode {
     Subtract,
     Decimal,
     Divide,
-    /// F1-F24 are possible
+    /// F1-F24 have legacy encodings; Kitty also supports F25-F35.
     Function(u8),
     NumLock,
     ScrollLock,
@@ -566,6 +566,14 @@ impl KeyCode {
             },
 
             Function(0) => return Err("unhandled fkey number 0".into()),
+            Function(n @ 13..=35) if matches!(modes.encoding, KeyboardEncoding::Kitty(_)) => {
+                write!(
+                    buf,
+                    "\x1b[{};{}u",
+                    57363 + u32::from(n),
+                    1 + mods.encode_xterm()
+                )?;
+            },
             Function(n) => {
                 if mods.is_empty() && n < 5 {
                     // F1-F4 are encoded using SS3 if there are no modifiers
@@ -1205,6 +1213,8 @@ impl InputParser {
             (15..=16, 13),
             // F17-F20 encoded as 31-34
             (17..=20, 14),
+            // F21-F24 encoded as 42-45
+            (21..=24, 21),
         ] {
             for n in range.clone() {
                 for (suffix, modifiers) in modifier_combos_including_meta() {
@@ -1507,6 +1517,51 @@ impl InputParser {
                         match csi_status(self.buf.as_slice()) {
                             ParseStatus::Complete(len) => {
                                 let sequence = &self.buf.as_slice()[..len];
+                                if sequence.last() == Some(&b'u') {
+                                    let mut fields = sequence[2..len - 1].split(|b| *b == b';');
+                                    let number = fields
+                                        .next()
+                                        .unwrap_or_default()
+                                        .split(|b| *b == b':')
+                                        .next()
+                                        .unwrap_or_default();
+                                    if std::str::from_utf8(number)
+                                        .ok()
+                                        .and_then(|s| s.parse::<u32>().ok())
+                                        .is_some_and(|code| (57344..=63743).contains(&code))
+                                    {
+                                        let mut modifiers =
+                                            fields.next().unwrap_or_default().split(|b| *b == b':');
+                                        let modifier_bytes = modifiers.next().unwrap_or_default();
+                                        let event = (modifiers.next() != Some(b"3".as_slice()))
+                                            .then(|| {
+                                                crate::keys::key_from_bytes_with_u(
+                                                    number,
+                                                    modifier_bytes,
+                                                )
+                                            })
+                                            .flatten()
+                                            .map(|key| {
+                                                InputEvent::Key(KeyEvent {
+                                                    key: crate::keys::to_termwiz_keycode(&key),
+                                                    modifiers: crate::keys::to_termwiz_modifiers(
+                                                        &key,
+                                                    ),
+                                                })
+                                            });
+                                        if event.is_none() {
+                                            self.flush_parked_esc_if_held(&mut callback);
+                                        }
+                                        self.buf.advance(len);
+                                        match event {
+                                            Some(event) => {
+                                                self.dispatch_callback(&mut callback, event)
+                                            },
+                                            None => callback(None, self.buf.len()),
+                                        }
+                                        continue;
+                                    }
+                                }
                                 if let Some((event, len)) =
                                     parse_sgr_mouse(sequence).or_else(|| parse_csi_report(sequence))
                                 {

@@ -187,9 +187,7 @@ impl KittyKeyboardParser {
         }
         match self.state {
             KittyKeysParsingState::DoneParsingWithU => {
-                // The modifier keys are checked before the general decode, because
-                // `yinz_key_codec::keys::bare_key_from_bytes_with_u` would otherwise turn 57443 into a private-use
-                // `Char` and it would be typed into whatever pane has focus.
+                // Standalone modifier events update held state rather than producing text.
                 if let Some(modifier) = modifier_from_keycode(&self.number_bytes) {
                     let event = self.event_kind();
                     self.reset();

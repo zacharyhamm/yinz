@@ -307,8 +307,7 @@ pub(crate) fn bare_keys(tc: &hegel::TestCase) -> BareKey {
         8 => BareKey::Backspace,
         9 => BareKey::Delete,
         10 => BareKey::Insert,
-        // Both `BareKey` enums stop at `BARE_KEY_F12`; there is no value for F13 and up.
-        11 => BareKey::F(tc.draw(generators::integers::<u8>().min_value(1).max_value(12))),
+        11 => BareKey::F(tc.draw(generators::integers::<u8>().min_value(1).max_value(35))),
         12 => BareKey::Char(
             tc.draw(generators::text().min_size(1).max_size(1))
                 .chars()

@@ -178,6 +178,47 @@ fn a_refused_command_is_answered_and_the_pane_carries_on() {
 }
 
 #[test]
+fn editing_the_displayed_frame_sends_updated_pixels_to_the_host() {
+    use yinz_terminal_graphics::kitty_graphics::{
+        KittyAction, KittyApcInterceptor, KittyCommandParser, Piece,
+    };
+
+    // Spec: "When specifying the r key the data for an existing frame is edited."
+    // https://sw.kovidgoyal.net/kitty/graphics-protocol/#transferring-animation-frame-data
+    let mut yinz = yinz_integration_tests::TestRunner::new(yinz_integration_tests::TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}")
+        .start();
+    let terminal = claim_first_terminal_and_wait_for_prompt(&yinz);
+    setup_kitty_host(&yinz, &terminal);
+    let has_pixels = |bytes: &[u8], expected: &[u8]| {
+        let mut interceptor = KittyApcInterceptor::new();
+        let mut parser = KittyCommandParser::new();
+        interceptor.split(bytes).any(|piece| {
+            if let Piece::Captured(raw) = piece
+                && let Some(Ok(command)) = parser.parse(&raw)
+                && command.action == KittyAction::Transmit
+                && let Some(image) = command.image
+            {
+                return (image.width, image.height) == (2, 2) && image.bytes == expected;
+            }
+            false
+        })
+    };
+    let original = [255, 0, 0, 255].repeat(4);
+    terminal.output(&apc_b64("a=T,f=32,s=2,v=2,i=83,C=1,q=2", &original));
+    yinz.wait_until_raw_output("the original frame reaches the host", |bytes| {
+        has_pixels(bytes, &original)
+    });
+
+    let edited = [0, 255, 0, 255].repeat(4);
+    terminal.output(&apc_b64("a=f,f=32,s=2,v=2,i=83,r=1,X=1,q=2", &edited));
+    yinz.wait_until_raw_output("the edited frame reaches the host", |bytes| {
+        has_pixels(bytes, &edited)
+    });
+    yinz.quit();
+}
+
+#[test]
 fn erasing_the_screen_withdraws_the_images_from_the_host() {
     // Spec: `ESC[2J` removes the images along with the screen contents, so the host terminal
     // must be told to drop them rather than leaving them painted over the next screen.

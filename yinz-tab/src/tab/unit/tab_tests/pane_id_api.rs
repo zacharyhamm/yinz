@@ -1,4 +1,101 @@
 use super::*;
+use yinz_types::keys::{BareKey, KeyWithModifier};
+
+#[test]
+fn targeted_extended_function_keys_follow_terminal_keyboard_mode() {
+    let terminal = TerminalId::new(1);
+    let pane = PaneId::Terminal(terminal);
+    for kitty in [false, true] {
+        let mut tab = create_new_tab(Size { cols: 80, rows: 20 }, true);
+        if kitty {
+            tab.handle_pty_bytes(terminal, b"\x1b[>1u".to_vec())
+                .unwrap();
+        }
+        let writes = install_pty_writer_capture(&mut tab);
+        for number in 25..=35 {
+            for ctrl in [false, true] {
+                let mut key = KeyWithModifier::new(BareKey::F(number));
+                if ctrl {
+                    key = key.with_ctrl_modifier();
+                }
+                tab.write_key_to_pane_id(pane, key, None).unwrap();
+                let instructions = drain_pty_writer(&writes);
+                if kitty {
+                    let [PtyWriteInstruction::Write(bytes, id, _)] = instructions.as_slice() else {
+                        panic!("expected one function-key write, got {instructions:?}");
+                    };
+                    assert_eq!(*id, terminal);
+                    assert_eq!(
+                        bytes,
+                        format!(
+                            "\x1b[{};{}u",
+                            57363 + u32::from(number),
+                            if ctrl { 5 } else { 1 }
+                        )
+                        .as_bytes()
+                    );
+                } else {
+                    assert!(instructions.is_empty(), "F{number} has no legacy encoding");
+                }
+            }
+        }
+        tab.write_key_to_pane_id(pane, KeyWithModifier::new(BareKey::Char('x')), None)
+            .unwrap();
+        assert!(matches!(
+            drain_pty_writer(&writes).as_slice(),
+            [PtyWriteInstruction::Write(bytes, id, _)] if bytes == b"x" && *id == terminal
+        ));
+        assert!(tab
+            .write_key_to_pane_id(pane, KeyWithModifier::new(BareKey::F(0)), None)
+            .is_err());
+    }
+}
+
+#[test]
+fn targeted_extended_function_keys_reach_plugins() {
+    use crate::plugins::PluginInstruction;
+    use yinz_types::data::Event;
+
+    let mut tab = create_new_tab(Size { cols: 80, rows: 20 }, true);
+    let (tx, rx) = unbounded();
+    tab.senders.replace_to_plugin(SenderWithContext::new(tx));
+    let plugin = crate::PluginId::new(3);
+    let pane = PaneId::Plugin(plugin);
+    tab.new_pane(
+        pane,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(ClientId::new(1)),
+        None,
+    )
+    .unwrap();
+    rx.try_iter().for_each(drop);
+    let keys: Vec<_> = (13..=35)
+        .map(|number| KeyWithModifier::new(BareKey::F(number)).with_ctrl_modifier())
+        .collect();
+    for key in &keys {
+        tab.write_key_to_pane_id(pane, key.clone(), None).unwrap();
+    }
+    let received: Vec<_> = rx
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::Update(events) => Some(events),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|(target, client, event)| match event {
+            Event::Key(key) => {
+                assert_eq!((target, client), (Some(plugin), None));
+                Some(key)
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(received, keys);
+}
 
 #[test]
 fn undirected_resize_reports_fixed_blockers_only_when_no_direction_succeeds() {
