@@ -487,7 +487,7 @@ pub fn screen_thread_main(
                     }
                 },
                 ScreenInstruction::PasteFromClient(text, client_id, completion) => {
-                    screen.paste_from_client(text, client_id, &keybind_intercepts, completion)?;
+                    screen.paste_from_client(text, client_id, completion)?;
                 },
                 ScreenInstruction::WriteCharacter(
                     key_with_modifier,

@@ -19,7 +19,6 @@ impl Screen {
         &mut self,
         text: String,
         client_id: ClientId,
-        keybind_intercepts: &HashMap<ClientId, PluginId>,
         completion: Option<NotificationEnd>,
     ) -> Result<()> {
         let bytes = text.into_bytes();
@@ -35,23 +34,17 @@ impl Screen {
                     }, ?
                 );
                 self.sync_scroll_mode_if_scroll_changed(client_id, was_scrolled)?;
-                self.write_character(
-                    None,
-                    b"\x1b[200~".to_vec(),
-                    false,
-                    client_id,
-                    keybind_intercepts,
-                    None,
-                )?;
-                self.write_character(None, bytes, false, client_id, keybind_intercepts, None)?;
-                self.write_character(
-                    None,
-                    b"\x1b[201~".to_vec(),
-                    false,
-                    client_id,
-                    keybind_intercepts,
-                    completion,
-                )?;
+                self.close_context_menu(client_id);
+                let mut state_changed = false;
+                active_tab_and_connected_client_id!(
+                    self, client_id, |tab: &mut Tab, client_id: ClientId| {
+                        state_changed = tab.paste_from_client(bytes, client_id, completion)?;
+                        Ok::<(), anyhow::Error>(())
+                    }, ?
+                );
+                if state_changed {
+                    self.log_and_report_session_state()?;
+                }
             },
             Some(InputMode::RenameTab) => self.update_active_tab_name(bytes, client_id)?,
             Some(InputMode::RenamePane) => {

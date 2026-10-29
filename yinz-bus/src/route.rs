@@ -125,6 +125,37 @@ impl NotificationEnd {
         self.requires_input_barrier
     }
 
+    /// Wait for every input target, reporting any target's write failure to the original caller.
+    pub fn split_for_input(mut self, count: usize) -> Vec<Self> {
+        if count == 0 {
+            return vec![];
+        }
+        if count == 1 {
+            return vec![self];
+        }
+        let mut completions = Vec::with_capacity(count);
+        let mut results = Vec::with_capacity(count);
+        for _ in 0..count {
+            let (tx, rx) = oneshot::channel();
+            let mut completion = Self::new(tx);
+            completion.requires_input_barrier = self.requires_input_barrier;
+            completions.push(completion);
+            results.push(rx);
+        }
+        crate::global_async_runtime::get_tokio_runtime().spawn(async move {
+            for result in results {
+                let error = match result.await {
+                    Ok(result) => result.error_message,
+                    Err(error) => Some(format!("input completion lost: {error}")),
+                };
+                if self.error_message.is_none() {
+                    self.error_message = error;
+                }
+            }
+        });
+        completions
+    }
+
     pub fn new_with_condition(
         sender: oneshot::Sender<ActionCompletionResult>,
         unblock_condition: UnblockCondition,

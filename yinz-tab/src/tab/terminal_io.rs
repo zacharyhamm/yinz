@@ -250,14 +250,7 @@ impl Tab {
         // returns true if a UI update should be triggered (eg. when closing a command pane with
         // ctrl-c)
         let mut should_trigger_ui_change = false;
-        let mut pane_ids = self.get_static_and_floating_pane_ids();
-        pane_ids.extend(
-            self.stack_list_of_member
-                .keys()
-                .filter(|member| self.pane_is_hidden_stack_list_member(member))
-                .copied(),
-        );
-        for pane_id in pane_ids {
+        for pane_id in self.sync_input_pane_ids() {
             let ui_change_triggered = self
                 .write_to_pane_id(
                     key_with_modifier,
@@ -273,6 +266,17 @@ impl Tab {
             }
         }
         Ok(should_trigger_ui_change)
+    }
+
+    fn sync_input_pane_ids(&self) -> Vec<PaneId> {
+        let mut pane_ids = self.get_static_and_floating_pane_ids();
+        pane_ids.extend(
+            self.stack_list_of_member
+                .keys()
+                .filter(|member| self.pane_is_hidden_stack_list_member(member))
+                .copied(),
+        );
+        pane_ids
     }
 
     pub fn write_to_active_terminal(
@@ -315,7 +319,7 @@ impl Tab {
         pane_id: PaneId,
         client_id: Option<ClientId>,
         completion: Option<NotificationEnd>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let bracketed_paste_begin = vec![27, 91, 50, 48, 48, 126];
         let bracketed_paste_end = vec![27, 91, 50, 48, 49, 126];
 
@@ -327,8 +331,35 @@ impl Tab {
             client_id,
             completion,
             true,
-        )?;
-        Ok(())
+        )
+    }
+
+    pub fn paste_from_client(
+        &mut self,
+        bytes: Vec<u8>,
+        client_id: ClientId,
+        completion: Option<NotificationEnd>,
+    ) -> Result<bool> {
+        let pane_ids = if self.is_sync_panes_active() {
+            self.sync_input_pane_ids()
+        } else {
+            self.clear_search(client_id);
+            self.mouse_help_text_visible.clear();
+            vec![self
+                .get_active_pane_id(client_id)
+                .ok_or_else(|| anyhow!("no active pane for client {client_id}"))?]
+        };
+        let mut completions = completion
+            .map(|completion| completion.split_for_input(pane_ids.len()))
+            .unwrap_or_default()
+            .into_iter();
+        let mut state_changed = false;
+        for pane_id in pane_ids {
+            state_changed |= self
+                .paste_to_pane_id(bytes.clone(), pane_id, Some(client_id), completions.next())
+                .context("failed to paste client input")?;
+        }
+        Ok(state_changed)
     }
 
     pub fn paste_to_active_terminal(
@@ -346,6 +377,7 @@ impl Tab {
             return Ok(());
         }
         self.paste_to_pane_id(bytes, active_pane_id, None, completion)
+            .map(|_| ())
     }
 
     /// Changes only for input delivered to the terminal, not terminal query replies.

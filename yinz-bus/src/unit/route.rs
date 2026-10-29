@@ -1,5 +1,41 @@
 use super::*;
 
+#[tokio::test]
+async fn split_input_completion_waits_for_all_targets_and_preserves_failures() {
+    for count in [0, 1, 3] {
+        for failed in [false, true] {
+            let (tx, mut rx) = oneshot::channel();
+            let mut parts = NotificationEnd::new_client_input(tx).split_for_input(count);
+            assert_eq!(parts.len(), count);
+            for part in &parts {
+                assert!(part.requires_input_barrier());
+            }
+            if count > 0 {
+                let mut first = parts.remove(0);
+                if failed {
+                    first.set_error_message("paste failed".into());
+                }
+                drop(first);
+                if !parts.is_empty() {
+                    assert!(matches!(
+                        rx.try_recv(),
+                        Err(oneshot::error::TryRecvError::Empty)
+                    ));
+                }
+            }
+            drop(parts);
+            let result = tokio::time::timeout(yinz_test_support::default_timeout(), rx)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                result.error_message.as_deref(),
+                (failed && count > 0).then_some("paste failed")
+            );
+        }
+    }
+}
+
 #[test]
 fn test_notification_end_sets_affected_tab_id() {
     let (tx, rx) = oneshot::channel();
