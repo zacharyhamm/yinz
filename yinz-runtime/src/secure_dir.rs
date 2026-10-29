@@ -1,11 +1,19 @@
 use std::collections::VecDeque;
 use std::ffi::{CString, OsString};
-use std::fs::{File, Permissions};
+use std::fs::{File, OpenOptions, Permissions};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path};
+
+#[cfg(target_os = "linux")]
+const ANCESTOR_ACCESS: libc::c_int = libc::O_PATH;
+#[cfg(target_os = "macos")]
+const ANCESTOR_ACCESS: libc::c_int = libc::O_SEARCH;
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const ANCESTOR_ACCESS: libc::c_int = libc::O_RDONLY;
+const DIRECTORY_FLAGS: libc::c_int = libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
 
 pub(super) fn ensure(path: &Path) -> io::Result<()> {
     let absolute = std::path::absolute(path)?;
@@ -13,7 +21,11 @@ pub(super) fn ensure(path: &Path) -> io::Result<()> {
         .components()
         .map(|part| part.as_os_str().to_owned())
         .collect();
-    let mut directory = File::open("/")?;
+    let root = OpenOptions::new()
+        .read(true)
+        .custom_flags(ANCESTOR_ACCESS | DIRECTORY_FLAGS)
+        .open("/")?;
+    let mut directory = root.try_clone()?;
     // SAFETY: geteuid has no preconditions.
     let uid = unsafe { libc::geteuid() };
     #[cfg(target_os = "linux")]
@@ -23,7 +35,7 @@ pub(super) fn ensure(path: &Path) -> io::Result<()> {
     let mut links = 0;
     while let Some(part) = pending.pop_front() {
         if part == "/" {
-            directory = File::open("/")?;
+            directory = root.try_clone()?;
             validate(&directory, uid, unmapped_uid, false)?;
             continue;
         }
@@ -35,7 +47,7 @@ pub(super) fn ensure(path: &Path) -> io::Result<()> {
             return Err(io::Error::other("private directory must have a final name"));
         }
         let name = CString::new(part.as_bytes())?;
-        let mut opened = open_directory(&directory, &name);
+        let mut opened = open_directory(&directory, &name, last);
         if opened
             .as_ref()
             .is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
@@ -47,7 +59,7 @@ pub(super) fn ensure(path: &Path) -> io::Result<()> {
                     return Err(error);
                 }
             }
-            opened = open_directory(&directory, &name);
+            opened = open_directory(&directory, &name, last);
         }
         let child = match opened {
             Ok(child) => child,
@@ -116,15 +128,15 @@ pub(super) fn ensure(path: &Path) -> io::Result<()> {
     Err(io::Error::other("private directory must have a final name"))
 }
 
-fn open_directory(parent: &File, name: &CString) -> io::Result<File> {
-    // SAFETY: parent remains open and name is NUL-terminated. Success transfers a new descriptor.
-    let fd = unsafe {
-        libc::openat(
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
+fn open_directory(parent: &File, name: &CString, last: bool) -> io::Result<File> {
+    // Only the final directory needs a descriptor that supports fchmod.
+    let access = if last {
+        libc::O_RDONLY
+    } else {
+        ANCESTOR_ACCESS
     };
+    // SAFETY: parent remains open and name is NUL-terminated. Success transfers a new descriptor.
+    let fd = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), access | DIRECTORY_FLAGS) };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }

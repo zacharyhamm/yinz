@@ -71,6 +71,27 @@ fn secure_dirs_are_created_with_missing_parents_and_owner_only_access() {
 
 #[cfg(unix)]
 #[test]
+fn secure_dirs_traverse_execute_only_ancestors() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = private_tempdir();
+    let ancestor = temp.path().join("searchable");
+    let child = ancestor.join("private");
+    std::fs::create_dir_all(&child).unwrap();
+    set_permissions(&child, 0o755).unwrap();
+    set_permissions(&ancestor, 0o100).unwrap();
+    let result = ensure_secure_dir(&child);
+    let mode = child
+        .metadata()
+        .map(|metadata| metadata.permissions().mode() & 0o7777);
+    // Restore read access before assertions so a failure still permits cleanup.
+    set_permissions(&ancestor, 0o700).unwrap();
+    result.unwrap();
+    assert_eq!(mode.unwrap(), 0o700);
+}
+
+#[cfg(unix)]
+#[test]
 fn secure_dirs_refuse_symlinks_at_the_final_name_without_changing_the_target() {
     use std::os::unix::fs::{symlink, PermissionsExt};
 

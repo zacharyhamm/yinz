@@ -1637,7 +1637,9 @@ impl Screen {
         completion_tx: Option<NotificationEnd>,
     ) -> Result<()> {
         match self.tab_containing_pane_mut(pane_id) {
-            Some(tab) => tab.paste_to_pane_id(bytes, pane_id, client_id, completion_tx),
+            Some(tab) => tab
+                .paste_to_pane_id(bytes, pane_id, client_id, completion_tx)
+                .map(|_| ()),
             None => Err(anyhow!("failed to find pane with id {pane_id:?}")),
         }
     }

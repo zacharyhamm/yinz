@@ -2080,6 +2080,7 @@ mod override_layout;
 mod pane_animations;
 mod pane_state;
 mod paneless_plugins;
+mod paste;
 mod plugin_broadcasts;
 mod plugin_launch;
 mod quit;
