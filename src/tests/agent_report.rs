@@ -776,6 +776,89 @@ fn claude_observer_outlives_the_hook_and_reports_missing_evidence() {
         .unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn claude_observer_delivers_confirmation_after_its_binary_is_replaced() {
+    warm_binary();
+    let dir = tempfile::tempdir().unwrap();
+    let listener = listener(dir.path());
+    // Debug images can exceed /tmp's capacity. Keep the replaceable copy on
+    // this worktree's build filesystem, with the short socket path still in /tmp.
+    let images = tempfile::tempdir_in(
+        std::path::Path::new(env!("CARGO_BIN_EXE_yinz"))
+            .parent()
+            .unwrap(),
+    )
+    .unwrap();
+    let binary = images.path().join("yinz");
+    std::fs::copy(env!("CARGO_BIN_EXE_yinz"), &binary).unwrap();
+    let mut child = Command::new(&binary)
+        .arg("--claude-turn-observer")
+        .env("YINZ_SOCKET_DIR", dir.path())
+        .env("TMPDIR", dir.path())
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env_remove("YINZ_PANE_REF")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // spawn() has exec'd the observer, and stdin gates its observation. Replace
+    // its image before releasing it, exactly as an install during a turn does.
+    let replacement = images.path().join("replacement");
+    yinz_test_support::write_warm_script(&replacement, "exit 97");
+    std::fs::rename(&replacement, &binary).unwrap();
+    write_event(
+        &mut child,
+        &serde_json::json!({
+            "kind":"claude",
+            "hook":{"hook_event_name":"UserPromptSubmit", "session_id":"conversation", "prompt_id":"prompt"},
+            "route":{"Local":{"session":"report-test","pane":"terminal_7"}},
+            // Missing process evidence makes the observer immediately send an
+            // unavailable confirmation; its delivery must still survive install.
+            "process":null
+        })
+        .to_string(),
+    );
+    let socket = dir
+        .path()
+        .join(&*yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR)
+        .join("report-test");
+    let waiter = std::thread::spawn(move || {
+        let output = child.wait_with_output().unwrap();
+        // If the observer cannot spawn its reporter, wake accept() with EOF so
+        // this regression fails on its exit status rather than timing out.
+        let _ = std::os::unix::net::UnixStream::connect(socket);
+        output
+    });
+    let mut receiver = IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
+    receiver
+        .set_recv_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let received = match receiver.recv_client_msg() {
+        IpcRecv::Msg(ClientToServerMsg::AgentReport(report), _) => {
+            let hook: yinz_types::agent::HookEvent =
+                serde_json::from_str(&report.event.unwrap().raw).unwrap();
+            assert_eq!(hook.claude_turn_complete, Some(false));
+            assert_eq!(hook.session_id, "conversation");
+            assert_eq!(hook.prompt_id.as_deref(), Some("prompt"));
+            receiver
+                .get_sender::<ServerToClientMsg>()
+                .unwrap()
+                .send_server_msg(ServerToClientMsg::AgentReportAccepted {
+                    report_id: report.report_id,
+                })
+                .unwrap();
+            true
+        },
+        _ => false,
+    };
+    let output = waiter.join().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(received, "observer lost the turn confirmation");
+}
+
 #[test]
 fn commands_in_an_adopted_pane_reach_the_adopting_session() {
     use yinz_server::pty_host::protocol::{
