@@ -64,6 +64,8 @@ mod query_guards;
 mod schema;
 #[path = "search.rs"]
 mod search;
+#[path = "../unit/store_guards.rs"]
+mod store_guards;
 #[path = "watches.rs"]
 mod watches;
 #[path = "writes.rs"]

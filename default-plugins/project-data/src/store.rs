@@ -1,5 +1,5 @@
 //! Shared entity definitions and backend operations for project and agent data.
-//! [`Local`] uses the real SQLite store for native model tests. Scheme plugins send
+//! With `test-support`, `Local` uses the real SQLite store for native model tests. Scheme plugins send
 //! data commands through their confined host bridge and keep transactions in guest code.
 
 use yinz_tile::prelude::HostId;
@@ -421,16 +421,17 @@ impl<T: Backend + ?Sized> Backend for &T {
     }
 }
 
-/// Put the backend's namespace on a request the caller built without one.
-fn stamped(namespace: Option<&str>, request: &FetchRequest) -> FetchRequest {
-    let mut request = request.clone();
-    request.namespace = namespace.map(str::to_owned);
-    request
-}
-
+#[cfg(any(test, feature = "test-support"))]
 mod local {
     use super::*;
     use yinz_storage::plugin_data_store::PluginDataStore;
+
+    /// Put the backend's namespace on a request the caller built without one.
+    fn stamped(namespace: Option<&str>, request: &FetchRequest) -> FetchRequest {
+        let mut request = request.clone();
+        request.namespace = namespace.map(str::to_owned);
+        request
+    }
 
     /// The id [`Local`] hands back from `watch`. Non-zero so that a plugin
     /// storing "no watch" as zero can still tell the two apart.
@@ -562,6 +563,7 @@ mod local {
     impl_backend!(Joined<'_>);
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub use local::{Joined, Local, LOCAL_WATCH_ID};
 
 // ---------------------------------------------------------------------------

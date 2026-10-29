@@ -2,11 +2,14 @@
 
 use yinz_types::internal_ids::DataRevision;
 use yinz_types::internal_ids::DataRowId;
-use yinz_types::plugin_data::{ApplyReport, AttrKind, DataError, DataValue, Mutation, REV_ABSENT};
+use yinz_types::plugin_data::{
+    ApplyReport, AttrKind, DataError, DataValue, FetchRequest, Mutation, REV_ABSENT,
+};
 
 use super::dialect::{Dialect, Params};
 use super::executor::{query_first, Executor};
 use super::predicate::compile_pred;
+use super::query::run_count_with_search_fallback;
 use super::schema::{EntitySchema, STORE_COLUMNS};
 use super::sql::{quote_ident, StoreContext};
 
@@ -304,11 +307,20 @@ pub(super) fn apply_one(
             ..
         } => {
             check_values(schema, values)?;
+            let expected = expect_rev
+                .map(|_| {
+                    run_count_with_search_fallback(
+                        exec,
+                        schema,
+                        &FetchRequest::entity(entity).filter(filter.clone()),
+                    )
+                })
+                .transpose()?;
             let (sql, params) = build_update(dialect, schema, filter, values, now, *expect_rev)?;
             let changed = exec
                 .execute(&sql, &params)
                 .with_context(|| format!("failed to update rows of `{}`", entity))?;
-            if changed == 0 {
+            if changed == 0 || expected.is_some_and(|expected| expected != changed) {
                 conflict(expect_rev, entity)?;
             }
             report.rows_written += changed;
@@ -326,8 +338,7 @@ pub(super) fn apply_one(
     Ok(())
 }
 
-/// Report a guarded write that matched nothing. A write with no guard matching nothing is not an
-/// error — it is the answer to the question it asked — so this is a no-op there.
+/// Report a guarded write that did not match every expected row. Unguarded writes cannot conflict.
 fn conflict(expect_rev: &Option<DataRevision>, entity: &str) -> Result<(), DataError> {
     let Some(rev) = *expect_rev else {
         return Ok(());
@@ -340,7 +351,7 @@ fn conflict(expect_rev: &Option<DataRevision>, entity: &str) -> Result<(), DataE
         )
     } else {
         format!(
-            "no row of `{}` is at revision {} any more; something else wrote it first, so \
+            "a row of `{}` is missing or no longer at revision {}; something else wrote it first, so \
              re-read it and decide again",
             entity, rev
         )

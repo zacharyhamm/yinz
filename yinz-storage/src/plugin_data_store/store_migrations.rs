@@ -9,8 +9,8 @@
 //! asking [`Dialect`] for backend-specific syntax — the same arrangement the rest of
 //! the store uses.
 //!
-//! A step must be idempotent in effect but is only ever *run* once per database, guarded by the
-//! version in `store_meta`. Steps are append-only: editing one already released means a database
+//! A step is run once per database, guarded by the version in `store_meta`; steps need not be
+//! idempotent. Steps are append-only: editing one already released means a database
 //! that ran the old version never gets the new one.
 
 use yinz_types::plugin_data::{AttrKind, DataError, DataValue};
@@ -204,9 +204,7 @@ fn rename_builtin_project_entities(exec: &mut dyn Executor) -> Result<(), DataEr
 
 /// Read the recorded version, treating a database with no `store_meta` row as version 0.
 ///
-/// A value that does not parse also reads as 0. That is deliberate and safe: the steps are
-/// idempotent in effect, so re-running them costs a little work rather than corrupting anything,
-/// whereas refusing to open the store would cost the user their session.
+/// Reject corrupt versions: replaying migrations can fail or alter an already-migrated database.
 pub(super) fn recorded_version(exec: &mut dyn Executor) -> Result<i64, DataError> {
     let meta_ddl = exec.dialect().store_meta_ddl();
     exec.execute_batch(meta_ddl)
@@ -216,9 +214,15 @@ pub(super) fn recorded_version(exec: &mut dyn Executor) -> Result<i64, DataError
     let sql = format!("SELECT value FROM store_meta WHERE key = {key}");
     let rows = query_all(exec, &sql, &params.into_values(), &[AttrKind::Text])
         .context("failed to read the store's schema version")?;
-    Ok(match rows.first().and_then(|row| row.first()) {
-        Some(DataValue::Text(value)) => value.parse::<i64>().unwrap_or(0),
-        _ => 0,
+    let version = match rows.first().and_then(|row| row.first()) {
+        None => return Ok(0),
+        Some(DataValue::Text(value)) => value.parse::<i64>().ok(),
+        _ => None,
+    };
+    version.filter(|version| *version >= 0).ok_or_else(|| {
+        DataError::Storage(
+            "invalid plugin data store schema_version; expected a nonnegative integer".into(),
+        )
     })
 }
 

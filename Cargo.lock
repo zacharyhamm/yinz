@@ -4814,6 +4814,8 @@ dependencies = [
 name = "yinz-host-protocol"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "prost",
  "yinz-types",
 ]
 
@@ -4857,7 +4859,6 @@ name = "yinz-ipc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "hegeltest",
  "interprocess",
  "libc",
@@ -4869,6 +4870,7 @@ dependencies = [
  "strum_macros",
  "tempfile",
  "tokio",
+ "yinz-host-protocol",
  "yinz-plugin-api",
  "yinz-runtime",
  "yinz-types",
@@ -5349,7 +5351,6 @@ dependencies = [
  "unicode-width 0.2.2",
  "vte 0.15.0",
  "yinz-host-protocol",
- "yinz-ipc",
  "yinz-runtime",
  "yinz-terminal-graphics",
  "yinz-types",

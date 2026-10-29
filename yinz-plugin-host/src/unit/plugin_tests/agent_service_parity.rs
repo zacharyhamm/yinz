@@ -13,6 +13,8 @@ use std::{
 };
 use yinz_plugin_api::event::ProtobufPaneScrollbackResponse;
 use yinz_plugin_api::plugin_command::*;
+use yinz_types::internal_ids::DataRevision;
+use yinz_types::plugin_data::REV_ABSENT;
 use yinz_types::{
     data::*,
     internal_ids::{PluginId, TabId, TabPosition, TerminalId},
@@ -314,13 +316,20 @@ fn stored_equal(wasm: &DataHost, steel: &DataHost) {
     ] {
         let request = FetchRequest {
             namespace: Some("shared:yinz".into()),
-            ..FetchRequest::entity(entity)
+            ..FetchRequest::entity(entity).sort_by("uid", SortDir::Asc)
         };
-        assert_eq!(
-            steel.fetch(&request),
-            wasm.fetch(&request),
-            "stored {entity}"
-        );
+        // Guarded updates do not consume SQLite insert IDs; the persistent identity is uid.
+        let without_ids = |host: &DataHost| {
+            let mut rows = host.fetch(&request);
+            assert!(!rows.truncated, "compare every stored {entity} row");
+            let id = rows.column_index("id").unwrap();
+            rows.columns.remove(id);
+            for row in &mut rows.rows {
+                row.remove(id);
+            }
+            rows
+        };
+        assert_eq!(without_ids(steel), without_ids(wasm), "stored {entity}");
     }
 }
 #[test]
@@ -690,6 +699,105 @@ fn seed(data: &Arc<DataHost>) {
         .unwrap();
     }
 }
+
+#[test]
+fn agent_service_keeps_original_revisions_on_conflict_and_other_runs_progress() {
+    use super::runtime_parity::SteelReference;
+    use agent_proto::agents::{rows, AgentRun};
+
+    let data = DataHost::new("agent-service");
+    seed(&data);
+    let mut original = Vec::new();
+    for (id, pane) in [("stale", 7), ("healthy", 8)] {
+        let run: AgentRun = serde_json::from_value(json!({
+            "id":id, "pane_id":pane, "host_id":"parity-host-id", "yinz_session_name":"work",
+            "kind":"claude", "started_at_ms":1000, "revision":1,
+            "entries":[{"revision":1,"kind":"prompt","text":"original"}]
+        }))
+        .unwrap();
+        data.apply("shared:yinz", &rows::run_mutations(&run, REV_ABSENT));
+        original.push(run);
+    }
+    let mut service = SteelReference::from_source(
+        "agent-service",
+        r#"
+        (require "./agent-service/state.scm" "./agent-service/messages.scm" "./agent-service/runs.scm")
+        (define (load _)
+          (as-set! "host" "parity-host-id") (as-set! "session" "work")
+          (as-call "restore-runs"))
+        (define (edit pane)
+          (define run (append-entry (as-map-get "runs" pane #f) "result" "local edit" #f json-null 2000))
+          (as-map-set! "runs" pane run) (as-map-set! "dirty-runs" (hash-ref run "id") run))
+        (define (restore) (as-call "restore-runs"))
+        (define (persist) (as-call "persist"))
+        (define (pending) (as-keys (as-get "dirty-runs")))
+        (define (revisions) (as-get "run-revisions"))
+        (define (release) (as-call "finish-run" 7 "Released" 3000) (as-call "persist"))
+        "#,
+        BTreeMap::new(),
+        data.responder(Arc::new(default_reply)),
+    );
+    assert_eq!(
+        service.runtime.invoke("revisions", vec![]).unwrap(),
+        json!({"stale":1,"healthy":1})
+    );
+    service.runtime.invoke("edit", vec![json!(7)]).unwrap();
+    let mut winner = original[0].clone();
+    winner.cwd = Some("/winner".into());
+    data.apply(
+        "shared:yinz",
+        &rows::run_mutations(&winner, DataRevision::new(1)),
+    );
+    service.runtime.invoke("restore", vec![]).unwrap();
+    assert_eq!(
+        service.runtime.invoke("revisions", vec![]).unwrap()["stale"],
+        1
+    );
+    let fetch = |id: &str| data.fetch(&rows::run_by_id_request(id).in_namespace("shared:yinz"));
+    for expected in [2, 3] {
+        service.runtime.invoke("edit", vec![json!(8)]).unwrap();
+        service.runtime.invoke("persist", vec![]).unwrap();
+        assert_eq!(
+            service.runtime.invoke("pending", vec![]).unwrap(),
+            json!(["stale"])
+        );
+        assert_eq!(
+            service.runtime.invoke("revisions", vec![]).unwrap(),
+            json!({"stale":1,"healthy":expected})
+        );
+        let saved = rows::runs_from_rows(&fetch("stale")).remove(0);
+        assert_eq!(saved.cwd, winner.cwd);
+        assert_eq!(saved.revision, 1);
+        assert_eq!(
+            rows::runs_from_rows(&fetch("healthy"))[0].revision,
+            expected
+        );
+        let entries =
+            data.fetch(&rows::entries_request(["stale".into()]).in_namespace("shared:yinz"));
+        assert_eq!(
+            entries.rows.len(),
+            1,
+            "a conflict rolls back the stale timeline too"
+        );
+        assert!(service.runtime.take_logs().unwrap().contains("conflict"));
+    }
+    winner.host_id = "other-host".into();
+    winner.yinz_session_name = "other-session".into();
+    data.apply(
+        "shared:yinz",
+        &rows::run_mutations(&winner, DataRevision::new(2)),
+    );
+    service.runtime.invoke("release", vec![]).unwrap();
+    assert_eq!(
+        service.runtime.invoke("pending", vec![]).unwrap(),
+        json!([])
+    );
+    assert_eq!(
+        rows::runs_from_rows(&fetch("stale"))[0].host_id,
+        winner.host_id
+    );
+}
+
 #[test]
 fn agent_service_actual_runtimes_match_reload_claim_and_released_run_ownership() {
     let _reference_trace = super::reference_trace::Scenario::new(
@@ -703,7 +811,7 @@ fn agent_service_actual_runtimes_match_reload_claim_and_released_run_ownership()
         seed(data);
         data.apply(
             "shared:yinz",
-            &agent_proto::agents::rows::run_mutations(&run),
+            &agent_proto::agents::rows::run_mutations(&run, REV_ABSENT),
         );
     }
     let mut pair = Pair::with_hosts(
@@ -727,18 +835,54 @@ fn agent_service_actual_runtimes_match_reload_claim_and_released_run_ownership()
         namespace: Some("shared:yinz".into()),
         ..agent_proto::agents::rows::run_by_id_request(&run.id)
     });
+    let DataValue::Int(revision) = rows.get(&rows.rows[0], "rev").unwrap() else {
+        panic!("run has a revision")
+    };
     run = agent_proto::agents::rows::runs_from_rows(&rows).remove(0);
     assert_eq!(run.host_id.as_str(), "parity-host-id");
+    let mut released = run.clone();
+    released.entries = agent_proto::agents::rows::entries_from_rows(&wasm.fetch(
+        &agent_proto::agents::rows::entries_request([run.id.clone()]).in_namespace("shared:yinz"),
+    ))
+    .remove(&run.id)
+    .unwrap();
+    released.outcome = agent_proto::agents::RunOutcome::Closed;
+    released.ended_at_ms = Some(clock.load(Ordering::SeqCst) as i64);
+    let owner =
+        agent_proto::agents::rows::Owner::new(run.host_id.clone(), run.yinz_session_name.clone());
     run.host_id = "other-host".into();
     run.yinz_session_name = "other-session".into();
     run.pane_id = 88;
     for data in [&wasm, &steel] {
         data.apply(
             "shared:yinz",
-            &[agent_proto::agents::rows::run_mutation(&run)],
+            &[agent_proto::agents::rows::run_mutation(
+                &run,
+                DataRevision::new(*revision),
+            )],
         );
     }
-    pair.event(Event::PaneUpdate(PaneManifest::default()));
+    let event = Event::PaneUpdate(PaneManifest::default());
+    assert_eq!(pair.steel.update(&event), pair.wasm.update(&event));
+    pair.compare_commands_for_event(false, |actual, expected| {
+        // The foreign owner now prevents the stale write; the original owner-filtered update wrote zero rows.
+        let lookup = PluginCommand::DataFetch {
+            request: FetchRequest {
+                select: vec!["payload".into()],
+                ..agent_proto::agents::rows::run_by_id_request(&run.id).in_namespace("shared:yinz")
+            },
+        };
+        assert_eq!(actual.pop(), Some(serde_json::to_value(lookup).unwrap()));
+        let mut no_op = serde_json::to_value(PluginCommand::DataApply {
+            namespace: Some("shared:yinz".into()),
+            mutations: vec![agent_proto::agents::rows::run_owned_mutation(
+                &released, &owner, REV_ABSENT,
+            )],
+        })
+        .unwrap();
+        no_op["DataApply"]["mutations"][0]["Update"]["expect_rev"] = Value::Null;
+        assert_eq!(expected.pop(), Some(no_op));
+    });
     stored_equal(&wasm, &steel);
     let rows = wasm.fetch(&FetchRequest {
         namespace: Some("shared:yinz".into()),

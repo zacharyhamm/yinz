@@ -897,9 +897,8 @@ pub enum Mutation {
         entity: String,
         filter: Pred,
         values: Vec<(String, DataValue)>,
-        /// The `rev` the matched rows must be at. Folded into the filter, so an update guarding
-        /// on a revision matches only rows at that revision — with a filter naming one row, which
-        /// is the normal case, that is a compare-and-set on that row.
+        /// The `rev` every row matching `filter` must be at. An empty match or any revision
+        /// mismatch refuses the entire batch with [`DataError::Conflict`].
         #[serde(default)]
         expect_rev: Option<DataRevision>,
     },
@@ -1124,7 +1123,7 @@ impl UpdateBuilder {
         self
     }
 
-    /// Apply only to rows still at `rev`, and refuse the batch if none match.
+    /// Apply only if every matching row is still at `rev`; refuse the batch if none match.
     pub fn expect_rev(mut self, rev: DataRevision) -> Self {
         self.expect_rev = Some(rev);
         self

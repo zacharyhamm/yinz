@@ -781,10 +781,12 @@ fn new_grid_for_nested_frames() -> Grid {
     )
 }
 
-fn nested_announce_message() -> yinz_ipc::nested_session::NestedSessionMessage {
-    yinz_ipc::nested_session::NestedSessionMessage::Announce {
+fn nested_announce_message() -> yinz_host_protocol::nested_session::NestedSessionMessage {
+    yinz_host_protocol::nested_session::NestedSessionMessage::Announce {
         session_name: "guest-session".to_owned().into(),
-        capabilities: vec![yinz_ipc::nested_session::NestedSessionCapability::NestedControl],
+        capabilities: vec![
+            yinz_host_protocol::nested_session::NestedSessionCapability::NestedControl,
+        ],
     }
 }
 
@@ -1315,7 +1317,10 @@ fn ui_component_dcs_payload_is_bounded_and_recovers() {
 
 #[test]
 fn nested_frame_dcs_payload_is_bounded_and_recovers() {
-    let prefix = format!("\x1bP{}n", yinz_ipc::nested_session::NESTED_DCS_PARAM);
+    let prefix = format!(
+        "\x1bP{}n",
+        yinz_host_protocol::nested_session::NESTED_DCS_PARAM
+    );
     assert_dcs_payload_is_bounded(prefix.as_bytes(), BufferedDcs::NestedFrame);
 }
 

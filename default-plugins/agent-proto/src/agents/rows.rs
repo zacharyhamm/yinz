@@ -12,7 +12,8 @@ use super::{
 use crate::store::Backend;
 use std::collections::{BTreeMap, BTreeSet};
 use yinz_tile::prelude::{
-    DataRows, DataValue, FetchRequest, Mutation, Pred, PutBuilder, SortDir, MAX_FETCH_ROWS,
+    DataRevision, DataRows, DataValue, FetchRequest, Mutation, Pred, PutBuilder, SortDir,
+    MAX_FETCH_ROWS,
 };
 
 use crate::store::owned_by;
@@ -56,7 +57,7 @@ pub fn active_runs_request(owner: &Owner) -> FetchRequest {
     FetchRequest::entity(RUN_ENTITY)
         .filter(Pred::eq("active", true))
         .filter(owned_or_unclaimed(owner))
-        .select(["payload"])
+        .select(["uid", "rev", "payload", "host_id", "yinz_session_name"])
 }
 
 /// One run by its id, whatever session it belongs to and whether or not it is still open.
@@ -67,7 +68,7 @@ pub fn active_runs_request(owner: &Owner) -> FetchRequest {
 pub fn run_by_id_request(run_id: &str) -> FetchRequest {
     FetchRequest::entity(RUN_ENTITY)
         .filter(Pred::eq("uid", run_id))
-        .select(["payload"])
+        .select(["uid", "rev", "payload", "host_id", "yinz_session_name"])
         .limit(1)
 }
 
@@ -500,8 +501,11 @@ fn stored_payload(run: &AgentRun) -> String {
     serde_json::to_string(&stored).expect("AgentRun serializes")
 }
 
-pub fn run_mutation(run: &AgentRun) -> Mutation {
-    let mut put = Mutation::put(RUN_ENTITY).uid(run.id.clone());
+/// Guard metadata with the revision its author read; zero means a new run.
+pub fn run_mutation(run: &AgentRun, expected_revision: DataRevision) -> Mutation {
+    let mut put = Mutation::put(RUN_ENTITY)
+        .uid(run.id.clone())
+        .expect_rev(expected_revision);
     for (attr, value) in run_values(run) {
         put = put.set(attr, value);
     }
@@ -514,9 +518,9 @@ pub fn run_mutation(run: &AgentRun) -> Mutation {
 /// timeline has rows of its own. agent-service does not use this — it knows which entries
 /// the store already has and writes only the new ones — but anything holding a complete
 /// run and no such bookkeeping wants all of it written.
-pub fn run_mutations(run: &AgentRun) -> Vec<Mutation> {
+pub fn run_mutations(run: &AgentRun, expected_revision: DataRevision) -> Vec<Mutation> {
     let mut mutations = Vec::with_capacity(run.entries.len() + 1);
-    mutations.push(run_mutation(run));
+    mutations.push(run_mutation(run, expected_revision));
     mutations.extend(
         run.entries
             .iter()
@@ -534,9 +538,8 @@ pub fn run_mutations(run: &AgentRun) -> Vec<Mutation> {
 /// closed one, and the entries the agent has produced since would be gone.
 ///
 /// The predicate settles that inside the transaction rather than by hoping about order: a
-/// row already claimed by another session matches nothing, and the write is simply dropped.
-/// An adoption is deliberately *not* guarded — claiming the row is precisely the write that
-/// changes the owner, so it must be a `Put`.
+/// row already claimed by another session matches nothing, and the batch conflicts.
+/// Adoption uses a `Put` guarded by the revision read before changing the owner.
 ///
 /// The owner is the machine and the session, not the session alone. On a store shared
 /// between machines a session called `main` on one of them would otherwise pass the guard
@@ -547,11 +550,16 @@ pub fn run_mutations(run: &AgentRun) -> Vec<Mutation> {
 /// before the column existed, and a guard this session can never satisfy would leave it
 /// open for good. The write itself carries the run's host, so the row is claimed by the
 /// same act that closes it.
-pub fn run_owned_mutation(run: &AgentRun, owner: &Owner) -> Mutation {
+pub fn run_owned_mutation(
+    run: &AgentRun,
+    owner: &Owner,
+    expected_revision: DataRevision,
+) -> Mutation {
     let mut update = Mutation::update(
         RUN_ENTITY,
         Pred::eq("uid", run.id.clone()).and(owned_or_unclaimed(owner)),
-    );
+    )
+    .expect_rev(expected_revision);
     for (attr, value) in run_values(run) {
         update = update.set(attr, value);
     }
@@ -574,9 +582,18 @@ fn decode_run<T: serde::de::DeserializeOwned>(value: &str) -> Option<T> {
 pub fn runs_from_rows(rows: &DataRows) -> Vec<AgentRun> {
     rows.rows
         .iter()
-        .filter_map(|row| match rows.get(row, "payload") {
-            Some(DataValue::Text(value)) => decode_run(value),
-            _ => None,
+        .filter_map(|row| {
+            let Some(DataValue::Text(value)) = rows.get(row, "payload") else {
+                return None;
+            };
+            let mut run: AgentRun = decode_run(value)?;
+            if let Some(DataValue::Text(session)) = rows.get(row, "yinz_session_name") {
+                run.yinz_session_name = session.clone().into();
+            }
+            if let Some(DataValue::Text(host_id)) = rows.get(row, "host_id") {
+                run.host_id = host_id.clone().into();
+            }
+            Some(run)
         })
         .collect()
 }

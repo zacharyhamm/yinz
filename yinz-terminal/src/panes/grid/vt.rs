@@ -9,7 +9,7 @@ use crate::panes::terminal_character::EMPTY_TERMINAL_CHARACTER;
 use crate::ui::components::UiComponentParser;
 use vte::Params;
 use vte::Perform;
-use yinz_ipc::nested_session;
+use yinz_host_protocol::nested_session;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::ui_components::UI_COMPONENT_DCS_FINAL;
 

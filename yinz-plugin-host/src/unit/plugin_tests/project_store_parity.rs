@@ -13,6 +13,7 @@ use std::{
 use yinz_plugin_api::plugin_command::*;
 use yinz_types::data::*;
 use yinz_types::internal_ids::{HostId, PluginId};
+use yinz_types::plugin_data::REV_ABSENT;
 
 const AGENT_SERVICE: u32 = 9;
 
@@ -149,6 +150,13 @@ impl Pair {
     }
     /// Compares commands after dropping those only Scheme sends.
     fn commands_with(&mut self, steel_only: fn(&Value) -> bool) -> Vec<Value> {
+        self.commands_for_search(steel_only, None)
+    }
+    fn commands_for_search(
+        &mut self,
+        steel_only: fn(&Value) -> bool,
+        exact_run: Option<&str>,
+    ) -> Vec<Value> {
         // The original reads through WASI; Scheme uses the permission-checked FS command.
         let app = |commands: Vec<Value>| {
             commands
@@ -157,8 +165,18 @@ impl Pair {
                 .collect::<Vec<_>>()
         };
         let expected = app(self.wasm.take_commands());
+        let mut comparable = expected.clone();
         let normalize = |mut commands: Vec<Value>| {
             for command in &mut commands {
+                if let Some(request) = command.pointer_mut("/DataFetch/request")
+                    && request["entity"] == agents::rows::RUN_ENTITY
+                    && (request["select"]
+                        == json!(["uid", "rev", "payload", "host_id", "yinz_session_name"])
+                        || request["select"] == json!(["payload", "host_id", "yinz_session_name"]))
+                {
+                    // Original by-ID reads predate revision and owner-column restoration.
+                    request["select"] = json!(["payload"]);
+                }
                 // Original traces predate source descriptions; the publisher test checks those.
                 if let Some(context) = command
                     .get_mut("SetProjectContext")
@@ -185,9 +203,31 @@ impl Pair {
         };
         let mut actual = app(self.steel.take_commands());
         actual.retain(|command| !steel_only(command));
+        if let Some(run) = exact_run {
+            // Explicit searches now check the run before reading its entries.
+            let request = agents::rows::run_by_id_request(run).in_namespace(store::SHARED);
+            assert_eq!(actual[1], json!({"DataFetch":{"request":request}}));
+            actual.remove(1);
+            if self.databases[1].fetch(&request).is_empty() {
+                let scope = json!({"In":["run_id",[{"Text":run}]]});
+                comparable.retain(|command| {
+                    let request = &command["DataFetch"]["request"];
+                    if request["entity"] != agents::rows::ENTRY_ENTITY {
+                        return true;
+                    }
+                    assert!(
+                        request["filter"] == scope
+                            || request["filter"]["And"]
+                                .as_array()
+                                .is_some_and(|parts| parts.contains(&scope))
+                    );
+                    false
+                });
+            }
+        }
         assert_eq!(
             normalize(actual),
-            normalize(expected.clone()),
+            normalize(comparable),
             "project-store runtime command mismatch"
         );
         expected
@@ -196,9 +236,16 @@ impl Pair {
         self.send(PipeSource::Cli("request".into()), name, payload)
     }
     fn send(&mut self, source: PipeSource, name: &str, payload: Option<String>) -> Vec<Value> {
+        let request = payload
+            .as_deref()
+            .and_then(|text| serde_json::from_str::<Value>(text).ok());
+        let exact_run = request
+            .as_ref()
+            .filter(|request| request["op"] == "agent_history_search")
+            .and_then(|request| request["args"]["run_id"].as_str());
         let message = message(source, name, payload, None);
         assert_eq!(self.steel.pipe(&message), self.wasm.pipe(&message));
-        self.commands()
+        self.commands_for_search(|_| false, exact_run)
     }
     /// Intended divergence: the recorded original trusted snapshots from any sender.
     /// Scheme receives them from the agent service with an increasing sequence number.
@@ -238,6 +285,21 @@ impl Pair {
     }
     fn query(&mut self, op: &str, args: Value) -> Value {
         self.op("store_query", op, args)
+    }
+    fn current_query(&mut self, op: &str, args: Value) -> Value {
+        let message = message(
+            PipeSource::Cli("request".into()),
+            "store_query",
+            Some(json!({"op":op,"args":args,"structured_reply":true}).to_string()),
+            None,
+        );
+        self.steel.pipe(&message);
+        let commands = self.steel.take_commands();
+        let output = commands
+            .iter()
+            .find_map(|command| command.get("CliPipeOutput"))
+            .unwrap();
+        serde_json::from_str(output[1].as_str().unwrap()).unwrap()
     }
     fn watches(&mut self) {
         let left = self.databases[0].changed();
@@ -398,7 +460,10 @@ fn project_store_actual_runtimes_match_archive_pages_scopes_and_search() {
                 })
                 .collect();
             run.revision = 18;
-            data.apply(store::SHARED, &agents::rows::run_mutations(&run));
+            data.apply(
+                store::SHARED,
+                &agents::rows::run_mutations(&run, REV_ABSENT),
+            );
         }
     }
     for args in [
@@ -435,6 +500,50 @@ fn project_store_actual_runtimes_match_archive_pages_scopes_and_search() {
         json!({"query":"needle","run_session":"other"}),
     ] {
         pair.query("agent_history_search", args);
+    }
+    // Legacy rows can have a valid payload and timeline without a listing header.
+    for data in &pair.databases {
+        data.apply(
+            store::SHARED,
+            &[
+                Mutation::update(agents::rows::RUN_ENTITY, Pred::eq("uid", "claude:legacy"))
+                    .set("header", DataValue::Null)
+                    .build(),
+            ],
+        );
+    }
+    for regex in [false, true] {
+        for (args, expected) in [
+            (
+                json!({"run_id":"claude:first","run_session":"main","host_id":"parity-host-id","project":"work"}),
+                18,
+            ),
+            (
+                json!({"run_id":"claude:legacy","run_session":"main","host_id":"parity-host-id"}),
+                18,
+            ),
+            (json!({"run_id":"claude:first","run_session":"other"}), 0),
+            (
+                json!({"run_id":"claude:third","host_id":"parity-host-id"}),
+                0,
+            ),
+            (json!({"run_id":"claude:legacy","project":"work"}), 0),
+            (json!({"run_id":"claude:first","kind":"codex"}), 0),
+            (json!({"run_id":"claude:first","active":false}), 0),
+            (
+                json!({"run_id":"claude:first","since_ms":1_700_000_000_001i64}),
+                0,
+            ),
+            (json!({"run_id":"missing"}), 0),
+        ] {
+            let mut args = args;
+            args["query"] = json!("needle");
+            args["regex"] = json!(regex);
+            // These corrected filter semantics have no counterpart in the historical recording.
+            let result = pair.current_query("agent_history_search", args);
+            assert_eq!(result["ok"], true, "{result}");
+            assert_eq!(result["data"]["count"], expected, "{result}");
+        }
     }
     pair.rows();
 }

@@ -432,7 +432,7 @@ fn headers_by_id(
         let rows = backend.fetch(
             &FetchRequest::entity(rows::RUN_ENTITY)
                 .filter(Pred::is_in("uid", chunk.to_vec()))
-                .select(["payload"])
+                .select(["payload", "host_id", "yinz_session_name"])
                 .limit(chunk.len() as u32),
         )?;
         for run in rows::runs_from_rows(&rows) {
@@ -735,7 +735,20 @@ pub fn search(
     let limit = limit.clamp(1, MAX_MATCHES);
     let mut partial_scope = false;
     let scope: Option<Vec<String>> = match run_id {
-        Some(run_id) => Some(vec![run_id.to_owned()]),
+        Some(run_id) => {
+            let mut request = rows::run_by_id_request(run_id);
+            if let Some(predicate) = filter.pred() {
+                request = request.filter(predicate);
+            }
+            let fetched = backend.fetch(&request)?;
+            if !rows::runs_from_rows(&fetched)
+                .iter()
+                .any(|run| filter.keeps(&run.header()))
+            {
+                return Ok(Found::default());
+            }
+            Some(vec![run_id.to_owned()])
+        },
         None if filter == &Filter::default() => None,
         None => {
             let (ids, cut) = scope_runs(backend, filter)?;

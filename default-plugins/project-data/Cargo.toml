@@ -8,6 +8,9 @@ description = "The agent plugins' store engine seam, entity schemas, and project
 [lints]
 workspace = true
 
+[features]
+test-support = ["dep:yinz-storage", "dep:tempfile"]
+
 # Nothing from the rest of agent-proto: the plugin host links this crate for the project
 # registry, so it must not bring agent strips, envelopes or the LLM request builders
 # into the server with it.
@@ -17,6 +20,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
 
-# Native model tests use the same SQLite engine as the host.
+# Only native model tests need the SQLite backend.
+yinz-storage = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+
+[dev-dependencies]
 yinz-storage = { workspace = true }
 tempfile = { workspace = true }

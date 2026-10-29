@@ -10,7 +10,6 @@ workspace = true
 
 [dependencies]
 yinz-host-protocol = { workspace = true }
-yinz-ipc = { workspace = true }
 yinz-runtime = { workspace = true }
 yinz-terminal-graphics = { workspace = true }
 yinz-types = { workspace = true }

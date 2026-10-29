@@ -1,6 +1,8 @@
 use crate::{to_scheme, Runtime};
 use agent_proto::{agents, markdown};
 use serde_json::{json, Value};
+use yinz_types::internal_ids::DataRevision;
+use yinz_types::plugin_data::REV_ABSENT;
 
 fn runtime() -> Runtime {
     Runtime::new(|_| anyhow::bail!("document models must not call the host")).unwrap()
@@ -49,13 +51,17 @@ fn long_histories_preserve_headers_mutations_fingerprints_and_rendering() {
     for (op, args, expected) in [
         (
             "RunMutation",
-            json!([run]),
-            json!(agents::rows::run_mutation(&run)),
+            json!([run, 0]),
+            json!(agents::rows::run_mutation(&run, REV_ABSENT)),
         ),
         (
             "RunOwnedMutation",
-            json!([run, {"host_id":run.host_id, "yinz_session_name":run.yinz_session_name}]),
-            json!(agents::rows::run_owned_mutation(&run, &run.owner())),
+            json!([run, {"host_id":run.host_id, "yinz_session_name":run.yinz_session_name}, 1]),
+            json!(agents::rows::run_owned_mutation(
+                &run,
+                &run.owner(),
+                DataRevision::new(1)
+            )),
         ),
     ] {
         assert_eq!(

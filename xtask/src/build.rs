@@ -59,7 +59,7 @@ pub(crate) fn run_proto_codegen(sh: &Shell, force: bool) {
             "generated_client_server_api.rs",
         ),
         (
-            "yinz-ipc/assets/prost_nested_session",
+            "yinz-host-protocol/assets/prost_nested_session",
             "yinz-ipc/src/nested_session_contract",
             "generated_nested_session_api.rs",
         ),

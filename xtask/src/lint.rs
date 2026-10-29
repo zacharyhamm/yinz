@@ -71,7 +71,7 @@ const FILE_LEVEL_ALLOWS: &[(&str, &str)] = &[
         "clippy::module_inception",
     ),
     (
-        "yinz-ipc/src/nested_session_contract/mod.rs",
+        "yinz-host-protocol/src/nested_session_contract/mod.rs",
         "clippy::module_inception",
     ),
     // vendored from termwiz; its doc comments are not ours to reflow

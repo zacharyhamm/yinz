@@ -63,7 +63,7 @@ use yinz_types::position::Position;
 use yinz_types::style::Palette;
 use yinz_types::style::Styling;
 
-use yinz_ipc::nested_session::NestedSessionMessage;
+use yinz_host_protocol::nested_session::NestedSessionMessage;
 use yinz_runtime::consts::DEFAULT_SCROLL_BUFFER_SIZE;
 use yinz_runtime::consts::SCROLL_BUFFER_SIZE;
 use yinz_types::data::PaletteColor;

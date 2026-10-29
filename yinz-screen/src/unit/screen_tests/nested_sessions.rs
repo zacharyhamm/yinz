@@ -27,16 +27,35 @@ pub fn nested_guest_announce_gets_announce_ack_with_ancestry() {
             pane_id: PaneId::Terminal(crate::TerminalId::new(0)),
             message: guest_announce_message(),
         });
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    let announce_ack = received_pty_instructions.wait_until(
+        "an announce_ack frame written to the guest pane",
+        yinz_test_support::default_timeout(),
+        |instructions| {
+            instructions
+                .iter()
+                .find_map(|instruction| match instruction {
+                    PtyWriteInstruction::Write(bytes, TERMINAL_0, None) => {
+                        decode_nested_frame(bytes)
+                    },
+                    _ => None,
+                })
+        },
+    );
+    received_background_jobs.wait_until(
+        "liveness pings started for the guest pane",
+        yinz_test_support::default_timeout(),
+        |jobs| {
+            jobs.iter()
+                .any(|job| {
+                    matches!(
+                        job,
+                        BackgroundJob::StartNestedGuestPing(PaneId::Terminal(TERMINAL_0))
+                    )
+                })
+                .then_some(())
+        },
+    );
     mock_screen.teardown(vec![pty_writer_thread, screen_thread]);
-    let announce_ack = received_pty_instructions
-        .lock()
-        .iter()
-        .find_map(|instruction| match instruction {
-            PtyWriteInstruction::Write(bytes, TERMINAL_0, None) => decode_nested_frame(bytes),
-            _ => None,
-        })
-        .expect("an announce_ack frame written to the guest pane");
     assert_eq!(
         announce_ack,
         yinz_ipc::nested_session::NestedSessionMessage::AnnounceAck {

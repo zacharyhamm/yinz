@@ -311,6 +311,7 @@ pub(crate) struct Pair {
     pub(crate) wasm: WasmReference,
     pub(crate) steel: SteelReference,
     pub(crate) mode: ModeInfo,
+    service: bool,
     unrecorded_hook_publications: u64,
     _root: tempfile::TempDir,
 }
@@ -335,6 +336,7 @@ impl Pair {
     ) -> Self {
         let root = tempfile::tempdir().unwrap();
         let mut pair = Self {
+            service: name == "agent-service",
             wasm: WasmReference::with_clock(
                 name,
                 configuration.clone(),
@@ -360,6 +362,13 @@ impl Pair {
         self.commands_for_event(false)
     }
     fn commands_for_event(&mut self, hook_event: bool) -> Vec<Value> {
+        self.compare_commands_for_event(hook_event, |_, _| {})
+    }
+    pub(crate) fn compare_commands_for_event(
+        &mut self,
+        hook_event: bool,
+        adapt: impl FnOnce(&mut Vec<Value>, &mut Vec<Value>),
+    ) -> Vec<Value> {
         let mut actual = self.steel.take_commands();
         let expected = self.wasm.take_commands();
         let is_snapshot = |command: &Value| {
@@ -388,7 +397,12 @@ impl Pair {
             });
             self.unrecorded_hook_publications += u64::from(publication.is_some());
         }
-        let normalize = |commands: Vec<Value>, sequence_offset: u64| {
+        let normalize = |commands: Vec<Value>, sequence_offset: u64, current: bool| {
+            let commands = if self.service {
+                normalize_run_persistence(commands, current)
+            } else {
+                commands
+            };
             commands
                 .into_iter()
                 // Provider-chain and cache tests cover these new service effects.
@@ -437,8 +451,9 @@ impl Pair {
                 })
                 .collect::<Vec<_>>()
         };
-        let expected = normalize(expected, 0);
-        let actual = normalize(actual, self.unrecorded_hook_publications);
+        let mut expected = normalize(expected, 0, false);
+        let mut actual = normalize(actual, self.unrecorded_hook_publications, true);
+        adapt(&mut actual, &mut expected);
         assert_eq!(
             actual, expected,
             "actual runtimes emitted different host commands"
@@ -553,6 +568,101 @@ impl Pair {
         }
         self.event(Event::ModeUpdate(mode));
     }
+}
+
+// Compare the original ordered mutations while checking the new revision contract separately.
+fn normalize_run_persistence(commands: Vec<Value>, current: bool) -> Vec<Value> {
+    let mut normalized = Vec::new();
+    for mut command in commands {
+        if current
+            && command.pointer("/DataFetch/request/entity") == Some(&serde_json::json!("agent_run"))
+        {
+            assert_eq!(
+                command["DataFetch"]["request"]["select"],
+                serde_json::json!(["uid", "rev", "payload", "host_id", "yinz_session_name"])
+            );
+            command["DataFetch"]["request"]["select"] = serde_json::json!(["payload"]);
+        }
+        let Some(mutations) = command
+            .pointer_mut("/DataApply/mutations")
+            .and_then(Value::as_array_mut)
+        else {
+            normalized.push(command);
+            continue;
+        };
+        let run_batch = mutations.iter().any(|mutation| {
+            mutation
+                .pointer("/Put/entity")
+                .or_else(|| mutation.pointer("/Update/entity"))
+                == Some(&serde_json::json!("agent_run"))
+        });
+        if !run_batch {
+            normalized.push(command);
+            continue;
+        }
+        for mutation in mutations.iter_mut() {
+            let entity = mutation
+                .pointer("/Put/entity")
+                .or_else(|| mutation.pointer("/Update/entity"));
+            assert!(
+                entity == Some(&serde_json::json!("agent_run"))
+                    || entity == Some(&serde_json::json!("agent_run_entry")),
+                "run batches contain only metadata and timeline writes"
+            );
+            if entity == Some(&serde_json::json!("agent_run")) {
+                let operation = if mutation.get("Put").is_some() {
+                    "Put"
+                } else {
+                    "Update"
+                };
+                let body = &mut mutation[operation];
+                if current {
+                    assert!(
+                        body["expect_rev"].as_u64().is_some(),
+                        "every service run write carries its author's revision"
+                    );
+                }
+                body["expect_rev"] = Value::Null;
+            }
+        }
+        let writes = std::mem::take(mutations);
+        for mutation in writes {
+            let mut single = command.clone();
+            single["DataApply"]["mutations"] = serde_json::json!([mutation]);
+            normalized.push(single);
+        }
+    }
+    normalized
+}
+
+#[test]
+fn run_persistence_comparison_preserves_writes_and_requires_current_guards() {
+    use serde_json::json;
+    let first = json!({"Put":{"entity":"agent_run","uid":"one","values":[["payload",{"Text":"first"}]],"expect_rev":null}});
+    let entry = json!({"Put":{"entity":"agent_run_entry","uid":"one#1","values":[["text",{"Text":"entry"}]],"expect_rev":null}});
+    let second = json!({"Put":{"entity":"agent_run","uid":"two","values":[["payload",{"Text":"second"}]],"expect_rev":null}});
+    let batch = |mutations: Vec<Value>| json!({"DataApply":{"namespace":"shared:yinz","mutations":mutations}});
+    let legacy = vec![
+        batch(vec![first.clone(), entry.clone(), second.clone()]),
+        json!("GetPluginIds"),
+    ];
+    let mut guarded_first = first.clone();
+    guarded_first["Put"]["expect_rev"] = json!(0);
+    let mut guarded_second = second.clone();
+    guarded_second["Put"]["expect_rev"] = json!(4);
+    let current = vec![
+        batch(vec![guarded_first, entry]),
+        batch(vec![guarded_second]),
+        json!("GetPluginIds"),
+    ];
+    assert_eq!(
+        normalize_run_persistence(current, true),
+        normalize_run_persistence(legacy, false)
+    );
+    assert!(
+        std::panic::catch_unwind(|| normalize_run_persistence(vec![batch(vec![first])], true))
+            .is_err()
+    );
 }
 
 // Native and Wasm builds use different serde_json object-map features. Claude

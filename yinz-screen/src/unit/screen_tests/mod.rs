@@ -60,7 +60,6 @@ use crate::{
     pty::{ClientTabIndexOrPaneId, PtyInstruction},
 };
 use std::collections::{BTreeMap, HashSet};
-use std::env::set_var;
 use std::sync::{Arc, Mutex};
 use yinz_ipc::ipc::IpcReceiverWithContext;
 use yinz_types::pane_size::{Size, SizeInPixels};
@@ -586,7 +585,7 @@ impl MockScreen {
         config.options.agent_pane_min_rows.get_or_insert(0);
         let client_attributes = self.client_attributes.clone();
         let default_layout = self.default_layout.clone();
-        let screen_bus = Bus::new(
+        let mut screen_bus = Bus::new(
             vec![self.screen_receiver.take().unwrap()],
             Some(&self.to_screen.clone()),
             Some(&self.to_pty.clone()),
@@ -597,14 +596,13 @@ impl MockScreen {
             Some(Box::new(self.os_input.clone())),
         )
         .should_silently_fail();
+        screen_bus.senders.session = self.session_metadata.senders.session.clone();
         let debug = false;
         let config_file_path = self.session_metadata.config_file_path.clone();
         let config_dir = self.session_metadata.config_dir.clone();
         let screen_thread = std::thread::Builder::new()
             .name("screen_thread".to_string())
             .spawn(move || {
-                // FIXME: Audit that the environment access only happens in single-threaded code.
-                unsafe { set_var("YINZ_SESSION_NAME", "yinz-test") };
                 screen_thread_main(
                     screen_bus,
                     None,
@@ -685,7 +683,7 @@ impl MockScreen {
     ) -> std::thread::JoinHandle<()> {
         let config = self.config.clone();
         let client_attributes = self.client_attributes.clone();
-        let screen_bus = Bus::new(
+        let mut screen_bus = Bus::new(
             vec![self.screen_receiver.take().unwrap()],
             Some(&self.to_screen.clone()),
             Some(&self.to_pty.clone()),
@@ -696,14 +694,13 @@ impl MockScreen {
             Some(Box::new(self.os_input.clone())),
         )
         .should_silently_fail();
+        screen_bus.senders.session = self.session_metadata.senders.session.clone();
         let debug = false;
         let config_file_path = self.session_metadata.config_file_path.clone();
         let config_dir = self.session_metadata.config_dir.clone();
         let screen_thread = std::thread::Builder::new()
             .name("screen_thread".to_string())
             .spawn(move || {
-                // FIXME: Audit that the environment access only happens in single-threaded code.
-                unsafe { set_var("YINZ_SESSION_NAME", "yinz-test") };
                 screen_thread_main(
                     screen_bus,
                     None,
@@ -941,7 +938,7 @@ impl MockScreen {
                 to_pty_writer: Some(to_pty_writer.clone()),
                 to_background_jobs: Some(to_background_jobs.clone()),
                 to_server: Some(to_server.clone()),
-                session: Default::default(),
+                session: yinz_runtime::envs::SessionState::new("yinz-test".into()),
                 session_checkpoint: Default::default(),
                 session_ownership: None,
                 should_silently_fail: true,
