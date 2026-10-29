@@ -48,6 +48,53 @@ fn rendered_text(chunks: &[CharacterChunk]) -> String {
 }
 
 #[test]
+fn initial_contents_seed_each_plugin_client_until_its_first_frame() {
+    let mut pane = test_plugin_pane(5, 40, Offset::frame(1));
+    let first = ClientId::new(1);
+    let second = ClientId::new(2);
+    for client in [first, second] {
+        pane.add_client(client);
+    }
+    let pane: &mut dyn Pane = &mut pane;
+    pane.set_initial_contents("restored λ\r\nsecond row");
+    for client in [first, second] {
+        assert_eq!(
+            pane.dump_screen(false, Some(client)).trim_end(),
+            "restored λ\nsecond row"
+        );
+    }
+    pane.handle_plugin_bytes(first, b"live frame".to_vec());
+    assert_eq!(
+        pane.dump_screen(false, Some(first)).trim_end(),
+        "live frame"
+    );
+    assert!(pane.dump_screen(false, Some(second)).contains("restored λ"));
+}
+
+#[test]
+fn pane_tabs_views_preserve_each_clients_highlight_and_reveal() {
+    let mut pane = test_plugin_pane(5, 40, Offset::frame(1));
+    let first = ClientId::new(1);
+    let second = ClientId::new(2);
+    let first_view = crate::pane_tabs::PaneTabsView {
+        highlight: 1,
+        reveal: Some(2),
+    };
+    let second_view = crate::pane_tabs::PaneTabsView {
+        highlight: 3,
+        reveal: None,
+    };
+    let pane: &mut dyn Pane = &mut pane;
+    pane.set_pane_tabs_views(HashMap::from([(first, first_view), (second, second_view)]));
+    assert_eq!(pane.pane_tabs_view(first), first_view);
+    assert_eq!(pane.pane_tabs_view(second), second_view);
+    assert_eq!(pane.pane_tabs_view(ClientId::new(3)), Default::default());
+    pane.remove_client(first);
+    assert_eq!(pane.pane_tabs_view(first), Default::default());
+    assert_eq!(pane.pane_tabs_view(second), second_view);
+}
+
+#[test]
 fn ending_a_selection_marks_the_pane_for_rendering() {
     // `start_selection` and `update_selection` set the flag; `end_selection` did
     // not, so a double-click word selection stayed invisible until an unrelated

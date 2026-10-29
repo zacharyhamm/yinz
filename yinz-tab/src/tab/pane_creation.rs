@@ -386,14 +386,17 @@ impl Tab {
         pane.update_name(&layout.name.unwrap_or_default());
         pane.set_borderless(layout.borderless.unwrap_or(false));
         pane.set_pane_default_colors(layout.default_fg, layout.default_bg);
+        self.park_new_pane(pane).context("park warp companion")?;
+        let pane = self
+            .get_pane_with_id_mut(id)
+            .context("find parked warp companion")?;
         if let Some(contents) = layout.pane_initial_contents {
-            pane.handle_pty_bytes(contents.into_bytes());
-            pane.handle_pty_bytes(b"\n\r".to_vec());
+            pane.set_initial_contents(&contents);
         }
         if let Some(command) = held_command {
             pane.hold(None, true, command);
         }
-        self.park_new_pane(pane)
+        Ok(())
     }
 
     /// A rejected landing cannot return supervisors already adopted from another session.

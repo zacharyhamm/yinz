@@ -378,6 +378,9 @@ impl Pane for PluginPane {
 
         self.should_render.insert(client_id, true);
     }
+    fn set_initial_contents(&mut self, contents: &str) {
+        self.handle_plugin_bytes_for_all_clients(format!("{contents}\n\r").into_bytes());
+    }
     fn cursor_coordinates(&self, client_id: Option<ClientId>) -> Option<(usize, usize, bool)> {
         let own_content_columns = self.get_content_columns();
         let own_content_rows = self.get_content_rows();
@@ -578,11 +581,7 @@ impl Pane for PluginPane {
         if self.tab_bar_rows() > 0
             && let Some(tabs) = &self.pane_tabs
         {
-            let view = self
-                .pane_tabs_views
-                .get(&client_id)
-                .copied()
-                .unwrap_or_default();
+            let view = self.pane_tabs_view(client_id);
             let characters = crate::pane_tabs::render_bar(
                 tabs,
                 view,

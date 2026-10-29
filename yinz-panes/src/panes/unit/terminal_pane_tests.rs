@@ -1284,6 +1284,54 @@ fn an_ordinary_held_command_still_drops_to_a_shell_on_escape() {
 }
 
 #[test]
+fn dropping_a_held_agent_to_shell_clears_agent_identity_and_command() {
+    use crate::pane::AdjustedInput;
+    use yinz_types::keys::BareKey;
+
+    for session_end_reported in [false, true] {
+        let command = RunCommand {
+            command: "env".into(),
+            args: vec!["YINZ_AGENT_PANE=1".into(), "claude".into()],
+            cwd: Some(PathBuf::from("/work")),
+            ..Default::default()
+        };
+        let mut pane = agent_pane_with_run(Some(super::Run::Command(command.clone())));
+        let mut agent = pane.agent_info().unwrap().clone();
+        agent.session_id = Some("old-session".into());
+        agent.run_id = Some("old-run".into());
+        pane.set_agent_info(Some(agent));
+        pane.set_detected_agent(true);
+        pane.record_agent_input(true);
+        pane.last_hook_at_ms = Some(123);
+        if session_end_reported {
+            pane.set_agent_info(None);
+        }
+        pane.hold(Some(0), false, command);
+        assert!(pane.was_an_agent());
+
+        assert!(matches!(
+            press_key(&mut pane, BareKey::Esc, ClientId::new(1)),
+            Some(AdjustedInput::DropToShellInThisPane { working_dir })
+                if working_dir == Some(PathBuf::from("/work"))
+        ));
+
+        let info = crate::pane::pane_info_for_pane(&pane.pid(), &pane, &HashMap::new());
+        assert!(info.agent.is_none());
+        assert!(info.last_agent_session_id.is_none());
+        assert!(!pane.was_an_agent());
+        assert!(!pane.is_detected_agent());
+        assert!(pane.last_agent_kind().is_none());
+        assert!(pane.last_agent_cwd().is_none());
+        assert!(pane.invoked_with().is_none());
+        assert!(pane.last_hook_at_ms.is_none());
+        assert_eq!(pane.agent_input_revision(), 0);
+        assert_eq!(pane.agent_enter_revision(), 0);
+        assert!(pane.agent_input_at().is_none());
+        assert!(!pane.is_held());
+    }
+}
+
+#[test]
 pub fn guest_modal_navigation_wraps() {
     use yinz_types::keys::BareKey;
     let mut pane = create_guest_modal_pane();

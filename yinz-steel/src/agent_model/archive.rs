@@ -1,4 +1,4 @@
-//! Pure archive models; all reads and pagination remain in the Scheme guest.
+//! Pure archive models and page accounting; storage reads remain in the Scheme guest.
 use super::{decode, encode};
 use agent_proto::{
     agents::{AgentRunHeader, RunEntry},
@@ -41,6 +41,14 @@ pub(super) fn register(engine: &mut Engine) {
 
 pub(super) fn run(op: &str, args: Value) -> Result<Value> {
     match op {
+        "ListRunsRequest" => {
+            let (filter, limit, offset): (run_history::Filter, usize, usize) = decode(args)?;
+            encode(run_history::list_runs_request(&filter, limit, offset))
+        },
+        "ListRunsPage" => {
+            let (filter, limit, rows): (run_history::Filter, usize, DataRows) = decode(args)?;
+            encode(run_history::list_runs_page(&filter, limit, &rows))
+        },
         "Filter" => {
             let (filter,): (run_history::Filter,) = decode(args)?;
             Ok(

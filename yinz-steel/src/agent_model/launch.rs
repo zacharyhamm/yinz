@@ -36,21 +36,20 @@ pub(super) fn run(op: &str, args: Value) -> Result<Value> {
                 decode(args)?;
             encode(launch::command_in_context(&kind, cwd, target))
         },
-        "ResumeCommand" => {
-            let (kind, session_id, cwd, host, bubblewrap): (
-                String,
-                String,
-                Option<String>,
-                Option<String>,
-                Option<String>,
+        "ResumeRunCommand" => {
+            let (run, host_id): (
+                agent_proto::agents::AgentRunHeader,
+                yinz_types::internal_ids::HostId,
             ) = decode(args)?;
-            encode(launch::resume_command(
-                &kind,
-                &session_id,
-                cwd.as_deref(),
-                host.as_deref(),
-                bubblewrap.as_deref(),
-            ))
+            encode(launch::resume_directory(&run, &host_id).and_then(|cwd| {
+                launch::resume_command(
+                    &run.kind,
+                    &run.session_id,
+                    Some(cwd),
+                    run.host.as_deref(),
+                    run.bubblewrap.as_deref(),
+                )
+            }))
         },
         _ => bail!("unknown launch model operation {op}"),
     }

@@ -15,20 +15,8 @@
 (define (a-empty cut) (hash "hits" '() "runs" (hash) "truncated" cut))
 
 (define (archive-list-runs filter limit offset)
-  (define limit (a-clamp limit 50))
-  (define info (a-model "Filter" filter))
-  (define want (if (hash-ref info "narrows") (min (* limit 8) 400) (+ limit 1)))
-  (define request (a-offset (ps-limit (a-select (a-sort
-            (ps-filter (ps-request "agent_run") (hash "NotNull" "header"))
-            '(("started_at_ms" "Desc") ("uid" "Asc"))) '("header" "host_id" "yinz_session_name")) want) offset))
-  (define rows (ps-fetch (a-scoped request (hash-ref info "predicate"))))
-  (define raw (a-size rows))
-  (let loop ((remaining (ps-model "agents" "RunHeadersFromRows" rows)) (index 0) (headers '()))
-    (define overflow (and (not (null? remaining)) (a-model "Keeps" filter (car remaining)) (= (length headers) limit)))
-    (if (or (null? remaining) overflow)
-      (hash "headers" (reverse headers) "scanned" (if (= raw 0) 0 (max 1 (min raw (if overflow index raw))))
-        "more" (or overflow (and (hash-ref info "narrows") (or (>= raw want) (hash-ref rows "truncated")))))
-      (loop (cdr remaining) (+ index 1) (if (a-model "Keeps" filter (car remaining)) (cons (car remaining) headers) headers)))))
+  (define rows (ps-fetch (a-model "ListRunsRequest" filter limit offset)))
+  (a-model "ListRunsPage" filter limit rows))
 
 (define (archive-run-header id)
   (define runs (ps-model "agents" "RunsFromRows" (ps-fetch (ps-model "agents" "RunByIdRequest" id))))

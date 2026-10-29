@@ -19,6 +19,23 @@ pub fn agent_pane_context() -> std::collections::BTreeMap<String, String> {
     std::collections::BTreeMap::from([(AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())])
 }
 
+/// Validate archive ownership and lifecycle before either UI prepares a resume command.
+pub fn resume_directory<'a>(
+    run: &'a crate::agents::AgentRunHeader,
+    host_id: &yinz_types::internal_ids::HostId,
+) -> Result<&'a str, String> {
+    if run.outcome == crate::agents::RunOutcome::Active || run.ended_at_ms.is_none() {
+        return Err("This run is active; focus its live agent".into());
+    }
+    if !run.host_id.is_empty() && &run.host_id != host_id {
+        return Err("Run belongs to an unmapped foreign host; resume on its owning host".into());
+    }
+    run.cwd
+        .as_deref()
+        .filter(|cwd| !cwd.trim().is_empty())
+        .ok_or_else(|| "Run has no recorded directory".into())
+}
+
 pub const AGENTS_ALIAS: &str = "agents";
 
 /// Match the Agents panel's keybinding configuration so plugin launches reuse its instance.

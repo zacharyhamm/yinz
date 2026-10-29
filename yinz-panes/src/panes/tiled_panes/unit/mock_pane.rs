@@ -174,6 +174,12 @@ pub fn run_layout(specs: &[PaneSpec], direction: SplitDirection, space: usize) -
 }
 
 impl Pane for MockPane {
+    fn set_initial_contents(&mut self, _contents: &str) {
+        unimplemented!()
+    }
+    fn pane_tabs_view(&self, _client: ClientId) -> crate::pane_tabs::PaneTabsView {
+        Default::default()
+    }
     fn reset_size_and_position_override(&mut self) {
         unimplemented!()
     }

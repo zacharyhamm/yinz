@@ -1541,6 +1541,86 @@ fn an_agent_run_round_trips_through_the_shared_store() {
     assert_eq!(detail, vec![run]);
 }
 
+#[test]
+fn stored_legacy_run_outcomes_are_normalized_before_resume() {
+    use crate::store::{self, Backend};
+    use yinz_tile::prelude::{FetchRequest, Mutation, Pred};
+    use RunOutcome::{Active, Closed, Completed, Replaced};
+
+    let local = store::Local::shared("agent-service");
+    local.define_all(&store::shared_defs()).unwrap();
+    for (index, (outcome, ended, expected)) in [
+        (None, None, Some(Active)),
+        (None, Some(Value::Null), Some(Active)),
+        (None, Some(json!(20)), Some(Completed)),
+        (Some(json!("active")), Some(json!(20)), Some(Active)),
+        (Some(json!("completed")), Some(json!(20)), Some(Completed)),
+        (Some(json!("closed")), Some(json!(20)), Some(Closed)),
+        (Some(json!("replaced")), Some(json!(20)), Some(Replaced)),
+        (Some(Value::Null), Some(json!(20)), None),
+        (Some(json!("unknown")), Some(json!(20)), None),
+        (None, Some(json!("invalid")), None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let run = a_run_with_entries(&format!("claude:legacy-{index}"), "yinz", 7, &["asked"]);
+        let mut payload = serde_json::to_value(&run).unwrap();
+        let mut header = serde_json::to_value(run.header()).unwrap();
+        for value in [&mut payload, &mut header] {
+            let object = value.as_object_mut().unwrap();
+            object.remove("outcome");
+            object.remove("ended_at_ms");
+            if let Some(outcome) = &outcome {
+                object.insert("outcome".into(), outcome.clone());
+            }
+            if let Some(ended) = &ended {
+                object.insert("ended_at_ms".into(), ended.clone());
+            }
+        }
+        local
+            .apply(vec![Mutation::put(rows::RUN_ENTITY)
+                .uid(run.id.clone())
+                .set("pane_id", run.pane_id)
+                .set("session_id", run.session_id.clone())
+                .set("kind", run.kind.clone())
+                .set("active", ended.as_ref().is_none_or(Value::is_null))
+                .set("started_at_ms", run.started_at_ms)
+                .set("payload", payload.to_string())
+                .set("header", header.to_string())
+                .build()])
+            .unwrap();
+        let fetched = local
+            .fetch(
+                &FetchRequest::entity(rows::RUN_ENTITY)
+                    .filter(Pred::eq("uid", run.id.clone()))
+                    .select(["payload", "header"]),
+            )
+            .unwrap();
+        let runs = rows::runs_from_rows(&fetched);
+        let headers = rows::run_headers_from_rows(&fetched);
+        assert_eq!(
+            runs.first().map(|run| run.outcome),
+            expected,
+            "case {index}"
+        );
+        assert_eq!(
+            headers.first().map(|header| header.outcome),
+            expected,
+            "case {index}"
+        );
+        if let Some(header) = headers.first() {
+            assert_eq!(runs[0].header(), *header);
+            assert_eq!(runs[0].entries, run.entries);
+            assert_eq!(
+                crate::launch::resume_directory(header, &run.host_id).is_ok(),
+                expected != Some(Active),
+                "case {index}"
+            );
+        }
+    }
+}
+
 /// A run written before the timeline had rows of its own keeps the entries in its payload.
 ///
 /// The whole of the backward compatibility: there is no migration and no backfill, so a
