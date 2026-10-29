@@ -1026,8 +1026,7 @@ impl<'a> LayoutApplier<'a> {
         );
         new_plugin.pending_pane_tabs = layout.pane_tabs.clone();
         if let Some(pane_initial_contents) = &layout.pane_initial_contents {
-            new_plugin.handle_pty_bytes(pane_initial_contents.as_bytes().into());
-            new_plugin.handle_pty_bytes("\n\r".as_bytes().into());
+            new_plugin.set_initial_contents(pane_initial_contents);
         }
 
         new_plugin.set_borderless(layout.borderless.unwrap_or(false));
@@ -1077,8 +1076,7 @@ impl<'a> LayoutApplier<'a> {
         );
         new_pane.pending_pane_tabs = floating_pane_layout.pane_tabs.clone();
         if let Some(pane_initial_contents) = &floating_pane_layout.pane_initial_contents {
-            new_pane.handle_pty_bytes(pane_initial_contents.as_bytes().into());
-            new_pane.handle_pty_bytes("\n\r".as_bytes().into());
+            new_pane.set_initial_contents(pane_initial_contents);
         }
         if floating_pane_layout.borderless.unwrap_or(false) {
             new_pane.set_borderless(true);
@@ -1135,8 +1133,7 @@ impl<'a> LayoutApplier<'a> {
             None,
         );
         if let Some(pane_initial_contents) = &floating_pane_layout.pane_initial_contents {
-            new_pane.handle_pty_bytes(pane_initial_contents.as_bytes().into());
-            new_pane.handle_pty_bytes("\n\r".as_bytes().into());
+            new_pane.set_initial_contents(pane_initial_contents);
         }
         if floating_pane_layout.borderless.unwrap_or(false) {
             new_pane.set_borderless(true);
@@ -1213,8 +1210,7 @@ impl<'a> LayoutApplier<'a> {
             notification_end,
         );
         if let Some(pane_initial_contents) = &layout.pane_initial_contents {
-            new_pane.handle_pty_bytes(pane_initial_contents.as_bytes().into());
-            new_pane.handle_pty_bytes("\n\r".as_bytes().into());
+            new_pane.set_initial_contents(pane_initial_contents);
         }
         new_pane.set_borderless(layout.borderless.unwrap_or(false));
         if let Some(exclude_from_sync) = layout.exclude_from_sync {

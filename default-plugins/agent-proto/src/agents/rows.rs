@@ -558,11 +558,24 @@ pub fn run_owned_mutation(run: &AgentRun, owner: &Owner) -> Mutation {
     update.build()
 }
 
+fn decode_run<T: serde::de::DeserializeOwned>(value: &str) -> Option<T> {
+    let mut value: serde_json::Value = serde_json::from_str(value).ok()?;
+    // Ended legacy runs predate outcomes; preserve any explicitly recorded outcome.
+    if value.get("outcome").is_none()
+        && value
+            .get("ended_at_ms")
+            .is_some_and(|ended| !ended.is_null())
+    {
+        value["outcome"] = serde_json::Value::String("completed".into());
+    }
+    serde_json::from_value(value).ok()
+}
+
 pub fn runs_from_rows(rows: &DataRows) -> Vec<AgentRun> {
     rows.rows
         .iter()
         .filter_map(|row| match rows.get(row, "payload") {
-            Some(DataValue::Text(value)) => serde_json::from_str(value).ok(),
+            Some(DataValue::Text(value)) => decode_run(value),
             _ => None,
         })
         .collect()
@@ -575,11 +588,11 @@ pub fn run_headers_from_rows(rows: &DataRows) -> Vec<AgentRunHeader> {
         .collect()
 }
 
-fn header_at(rows: &DataRows, row: &[DataValue]) -> Option<AgentRunHeader> {
+pub(crate) fn header_at(rows: &DataRows, row: &[DataValue]) -> Option<AgentRunHeader> {
     let Some(DataValue::Text(value)) = rows.get(row, "header") else {
         return None;
     };
-    let mut header: AgentRunHeader = serde_json::from_str(value).ok()?;
+    let mut header: AgentRunHeader = decode_run(value)?;
     // Older stored headers omit ownership; the row columns are authoritative when fetched.
     if let Some(DataValue::Text(session)) = rows.get(row, "yinz_session_name") {
         header.yinz_session_name = session.clone().into();

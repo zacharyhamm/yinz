@@ -198,6 +198,8 @@ pub trait Pane {
         self.set_borderless_with_content_offset(borderless, content_offset);
     }
     fn character_cell_size_possibly_changed(&mut self) {}
+    /// Seed layout contents before the pane's process or plugin produces output.
+    fn set_initial_contents(&mut self, contents: &str);
     fn handle_pty_bytes(&mut self, _bytes: VteBytes) {}
     fn handle_plugin_bytes(&mut self, _client_id: ClientId, _bytes: VteBytes) {}
     fn show_cursor(&mut self, _client_id: ClientId, _cursor_position: Option<(usize, usize)>) {}
@@ -739,9 +741,7 @@ pub trait Pane {
         _views: std::collections::HashMap<ClientId, crate::pane_tabs::PaneTabsView>,
     ) {
     }
-    fn pane_tabs_view(&self, _client: ClientId) -> crate::pane_tabs::PaneTabsView {
-        Default::default()
-    }
+    fn pane_tabs_view(&self, client: ClientId) -> crate::pane_tabs::PaneTabsView;
     fn set_pane_tabs(&mut self, _tabs: Option<yinz_types::pane_tabs::PaneTabsInfo>) {}
     fn pane_tabs(&self) -> Option<&yinz_types::pane_tabs::PaneTabsInfo> {
         None

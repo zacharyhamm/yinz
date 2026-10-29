@@ -3,6 +3,42 @@ use yinz_types::input::layout::Run;
 use yinz_types::pane_size::Offset;
 
 #[test]
+fn warp_companion_initial_contents_use_parked_geometry() {
+    use yinz_types::internal_ids::PluginId;
+
+    let client = ClientId::new(1);
+    for id in [
+        PaneId::Terminal(TerminalId::new(2)),
+        PaneId::Plugin(PluginId::new(2)),
+    ] {
+        let (mut tab, _plugin_receiver) = create_new_tab_with_plugin_receiver(
+            Size {
+                cols: 120,
+                rows: 40,
+            },
+            ModeInfo::default(),
+        );
+        tab.create_warp_companion(
+            id,
+            FloatingPaneLayout {
+                pane_initial_contents: Some("restored companion\r\nsecond row".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            tab.get_pane_with_id(id)
+                .unwrap()
+                .dump_screen(false, Some(client))
+                .trim_end(),
+            "restored companion\nsecond row",
+            "{id:?}"
+        );
+    }
+}
+
+#[test]
 fn focused_directional_splits_preserve_launch_command_and_title() {
     for direction in [Direction::Right, Direction::Down] {
         for hold_on_start in [false, true] {

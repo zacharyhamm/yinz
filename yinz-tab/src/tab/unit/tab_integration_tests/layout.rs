@@ -1,6 +1,90 @@
 use super::*;
 
 #[test]
+fn initial_contents_reach_tiled_and_floating_terminal_and_plugin_panes() {
+    use yinz_types::input::layout::Run;
+    use yinz_types::internal_ids::PluginId;
+
+    let client = ClientId::new(1);
+    for is_plugin in [false, true] {
+        let (mut tab, _plugin_receiver) = create_new_tab_with_plugin_receiver(
+            Size {
+                cols: 120,
+                rows: 40,
+            },
+            ModeInfo::default(),
+        );
+        tab.tiled_panes.drain();
+        let plugin = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "yinz:fixture-plugin-for-tests",
+            &None,
+            None,
+            None,
+        )
+        .unwrap();
+        let run = is_plugin.then(|| Run::Plugin(plugin.clone()));
+        let terminal_ids = if is_plugin {
+            vec![]
+        } else {
+            vec![(TerminalId::new(1), None)]
+        };
+        let floating_terminal_ids = if is_plugin {
+            vec![]
+        } else {
+            vec![(TerminalId::new(2), None)]
+        };
+        let plugin_ids = if is_plugin {
+            HashMap::from([(plugin, vec![PluginId::new(2), PluginId::new(1)])])
+        } else {
+            HashMap::new()
+        };
+        tab.apply_layout(
+            TiledPaneLayout {
+                run: run.clone(),
+                pane_initial_contents: Some("restored tiled".into()),
+                ..Default::default()
+            },
+            vec![FloatingPaneLayout {
+                run,
+                pane_initial_contents: Some("restored floating".into()),
+                ..Default::default()
+            }],
+            terminal_ids,
+            floating_terminal_ids,
+            plugin_ids,
+            client,
+            None,
+        )
+        .unwrap();
+
+        let panes = if is_plugin {
+            [
+                PaneId::Plugin(PluginId::new(1)),
+                PaneId::Plugin(PluginId::new(2)),
+            ]
+        } else {
+            [
+                PaneId::Terminal(TerminalId::new(1)),
+                PaneId::Terminal(TerminalId::new(2)),
+            ]
+        };
+        for (pane_id, expected) in panes
+            .into_iter()
+            .zip(["restored tiled", "restored floating"])
+        {
+            assert_eq!(
+                tab.get_pane_with_id(pane_id)
+                    .unwrap()
+                    .dump_screen(false, Some(client))
+                    .trim_end(),
+                expected,
+                "{pane_id:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn layout_reapplication_preserves_user_pane_names() {
     let mut tab = create_new_tab(
         Size {

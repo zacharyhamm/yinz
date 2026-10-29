@@ -282,6 +282,10 @@ impl Pane for TerminalPane {
         self.render_full_viewport();
         self.set_should_render(true);
     }
+    fn set_initial_contents(&mut self, contents: &str) {
+        self.handle_pty_bytes(contents.as_bytes().to_vec());
+        self.handle_pty_bytes(b"\n\r".to_vec());
+    }
     fn handle_pty_bytes(&mut self, bytes: VteBytes) {
         self.grid.should_render = true;
         if self.forward_paused {
@@ -1820,10 +1824,7 @@ impl Pane for TerminalPane {
                     if replacement.command != run_command.command
                         || replacement.args != run_command.args
                     {
-                        self.agent = None;
-                        self.was_an_agent = false;
-                        self.last_agent_kind = None;
-                        self.last_agent_cwd = None;
+                        self.clear_agent_identity();
                     }
                     self.invoked_with = Some(Run::Command(replacement.clone()));
                     // A replacement marked as an agent starts a fresh conversation.
@@ -2039,6 +2040,19 @@ fn agent_from_run(invoked_with: Option<&Run>) -> Option<AgentInfo> {
 }
 
 impl TerminalPane {
+    fn clear_agent_identity(&mut self) {
+        self.set_agent_info(None);
+        self.was_an_agent = false;
+        self.last_agent_kind = None;
+        self.last_agent_cwd = None;
+        self.last_agent_session_id = None;
+        self.detected_agent = false;
+        self.agent_input_revision = 0;
+        self.agent_enter_revision = 0;
+        self.agent_input_at = None;
+        self.pending_agent_escape_clients.clear();
+    }
+
     fn clear_waiting_pulse(&mut self) {
         self.waiting_pulse_started_at = None;
         if self.waiting_pulse.take().is_some() {
@@ -2400,6 +2414,8 @@ impl TerminalPane {
             // Drop to shell in the same working directory as the command was run
             let working_dir = run_command.cwd.clone();
             self.is_held = None;
+            self.clear_agent_identity();
+            self.invoked_with = None;
             self.grid.reset_terminal_state();
             self.grid.begin_agent_run();
             self.set_should_render(true);

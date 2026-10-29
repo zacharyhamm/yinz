@@ -920,6 +920,80 @@ fn a_listing_reports_that_more_follow_it() {
     assert!(!second.more);
 }
 
+#[test]
+fn a_listing_continues_after_the_store_byte_limit() {
+    let backend = backend();
+    for index in 0..12 {
+        let mut run = run(&format!("large-{index:02}"), "claude", "main", index);
+        run.cwd = Some(format!("/work/{}", "x".repeat(200_000)));
+        write(&backend, &run);
+    }
+    let first = list_runs(&backend, &Filter::default(), MAX_RUNS, 0).unwrap();
+    assert!(!first.headers.is_empty());
+    assert!(
+        first.headers.len() < 12,
+        "the byte budget shortened the fetch"
+    );
+    assert!(first.more);
+    let second = list_runs(&backend, &Filter::default(), MAX_RUNS, first.scanned).unwrap();
+    assert!(!second.more);
+    let ids: Vec<_> = first
+        .headers
+        .iter()
+        .chain(&second.headers)
+        .map(|h| h.id.clone())
+        .collect();
+    assert_eq!(
+        ids,
+        (0..12)
+            .rev()
+            .map(|index| format!("large-{index:02}"))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_listing_keeps_raw_offsets_across_invalid_and_filtered_headers() {
+    use yinz_tile::prelude::DataValue;
+    let header = |id: &str, cwd: &str| {
+        let mut run = run(id, "claude", "main", 0);
+        run.cwd = Some(cwd.into());
+        vec![DataValue::Text(
+            serde_json::to_string(&run.header()).unwrap(),
+        )]
+    };
+    let fetched = DataRows {
+        columns: vec!["header".into()],
+        rows: vec![
+            vec![DataValue::Text("invalid JSON".into())],
+            header("other", "/other"),
+            header("first", "/work/agent"),
+            vec![DataValue::Null],
+            header("second", "/work/agent"),
+        ],
+        ..Default::default()
+    };
+    let filter = Filter {
+        root: Some(RootScope::new("/work/agent", HostId::new(HOST))),
+        ..Default::default()
+    };
+    let page = list_runs_page(&filter, 1, &fetched);
+    assert_eq!(page.headers[0].id, "first");
+    assert_eq!(
+        page.scanned, 4,
+        "the overflowing run starts at database row four"
+    );
+    assert!(page.more);
+    let rest = DataRows {
+        rows: fetched.rows[page.scanned..].to_vec(),
+        ..fetched
+    };
+    let page = list_runs_page(&filter, 1, &rest);
+    assert_eq!(page.headers[0].id, "second");
+    assert_eq!(page.scanned, 1);
+    assert!(!page.more);
+}
+
 /// Paging a narrowed listing has to advance by the rows it *scanned*, not the runs it
 /// kept, or every page starts a few rows in and hands back the same runs for ever.
 #[test]

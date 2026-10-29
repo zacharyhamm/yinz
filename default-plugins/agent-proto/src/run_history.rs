@@ -23,7 +23,7 @@ use yinz_types::internal_ids::SessionName;
 use crate::agents::{self, rows, AgentRunHeader, RunEntry, RunEntryKind};
 use crate::projects;
 use crate::store::{self, Backend};
-use yinz_tile::prelude::{FetchRequest, Pred, SortDir};
+use yinz_tile::prelude::{DataRows, FetchRequest, Pred, SortDir};
 
 /// Stable archive header shape shared by panel and CLI readers.
 pub fn header_reply(
@@ -287,7 +287,7 @@ pub fn matches_root(
 // ---------------------------------------------------------------------------
 
 /// One page of runs, and where the page after it starts.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct RunPage {
     pub headers: Vec<AgentRunHeader>,
     /// Whether more runs follow this page.
@@ -313,6 +313,12 @@ pub fn list_runs(
     limit: usize,
     offset: usize,
 ) -> Result<RunPage, String> {
+    let fetched = backend.fetch(&list_runs_request(filter, limit, offset))?;
+    Ok(list_runs_page(filter, limit, &fetched))
+}
+
+/// The same bounded listing request for native readers and permission-checked guest reads.
+pub fn list_runs_request(filter: &Filter, limit: usize, offset: usize) -> FetchRequest {
     let limit = limit.clamp(1, MAX_RUNS);
     // A guest-side narrowing throws rows away after the store has counted them, so ask for
     // more than the page when one is in play. Bounded: an over-fetch that pages the whole
@@ -336,7 +342,12 @@ pub fn list_runs(
     if let Some(pred) = filter.pred() {
         request = request.filter(pred);
     }
-    let fetched = backend.fetch(&request)?;
+    request
+}
+
+/// Turn fetched rows into a page, preserving database offsets even for invalid headers.
+pub fn list_runs_page(filter: &Filter, limit: usize, fetched: &DataRows) -> RunPage {
+    let limit = limit.clamp(1, MAX_RUNS);
     let raw = fetched.len();
     // Kept and counted in one pass, because the page has to report both what it kept and how
     // many rows it spent getting there. A row that overflows the page is the boundary: the
@@ -344,10 +355,10 @@ pub fn list_runs(
     let mut headers: Vec<AgentRunHeader> = Vec::new();
     let mut scanned = raw;
     let mut overflowed = false;
-    for (index, header) in rows::run_headers_from_rows(&fetched)
-        .into_iter()
-        .enumerate()
-    {
+    for (index, row) in fetched.rows.iter().enumerate() {
+        let Some(header) = rows::header_at(fetched, row) else {
+            continue;
+        };
         if !filter.keeps(&header) {
             continue;
         }
@@ -364,15 +375,13 @@ pub fn list_runs(
         0 => 0,
         raw => scanned.clamp(1, raw),
     };
-    // `truncated` as well as the row count, because [`crate::store::MAX_FETCH_BYTES`] cuts a
-    // fetch by weight and not by `limit` — a scan stopped at three hundred rows of four
-    // hundred asked for would otherwise report that the archive ends there.
-    let more = overflowed || (filter.narrows_in_guest() && (raw >= want || fetched.truncated));
-    Ok(RunPage {
+    // The store's byte budget can truncate a fetch before the requested row count.
+    let more = overflowed || fetched.truncated;
+    RunPage {
         headers,
         more,
         scanned,
-    })
+    }
 }
 
 /// One run's header, whatever session it belongs to and whether or not it is still open.

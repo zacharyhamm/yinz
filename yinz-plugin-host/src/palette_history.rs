@@ -471,19 +471,8 @@ pub(super) fn execute(
         },
         HistoryAction::Resume { id } => {
             let h = history::run_header(&backend, id)?.ok_or("Run no longer retained")?;
-            if h.outcome == RunOutcome::Active {
-                return Err("This run is active; focus its live agent".into());
-            }
-            if !h.host_id.is_empty() && h.host_id != yinz_runtime::host_identity::host_id() {
-                return Err(
-                    "Run belongs to an unmapped foreign host; resume on its owning host".into(),
-                );
-            }
-            let cwd = h
-                .cwd
-                .as_deref()
-                .filter(|s| !s.trim().is_empty())
-                .ok_or("Run has no recorded directory")?;
+            let cwd =
+                agent_proto::launch::resume_directory(&h, &yinz_runtime::host_identity::host_id())?;
             let mut command = yinz_runtime::agent::launch::resume_command(
                 &h.kind,
                 &h.session_id,
@@ -502,7 +491,7 @@ pub(super) fn execute(
                 yinz_runtime::agent::pi::strip_extension(&mut command.args);
             }
             let spec = AgentSpawnSpec {
-                kind: Some(h.kind),
+                kind: Some(h.kind.clone()),
                 ..Default::default()
             };
             return launch(request, senders, spec, |_| {
