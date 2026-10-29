@@ -252,6 +252,7 @@ pub(crate) struct Recovery {
     pub rendered: bool,
     diagnostic: String,
     status: Option<(Size, String)>,
+    status_started: Option<Instant>,
     pub routers: Vec<JoinHandle<()>>,
 }
 impl Recovery {
@@ -267,6 +268,7 @@ impl Recovery {
             rendered: false,
             diagnostic: String::new(),
             status: None,
+            status_started: None,
             routers: Vec::new(),
         }
     }
@@ -277,6 +279,7 @@ impl Recovery {
             if self.control.repainted() {
                 self.healthy_since = Some(now);
                 self.status = None;
+                self.status_started = None;
                 // The old connection's ancestry was cleared on disconnect. Host pings
                 // can keep the silence timer satisfied, so force a new handshake once
                 // input handling is connected and can forward the host's reply again.
@@ -424,7 +427,7 @@ impl Recovery {
         os.install_session_connection(sender, receiver)
             .context("install remote replacement")?;
         crate::remote_sessions::set_owned_forward(prepared.forward.take());
-        // An attach's first frame is a complete screen; clear stale cells and the status row.
+        // An attach's first frame is a complete screen; clear stale cells and the reconnection dialog.
         if let Some((yinz_ipc::ipc::ServerToClientMsg::Render { content }, _)) = prepared
             .buffered
             .iter_mut()
@@ -449,42 +452,64 @@ impl Recovery {
                 )
             })
             .unwrap_or_else(|| "connecting (30s limit)".into());
-        let (identity, suffix) = if size.cols < 80 {
-            // Keep the cancellation hint visible when a narrow terminal cannot fit the labels.
-            let suffix = if size.cols < 26 {
-                " Ctrl-C to cancel".to_owned()
+        let started = *self.status_started.get_or_insert(now);
+        let indicator =
+            if (now.saturating_duration_since(started).as_millis() / 500).is_multiple_of(2) {
+                "📡"
             } else {
-                format!(
-                    " #{} {} Ctrl-C to cancel",
-                    self.attempt_number,
-                    retry.strip_prefix("next retry ").unwrap_or("now")
-                )
+                "  "
             };
-            (format!("{} / {name}", self.host), suffix)
-        } else {
-            (
-                format!("Reconnecting {} / {name}", self.host),
-                format!(
-                    " | attempt {} | {retry} | Ctrl-C to cancel",
-                    self.attempt_number
-                ),
-            )
-        };
-        let identity: String = identity
-            .chars()
-            .scan(
-                size.cols.saturating_sub(suffix.len()),
-                |remaining, character| {
-                    let width = character.width().unwrap_or(0);
-                    if width > *remaining {
-                        return None;
-                    }
-                    *remaining -= width;
-                    Some(character)
-                },
-            )
+        let width = size.cols.min(80);
+        let bordered = width >= 4 && size.rows >= 6;
+        let inner_width = width.saturating_sub(if bordered { 4 } else { 0 });
+        let mut lines = vec![
+            format!("{indicator} Reconnecting"),
+            format!("{} / {name}", self.host),
+            format!("Attempt {} · {retry}", self.attempt_number),
+            "Ctrl-C to cancel".to_owned(),
+        ];
+        if size.rows >= 8 {
+            lines.insert(1, String::new());
+            lines.insert(4, String::new());
+        }
+        // Very short terminals prioritize the heading and cancellation hint.
+        while lines.len() > size.rows {
+            lines.remove(1.min(lines.len() - 1));
+        }
+        let mut lines: Vec<String> = lines
+            .into_iter()
+            .map(|line| {
+                let mut remaining = inner_width;
+                let text: String = line
+                    .chars()
+                    .filter(|character| !character.is_control())
+                    .take_while(|character| {
+                        let width = character.width().unwrap_or(0);
+                        if width > remaining {
+                            return false;
+                        }
+                        remaining -= width;
+                        true
+                    })
+                    .collect();
+                let padding = " ".repeat(remaining);
+                if bordered {
+                    format!("│ {text}{padding} │")
+                } else {
+                    format!("{text}{padding}")
+                }
+            })
             .collect();
-        let message = format!("{identity}{suffix}");
+        if bordered {
+            lines.insert(0, format!("┌{}┐", "─".repeat(width - 2)));
+            lines.push(format!("└{}┘", "─".repeat(width - 2)));
+        }
+        let top = size.rows.saturating_sub(lines.len()) / 2 + 1;
+        let left = size.cols.saturating_sub(width) / 2 + 1;
+        let mut message = String::new();
+        for (row, line) in lines.iter().enumerate() {
+            message.push_str(&format!("\x1b[{};{left}H{line}", top + row));
+        }
         if self
             .status
             .as_ref()
@@ -492,27 +517,17 @@ impl Recovery {
         {
             return Ok(());
         }
-        let text: String = message
-            .chars()
-            .scan(size.cols, |remaining, character| {
-                let width = character.width().unwrap_or(0);
-                if width > *remaining {
-                    return None;
-                }
-                *remaining -= width;
-                Some(character)
-            })
-            .collect();
-        let clear_previous = self.status.as_ref().and_then(|(old_size, _)| {
-            let old_row = old_size.rows.max(1);
-            (old_row != size.rows.max(1) && old_row <= size.rows.max(1))
-                .then(|| format!("\x1b[{old_row};1H\x1b[0m\x1b[2K"))
-        });
-        let output = format!(
-            "\x1b7{}\x1b[{};1H\x1b[0m\x1b[7m{text}\x1b[K\x1b[0m\x1b8",
-            clear_previous.unwrap_or_default(),
-            size.rows.max(1)
-        );
+        // A resized terminal cannot retain the old dialog at its previous position.
+        let clear = if self
+            .status
+            .as_ref()
+            .is_none_or(|(old_size, _)| *old_size != size)
+        {
+            crate::terminal_escapes::CLEAR_SCREEN
+        } else {
+            ""
+        };
+        let output = format!("\x1b7\x1b[0m{clear}\x1b[1;7m{message}\x1b[0m\x1b8");
         let mut out = os.get_stdout_writer();
         out.write_all(output.as_bytes())
             .context("write reconnection status")?;
