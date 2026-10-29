@@ -36,10 +36,15 @@ macro_rules! resize_pty {
             let character_cell_size = $character_cell_size.borrow();
             match *character_cell_size {
                 Some(size_in_pixels) => {
-                    let width_in_pixels =
-                        (size_in_pixels.width * $pane.get_content_columns()) as u16;
-                    let height_in_pixels =
-                        (size_in_pixels.height * $pane.get_content_rows()) as u16;
+                    // PTY winsize fields are u16; large dimensions must not wrap.
+                    let width_in_pixels = size_in_pixels
+                        .width
+                        .saturating_mul($pane.get_content_columns())
+                        .min(u16::MAX as usize) as u16;
+                    let height_in_pixels = size_in_pixels
+                        .height
+                        .saturating_mul($pane.get_content_rows())
+                        .min(u16::MAX as usize) as u16;
                     (Some(width_in_pixels), Some(height_in_pixels))
                 },
                 None => (None, None),
@@ -52,8 +57,8 @@ macro_rules! resize_pty {
                 $senders
                     .send_to_pty_writer(PtyWriteInstruction::ResizePty(
                         *pid,
-                        $pane.get_content_columns() as u16,
-                        $pane.get_content_rows() as u16,
+                        $pane.get_content_columns().min(u16::MAX as usize) as u16,
+                        $pane.get_content_rows().min(u16::MAX as usize) as u16,
                         width_in_pixels,
                         height_in_pixels,
                     ))
@@ -126,6 +131,7 @@ pub trait Pane {
     fn plugin_control_mut(&mut self) -> Option<&mut dyn PluginPaneControl> {
         None
     }
+    /// Layout coordinates retain the requested rectangle; use `render_geom` for presentation.
     fn x(&self) -> usize {
         self.current_geom().x
     }
@@ -221,7 +227,7 @@ pub trait Pane {
         None
     }
     fn position_and_size(&self) -> PaneGeom;
-    /// The geometry the pane occupies now: its override if it has one, else its own.
+    /// Layout geometry: its override if it has one, else its own, before presentation caps.
     fn current_geom(&self) -> PaneGeom {
         self.geom_override()
             .unwrap_or_else(|| self.position_and_size())
@@ -449,27 +455,23 @@ pub trait Pane {
     fn is_directly_above(&self, other: &dyn Pane) -> bool {
         self.y() + self.rows() == other.y()
     }
+    /// Shared layout rows allow horizontal navigation between adjacent panes.
     fn horizontally_overlaps_with(&self, other: &dyn Pane) -> bool {
-        (self.y() >= other.y() && self.y() < (other.y() + other.rows()))
-            || ((self.y() + self.rows()) <= (other.y() + other.rows())
-                && (self.y() + self.rows()) > other.y())
-            || (self.y() <= other.y() && (self.y() + self.rows() >= (other.y() + other.rows())))
-            || (other.y() <= self.y() && (other.y() + other.rows() >= (self.y() + self.rows())))
+        self.get_horizontal_overlap_with(other) > 0
     }
+    /// Number of shared layout rows, or zero for empty, touching or disjoint spans.
     fn get_horizontal_overlap_with(&self, other: &dyn Pane) -> usize {
         std::cmp::min(self.y() + self.rows(), other.y() + other.rows())
-            - std::cmp::max(self.y(), other.y())
+            .saturating_sub(std::cmp::max(self.y(), other.y()))
     }
+    /// Shared layout columns allow vertical navigation between adjacent panes.
     fn vertically_overlaps_with(&self, other: &dyn Pane) -> bool {
-        (self.x() >= other.x() && self.x() < (other.x() + other.cols()))
-            || ((self.x() + self.cols()) <= (other.x() + other.cols())
-                && (self.x() + self.cols()) > other.x())
-            || (self.x() <= other.x() && (self.x() + self.cols() >= (other.x() + other.cols())))
-            || (other.x() <= self.x() && (other.x() + other.cols() >= (self.x() + self.cols())))
+        self.get_vertical_overlap_with(other) > 0
     }
+    /// Number of shared layout columns, or zero for empty, touching or disjoint spans.
     fn get_vertical_overlap_with(&self, other: &dyn Pane) -> usize {
         std::cmp::min(self.x() + self.cols(), other.x() + other.cols())
-            - std::cmp::max(self.x(), other.x())
+            .saturating_sub(std::cmp::max(self.x(), other.x()))
     }
     fn min_width(&self) -> usize {
         MIN_TERMINAL_WIDTH
@@ -541,18 +543,18 @@ pub trait Pane {
         false
     }
     fn get_edge_at_position(&self, position: &Position) -> Option<PaneEdge> {
+        let pos_line = usize::try_from(position.line()).ok()?;
         if !self.contains(position) {
             return None;
         }
 
         let pos_col = position.column();
-        let pos_line = position.line();
         let geom = self.render_geom();
         let mid_col = geom.x + geom.cols.as_usize() / 2;
         let mid_line = geom.y + geom.rows.as_usize() / 2;
 
         let is_left = pos_col < mid_col;
-        let is_top = (pos_line as usize) < mid_line;
+        let is_top = pos_line < mid_line;
 
         Some(match (is_top, is_left) {
             (true, true) => PaneEdge::TopLeft,

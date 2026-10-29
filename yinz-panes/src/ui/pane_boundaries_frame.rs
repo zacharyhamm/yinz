@@ -498,15 +498,15 @@ impl PaneFrame {
             ret.push(EMPTY_TERMINAL_CHARACTER);
             ret.append(&mut right_separator);
             Some((ret, middle_indication_len + 4))
-        } else if short_indication_len + 3 <= max_length {
-            // 2 for separators, 1 for padding
+        } else if short_indication_len + 4 <= max_length {
+            // 2 for separators, 2 for padding
             let mut ret = vec![];
             ret.append(&mut left_separator);
             ret.push(EMPTY_TERMINAL_CHARACTER);
             ret.append(&mut short_indication);
             ret.push(EMPTY_TERMINAL_CHARACTER);
             ret.append(&mut right_separator);
-            Some((ret, short_indication_len + 3))
+            Some((ret, short_indication_len + 4))
         } else {
             None
         }
@@ -1252,12 +1252,11 @@ impl PaneFrame {
 
         let tooltip_text = self.highlight_tooltip.as_deref().unwrap_or("");
         let text = format!(" Alt <Click> - {} ", tooltip_text);
-        let text_len = text.chars().count();
+        let mut text_characters = foreground_color(&text, self.color);
+        let text_len = text_characters.iter().map(TerminalCharacter::width).sum();
         if text_len > max_undertitle_length {
             return Ok(self.empty_undertitle(max_undertitle_length));
         }
-
-        let mut text_characters = foreground_color(&text, self.color);
 
         let padding_len = max_undertitle_length.saturating_sub(text_len);
         let mut padding = String::new();

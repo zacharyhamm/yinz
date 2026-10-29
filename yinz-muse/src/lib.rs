@@ -269,13 +269,14 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
     }
     let env = route_env_from_process();
     let registration = Registration::new(&directory(), env, std::process::id())?;
+    // Finish the provisional announcement before Muse can report its real session.
+    if let Ok(yinz) = std::env::current_exe() {
+        registration.announce(&yinz);
+    }
     let mut child = Command::new(program)
         .args(args)
         .spawn()
         .context("run Muse")?;
-    if let Ok(yinz) = std::env::current_exe() {
-        registration.announce(&yinz);
-    }
     child.wait().map(exit_code).context("wait for Muse")
 }
 
