@@ -365,6 +365,218 @@ fn publishing_and_persistence_keep_long_histories_and_other_live_agents() {
 }
 
 #[test]
+fn adoption_conflicts_merge_history_and_retry_without_losing_revision_guards() {
+    // The mock store checks the actual emitted guards and commits metadata and entries together.
+    // Each case schedules commits/failures explicitly; no threads or sleeps control the race.
+    for (retry_conflict, read_failure, completed, local_summary) in [
+        (false, false, false, false),
+        (true, false, false, true),
+        (false, true, true, false),
+    ] {
+        let (mut runtime, host) = plugin_with_source(
+            "agent-service",
+            r#"
+            (require "./agent-service/state.scm" "./agent-service/messages.scm" "./agent-service/runs.scm")
+            (define (setup run)
+              (set-store run 10)
+              (as-set! "host" "host") (as-set! "session" "destination")
+              (as-set! "panes" (list (hash "pane_id" 8 "agent" (hash "run_id" "claude:handoff" "kind" "claude" "state" "Busy" "source" "Reported"))))
+              (as-call "adopt-arrived-runs"))
+            (define (append-local text event-id)
+              (define run (append-entry (as-map-get "runs" 8 #f) "result" text event-id json-null 20))
+              (as-map-set! "runs" 8 run) (as-map-set! "dirty-runs" "claude:handoff" run))
+            (define (summarize-local summary)
+              (append-local "local summary" #f)
+              (define run (as-map-get "runs" 8 #f))
+              (set! run (hash-insert (hash-insert run "summary" summary) "summarized_revision" (hash-ref run "revision")))
+              (as-map-set! "runs" 8 run) (as-map-set! "dirty-runs" "claude:handoff" run))
+            (define (finish) (as-call "finish-run" 8 "Completed" 30))
+            (define (persist-now) (as-call "persist"))
+            (define (snapshot) (list stored store-rev attempts (as-get "dirty-runs") (as-get "adoptions") (as-get "runs")))
+            (define (late-release original)
+              (as-reset!) (as-set! "host" "host") (as-set! "session" "source")
+              (as-map-set! "runs" 7 original) (as-map-set! "run-revisions" "claude:handoff" 10)
+              (as-call "finish-run" 7 "Released" 50) (as-call "persist"))
+            "#,
+            json!({}),
+            BTreeMap::new(),
+            r#"
+            (define stored #f) (define store-rev 0) (define attempts '())
+            (define fail-read #f) (define race-retry #f)
+            (define (set-store run rev) (set! stored run) (set! store-rev rev))
+            (define (faults read race) (set! fail-read read) (set! race-retry race))
+            (define (rows columns values) (hash "columns" columns "rows" values "truncated" #f "next_cursor" json-null))
+            (define (entry-row entry)
+              (map (lambda (key)
+                  (define value (hash-ref entry key))
+                  (cond ((json-null? value) "Null") ((number? value) (hash "Int" value)) (else (hash "Text" value))))
+                '("revision" "event_id" "kind" "text" "created_at_ms")))
+            (define (yinz-data-fetch namespace request)
+              (when (and fail-read (equal? (hash-ref request "entity") "agent_run_entry")) (error "injected read failure"))
+              (if (equal? (hash-ref request "entity") "agent_run")
+                (rows '("uid" "rev" "payload" "host_id" "yinz_session_name")
+                  (list (list (hash "Text" "claude:handoff") (hash "Int" store-rev)
+                    (hash "Text" (yinz-json-string (hash-insert stored "entries" '())))
+                    (hash "Text" (hash-ref stored "host_id")) (hash "Text" (hash-ref stored "yinz_session_name")))))
+                (rows '("run_id" "revision" "event_id" "kind" "text" "created_at_ms")
+                  (map (lambda (entry) (cons (hash "Text" "claude:handoff") (entry-row entry))) (hash-ref stored "entries")))))
+            (define (yinz-data-fetch-all namespace request) (yinz-data-fetch namespace request))
+            (define (yinz-data-apply namespace mutations)
+              (define put (hash-ref (car mutations) "Put"))
+              (define expected (hash-ref put "expect_rev"))
+              (set! attempts (append attempts (list expected)))
+              (when (and race-retry (= expected store-rev))
+                (set! race-retry #f) (set! store-rev (+ store-rev 1))
+                (define revision (+ 1 (hash-ref stored "revision")))
+                (set! stored (hash-insert (hash-insert stored "revision" revision) "entries"
+                    (append (hash-ref stored "entries") (list (hash "revision" revision "event_id" json-null
+                        "kind" "result" "text" "racing source" "created_at_ms" 20))))))
+              (unless (= expected store-rev) (error "conflict"))
+              (define payload (cadr (car (filter (lambda (pair) (equal? (car pair) "payload")) (hash-ref put "values")))))
+              (define entries (hash-ref stored "entries"))
+              (for-each (lambda (mutation)
+                  (define values (hash-ref (hash-ref mutation "Put") "values"))
+                  (define decoded (yinz-agent-model "agents" "EntriesFromRows"
+                      (list (rows (map car values) (list (map cadr values))))))
+                  (set! entries (append entries (hash-ref decoded "claude:handoff")))) (cdr mutations))
+              (set! stored (hash-insert (yinz-json-parse (hash-ref payload "Text")) "entries" entries))
+              (set! store-rev (+ store-rev 1)) #t)
+            "#,
+        );
+        let entry = |revision, text: &str, event_id: Option<&str>| json!({"revision":revision, "kind":"result", "text":text, "event_id":event_id, "created_at_ms":20});
+        let original = json!({
+            "id":"claude:handoff", "pane_id":7, "kind":"claude", "session_id":"handoff",
+            "host_id":"host", "yinz_session_name":"source", "started_at_ms":1,
+            "ended_at_ms":null, "outcome":"active", "revision":1, "summarized_revision":0,
+            "summary":null, "entries":[entry(1, "original", None)],
+        });
+        runtime.invoke("setup", vec![original.clone()]).unwrap();
+        runtime
+            .invoke("append-local", vec![json!("shared event"), json!("shared")])
+            .unwrap();
+        runtime
+            .invoke("append-local", vec![json!("destination"), json!(null)])
+            .unwrap();
+        let summary = |text: &str| json!({"text":text, "awaiting":false, "title":"", "hash":0, "created_at_ms":20});
+        if local_summary {
+            runtime
+                .invoke("summarize-local", vec![summary("local")])
+                .unwrap();
+        }
+        if completed {
+            runtime.invoke("finish", vec![]).unwrap();
+        }
+        let mut released = original.clone();
+        released["ended_at_ms"] = json!(10);
+        released["outcome"] = json!("closed");
+        released["revision"] = json!(3);
+        released["summarized_revision"] = json!(3);
+        released["summary"] = summary("source");
+        released["entries"] = json!([
+            entry(1, "original", None),
+            entry(2, "source", None),
+            entry(3, "shared event", Some("shared"))
+        ]);
+        runtime
+            .invoke("set-store", vec![released, json!(11)])
+            .unwrap();
+        runtime
+            .invoke("faults", vec![json!(read_failure), json!(retry_conflict)])
+            .unwrap();
+        runtime.invoke("persist-now", vec![]).unwrap();
+        if retry_conflict || read_failure {
+            let pending = runtime.invoke("snapshot", vec![]).unwrap();
+            assert_eq!(pending[0]["yinz_session_name"], "source");
+            assert!(pending[3].get("claude:handoff").is_some());
+            assert!(pending[4].get("claude:handoff").is_some());
+            assert_eq!(
+                pending[2],
+                if read_failure {
+                    json!([10])
+                } else {
+                    json!([10, 11])
+                }
+            );
+            runtime
+                .invoke("faults", vec![json!(false), json!(false)])
+                .unwrap();
+            runtime.invoke("persist-now", vec![]).unwrap();
+        }
+        let state = runtime.invoke("snapshot", vec![]).unwrap();
+        let stored = &state[0];
+        assert_eq!(
+            stored["yinz_session_name"],
+            "destination",
+            "state: {state}; commands: {:?}",
+            host.lock().unwrap().commands
+        );
+        assert_eq!(stored["pane_id"], 8);
+        assert_eq!(
+            stored["outcome"],
+            if completed { "completed" } else { "active" }
+        );
+        assert_eq!(
+            stored["ended_at_ms"],
+            if completed { json!(30) } else { json!(null) }
+        );
+        assert_eq!(
+            stored["summary"],
+            summary(if local_summary { "local" } else { "source" })
+        );
+        assert_eq!(
+            stored["summarized_revision"],
+            if local_summary { 6 } else { 3 }
+        );
+        let entries = stored["entries"].as_array().unwrap();
+        let mut texts = vec!["original", "source", "shared event"];
+        if retry_conflict {
+            texts.push("racing source");
+        }
+        texts.push("destination");
+        if local_summary {
+            texts.push("local summary");
+        }
+        assert_eq!(entries.len(), texts.len());
+        for (index, text) in texts.iter().enumerate() {
+            assert_eq!(entries[index]["text"], *text);
+            assert_eq!(entries[index]["revision"], index + 1);
+        }
+        assert_eq!(state[3], json!({}));
+        assert_eq!(state[4], json!({}));
+        assert_eq!(
+            state[2],
+            if retry_conflict {
+                json!([10, 11, 11, 12])
+            } else if read_failure {
+                json!([10, 10, 11])
+            } else {
+                json!([10, 11])
+            }
+        );
+        if !completed {
+            assert_eq!(state[5]["8"]["entries"], stored["entries"]);
+            runtime
+                .invoke("append-local", vec![json!("after adoption"), json!(null)])
+                .unwrap();
+            runtime.invoke("persist-now", vec![]).unwrap();
+            let after = runtime.invoke("snapshot", vec![]).unwrap();
+            assert_eq!(
+                after[0]["entries"].as_array().unwrap().last().unwrap()["text"],
+                "after adoption"
+            );
+            assert_eq!(after[3], json!({}));
+        }
+        let before = runtime.invoke("snapshot", vec![]).unwrap();
+        runtime.invoke("late-release", vec![original]).unwrap();
+        let after = runtime.invoke("snapshot", vec![]).unwrap();
+        assert_eq!(after[0], before[0]);
+        assert_eq!(after[2], before[2]);
+        assert_eq!(after[3], json!({}));
+        assert_eq!(after[4], json!({}));
+    }
+}
+
+#[test]
 fn project_provider_chain_precedence_fallback_deadline_and_stale_replies() {
     let source = r#"
         (require "./agent-service/state.scm")

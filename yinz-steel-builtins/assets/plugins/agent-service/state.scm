@@ -62,7 +62,7 @@
       "bootstrapped" #f "watches" '() "count-subscribers" '() "counts" #f "count-seq" 0 "subscribers" '() "seq" 0 "published" #f "run-headers" (hash)
       "manual" (hash) "assignments" (hash) "commands" (hash) "cwds" (hash) "hosts" (hash) "bubblewrap" (hash)
       "latched" (hash) "pending-release" '() "activity" (hash) "hooks" (hash) "event-fed" '() "prompts" (hash)
-      "runs" (hash) "dirty-runs" (hash) "released-runs" (hash) "finished-runs" '() "observed-runs" '()
+      "runs" (hash) "dirty-runs" (hash) "adoptions" (hash) "released-runs" (hash) "finished-runs" '() "observed-runs" '()
       "predecessors" (hash) "pending-messages" (hash) "persisted" (hash) "run-revisions" (hash) "run-lookups" '()
       "summaries" (hash) "summary-requests" (hash) "run-summary-requests" (hash) "summary-seq" 0
       "completions" (hash) "completion-seq" 0 "project-providers" '() "published-locations" #f "repositories" (hash) "git-probes" (hash) "probe-backoff" (hash)
