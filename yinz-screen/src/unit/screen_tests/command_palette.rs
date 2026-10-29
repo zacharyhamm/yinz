@@ -4047,6 +4047,83 @@ fn live_agent_results_refresh_panel_presentation_in_root_and_picker() {
 }
 
 #[test]
+fn agent_info_focus_reports_success_when_focus_changes_or_is_already_set() {
+    use crate::screen::thread_main::PendingEvents;
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+
+    for scenario in ["already focused", "another tab", "focused while queued"] {
+        let mut screen = screen();
+        let pane = PaneId::Terminal(TerminalId::new(1));
+        screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
+            pane,
+            Some(AgentInfo {
+                kind: "codex".into(),
+                state: AgentState::Waiting,
+                source: AgentSource::Reported,
+                detail: None,
+                waiting_on: Some("permission".into()),
+                wait_needs_a_person: true,
+                cwd: None,
+                session_id: None,
+                run_id: None,
+            }),
+        );
+        if scenario != "already focused" {
+            new_tab(&mut screen, 2, TabId::new(1));
+            assert_ne!(screen.get_active_pane_id(&CLIENT), Some(pane));
+        }
+        let renders = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        palette_search(&mut screen, "provider:codex");
+        palette_key(&mut screen, BareKey::Enter);
+        render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+        let (row, col) = grid
+            .as_character_lines()
+            .iter()
+            .enumerate()
+            .find_map(|(row, cells)| {
+                let line = cells.iter().map(|cell| cell.character).collect::<String>();
+                line.find("Focus")
+                    .map(|byte| (row, line[..byte].chars().count()))
+            })
+            .expect("agent info has a Focus button");
+        let actions = palette_actions_receiver(&mut screen);
+        screen.handle_mouse_event(
+            MouseEvent::new_left_press_event(Position::new(row as i32, col as u16)),
+            CLIENT,
+        );
+        assert!(!screen.command_palettes.contains_key(&CLIENT));
+        if scenario == "focused while queued" {
+            screen
+                .focus_pane_with_id(pane, false, false, CLIENT)
+                .unwrap();
+        }
+        match actions.recv_timeout(Duration::from_secs(5)).unwrap().0 {
+            ScreenInstruction::FocusPaneWithId(id, float, in_place, client, completion) => {
+                assert_eq!((id, client), (pane, CLIENT));
+                screen
+                    .focus_pane_by_request(
+                        id,
+                        float,
+                        in_place,
+                        client,
+                        completion,
+                        &mut PendingEvents::default(),
+                    )
+                    .unwrap();
+            },
+            other => panic!("unexpected instruction: {other:?}"),
+        }
+        assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane), "{scenario}");
+        let notification = actions.recv_timeout(Duration::from_secs(5)).unwrap().0;
+        assert!(
+            matches!(&notification, ScreenInstruction::Notify(message, ..) if message == "Completed: Focus agent"),
+            "{scenario}: {notification:?}"
+        );
+    }
+}
+
+#[test]
 fn agent_info_keeps_missing_history_readable_and_rejects_replaced_identity() {
     use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
     let mut screen = screen();
