@@ -16,6 +16,19 @@ use yinz_types::agent::HookEvent;
 
 pub const OBSERVER_FLAG: &str = "--claude-turn-observer";
 
+fn observer_executable() -> Result<PathBuf> {
+    // An observer can outlive an install. On Linux current_exe() then ends in
+    // " (deleted)", which cannot be spawned. Re-exec the running image instead.
+    #[cfg(target_os = "linux")]
+    {
+        Ok(PathBuf::from("/proc/self/exe"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        std::env::current_exe().context("resolve turn observer binary")
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Route {
     Local {
@@ -142,8 +155,7 @@ pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
                 .filter(|_| kind == "claude")
                 .and_then(|(pid, _)| ClaudeStatusObservation::new(pid)),
         };
-        let mut command =
-            Command::new(std::env::current_exe().context("resolve turn observer binary")?);
+        let mut command = Command::new(observer_executable()?);
         command
             .arg(OBSERVER_FLAG)
             .stdin(Stdio::piped())
@@ -737,8 +749,7 @@ pub(crate) fn send(route: &Route, kind: &str, hook: &HookEvent) -> Result<()> {
             crate::pty_host::remote::broker::report_agent_hook_to(socket, pane_token, kind, &json)
         },
         Route::Local { .. } | Route::Pane { .. } => {
-            let mut command =
-                Command::new(std::env::current_exe().context("resolve confirmation reporter")?);
+            let mut command = Command::new(observer_executable()?);
             match route {
                 Route::Local { session, pane } => {
                     command.args([
