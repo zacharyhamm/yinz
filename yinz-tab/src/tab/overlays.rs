@@ -716,10 +716,9 @@ impl Tab {
         };
         let stacked = pane.current_geom().is_stacked();
         if self.tiled_panes.panes_contain(&pane_id)
-            && ((!self.pane_frame_style.draws_full_frames()
-                && !self.pane_frame_style.draws_titles()
-                && !stacked)
-                || (self.single_pane_titles() && pane.subtitle().is_none()))
+            && !self.pane_frame_style.draws_full_frames()
+            && !self.pane_frame_style.draws_titles()
+            && !stacked
         {
             return false;
         }

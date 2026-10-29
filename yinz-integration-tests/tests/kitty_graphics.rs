@@ -285,7 +285,7 @@ fn pane_kitty_image_reaches_client_with_transmit_and_placement() {
 
     let placement_position = find_bytes(&bytes, PLACEMENT).unwrap();
     let before_placement = &bytes[..placement_position];
-    let prompt_cursor_zero_indexed = (2usize, 1usize);
+    let prompt_cursor_zero_indexed = (2usize, 2usize);
     let expected_goto_row = prompt_cursor_zero_indexed.1 + 1;
     let expected_goto_column = prompt_cursor_zero_indexed.0 + 1;
     let expected_prefix = format!("\x1b[{};{}H\x1b[m", expected_goto_row, expected_goto_column);
@@ -586,7 +586,7 @@ fn floating_pane_occludes_kitty_image_and_restores_it_without_retransmit() {
     setup_kitty_host(&yinz, &terminal);
 
     let image_rect = CellRect {
-        cell_y: IMAGE_CELL_Y,
+        cell_y: IMAGE_CELL_Y + 1,
         cell_x: IMAGE_CELL_X,
         cell_width: IMAGE_CELL_WIDTH,
         cell_height: IMAGE_CELL_HEIGHT,
@@ -750,7 +750,7 @@ fn pinned_floating_pane_keeps_its_image_when_floating_panes_are_toggled_off() {
         |grid_snapshot| {
             grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("PIN [+]")
-                && grid_snapshot.cursor_is_at(col(2).row(1))
+                && grid_snapshot.cursor_is_at(col(2).row(2))
         },
     );
 

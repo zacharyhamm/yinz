@@ -57,7 +57,11 @@ fn lone_pane_title_becomes_the_tab_name() {
 
     terminal.output(b"\x1b]0;my-title\x07");
     let grid_snapshot = yinz.wait_until("tab borrows the pane title", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.contains("my-title")
+        grid_snapshot.status_bar_appears()
+            && grid_snapshot
+                .tab_bar_line()
+                .is_some_and(|bar| bar.contains("my-title"))
+            && grid_snapshot.lines()[1].contains("my-title")
     });
     assert!(
         !grid_snapshot.contains("Tab #1"),
@@ -77,7 +81,7 @@ fn lone_pane_with_unknown_program_keeps_the_default_tab_name() {
         grid_snapshot.status_bar_appears() && grid_snapshot.contains("Tab #1")
     });
     assert!(
-        !grid_snapshot.contains("Pane #1"),
+        !grid_snapshot.tab_bar_line().unwrap().contains("Pane #1"),
         "the default pane name never leaks into the tab name:\n{}",
         grid_snapshot.text
     );
@@ -127,7 +131,9 @@ fn lone_held_pane_tab_name_shows_exit_status() {
 
     command_terminal.exit(Some(0));
     yinz.wait_until("tab name carries the exit status", |grid_snapshot| {
-        grid_snapshot.contains("EXIT CODE: 0")
+        grid_snapshot
+            .tab_bar_line()
+            .is_some_and(|bar| bar.contains("EXIT CODE: 0"))
     });
 
     yinz.quit();

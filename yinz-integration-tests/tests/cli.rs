@@ -143,23 +143,23 @@ fn eof_does_not_replace_a_self_closing_pipe_recipient() {
                 (0, "response\n"),
                 "{destination}"
             );
-            let (status, panes) = yinz.run_cli_action_reporting(CliAction::ListPanes {
-                tab: false,
-                command: false,
-                state: false,
-                geometry: false,
-                all: true,
-                json: true,
-            });
-            assert_eq!(status, 0, "{panes}");
-            let panes: serde_json::Value = serde_json::from_str(&panes).unwrap();
-            assert!(
+            // The pipe unblocks before CloseSelf reaches the screen thread.
+            yinz.wait_until("pipe recipient closed without being replaced", |_| {
+                let (status, panes) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+                    tab: false,
+                    command: false,
+                    state: false,
+                    geometry: false,
+                    all: true,
+                    json: true,
+                });
+                assert_eq!(status, 0, "{panes}");
+                let panes: serde_json::Value = serde_json::from_str(&panes).unwrap();
                 panes.as_array().unwrap().iter().all(|pane| {
                     pane["plugin_url"] != "recipient"
                         && pane["plugin_url"].as_str() != Some(url.as_str())
-                }),
-                "{panes}"
-            );
+                })
+            });
         }
     }
     yinz.quit();
@@ -316,7 +316,7 @@ fn send_blocking_command_through_the_cli() {
     assert_eq!(blocking_command.wait_for_exit(), 42);
 
     let grid_snapshot = yinz.wait_until("floating pane closed on exit", |grid_snapshot| {
-        !grid_snapshot.contains("PIN") && grid_snapshot.cursor_is_at(col(2).row(1))
+        !grid_snapshot.contains("PIN") && grid_snapshot.cursor_is_at(col(2).row(2))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();

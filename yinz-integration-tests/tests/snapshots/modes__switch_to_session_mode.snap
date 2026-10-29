@@ -1,8 +1,8 @@
 ---
 source: yinz-integration-tests/tests/modes.rs
-assertion_line: 89
 expression: normalized(&grid_snapshot)
 ---
  Yinz (test)  [0] Tab #1  + 
+                                                     👇 [0] Pane #1
 $ █
  Ctrl + <o> SESS   d  Detach  l  Command palette  c  Configure  n  Notifications  ENTER  Select pane 

@@ -328,8 +328,7 @@ fn an_individual_warp_to_a_new_tab_preserves_the_terminal_header() {
         grid.contains("before transfer") && grid.tab_bar_appears() && grid.status_bar_appears()
     });
 
-    // Title-style frames show a lone terminal's title in the tab bar; a second
-    // terminal makes the transferred terminal's own header visible.
+    // The transferred terminal keeps its title when another pane joins the tab.
     split_off_a_pane(&receiver, "beside the transferred terminal");
     receiver.wait_until("the transferred title in its pane header", |grid| {
         grid.lines().iter().skip(1).any(|line| line.contains(title))

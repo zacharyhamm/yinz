@@ -78,7 +78,7 @@ fn guest_ui_settled(guest_grid: &GridSnapshot) -> bool {
 }
 
 fn single_blank_pane_guest_settled(guest_grid: &GridSnapshot) -> bool {
-    guest_ui_settled(guest_grid) && guest_grid.cursor_is_at(col(0).row(1))
+    guest_ui_settled(guest_grid) && guest_grid.cursor_is_at(col(0).row(2))
 }
 
 fn guest_ascended_ui_settled(guest_grid: &GridSnapshot) -> bool {

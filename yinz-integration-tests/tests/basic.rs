@@ -23,7 +23,7 @@ fn starts_with_one_terminal() {
     let grid_snapshot = yinz.wait_until("steady loaded state", |grid_snapshot| {
         grid_snapshot.tab_bar_appears()
             && grid_snapshot.status_bar_appears()
-            && grid_snapshot.cursor_is_at(col(2).row(1))
+            && grid_snapshot.cursor_is_at(col(2).row(2))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -79,7 +79,7 @@ fn command_pane_closes_on_exit() {
     yinz.wait_until(
         "right terminal closed, focus back on first",
         |grid_snapshot| {
-            !grid_snapshot.contains("about to exit") && grid_snapshot.cursor_is_at(col(2).row(1))
+            !grid_snapshot.contains("about to exit") && grid_snapshot.cursor_is_at(col(2).row(2))
         },
     );
     yinz.quit();

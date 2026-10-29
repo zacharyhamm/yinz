@@ -3,5 +3,6 @@ source: yinz-integration-tests/tests/modes.rs
 expression: normalized(&grid_snapshot)
 ---
  Yinz (test)  [0] Tab #1  + 
+                                                     👇 [0] Pane #1
 $ nabc█
  Ctrl + <g> LOCK 

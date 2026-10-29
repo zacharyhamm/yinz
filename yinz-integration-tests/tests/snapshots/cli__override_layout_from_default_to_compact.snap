@@ -2,5 +2,6 @@
 source: yinz-integration-tests/tests/cli.rs
 expression: normalized(&grid_snapshot)
 ---
+                                                     👇 [0] Pane #1
 $ █
  Yinz (test) NORMAL  [0] Tab #1 

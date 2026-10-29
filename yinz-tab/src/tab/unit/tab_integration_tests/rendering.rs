@@ -1,6 +1,70 @@
 use super::*;
 
 #[test]
+fn titles_frame_style_keeps_the_only_pane_title() {
+    let size = Size { rows: 12, cols: 72 };
+    let client = ClientId::new(1);
+    let terminal = crate::TerminalId::new(1);
+    let pane_id = PaneId::Terminal(terminal);
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.set_pane_frames(PaneFrameStyle::Titles);
+    tab.handle_pty_bytes(
+        terminal,
+        b"\x1b]2;only pane title\x07CONTENT FIRST\r\nCONTENT SECOND".to_vec(),
+    )
+    .unwrap();
+
+    let assert_title_and_content = |tab: &mut Tab| {
+        tab.set_force_render();
+        let mut output = Output::default();
+        tab.render(&mut output, None).unwrap();
+        let rendered = take_snapshot(
+            output.serialize().unwrap().get(&client).unwrap(),
+            size.rows,
+            size.cols,
+            Palette::default(),
+        );
+        let lines: Vec<_> = rendered.lines().collect();
+        assert!(lines[0].contains("only pane title"), "{rendered}");
+        assert!(lines[1].contains("CONTENT FIRST"), "{rendered}");
+        assert!(lines[2].contains("CONTENT SECOND"), "{rendered}");
+        let pane = tab.get_pane_with_id(pane_id).unwrap();
+        assert_eq!(pane.get_content_y(), 1);
+        assert_eq!(pane.get_content_rows(), size.rows - 1);
+        assert_eq!(pane.get_content_columns(), size.cols);
+        assert!(tab.agent_title_is_visible(pane_id, Some(client)));
+    };
+    assert_title_and_content(&mut tab);
+
+    let second_pane = PaneId::Terminal(crate::TerminalId::new(2));
+    tab.new_pane(
+        second_pane,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client),
+        None,
+    )
+    .unwrap();
+    tab.close_pane(second_pane, false, None);
+    assert_title_and_content(&mut tab);
+
+    tab.set_pane_frames(PaneFrameStyle::None);
+    assert_eq!(tab.get_pane_with_id(pane_id).unwrap().get_content_y(), 0);
+    assert!(!tab.agent_title_is_visible(pane_id, Some(client)));
+    tab.set_pane_frames(PaneFrameStyle::Titles);
+    assert_title_and_content(&mut tab);
+
+    tab.toggle_active_pane_no_ui_fullscreen(client);
+    assert_eq!(tab.get_pane_with_id(pane_id).unwrap().get_content_y(), 0);
+    assert!(!tab.agent_title_is_visible(pane_id, Some(client)));
+    tab.toggle_active_pane_no_ui_fullscreen(client);
+    assert_title_and_content(&mut tab);
+}
+
+#[test]
 fn increase_tiled_pane_sizes_with_stacked_resizes() {
     // this is the default resizing algorithm
     let size = Size {

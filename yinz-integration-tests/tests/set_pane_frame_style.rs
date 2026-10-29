@@ -18,8 +18,10 @@ fn set_pane_frame_style_through_the_cli() {
     let mut yinz = start_yinz();
     claim_first_terminal_and_wait_for_prompt(&yinz);
 
-    yinz.wait_until("lone titles pane has no frame", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && !grid_snapshot.contains(FULL_FRAME_CORNER)
+    yinz.wait_until("lone titles pane shows its title", |grid_snapshot| {
+        grid_snapshot.status_bar_appears()
+            && grid_snapshot.contains("Pane #1")
+            && !grid_snapshot.contains(FULL_FRAME_CORNER)
     });
 
     let exit_code = yinz.run_cli_action(CliAction::SetPaneFrameStyle {
@@ -40,11 +42,11 @@ fn set_pane_frame_style_through_the_cli() {
     assert_eq!(exit_code, 0, "set-pane-frame-style exited cleanly");
 
     yinz.wait_until(
-        "frame removed after switching back to titles",
+        "title remains after switching back to titles",
         |grid_snapshot| {
             grid_snapshot.status_bar_appears()
                 && !grid_snapshot.contains(FULL_FRAME_CORNER)
-                && !grid_snapshot.contains("Pane #1")
+                && grid_snapshot.contains("Pane #1")
         },
     );
 
@@ -103,8 +105,10 @@ fn set_pane_frame_style_through_a_keybinding() {
     .start();
     claim_first_terminal_and_wait_for_prompt(&yinz);
 
-    yinz.wait_until("lone titles pane has no frame", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && !grid_snapshot.contains(FULL_FRAME_CORNER)
+    yinz.wait_until("lone titles pane shows its title", |grid_snapshot| {
+        grid_snapshot.status_bar_appears()
+            && grid_snapshot.contains("Pane #1")
+            && !grid_snapshot.contains(FULL_FRAME_CORNER)
     });
 
     yinz.send_stdin(&ctrl_y());

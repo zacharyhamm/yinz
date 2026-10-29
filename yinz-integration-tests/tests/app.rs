@@ -122,7 +122,7 @@ fn status_bar_loads_custom_keybindings() {
     let grid_snapshot = yinz.wait_until(
         "status bar reflects the custom keybindings",
         |grid_snapshot| {
-            grid_snapshot.cursor_is_at(col(2).row(1))
+            grid_snapshot.cursor_is_at(col(2).row(2))
                 && grid_snapshot.contains("LOCK")
                 && grid_snapshot.contains("[0] Tab #1")
         },
@@ -168,7 +168,9 @@ fn edit_scrollback() {
     yinz.expect_pty_spawn();
 
     let grid_snapshot = yinz.wait_until("scrollback editor pane open", |grid_snapshot| {
-        grid_snapshot.contains("EDITING SCROLLBACK")
+        grid_snapshot
+            .tab_bar_line()
+            .is_some_and(|bar| bar.contains("EDITING SCROLLBACK"))
             && grid_snapshot.contains("SCROLLBACK_MARKER_ONE")
             && grid_snapshot.contains("SCROLLBACK_MARKER_TWO")
             && grid_snapshot.status_bar_appears()

@@ -80,7 +80,7 @@ fn pin_floating_panes() {
         |grid_snapshot| {
             grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("PIN [+]")
-                && grid_snapshot.cursor_is_at(col(2).row(1))
+                && grid_snapshot.cursor_is_at(col(2).row(2))
         },
     );
 

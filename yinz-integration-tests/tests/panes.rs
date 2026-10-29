@@ -14,7 +14,7 @@ fn cannot_split_terminals_vertically_when_active_terminal_is_too_small() {
     let terminal = yinz.expect_pty_spawn();
     terminal.output(PROMPT);
     yinz.wait_until("first terminal prompt rendered", |grid_snapshot| {
-        grid_snapshot.cursor_is_at(col(2).row(1))
+        grid_snapshot.cursor_is_at(col(2).row(2))
     });
     let (width_before_split, _) = terminal.wait_for_size("first terminal sized", |_, _| true);
 
@@ -161,7 +161,7 @@ fn close_pane() {
     let grid_snapshot =
         yinz.wait_until("right pane closed, focus back on first", |grid_snapshot| {
             grid_snapshot.status_bar_appears()
-                && grid_snapshot.cursor_is_at(col(2).row(1))
+                && grid_snapshot.cursor_is_at(col(2).row(2))
                 && grid_snapshot
                     .tab_bar_line()
                     .is_some_and(|bar| bar.contains("[0] Tab #1"))
@@ -230,7 +230,7 @@ fn pane_closes_when_its_process_exits() {
     let grid_snapshot =
         yinz.wait_until("right pane closed, focus back on first", |grid_snapshot| {
             grid_snapshot.status_bar_appears()
-                && grid_snapshot.cursor_is_at(col(2).row(1))
+                && grid_snapshot.cursor_is_at(col(2).row(2))
                 && grid_snapshot
                     .tab_bar_line()
                     .is_some_and(|bar| bar.contains("[0] Tab #1"))
@@ -777,10 +777,10 @@ fn toggle_frames_with_single_pane() {
     claim_first_terminal_and_wait_for_prompt(&yinz);
 
     yinz.wait_until(
-        "lone pane in titles mode omits its title",
+        "lone pane in titles mode shows its title",
         |grid_snapshot| {
             grid_snapshot.status_bar_appears()
-                && !grid_snapshot.contains("Pane #1")
+                && grid_snapshot.contains("Pane #1")
                 && !grid_snapshot.contains("┌")
         },
     );

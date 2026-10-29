@@ -21,7 +21,7 @@ fn mirrored_sessions() {
     second_client.wait_until("second client loaded on the first tab", |grid_snapshot| {
         grid_snapshot.tab_bar_appears()
             && grid_snapshot.status_bar_appears()
-            && grid_snapshot.cursor_is_at(col(2).row(1))
+            && grid_snapshot.cursor_is_at(col(2).row(2))
     });
 
     second_client.send_stdin(&keys::ctrl('p'));
@@ -102,7 +102,7 @@ fn multiple_users_in_different_panes_and_same_tab() {
 
     let second_client = yinz.attach_client(TERMINAL_SIZE);
     second_client.wait_until("second client loaded on the first tab", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(1))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(2))
     });
 
     second_client.send_stdin(&keys::ctrl('p'));
@@ -156,7 +156,7 @@ fn multiple_users_in_different_tabs() {
 
     let second_client = yinz.attach_client(TERMINAL_SIZE);
     second_client.wait_until("second client loaded on the first tab", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(1))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(2))
     });
 
     second_client.send_stdin(&keys::ctrl('t'));
@@ -170,7 +170,7 @@ fn multiple_users_in_different_tabs() {
                 && session_name_rendered(grid_snapshot)
                 && grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("[1] Tab #2")
-                && grid_snapshot.cursor_is_at(col(2).row(1))
+                && grid_snapshot.cursor_is_at(col(2).row(2))
         });
     let main_grid = yinz.wait_until(
         "main client sees the new tab while staying on the first tab",
@@ -181,7 +181,7 @@ fn multiple_users_in_different_tabs() {
                 // The second client's `[1]` marker arrives in a later tab-bar frame than the
                 // tab itself; the snapshot below asserts it, so wait for it.
                 && grid_snapshot.contains("[1] Tab #2")
-                && grid_snapshot.cursor_is_at(col(2).row(1))
+                && grid_snapshot.cursor_is_at(col(2).row(2))
         },
     );
     assert_snapshot!(normalized(&main_grid));

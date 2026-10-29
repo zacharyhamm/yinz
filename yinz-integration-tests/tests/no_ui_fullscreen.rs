@@ -89,7 +89,8 @@ fn no_ui_fullscreen_works_with_single_pane() {
     yinz.wait_until("chrome restored for single pane", |grid_snapshot| {
         grid_snapshot.tab_bar_appears()
             && grid_snapshot.status_bar_appears()
-            && grid_snapshot.cursor_is_at(col(2).row(1))
+            && grid_snapshot.contains("Pane #1")
+            && grid_snapshot.cursor_is_at(col(2).row(2))
     });
     yinz.quit();
 }
