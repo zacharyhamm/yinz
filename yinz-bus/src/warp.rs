@@ -42,7 +42,7 @@ use crate::PaneId;
 /// Internal release state retained after PTY metadata is removed, until Screen accepts it.
 #[derive(Clone, Debug)]
 pub struct ReleasedPaneForWarp {
-    pub pane: crate::pty_host::client::ReleasedPane,
+    pub pane: crate::os_input_output::ReleasedPane,
     pub run_command: yinz_types::input::command::RunCommand,
 }
 
@@ -739,7 +739,7 @@ pub fn warp_tab_from_session(
 /// The command that gets a pane back, when both the handoff and the rollback
 /// have failed.
 ///
-/// The wording itself lives with the pty-host client, because the release path
+/// The wording itself lives with the process contracts, because the release path
 /// has to say the same thing when a pane is stranded without ever reaching a
 /// rollback.
 pub fn recovery_command(pane: &WarpedPane) -> String {
@@ -756,7 +756,7 @@ pub fn recovery_command(pane: &WarpedPane) -> String {
             .collect::<Vec<_>>()
             .join("; ");
     }
-    crate::pty_host::client::recovery_command(
+    yinz_process_api::recovery_command(
         &pane.host_id,
         pane.remote
             .as_ref()

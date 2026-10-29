@@ -102,6 +102,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "yinz-terminal-graphics",
         ],
     ),
+    ("yinz-process-api", &["yinz-types"]),
     (
         "yinz-process",
         &[
@@ -109,6 +110,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "yinz-runtime",
             "yinz-ipc",
             "yinz-test-support",
+            "yinz-process-api",
         ],
     ),
     (
@@ -131,7 +133,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "yinz-ipc",
             "yinz-session",
             "yinz-host-protocol",
-            "yinz-process",
+            "yinz-process-api",
             "yinz-test-support",
         ],
     ),

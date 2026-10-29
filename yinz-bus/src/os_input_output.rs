@@ -7,9 +7,9 @@ use yinz_types::internal_ids::{ProcessId, SessionName};
 
 use interprocess::local_socket::Stream as LocalSocketStream;
 
-use crate::pty_host::client::{AgentReportCb, ChildStateCb, ReleasedPane};
-use crate::pty_host::remote::{
-    conn::RemoteGitProbe, protocol::ChildSignal, ssh::SshOptions, RemoteStatus,
+pub use yinz_process_api::{
+    AgentReportCb, AsyncReader, ChildRunState, ChildSignal, ChildStateCb, ReleasedPane,
+    ReleasedPtyHost, ReleasedRemotePane, RemoteGitProbe, RemoteStatus, SshOptions,
 };
 use yinz_types::data::RemotePaneHandoff;
 
@@ -79,8 +79,6 @@ pub struct AdoptedTerminal {
 
 /// A null `AsyncReader` for held panes (produces EOF immediately).
 pub struct NullAsyncReader;
-
-pub use yinz_process::AsyncReader;
 
 #[async_trait]
 impl AsyncReader for NullAsyncReader {

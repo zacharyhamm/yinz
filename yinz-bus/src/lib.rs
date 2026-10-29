@@ -36,7 +36,6 @@ pub use server_instruction::ServerInstruction;
 // Moved files keep their `crate::` paths to shared items through these re-exports, mirroring
 // what `yinz-server` and `yinz-terminal` do at their roots.
 pub use yinz_host_protocol::host_query;
-pub use yinz_process::pty_host;
 pub use yinz_runtime::channels;
 pub use yinz_types::internal_ids::{ClientId, PluginId, TerminalId};
 pub use yinz_types::pane_id::PaneId;

@@ -77,21 +77,7 @@ pub const FRAME_HEADER_LEN: usize = 5;
 /// takes to push 4 MiB.
 pub const MAX_STREAM_PAYLOAD: usize = 64 * 1024;
 
-/// A signal to deliver to the pane's child.
-///
-/// Symbolic on purpose. The local server never learns the remote child's pid —
-/// a pid from another machine is not merely useless locally, it is *dangerous*,
-/// because it will happily name an unrelated local process. The broker resolves
-/// this against the child it actually owns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ChildSignal {
-    Hup,
-    Int,
-    Kill,
-    /// Continue a stopped child. Only ever sent for a local pane today — a
-    /// remote broker never reports a suspend, so nothing can ask for this.
-    Cont,
-}
+pub use yinz_process_api::ChildSignal;
 
 /// Why a `Resume` was refused, and so whether waiting could help.
 ///

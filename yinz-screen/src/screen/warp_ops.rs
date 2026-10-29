@@ -5,13 +5,13 @@ use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TerminalId;
 
 use super::{PreparedTabWarp, Screen, ScreenInstruction, WarpAddress};
+use crate::os_input_output::ReleasedPane;
 use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
 use crate::pty::{
     held_command_on_exit, terminal_exit_instruction, AdoptedPane, AdoptedTabPanes,
     AdoptedTabTerminal, ClientTabIndexOrPaneId, PtyInstruction,
 };
-use crate::pty_host::client::ReleasedPane;
 use crate::session_layout_metadata::PaneLayoutMetadata;
 use crate::tab::Pane;
 use crate::ClientId;

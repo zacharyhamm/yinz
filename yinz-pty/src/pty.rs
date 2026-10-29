@@ -1,8 +1,8 @@
 use crate::global_async_runtime::get_tokio_runtime as async_runtime;
-use crate::os_input_output::{AsyncReader, NullAsyncReader, TerminalProcesses};
+use crate::os_input_output::{
+    AsyncReader, ChildRunState, ChildSignal, NullAsyncReader, TerminalProcesses,
+};
 use crate::plugins::{PluginId, PluginInstruction};
-use crate::pty_host::client::ChildRunState;
-use crate::pty_host::remote::protocol::ChildSignal;
 use crate::route::NotificationEnd;
 use crate::screen::ScreenInstruction;
 use crate::terminal_bytes::TerminalBytes;

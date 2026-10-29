@@ -708,22 +708,6 @@ fn a_pane_carries_this_sides_terminal_and_its_own_id() {
     }
 }
 
-/// ssh tokenizes an `-o Name=value` string on whitespace even when it arrives
-/// as one argv entry, so a path with a space has to be double-quoted or the
-/// value is cut short — which for `UserKnownHostsFile` means every strict
-/// host-key check fails.
-#[test]
-fn ssh_option_paths_are_quoted_for_the_option_tokenizer() {
-    assert_eq!(
-        ssh_option_value(Path::new("/home/a user/known_hosts")),
-        r#""/home/a user/known_hosts""#
-    );
-    assert_eq!(
-        ssh_option_value(Path::new(r#"/odd "dir"\here"#)),
-        r#""/odd \"dir\"\\here""#
-    );
-}
-
 #[test]
 fn known_hosts_and_control_paths_reach_ssh_quoted() {
     let options = SshOptions {

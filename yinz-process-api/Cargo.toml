@@ -1,0 +1,17 @@
+[package]
+name = "yinz-process-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Process contracts shared by the Yinz server bus and process backends"
+
+[lints]
+workspace = true
+
+[dependencies]
+yinz-types = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

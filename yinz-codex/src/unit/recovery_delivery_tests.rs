@@ -29,6 +29,10 @@ async fn recovery_daemon(peers: &tokio::net::UnixListener, history: &str, review
                 .unwrap();
                 return pid;
             },
+            1 if review && history == "current" => json!({"data":[
+                {"id":"review-child","rootTurnId":"known-turn","status":"completed"},
+                {"id":"known-turn","status":"completed"}
+            ]}),
             1 => json!({"data":[{
                 "id":if history == "newer" {"newer-turn"} else {"known-turn"},
                 "status":if review {"completed"} else {"failed"},
@@ -90,6 +94,10 @@ async fn reconnect_recovery_delivers_only_proven_current_outcomes() {
         (false, true, "unavailable"),
         (false, false, "unavailable"),
         (true, false, "newer"),
+        (true, true, "current"),
+        (true, true, "newer"),
+        (true, true, "active"),
+        (true, true, "unavailable"),
     ] {
         let case = tempfile::tempdir_in(root.path()).unwrap();
         let output = case.path().join("reports.jsonl");
@@ -105,12 +113,13 @@ async fn reconnect_recovery_delivers_only_proven_current_outcomes() {
         {
             let mut conversations = registration.conversations.borrow_mut();
             conversations.select("selected", &registration).unwrap();
-            if !cancelled {
+            if !cancelled || review {
                 if review {
                     conversations.review = Some(Review {
-                        request_id: Some(json!(7)),
+                        request_id: None,
                         thread: "selected".into(),
                         turn: Some("known-turn".into()),
+                        early_terminal: None,
                     });
                 } else {
                     conversations.current_turn = Some("known-turn".into());
@@ -130,6 +139,14 @@ async fn reconnect_recovery_delivers_only_proven_current_outcomes() {
             .into();
         }
         if cancelled {
+            if review {
+                let hooks = registration.conversations.borrow_mut().response(
+                    &json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"known-turn","status":"completed"}}}),
+                    &registration,
+                ).unwrap();
+                assert_eq!(hooks, vec![expected.clone()]);
+                assert!(registration.conversations.borrow().review_turns.is_empty());
+            }
             registration
                 .reports
                 .borrow_mut()
@@ -146,6 +163,11 @@ async fn reconnect_recovery_delivers_only_proven_current_outcomes() {
         result.unwrap();
         assert_bridge_child_stopped(pid).await;
         assert!(registration.reports.borrow().is_empty());
+        assert!(registration
+            .conversations
+            .borrow()
+            .reported_review
+            .is_none());
         if history == "current" {
             let reports: Vec<Value> = std::fs::read_to_string(&output)
                 .unwrap()

@@ -896,34 +896,26 @@ fn a_control_fd_that_is_already_fd_three_still_has_close_on_exec_cleared() {
 /// `Command::spawn` returned. `sh` does not close fd 3 across the exec, so the
 /// control socket `place_control_fd` put there survives into the test binary.
 fn write_host_wrapper(dir: &Path) -> PathBuf {
-    write_host_wrapper_with_socket_dir(dir, None)
+    write_host_wrapper_with_socket_dir(dir, &dir.join("sock"))
 }
 
 /// A wrapper that also points the supervisor's named socket at `socket_dir`.
 ///
-/// `YINZ_SOCK_DIR` is resolved once per process, so the only way to keep a
+/// `YINZ_SOCKET_DIR` is resolved once per process, so the only way to keep a
 /// test's supervisors out of the developer's real socket directory is to set the
 /// variable in the supervisor's own environment, which the wrapper can do.
-fn write_host_wrapper_with_socket_dir(dir: &Path, socket_dir: Option<&Path>) -> PathBuf {
+fn write_host_wrapper_with_socket_dir(dir: &Path, socket_dir: &Path) -> PathBuf {
     let test_bin = std::env::current_exe().expect("failed to find the test binary");
     let path = dir.join("host.sh");
-    let socket_dir = socket_dir
-        .map(|socket_dir| format!("YINZ_SOCKET_DIR='{}' ", socket_dir.display()))
-        .unwrap_or_default();
-    std::fs::write(
+    yinz_test_support::write_warm_script(
         &path,
-        format!(
-            "#!/bin/sh\n{socket_dir}{REEXEC_ENV}=1 exec '{}' '{}' --exact\n",
+        &format!(
+            "YINZ_SOCKET_DIR='{}' {REEXEC_ENV}=1 exec '{}' '{}' --exact",
+            socket_dir.display(),
             test_bin.display(),
             REEXEC_HELPER,
         ),
-    )
-    .expect("failed to write the wrapper");
-    let mut perms = std::fs::metadata(&path)
-        .expect("failed to stat the wrapper")
-        .permissions();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-    std::fs::set_permissions(&path, perms).expect("failed to make the wrapper executable");
+    );
     path
 }
 
@@ -1012,6 +1004,17 @@ fn spawning_a_real_supervisor_yields_a_pty_the_server_can_read() {
     let pending = spawn_real_host(dir.path(), sh("echo yinz-real-host-marker; exit 3"))
         .expect("spawning a real supervisor failed");
     let guard = KillOnDrop(pending.host_pid);
+
+    assert!(
+        pending
+            .control_socket
+            .as_ref()
+            .expect("the supervisor should have bound a socket")
+            .canonicalize()
+            .unwrap()
+            .starts_with(dir.path().join("sock").canonicalize().unwrap()),
+        "test supervisors must not use the developer's socket directory"
+    );
 
     let reports: Reports = Arc::default();
     let mut spawned = pending.finish(recording_quit_cb(&reports), None);
@@ -1127,7 +1130,7 @@ fn a_pane_survives_the_server_that_started_it() {
 fn sweeping_a_session_terminates_only_the_orphans_labelled_with_it() {
     let dir = tempfile::tempdir().expect("failed to create a temp dir");
     let socket_root = dir.path().join("sock");
-    let wrapper = write_host_wrapper_with_socket_dir(dir.path(), Some(&socket_root));
+    let wrapper = write_host_wrapper_with_socket_dir(dir.path(), &socket_root);
 
     let mut hosts = Vec::new();
     for session in ["swept", "other"] {
@@ -1212,7 +1215,7 @@ fn sweeping_a_session_terminates_only_the_orphans_labelled_with_it() {
 fn sweeping_a_session_leaves_its_attached_supervisors_alone() {
     let dir = tempfile::tempdir().expect("failed to create a temp dir");
     let socket_root = dir.path().join("sock");
-    let wrapper = write_host_wrapper_with_socket_dir(dir.path(), Some(&socket_root));
+    let wrapper = write_host_wrapper_with_socket_dir(dir.path(), &socket_root);
     let pending = spawn_real_host_via(&wrapper, "held", sh("sleep 60"))
         .expect("spawning a real supervisor failed");
     let guard = KillOnDrop(pending.host_pid);
@@ -1252,7 +1255,7 @@ fn sweeping_a_session_leaves_its_attached_supervisors_alone() {
 #[test]
 fn relabeling_preserves_attached_and_detached_panes_across_repeated_renames() {
     let dir = tempfile::tempdir().unwrap();
-    let wrapper = write_host_wrapper_with_socket_dir(dir.path(), Some(&dir.path().join("sock")));
+    let wrapper = write_host_wrapper_with_socket_dir(dir.path(), &dir.path().join("sock"));
     let pending = spawn_real_host_via(&wrapper, "old", sh(
         "stty -echo; printf 'ready\\n'; IFS= read -r line; printf 'buffered-marker'; IFS= read -r line"
     )).unwrap();
@@ -1349,7 +1352,7 @@ fn relabeling_preserves_attached_and_detached_panes_across_repeated_renames() {
 #[test]
 fn renaming_leaves_other_servers_and_adopted_panes_untouched() {
     let dir = tempfile::tempdir().unwrap();
-    let wrapper = write_host_wrapper_with_socket_dir(dir.path(), Some(&dir.path().join("sock")));
+    let wrapper = write_host_wrapper_with_socket_dir(dir.path(), &dir.path().join("sock"));
     let reports: Reports = Arc::default();
     let mut hosts = Vec::new();
     for session in ["old", "old", "unrelated", "old"] {

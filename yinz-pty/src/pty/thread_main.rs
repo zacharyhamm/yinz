@@ -7,8 +7,8 @@ use super::{
     PendingPaneSpawn, Pty,
 };
 use crate::background_jobs::BackgroundJob;
+use crate::os_input_output::ReleasedPane;
 use crate::plugins::PluginInstruction;
-use crate::pty_host::client::ReleasedPane;
 use crate::screen::ScreenInstruction;
 use crate::ServerInstruction;
 use yinz_bus::pty::{PendingSpawn, PtyInstruction};

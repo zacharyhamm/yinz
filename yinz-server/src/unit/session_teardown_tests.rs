@@ -53,7 +53,8 @@ fn detaching_a_client_after_the_screen_and_plugin_threads_exited_does_not_panic(
 
     let ran = with_session(&session_data, |session| {
         session.detach_client(ClientId::new(1))
-    });
+    })
+    .unwrap();
 
     assert_eq!(
         ran,
@@ -68,7 +69,8 @@ fn detaching_a_client_before_the_session_exists_is_a_no_op() {
 
     let ran = with_session(&session_data, |session| {
         session.detach_client(ClientId::new(1))
-    });
+    })
+    .unwrap();
 
     assert_eq!(ran, None);
 }
@@ -133,7 +135,11 @@ fn mouse_updates_reach_every_interactive_client_with_a_full_server_queue() {
             [ServerToClientMsg::SetMouseMode { enabled }] if *enabled == (id % 2 == 0)
         ));
     }
-    assert!(with_session(&session, |session| session.pending_mouse_updates.is_empty()).unwrap());
+    assert!(
+        with_session(&session, |session| session.pending_mouse_updates.is_empty())
+            .unwrap()
+            .unwrap()
+    );
     assert_eq!(server_rx.len(), 50);
 }
 
@@ -184,7 +190,11 @@ fn terminal_notifications_exclude_noninteractive_clients_even_with_configuration
             vec![ServerToClientMsg::SetMouseMode { enabled: false }]
         )])
     );
-    assert!(with_session(&session, |session| session.pending_mouse_updates.is_empty()).unwrap());
+    assert!(
+        with_session(&session, |session| session.pending_mouse_updates.is_empty())
+            .unwrap()
+            .unwrap()
+    );
 }
 
 #[test]
@@ -270,7 +280,7 @@ fn removal_queues_screen_cleanup_before_plugin_cleanup() {
     let removing_session = session.clone();
     let removing = std::thread::spawn(move || {
         let mut os: Box<dyn ServerOsApi> = Box::new(crate::capturing_os::CapturingOs::default());
-        remove_client_and_flush_forwards(old, &mut os, &removing_state, &removing_session);
+        remove_client_and_flush_forwards(old, &mut os, &removing_state, &removing_session).unwrap();
     });
     let cleanup = screen_rx.recv_timeout(Duration::from_secs(2));
     // Always release the sender before asserting, including on a regression.
@@ -288,11 +298,11 @@ fn a_repeat_removal_leaves_newer_connections_alone() {
     let mut os: Box<dyn ServerOsApi> = Box::new(crate::capturing_os::CapturingOs::default());
     let old = state.write().unwrap().new_client().unwrap();
     // A send failure removes the connection before its router queues RemoveClient.
-    remove_client_and_flush_forwards(old, &mut os, &state, &session);
+    remove_client_and_flush_forwards(old, &mut os, &state, &session).unwrap();
     let attached = state.write().unwrap().new_client().unwrap();
     assert_ne!(attached, old);
     // The router's own removal follows.
-    remove_client_and_flush_forwards(old, &mut os, &state, &session);
+    remove_client_and_flush_forwards(old, &mut os, &state, &session).unwrap();
     assert!(state.read().unwrap().client_ids().contains(&attached));
 }
 
@@ -314,7 +324,7 @@ fn disconnect_retires_only_the_clients_cli_pipes() {
         (disconnected, other)
     };
     let mut os: Box<dyn ServerOsApi> = Box::new(crate::capturing_os::CapturingOs::default());
-    remove_client_and_flush_forwards(disconnected, &mut os, &state, &session);
+    remove_client_and_flush_forwards(disconnected, &mut os, &state, &session).unwrap();
     let cleanup: Vec<_> = plugin_rx
         .try_iter()
         .map(|(instruction, _)| instruction)
@@ -330,7 +340,7 @@ fn disconnect_retires_only_the_clients_cli_pipes() {
         state.read().unwrap().pipes,
         HashMap::from([("other".into(), other)])
     );
-    remove_client_and_flush_forwards(disconnected, &mut os, &state, &session);
+    remove_client_and_flush_forwards(disconnected, &mut os, &state, &session).unwrap();
     assert!(plugin_rx.try_iter().all(|(instruction, _)| !matches!(
         instruction,
         PluginInstruction::CliPipesDisconnected(_)
@@ -371,7 +381,7 @@ fn a_departed_client_leaves_no_state_behind() {
     let session = Arc::new(RwLock::new(Some(session)));
     let capture = crate::capturing_os::CapturingOs::default();
     let mut os: Box<dyn ServerOsApi> = Box::new(capture.clone());
-    remove_client_and_flush_forwards(departed, &mut os, &state, &session);
+    remove_client_and_flush_forwards(departed, &mut os, &state, &session).unwrap();
     let cli = state.write().unwrap().new_client().unwrap();
     assert_ne!(
         cli, departed,
@@ -390,6 +400,7 @@ fn a_departed_client_leaves_no_state_behind() {
         assert!(session.key_passthrough_clients.contains_key(&attached));
         assert!(session.current_input_modes.contains_key(&attached));
     })
+    .unwrap()
     .unwrap();
 
     // What the server does with the `RebindKeys` every plugin unload sends.
@@ -398,7 +409,8 @@ fn a_departed_client_leaves_no_state_behind() {
             .session_configuration
             .register_plugin_default_keybinds(PluginId::new(8), Keybinds::default());
         session.propagate_configuration_changes(changes, false);
-    });
+    })
+    .unwrap();
     flush_pending_mouse_updates(&mut os, &state, &session).unwrap();
 
     let messages = capture.server_to_client_messages.lock();
@@ -444,7 +456,7 @@ fn late_instructions_for_a_departed_client_leave_nothing_behind() {
     let session = Arc::new(RwLock::new(Some(session)));
     let capture = crate::capturing_os::CapturingOs::default();
     let mut os: Box<dyn ServerOsApi> = Box::new(capture.clone());
-    remove_client_and_flush_forwards(departed, &mut os, &state, &session);
+    remove_client_and_flush_forwards(departed, &mut os, &state, &session).unwrap();
     let cli = state.write().unwrap().new_client().unwrap();
     while screen_rx.try_recv().is_ok() {}
 
@@ -514,6 +526,7 @@ fn late_instructions_for_a_departed_client_leave_nothing_behind() {
         );
         assert!(session.key_passthrough_clients.contains_key(&attached));
     })
+    .unwrap()
     .unwrap();
     while let Ok((instruction, _)) = screen_rx.try_recv() {
         match instruction {
@@ -560,6 +573,7 @@ fn a_mode_change_for_a_client_that_is_not_attached_fails() {
     with_session(&session, |session| {
         assert!(session.current_input_modes.is_empty())
     })
+    .unwrap()
     .unwrap();
 }
 
@@ -586,7 +600,7 @@ fn a_departed_clients_runtime_change_reaches_the_session_with_no_client_attached
         .set_client_runtime_configuration(departed, Config::default());
     let session = Arc::new(RwLock::new(Some(session)));
     let mut os: Box<dyn ServerOsApi> = Box::new(crate::capturing_os::CapturingOs::default());
-    remove_client_and_flush_forwards(departed, &mut os, &state, &session);
+    remove_client_and_flush_forwards(departed, &mut os, &state, &session).unwrap();
     while screen_rx.try_recv().is_ok() {}
     while plugin_rx.try_recv().is_ok() {}
 
@@ -610,6 +624,7 @@ fn a_departed_clients_runtime_change_reaches_the_session_with_no_client_attached
     with_session(&session, |session| {
         assert!(session.session_configuration.runtime_config.is_empty());
     })
+    .unwrap()
     .unwrap();
 }
 
@@ -636,7 +651,7 @@ fn a_departed_clients_unsaved_rebind_reaches_the_session_with_no_client_attached
         .set_client_runtime_configuration(departed, Config::default());
     let session = Arc::new(RwLock::new(Some(session)));
     let mut os: Box<dyn ServerOsApi> = Box::new(crate::capturing_os::CapturingOs::default());
-    remove_client_and_flush_forwards(departed, &mut os, &state, &session);
+    remove_client_and_flush_forwards(departed, &mut os, &state, &session).unwrap();
     while screen_rx.try_recv().is_ok() {}
     while plugin_rx.try_recv().is_ok() {}
 
@@ -671,6 +686,7 @@ fn a_departed_clients_unsaved_rebind_reaches_the_session_with_no_client_attached
     with_session(&session, |session| {
         assert!(session.session_configuration.runtime_config.is_empty());
     })
+    .unwrap()
     .unwrap();
 }
 
@@ -705,7 +721,7 @@ fn a_departed_clients_failed_save_changes_nothing_while_another_client_is_attach
     }
     let session = Arc::new(RwLock::new(Some(session)));
     let mut os: Box<dyn ServerOsApi> = Box::new(crate::capturing_os::CapturingOs::default());
-    remove_client_and_flush_forwards(departed, &mut os, &state, &session);
+    remove_client_and_flush_forwards(departed, &mut os, &state, &session).unwrap();
     while screen_rx.try_recv().is_ok() {}
     while plugin_rx.try_recv().is_ok() {}
     let running = |session: &Arc<RwLock<Option<SessionMetaData>>>| {
@@ -714,6 +730,7 @@ fn a_departed_clients_failed_save_changes_nothing_while_another_client_is_attach
                 .session_configuration
                 .get_client_configuration(&attached)
         })
+        .unwrap()
         .unwrap()
     };
     let before = running(&session);
@@ -755,6 +772,7 @@ fn a_departed_clients_failed_save_changes_nothing_while_another_client_is_attach
             .collect();
         assert_eq!(configured, vec![attached]);
     })
+    .unwrap()
     .unwrap();
 }
 
@@ -781,7 +799,7 @@ fn a_saved_config_reaches_the_threads_with_no_client_attached() {
         .set_client_runtime_configuration(detached, Config::default());
     let session = Arc::new(RwLock::new(Some(session)));
     let mut os: Box<dyn ServerOsApi> = Box::new(crate::capturing_os::CapturingOs::default());
-    remove_client_and_flush_forwards(detached, &mut os, &state, &session);
+    remove_client_and_flush_forwards(detached, &mut os, &state, &session).unwrap();
     while screen_rx.try_recv().is_ok() {}
     while plugin_rx.try_recv().is_ok() {}
 
@@ -792,6 +810,7 @@ fn a_saved_config_reaches_the_threads_with_no_client_attached() {
             .session_configuration
             .change_saved_config(config.clone())
     })
+    .unwrap()
     .unwrap();
     assert_eq!(
         changes.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
@@ -799,7 +818,8 @@ fn a_saved_config_reaches_the_threads_with_no_client_attached() {
     );
     with_session_mut(&session, |session| {
         session.propagate_configuration_changes(changes, true)
-    });
+    })
+    .unwrap();
     assert!(screen_rx.try_iter().any(|(instruction, _)| matches!(
         instruction,
         ScreenInstruction::Reconfigure { client_id, .. } if client_id == ClientId::NONE
@@ -812,6 +832,7 @@ fn a_saved_config_reaches_the_threads_with_no_client_attached() {
     let unchanged = with_session_mut(&session, |session| {
         session.session_configuration.change_saved_config(config)
     })
+    .unwrap()
     .unwrap();
     assert!(unchanged.is_empty(), "an unchanged config is no change");
 }
@@ -926,7 +947,7 @@ fn removing_a_watcher_forgets_its_state() {
     let session = Arc::new(RwLock::new(Some(session)));
     let mut os: Box<dyn ServerOsApi> = Box::new(crate::capturing_os::CapturingOs::default());
 
-    remove_watcher_client(watcher, &mut os, &state, &session);
+    remove_watcher_client(watcher, &mut os, &state, &session).unwrap();
 
     assert!(!state.read().unwrap().is_watcher(&watcher));
     with_session(&session, |session| {
@@ -934,6 +955,7 @@ fn removing_a_watcher_forgets_its_state() {
         assert!(session.current_input_modes.is_empty());
         assert!(session.pending_mouse_updates.is_empty());
     })
+    .unwrap()
     .unwrap();
     assert!(plugin_rx.try_iter().any(|(instruction, _)| matches!(
         instruction,

@@ -110,6 +110,7 @@ impl Registration {
             };
             // Cancellation keeps this hook for the replacement, before it accepts new work.
             self.reports.borrow_mut().pop_front();
+            self.conversations.borrow_mut().reported_review = None;
             result.non_fatal();
         }
     }
@@ -135,6 +136,7 @@ impl Registration {
             if !current {
                 // Newer native work or unavailable history makes replay unsafe, not successful.
                 self.reports.borrow_mut().pop_front();
+                self.conversations.borrow_mut().reported_review = None;
             }
         }
         self.flush_reports(program).await;
@@ -185,12 +187,13 @@ impl Registration {
             .context("connect Codex reconciliation WebSocket")?;
             let review = {
                 let conversations = self.conversations.borrow();
-                conversations
-                    .review_turns
-                    .contains(&(thread.to_owned(), turn.to_owned()))
-                    || conversations.review.as_ref().is_some_and(|review| {
-                        review.thread == thread && review.turn.as_deref() == Some(turn)
-                    })
+                conversations.reported_review.as_ref().is_some_and(
+                    |(reported_thread, reported_turn)| {
+                        reported_thread == thread && reported_turn == turn
+                    },
+                ) || conversations.review.as_ref().is_some_and(|review| {
+                    review.thread == thread && review.turn.as_deref() == Some(turn)
+                })
             };
             read_recovered_turn(&mut ws, thread, turn, review).await
         })
@@ -279,6 +282,8 @@ struct Review {
     request_id: Option<Value>,
     thread: String,
     turn: Option<String>,
+    // shortcut: one early outcome; displaced candidates require authoritative history recovery.
+    early_terminal: Option<Value>,
 }
 
 #[derive(Default)]
@@ -286,21 +291,25 @@ struct Conversations {
     /// Request ids of conversation selections awaiting their reply, and whether each asked
     /// for an ephemeral thread.
     pending: HashMap<String, (String, bool)>,
-    /// Hidden helper threads, such as the TUI's title generator, which never own the pane.
-    // shortcut: retain helper identities for the UI lifetime until safe closure evidence is available.
-    ephemeral: HashSet<String>,
+    /// Only successfully loaded visible threads may claim the pane; helpers need no tombstones.
+    visible: HashSet<String>,
     selected: Option<String>,
     current_turn: Option<String>,
     review: Option<Review>,
-    /// Review identities already observed, including superseded or consumed parents.
+    /// Unfinished review parents exclude older active markers during reconnect recovery.
     review_turns: HashSet<(String, String)>,
+    /// A cancelled terminal report still needs review-aware reconciliation after pruning.
+    reported_review: Option<(String, String)>,
 }
 
 impl Conversations {
     fn reconnect(&mut self) {
         self.pending.clear();
-        if let Some(review) = &mut self.review {
-            review.request_id = None;
+        if let Some(review) = &mut self.review
+            && review.request_id.take().is_some()
+        {
+            review.turn = None;
+            review.early_terminal = None;
         }
     }
 
@@ -344,7 +353,7 @@ impl Conversations {
         // Also handles a UI returning to an already loaded conversation without resuming it.
         if matches!(method, "turn/start" | "turn/steer")
             && let Some(thread) = value["params"]["threadId"].as_str()
-            && !self.ephemeral.contains(thread)
+            && self.visible.contains(thread)
         {
             self.select(thread, registration)?;
             self.review = None;
@@ -354,7 +363,7 @@ impl Conversations {
                 (value.get("id"), value["params"]["threadId"].as_str())
             && (id.is_string() || id.is_number())
             && !thread.is_empty()
-            && !self.ephemeral.contains(thread)
+            && self.visible.contains(thread)
             && (value["params"]["delivery"].is_null() || value["params"]["delivery"] == "inline")
         {
             self.select(thread, registration)?;
@@ -363,6 +372,7 @@ impl Conversations {
                 request_id: Some(id.clone()),
                 thread: thread.to_owned(),
                 turn: None,
+                early_terminal: None,
             });
         }
         Ok(())
@@ -372,7 +382,7 @@ impl Conversations {
     ///
     /// Returns the lifecycle hooks to report, in order.
     fn response(&mut self, value: &Value, registration: &Registration) -> Result<Vec<Value>> {
-        // Keeping only the current request also invalidates replies from older selections/work.
+        // The correlated reply, not replayable entry items, authorizes a review parent.
         if value.get("method").is_none()
             && let Some(review) = &mut self.review
             && review
@@ -383,12 +393,17 @@ impl Conversations {
             let result = &value["result"];
             if result["reviewThreadId"].as_str() == Some(review.thread.as_str())
                 && let Some(id) = result["turn"]["id"].as_str().filter(|id| !id.is_empty())
-                && (review.turn.as_deref() == Some(id)
-                    || self
-                        .review_turns
-                        .insert((review.thread.clone(), id.to_owned())))
+                && self
+                    .review_turns
+                    .insert((review.thread.clone(), id.to_owned()))
             {
                 review.turn = Some(id.to_owned());
+                review.request_id = None;
+                if let Some(terminal) = review.early_terminal.take()
+                    && terminal["params"]["turn"]["id"].as_str() == Some(id)
+                {
+                    return self.response(&terminal, registration);
+                }
             } else {
                 self.review = None;
             }
@@ -396,23 +411,53 @@ impl Conversations {
         }
         if value.get("id").is_none() {
             let params = &value["params"];
-            if let Some(review) = &mut self.review
-                && params["threadId"].as_str() == Some(review.thread.as_str())
-                && matches!(
-                    value["method"].as_str(),
-                    Some("item/started" | "item/completed")
-                )
-                && params["item"]["type"] == "enteredReviewMode"
-                && review.turn.is_none()
-                && let Some(id) = params["turnId"].as_str().filter(|id| !id.is_empty())
-                && self
-                    .review_turns
-                    .insert((review.thread.clone(), id.to_owned()))
+            if value["method"] == "thread/closed"
+                && let Some(thread) = params["threadId"].as_str()
             {
-                review.turn = Some(id.to_owned());
+                self.visible.remove(thread);
+                self.review_turns.retain(|(owner, _)| owner != thread);
+                return Ok(Vec::new());
+            }
+            if value["method"] == "turn/completed"
+                && let (Some(thread), Some(turn)) =
+                    (params["threadId"].as_str(), params["turn"]["id"].as_str())
+                && matches!(
+                    params["turn"]["status"].as_str(),
+                    Some("completed" | "interrupted" | "failed")
+                )
+            {
+                self.review_turns
+                    .remove(&(thread.to_owned(), turn.to_owned()));
+            }
+            if let Some(review) = &mut self.review
+                && review.request_id.is_some()
+                && params["threadId"].as_str() == Some(review.thread.as_str())
+                && value["method"] == "turn/completed"
+                && params["turn"]["id"]
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty())
+                && matches!(
+                    params["turn"]["status"].as_str(),
+                    Some("completed" | "interrupted" | "failed")
+                )
+            {
+                // Keep one provisional outcome; only the request's reply can validate it.
+                review.early_terminal = Some(serde_json::json!({
+                    "method": "turn/completed",
+                    "params": {"threadId": review.thread, "turn": {
+                        "id": params["turn"]["id"], "status": params["turn"]["status"],
+                        "error": {"message": params["turn"]["error"]["message"]},
+                    }},
+                }));
+                return Ok(Vec::new());
             }
             if params["threadId"].as_str().is_some_and(|thread| {
-                self.selected.as_deref() == Some(thread) && !self.ephemeral.contains(thread)
+                self.selected.as_deref() == Some(thread)
+                    && (self.visible.contains(thread)
+                        || self.outstanding_turn().is_some_and(|(_, turn)| {
+                            params["turn"]["id"].as_str() == Some(turn)
+                                && value["method"] == "turn/completed"
+                        }))
             }) {
                 let turn = &params["turn"];
                 if let Some(id) = turn["id"].as_str().filter(|id| !id.is_empty()) {
@@ -435,8 +480,11 @@ impl Conversations {
                             // Consume every terminal event so a duplicate or delayed failure
                             // cannot end this turn twice or affect a newer turn.
                             self.current_turn = None;
-                            let review = self.review.take().is_some();
-                            if review || turn["status"] == "failed" {
+                            let review = self.review.take();
+                            if let Some(review) = &review {
+                                self.reported_review = Some((review.thread.clone(), id.to_owned()));
+                            }
+                            if review.is_some() || turn["status"] == "failed" {
                                 let event = match turn["status"].as_str() {
                                     Some("completed") => "Stop",
                                     Some("interrupted") => "Interrupt",
@@ -476,7 +524,7 @@ impl Conversations {
             return Ok(Vec::new());
         };
         if ephemeral || thread["ephemeral"].as_bool() == Some(true) {
-            self.ephemeral.insert(id.to_owned());
+            self.visible.remove(id);
             return Ok(Vec::new());
         }
         // A new thread replacing the selected one is the UI's `/new`: the same shape as
@@ -491,6 +539,20 @@ impl Conversations {
             && (self.current_turn.is_some() || self.review.is_some());
         // Publish before the UI sees the reply and can submit its first turn.
         self.select(id, registration)?;
+        self.visible.insert(id.to_owned());
+        if let Some(turns) = thread["turns"].as_array() {
+            for turn in turns {
+                if let Some(turn_id) = turn["id"].as_str()
+                    && matches!(
+                        turn["status"].as_str(),
+                        Some("completed" | "interrupted" | "failed")
+                    )
+                {
+                    self.review_turns
+                        .remove(&(id.to_owned(), turn_id.to_owned()));
+                }
+            }
+        }
         // Resuming an active thread may not replay its turn/started notification.
         let active_turn = thread["turns"].as_array().and_then(|turns| {
             turns
@@ -555,17 +617,11 @@ impl Conversations {
                     },
                     _ => None,
                 };
-                if let Some(parent) = parent {
-                    return self.response(
-                        &serde_json::json!({
-                            "method": "item/started",
-                            "params": {
-                                "threadId": id, "turnId": parent,
-                                "item": {"type": "enteredReviewMode"},
-                            },
-                        }),
-                        registration,
-                    );
+                if let Some(parent) = parent
+                    && let Some(review) = &mut self.review
+                {
+                    review.turn = Some(parent.to_owned());
+                    self.review_turns.insert((id.to_owned(), parent.to_owned()));
                 }
             }
             // Work can finish after the reconnect history check but before this resume.

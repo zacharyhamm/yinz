@@ -85,6 +85,30 @@ fn test_new_creates_one_thread() {
 }
 
 #[test]
+fn dropping_a_poisoned_executor_still_sends_shutdown() {
+    let executor = create_test_executor(1);
+    // Keep the state alive so channel disconnection cannot substitute for Shutdown.
+    let state = executor.state.clone();
+    let (sender, receiver) = channel();
+    state.lock().unwrap().threads.push(Some(ExecutionThread {
+        sender,
+        jobs_in_flight: Arc::new(AtomicUsize::new(0)),
+    }));
+    let poisoner = state.clone();
+    assert!(thread::spawn(move || {
+        let _guard = poisoner.lock().unwrap();
+        panic!("injected executor bookkeeping panic");
+    })
+    .join()
+    .is_err());
+    drop(executor);
+    assert!(matches!(
+        receiver.recv_timeout(Duration::from_secs(5)),
+        Ok(Job::Shutdown)
+    ));
+}
+
+#[test]
 fn test_new_respects_min_threads() {
     let executor = create_test_executor(0);
     assert_eq!(

@@ -14,8 +14,8 @@ pub use screen::screen_thread_main;
 // server's root did. `plugins` is the bus's instruction module, not the plugin runtime: the
 // screen talks to plugins only through `PluginInstruction`.
 pub(crate) use yinz_bus::{
-    background_jobs, global_async_runtime, nested_guest, os_input_output, plugins, pty, pty_host,
-    pty_writer, session_layout_metadata, thread_bus, warp, ServerInstruction,
+    background_jobs, global_async_runtime, nested_guest, os_input_output, plugins, pty, pty_writer,
+    session_layout_metadata, thread_bus, warp, ServerInstruction,
 };
 pub(crate) use yinz_panes::{panes, ui};
 pub(crate) use yinz_tab::{pane_groups, tab};

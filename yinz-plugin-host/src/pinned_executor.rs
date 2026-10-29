@@ -625,7 +625,8 @@ impl PinnedExecutor {
 
 impl Drop for PinnedExecutor {
     fn drop(&mut self) {
-        let mut state = self.state.lock().unwrap();
+        // Teardown only sends shutdown; poisoned bookkeeping is never reused for jobs.
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
 
         // Send shutdown to all threads
         for thread in state.threads.iter_mut().flatten() {

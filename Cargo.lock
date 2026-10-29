@@ -4687,7 +4687,7 @@ dependencies = [
  "yinz-config",
  "yinz-host-protocol",
  "yinz-ipc",
- "yinz-process",
+ "yinz-process-api",
  "yinz-runtime",
  "yinz-session",
  "yinz-test-support",
@@ -5058,8 +5058,19 @@ dependencies = [
  "two-face",
  "uuid",
  "yinz-ipc",
+ "yinz-process-api",
  "yinz-runtime",
  "yinz-test-support",
+ "yinz-types",
+]
+
+[[package]]
+name = "yinz-process-api"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
  "yinz-types",
 ]
 

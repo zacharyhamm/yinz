@@ -397,12 +397,24 @@ fn close_plugin_instance(
     subscriptions: Arc<Mutex<Subscriptions>>,
     senders: ThreadSenders,
 ) {
-    let subscriptions_guard = subscriptions.lock().unwrap();
-    let needs_before_close = subscriptions_guard.contains(&EventType::BeforeClose);
-    drop(subscriptions_guard); // Release lock before calling plugin
+    let (needs_before_close, poisoned_subscriptions) = match subscriptions.lock() {
+        Ok(subscriptions) => (subscriptions.contains(&EventType::BeforeClose), false),
+        Err(_) => (false, true),
+    };
+    let mut rp = match running_plugin.lock() {
+        Ok(instance) => instance,
+        Err(poisoned) => {
+            // Recover ownership only for disposal; never call a poisoned guest again.
+            let mut instance = poisoned.into_inner();
+            instance.mark_failed();
+            instance
+        },
+    };
+    if poisoned_subscriptions {
+        rp.mark_failed();
+    }
 
-    if needs_before_close && !running_plugin.lock().unwrap().is_disposed() {
-        let mut rp = running_plugin.lock().unwrap();
+    if needs_before_close && !rp.is_disposed() {
         // Holding the lock means the guest is not running. If the token was set but
         // never tripped, the guest was idle and `BeforeClose` gets a normal call. If
         // it tripped, the guest was stopped mid-call, and is not called again: see
@@ -435,7 +447,8 @@ fn close_plugin_instance(
         }
     }
 
-    running_plugin.lock().unwrap().dispose();
+    rp.dispose();
+    drop(rp);
     let _ = senders.send_to_screen(ScreenInstruction::SubscribePaneOutput(
         plugin_id, client_id, None, None,
     ));
