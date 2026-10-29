@@ -166,14 +166,26 @@ impl CommandPaletteState {
         if self.agents.owns_view(self.widget.view) {
             return;
         }
+        self.widget.columns.clear();
+        self.widget.table_cells.clear();
         if let Some(nested) = self.plugins.views.get(&self.widget.view) {
             if let View::Actions {
                 title,
                 actions,
                 source,
+                columns,
                 ..
             } = &nested.display
             {
+                self.widget.columns = columns.clone();
+                self.widget.table_cells = actions
+                    .iter()
+                    .filter_map(|a| {
+                        a.cells
+                            .as_ref()
+                            .map(|cells| (entry_id(&nested.provider, &a.id), cells.clone()))
+                    })
+                    .collect();
                 self.widget.set_sections(vec![PluginSection {
                     title: title.clone(),
                     entries: entries(&nested.provider, actions),
@@ -948,6 +960,26 @@ impl Screen {
         {
             state.release(&self.bus.senders, client, &pending.provider, reply);
             result = Err(error);
+        }
+        if let Ok(reply) = &result
+            && let Reply::Actions { actions } = reply
+        {
+            let columns = state
+                .plugins
+                .views
+                .get(&scope.view)
+                .and_then(|nested| {
+                    if let View::Actions { columns, .. } = &nested.display {
+                        Some(columns.as_slice())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(&[]);
+            if let Err(error) = wire::validate_table(columns, actions) {
+                state.release(&self.bus.senders, client, &pending.provider, reply);
+                result = Err(error);
+            }
         }
         state.widget.busy = false;
         state.widget.pending = state.plugins.pending.iter().any(|p| !p.execution);

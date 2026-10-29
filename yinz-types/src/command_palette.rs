@@ -35,6 +35,47 @@ pub struct Action {
     #[serde(default)]
     pub aliases: Vec<String>,
     pub handle: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cells: Option<Vec<String>>,
+}
+
+/// Ordered table column. Width is a preferred terminal-cell width; omission fills
+/// remaining space. At most one column may omit width.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Column {
+    pub header: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<usize>,
+    #[serde(default = "one")]
+    pub max_lines: usize,
+}
+
+fn one() -> usize {
+    1
+}
+
+/// Also used for source refreshes, whose replies carry actions alone.
+pub fn validate_table(columns: &[Column], actions: &[Action]) -> Result<(), String> {
+    if columns.len() > 16 || columns.iter().filter(|c| c.width.is_none()).count() > 1 {
+        return Err("Palette tables allow up to 16 columns and one flexible column".into());
+    }
+    for column in columns {
+        label(&column.header)?;
+        if !(1..=3).contains(&column.max_lines)
+            || column.width.is_some_and(|w| !(1..=512).contains(&w))
+        {
+            return Err("Palette column widths must be 1..512 and maxLines 1..3".into());
+        }
+    }
+    for action in actions {
+        if let Some(cells) = &action.cells
+            && (columns.is_empty() || cells.len() != columns.len())
+        {
+            return Err("Palette cells must match the view columns".into());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -101,6 +142,8 @@ pub enum View {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         description: String,
         actions: Vec<Action>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        columns: Vec<Column>,
         source: Option<String>,
         #[serde(default, rename = "initialQuery")]
         initial_query: String,
@@ -225,6 +268,14 @@ pub fn validate_actions(actions: &[Action]) -> Result<(), String> {
         label(&action.label)?;
         label(&action.handle)?;
         plain_text(&action.description)?;
+        if let Some(cells) = &action.cells {
+            if cells.is_empty() || cells.len() > 16 {
+                return Err("Palette actions allow 1..16 cells".into());
+            }
+            for cell in cells {
+                plain_text(cell)?;
+            }
+        }
         for alias in &action.aliases {
             label(alias)?;
         }
@@ -264,7 +315,9 @@ impl Reply {
                     actions,
                     source,
                     initial_query,
+                    columns,
                 } => {
+                    validate_table(columns, actions)?;
                     plain_text(description)?;
                     plain_text(initial_query)?;
                     label(title)?;
@@ -291,6 +344,7 @@ impl Reply {
                     label(submit_label)?;
                     label(handle)?;
                     validate_actions(actions)?;
+                    validate_table(&[], actions)?;
                     if fields.len() > 16 {
                         return Err("Palette forms are limited to 16 fields".into());
                     }

@@ -23,9 +23,10 @@
 
 (define (%palette-wire-actions actions scope client)
   (map (lambda (item)
-         (hash "id" (hash-ref item "id") "label" (hash-ref item "label")
+         (define wired (hash "id" (hash-ref item "id") "label" (hash-ref item "label")
                "description" (%palette-get item "description" "") "aliases" (%palette-get item "aliases" '())
                "handle" (%palette-remember (hash-ref item "run") scope client)))
+         (if (hash-contains? item "cells") (hash-insert wired "cells" (hash-ref item "cells")) wired))
        actions))
 
 (define (%palette-wire-field field)
@@ -79,6 +80,8 @@
            "handle" (%palette-remember (hash-ref view "onSubmit") scope client)
            "actions" (%palette-wire-actions (append (%palette-get view "actions" '()) browse-actions) scope client)
            "confirmation" (%palette-get view "confirmation" #f)))))
+  (when (and (equal? kind "actions") (hash-contains? view "columns"))
+    (set! wired (hash-insert wired "columns" (hash-ref view "columns"))))
   (define description (%palette-get view "description" ""))
   (if (equal? description "") wired (hash-insert wired "description" description)))
 

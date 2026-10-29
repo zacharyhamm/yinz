@@ -188,6 +188,8 @@ pub struct CommandPalette {
     pub agent_presentations: std::collections::BTreeMap<String, AgentPresentation>,
     pub metadata: Option<String>,
     pub description: String,
+    pub columns: Vec<yinz_types::command_palette::Column>,
+    pub table_cells: std::collections::BTreeMap<String, Vec<String>>,
     description_offset: Cell<usize>,
     description_rows: Cell<usize>,
     description_total: Cell<usize>,
@@ -1382,6 +1384,7 @@ impl CommandPalette {
             };
             if (section, label) != previous
                 && capacity >= 2
+                && self.columns.is_empty()
                 && let Some(label) = label
             {
                 rows.push(ResultRow::Heading(label.into()));
@@ -1420,7 +1423,7 @@ impl CommandPalette {
                 if entries.is_empty() && section.status.is_none() {
                     continue;
                 }
-                if capacity >= 2 {
+                if capacity >= 2 && self.columns.is_empty() {
                     rows.push(ResultRow::Heading(section.title.clone()));
                 }
                 rows.extend(entries);
@@ -1432,9 +1435,102 @@ impl CommandPalette {
         rows
     }
 
+    /// Allocate in terminal cells. Collapse gaps first, then shrink preferred
+    /// metadata widths so a flexible subject retains a useful share of the row.
+    fn table_widths(&self, width: usize) -> (Vec<usize>, usize) {
+        let count = self.columns.len();
+        if count == 0 {
+            return (vec![], 0);
+        }
+        let gap = usize::from(width >= count * 2 - 1);
+        let available = width.saturating_sub(gap * (count - 1));
+        if available == 0 {
+            return (vec![0; count], gap);
+        }
+        let mut widths: Vec<_> = self.columns.iter().map(|c| c.width.unwrap_or(1)).collect();
+        let flexible = self.columns.iter().position(|c| c.width.is_none());
+        if let Some(index) = flexible {
+            widths[index] = (available / 3).max(1);
+        }
+        while widths.iter().sum::<usize>() > available {
+            let Some(index) = widths
+                .iter()
+                .enumerate()
+                .filter(|(i, w)| **w > usize::from(*i == flexible.unwrap_or(usize::MAX)))
+                .max_by_key(|(_, w)| **w)
+                .map(|(i, _)| i)
+            else {
+                break;
+            };
+            widths[index] -= 1;
+        }
+        if let Some(index) = flexible {
+            widths[index] += available.saturating_sub(widths.iter().sum());
+        }
+        (widths, gap)
+    }
+
+    fn table_lines(&self, cells: &[String], width: usize, max_lines: usize) -> Vec<MdLine> {
+        use unicode_width::UnicodeWidthStr;
+        let (widths, gap) = self.table_widths(width);
+        let columns: Vec<Vec<String>> = self
+            .columns
+            .iter()
+            .zip(&widths)
+            .enumerate()
+            .map(|(i, (column, width))| {
+                let width = *width;
+                if width == 0 {
+                    return vec![String::new()];
+                }
+                // Cells are plain text, never Markdown. Normalize permitted whitespace.
+                let text = cells
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_default()
+                    .replace(['\n', '\t'], " ");
+                let limit = column.max_lines.min(max_lines).max(1);
+                let mut lines = if limit == 1 {
+                    vec![MdLine::plain(&text)]
+                } else {
+                    wrap_inline(&MdLine::plain(&text), width)
+                };
+                let truncated = lines.len() > limit || lines.iter().any(|l| l.text.width() > width);
+                lines.truncate(limit);
+                if truncated && let Some(last) = lines.last_mut() {
+                    last.text = format!("{}…", take_columns(&last.text, width.saturating_sub(1)));
+                }
+                lines
+                    .into_iter()
+                    .map(|line| take_columns(&line.text, width))
+                    .collect()
+            })
+            .collect();
+        let height = columns.iter().map(Vec::len).max().unwrap_or(1);
+        (0..height)
+            .map(|line| {
+                let mut text = String::new();
+                for (i, (column, width)) in columns.iter().zip(&widths).enumerate() {
+                    if i > 0 {
+                        text.push_str(&" ".repeat(gap));
+                    }
+                    let cell = column.get(line).map(String::as_str).unwrap_or_default();
+                    text.push_str(cell);
+                    text.push_str(&" ".repeat(width.saturating_sub(cell.width())));
+                }
+                MdLine::plain(text)
+            })
+            .collect()
+    }
+
     fn entry_lines(&self, index: usize, width: usize, max_lines: usize) -> Vec<MdLine> {
         use unicode_width::UnicodeWidthStr;
         let entry = &self.entries[self.matches[index]];
+        if !self.columns.is_empty()
+            && let Some(cells) = self.table_cells.get(&entry.id)
+        {
+            return self.table_lines(cells, width.saturating_sub(2), max_lines);
+        }
         let shortcut = take_columns(&entry.shortcut, width.saturating_sub(3));
         let width = width.saturating_sub(shortcut.width() + usize::from(!shortcut.is_empty()));
         let width = width - width.saturating_sub(1).min(2);
@@ -1474,7 +1570,10 @@ impl CommandPalette {
 
     fn entry_line_limit(&self, index: usize, capacity: usize) -> usize {
         let heading = usize::from(self.entry_heading(index).is_some());
-        let limit = if self.agent_presentation(index).is_some() {
+        let entry = &self.entries[self.matches[index]];
+        let limit = if self.table_cells.contains_key(&entry.id) && !self.columns.is_empty() {
+            self.columns.iter().map(|c| c.max_lines).max().unwrap_or(1)
+        } else if self.agent_presentation(index).is_some() {
             5
         } else {
             2
@@ -1483,6 +1582,9 @@ impl CommandPalette {
     }
 
     fn entry_heading(&self, index: usize) -> Option<String> {
+        if !self.columns.is_empty() {
+            return None;
+        }
         let entry = &self.entries[self.matches[index]];
         if entry.kind == EntryKind::Plugin {
             self.entry_sections[self.matches[index]].map(|i| self.sections[i].title.clone())
@@ -1516,7 +1618,11 @@ impl CommandPalette {
     }
 
     fn page_selection(&mut self, down: bool) {
-        let capacity = self.page_rows.get().max(1);
+        let capacity = self
+            .page_rows
+            .get()
+            .saturating_sub(usize::from(!self.columns.is_empty()))
+            .max(1);
         let mut rows = self.wrapped_result_rows(capacity, self.result_width.get());
         if self.metadata.is_some() {
             rows.retain(|row| {
@@ -1559,6 +1665,25 @@ impl CommandPalette {
     }
 
     fn visible_result_rows(&self, capacity: usize, width: usize) -> Vec<ResultRow> {
+        if self.columns.is_empty() || capacity < 2 {
+            return self.visible_result_body(capacity, width);
+        }
+        let headers = self
+            .columns
+            .iter()
+            .map(|c| c.header.clone())
+            .collect::<Vec<_>>();
+        let header = self
+            .table_lines(&headers, width.saturating_sub(2), 1)
+            .first()
+            .map(|l| format!("  {}", l.text))
+            .unwrap_or_default();
+        let mut rows = vec![ResultRow::Heading(header)];
+        rows.extend(self.visible_result_body(capacity - 1, width));
+        rows
+    }
+
+    fn visible_result_body(&self, capacity: usize, width: usize) -> Vec<ResultRow> {
         let rows = self.wrapped_result_rows(capacity, width);
         if rows.is_empty() {
             return rows;
@@ -1569,6 +1694,9 @@ impl CommandPalette {
             .unwrap_or(0);
         let mut start = (selected + 1).saturating_sub(capacity);
         let sticky_heading = |start: usize| {
+            if !self.columns.is_empty() {
+                return None;
+            }
             if let Some(ResultRow::Status(section, _)) = rows.get(start) {
                 return Some(self.sections[*section].title.clone());
             }
@@ -1645,7 +1773,8 @@ impl CommandPalette {
         surface: Viewport,
         arrow_fonts: bool,
     ) -> CommandPaletteLayout {
-        let expanded = self.metadata.is_some()
+        let expanded = !self.columns.is_empty()
+            || self.metadata.is_some()
             || !self.description.is_empty()
             || self.text.is_some()
             || self.agent.is_some();
@@ -1703,8 +1832,12 @@ impl CommandPalette {
             // Measure at the cap so shrinking does not hide wrapped lines or detail text.
             let (description_rows, metadata_rows, capacity) = content_heights(max_rows);
             let required = self
-                .wrapped_result_rows(capacity, cols.saturating_sub(2 * border))
+                .wrapped_result_rows(
+                    capacity.saturating_sub(usize::from(!self.columns.is_empty())),
+                    cols.saturating_sub(2 * border),
+                )
                 .len()
+                .saturating_add(usize::from(!self.columns.is_empty()))
                 .max(1);
             let metadata_rows = metadata_rows.min(metadata_lines.len());
             (max_rows.min(6)..=max_rows)
@@ -2074,7 +2207,7 @@ impl CommandPalette {
                             ResultRow::Heading(label) | ResultRow::Status(_, label),
                         ) = row
                         {
-                            markdown = inline(label);
+                            markdown = if !self.columns.is_empty() && matches!(row, Some(ResultRow::Heading(_))) { MdLine::plain(label) } else { inline(label) };
                             markdown.text.clone()
                         } else if let Some(ResultRow::Divider) = row {
                             "─".repeat(width)

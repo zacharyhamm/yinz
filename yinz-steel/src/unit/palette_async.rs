@@ -251,3 +251,42 @@ fn source_cleanup_retains_the_acting_client_and_runs_once() {
     send(&mut h, 2, json!({"type":"dismiss","opening":1}));
     assert_eq!(h.value("cleaned"), json!([2]));
 }
+
+#[test]
+fn table_sdk_round_trip_preserves_cells_columns_and_callbacks() {
+    let mut h = Harness::new("");
+    h.eval(
+        r#"
+      (define wired (%palette-wire-view
+        (hash "type" "actions" "title" "Records"
+          "columns" (list (hash "header" "Number" "width" 8)
+                          (hash "header" "Subject" "maxLines" 3))
+          "actions" (list
+            (hash "id" "42" "label" "Record 雪" "aliases" '("Zoë")
+              "cells" '("42" "Unicode 雪 🦀 subject")
+              "run" (lambda (values context) "original callback"))
+            (hash "id" "jump" "label" "Jump" "run" (lambda (values context) json-null))))
+        (hash "registration" "1" "opening" 1 "view" 1 "revision" 1) 7))
+    "#,
+    );
+    let wired = h.value("wired");
+    assert_eq!(
+        wired["columns"],
+        json!([{"header":"Number","width":8},{"header":"Subject","maxLines":3}])
+    );
+    assert_eq!(
+        wired["actions"][0]["cells"],
+        json!(["42", "Unicode 雪 🦀 subject"])
+    );
+    assert!(wired["actions"][1].get("cells").is_none());
+    let view: yinz_types::command_palette::View = serde_json::from_value(wired).unwrap();
+    assert!(yinz_types::command_palette::Reply::View { view }
+        .validate()
+        .is_ok());
+    h.eval(r#"(define callback-result ((hash-ref (hash-ref %palette-handles (hash-ref (car (hash-ref wired "actions")) "handle")) "callback") (hash) (hash)))"#);
+    assert_eq!(h.value("callback-result"), json!("original callback"));
+    h.eval(
+        r#"(define legacy (%palette-wire-view (hash "type" "actions" "title" "Legacy") (hash) 7))"#,
+    );
+    assert!(h.value("legacy").get("columns").is_none());
+}
