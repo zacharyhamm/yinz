@@ -438,9 +438,9 @@ fn recovery_status_uses_current_terminal_geometry_and_permanent_failures_do_not_
     });
     recovery.paint_status(&resized, "renamed", now).unwrap();
     let output = String::from_utf8(os.stdout_bytes()).unwrap();
-    assert!(output.contains("\x1b[24;1H"));
-    assert!(output.contains("\x1b[40;1H"));
-    assert!(output.contains("\x1b7\x1b[24;1H\x1b[0m\x1b[2K\x1b[40;1H"));
+    assert!(output.contains("\x1b[9;1H┌"));
+    assert!(output.contains("\x1b[17;21H┌"));
+    assert!(output.contains("📡 Reconnecting"));
     assert!(output.contains("host / renamed"));
     assert!(output.contains("Ctrl-C to cancel"));
     let narrow = crate::test_support::FakeClientOsApi::new()
@@ -458,7 +458,7 @@ fn recovery_status_uses_current_terminal_geometry_and_permanent_failures_do_not_
 }
 
 #[test]
-fn recovery_status_clears_each_previous_visible_row_without_clamping_old_rows() {
+fn recovery_status_clears_old_dialog_on_resize_and_blinks_without_other_changes() {
     let os = crate::test_support::FakeClientOsApi::new().capturing_stdout();
     let mut recovery = Recovery::new("host".into(), CommandIsExecuting::new());
     recovery.control.lost(0, "outage".into());
@@ -470,12 +470,66 @@ fn recovery_status_clears_each_previous_visible_row_without_clamping_old_rows() 
         let output = String::from_utf8(os.stdout_bytes()[previous_len..].to_vec()).unwrap();
         assert!(output.starts_with("\x1b7"));
         assert!(output.ends_with("\x1b8"));
-        match rows {
-            40 => assert!(output.contains("\x1b[24;1H\x1b[0m\x1b[2K")),
-            50 => assert!(output.contains("\x1b[40;1H\x1b[0m\x1b[2K")),
-            12 => assert!(!output.contains("\x1b[50;1H")),
-            30 => assert!(output.contains("\x1b[12;1H\x1b[0m\x1b[2K")),
-            _ => {},
+        assert!(output.contains(crate::terminal_escapes::CLEAR_SCREEN));
+        assert!(output.contains(&format!("\x1b[{};11H┌", (rows - 8) / 2 + 1)));
+    }
+    let resized = os.clone().with_terminal_size(Size {
+        rows: 30,
+        cols: 100,
+    });
+    let previous_len = os.stdout_bytes().len();
+    recovery
+        .paint_status(&resized, "work", now + Duration::from_millis(100))
+        .unwrap();
+    assert_eq!(os.stdout_bytes().len(), previous_len);
+    recovery
+        .paint_status(&resized, "work", now + Duration::from_millis(500))
+        .unwrap();
+    let output = String::from_utf8(os.stdout_bytes()[previous_len..].to_vec()).unwrap();
+    assert!(!output.contains("📡"));
+    assert!(output.contains("Reconnecting"));
+    assert!(!output.contains(crate::terminal_escapes::CLEAR_SCREEN));
+    let previous_len = os.stdout_bytes().len();
+    recovery
+        .paint_status(&resized, "work", now + Duration::from_secs(1))
+        .unwrap();
+    let output = String::from_utf8(os.stdout_bytes()[previous_len..].to_vec()).unwrap();
+    assert!(output.contains("📡"));
+}
+
+#[test]
+fn recovery_status_fits_small_terminals_and_wide_host_names() {
+    let positions = regex::Regex::new(r"\x1b\[(\d+);(\d+)H").unwrap();
+    for size in [
+        Size {
+            rows: 24,
+            cols: 120,
+        },
+        Size { rows: 12, cols: 40 },
+        Size { rows: 6, cols: 20 },
+        Size { rows: 3, cols: 8 },
+        Size { rows: 1, cols: 1 },
+    ] {
+        let os = crate::test_support::FakeClientOsApi::new()
+            .capturing_stdout()
+            .with_terminal_size(size);
+        let mut recovery = Recovery::new("遠隔".repeat(80), CommandIsExecuting::new());
+        recovery.control.lost(0, "outage".into());
+        recovery.paint_status(&os, "work", Instant::now()).unwrap();
+        let (_, message) = recovery.status.as_ref().unwrap();
+        let rows: Vec<_> = positions.captures_iter(message).collect();
+        for (index, position) in rows.iter().enumerate() {
+            let row: usize = position[1].parse().unwrap();
+            let col: usize = position[2].parse().unwrap();
+            let start = position.get(0).unwrap().end();
+            let end = rows
+                .get(index + 1)
+                .map(|next| next.get(0).unwrap().start())
+                .unwrap_or(message.len());
+            let width = unicode_width::UnicodeWidthStr::width(&message[start..end]);
+            assert!(row <= size.rows);
+            assert_eq!(width, size.cols.min(80));
+            assert!(col + width - 1 <= size.cols);
         }
     }
 }
