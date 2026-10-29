@@ -3,5 +3,6 @@ source: yinz-integration-tests/tests/app.rs
 expression: normalized(&grid_snapshot)
 ---
  Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 
+                                                     👇 [0] Pane #1
 $ █
  Yinz (test)  [0] Tab #1  + 

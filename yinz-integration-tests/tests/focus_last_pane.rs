@@ -154,7 +154,7 @@ fn focus_last_floating_pane_returns_to_earlier_pane_after_closing_focused_pane()
     let first_floating_cursor = yinz
         .wait_until("first floating pane focused with its prompt", |grid| {
             grid.contains("Pane #2")
-                && !grid.cursor_is_at(col(2).row(1))
+                && !grid.cursor_is_at(col(2).row(2))
                 && prompt_cursor_settled(grid)
         })
         .cursor

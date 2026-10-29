@@ -887,18 +887,11 @@ impl TiledPanes {
         }
         self.reset_boundaries();
     }
-    /// What `apply_frame` needs to know about the tab as a whole, gathered once: the
-    /// stacks' rectangles and the count of selectable panes are answers about the whole
-    /// map, and asking per pane would be quadratic.
+    /// What `apply_frame` needs to know about the tab as a whole, gathered once:
+    /// asking for the stacks' rectangles per pane would be quadratic.
     fn frame_context(&mut self) -> FrameContext {
         let draws_full_frames = self.pane_frame_style.draws_full_frames();
         let draws_titles = self.pane_frame_style.draws_titles();
-        let single_selectable_tiled_pane = self
-            .panes
-            .values()
-            .filter(|p| p.selectable() && !p.borderless())
-            .count()
-            == 1;
         let no_ui_fullscreen_pane_id = if *self.fullscreen_covers_ui.borrow() {
             self.fullscreen_is_active
         } else {
@@ -916,7 +909,6 @@ impl TiledPanes {
         FrameContext {
             draws_full_frames,
             draws_titles,
-            single_selectable_tiled_pane,
             viewport: *self.viewport.borrow(),
             no_ui_fullscreen_pane_id,
             position_and_sizes_of_stacks,
@@ -1389,12 +1381,6 @@ impl TiledPanes {
                 .with_context(err_context)?
         };
         let selectable_pane_count = self.panes.iter().filter(|(_, p)| p.selectable()).count();
-        let content_pane_count = self
-            .panes
-            .iter()
-            .filter(|(_, p)| p.selectable() && !p.borderless())
-            .count();
-        let omit_pane_title = self.pane_frame_style.draws_titles() && content_pane_count == 1;
         for (kind, pane) in self.panes.iter_mut() {
             match kind {
                 PaneId::Terminal(_) => {
@@ -1451,7 +1437,6 @@ impl TiledPanes {
                     None
                 };
                 let pane_has_guest_modal = pane.has_guest_modal_for_any_client();
-                let omit_pane_title = omit_pane_title && pane.subtitle().is_none();
                 let pane_has_subtitle = pane.subtitle_rows() > 0;
                 let mut pane_contents_and_ui = PaneContentsAndUi::new(
                     pane,
@@ -1466,7 +1451,7 @@ impl TiledPanes {
                     mouse_hover_pane_id,
                     current_pane_group.clone(),
                     show_help_text,
-                    omit_pane_title && reserved_rows_for_pane == 0,
+                    false,
                     mouse_scroll_resize,
                     self.dimmed_clients.clone(),
                 );
@@ -3327,7 +3312,6 @@ impl TiledPanes {
 struct FrameContext {
     draws_full_frames: bool,
     draws_titles: bool,
-    single_selectable_tiled_pane: bool,
     /// Both the viewport a pane is measured against and the boundary its content offset
     /// is computed from: `set_pane_frames` read the same field twice under two names.
     viewport: Viewport,
@@ -3398,9 +3382,7 @@ fn apply_frame(ctx: &FrameContext, pane: &mut Box<dyn Pane>) {
         let (pane_columns_offset, pane_rows_offset) =
             pane_content_offset(&position_and_size, &ctx.viewport);
         let reserve_title_row = if ctx.draws_titles {
-            !pane_is_borderless
-                && (!ctx.single_selectable_tiled_pane || pane.subtitle().is_some())
-                && !is_one_liner_in_stack
+            !pane_is_borderless && !is_one_liner_in_stack
         } else {
             is_stacked && is_flexible
         };

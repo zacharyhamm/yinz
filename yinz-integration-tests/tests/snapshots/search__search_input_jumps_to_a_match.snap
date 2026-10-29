@@ -2,7 +2,8 @@
 source: yinz-integration-tests/tests/search.rs
 expression: normalized(&grid_snapshot)
 ---
- Yinz (test)  [0] Tab #1  +                                                                      [ SCROLL 15/19 ]
+ Yinz (test)  [0] Tab #1  +                                                                      [ SCROLL 16/20 ]
+                                                  👇 SEARCHING: NEEDLE                                [ SCROLL: 16/20 ]
 line05 NEEDLE
 line06
 line07
@@ -23,6 +24,5 @@ line21
 line22
 line23
 line24
-line25
-█ine26
+█ine25
  ENTERING SEARCH TERM   ENTER  When done 

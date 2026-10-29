@@ -3,8 +3,8 @@ source: yinz-tab/src/tab/./unit/tab_integration_tests/layout.rs
 expression: snapshot
 ---
 00 (C): I am the left bar                                      I am the right bar                                                
-01 (C): I am the main pane                                                                                                       
-02 (C):                                                                                                                          
+01 (C):                                                      👇 [1] Pane #2                                                      
+02 (C): I am the main pane                                                                                                       
 03 (C):                                                                                                                          
 04 (C):                                                                                                                          
 05 (C):                                                                                                                          

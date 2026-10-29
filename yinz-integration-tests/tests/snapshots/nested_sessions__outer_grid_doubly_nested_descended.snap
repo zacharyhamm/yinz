@@ -3,8 +3,11 @@ source: yinz-integration-tests/tests/nested_sessions.rs
 expression: normalized(&outer_doubly_nested)
 ---
  Yinz (test)  [0] Yinz:test-2 | Yinz:test-2  + 
+                                            👇 [0] Yinz:test-2 | Yinz:test-2
  Yinz (test)  [0] Yinz:test-2  + 
+                                                   👇 [0] Yinz:test-2
  Yinz (test)  [0] Tab #1  + 
+                                                     👇 [0] Pane #1
 █
  Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 
  Ascend: Ctrl + <o> + <]>

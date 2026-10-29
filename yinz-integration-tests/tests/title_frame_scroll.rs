@@ -37,7 +37,10 @@ fn single_pane_scroll_shows_on_the_tab_line() {
         |grid_snapshot| tab_line_shows_scroll(grid_snapshot) && !grid_snapshot.contains(LAST_LINE),
     );
     assert!(
-        !grid_snapshot.contains("SCROLL:"),
+        !grid_snapshot
+            .project_bar_line()
+            .unwrap()
+            .contains("SCROLL:"),
         "the single-pane tab-line indicator uses the colon-free format:\n{}",
         grid_snapshot.text
     );

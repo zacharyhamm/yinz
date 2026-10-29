@@ -333,7 +333,8 @@ fn a_stack_list_dissolves_into_a_normal_pane_at_one_member() {
         grid_snapshot.status_bar_appears()
             && grid_snapshot.contains(&format!("[{}] Tab #1", first_member.terminal_id()))
             && !grid_snapshot.contains("Pane #2")
-            && !grid_snapshot.contains("Pane #1")
+            && grid_snapshot.contains("Pane #1")
+            && !has_selected_entry(grid_snapshot, "Pane #1")
             && grid_snapshot.contains("first-member")
     });
     assert_snapshot!(normalized(&grid_snapshot));

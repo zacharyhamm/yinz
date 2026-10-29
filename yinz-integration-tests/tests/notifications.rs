@@ -694,7 +694,7 @@ fn a_notification_does_not_steal_the_cursor() {
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
         .with_config("notification_position \"top-right\"\nnotification_timeout 30")
         .start();
-    // asserts the prompt's cursor is at col(2).row(1) to begin with
+    // asserts the prompt's cursor is at col(2).row(2) to begin with
     claim_first_terminal_and_wait_for_prompt(&yinz);
 
     notify(&yinz, "build finished");
@@ -706,7 +706,7 @@ fn a_notification_does_not_steal_the_cursor() {
         |snapshot| {
             a_toast_is_fully_revealed(snapshot)
                 && snapshot.contains("build finished")
-                && snapshot.cursor_is_at(col(2).row(1))
+                && snapshot.cursor_is_at(col(2).row(2))
         },
     );
 

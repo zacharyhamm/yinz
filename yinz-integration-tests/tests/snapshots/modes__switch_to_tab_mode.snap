@@ -3,5 +3,6 @@ source: yinz-integration-tests/tests/modes.rs
 expression: normalized(&grid_snapshot)
 ---
  Yinz (test)  [0] Tab #1  + 
+                                                     👇 [0] Pane #1
 $ █
  Ctrl + <t> TAB   n  New  g  Group  ←→  Move  x  Close  r  Rename  s  Sync  b  Break out  ...

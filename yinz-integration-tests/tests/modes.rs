@@ -178,7 +178,7 @@ fn return_to_normal_mode() {
     yinz.send_stdin(&keys::ENTER);
 
     let grid_snapshot = yinz.wait_until("returned to normal mode", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(1))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(2))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();

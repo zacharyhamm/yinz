@@ -5,8 +5,8 @@ expression: normalized(&host_ascended)
  Yinz (test)  Tab #1  + 
                      👇 [0] Yinz:test-1                    │                         [1] Pane #2
  Yinz (test)  [0] Tab #1  +        Alt <[]>  BASE  │$
+                      👇 [0] Pane #1                       │
 █                                                          │
-                                                           │
                                                            │
                                                            │
                                                            │

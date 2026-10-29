@@ -37,7 +37,7 @@ pub fn claim_first_terminal_and_wait_for_prompt(yinz: &TestSession) -> FakePtyHa
         |grid_snapshot| {
             grid_snapshot.tab_bar_appears()
                 && grid_snapshot.status_bar_appears()
-                && grid_snapshot.cursor_is_at(col(2).row(1))
+                && grid_snapshot.cursor_is_at(col(2).row(2))
         },
     );
     terminal
