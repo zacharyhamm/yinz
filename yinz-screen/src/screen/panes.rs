@@ -24,9 +24,9 @@ use yinz_types::geometry::Direction;
 use yinz_types::input::layout::Run;
 
 impl Screen {
-    /// Focuses a pane by id for a client, answering the completion with an error when the pane
-    /// does not exist or is already focused. Deferred while a tab's layout has not landed, for
-    /// the reason `GoToTab` is.
+    /// Focuses a pane by id for a client. An already focused pane is a successful no-op;
+    /// a missing pane answers the completion with an error. Deferred while a tab's layout
+    /// has not landed, for the reason `GoToTab` is.
     pub(super) fn focus_pane_by_request(
         &mut self,
         pane_id: PaneId,
@@ -71,12 +71,7 @@ impl Screen {
                 .get_active_pane_id(&client_id)
                 .map(|active| active == pane_id)
                 .unwrap_or(false);
-            if already_focused {
-                if let Some(c) = completion_tx.as_mut() {
-                    c.set_exit_status(1);
-                    c.set_error_message(format!("Pane {:?} is already focused", pane_id));
-                }
-            } else {
+            if !already_focused {
                 self.focus_pane_with_id(
                     pane_id,
                     should_float_if_hidden,
