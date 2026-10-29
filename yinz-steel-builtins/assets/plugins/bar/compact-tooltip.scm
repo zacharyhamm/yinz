@@ -42,9 +42,9 @@
     ((equal? mode "Session") (append (named '("Detach" "CommandPalette")) (map launches '("session-manager" "plugin-manager" "configuration"))))
     ((equal? mode "Notifications") (append (map (lambda (direction) (matches (bar-direction "MoveNotificationSelection" direction))) '("Down" "Up"))
         (named '("ActivateNotification" "ToggleNotificationDetail"))))
-    ((equal? mode "Agent") (map launches '("new-agent" "agents")))
+    ((equal? mode "Agent") (append (map launches '("new-agent")) (named '("OpenAgents"))))
     (else '())))
-(define descriptions (hash "MoveFocus" "Move focus" "MovePaneWithDirection" "Move pane" "MovePaneWithoutDirection" "Move pane"
+(define descriptions (hash "OpenAgents" "Agents" "MoveFocus" "Move focus" "MovePaneWithDirection" "Move pane" "MovePaneWithoutDirection" "Move pane"
     "ResizeIncrease" "Increase size in direction" "ResizeDecrease" "Decrease size in direction" "ResizeAny" "Increase or decrease size"
     "Search" "Search" "NewPaneWithDirection" "Split right/down" "NewPaneWithoutDirection" "New pane"
     "MovePaneToTabGroup" "Move pane to adjacent group" "BreakPaneLeftOrRight" "Break pane to adjacent tab" "GoToAdjacentTab" "Move tab focus" "Scroll" "Scroll"
@@ -101,7 +101,9 @@
   (define (entry-action entry)
     (define base (hash-ref mi "base_mode"))
     (if (bar-equal? (cadr entry) (list (bar-switch-mode (if (json-null? base) "Normal" base)) "ToggleCommandPalette"))
-      "CommandPalette" (car (cadr entry))))
+      "CommandPalette"
+      (if (bar-equal? (cadr entry) (list (bar-switch-mode (if (json-null? base) "Normal" base)) "OpenAgents"))
+        "OpenAgents" (car (cadr entry)))))
   (define processed '())
   (define result '())
   (for-each (lambda (predicate)

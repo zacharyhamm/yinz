@@ -30,16 +30,6 @@ pub const AGENT_SNAPSHOT: &str = "agent_snapshot";
 /// already probed changes the branch and nothing says so. Whoever shows a branch
 /// asks for this; the answer arrives as an ordinary snapshot.
 pub const AGENT_REFRESH: &str = "agent_refresh";
-/// Move the project panel clockwise, from any of its views.
-pub const AGENT_STRIP_REPOSITION: &str = "agent_strip_reposition";
-/// Focus the project panel's tab bar.
-pub const AGENT_STRIP_YIELD: &str = "agent_strip_yield";
-/// Select the receiving view's focus stop.
-pub const AGENT_STRIP_TAKE: &str = "agent_strip_take";
-pub const PANEL_STOP: &str = "stop";
-pub const STOP_LIST: &str = "list";
-pub const STOP_HISTORY: &str = "history";
-pub const STOP_TABS: &str = "tabs";
 /// agents → agentd: "describe this agent now".
 ///
 /// The one summary somebody asks for. The daemon buys exactly one of its own accord, when a

@@ -64,21 +64,10 @@
     "\"
         }
         bind \"a\" {
-            LaunchOrFocusPlugin \"agents\" {
-                floating true
-                overlay true
-                awaits_placement true
-                move_to_focused_tab true
-            };
             SwitchToMode \""
     exit-mode
-    "\"
-        }
-        bind \"o\" {
-            MessagePlugin { name \"agent_strip_reposition\"; };
-            SwitchToMode \""
-    exit-mode
-    "\"
+    "\";
+            OpenAgents
         }
     }
 "))

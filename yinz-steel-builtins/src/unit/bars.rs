@@ -121,18 +121,18 @@ fn shared_bar_defaults_key_normalization_and_selection_match_wire_types() {
     );
     let binding = json!({"bare_key":{"Char":"a"},"key_modifiers":["Alt"]});
     let map = json!([
-        [binding,[{"LaunchPlugin":{"plugin":{"Alias":{"name":"agents"}}}}]],
-        [binding,[{"KeybindPipe":{"name":"agent_strip_reposition"}}]]
+        [binding,[{"LaunchPlugin":{"plugin":{"Alias":{"name":"configuration"}}}}]],
+        [binding,[{"KeybindPipe":{"name":"fixture_message"}}]]
     ]);
     assert_eq!(
         runtime
-            .invoke("bar-plugin-keys", vec![map.clone(), json!("agents")])
+            .invoke("bar-plugin-keys", vec![map.clone(), json!("configuration")])
             .unwrap(),
         json!([binding])
     );
     assert_eq!(
         runtime
-            .invoke("bar-pipe-keys", vec![map, json!("agent_strip_reposition")])
+            .invoke("bar-pipe-keys", vec![map, json!("fixture_message")])
             .unwrap(),
         json!([binding])
     );

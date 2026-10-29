@@ -1729,6 +1729,7 @@ impl TryFrom<yinz_types::input::actions::Action>
             NextSwapLayoutByTabIdAction,
             NoOpAction,
             NotifyAction,
+            OpenAgentsAction,
             OverrideLayoutAction,
             PageScrollDownAction,
             PageScrollDownByPaneIdAction,
@@ -2050,6 +2051,9 @@ impl TryFrom<yinz_types::input::actions::Action>
             },
             yinz_types::input::actions::Action::ToggleCommandPalette => {
                 ActionType::ToggleCommandPalette(ToggleCommandPaletteAction {})
+            },
+            yinz_types::input::actions::Action::OpenAgents => {
+                ActionType::OpenAgents(OpenAgentsAction {})
             },
             yinz_types::input::actions::Action::TogglePaneFrames => {
                 ActionType::TogglePaneFrames(TogglePaneFramesAction {})
@@ -3193,6 +3197,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             ActionType::ToggleCommandPalette(_) => {
                 Ok(yinz_types::input::actions::Action::ToggleCommandPalette)
             },
+            ActionType::OpenAgents(_) => Ok(yinz_types::input::actions::Action::OpenAgents),
             ActionType::TogglePaneFrames(_) => {
                 Ok(yinz_types::input::actions::Action::TogglePaneFrames)
             },

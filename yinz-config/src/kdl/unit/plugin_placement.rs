@@ -139,7 +139,7 @@ fn awaits_placement_reaches_the_configuration_beside_overlay() {
             keybinds {{
                 normal {{
                     bind "Ctrl o" {{
-                        LaunchOrFocusPlugin "agents" {{
+                        LaunchOrFocusPlugin "configuration" {{
                             {block}
                         }}
                     }}
@@ -194,7 +194,7 @@ fn awaits_placement_reaches_the_configuration_beside_overlay() {
         keybinds {
             normal {
                 bind "Ctrl o" {
-                    LaunchOrFocusPlugin "agents" {
+                    LaunchOrFocusPlugin "configuration" {
                         floating true
                         overlay true
                         awaits_placement true

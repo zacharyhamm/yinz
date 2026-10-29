@@ -33,6 +33,11 @@ pub(super) fn legacy_preset(source: &str) -> String {
         "LaunchOrFocusPlugin \"duplicate-agent\" {\n                floating true\n                overlay true\n                modal true\n                move_to_focused_tab true\n            };",
     );
     for mode in ["Normal", "Locked"] {
+        source = source.replace(
+            &format!("bind \"a\" {{\n            SwitchToMode \"{mode}\";\n            OpenAgents\n        }}"),
+            &format!("bind \"a\" {{\n            LaunchOrFocusPlugin \"agents\" {{\n                floating true\n                overlay true\n                awaits_placement true\n                move_to_focused_tab true\n            }};\n            SwitchToMode \"{mode}\"\n        }}\n        bind \"o\" {{\n            MessagePlugin {{ name \"agent_strip_reposition\"; }};\n            SwitchToMode \"{mode}\"\n        }}"),
+        );
+
         for (key, plugin) in [
             ("w", "session-manager"),
             ("p", "plugin-manager"),

@@ -49,7 +49,6 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "configuration",
     "file-finder",
     "new-agent",
-    "agents",
     "agent-service",
     "project-store",
     "multiple-select",

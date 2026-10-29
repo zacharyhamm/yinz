@@ -6969,3 +6969,130 @@ fn native_worktree_search_launches_typed_branch_once_without_a_form() {
         .try_iter()
         .any(|(instruction, _)| matches!(instruction, PluginInstruction::PaletteAgent(_))));
 }
+
+#[test]
+fn open_agents_starts_empty_returns_to_root_and_is_client_local() {
+    let mut screen = screen();
+    let other = ClientId::new(2);
+    screen.add_client(other).unwrap();
+    screen.toggle_command_palette(other);
+    screen.command_palette_handles_input(&None, b"private query", false, other);
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let other_before = render_frame_into(&mut screen, &receiver, other, &mut grid);
+
+    screen.open_agents(CLIENT);
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(
+        frame.contains("Agents") && frame.contains("Agent filters…"),
+        "{frame}"
+    );
+    screen.command_palette_handles_input(&None, b"stale search", false, CLIENT);
+    screen.open_agents(CLIENT);
+    let reopened = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert_eq!(
+        frame, reopened,
+        "opening an existing picker clears its search"
+    );
+    assert_eq!(
+        render_frame_into(&mut screen, &receiver, other, &mut grid),
+        other_before
+    );
+
+    screen.command_palette_handles_input(
+        &Some(KeyWithModifier::new(BareKey::Esc)),
+        &[],
+        false,
+        CLIENT,
+    );
+    let root = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(root.contains("Do · Project:"), "{root}");
+    assert!(screen.command_palette_is_open(CLIENT));
+    screen.command_palette_handles_input(
+        &Some(KeyWithModifier::new(BareKey::Esc)),
+        &[],
+        false,
+        CLIENT,
+    );
+    assert!(!screen.command_palette_is_open(CLIENT));
+    assert!(screen.command_palette_is_open(other));
+}
+
+#[test]
+fn open_agents_cancels_theme_preview_and_releases_other_clients() {
+    let mut screen = theme_screen();
+    let other = ClientId::new(2);
+    screen.add_client(other).unwrap();
+    let receiver = screen_wired_to_server(&mut screen);
+    let original_colors = screen.style.colors;
+    let original_terminal = screen.style.terminal;
+    open_themes(&mut screen);
+    palette_key(&mut screen, BareKey::Up);
+    assert_ne!(screen.style.colors, original_colors);
+    assert_ne!(screen.style.terminal, original_terminal);
+
+    screen.open_agents(CLIENT);
+
+    assert!(screen.theme_preview.is_none());
+    assert_eq!(screen.style.colors, original_colors);
+    assert_eq!(screen.style.terminal, original_terminal);
+    assert_eq!(screen.default_mode_info.style.colors, original_colors);
+    assert_eq!(screen.mode_info[&other].style.colors, original_colors);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(
+        frame.contains("Agents") && frame.contains("Agent filters…"),
+        "{frame}"
+    );
+
+    screen.toggle_command_palette(other);
+    screen.command_palette_handles_input(&None, b"Change theme", false, other);
+    screen.command_palette_handles_input(
+        &Some(KeyWithModifier::new(BareKey::Enter)),
+        &[],
+        false,
+        other,
+    );
+    assert_eq!(screen.theme_preview.as_ref().unwrap().client, other);
+}
+
+#[test]
+fn open_agents_preserves_another_clients_theme_preview() {
+    let mut screen = theme_screen();
+    let other = ClientId::new(2);
+    screen.add_client(other).unwrap();
+    let receiver = screen_wired_to_server(&mut screen);
+    open_themes(&mut screen);
+    palette_key(&mut screen, BareKey::Up);
+    let preview_colors = screen.style.colors;
+    let preview_terminal = screen.style.terminal;
+
+    screen.open_agents(other);
+
+    assert_eq!(screen.theme_preview.as_ref().unwrap().client, CLIENT);
+    assert_eq!(screen.style.colors, preview_colors);
+    assert_eq!(screen.style.terminal, preview_terminal);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let frame = render_frame_into(&mut screen, &receiver, other, &mut grid);
+    assert!(
+        frame.contains("Agents") && frame.contains("Agent filters…"),
+        "{frame}"
+    );
+}
+
+#[test]
+fn open_agents_respects_permission_modal() {
+    use yinz_types::data::{PermissionType, PluginPermission};
+    let mut screen = screen();
+    screen.open_permission_modal(
+        PluginId::new(9),
+        PluginPermission::new(
+            "fixture.scm".into(),
+            vec![PermissionType::ReadApplicationState],
+        ),
+    );
+    screen.assign_permission_modals();
+    assert!(screen.permission_modal_open(CLIENT));
+    screen.open_agents(CLIENT);
+    assert!(!screen.command_palette_is_open(CLIENT));
+}

@@ -126,6 +126,7 @@ pub enum ScreenContext {
     ToggleActiveTerminalNoUiFullscreen,
     TogglePaneFrames,
     ToggleCommandPalette,
+    OpenAgents,
     SetPaneFrameStyle,
     SetSelectable,
     ShowPluginCursor,

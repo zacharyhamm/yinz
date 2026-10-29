@@ -576,6 +576,7 @@ enum ActionName {
     ToggleNotificationDetail = 121;
     Copy = 122;
     ToggleCommandPalette = 126;
+    OpenAgents = 138;
     ActivateLastNotification = 128;
     NewTabGroup = 129;
     GoToNextTabGroup = 130;

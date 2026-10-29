@@ -4,8 +4,7 @@ use std::io::Read;
 
 #[test]
 fn managed_overlay_tab_plugins_replace_persisted_lists_and_root_edits() {
-    let initial_list =
-        r#"overlay_tab_plugins { "yinz:agents" label="Agents"; "yinz:strider" label="Files"; }"#;
+    let initial_list = r#"overlay_tab_plugins { "yinz:configuration" label="Agents"; "yinz:strider" label="Files"; }"#;
     for initial in [
         initial_list.to_owned(),
         format!("configuration_edits {{ set \"overlay_tab_plugins\" {{ {initial_list}; }}; }}"),

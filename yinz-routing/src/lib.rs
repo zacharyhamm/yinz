@@ -647,6 +647,14 @@ pub fn route_action(
                 ))
                 .with_context(err_context)?;
         },
+        Action::OpenAgents => {
+            senders
+                .send_to_screen(ScreenInstruction::OpenAgents(
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
         Action::TogglePaneFrames => {
             senders
                 .send_to_screen(ScreenInstruction::TogglePaneFrames(Some(

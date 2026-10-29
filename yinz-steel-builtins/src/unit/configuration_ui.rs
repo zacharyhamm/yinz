@@ -205,6 +205,15 @@ fn every_preset_parses_with_palette_agent_selection_and_notifications() {
                 vec![Action::ActivateNotification]
             );
             assert!(config.keybinds.0[&InputMode::Agent].contains_key(&key("n")));
+            assert_eq!(
+                config.keybinds.0[&InputMode::Agent][&key("a")],
+                vec![
+                    Action::SwitchToMode {
+                        input_mode: config.options.default_mode.unwrap_or_default()
+                    },
+                    Action::OpenAgents
+                ]
+            );
             assert!(config.keybinds.0[&InputMode::Select].contains_key(&key("Enter")));
         }
     }

@@ -515,10 +515,19 @@ fn project_store_actual_runtimes_match_discovery_context_arrangement_and_rpc_aut
     let payload = json!({"op":"project_list","structured_reply":true,"request_id":"correlated-1"})
         .to_string();
     for id in [8, 7] {
-        pair.send(
+        let message = message(
             PipeSource::Plugin(PluginId::new(id)),
             "store_query",
             Some(payload.clone()),
+            None,
+        );
+        // The recording predates removal of the panel's authorization exception.
+        pair.wasm.pipe(&message);
+        pair.wasm.take_commands();
+        pair.steel.pipe(&message);
+        assert!(
+            pair.steel.take_commands().is_empty(),
+            "plugin store RPC is ignored"
         );
     }
     pair.rows();

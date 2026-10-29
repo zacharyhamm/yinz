@@ -264,6 +264,7 @@ pub enum Action {
     TogglePaneFrames,
     /// Toggle the client-local command palette prototype.
     ToggleCommandPalette,
+    OpenAgents,
     SetPaneFrameStyle(PaneFrameStyle),
     /// Toggle between sending text commands to all panes on the current tab and normal mode.
     ToggleActiveSyncTab,

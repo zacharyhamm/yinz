@@ -15,12 +15,6 @@ use yinz_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, TERMINAL
 /// checkouts they are in into projects. All three are needed: without the store
 /// there is a checkout but no project, and so nothing to name a tab after.
 const AGENT_PROJECT_CONFIG: &str = r#"plugins {
-  agent location="yinz:agents" {
-    shared true
-  }
-  agents location="yinz:agents" {
-    shared true
-  }
   agent-service location="yinz:agent-service"
   project-store location="yinz:project-store"
 }
@@ -259,13 +253,6 @@ fn a_tab_is_named_after_the_project_its_agent_is_in() {
     pane size=1 borderless=true {{
         plugin location="yinz:tab-bar"
     }}
-    floating_panes {{
-        pane x=0 y=1 width="50%" height="90%" {{
-            plugin location="agents" {{
-                overlay true
-            }}
-        }}
-    }}
     pane cwd="{}"
 }}
 "#,
@@ -292,104 +279,6 @@ fn a_tab_is_named_after_the_project_its_agent_is_in() {
         !tab_bar.contains("Tab #1"),
         "the project replaced the default name rather than sitting beside it:\n{screen}"
     );
-}
-
-#[test]
-fn exited_agent_panel_groups_follow_project_rename_and_merge() {
-    let source = write_git_repository("panel-source", "main")
-        .canonicalize()
-        .expect("source checkout");
-    let target = write_git_repository("panel-target", "main")
-        .canonicalize()
-        .expect("target checkout");
-    for repository in [&source, &target] {
-        assert!(std::process::Command::new("git")
-            .args([
-                "remote",
-                "add",
-                "origin",
-                "https://example.com/panel/repo.git"
-            ])
-            .current_dir(repository)
-            .status()
-            .expect("add origin")
-            .success());
-    }
-    let layout = format!(
-        r#"layout {{
-            tab name="manual tab" {{
-                pane size=1 borderless=true {{ plugin location="yinz:tab-bar"; }}
-                pane command="claude" cwd="{}"
-                pane command="claude" cwd="{}"
-                floating_panes {{
-                    pane x=0 y=1 width="90%" height="90%" {{
-                        plugin location="agents" {{ overlay true; }}
-                    }}
-                }}
-            }}
-        }}"#,
-        source.display(),
-        target.display()
-    );
-    let mut yinz = TestRunner::new(TERMINAL_SIZE)
-        .with_config(AGENT_PROJECT_CONFIG)
-        .with_layout(LayoutInfo::Stringified(layout))
-        .start();
-    let agent = yinz.expect_pty_spawn();
-    let other_agent = yinz.expect_pty_spawn();
-    for (name, root) in [("panel-source", &source), ("panel-target", &target)] {
-        mutate_store(
-            &yinz,
-            "project_remember",
-            serde_json::json!({"name": name, "root": root}),
-        );
-    }
-    yinz.wait_until("the open panel groups the agent", |screen| {
-        screen.contains("panel-source")
-            && screen.contains("panel-target")
-            && screen.contains("claude")
-    });
-    assert_eq!(
-        yinz.run_cli_action(CliAction::ClosePane {
-            pane_id: Some(other_agent.terminal_id().to_string()),
-        }),
-        0
-    );
-    assert_eq!(
-        yinz.run_cli_action(CliAction::RenameTab {
-            name: "manual tab".into(),
-            tab_id: None,
-        }),
-        0
-    );
-    wait_for_tab(&yinz, "manual tab", &[]);
-    agent.exit(Some(0));
-    yinz.wait_until("the open panel groups the exited agent", |screen| {
-        screen.contains("panel-source") && screen.contains("claude") && screen.contains("held")
-    });
-    // The exited agent and manual tab name leave no pane activity to refresh the group.
-    mutate_store(
-        &yinz,
-        "project_rename",
-        serde_json::json!({"name": "panel-source", "new_name": "panel-renamed"}),
-    );
-    yinz.wait_until("the open panel shows the renamed group", |screen| {
-        screen.contains("panel-renamed")
-            && !screen.contains("panel-source")
-            && screen.contains("held")
-    });
-    mutate_store(
-        &yinz,
-        "project_merge",
-        serde_json::json!({"source": "panel-renamed", "target": "panel-target"}),
-    );
-    yinz.wait_until("the open panel shows the merged group", |screen| {
-        screen.contains("panel-target")
-            && !screen.contains("panel-renamed")
-            && screen.contains("held")
-    });
-    wait_for_tab(&yinz, "manual tab", &[]);
-    yinz.quit();
 }
 
 #[test]
@@ -1011,19 +900,8 @@ fn non_git_provider_labels_discovers_groups_and_filters_agents() {
     });
     first.run_foreground(&["codex"]);
     second.run_foreground(&["codex"]);
-    // Opening Agents observes the saved project, beyond the shell-only label.
-    yinz.run_cli_action(CliAction::LaunchOrFocusPlugin {
-        url: "yinz:agents".into(),
-        configuration: None,
-        configuration_json: None,
-        floating: true,
-        in_place: false,
-        close_replaced_pane: false,
-        move_to_focused_tab: false,
-        skip_plugin_cache: false,
-        tab_id: None,
-    });
-    yinz.wait_until("non-Git agents grouped in the project panel", |screen| {
+    yinz.send_stdin(b"\x05a");
+    yinz.wait_until("non-Git agents discovered in the picker", |screen| {
         screen.contains("MarkerWork") && screen.contains("codex")
     });
     let socket = yinz_ipc::consts::ipc_connect(

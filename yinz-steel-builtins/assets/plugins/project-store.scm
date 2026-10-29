@@ -109,12 +109,7 @@
       (hash "Ok" result)))
   (reply source id structured outcome))
 (define (authorized? source)
-  (if (and (hash? source) (hash-contains? source "Plugin"))
-    (ps-safe (lambda ()
-        (define sessions (hash-ref (yinz-command "GetSessionList") "live_sessions"))
-        (not (null? (filter (lambda (session)
-                (and (hash-ref session "is_current_session") (equal? "yinz:agents"
-                    (ps-get (ps-get (hash-ref session "plugins") (number->string (hash-ref source "Plugin")) (hash)) "location" #f)))) sessions)))) #f) #t))
+  (not (and (hash? source) (hash-contains? source "Plugin"))))
 ;; Snapshots drive shared project, todo and note writes, so only the session's agent service may send them.
 ;; A sender other than the cached service id re-resolves it, covering a service that loaded or reloaded later.
 ;; The plugin map knows the service before its first snapshot; the session list can lag it at startup.

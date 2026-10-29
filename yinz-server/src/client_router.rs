@@ -602,6 +602,7 @@ pub(crate) fn route_thread_main(
                                         ScreenInstruction::ContextMenuHandleKeyIfOpen {
                                             key: Some(key_for_overlay_check),
                                             toggle_command_palette: actions.contains(&Action::ToggleCommandPalette),
+                                            open_agents: actions.contains(&Action::OpenAgents),
                                             client_id,
                                             completion: Some(NotificationEnd::new(completion_tx)),
                                         },

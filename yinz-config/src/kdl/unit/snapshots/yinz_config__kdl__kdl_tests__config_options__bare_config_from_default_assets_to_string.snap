@@ -125,15 +125,7 @@ keybinds clear-defaults=true {
         bind "w" { SwitchToMode "normal"; ToggleCommandPalette; }
     }
     agent {
-        bind "a" {
-            LaunchOrFocusPlugin "agents" {
-                floating true
-                move_to_focused_tab true
-                awaits_placement true
-                overlay true
-            }
-            SwitchToMode "normal"
-        }
+        bind "a" { SwitchToMode "normal"; OpenAgents; }
         bind "d" {
             LaunchPlugin "duplicate-agent" {
                 floating true
@@ -158,13 +150,6 @@ keybinds clear-defaults=true {
                 move_to_focused_tab true
                 modal true
                 overlay true
-            }
-            SwitchToMode "normal"
-        }
-        bind "o" {
-            MessagePlugin {
-                name "agent_strip_reposition"
-                floating false
             }
             SwitchToMode "normal"
         }
@@ -322,9 +307,6 @@ plugins {
     agent-exit location="yinz:agent-exit"
     agent-policy location="yinz:agent-policy"
     agent-service location="yinz:agent-service" {
-        shared true
-    }
-    agents location="yinz:agents" {
         shared true
     }
     compact-bar location="yinz:compact-bar"

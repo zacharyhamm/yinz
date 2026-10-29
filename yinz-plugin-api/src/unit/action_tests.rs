@@ -374,6 +374,7 @@ pub(crate) mod props {
             | Action::ToggleFocusNoUiFullscreen
             | Action::TogglePaneFrames
             | Action::ToggleCommandPalette
+            | Action::OpenAgents
             | Action::SetPaneFrameStyle(_)
             | Action::ToggleActiveSyncTab
             | Action::TogglePaneEmbedOrFloating

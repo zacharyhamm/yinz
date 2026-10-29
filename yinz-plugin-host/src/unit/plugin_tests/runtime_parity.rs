@@ -184,14 +184,6 @@ impl SteelReference {
     ) -> Self {
         Self::instance(name, configuration, responder, clock, None)
     }
-    pub(crate) fn worker(
-        name: &str,
-        responder: Responder,
-        clock: Option<Arc<AtomicU64>>,
-        worker: &str,
-    ) -> Self {
-        Self::instance(name, BTreeMap::new(), responder, clock, Some(worker))
-    }
     fn instance(
         name: &str,
         configuration: BTreeMap<String, String>,
@@ -319,7 +311,6 @@ pub(crate) struct Pair {
     pub(crate) wasm: WasmReference,
     pub(crate) steel: SteelReference,
     pub(crate) mode: ModeInfo,
-    history_worker: Option<SteelReference>,
     unrecorded_hook_publications: u64,
     _root: tempfile::TempDir,
 }
@@ -343,11 +334,7 @@ impl Pair {
         clock: Option<Arc<AtomicU64>>,
     ) -> Self {
         let root = tempfile::tempdir().unwrap();
-        let history_worker = (name == "agents").then(|| {
-            SteelReference::worker(name, steel_responder.clone(), clock.clone(), "history")
-        });
         let mut pair = Self {
-            history_worker,
             wasm: WasmReference::with_clock(
                 name,
                 configuration.clone(),
@@ -374,39 +361,6 @@ impl Pair {
     }
     fn commands_for_event(&mut self, hook_event: bool) -> Vec<Value> {
         let mut actual = self.steel.take_commands();
-        if let Some(worker) = &mut self.history_worker {
-            // Compare the recorded cells after explicitly delivering every history result.
-            let mut requests: Vec<_> = actual
-                .iter()
-                .filter_map(|c| c.get("PostMessageTo"))
-                .cloned()
-                .collect();
-            while let Some(request) = requests.pop() {
-                worker
-                    .runtime
-                    .invoke(
-                        "yinz-worker-message",
-                        vec![request["name"].clone(), request["payload"].clone()],
-                    )
-                    .unwrap();
-                for command in worker.take_commands() {
-                    if let Some(reply) = command.get("PostMessageToPlugin") {
-                        self.steel.update(&Event::CustomMessage(
-                            reply["name"].as_str().unwrap().into(),
-                            reply["payload"].as_str().unwrap().into(),
-                        ));
-                    }
-                }
-                let commands = self.steel.take_commands();
-                requests.extend(
-                    commands
-                        .iter()
-                        .filter_map(|c| c.get("PostMessageTo"))
-                        .cloned(),
-                );
-                actual.extend(commands);
-            }
-        }
         let expected = self.wasm.take_commands();
         let is_snapshot = |command: &Value| {
             command.pointer("/MessageToPlugin/message_name")
@@ -434,7 +388,6 @@ impl Pair {
             });
             self.unrecorded_hook_publications += u64::from(publication.is_some());
         }
-        let agents = self.history_worker.is_some();
         let normalize = |commands: Vec<Value>, sequence_offset: u64| {
             commands
                 .into_iter()
@@ -445,58 +398,8 @@ impl Pair {
                         && command.get("Subscribe")
                             != Some(&serde_json::json!(["ProjectProvidersChanged"]))
                 })
-                // History I/O now belongs to a worker and unchanged snapshots omit it entirely.
-                // Dedicated archive tests assert requests, ordering and failures separately.
-                // The screen now creates and moves the overlay container.
-                .filter(|command| {
-                    !agents
-                        || (command.pointer("/PaneTabs/Mount").is_none()
-                            && command.get("BreakPanesToTabWithIndex").is_none())
-                })
-                // Opening now requests the latest focus. The panel opening tests cover this
-                // extra service request, which did not exist in the original runtime.
-                .filter(|command| {
-                    !agents
-                        || command.pointer("/MessageToPlugin/message_name")
-                            != Some(&serde_json::json!("agent_subscribe"))
-                })
-                // Usage subscribes to CustomMessage through the SDK; agents_usage covers both effects.
-                .filter(|command| {
-                    !agents
-                        || (command.get("Subscribe") != Some(&serde_json::json!(["CustomMessage"]))
-                            && !command
-                                .pointer("/AgentControl/request")
-                                .and_then(Value::as_str)
-                                .and_then(|request| serde_json::from_str::<Value>(request).ok())
-                                .is_some_and(|request| request.get("Usage").is_some()))
-                })
-                .filter(|command| {
-                    !agents
-                        || !(command.get("PostMessageTo").is_some()
-                            || command
-                                .pointer("/DataFetch/request/entity")
-                                .is_some_and(|entity| entity == "agent_run_entry")
-                            || command.pointer("/DataFetch/request/select")
-                                == Some(&serde_json::json!(["payload"]))
-                            || command.get("DataCount").is_some()
-                            || command.get("GetLocalUtcOffset").is_some()
-                            || command.get("GetLocalTime").is_some())
-                })
                 .map(|mut command| {
-                    // The agents search label now includes its mode; its cursor is tested separately.
-                    if agents && command.get("ShowCursor").is_some() {
-                        command["ShowCursor"] = Value::Null;
-                    }
                     if let Some(Value::Array(events)) = command.get_mut("Subscribe") {
-                        if agents {
-                            // Worker replies, theme repainting, and the tested hook pulse postdate these recordings.
-                            events.retain(|event| {
-                                event != "AgentEvent"
-                                    && event != "CustomMessage"
-                                    && event != "ModeUpdate"
-                                    && event != "CellPixelSizeChanged"
-                            });
-                        }
                         events.sort_by_key(Value::to_string);
                     }
                     if let Some(preset) = command.pointer_mut("/Reconfigure/0")
@@ -546,23 +449,9 @@ impl Pair {
         if let Event::ModeUpdate(mode) = &event {
             self.mode = mode.clone();
         }
-        if self.history_worker.is_some()
-            && matches!(event, Event::Key(_))
-            && self
-                .steel
-                .runtime
-                .invoke("a-get", vec![Value::String("history_hidden".into())])
-                .unwrap()
-                == true
-        {
-            // The original traces omit the visibility event between panel visits.
-            self.steel.update(&Event::Visible(true));
-        }
         let actual = self.steel.update(&event);
         let expected = self.wasm.update(&event);
-        if self.history_worker.is_none() {
-            assert_eq!(actual, expected, "update decision for {event:?}");
-        }
+        assert_eq!(actual, expected, "update decision for {event:?}");
         self.commands_for_event(matches!(event, Event::AgentEvent(_)))
     }
     pub(crate) fn key(&mut self, key: &str) -> Vec<Value> {
@@ -571,20 +460,13 @@ impl Pair {
     pub(crate) fn pipe(&mut self, message: PipeMessage) {
         let actual = self.steel.pipe(&message);
         let expected = self.wasm.pipe(&message);
-        if self.history_worker.is_none() {
-            assert_eq!(actual, expected);
-        }
+        assert_eq!(actual, expected);
         self.commands();
     }
     pub(crate) fn render(&mut self, rows: usize, cols: usize) {
         let expected = self.wasm.render(rows, cols);
         let actual = self.steel.render(rows, cols);
         self.commands();
-        // Agents now uses a draggable column layout; agents_render checks its cells and mouse geometry.
-        // Keep replaying these recordings for the host-command contract.
-        if self.history_worker.is_some() {
-            return;
-        }
         let cells = |text: &str| {
             let mut grid = Grid::new(
                 rows.max(1),
