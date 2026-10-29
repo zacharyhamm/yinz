@@ -1742,6 +1742,7 @@ pub fn start_server_impl(
                     "startup trace: server received FirstClientConnected client_id={client_id}"
                 );
                 let host_terminal_env = cli_assets.host_terminal_env.clone();
+                let timezone = cli_assets.timezone.clone();
                 let supports_session_requests = cli_assets.supports_session_requests;
                 let (config, layout) = match startup_stage("server.config_and_layout", || {
                     yinz_config::cli_assets::load_config_and_layout(&cli_assets)
@@ -1940,6 +1941,11 @@ pub fn start_server_impl(
                         .non_fatal();
                     session
                         .senders
+                        .send_to_screen(ScreenInstruction::SetClientTimezone(client_id, timezone))
+                        .context("recording the first client timezone")
+                        .non_fatal();
+                    session
+                        .senders
                         .send_to_screen(ScreenInstruction::SetClientHostTerminalEnv(
                             client_id,
                             host_terminal_env,
@@ -1986,6 +1992,7 @@ pub fn start_server_impl(
                 };
                 let config = session_data.session_configuration.saved_config.clone();
                 let host_terminal_env = cli_assets.host_terminal_env.clone();
+                let timezone = cli_assets.timezone.clone();
                 let supports_session_requests = cli_assets.supports_session_requests;
                 let runtime_config_options = match cli_assets.configuration_options {
                     Some(configuration_options) => config.options.merge(configuration_options),
@@ -2044,6 +2051,11 @@ pub fn start_server_impl(
                 log::info!(
                     "attach trace: server main client_id={client_id} enqueue SetClientHostTerminalEnv"
                 );
+                session_data
+                    .senders
+                    .send_to_screen(ScreenInstruction::SetClientTimezone(client_id, timezone))
+                    .context("recording the attaching client timezone")
+                    .non_fatal();
                 session_data
                     .senders
                     .send_to_screen(ScreenInstruction::SetClientHostTerminalEnv(

@@ -1573,6 +1573,8 @@ pub struct CliAssets {
     /// The client handles ServerToClientMsg.session_request_json. Older clients omit it.
     #[prost(bool, tag="13")]
     pub supports_session_requests: bool,
+    #[prost(string, optional, tag="14")]
+    pub timezone: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

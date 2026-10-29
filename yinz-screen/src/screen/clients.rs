@@ -348,6 +348,7 @@ impl Screen {
         self.client_host_focused.remove(&client_id);
         self.client_notification_protocols.remove(&client_id);
         self.client_host_terminal_env.remove(&client_id);
+        self.client_timezones.remove(&client_id);
         self.last_forwarded_osc7.remove(&client_id);
         // This entry describes the terminal on the other end: its probed
         // `capabilities.kitty_graphics`, its theme, its keybinds. Left behind, a departed client

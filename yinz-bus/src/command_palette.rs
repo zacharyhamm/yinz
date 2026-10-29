@@ -96,6 +96,7 @@ pub struct AgentLabelSource {
 /// Native palette requests never cross the plugin wire boundary.
 #[derive(Clone, Debug)]
 pub struct AgentRequest {
+    pub timezone: yinz_runtime::client_time::ClientTimeZone,
     pub client: ClientId,
     pub opening: u64,
     pub step: u64,

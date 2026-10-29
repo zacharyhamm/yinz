@@ -2146,6 +2146,12 @@ pub fn screen_thread_main(
                 ScreenInstruction::HostTerminalFocusChanged(client_id, focused) => {
                     screen.host_terminal_focus_changed(client_id, focused);
                 },
+                ScreenInstruction::SetClientTimezone(client_id, timezone) => {
+                    screen.client_timezones.insert(
+                        client_id,
+                        yinz_runtime::client_time::ClientTimeZone::from_client(timezone.as_deref()),
+                    );
+                },
                 ScreenInstruction::SetClientHostTerminalEnv(client_id, host_terminal_env) => {
                     screen.set_client_host_terminal_env(client_id, host_terminal_env);
                 },

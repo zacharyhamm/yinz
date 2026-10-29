@@ -375,6 +375,7 @@ impl Recovery {
                 terminal_window_size: os.get_terminal_size(),
                 supports_session_requests: true,
                 host_terminal_env: yinz_runtime::host_terminal_env::host_terminal_env(),
+                timezone: yinz_runtime::client_time::capture_timezone(),
                 ..Default::default()
             };
             let (sender, result) = mpsc::channel();

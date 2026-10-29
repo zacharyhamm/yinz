@@ -6,7 +6,7 @@ fn header() -> HistoryHeader {
         name: "Agent".into(),
         status: "codex · idle".into(),
         location: "session · /work".into(),
-        started: "2026-10-09 10:00 UTC".into(),
+        started: "Oct. 9th, 2026, 5am".into(),
         details: "literal **metadata**\nsecond line".into(),
         task: "Agent task".into(),
         session_id: "session abc123".into(),

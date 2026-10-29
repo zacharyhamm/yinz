@@ -201,6 +201,7 @@ pub enum ScreenContext {
     ClearPaneFrameColorOverride,
     SetTabBellFlash,
     HostTerminalFocusChanged,
+    SetClientTimezone,
     SetClientHostTerminalEnv,
     ForwardDesktopNotifications,
     PluginNotify,

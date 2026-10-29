@@ -736,6 +736,7 @@ fn test_client_messages() {
             host_terminal_env: [("TERM".to_owned(), "xterm-kitty".to_owned())]
                 .into_iter()
                 .collect(),
+            timezone: Some("America/Chicago".into()),
             supports_session_requests: true,
         },
     });
@@ -755,6 +756,7 @@ fn test_client_messages() {
             host_terminal_env: [("TERM".to_owned(), "xterm-kitty".to_owned())]
                 .into_iter()
                 .collect(),
+            timezone: Some("America/Chicago".into()),
             supports_session_requests: true,
         },
     });
@@ -842,6 +844,7 @@ fn test_client_messages() {
             host_terminal_env: [("TERM".to_owned(), "xterm-kitty".to_owned())]
                 .into_iter()
                 .collect(),
+            timezone: Some("America/Chicago".into()),
             supports_session_requests: true,
         },
     });
@@ -5856,6 +5859,35 @@ fn legacy_completion_request_does_not_opt_into_progress() {
 }
 
 #[test]
+fn client_timezones_survive_initial_and_attached_client_messages() {
+    use crate::ipc::ProtoClientToServerMsg;
+    for timezone in [
+        None,
+        Some("America/Chicago"),
+        Some("CST6CDT,M3.2.0,M11.1.0"),
+    ] {
+        let assets = CliAssets {
+            timezone: timezone.map(str::to_owned),
+            ..Default::default()
+        };
+        for message in [
+            ClientToServerMsg::FirstClientConnected {
+                cli_assets: assets.clone(),
+            },
+            ClientToServerMsg::AttachClient {
+                cli_assets: assets.clone(),
+                tab_number_to_focus: None,
+                pane_to_focus: None,
+            },
+        ] {
+            let proto = ProtoClientToServerMsg::try_from(message.clone()).unwrap();
+            let decoded = ProtoClientToServerMsg::decode(proto.encode_to_vec().as_slice()).unwrap();
+            assert_eq!(ClientToServerMsg::try_from(decoded).unwrap(), message);
+        }
+    }
+}
+
+#[test]
 fn attach_without_session_request_capability_decodes_as_unsupported() {
     use crate::client_server_contract::client_server_contract::CliAssets as WireCliAssets;
     use crate::ipc::ProtoClientToServerMsg;
@@ -5912,4 +5944,5 @@ fn attach_without_session_request_capability_decodes_as_unsupported() {
     )
     .unwrap();
     assert!(!json.supports_session_requests);
+    assert!(json.timezone.is_none());
 }

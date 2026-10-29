@@ -140,6 +140,7 @@ fn git(root: &Path, args: &[&str]) -> String {
 
 fn request(root: &Path, action: AgentAction) -> AgentRequest {
     AgentRequest {
+        timezone: yinz_runtime::client_time::ClientTimeZone::from_client(Some("UTC")),
         client: ClientId::new(1),
         opening: 1,
         step: 1,
@@ -738,6 +739,67 @@ fn palette_history_search_exact_event_predecessor_and_resume() {
 }
 
 #[test]
+fn palette_history_formats_all_dates_in_the_requesting_clients_timezone() {
+    use yinz_bus::command_palette::{HistoryAction, HistoryReply};
+    let (temp, data) = repository();
+    let mut recorded = recorded_run(temp.path());
+    let ms = chrono::DateTime::parse_from_rfc3339("2026-10-30T02:00:00Z")
+        .unwrap()
+        .timestamp_millis();
+    recorded.started_at_ms = ms;
+    recorded.ended_at_ms = Some(ms + 60_000);
+    recorded.entries[0].created_at_ms = Some(ms);
+    data.plugin_data()
+        .apply(
+            project_data::store::SHARED,
+            &agent_proto::agents::rows::run_mutations(&recorded),
+        )
+        .unwrap();
+    for (timezone, start, end) in [
+        (
+            "America/Chicago",
+            "Oct. 29th, 2026, 9pm",
+            "Oct. 29th, 2026, 9:01pm",
+        ),
+        (
+            "Asia/Tokyo",
+            "Oct. 30th, 2026, 11am",
+            "Oct. 30th, 2026, 11:01am",
+        ),
+        (
+            "America/Chicago",
+            "Oct. 29th, 2026, 9pm",
+            "Oct. 29th, 2026, 9:01pm",
+        ),
+    ] {
+        for query in ["", "needle"] {
+            let mut request = request(
+                temp.path(),
+                AgentAction::History(HistoryAction::Run {
+                    id: recorded.id.clone(),
+                    from: None,
+                    query: query.into(),
+                }),
+            );
+            request.timezone =
+                yinz_runtime::client_time::ClientTimeZone::from_client(Some(timezone));
+            let (reply, _) = run(&request, &data);
+            let AgentReply::History(HistoryReply::Run { header, events, .. }) = reply.unwrap()
+            else {
+                panic!("expected timeline");
+            };
+            assert_eq!(header.started, start);
+            assert!(header
+                .details
+                .contains(&format!("Started: {start}\nEnded: {end}\n")));
+            assert!(!header.details.contains("epoch ms"));
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].time, start);
+        }
+    }
+}
+
+#[test]
 fn palette_history_automatically_loads_all_retained_revisions() {
     use yinz_bus::command_palette::{HistoryAction, HistoryReply};
     for (revisions, text, expected_starts) in [
@@ -995,8 +1057,8 @@ fn palette_history_run_search_orders_events_and_keeps_time_and_hit_navigation() 
             events.iter().map(|e| e.revision).collect::<Vec<_>>(),
             [1, 2, 3]
         );
-        assert_eq!(header.started, "1970-01-01 00:00 UTC");
-        assert!(events.iter().all(|e| e.time == "1970-01-01 00:00 UTC"));
+        assert_eq!(header.started, "Jan. 1st, 1970, 12am");
+        assert!(events.iter().all(|e| e.time == "Jan. 1st, 1970, 12am"));
         if query.is_empty() {
             assert_eq!(events[0].markdown, recorded.entries[0].text);
             assert!(!events[0].truncated);

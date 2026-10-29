@@ -165,6 +165,11 @@ impl Screen {
         }
         let prompt = state.agents.prompt_pending();
         let request = AgentRequest {
+            timezone: self
+                .client_timezones
+                .get(&client)
+                .cloned()
+                .unwrap_or_default(),
             client,
             opening: state.agents.opening,
             step: state.agents.step,

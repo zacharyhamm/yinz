@@ -397,6 +397,7 @@ pin_context_to_instruction! {
     ), (
         "PaletteAgent",
         PluginInstruction::PaletteAgent(Box::new(crate::command_palette::AgentRequest {
+            timezone: Default::default(),
             client: ClientId::new(1), opening: 1, step: 1,
             source: Default::default(), action: crate::command_palette::AgentAction::Fork,
             values: vec![], active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),

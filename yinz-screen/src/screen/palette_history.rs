@@ -706,6 +706,11 @@ impl Screen {
             .senders
             .send_to_plugin(yinz_bus::plugins::PluginInstruction::PaletteAgent(
                 Box::new(yinz_bus::command_palette::AgentRequest {
+                    timezone: self
+                        .client_timezones
+                        .get(&client)
+                        .cloned()
+                        .unwrap_or_default(),
                     client,
                     opening: state.agents.opening,
                     step: view,

@@ -930,6 +930,8 @@ pub(crate) struct Screen {
     client_notification_protocols: HashMap<ClientId, NotificationProtocol>,
     /// The configured `host_notification_protocol`, re-resolved for every client on reconfigure.
     host_notification_protocol: HostNotificationProtocol,
+    /// Timezone rules supplied by each client, independent of the server environment.
+    client_timezones: HashMap<ClientId, yinz_runtime::client_time::ClientTimeZone>,
     /// Each client's whitelisted host terminal environment, kept so a reconfigure can re-resolve.
     client_host_terminal_env: HashMap<ClientId, BTreeMap<String, String>>,
     last_forwarded_osc7: HashMap<ClientId, Option<String>>,
@@ -1597,6 +1599,7 @@ impl Screen {
             client_host_focused: HashMap::new(),
             client_notification_protocols: HashMap::new(),
             host_notification_protocol,
+            client_timezones: HashMap::new(),
             client_host_terminal_env: HashMap::new(),
             last_forwarded_osc7: HashMap::new(),
             #[cfg(test)]
