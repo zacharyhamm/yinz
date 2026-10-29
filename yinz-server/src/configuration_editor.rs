@@ -55,7 +55,7 @@ impl SessionConfiguration {
 }
 
 impl SessionMetaData {
-    pub(super) fn apply_palette_theme(
+    pub(crate) fn apply_palette_theme(
         &mut self,
         client: ClientId,
         request: uuid::Uuid,
@@ -91,7 +91,7 @@ impl SessionMetaData {
         Ok(())
     }
 
-    pub(super) fn inspect_configuration(
+    pub(crate) fn inspect_configuration(
         &self,
         theme: Option<&str>,
     ) -> Result<serde_json::Value, String> {
@@ -99,7 +99,7 @@ impl SessionMetaData {
         self.session_configuration.editor_snapshot(&disk, "", theme)
     }
 
-    pub(super) fn configuration_editor(
+    pub(crate) fn configuration_editor(
         &mut self,
         edit: Option<Edit>,
     ) -> Result<serde_json::Value, String> {

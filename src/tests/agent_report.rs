@@ -1226,5 +1226,8 @@ mod pane_routing;
 #[path = "../unit/hooks_status.rs"]
 mod hooks_status;
 
+#[path = "../unit/hooks_provider.rs"]
+mod hooks_provider;
+
 #[path = "../unit/muse_launch.rs"]
 mod muse_launch;

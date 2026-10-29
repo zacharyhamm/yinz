@@ -37,7 +37,6 @@ mod hook_writes;
 /// it does.
 pub(crate) const CLAUDE_EVENTS: &[&str] = yinz_types::agent::CLAUDE_HOOK_EVENTS;
 const CODEX_EVENTS: &[&str] = yinz_types::agent::CODEX_HOOK_EVENTS;
-const OPENCODE_EVENTS: &[&str] = yinz_types::agent::OPENCODE_HOOK_EVENTS;
 const MUSE_EVENTS: &[&str] = yinz_types::agent::MUSE_HOOK_EVENTS;
 const AGY_EVENTS: &[&str] = yinz_types::agent::AGY_HOOK_EVENTS;
 const PI_EVENTS: &[&str] = yinz_runtime::agent::pi::PI_HOOK_EVENTS;
@@ -74,47 +73,34 @@ const OPENCODE_PLUGIN_VERSION: u32 = 6;
 /// it in something still has their entry replaced rather than duplicated.
 const MARKER: &str = "yinz-hook.sh";
 
-/// The opencode plugin's file name and the string that marks the file as ours.
-const OPENCODE_PLUGIN_FILE: &str = "yinz.js";
-
-fn legacy_agent(name: Option<&str>) -> Result<Option<HookAgent>> {
-    name.map(|name| HookAgent::from_str(name, true).map_err(|error| anyhow!(error)))
-        .transpose()
+// Compatibility names select their provider once, before any hook operation.
+fn provider_location(agent: HookAgent) -> Option<&'static str> {
+    match agent {
+        HookAgent::Opencode => Some("yinz:agent-opencode"),
+        _ => None,
+    }
 }
 
 /// Provider metadata is evaluated from Scheme in a worker with no host authority.
 /// The CLI, after explicit install/uninstall, performs only the declared file operations.
-fn provider_command(command: &Hooks, data_dir: &Path) -> Result<bool> {
-    let (agent, project) = match command {
-        Hooks::Install {
-            agent,
-            project,
-            project_dir,
-            ..
-        }
-        | Hooks::Uninstall {
-            agent,
-            project,
-            project_dir,
-        } => (agent.as_deref(), *project || project_dir.is_some()),
-        Hooks::Status { agent } => (agent.as_deref(), false),
-    };
-    let Some(agent) = agent else {
-        return Ok(false);
-    };
-    if legacy_agent(Some(agent)).is_ok() && agent != "opencode" {
-        return Ok(false);
-    }
-    if project {
+fn provider_command(command: &Hooks, location: &str, data_dir: &Path) -> Result<()> {
+    if matches!(
+        command,
+        Hooks::Install { project: true, .. }
+            | Hooks::Uninstall { project: true, .. }
+            | Hooks::Install {
+                project_dir: Some(_),
+                ..
+            }
+            | Hooks::Uninstall {
+                project_dir: Some(_),
+                ..
+            }
+    ) {
         return Err(anyhow!(
             "Scheme provider hook files are installed at their declared home or config paths"
         ));
     }
-    let location = if agent == "opencode" {
-        "yinz:agent-opencode"
-    } else {
-        agent
-    };
     let provider = yinz_server::inspect_agent_provider(location, data_dir)?;
     if provider.hooks.is_empty() {
         return Err(anyhow!("{} declares no hook files", provider.kind));
@@ -149,7 +135,7 @@ fn provider_command(command: &Hooks, data_dir: &Path) -> Result<bool> {
             Hooks::Status { .. } => provider_status(&path, hook, &binary)?,
         }
     }
-    Ok(true)
+    Ok(())
 }
 
 fn remove_legacy_opencode(path: &Path, marker: &str, dry_run: bool) -> Result<()> {
@@ -197,85 +183,74 @@ fn provider_status(
 }
 
 pub(crate) fn run(hooks: Hooks, data_dir: &Path) -> Result<()> {
-    if provider_command(&hooks, data_dir)? {
-        return Ok(());
-    }
-    // The default/all commands use the same provider-owned paths as an explicit install.
-    let mut opencode_hooks = hooks.clone();
-    match &mut opencode_hooks {
-        Hooks::Install { agent, .. } | Hooks::Uninstall { agent, .. } | Hooks::Status { agent } => {
-            *agent = Some("opencode".to_owned())
-        },
-    }
-    match hooks {
+    let (name, project) = match &hooks {
         Hooks::Install {
             agent,
             project,
             project_dir,
-            dry_run,
-        } => {
-            let yinz = std::env::current_exe().context("cannot find this yinz binary")?;
-            for_each_agent(
-                selected_agents(
-                    legacy_agent(agent.as_deref())?,
-                    project || project_dir.is_some(),
-                )?,
-                |agent| {
-                    if agent == HookAgent::Opencode {
-                        return provider_command(&opencode_hooks, data_dir).map(|_| ());
-                    }
-                    install(
-                        &Files::resolve(agent, project, project_dir.clone())?,
-                        &yinz,
-                        dry_run,
-                    )
-                },
-            )
-        },
-        Hooks::Uninstall {
+            ..
+        }
+        | Hooks::Uninstall {
             agent,
             project,
             project_dir,
-        } => for_each_agent(
-            selected_agents(
-                legacy_agent(agent.as_deref())?,
-                project || project_dir.is_some(),
-            )?,
-            |agent| {
-                if agent == HookAgent::Opencode {
-                    return provider_command(&opencode_hooks, data_dir).map(|_| ());
-                }
-                uninstall(&Files::resolve(agent, project, project_dir.clone())?)
-            },
-        ),
-        Hooks::Status { agent } => {
-            let mut first = true;
-            let reported = for_each_agent(
-                selected_agents(legacy_agent(agent.as_deref())?, false)?,
-                |agent| {
-                    // Two reports run together otherwise, and the second agent's heading reads
-                    // as another line of the first one's.
-                    if !std::mem::take(&mut first) {
-                        status_line(format_args!(""))?;
-                    }
-                    if agent == HookAgent::Opencode {
-                        return provider_command(&opencode_hooks, data_dir).map(|_| ());
-                    }
-                    let files = if matches!(agent, HookAgent::Claude | HookAgent::Agy) {
-                        Files::resolve(agent, true, None)
-                            .or_else(|_| Files::resolve(agent, false, None))?
-                    } else {
-                        Files::resolve(agent, false, None)?
-                    };
-                    status(&files)
-                },
-            );
-            // A fact about this shell rather than about either agent: said once, and said
-            // even when a settings file could not be read.
-            pane_line()?;
-            reported
+        } => (agent.as_deref(), *project || project_dir.is_some()),
+        Hooks::Status { agent } => (agent.as_deref(), false),
+    };
+    let selected = match name {
+        Some(name) => match HookAgent::from_str(name, true) {
+            Ok(agent) => Some(agent),
+            Err(_) => return provider_command(&hooks, name, data_dir),
         },
+        None => None,
+    };
+    if let Some(location) = selected.and_then(provider_location) {
+        return provider_command(&hooks, location, data_dir);
     }
+    let reporting = matches!(hooks, Hooks::Status { .. });
+    let mut first = true;
+    let result = for_each_agent(selected_agents(selected, project)?, |agent| {
+        if reporting && !std::mem::take(&mut first) {
+            status_line(format_args!(""))?;
+        }
+        if let Some(location) = provider_location(agent) {
+            return provider_command(&hooks, location, data_dir);
+        }
+        match &hooks {
+            Hooks::Install {
+                project,
+                project_dir,
+                dry_run,
+                ..
+            } => {
+                let yinz = std::env::current_exe().context("cannot find this yinz binary")?;
+                install(
+                    &Files::resolve(agent, *project, project_dir.clone())?,
+                    &yinz,
+                    *dry_run,
+                )
+            },
+            Hooks::Uninstall {
+                project,
+                project_dir,
+                ..
+            } => uninstall(&Files::resolve(agent, *project, project_dir.clone())?),
+            Hooks::Status { .. } => {
+                let files = if matches!(agent, HookAgent::Claude | HookAgent::Agy) {
+                    Files::resolve(agent, true, None)
+                        .or_else(|_| Files::resolve(agent, false, None))?
+                } else {
+                    Files::resolve(agent, false, None)?
+                };
+                status(&files)
+            },
+        }
+    });
+    if reporting {
+        // Report shell context once, including when one agent's status failed.
+        pane_line()?;
+    }
+    result
 }
 
 /// Run a command once for each selected agent, keeping one agent's failure to itself.
@@ -532,25 +507,13 @@ exit 0
     )
 }
 
-// OpenCode is a Scheme provider; the compatibility CLI spelling resolves its module.
-fn opencode_provider() -> Result<yinz_types::agent::provider::AgentProvider> {
-    #[cfg(test)]
-    let data = {
-        let data = tempfile::tempdir().expect("provider fixture directory");
-        yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), data.path())
-            .expect("install provider fixture");
-        data
-    };
-    #[cfg(test)]
-    let data_dir = data.path().to_owned();
-    #[cfg(not(test))]
-    let data_dir = yinz_runtime::home::get_default_data_dir();
-    yinz_server::inspect_agent_provider("yinz:agent-opencode", &data_dir)
-}
-
 #[cfg(test)]
 fn opencode_plugin(yinz: &Path) -> String {
-    let provider = opencode_provider().expect("builtin Scheme provider evaluates");
+    let data = tempfile::tempdir().expect("provider fixture directory");
+    yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), data.path())
+        .expect("install provider fixture");
+    let provider = yinz_server::inspect_agent_provider("yinz:agent-opencode", data.path())
+        .expect("builtin Scheme provider evaluates");
     yinz_runtime::agent::hook_files::render(
         &provider.hooks[0],
         yinz,
@@ -855,6 +818,10 @@ impl Files {
     /// what a person at a shell wants and what a plugin - whose cwd is the server's, not the
     /// project's - cannot use.
     fn resolve(agent: HookAgent, project: bool, project_dir: Option<PathBuf>) -> Result<Files> {
+        anyhow::ensure!(
+            provider_location(agent).is_none(),
+            "provider hook paths come from its descriptor"
+        );
         if matches!(
             agent,
             HookAgent::Codex | HookAgent::Opencode | HookAgent::Muse | HookAgent::Pi
@@ -877,9 +844,7 @@ impl Files {
             std::env::var_os("XDG_CONFIG_HOME"),
             home,
         )?;
-        // For Claude Code, Codex and Antigravity the generated artefact is a script and the
-        // wiring is a settings document beside it. opencode loads a plugin file, so the file
-        // *is* the wiring: one path is both, and `settings()` is never asked for it.
+        // Script hooks have a settings document beside them; pi loads its extension directly.
         let (script, user_settings) = match agent {
             HookAgent::Claude => (root.join("yinz").join(MARKER), root.join("settings.json")),
             HookAgent::Codex => (root.join("yinz").join(MARKER), root.join("hooks.json")),
@@ -887,12 +852,8 @@ impl Files {
                 yinz_muse::hook_script_path(&root),
                 yinz_muse::settings_path(&root),
             ),
-            HookAgent::Opencode => {
-                let plugin = root.join("plugin").join(OPENCODE_PLUGIN_FILE);
-                (plugin.clone(), plugin)
-            },
-            // The opencode shape exactly: one file the agent loads, which is both the
-            // artifact and the wiring, and `settings()` is never asked for it.
+            HookAgent::Opencode => unreachable!("provider paths are resolved from its descriptor"),
+            // The extension is its own wiring, so settings() is never asked for it.
             HookAgent::Pi => {
                 let extension = root
                     .join("extensions")
@@ -943,7 +904,7 @@ impl Files {
         match self.agent {
             HookAgent::Claude => CLAUDE_EVENTS,
             HookAgent::Codex => CODEX_EVENTS,
-            HookAgent::Opencode => OPENCODE_EVENTS,
+            HookAgent::Opencode => unreachable!("provider hooks are declared by its descriptor"),
             HookAgent::Muse => MUSE_EVENTS,
             HookAgent::Agy => AGY_EVENTS,
             HookAgent::Pi => PI_EVENTS,
@@ -959,7 +920,7 @@ impl Files {
         match self.agent {
             HookAgent::Claude => yinz_types::agent::CLAUDE_HOOK_TIMEOUT_SECONDS,
             HookAgent::Codex => yinz_types::agent::CODEX_HOOK_TIMEOUT_SECONDS,
-            HookAgent::Opencode => yinz_types::agent::OPENCODE_HOOK_TIMEOUT_SECONDS,
+            HookAgent::Opencode => unreachable!("provider hooks are declared by its descriptor"),
             HookAgent::Muse => yinz_types::agent::MUSE_HOOK_TIMEOUT_SECONDS,
             HookAgent::Agy => yinz_types::agent::AGY_HOOK_TIMEOUT_SECONDS,
             // pi reports from its extension events, which have no hook timeout to wire:
@@ -975,12 +936,6 @@ impl Files {
         } else {
             installed_events(settings)
         }
-    }
-
-    /// The one-file installs answer nothing here: their wiring is the file itself, and
-    /// `status` reads that rather than a settings document.
-    fn is_one_file(&self) -> bool {
-        matches!(self.agent, HookAgent::Opencode | HookAgent::Pi)
     }
 
     /// The legacy file with our entries still in it, if there is one to move out of.
@@ -1109,34 +1064,6 @@ fn write_generated(path: &Path, text: &str) -> Result<bool> {
     Ok(backed_up)
 }
 
-/// opencode's install: one plugin file, and no settings merge, because the file *is* the
-/// wiring.
-fn install_opencode(files: &Files, yinz: &Path, dry_run: bool) -> Result<()> {
-    let provider = opencode_provider()?;
-    let hook = provider
-        .hooks
-        .first()
-        .context("provider has no hook artifact")?;
-    let content = yinz_runtime::agent::hook_files::render(
-        hook,
-        yinz,
-        yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV,
-    )?;
-    yinz_runtime::agent::hook_files::read_owned(&files.script, &hook.marker)?;
-    remove_legacy_opencode(&files.script, &hook.marker, dry_run)?;
-    if dry_run {
-        println!("would write {}:\n{content}", files.script.display());
-    } else {
-        yinz_runtime::agent::hook_files::install(&files.script, hook, &content)?;
-        println!(
-            "wrote {}; restart {} to load the hook",
-            files.script.display(),
-            provider.kind
-        );
-    }
-    Ok(())
-}
-
 /// pi's install: one extension file, and no settings merge, because the file *is* the
 /// wiring - the opencode shape, in pi's own extension directory.
 ///
@@ -1177,9 +1104,6 @@ fn install_pi(files: &Files, yinz: &Path, dry_run: bool) -> Result<()> {
 }
 
 pub(crate) fn install(files: &Files, yinz: &Path, dry_run: bool) -> Result<()> {
-    if files.agent == HookAgent::Opencode {
-        return install_opencode(files, yinz, dry_run);
-    }
     if files.agent == HookAgent::Pi {
         return install_pi(files, yinz, dry_run);
     }
@@ -1287,8 +1211,8 @@ fn make_executable(path: &Path) -> Result<()> {
 }
 
 pub(crate) fn uninstall(files: &Files) -> Result<()> {
-    if files.is_one_file() {
-        return uninstall_opencode(files);
+    if files.agent == HookAgent::Pi {
+        return uninstall_pi(files);
     }
     let settings_path = files.settings();
     let settings = read_settings(&settings_path)?;
@@ -1332,19 +1256,8 @@ pub(crate) fn uninstall(files: &Files) -> Result<()> {
     Ok(())
 }
 
-/// Remove the one generated file of a one-file agent - the opencode plugin or the pi
-/// extension - if it is one we wrote.
-fn uninstall_opencode(files: &Files) -> Result<()> {
-    if files.agent == HookAgent::Opencode {
-        let provider = opencode_provider()?;
-        let hook = provider
-            .hooks
-            .first()
-            .context("provider has no hook artifact")?;
-        yinz_runtime::agent::hook_files::uninstall(&files.script, hook)?;
-        println!("removed {}", files.script.display());
-        return Ok(());
-    }
+/// Remove pi's generated extension only when it is one we wrote.
+fn uninstall_pi(files: &Files) -> Result<()> {
     let marker = yinz_runtime::agent::pi::PI_EXTENSION_MARKER;
     match read_generated(&files.script)? {
         Some(text) if text.contains(marker) => {
@@ -1365,15 +1278,6 @@ fn uninstall_opencode(files: &Files) -> Result<()> {
 
 /// What is wired, and the things that would quietly stop it working.
 fn status(files: &Files) -> Result<()> {
-    if files.agent == HookAgent::Opencode {
-        let provider = opencode_provider()?;
-        let hook = provider
-            .hooks
-            .first()
-            .context("provider has no hook artifact")?;
-        let binary = std::env::current_exe().context("find this yinz binary")?;
-        return provider_status(&files.script, hook, &binary);
-    }
     if files.agent == HookAgent::Pi {
         let marker = yinz_runtime::agent::pi::PI_EXTENSION_MARKER;
         let version = yinz_runtime::agent::pi::PI_EXTENSION_VERSION;

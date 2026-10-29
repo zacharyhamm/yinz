@@ -349,18 +349,6 @@ fn codex_files(temp: &Path) -> Files {
     }
 }
 
-fn opencode_files(temp: &Path) -> Files {
-    let plugin = temp
-        .join("home/.config/opencode/plugin")
-        .join(OPENCODE_PLUGIN_FILE);
-    Files {
-        agent: HookAgent::Opencode,
-        script: plugin.clone(),
-        user_settings: plugin,
-        project: None,
-    }
-}
-
 fn pi_files(temp: &Path) -> Files {
     let extension = temp
         .join("home/.pi/agent/extensions")
@@ -679,37 +667,6 @@ fn installing_agy_hooks_rejects_settings_shapes_it_cannot_merge() {
     .is_err());
 }
 
-/// opencode's wiring is one plugin file and no settings merge, so installing twice is
-/// one file either way and uninstalling takes it with it.
-#[test]
-fn an_opencode_install_writes_a_versioned_plugin_and_uninstall_removes_it() {
-    let temp = temp_dir("opencode-install");
-    let files = opencode_files(&temp);
-    install(&files, &fake_yinz(&temp), false).unwrap();
-
-    let plugin = read_generated(&files.script).unwrap().unwrap();
-    assert!(
-        plugin.contains(&format!("yinz-opencode-plugin v{OPENCODE_PLUGIN_VERSION}")),
-        "{plugin}"
-    );
-    assert!(plugin.contains("\"agent-report\""), "{plugin}");
-    assert!(plugin.contains("\"--pty-broker\""), "{plugin}");
-    assert!(
-        !plugin.contains("__YINZ_BIN__")
-            && !plugin.contains("__TOKEN_ENV__")
-            && !plugin.contains("__VERSION__"),
-        "every substitution is filled in"
-    );
-    assert!(!temp.join("home/.config/opencode/settings.json").exists());
-
-    install(&files, &fake_yinz(&temp), false).unwrap();
-    assert_eq!(read_generated(&files.script).unwrap().unwrap(), plugin);
-
-    uninstall(&files).unwrap();
-    assert!(read_generated(&files.script).unwrap().is_none());
-    std::fs::remove_dir_all(temp).unwrap();
-}
-
 #[test]
 fn opencode_plugin_reports_in_order_and_tracks_turn_text() {
     let temp = tempfile::tempdir().unwrap();
@@ -741,29 +698,12 @@ fn opencode_plugin_reports_in_order_and_tracks_turn_text() {
     }
 }
 
-/// A plugin file we did not write is somebody else's: neither install nor uninstall may
-/// touch it, and both say so.
-#[test]
-fn opencode_leaves_a_plugin_file_it_did_not_write_alone() {
-    let temp = temp_dir("opencode-foreign");
-    let files = opencode_files(&temp);
-    std::fs::create_dir_all(files.script.parent().unwrap()).unwrap();
-    std::fs::write(&files.script, "// somebody else's plugin\n").unwrap();
-
-    assert!(install(&files, &fake_yinz(&temp), false).is_err());
-    assert!(uninstall(&files).is_err());
-    assert_eq!(
-        read_generated(&files.script).unwrap().unwrap(),
-        "// somebody else's plugin\n"
-    );
-    std::fs::remove_dir_all(temp).unwrap();
-}
-
 /// The binary path is a JavaScript string, not a shell word: a folder name with a space
 /// or a quote in it must not write a plugin opencode cannot parse.
 #[test]
 fn the_opencode_plugin_bakes_a_json_quoted_binary_path() {
     let plugin = opencode_plugin(Path::new("/opt/my yinz/yinz"));
+    assert!(plugin.contains(&format!("yinz-opencode-plugin v{OPENCODE_PLUGIN_VERSION}")));
     assert!(plugin.contains("\"/opt/my yinz/yinz\""), "{plugin}");
 }
 
