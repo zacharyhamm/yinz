@@ -1452,17 +1452,40 @@ impl CommandPalette {
         if let Some(index) = flexible {
             widths[index] = (available / 3).max(1);
         }
-        while widths.iter().sum::<usize>() > available {
-            let Some(index) = widths
+        if widths.iter().sum::<usize>() > available {
+            // Find the common ceiling in logarithmic time instead of removing
+            // thousands of cells individually on every measurement/render pass.
+            let capped = |index: usize, width: usize, ceiling: usize| {
+                width.min(ceiling).max(usize::from(Some(index) == flexible))
+            };
+            let mut low = 0;
+            let mut high = widths.iter().copied().max().unwrap_or(0);
+            while low < high {
+                let ceiling = low + (high - low).div_ceil(2);
+                let total: usize = widths
+                    .iter()
+                    .enumerate()
+                    .map(|(i, width)| capped(i, *width, ceiling))
+                    .sum();
+                if total <= available {
+                    low = ceiling;
+                } else {
+                    high = ceiling - 1;
+                }
+            }
+            let total: usize = widths
                 .iter()
                 .enumerate()
-                .filter(|(i, w)| **w > usize::from(*i == flexible.unwrap_or(usize::MAX)))
-                .max_by_key(|(_, w)| **w)
-                .map(|(i, _)| i)
-            else {
-                break;
-            };
-            widths[index] -= 1;
+                .map(|(i, width)| capped(i, *width, low))
+                .sum();
+            let mut remaining = available.saturating_sub(total);
+            for (i, width) in widths.iter_mut().enumerate() {
+                let reduced = capped(i, *width, low);
+                // The old largest-first loop shrank later columns first on ties.
+                let extra = usize::from(remaining > 0 && reduced == low && *width > reduced);
+                *width = reduced + extra;
+                remaining -= extra;
+            }
         }
         if let Some(index) = flexible {
             widths[index] += available.saturating_sub(widths.iter().sum());
@@ -1471,7 +1494,6 @@ impl CommandPalette {
     }
 
     fn table_lines(&self, cells: &[String], width: usize, max_lines: usize) -> Vec<MdLine> {
-        use unicode_width::UnicodeWidthStr;
         let (widths, gap) = self.table_widths(width);
         let columns: Vec<Vec<String>> = self
             .columns
@@ -1495,7 +1517,8 @@ impl CommandPalette {
                 } else {
                     wrap_inline(&MdLine::plain(&text), width)
                 };
-                let truncated = lines.len() > limit || lines.iter().any(|l| l.text.width() > width);
+                let truncated =
+                    lines.len() > limit || lines.iter().any(|l| terminal_width(&l.text) > width);
                 lines.truncate(limit);
                 if truncated && let Some(last) = lines.last_mut() {
                     last.text = format!("{}…", take_columns(&last.text, width.saturating_sub(1)));
@@ -1516,7 +1539,7 @@ impl CommandPalette {
                     }
                     let cell = column.get(line).map(String::as_str).unwrap_or_default();
                     text.push_str(cell);
-                    text.push_str(&" ".repeat(width.saturating_sub(cell.width())));
+                    text.push_str(&" ".repeat(width.saturating_sub(terminal_width(cell))));
                 }
                 MdLine::plain(text)
             })
@@ -2237,7 +2260,10 @@ impl CommandPalette {
                             } else {
                                 label
                             }
-                        } else if self.matches.is_empty() && y == layout.options_y {
+                        } else if self.matches.is_empty()
+                            && y == layout.options_y
+                                + usize::from(!self.columns.is_empty() && layout.options_rows >= 2)
+                        {
                             if self.picker == Some(EntryKind::Project)
                                 && !self.entries.iter().any(|e| e.kind == EntryKind::Project)
                             {
@@ -2434,10 +2460,16 @@ fn paint_markdown_with_selection(
     painted.into()
 }
 
-fn fit(text: &str, cols: usize, pad: char) -> String {
+// Match take_columns, Markdown wrapping, and emitted TerminalCharacters, which
+// account for each character rather than treating an emoji sequence as one glyph.
+fn terminal_width(text: &str) -> usize {
     use unicode_width::UnicodeWidthChar;
+    text.chars().map(|c| c.width().unwrap_or(0)).sum()
+}
+
+fn fit(text: &str, cols: usize, pad: char) -> String {
     let mut text = take_columns(text, cols);
-    let width: usize = text.chars().map(|c| c.width().unwrap_or(0)).sum();
+    let width = terminal_width(&text);
     text.extend(std::iter::repeat_n(pad, cols.saturating_sub(width)));
     text
 }

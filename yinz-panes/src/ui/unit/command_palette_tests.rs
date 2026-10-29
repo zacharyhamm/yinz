@@ -3436,6 +3436,189 @@ fn table_columns_align_wrap_and_ellipsis_at_terminal_widths() {
 }
 
 #[test]
+fn table_unicode_headers_and_cells_align_in_emitted_chunks() {
+    use yinz_types::command_palette::Column;
+    for text in ["👨‍👩‍👧‍👦", "🏳️‍🌈", "e\u{301}", "日本語"] {
+        for width in [1, 2, 5, 10] {
+            for max_lines in [1, 3] {
+                let mut palette = CommandPalette {
+                    view: 1,
+                    columns: vec![
+                        Column {
+                            header: text.into(),
+                            width: Some(width),
+                            max_lines,
+                        },
+                        Column {
+                            header: "TAIL".into(),
+                            width: Some(4),
+                            max_lines: 1,
+                        },
+                    ],
+                    ..Default::default()
+                };
+                palette
+                    .table_cells
+                    .insert("row".into(), vec![text.into(), "TAIL".into()]);
+                palette.set_sections(vec![PluginSection {
+                    title: "Records".into(),
+                    entries: vec![entry("row", "Row", EntryKind::Plugin)],
+                    semantic: false,
+                    status: None,
+                }]);
+                let layout = palette.layout(Viewport {
+                    cols: 80,
+                    rows: 24,
+                    ..Default::default()
+                });
+                let chunks = palette.chunks(&layout, &Style::default());
+                let mut tails = 0;
+                for chunk in &chunks[layout.options_y - layout.rect.y..][..layout.result_rows.len()]
+                {
+                    let characters = &chunk.terminal_characters;
+                    assert!(
+                        characters
+                            .iter()
+                            .map(TerminalCharacter::width)
+                            .sum::<usize>()
+                            <= layout.rect.cols
+                    );
+                    if let Some(index) = characters.iter().position(|c| c.character == 'T') {
+                        tails += 1;
+                        assert_eq!(
+                            characters[..index]
+                                .iter()
+                                .map(TerminalCharacter::width)
+                                .sum::<usize>(),
+                            layout.border + 2 + width + 1,
+                            "{text:?}, width {width}, max_lines {max_lines}"
+                        );
+                    }
+                }
+                assert_eq!(tails, 2, "header and first body line must retain TAIL");
+                let text_width: usize = text
+                    .chars()
+                    .map(|c| TerminalCharacter::new(c).width())
+                    .sum();
+                if max_lines == 1 && text_width > width {
+                    assert!(palette.entry_lines(0, 78, 1)[0].text.contains('…'));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn table_width_allocation_preserves_largest_first_shrinking() {
+    use yinz_types::command_palette::Column;
+    // Keep the original slow allocator as an independent compatibility oracle.
+    fn original_widths(columns: &[Column], width: usize) -> (Vec<usize>, usize) {
+        if columns.is_empty() {
+            return (vec![], 0);
+        }
+        let count = columns.len();
+        let gap = usize::from(width >= count * 2 - 1);
+        let available = width.saturating_sub(gap * (count - 1));
+        if available == 0 {
+            return (vec![0; count], gap);
+        }
+        let flexible = columns.iter().position(|c| c.width.is_none());
+        let mut widths: Vec<_> = columns.iter().map(|c| c.width.unwrap_or(1)).collect();
+        if let Some(index) = flexible {
+            widths[index] = (available / 3).max(1);
+        }
+        while widths.iter().sum::<usize>() > available {
+            let Some(index) = widths
+                .iter()
+                .enumerate()
+                .filter(|(i, w)| **w > usize::from(Some(*i) == flexible))
+                .max_by_key(|(_, w)| **w)
+                .map(|(i, _)| i)
+            else {
+                break;
+            };
+            widths[index] -= 1;
+        }
+        if let Some(index) = flexible {
+            widths[index] += available.saturating_sub(widths.iter().sum());
+        }
+        (widths, gap)
+    }
+    for preferred in [
+        vec![],
+        vec![Some(1)],
+        vec![None],
+        vec![Some(8), Some(8), Some(12)],
+        vec![Some(512); 16],
+    ] {
+        for flexible in 0..=preferred.len() {
+            let columns = preferred
+                .iter()
+                .enumerate()
+                .map(|(i, width)| Column {
+                    header: String::new(),
+                    width: if i == flexible { None } else { *width },
+                    max_lines: 1,
+                })
+                .collect();
+            let palette = CommandPalette {
+                columns,
+                ..Default::default()
+            };
+            for width in (0..65).chain([100, 512, 8192]) {
+                assert_eq!(
+                    palette.table_widths(width),
+                    original_widths(&palette.columns, width),
+                    "preferred {preferred:?}, flexible {flexible}, width {width}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn table_empty_filter_shows_message_below_header_or_without_header_on_short_surfaces() {
+    let mut palette = table_palette();
+    palette.sections[0].semantic = false;
+    palette.description = "First line  \nSecond line".into();
+    palette.set_query("unmatched".into());
+    assert!(palette.matches.is_empty());
+    let mut with_header = false;
+    let mut without_header = false;
+    for rows in 1..=35 {
+        let layout = palette.layout(Viewport {
+            cols: 100,
+            rows,
+            ..Default::default()
+        });
+        if layout.options_rows == 0 {
+            continue;
+        }
+        let lines = rendered_lines(&palette, &layout);
+        let header = layout.options_rows >= 2;
+        let offset = layout.options_y - layout.rect.y;
+        if header {
+            with_header = true;
+            assert!(lines[offset].contains("Subject"));
+        } else {
+            without_header = true;
+        }
+        assert!(
+            lines[offset + usize::from(header)].contains("No matches"),
+            "surface height {rows}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("No matches"))
+                .count(),
+            1
+        );
+    }
+    assert!(with_header && without_header);
+}
+
+#[test]
 fn table_headers_scroll_with_whole_actions_and_original_activation() {
     let mut palette = table_palette();
     palette.page_rows.set(8);
