@@ -265,11 +265,13 @@ fn the_launcher_registers_a_pane_and_runs_the_program() {
     );
     assert_eq!(launch(&program, &[]).unwrap(), code);
     let seen = std::fs::read_to_string(&snapshot).unwrap();
+    let error = launch(&scratch.path().join("missing-program"), &[]).unwrap_err();
+    assert_eq!(error.to_string(), "run Muse");
     if pane.is_empty() {
         assert!(seen.is_empty(), "no registration outside a pane");
     } else {
         assert!(!seen.is_empty(), "the session runs registered");
-        // ... and the registration is removed with the session.
+        // Both an exited child and a failed spawn release their registration.
         let lingering = std::fs::read_dir(directory())
             .map(|entries| {
                 entries

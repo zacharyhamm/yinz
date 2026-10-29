@@ -1223,6 +1223,128 @@ pub fn pane_geometry_follows_override_until_reset() {
     );
 }
 
+#[test]
+fn pane_overlap_counts_shared_layout_spans() {
+    let mut first = make_terminal_pane_for_bell();
+    first.set_geom(geom_at(10, 20, 10, 10));
+    let mut second = make_terminal_pane_for_bell();
+    for (geom, rows, columns) in [
+        (geom_at(30, 40, 5, 5), 0, 0),
+        (geom_at(20, 30, 5, 5), 0, 0),
+        (geom_at(12, 23, 4, 3), 3, 4),
+        (geom_at(5, 15, 30, 30), 10, 10),
+        (geom_at(18, 29, 4, 3), 1, 2),
+        (geom_at(15, 25, 0, 0), 0, 0),
+        (geom_at(10, 20, 0, 0), 0, 0),
+        (geom_at(20, 30, 0, 0), 0, 0),
+        (geom_at(10, 20, 10, 10), 10, 10),
+    ] {
+        second.set_geom(geom);
+        for (pane, other) in [(&first, &second), (&second, &first)] {
+            assert_eq!(pane.get_horizontal_overlap_with(other), rows, "{geom:?}");
+            assert_eq!(pane.get_vertical_overlap_with(other), columns, "{geom:?}");
+            assert_eq!(pane.horizontally_overlaps_with(other), rows > 0, "{geom:?}");
+            assert_eq!(
+                pane.vertically_overlaps_with(other),
+                columns > 0,
+                "{geom:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn pane_width_cap_keeps_layout_but_limits_mouse_edges() {
+    use crate::pane::PaneEdge;
+
+    let mut pane = make_terminal_pane_for_bell();
+    let requested = geom_at(0, 0, 121, 20);
+    pane.set_geom(requested);
+    pane.set_content_offset(Offset::frame(1));
+    pane.set_max_content_width(80);
+
+    assert_eq!(pane.current_geom(), requested);
+    assert_eq!(
+        (pane.x(), pane.cols(), pane.right_boundary_x_coords()),
+        (0, 121, 121)
+    );
+    assert_eq!(pane.render_geom(), geom_at(19, 0, 82, 20));
+    assert_eq!((pane.get_content_x(), pane.get_content_columns()), (20, 80));
+    assert_eq!((pane.grid.width, pane.grid.height), (80, 18));
+    for column in [0, 18, 101, 120] {
+        let position = Position::new(2, column);
+        assert!(!pane.contains(&position));
+        assert!(!pane.position_is_on_frame(&position));
+        assert_eq!(pane.get_edge_at_position(&position), None);
+    }
+    for (position, edge) in [
+        (Position::new(0, 19), PaneEdge::TopLeft),
+        (Position::new(0, 100), PaneEdge::TopRight),
+        (Position::new(19, 19), PaneEdge::BottomLeft),
+        (Position::new(19, 100), PaneEdge::BottomRight),
+    ] {
+        assert!(pane.position_is_on_frame(&position));
+        assert_eq!(pane.get_edge_at_position(&position), Some(edge));
+    }
+    for row in [-1, isize::MIN] {
+        let mut position = Position::new(0, 19);
+        position.change_line(row);
+        assert!(!pane.contains(&position));
+        assert!(!pane.position_is_on_frame(&position));
+        assert_eq!(pane.get_edge_at_position(&position), None);
+    }
+    pane.set_max_content_width(0);
+    assert_eq!(pane.current_geom(), requested);
+    assert_eq!(pane.render_geom(), requested);
+    assert_eq!(pane.grid.width, 119);
+}
+
+#[test]
+fn resize_pty_clamps_dimensions_without_wrapping() {
+    use crate::panes::PaneId;
+    use crate::plugins::PluginInstruction;
+    use crate::thread_bus::ThreadSenders;
+    use crate::PtyWriteInstruction;
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    use yinz_runtime::errors::prelude::*;
+
+    let mut pane = make_terminal_pane_for_bell();
+    let (tx, rx) = unbounded();
+    let mut senders = ThreadSenders::default();
+    senders.replace_to_pty_writer(SenderWithContext::new(tx));
+    let max = u16::MAX as usize;
+    for (cols, rows, cell, expected_cols, expected_rows, expected_pixels) in [
+        (121, 20, None, 121, 20, None),
+        (121, 20, Some((8, 21)), 121, 20, Some((968, 420))),
+        (3, 5, Some((21845, 13107)), 3, 5, Some((u16::MAX, u16::MAX))),
+        (4, 6, Some((21845, 13107)), 4, 6, Some((u16::MAX, u16::MAX))),
+        (
+            121,
+            20,
+            Some((usize::MAX, usize::MAX)),
+            121,
+            20,
+            Some((u16::MAX, u16::MAX)),
+        ),
+        (max, max, None, u16::MAX, u16::MAX, None),
+        (max + 1, max + 1, None, u16::MAX, u16::MAX, None),
+        (0, 0, Some((usize::MAX, usize::MAX)), 0, 0, Some((0, 0))),
+    ] {
+        // Exercise PTY serialization without allocating a grid at these synthetic sizes.
+        pane.geom = geom_at(0, 0, cols, rows);
+        let cell = RefCell::new(cell.map(|(width, height)| SizeInPixels { width, height }));
+        crate::resize_pty!(pane, (), senders, cell).unwrap();
+        let (instruction, _) = rx.try_recv().unwrap();
+        let PtyWriteInstruction::ResizePty(id, cols, rows, width, height) = instruction else {
+            panic!("unexpected instruction: {instruction:?}");
+        };
+        assert_eq!(id, crate::TerminalId::new(1));
+        assert_eq!((cols, rows), (expected_cols, expected_rows));
+        assert_eq!(width, expected_pixels.map(|(width, _)| width));
+        assert_eq!(height, expected_pixels.map(|(_, height)| height));
+    }
+}
+
 fn create_guest_modal_pane() -> TerminalPane {
     let mut fake_win_size = PaneGeom::default();
     fake_win_size.cols.set_inner(80);

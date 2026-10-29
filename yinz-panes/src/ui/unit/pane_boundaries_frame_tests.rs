@@ -157,6 +157,53 @@ fn characters_to_string(chars: &[TerminalCharacter]) -> String {
     chars.iter().map(|c| c.character).collect()
 }
 
+#[test]
+fn other_focused_users_fit_their_reported_columns() {
+    let mut frame = pane_frame_with(false, false, 80);
+    frame.is_main_client = false;
+    for clients in 1..=3 {
+        frame.other_focused_clients = vec![None; clients];
+        for available in 0..40 {
+            let indicator = frame.render_title_middle(available);
+            assert_eq!(indicator.is_some(), available >= clients * 2 + 4);
+            if let Some((characters, reported)) = indicator {
+                let rendered = characters
+                    .iter()
+                    .map(TerminalCharacter::width)
+                    .sum::<usize>();
+                assert_eq!(rendered, reported);
+                assert!(rendered <= available);
+            }
+        }
+    }
+}
+
+#[test]
+fn highlight_tooltips_fit_rendered_columns() {
+    for tooltip in ["hint", "界面", "e\u{301}", "👩\u{200d}💻"] {
+        let mut frame = pane_frame_with(false, false, 80);
+        frame.highlight_tooltip = Some(tooltip.into());
+        let text = format!(" Alt <Click> - {tooltip} ");
+        let text_width = text.chars().map(|c| c.width().unwrap_or(0)).sum::<usize>();
+        for available in [text_width - 1, text_width, text_width + 1] {
+            frame.geom.cols = available + 2;
+            let characters = frame.render_highlight_tooltip_undertitle().unwrap();
+            assert_eq!(
+                characters
+                    .iter()
+                    .map(TerminalCharacter::width)
+                    .sum::<usize>(),
+                frame.geom.cols,
+                "tooltip {tooltip:?}, available {available}"
+            );
+            assert_eq!(
+                characters_to_string(&characters).contains(&text),
+                available >= text_width
+            );
+        }
+    }
+}
+
 fn right_side_indicators(show_pin: bool, show_scroll: bool) -> String {
     let mut frame = pane_frame_with(false, true, 80);
     frame.scroll_position = (1, 2);
