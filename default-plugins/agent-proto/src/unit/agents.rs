@@ -11,6 +11,8 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use unicode_width::UnicodeWidthStr;
 use yinz_tile::prelude::HostId;
+use yinz_types::internal_ids::DataRevision;
+use yinz_types::plugin_data::REV_ABSENT;
 
 /// The machine most of these tests are on. Named, rather than empty, so that a helper which
 /// forgot to write `host_id` fails a test instead of matching the pre-migration rows.
@@ -1492,12 +1494,14 @@ fn an_agent_run_round_trips_through_the_shared_store() {
         }],
         omitted_entries: 0,
     };
-    local.apply(rows::run_mutations(&run)).unwrap();
+    local.apply(rows::run_mutations(&run, REV_ABSENT)).unwrap();
     let mut foreign = run.clone();
     foreign.id = "claude:session-2".to_owned();
     foreign.session_id = "session-2".to_owned();
     foreign.yinz_session_name = "another-yinz".to_owned().into();
-    local.apply(rows::run_mutations(&foreign)).unwrap();
+    local
+        .apply(rows::run_mutations(&foreign, REV_ABSENT))
+        .unwrap();
     let active = local
         .fetch(&rows::active_runs_request(&owner("yinz")))
         .unwrap();
@@ -1517,7 +1521,9 @@ fn an_agent_run_round_trips_through_the_shared_store() {
 
     run.ended_at_ms = Some(20);
     run.outcome = RunOutcome::Completed;
-    local.apply(rows::run_mutations(&run)).unwrap();
+    local
+        .apply(rows::run_mutations(&run, DataRevision::new(1)))
+        .unwrap();
     let completed = local
         .fetch(
             &FetchRequest::entity(rows::RUN_ENTITY)
@@ -1684,7 +1690,7 @@ fn a_run_detail_is_cut_to_its_byte_budget_from_the_newest_end() {
         7,
         &texts.iter().map(String::as_str).collect::<Vec<_>>(),
     );
-    local.apply(rows::run_mutations(&run)).unwrap();
+    local.apply(rows::run_mutations(&run, REV_ABSENT)).unwrap();
 
     let mut detail = AgentRun {
         entries: Vec::new(),
@@ -1712,7 +1718,7 @@ fn a_run_detail_is_cut_to_its_byte_budget_from_the_newest_end() {
     // a large one.
     let huge = "x".repeat(rows::RUN_DETAIL_BYTES * 2);
     let big = a_run_with_entries("claude:session-2", "yinz", 8, &[huge.as_str()]);
-    local.apply(rows::run_mutations(&big)).unwrap();
+    local.apply(rows::run_mutations(&big, REV_ABSENT)).unwrap();
     let mut detail = AgentRun {
         entries: Vec::new(),
         ..big.clone()
@@ -1739,7 +1745,7 @@ fn a_run_cut_to_its_newest_entries_opens_with_a_notice() {
         7,
         &texts.iter().map(String::as_str).collect::<Vec<_>>(),
     );
-    local.apply(rows::run_mutations(&run)).unwrap();
+    local.apply(rows::run_mutations(&run, REV_ABSENT)).unwrap();
     let mut detail = AgentRun {
         entries: Vec::new(),
         ..run.clone()
@@ -1813,7 +1819,7 @@ fn a_long_timeline_is_paged_back_in_full() {
         7,
         &texts.iter().map(String::as_str).collect::<Vec<_>>(),
     );
-    local.apply(rows::run_mutations(&run)).unwrap();
+    local.apply(rows::run_mutations(&run, REV_ABSENT)).unwrap();
     let mut restored = rows::runs_from_rows(
         &local
             .fetch(&rows::active_runs_request(&owner("yinz")))
@@ -1843,7 +1849,12 @@ fn lineage_round_trips_in_payload_and_header_and_defaults_to_absent() {
             serde_json::from_value::<AgentRunHeader>(header).unwrap(),
             run.header()
         );
-        local.apply(rows::run_mutations(&run)).unwrap();
+        local
+            .apply(rows::run_mutations(
+                &run,
+                DataRevision::new(i64::from(linked)),
+            ))
+            .unwrap();
         assert_eq!(stored_run(&local, &run.id), run);
         let fetched = local
             .fetch(&rows::run_by_id_request(&run.id).select(["header"]))
@@ -1927,6 +1938,43 @@ fn stored_run(local: &impl crate::store::Backend, id: &str) -> AgentRun {
     runs.into_iter().next().expect("the run is stored")
 }
 
+#[test]
+fn run_writes_reject_stale_metadata_and_roll_back_its_entries() {
+    use crate::store::{self, Backend};
+    use yinz_tile::prelude::DataValue;
+
+    let first = store::Local::shared("agent-service");
+    first.define_all(&store::shared_defs()).unwrap();
+    let second = first.joined(store::SHARED, "agent-service");
+    let run = a_run_with_entries("claude:concurrent", "here", 7, &["original"]);
+    first.apply(rows::run_mutations(&run, REV_ABSENT)).unwrap();
+    assert!(second.apply(rows::run_mutations(&run, REV_ABSENT)).is_err());
+    let fetched = second.fetch(&rows::run_by_id_request(&run.id)).unwrap();
+    let Some(DataValue::Int(revision)) = fetched.get(&fetched.rows[0], "rev") else {
+        panic!("the original read carries its database revision")
+    };
+    let expected = DataRevision::new(*revision);
+    let mut winner = stored_run(&first, &run.id);
+    let mut stale = stored_run(&second, &run.id);
+    winner.cwd = Some("/new/location".into());
+    first.apply(rows::run_mutations(&winner, expected)).unwrap();
+    stale.entries[0].text = "stale replacement".into();
+    stale.entries.push(RunEntry {
+        revision: 2,
+        ..stale.entries[0].clone()
+    });
+    for mutations in [
+        rows::run_mutations(&stale, expected),
+        vec![rows::run_owned_mutation(&stale, &owner("here"), expected)],
+    ] {
+        assert!(matches!(
+            second.apply(mutations),
+            Err(yinz_tile::prelude::WriteError::Conflict(_))
+        ));
+        assert_eq!(stored_run(&first, &run.id), winner);
+    }
+}
+
 /// A warped pane's run continues where it left off.
 ///
 /// The session that lost the pane cannot tell a warp from a `kill -9`, so it closes the
@@ -1942,12 +1990,16 @@ fn a_closed_run_is_reopened_by_the_session_that_adopted_its_pane() {
     let gaining = losing.joined(store::SHARED, "agent-service");
 
     let mut run = a_run_with_entries("claude:session-1", "here", 7, &["ship it"]);
-    losing.apply(rows::run_mutations(&run)).unwrap();
+    losing.apply(rows::run_mutations(&run, REV_ABSENT)).unwrap();
     // The pane leaves the manifest, so the losing session releases the run.
     run.ended_at_ms = Some(20);
     run.outcome = RunOutcome::Closed;
     losing
-        .apply(vec![rows::run_owned_mutation(&run, &owner("here"))])
+        .apply(vec![rows::run_owned_mutation(
+            &run,
+            &owner("here"),
+            DataRevision::new(1),
+        )])
         .unwrap();
     assert_eq!(
         stored_run(&losing, "claude:session-1").outcome,
@@ -1959,7 +2011,9 @@ fn a_closed_run_is_reopened_by_the_session_that_adopted_its_pane() {
     assert_eq!(adopted.entries.len(), 1, "the history came with it");
     assert_eq!(adopted.started_at_ms, 10, "and so did when it began");
     assert_eq!(adopted.outcome, RunOutcome::Active);
-    gaining.apply(rows::run_mutations(&adopted)).unwrap();
+    gaining
+        .apply(rows::run_mutations(&adopted, DataRevision::new(2)))
+        .unwrap();
 
     let stored = stored_run(&losing, "claude:session-1");
     assert_eq!(stored.pane_id, 2);
@@ -1983,7 +2037,7 @@ fn a_release_after_the_run_moved_on_does_not_overwrite_it() {
     let gaining = losing.joined(store::SHARED, "agent-service");
 
     let run = a_run_with_entries("claude:session-1", "here", 7, &["ship it"]);
-    losing.apply(rows::run_mutations(&run)).unwrap();
+    losing.apply(rows::run_mutations(&run, REV_ABSENT)).unwrap();
 
     // The gaining session gets there first, and the agent keeps working.
     let mut adopted = stored_run(&gaining, "claude:session-1").adopted_by(2, &owner("there"));
@@ -1996,15 +2050,21 @@ fn a_release_after_the_run_moved_on_does_not_overwrite_it() {
         text: "shipped".to_owned(),
         created_at_ms: None,
     });
-    gaining.apply(rows::run_mutations(&adopted)).unwrap();
+    gaining
+        .apply(rows::run_mutations(&adopted, DataRevision::new(1)))
+        .unwrap();
 
     // Only now does the losing session notice the pane is gone.
     let mut released = run.clone();
     released.ended_at_ms = Some(20);
     released.outcome = RunOutcome::Closed;
     losing
-        .apply(vec![rows::run_owned_mutation(&released, &owner("here"))])
-        .unwrap();
+        .apply(vec![rows::run_owned_mutation(
+            &released,
+            &owner("here"),
+            DataRevision::new(1),
+        )])
+        .unwrap_err();
 
     let stored = stored_run(&losing, "claude:session-1");
     assert_eq!(stored, adopted, "the loser's last word was dropped whole");
@@ -2025,12 +2085,16 @@ fn a_release_of_a_run_nobody_took_closes_it() {
     let local = store::Local::shared("agent-service");
     local.define_all(&store::shared_defs()).unwrap();
     let mut run = a_run_with_entries("claude:session-1", "here", 7, &["ship it"]);
-    local.apply(rows::run_mutations(&run)).unwrap();
+    local.apply(rows::run_mutations(&run, REV_ABSENT)).unwrap();
 
     run.ended_at_ms = Some(20);
     run.outcome = RunOutcome::Closed;
     local
-        .apply(vec![rows::run_owned_mutation(&run, &owner("here"))])
+        .apply(vec![rows::run_owned_mutation(
+            &run,
+            &owner("here"),
+            DataRevision::new(1),
+        )])
         .unwrap();
 
     let stored = stored_run(&local, "claude:session-1");
@@ -2206,7 +2270,9 @@ fn a_guarded_run_write_does_not_match_another_machines_session_of_the_same_name(
     // The build box owns the run, and has said something recent about it.
     let mut run = a_run_with_entries("claude:session-1", "main", 7, &["answered"]);
     run.host_id = on_build_box.host_id.clone();
-    build_box.apply(rows::run_mutations(&run)).unwrap();
+    build_box
+        .apply(rows::run_mutations(&run, REV_ABSENT))
+        .unwrap();
 
     // The laptop's session, also called `main`, closes a run it believes it lost.
     let mut stale = run.clone();
@@ -2214,8 +2280,12 @@ fn a_guarded_run_write_does_not_match_another_machines_session_of_the_same_name(
     stale.ended_at_ms = Some(99);
     stale.outcome = RunOutcome::Completed;
     laptop
-        .apply(vec![rows::run_owned_mutation(&stale, &on_laptop)])
-        .unwrap();
+        .apply(vec![rows::run_owned_mutation(
+            &stale,
+            &on_laptop,
+            DataRevision::new(1),
+        )])
+        .unwrap_err();
 
     let live = rows::runs_from_rows(
         &build_box
@@ -2349,7 +2419,9 @@ fn a_run_written_before_the_host_column_is_restored_and_then_claimed() {
     // Claiming costs no write of its own: the stamp rides out with the next persist.
     rows::claim_unowned_runs(&mut restored, &owner("yinz"));
     assert_eq!(restored[0].host_id, HostId::new(HOST));
-    local.apply(rows::run_mutations(&restored[0])).unwrap();
+    local
+        .apply(rows::run_mutations(&restored[0], DataRevision::new(1)))
+        .unwrap();
 
     // Which narrows the row. Another machine running a session of the same name could reach
     // it while it named no host, and cannot once it does.
@@ -2381,14 +2453,18 @@ fn a_guarded_close_can_close_a_run_that_predates_the_host_column() {
     local.define_all(&store::shared_defs()).unwrap();
     let mut run = a_run_with_entries("claude:session-1", "yinz", 7, &["asked"]);
     run.host_id = HostId::default();
-    local.apply(rows::run_mutations(&run)).unwrap();
+    local.apply(rows::run_mutations(&run, REV_ABSENT)).unwrap();
 
     // The daemon restores it, claims it in memory, and closes it when the pane goes.
     run.host_id = HostId::new(HOST);
     run.ended_at_ms = Some(99);
     run.outcome = RunOutcome::Closed;
     local
-        .apply(vec![rows::run_owned_mutation(&run, &owner("yinz"))])
+        .apply(vec![rows::run_owned_mutation(
+            &run,
+            &owner("yinz"),
+            DataRevision::new(1),
+        )])
         .unwrap();
 
     assert!(

@@ -52,6 +52,7 @@ fn boundaries_cover_all_dependency_kinds_targets_and_aliases() {
     validate_dependency_boundaries(&metadata).unwrap();
     for (source, destination) in [
         ("yinz-types", "yinz-cli"),
+        ("yinz-terminal", "yinz-ipc"),
         ("yinz-bus", "yinz-routing"),
         ("yinz-bus", "yinz-terminal"),
         ("yinz-bus", "yinz-server-os"),
@@ -118,7 +119,7 @@ fn boundaries_cover_all_dependency_kinds_targets_and_aliases() {
     }
 }
 
-/// The first four edges are the ones that once shipped test helpers in the release binary.
+/// Includes edges that once shipped test helpers in the release binary.
 #[test]
 fn test_only_features_are_enabled_only_from_dev_dependencies() {
     let mut metadata = allowed_workspace();
@@ -131,6 +132,7 @@ fn test_only_features_are_enabled_only_from_dev_dependencies() {
         .push(json!(COMPOSITION_ROOT));
     for (source, destination) in [
         ("yinz-plugin-host", "yinz-plugin-authoring"),
+        ("yinz-plugin-host", "project-data"),
         ("yinz-tab", "yinz-panes"),
         ("yinz-screen", "yinz-panes"),
         ("yinz-screen", "yinz-tab"),

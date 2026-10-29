@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+use yinz_types::plugin_data::REV_ABSENT;
+
 use yinz_cli::args::CliAction;
 use yinz_integration_tests::{keys, LayoutInfo, TestRunner, PROMPT, TERMINAL_SIZE};
 
@@ -1003,7 +1005,7 @@ fn command_palette_agent_history_event_back_focus_and_archive_resume() {
     data.plugin_data()
         .apply(
             store::SHARED,
-            &agent_proto::agents::rows::run_mutations(&run),
+            &agent_proto::agents::rows::run_mutations(&run, REV_ABSENT),
         )
         .unwrap();
     let mut yinz = TestRunner::new(TERMINAL_SIZE)

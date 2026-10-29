@@ -237,11 +237,12 @@ pub(super) fn run(op: &str, args: Value) -> Result<Value> {
         "EntriesFromRows" => encode(agents::rows::entries_from_rows(&arg(&args, 0)?)),
         "RunsFromRows" => encode(agents::rows::runs_from_rows(&arg(&args, 0)?)),
         "RunHeadersFromRows" => encode(agents::rows::run_headers_from_rows(&arg(&args, 0)?)),
-        "RunMutation" => encode(agents::rows::run_mutation(&arg(&args, 0)?)),
-        "RunMutations" => encode(agents::rows::run_mutations(&arg(&args, 0)?)),
+        "RunMutation" => encode(agents::rows::run_mutation(&arg(&args, 0)?, arg(&args, 1)?)),
+        "RunMutations" => encode(agents::rows::run_mutations(&arg(&args, 0)?, arg(&args, 1)?)),
         "RunOwnedMutation" => encode(agents::rows::run_owned_mutation(
             &arg(&args, 0)?,
             &owner(args[1].clone())?,
+            arg(&args, 2)?,
         )),
         "EntryMutation" => encode(agents::rows::entry_mutation(
             &arg::<String>(&args, 0)?,

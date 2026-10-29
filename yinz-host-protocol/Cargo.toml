@@ -1,6 +1,6 @@
 [package]
 name = "yinz-host-protocol"
-description = "Host-terminal queries and desktop-notification escapes Yinz relays between panes and the host"
+description = "Terminal wire protocols Yinz relays between panes and the host"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,4 +9,6 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+prost = { workspace = true }
 yinz-types = { workspace = true }

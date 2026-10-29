@@ -119,19 +119,20 @@ fn regex_budgets_include_nonmatches_and_never_match_partial_entries() {
 }
 
 #[test]
-fn regex_scope_and_exact_run_precedence_match_keyword_search() {
+fn regex_and_keyword_exact_run_search_keep_the_host_scope() {
     let backend = seeded();
     let filter = Filter {
         host_id: Some(HostId::new("unrelated")),
         ..Filter::default()
     };
-    assert!(search(&backend, &filter, None, "parser", true, 10)
-        .unwrap()
-        .hits
-        .is_empty());
-    let found = search(&backend, &filter, Some("codex:two"), "parser", true, 10).unwrap();
-    assert_eq!(found.hits.len(), 1);
-    assert_eq!(found.hits[0].run_id, "codex:two");
+    for regex in [false, true] {
+        for run_id in [None, Some("codex:two")] {
+            assert!(search(&backend, &filter, run_id, "parser", regex, 10)
+                .unwrap()
+                .hits
+                .is_empty());
+        }
+    }
 }
 
 #[test]

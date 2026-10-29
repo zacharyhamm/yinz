@@ -7,7 +7,9 @@ use yinz_bus::pty::ClientTabIndexOrPaneId;
 use yinz_runtime::channels::{unbounded, SenderWithContext};
 use yinz_types::agent::control::AgentOutcome;
 use yinz_types::input::command::{RunCommand, TerminalAction};
+use yinz_types::internal_ids::DataRevision;
 use yinz_types::internal_ids::{ClientId, HostId, TabId};
+use yinz_types::plugin_data::REV_ABSENT;
 
 #[test]
 fn live_agent_labels_use_panel_project_and_checkout_metadata() {
@@ -612,13 +614,15 @@ fn palette_history_search_exact_event_predecessor_and_resume() {
     use yinz_bus::command_palette::{HistoryAction, HistoryReply};
     let (temp, data) = repository();
     let recorded = recorded_run(temp.path());
+    let revision = std::cell::Cell::new(REV_ABSENT);
     let write = |recorded: &agent_proto::agents::AgentRun| {
         data.plugin_data()
             .apply(
                 project_data::store::SHARED,
-                &agent_proto::agents::rows::run_mutations(recorded),
+                &agent_proto::agents::rows::run_mutations(recorded, revision.get()),
             )
             .unwrap();
+        revision.set(DataRevision::new(revision.get().get() + 1));
     };
     write(&recorded);
     let execute = |action| run(&request(temp.path(), AgentAction::History(action)), &data);
@@ -836,7 +840,7 @@ fn palette_history_opens_at_tail_and_loads_earlier_revisions_only_on_request() {
         data.plugin_data()
             .apply(
                 project_data::store::SHARED,
-                &agent_proto::agents::rows::run_mutations(&recorded),
+                &agent_proto::agents::rows::run_mutations(&recorded, REV_ABSENT),
             )
             .unwrap();
         // Other runs must not contribute revisions to this timeline.
@@ -845,7 +849,7 @@ fn palette_history_opens_at_tail_and_loads_earlier_revisions_only_on_request() {
         data.plugin_data()
             .apply(
                 project_data::store::SHARED,
-                &agent_proto::agents::rows::run_mutations(&other),
+                &agent_proto::agents::rows::run_mutations(&other, REV_ABSENT),
             )
             .unwrap();
         let mut action = HistoryAction::Run {
@@ -922,7 +926,7 @@ fn palette_history_hit_backfills_prefix_and_finishes_forward_pagination() {
         data.plugin_data()
             .apply(
                 project_data::store::SHARED,
-                &agent_proto::agents::rows::run_mutations(&recorded),
+                &agent_proto::agents::rows::run_mutations(&recorded, REV_ABSENT),
             )
             .unwrap();
         let mut action = HistoryAction::Hit {
@@ -983,7 +987,7 @@ fn palette_history_filters_match_the_same_runs_with_or_without_text() {
         data.plugin_data()
             .apply(
                 project_data::store::SHARED,
-                &agent_proto::agents::rows::run_mutations(record),
+                &agent_proto::agents::rows::run_mutations(record, REV_ABSENT),
             )
             .unwrap();
     }
@@ -1045,7 +1049,7 @@ fn palette_history_run_search_orders_events_and_keeps_time_and_hit_navigation() 
     data.plugin_data()
         .apply(
             project_data::store::SHARED,
-            &agent_proto::agents::rows::run_mutations(&recorded),
+            &agent_proto::agents::rows::run_mutations(&recorded, REV_ABSENT),
         )
         .unwrap();
     for query in ["", "needle"] {
@@ -1147,7 +1151,7 @@ fn palette_history_keeps_panel_tool_entries_and_opens_full_retained_tools() {
     data.plugin_data()
         .apply(
             project_data::store::SHARED,
-            &agent_proto::agents::rows::run_mutations(&recorded),
+            &agent_proto::agents::rows::run_mutations(&recorded, REV_ABSENT),
         )
         .unwrap();
     let execute = |action| {
@@ -1291,7 +1295,7 @@ fn palette_history_opens_merged_tools_exceeding_fetch_budget() {
         })
         .collect();
     recorded.revision = 30;
-    for batch in rows::run_mutations(&recorded).chunks(10) {
+    for batch in rows::run_mutations(&recorded, REV_ABSENT).chunks(10) {
         data.plugin_data()
             .apply(project_data::store::SHARED, batch)
             .unwrap();

@@ -5,8 +5,7 @@ pub mod client_server_contract;
 pub mod consts;
 pub mod ipc;
 mod mode_info;
-pub mod nested_session;
-pub mod nested_session_contract;
+pub use yinz_host_protocol::{nested_session, nested_session_contract};
 pub mod probe;
 pub use mode_info::get_mode_info;
 

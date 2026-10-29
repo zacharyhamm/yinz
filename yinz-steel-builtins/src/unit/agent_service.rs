@@ -336,22 +336,25 @@ fn publishing_and_persistence_keep_long_histories_and_other_live_agents() {
             .iter()
             .filter_map(|command| command.get("DataApply"))
             .collect();
-        assert_eq!(writes.len(), 1);
+        assert_eq!(writes.len(), 2);
         assert_eq!(writes[0]["namespace"], "shared:yinz");
-        let mutations = writes[0]["mutations"].as_array().unwrap();
+        let mutations: Vec<_> = writes
+            .iter()
+            .flat_map(|write| write["mutations"].as_array().unwrap())
+            .collect();
         assert_eq!(mutations.len(), 4);
         for (run, revision) in [(&mut run, 8000 + added), (&mut other, added)] {
             let entry = json!({"revision":revision, "event_id":null, "kind":"result", "text":"new result", "created_at_ms":90000});
             run["revision"] = json!(revision);
             run["entries"].as_array_mut().unwrap().push(entry.clone());
             for (op, args) in [
-                ("RunMutation", json!([run])),
+                ("RunMutation", json!([run, added - 1])),
                 ("EntryMutation", json!([run["id"], run["host_id"], entry])),
             ] {
                 let expected = runtime
                     .invoke("yinz-agent-model", vec![json!("agents"), json!(op), args])
                     .unwrap();
-                assert!(mutations.contains(&expected));
+                assert!(mutations.contains(&&expected));
             }
             assert_eq!(
                 snapshot["runs"][if run["pane_id"] == 7 { 0 } else { 1 }]["revision"],

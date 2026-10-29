@@ -92,10 +92,16 @@ pub(super) fn apply(
             schemas.insert(entity.to_owned(), require_entity(exec, namespace, entity)?);
         }
     }
-    if mutations
-        .iter()
-        .any(|mutation| matches!(mutation, Mutation::AssertRows { .. }))
-    {
+    if mutations.iter().any(|mutation| {
+        matches!(
+            mutation,
+            Mutation::AssertRows { .. }
+                | Mutation::Update {
+                    expect_rev: Some(_),
+                    ..
+                }
+        )
+    }) {
         let mut tables: Vec<_> = schemas.values().map(EntitySchema::table).collect();
         tables.sort();
         exec.lock_writes(&tables)?;

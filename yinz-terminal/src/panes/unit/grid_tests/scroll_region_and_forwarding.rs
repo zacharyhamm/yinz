@@ -1222,7 +1222,10 @@ fn nested_session_frame_is_staged_for_dispatch() {
     let mut vte_parser = vte::Parser::new();
     let mut grid = new_grid_for_nested_frames();
     let message = nested_announce_message();
-    vte_parser.advance(&mut grid, &yinz_ipc::nested_session::encode_frame(&message));
+    vte_parser.advance(
+        &mut grid,
+        &yinz_host_protocol::nested_session::encode_frame(&message),
+    );
     assert_eq!(grid.pending_nested_session_messages, vec![message]);
 }
 
@@ -1231,7 +1234,7 @@ fn nested_session_frame_split_across_feeds_is_staged() {
     let mut vte_parser = vte::Parser::new();
     let mut grid = new_grid_for_nested_frames();
     let message = nested_announce_message();
-    let frame = yinz_ipc::nested_session::encode_frame(&message);
+    let frame = yinz_host_protocol::nested_session::encode_frame(&message);
     let (first_half, second_half) = frame.split_at(frame.len() / 2);
     vte_parser.advance(&mut grid, first_half);
     assert!(grid.pending_nested_session_messages.is_empty());

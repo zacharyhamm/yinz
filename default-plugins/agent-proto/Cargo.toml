@@ -8,8 +8,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-# The store seam, the schemas and the project registry, re-exported unchanged. Its
-# native build carries the store engine, which is what `store::Local` needs here.
+# The pure store seam, schemas and project registry, re-exported unchanged.
 project-data = { path = "../project-data" }
 yinz-types = { workspace = true }
 yinz-tile = { path = "../../yinz-tile" }
@@ -23,3 +22,6 @@ regex = { workspace = true, features = ["unicode-case"] }
 
 anyhow = { workspace = true }
 png = { version = "0.17.16", default-features = false }
+
+[dev-dependencies]
+project-data = { path = "../project-data", features = ["test-support"] }

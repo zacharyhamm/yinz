@@ -1,3 +1,5 @@
+use yinz_types::internal_ids::DataRevision;
+use yinz_types::plugin_data::REV_ABSENT;
 /// The machine these runs were recorded on.
 const HOST: &str = "host-a";
 
@@ -112,7 +114,7 @@ pub(super) fn run(id: &str, kind: &str, session: &str, started_at_ms: i64) -> Ag
 
 pub(super) fn write(backend: &impl Backend, run: &AgentRun) {
     backend
-        .apply(rows::run_mutations(run))
+        .apply(rows::run_mutations(run, REV_ABSENT))
         .expect("wrote the run");
 }
 
@@ -238,6 +240,122 @@ fn tool_payload_round_trip_search_and_exact_retrieval() {
 // -- searching ------------------------------------------------------
 
 #[test]
+fn explicit_run_search_intersects_every_filter_for_keyword_and_regex() {
+    let backend = backend();
+    let mut recorded = run("scoped", "claude", "main", 100);
+    recorded.entries = vec![entry(1, RunEntryKind::Prompt, "needle", 100)];
+    write(&backend, &recorded);
+    let matching = Filter {
+        yinz_session_name: Some("main".into()),
+        host_id: Some(HOST.into()),
+        root: Some(RootScope::new("/work", HOST.into())),
+        kind: Some("claude".into()),
+        since_ms: Some(100),
+        active: Some(true),
+    };
+    let rejected = [
+        Filter {
+            yinz_session_name: Some("other".into()),
+            ..matching.clone()
+        },
+        Filter {
+            host_id: Some("other".into()),
+            ..matching.clone()
+        },
+        Filter {
+            root: Some(RootScope::new("/elsewhere", HOST.into())),
+            ..matching.clone()
+        },
+        Filter {
+            kind: Some("codex".into()),
+            ..matching.clone()
+        },
+        Filter {
+            since_ms: Some(101),
+            ..matching.clone()
+        },
+        Filter {
+            active: Some(false),
+            ..matching.clone()
+        },
+    ];
+    for regex in [false, true] {
+        assert_eq!(
+            search(&backend, &matching, Some(&recorded.id), "needle", regex, 50)
+                .unwrap()
+                .hits
+                .len(),
+            1
+        );
+        for filter in &rejected {
+            let found = search(&backend, filter, Some(&recorded.id), "needle", regex, 50).unwrap();
+            assert!(found.hits.is_empty(), "{filter:?}");
+            assert!(!found.truncated);
+        }
+        assert!(search(
+            &backend,
+            &Filter::default(),
+            Some("missing"),
+            "needle",
+            regex,
+            50
+        )
+        .unwrap()
+        .hits
+        .is_empty());
+    }
+}
+
+#[test]
+fn explicit_run_search_accepts_payload_only_legacy_rows_and_uses_stored_owner() {
+    use yinz_tile::prelude::{DataValue, Mutation};
+    let backend = backend();
+    let mut recorded = run("legacy-payload", "claude", "main", 100);
+    recorded.entries = vec![entry(1, RunEntryKind::Prompt, "needle", 100)];
+    write(&backend, &recorded);
+    let mut payload = serde_json::to_value(&recorded).unwrap();
+    payload.as_object_mut().unwrap().remove("host_id");
+    payload.as_object_mut().unwrap().remove("yinz_session_name");
+    backend
+        .apply(vec![Mutation::update(
+            rows::RUN_ENTITY,
+            Pred::eq("uid", recorded.id.as_str()),
+        )
+        .set("header", DataValue::Null)
+        .set("payload", payload.to_string())
+        .expect_rev(DataRevision::new(1))
+        .build()])
+        .unwrap();
+    let matching = Filter {
+        host_id: Some(HOST.into()),
+        yinz_session_name: Some("main".into()),
+        root: Some(RootScope::new("/work", HOST.into())),
+        ..Default::default()
+    };
+    for regex in [false, true] {
+        for filter in [&Filter::default(), &matching] {
+            let found = search(&backend, filter, Some(&recorded.id), "needle", regex, 25).unwrap();
+            assert_eq!(found.hits.len(), 1);
+            assert_eq!(found.runs[&recorded.id].host_id, recorded.host_id);
+            assert_eq!(
+                found.runs[&recorded.id].yinz_session_name,
+                recorded.yinz_session_name
+            );
+        }
+        let foreign = Filter {
+            host_id: Some("foreign".into()),
+            ..matching.clone()
+        };
+        assert!(
+            search(&backend, &foreign, Some(&recorded.id), "needle", regex, 25)
+                .unwrap()
+                .hits
+                .is_empty()
+        );
+    }
+}
+
+#[test]
 fn retained_tool_payloads_are_searchable_and_hits_stay_distinct() {
     let backend = backend();
     let mut r = run("tool-run", "codex", "main", 1);
@@ -268,7 +386,9 @@ fn retained_tool_payloads_are_searchable_and_hits_stay_distinct() {
     .unwrap();
     assert_eq!(found.hits.len(), 1);
     r.entries[0].text = "captured-payload-needle".into();
-    write(&backend, &r);
+    backend
+        .apply(rows::run_mutations(&r, DataRevision::new(1)))
+        .unwrap();
     assert_eq!(
         search_runs(&backend, "captured-payload-needle")
             .unwrap()
@@ -343,7 +463,9 @@ fn literal_tool_search_decodes_payloads_and_preserves_scope() {
         );
     }
     r.entries[0].text = payload.into();
-    write(&backend, &r);
+    backend
+        .apply(rows::run_mutations(&r, DataRevision::new(1)))
+        .unwrap();
     for id in [None, Some(r.id.as_str())] {
         let found = search(&backend, &scoped, id, "Hello", false, 50).unwrap();
         assert_eq!(found.hits.len(), 1);
@@ -405,7 +527,9 @@ fn tool_search_pages_nonmatches_and_reports_scan_ceiling() {
         e.tool = Some(capture.clone());
         e
     }));
-    write(&backend, &r);
+    backend
+        .apply(rows::run_mutations(&r, DataRevision::new(1)))
+        .unwrap();
     let mut results = vec![search_runs(&backend, r#"c:\work\file"#).unwrap()];
     for id in [None, Some(r.id.as_str())] {
         results.push(
