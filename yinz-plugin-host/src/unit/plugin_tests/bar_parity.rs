@@ -10,6 +10,7 @@ use std::{
 use yinz_terminal::panes::{grid::Grid, terminal_character::TerminalCharacter, AnsiCode};
 use yinz_types::{
     data::{Event, InputMode, ModeInfo, PluginCommand},
+    input::{actions::Action, layout::RunPluginOrAlias},
     units::FractionalSeconds,
 };
 
@@ -28,6 +29,7 @@ pub(super) struct Pair {
     pub(super) cache: tempfile::TempDir,
     status_bar: bool,
     tab_bar: bool,
+    compact_bar: bool,
 }
 
 impl Pair {
@@ -170,6 +172,7 @@ impl Pair {
             cache,
             status_bar: name == "status-bar",
             tab_bar: name == "tab-bar",
+            compact_bar: name == "compact-bar",
         };
         pair.reference(json!(["load"]));
         pair.compare_commands();
@@ -368,9 +371,20 @@ impl Pair {
         let left = cells(expected);
         let right = cells(&actual);
         let steel_cells = cells(&steel);
-        // The Agents mode recording contains the removed Move panel hint. Current
-        // picker bindings and hints are covered by the builtin bar tests.
-        if self.status_bar && self.mode.mode == InputMode::Agent {
+        // The Agents recording contains the removed Move panel hint and labels the
+        // picker launch "Other action" in the compact tooltip. Builtin bar tests
+        // cover the current hints. Keep command/geometry comparisons above, and
+        // retain cell comparisons for custom generic LaunchPlugin payload fixtures.
+        let legacy_picker_hint = self.compact_bar
+            && self.mode.keybinds.iter().any(|(mode, keys)| {
+                *mode == InputMode::Agent
+                    && keys.iter().flat_map(|(_, actions)| actions).any(|action| {
+                        matches!(action, Action::LaunchOrFocusPlugin {
+                            plugin: RunPluginOrAlias::Alias(alias), ..
+                        } if alias.name == "agents")
+                    })
+            });
+        if (self.status_bar || legacy_picker_hint) && self.mode.mode == InputMode::Agent {
             assert_eq!(left, right);
             return steel_cells;
         }
@@ -556,10 +570,12 @@ fn current_bar_event(event: &Event, status_bar: bool) -> Value {
                         .and_then(|value| value.pointer("/plugin/Alias/name"))
                         .is_some_and(|name| name == "agents")
                 }) {
-                    if status_bar {
+                    if status_bar || object.contains_key("LaunchOrFocusPlugin") {
                         *value = json!("OpenAgents");
                     } else {
-                        // Preserve generic launch-payload grouping with a retained modal.
+                        // The custom LaunchPlugin fixture checks generic payload grouping.
+                        // Keep it on a retained modal; shipped LaunchOrFocusPlugin bindings
+                        // must use OpenAgents so they do not merge into the New agent row.
                         for kind in ["LaunchPlugin", "LaunchOrFocusPlugin"] {
                             if let Some(name) = object
                                 .get_mut(kind)

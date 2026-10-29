@@ -92,9 +92,7 @@ fn switch_to_session_mode() {
 
 /// `Ctrl e` gathers the agent actions the way `Ctrl p` gathers the pane ones.
 ///
-/// The hints are the point: each launch names a different plugin alias, and the keymap cannot
-/// tell them apart by action variant alone, so a regression here shows up as them sharing one
-/// key rather than as a missing mode.
+/// The hints distinguish the plugin launches from each other and from the native Agents picker.
 #[test]
 fn switch_to_agent_mode() {
     let mut yinz = start_yinz();
@@ -107,30 +105,26 @@ fn switch_to_agent_mode() {
     });
     // Each label preceded by its own key, in order — ribbon separators between them are arrow
     // glyphs rather than spaces, so match on the sequence rather than on exact spacing.
-    //
-    // The short label of each hint: five of them no longer fit this 120-column terminal in
-    // full, and the ribbon shortens all of a mode's hints together or none of them. The test
-    // is about which keys carry which actions, in what order, so the shorter spelling of each
-    // is the same assertion.
     let hints = grid_snapshot.lines().last().cloned().unwrap();
     let mut rest = hints.as_str();
     for expected in [
         " n ",
-        " New ",
+        " New agent ",
         " d ",
-        " Duplicate ",
+        " Duplicate agent ",
         " f ",
-        " Fork ",
+        " Fork agent ",
         " a ",
         " Agents ",
-        " o ",
-        " Move ",
+        " ENTER ",
+        " Select pane ",
     ] {
         let found = rest.find(expected).unwrap_or_else(|| {
             panic!("agent hints lost {expected:?} in order, got: {hints:?}");
         });
         rest = &rest[found + expected.len() - 1..];
     }
+    assert!(!hints.contains(" Move ") && !hints.contains(" o "));
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
 }

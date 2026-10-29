@@ -425,4 +425,27 @@ fn compact_agents_tooltip_accepts_the_base_mode_switch_before_opening() {
             json!([["<a>", "Agents"]])
         );
     }
+    let config = yinz_config::config::Config::from_kdl(
+        std::str::from_utf8(yinz_config::assets::DEFAULT_CONFIG).unwrap(),
+        None,
+    )
+    .unwrap();
+    let mut mode = serde_json::to_value(ModeInfo::default()).unwrap();
+    mode["mode"] = json!("Agent");
+    mode["keybinds"] = json!(config.keybinds.to_keybinds_vec());
+    // The shipped New agent and Agents bindings must remain separate tooltip rows.
+    assert_eq!(
+        bar.runtime
+            .invoke("compact-actions", vec![mode.clone()])
+            .unwrap(),
+        json!([["<n>", "Other action"], ["<a>", "Agents"]])
+    );
+    bar.event(json!({"ModeUpdate":mode}));
+    let frame = bar.render(8, 80);
+    assert!(frame.contains("<n>") && frame.contains("<a>") && frame.contains("Agents"));
+    assert_eq!(
+        bar.named("ChangeFloatingPanesCoordinates").last().unwrap()
+            ["ChangeFloatingPanesCoordinates"][0][1]["height"],
+        json!({"Fixed":6})
+    );
 }
