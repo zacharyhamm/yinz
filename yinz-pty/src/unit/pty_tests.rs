@@ -5,7 +5,7 @@ use super::warp::release_tab_with_held_for_warp;
 use super::warp::strand_pane_after_warp;
 use super::warp::warp_restart_command;
 use super::warp::READER_SHUTDOWN_TIMEOUT;
-use crate::pty_host::client::ReleasedPane;
+use crate::os_input_output::ReleasedPane;
 use crate::ServerInstruction;
 use std::time::Duration;
 use yinz_bus::os_input_output::{
@@ -33,9 +33,8 @@ const TERMINAL_41: yinz_types::internal_ids::TerminalId =
     yinz_types::internal_ids::TerminalId::new(41);
 
 use super::*;
+use crate::os_input_output::{RemoteGitProbe, RemoteStatus};
 use crate::plugins::PluginInstruction;
-use crate::pty_host::remote::conn::RemoteGitProbe;
-use crate::pty_host::remote::RemoteStatus;
 use crate::thread_bus::Bus;
 use interprocess::local_socket::Stream as LocalSocketStream;
 use std::collections::HashMap;
@@ -438,7 +437,7 @@ impl TerminalSupervision for MockOsApi {
             ));
         }
         Ok(ReleasedPane::Local(
-            crate::pty_host::client::ReleasedPtyHost {
+            crate::os_input_output::ReleasedPtyHost {
                 host_id: SupervisorId::new(format!("host-{terminal_id}")),
                 host_pid: ProcessId::new(1),
                 control_socket: Some(PathBuf::from("/tmp/warp-test.sock")),

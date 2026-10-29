@@ -125,50 +125,8 @@ impl Drop for HostForward {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct SshOptions {
-    pub identity_file: Option<PathBuf>,
-    pub known_hosts_file: Option<PathBuf>,
-}
-
-impl SshOptions {
-    pub fn args(&self) -> Vec<String> {
-        let mut args = vec![];
-        if let Some(path) = &self.identity_file {
-            // `-i` takes its whole argument as the path, so it needs no quoting.
-            args.extend([
-                "-o".to_owned(),
-                "IdentitiesOnly=yes".to_owned(),
-                "-i".to_owned(),
-                path.display().to_string(),
-            ]);
-        }
-        if let Some(path) = &self.known_hosts_file {
-            args.extend([
-                "-o".to_owned(),
-                format!("UserKnownHostsFile={}", ssh_option_value(path)),
-                "-o".to_owned(),
-                "StrictHostKeyChecking=yes".to_owned(),
-            ]);
-        }
-        args
-    }
-}
-
-/// A path as the value of an `-o Name=value` ssh option.
-///
-/// ssh reads the option string with its config-file tokenizer, which splits on
-/// whitespace even when the whole `Name=value` arrived as one argv entry, so an
-/// unquoted path with a space in it is silently cut at the space. Double quotes
-/// keep the value whole; a quote or backslash inside the path is escaped, which
-/// OpenSSH 8.7 and later understand.
-pub(crate) fn ssh_option_value(path: &Path) -> String {
-    let escaped = path
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
-    format!("\"{escaped}\"")
-}
+pub(crate) use yinz_process_api::ssh_option_value;
+pub use yinz_process_api::SshOptions;
 
 /// Reject options and shell syntax before passing a destination to OpenSSH.
 pub fn validate_ssh_host(host: &str) -> Result<()> {

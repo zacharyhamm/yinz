@@ -642,8 +642,8 @@ fn launcher_keeps_the_ui_alive_across_backend_connection_failures() {
     const ROLE_ENV: &str = "YINZ_TEST_CODEX_RECONNECT_ROLE";
     const ROOT_ENV: &str = "YINZ_TEST_CODEX_RECONNECT_ROOT";
     const REQUEST: &str =
-        r#"{"id":0,"method":"turn/start","params":{"threadId":"reconnect-thread"}}"#;
-    const REPLY: &str = r#"{"id":0,"result":true}"#;
+        r#"{"id":0,"method":"thread/resume","params":{"threadId":"reconnect-thread"}}"#;
+    const REPLY: &str = r#"{"id":0,"result":{"thread":{"id":"reconnect-thread"}}}"#;
     let role = std::env::var(ROLE_ENV).unwrap_or_default();
     if role == "launcher" {
         let program = PathBuf::from(std::env::var_os(ROOT_ENV).unwrap()).join("codex");
@@ -723,10 +723,11 @@ fn launcher_keeps_the_ui_alive_across_backend_connection_failures() {
                         } else {
                             assert!(matches!(attempt, 1 | 3));
                             let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
-                            assert_eq!(
-                                ws.next().await.unwrap().unwrap(),
-                                Message::text(REQUEST)
-                            );
+                            let request = ws.next().await.unwrap().unwrap();
+                            let mut request: Value = serde_json::from_str(request.to_text().unwrap()).unwrap();
+                            let config = request["params"].as_object_mut().unwrap().remove("config").unwrap();
+                            assert_eq!(config["shell_environment_policy.set.YINZ_PANE_REF"], "abcdef012345");
+                            assert_eq!(request, serde_json::from_str::<Value>(REQUEST).unwrap());
                             ws.send(Message::text(REPLY)).await.unwrap();
                             if attempt == 3 {
                                 assert!(matches!(
@@ -890,6 +891,9 @@ async fn reconnects_replace_only_after_handshake_and_cancel_owned_children() {
         );
     }
     let mut registration = registration(root.path(), "aaaaaaaaaaaa");
+    registration
+        .conversations
+        .replace(loaded_conversations(&registration, &["selected"]));
     registration.reporter = Some(reporter);
 
     async fn backend(
@@ -1278,6 +1282,25 @@ fn registry_and_a_session_named_codex_coexist() {
 
 fn registration(root: &Path, pane: &str) -> Registration {
     Registration::new(root, HashMap::from([("YINZ_PANE_REF".into(), pane.into())])).unwrap()
+}
+
+fn loaded_conversations(registration: &Registration, threads: &[&str]) -> Conversations {
+    let mut conversations = Conversations::default();
+    for thread in threads {
+        conversations
+            .request(
+                &json!({"id":"load", "method":"thread/resume", "params":{"threadId":thread}}),
+                registration,
+            )
+            .unwrap();
+        conversations
+            .response(
+                &json!({"id":"load", "result":{"thread":{"id":thread, "ephemeral":false}}}),
+                registration,
+            )
+            .unwrap();
+    }
+    conversations
 }
 
 #[test]
@@ -1946,11 +1969,18 @@ async fn announcements_finish_before_later_selections_turns_and_the_selection_re
                     .unwrap();
             assert_eq!(request["id"], id);
         }
-        assert!(binding_for(root.path(), "second").unwrap().is_some());
+        assert!(binding_for(root.path(), "first").unwrap().is_some());
         let hook: Value =
             serde_json::from_slice(&std::fs::read(root.path().join("report.json")).unwrap())
                 .unwrap();
         assert_eq!(hook["_yinz_codex_hooks_ready"], false);
+        // A queued selection is admitted only after its successful daemon response.
+        let reply = Message::text(r#"{"id":2,"result":{"thread":{"id":"second"}}}"#);
+        daemon.send(reply.clone()).await.unwrap();
+        assert_eq!(tokio::fs::read(&entered).await.unwrap(), b"x");
+        assert!(binding_for(root.path(), "second").unwrap().is_some());
+        unblock.write_all(b"done\n").unwrap();
+        assert_eq!(ui.next().await.unwrap().unwrap(), reply);
         ui.close(None).await.unwrap();
         assert!(matches!(
             daemon.next().await.unwrap().unwrap(),
@@ -2255,7 +2285,7 @@ async fn worktree_trust_uses_only_base_user_decisions_and_guards_concurrent_writ
 fn failures_belong_only_to_the_selected_current_turn() {
     let root = tempfile::tempdir().unwrap();
     let registration = registration(root.path(), "aaaaaaaaaaaa");
-    let mut conversations = Conversations::default();
+    let mut conversations = loaded_conversations(&registration, &["other"]);
     conversations
         .request(&json!({"id":1,"method":"thread/resume"}), &registration)
         .unwrap();
@@ -2326,7 +2356,7 @@ fn failures_belong_only_to_the_selected_current_turn() {
 fn proposed_plans_do_not_report_waiting_on_completion() {
     let root = tempfile::tempdir().unwrap();
     let registration = registration(root.path(), "aaaaaaaaaaaa");
-    let mut conversations = Conversations::default();
+    let mut conversations = loaded_conversations(&registration, &["other", "selected"]);
     conversations
         .request(
             &json!({"id":1,"method":"turn/start","params":{"threadId":"selected"}}),
@@ -2398,6 +2428,9 @@ async fn bridge_reports_failures_and_reviews_in_order_without_changing_traffic()
                 .env
                 .insert("YINZ_REMOTE_PANE_TOKEN".into(), "remote-token".into());
         }
+        registration
+            .conversations
+            .replace(loaded_conversations(&registration, &["selected"]));
         registration.reporter = Some(reporter);
         let (ui_stream, relay_stream) = tokio::net::UnixStream::pair().unwrap();
         let (backend_stream, server_stream) = tokio::io::duplex(16384);
@@ -2479,13 +2512,13 @@ async fn bridge_reports_failures_and_reviews_in_order_without_changing_traffic()
                     let message = Message::text(format!(" {value} "));
                     backend.send(message.clone()).await.unwrap();
                     assert_eq!(ui.next().await.unwrap().unwrap(), message);
-                    if value["method"] == "turn/completed" {
+                    if value.get("result").is_some() {
                         let recorded = std::fs::read_to_string(&reports).unwrap();
                         let hook: Value =
                             serde_json::from_str(recorded.lines().last().unwrap()).unwrap();
                         assert_eq!(
                             hook["hook_event_name"], event,
-                            "report precedes UI completion"
+                            "report precedes the reply authorizing the review parent"
                         );
                     }
                 }
@@ -2834,7 +2867,7 @@ fn review_completion_tracks_parent_and_consumes_terminal_events() {
         for reply_timing in 0..3 {
             let root = tempfile::tempdir().unwrap();
             let registration = registration(root.path(), "aaaaaaaaaaaa");
-            let mut conversations = Conversations::default();
+            let mut conversations = loaded_conversations(&registration, &["other", "selected"]);
             conversations
                 .request(
                     &json!({"id":1,"method":"review/start","params":{"threadId":"selected"}}),
@@ -2873,7 +2906,14 @@ fn review_completion_tracks_parent_and_consumes_terminal_events() {
                     .is_empty());
             }
             let completed = json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"parent","status":status,"error":{"message":"review failed"}}}});
-            let hooks = conversations.response(&completed, &registration).unwrap();
+            let mut hooks = conversations.response(&completed, &registration).unwrap();
+            if reply_timing == 2 {
+                assert!(
+                    hooks.is_empty(),
+                    "entry items cannot authorize a review outcome"
+                );
+                hooks = conversations.response(&reply, &registration).unwrap();
+            }
             assert_eq!(hooks.len(), 1);
             assert_eq!(hooks[0]["hook_event_name"], event);
             assert_eq!(hooks[0]["turn_id"], "parent");
@@ -2909,7 +2949,7 @@ fn newer_work_invalidates_review_requests_and_turns() {
         ] {
             let root = tempfile::tempdir().unwrap();
             let registration = registration(root.path(), "aaaaaaaaaaaa");
-            let mut conversations = Conversations::default();
+            let mut conversations = loaded_conversations(&registration, &["other", "selected"]);
             conversations
                 .request(
                     &json!({"id":1,"method":"review/start","params":{"threadId":"selected"}}),
@@ -2960,8 +3000,7 @@ fn review_requires_valid_inline_parent_identity() {
     ] {
         let root = tempfile::tempdir().unwrap();
         let registration = registration(root.path(), "aaaaaaaaaaaa");
-        let mut conversations = Conversations::default();
-        conversations.ephemeral.insert("hidden".into());
+        let mut conversations = loaded_conversations(&registration, &["other", "selected"]);
         conversations
             .request(
                 &json!({"id":1,"method":"review/start","params":params}),
@@ -2993,7 +3032,7 @@ fn review_requires_valid_inline_parent_identity() {
     ] {
         let root = tempfile::tempdir().unwrap();
         let registration = registration(root.path(), "aaaaaaaaaaaa");
-        let mut conversations = Conversations::default();
+        let mut conversations = loaded_conversations(&registration, &["other", "selected"]);
         conversations
             .request(
                 &json!({"id":1,"method":"review/start","params":{"threadId":"selected"}}),
@@ -3011,7 +3050,7 @@ fn review_requires_valid_inline_parent_identity() {
 fn a_new_review_rejects_old_replies_and_replayed_entry_items() {
     let root = tempfile::tempdir().unwrap();
     let registration = registration(root.path(), "aaaaaaaaaaaa");
-    let mut conversations = Conversations::default();
+    let mut conversations = loaded_conversations(&registration, &["other", "selected"]);
     let old_reply = json!({"id":1,"result":{"reviewThreadId":"selected","turn":{"id":"old"}}});
     conversations
         .request(
@@ -3063,3 +3102,6 @@ mod reconnect_relay_tests;
 
 #[path = "recovery_delivery_tests.rs"]
 mod recovery_delivery_tests;
+
+#[path = "tracking_tests.rs"]
+mod tracking_tests;

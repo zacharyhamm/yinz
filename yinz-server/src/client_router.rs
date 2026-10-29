@@ -356,7 +356,11 @@ pub(crate) fn route_thread_main(
                     }
 
                     // Check if this is a watcher client and ignore input messages
-                    let is_watcher = session_state.read().unwrap().is_watcher(&client_id);
+                    let is_watcher = session_state
+                        .read()
+                        .to_anyhow()
+                        .context("access routed session state")?
+                        .is_watcher(&client_id);
                     if is_watcher {
                         let should_exit = match &instruction {
                             ClientToServerMsg::Key { key, .. } => {
@@ -512,7 +516,7 @@ pub(crate) fn route_thread_main(
                             // Legacy LF is Enter unless Ctrl-J is bound in the current mode.
                             // Resolve its identity before menus, modifiers and passthrough see it.
                             let key = if raw_bytes == [10] && !is_kitty_keyboard_protocol {
-                                session_data.read().unwrap().as_ref()
+                                session_data.read().to_anyhow().context("access routed session state")?.as_ref()
                                     .map(|session| legacy_lf_key(session, client_id))
                                     .unwrap_or(key)
                             } else {
@@ -555,7 +559,7 @@ pub(crate) fn route_thread_main(
                             // `route_action` runs without holding `session_data.read()` —
                             // see the doc comment on `route_action` for why this matters.
                             let dispatch_inputs =
-                                session_data.read().unwrap().as_ref().and_then(|s| {
+                                session_data.read().to_anyhow().context("access routed session state")?.as_ref().and_then(|s| {
                                     let in_passthrough =
                                         s.key_passthrough_clients.contains_key(&client_id);
                                     if in_passthrough {
@@ -675,9 +679,7 @@ pub(crate) fn route_thread_main(
                             let client_id = if is_cli_client {
                                 // A CLI connection has no focus, mode or tab of its own: actions
                                 // such as move focus, switch mode or quit act for one interactive client.
-                                session_state
-                                    .read()
-                                    .unwrap()
+                                session_state.read().to_anyhow().context("access routed session state")?
                                     .cli_action_target(client_id, maybe_client_id)
                             } else {
                                 maybe_client_id.unwrap_or(client_id)
@@ -692,7 +694,7 @@ pub(crate) fn route_thread_main(
                             // `route_action` runs without holding `session_data.read()` —
                             // see the doc comment on `route_action` for why this matters.
                             let session_data_assets =
-                                session_data.read().unwrap().as_ref().map(|s| {
+                                session_data.read().to_anyhow().context("access routed session state")?.as_ref().map(|s| {
                                     (
                                         s.senders.clone(),
                                         s.default_shell.clone(),
@@ -928,9 +930,7 @@ pub(crate) fn route_thread_main(
                             // first so a later disconnect of that
                             // client can't synthesize a spurious
                             // empty reply for the same token.
-                            session_state
-                                .write()
-                                .unwrap()
+                            session_state.write().to_anyhow().context("access routed session state")?
                                 .clear_forward_in_flight(token);
                             send_to_screen_or_retry_queue!(
                                 senders,

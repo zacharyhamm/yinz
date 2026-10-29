@@ -27,6 +27,11 @@ use super::protocol::{
 };
 use super::PTY_HOST_FLAG;
 
+pub use yinz_process_api::{
+    recovery_command, AgentReportCb, ChildRunState, ChildStateCb, QuitCb, ReleasedPane,
+    ReleasedPtyHost, ReleasedRemotePane,
+};
+
 /// `spawn_terminal` runs synchronously on the pty thread, which also services
 /// pane close, tab close and layout dumps. A supervisor that wedges during its
 /// handshake must not take the session with it.
@@ -154,102 +159,6 @@ pub struct PtyHostHandle {
     /// Set when the pane is being handed to someone else rather than closed, so
     /// the reader thread winds itself down instead of reaping the supervisor.
     released: Arc<AtomicBool>,
-}
-
-/// What a caller needs to hand a released supervisor on to its next owner.
-#[derive(Debug, Clone)]
-pub struct ReleasedPtyHost {
-    pub host_id: SupervisorId,
-    pub host_pid: ProcessId,
-    /// `None` if the supervisor never managed to bind its named socket, which is
-    /// the one case where a pane is detachable but not transferable — there is no
-    /// address for the next owner to attach to.
-    pub control_socket: Option<PathBuf>,
-}
-
-/// What a caller needs to hand a *remote* pane on to its next owner.
-///
-/// The remote counterpart of `ReleasedPtyHost`, and deliberately not a variant
-/// of it: nothing here is a path or a pid this machine could act on. The whole
-/// address is "which host, and which pane the broker there is holding".
-#[derive(Debug, Clone)]
-pub struct ReleasedRemotePane {
-    /// The ssh destination, as the pane was opened with. The adopting server
-    /// builds its own forward to it rather than inheriting one.
-    pub host: String,
-    /// How the broker names this pane on a `Resume`. Meaningful only to that
-    /// broker.
-    pub pane_token: String,
-    /// Output bytes this session took delivery of, sampled after its reader
-    /// stopped. The broker replays from exactly here, so this is what keeps the
-    /// pane's serialized screen and the replay from overlapping or leaving a
-    /// gap between them.
-    pub received: u64,
-    /// What the pane runs.
-    ///
-    /// Filled in by the pty thread, which is where the command is recorded. The
-    /// local path does not need this — the adopting server gets it back from
-    /// the supervisor's `AttachAck` — but a broker's answer to a resume carries
-    /// none, and a pane that cannot name its command cannot title itself, be
-    /// re-run on the right machine when held, or be attributed to a project.
-    pub cmd: RunCommand,
-}
-
-/// A pane let go for a warp, whichever machine its process is on.
-///
-/// An enum rather than two functions for the same reason `PaneTransport` is
-/// one: every consumer of a released pane has to answer for the remote case,
-/// and the compiler naming each site is better than any of them quietly
-/// assuming a local supervisor.
-#[derive(Debug, Clone)]
-pub enum ReleasedPane {
-    Held(yinz_types::data::HeldTerminal),
-    Local(ReleasedPtyHost),
-    Remote(ReleasedRemotePane),
-}
-
-impl ReleasedPane {
-    /// How to name this pane to a user who has to go and recover it by hand.
-    ///
-    /// Both halves of a warp put this in their failure messages, which is why it
-    /// lives with the type rather than at either call site.
-    pub fn recovery_id(&self) -> String {
-        match self {
-            ReleasedPane::Held(_) => "held terminal".into(),
-            ReleasedPane::Local(local) => local.host_id.to_string(),
-            ReleasedPane::Remote(remote) => format!("{}:{}", remote.host, remote.pane_token),
-        }
-    }
-
-    /// The command that gets this pane back.
-    pub fn recovery_command(&self) -> String {
-        match self {
-            ReleasedPane::Held(_) => String::new(),
-            ReleasedPane::Local(local) => recovery_command(&local.host_id, None),
-            ReleasedPane::Remote(remote) => recovery_command(
-                &SupervisorId::default(),
-                Some((&remote.host, &remote.pane_token)),
-            ),
-        }
-    }
-}
-
-/// The command that gets a released pane back, when nobody ended up holding it.
-///
-/// A pane in that state is running with nothing watching it, and this line is
-/// the only thing standing between the user and losing the work in it — so it
-/// has to be a command that actually applies. A remote pane is not reachable by
-/// `pty-host adopt <id>`: its supervisor is on the other machine, and the id
-/// that names it is a token only the broker there understands.
-///
-/// Written once and called from everywhere that has to say it — the release
-/// path, the warp's rollback and the containment when both have failed — because
-/// a second wording of this is a second chance to get it wrong.
-pub fn recovery_command(local_host_id: &SupervisorId, remote: Option<(&str, &str)>) -> String {
-    match remote {
-        Some((host, pane_token)) => format!("yinz pty-host adopt --host {host} {pane_token}"),
-        None => format!("yinz pty-host adopt {local_host_id}"),
-    }
 }
 
 #[cfg(test)]
@@ -447,33 +356,6 @@ impl Drop for HostGuard {
         }
     }
 }
-
-pub type QuitCb = Box<dyn Fn(TerminalId, Option<i32>, RunCommand) + Send>;
-
-/// Whether a pane's root process is stopped or running.
-///
-/// Only transitions are ever reported, never a current state: a supervisor with
-/// nobody attached has no one to tell, so a pane adopted while already stopped
-/// stays unmarked until it moves again.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChildRunState {
-    Stopped,
-    Continued,
-}
-
-/// Told when a pane's root process stops or starts running again.
-///
-/// Deliberately *not* a second parameter on `spawn_terminal` next to `quit_cb`:
-/// that signature is spelled out at some twenty-five sites, most of them test
-/// fakes, and none of them has anything to say about suspension. This is
-/// registered once, on the backend, and is the same closure for every pane —
-/// which it can be, because unlike `quit_cb` it carries no per-pane policy.
-pub type ChildStateCb = Arc<dyn Fn(TerminalId, ChildRunState) + Send + Sync>;
-
-/// Told when a coding agent's hook in a remote pane reports an event, with the
-/// pane's terminal id, the agent kind and the event JSON. Registered once on
-/// the backend, like `ChildStateCb`, and handed to every remote reader.
-pub type AgentReportCb = Arc<dyn Fn(TerminalId, String, String) + Send + Sync>;
 
 fn handshake_and_spawn(
     control: &UnixStream,

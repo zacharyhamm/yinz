@@ -2,7 +2,7 @@
 
 use super::{send_pane_error_to_screen, Pty};
 use crate::global_async_runtime::get_tokio_runtime as async_runtime;
-use crate::pty_host::client::ReleasedPane;
+use crate::os_input_output::ReleasedPane;
 use crate::screen::ScreenInstruction;
 use crate::terminal_bytes::TerminalBytes;
 use std::collections::HashMap;

@@ -35,6 +35,53 @@ use yinz_types::data::PluginTag;
 #[path = "plugin_loader_tests.rs"]
 mod loader_tests;
 
+thread_local! {
+    pub(super) static FAIL_AGENT_PROJECT_SPAWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[test]
+fn project_resolver_spawn_failure_replies_for_every_requested_project() {
+    let test = TestBridge::new();
+    FAIL_AGENT_PROJECT_SPAWN.set(true);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        test.bridge.resolve_agent_event_projects(
+            17,
+            vec![],
+            vec!["one".to_owned(), "two".to_owned()],
+        );
+    }));
+    FAIL_AGENT_PROJECT_SPAWN.set(false);
+    result.expect("thread creation failure must not panic the plugin host");
+
+    let receiver = test.receiver::<ScreenInstruction>();
+    let ScreenInstruction::AgentEventProjects(version, projects) = receiver
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap()
+        .0
+    else {
+        panic!("missing project resolution response");
+    };
+    assert_eq!(version, 17);
+    assert_eq!(
+        projects.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["one", "two"]
+    );
+    assert!(projects.values().all(|result| result
+        .as_ref()
+        .unwrap_err()
+        .contains("start agent project resolver")));
+    assert!(
+        receiver.try_recv().is_err(),
+        "one completion per resolution"
+    );
+
+    test.bridge.resolve_agent_event_projects(18, vec![], vec![]);
+    assert!(matches!(
+        receiver.recv_timeout(yinz_test_support::default_timeout()).unwrap().0,
+        ScreenInstruction::AgentEventProjects(18, projects) if projects.is_empty()
+    ));
+}
+
 /// Senders nothing listens to. The receivers are returned so the channels stay connected for as
 /// long as the bridge does.
 struct TestBridge {
@@ -5087,6 +5134,60 @@ fn a_resize_skips_an_instance_whose_lock_is_poisoned() {
     test.settle(plugin);
     assert!(frames(&mut test, plugin).is_empty());
     test.bridge.unload_plugin(plugin).unwrap();
+}
+
+#[test]
+fn poisoned_plugin_teardown_releases_resources_without_calling_guest_cleanup() {
+    for poison_subscriptions in [false, true] {
+        let mut test = TestBridge::new();
+        let source = format!(
+            "{SCRATCH_PLUGIN}\n(define (unload) (write-file \"/cache/unloaded\" \"must not run\"))"
+        );
+        let context = test.context(1, 1, &source);
+        let cache = context.plugin_own_cache_dir.clone();
+        std::fs::write(context.plugin_own_data_dir.join("value"), "must not run").unwrap();
+        test.load(context).unwrap();
+        test.grant_files(1, 1);
+        let plugin = PluginId::new(1);
+        let (instance, subscriptions) = test
+            .bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .get_running_plugin_and_subscriptions(plugin, ClientId::new(1))
+            .unwrap();
+        let instance_id = instance.lock().unwrap().instance_id;
+        let poisoner = instance.clone();
+        assert!(std::thread::spawn(move || {
+            if poison_subscriptions {
+                let _guard = subscriptions.lock().unwrap();
+                panic!("injected subscription panic");
+            } else {
+                let _guard = poisoner.lock().unwrap();
+                panic!("injected instance panic");
+            }
+        })
+        .join()
+        .is_err());
+
+        test.bridge.unload_plugin(plugin).unwrap();
+        let deadline = Instant::now() + yinz_test_support::default_timeout();
+        loop {
+            let (instruction, _) = test
+                .receiver::<PluginInstruction>()
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+            if let PluginInstruction::ReleasePluginInstancePipes(id, released) = instruction {
+                assert_eq!((id, released), (plugin, instance_id));
+                break;
+            }
+        }
+        let instance = instance.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(instance.is_disposed());
+        assert!(instance.failed);
+        assert!(!cache.join("saved").exists());
+        assert!(!cache.join("unloaded").exists());
+    }
 }
 
 #[test]

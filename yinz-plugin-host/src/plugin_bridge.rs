@@ -442,13 +442,35 @@ impl PluginBridge {
     ) {
         let data = self.data_access.clone();
         let senders = self.senders.clone();
-        std::thread::spawn(move || {
-            let result =
-                crate::yinz_exports::agent_event_projects(agents, projects, &data, &senders);
-            senders
+        let requested = projects.clone();
+        let spawn = || {
+            #[cfg(test)]
+            if plugin_bridge_tests::FAIL_AGENT_PROJECT_SPAWN.with(std::cell::Cell::get) {
+                return Err(std::io::Error::from(std::io::ErrorKind::WouldBlock));
+            }
+            std::thread::Builder::new()
+                .name("agent-projects".into())
+                .spawn(move || {
+                    let result = crate::yinz_exports::agent_event_projects(
+                        agents, projects, &data, &senders,
+                    );
+                    senders
+                        .send_to_screen(ScreenInstruction::AgentEventProjects(version, result))
+                        .context("report agent event projects")
+                        .non_fatal();
+                })
+        };
+        if let Err(error) = spawn().context("start agent project resolver") {
+            let message = format!("{error:#}");
+            let result = requested
+                .into_iter()
+                .map(|project| (project, Err(message.clone())))
+                .collect();
+            self.senders
                 .send_to_screen(ScreenInstruction::AgentEventProjects(version, result))
+                .context("report failed agent project resolver")
                 .non_fatal();
-        });
+        }
     }
 
     /// A `yinz events` client asking for `event_types` by name. A name that is not a

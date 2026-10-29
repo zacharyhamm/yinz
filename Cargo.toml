@@ -88,6 +88,7 @@ members = [
     "yinz-plugin-host",
     "yinz-plugin-authoring",
     "yinz-process",
+    "yinz-process-api",
     "yinz-codex",
     "yinz-muse",
     "yinz-terminal",
@@ -162,6 +163,7 @@ yinz-steel = { path = "yinz-steel", version = "0.1.0" }
 yinz-steel-builtins = { path = "yinz-steel-builtins", version = "0.1.0" }
 yinz-storage = { path = "yinz-storage", version = "0.1.0" }
 yinz-types = { path = "yinz-types", version = "0.1.0" }
+yinz-process-api = { path = "yinz-process-api", version = "0.1.0" }
 yinz-runtime = { path = "yinz-runtime", version = "0.1.0" }
 yinz-plugin-location = { path = "yinz-plugin-location", version = "0.1.0" }
 yinz-key-codec = { path = "yinz-key-codec", version = "0.1.0" }

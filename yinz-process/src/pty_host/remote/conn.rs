@@ -35,35 +35,7 @@ use crate::pty_host::protocol::WireWinsize;
 /// `PENDING_DRAIN_TIMEOUT`, exactly as it does for a busy local pane.
 const OUTBOUND_CAPACITY: usize = 256 * 1024;
 
-/// What the broker last told us about the pane, from its own machine.
-///
-/// Cached rather than fetched, because the alternative is a request/response
-/// round trip over a link that may be dead, from `update_and_report_cwds` on the
-/// pty thread. A stale-but-plausible answer is the better failure mode.
-#[derive(Debug, Clone, Default)]
-pub struct RemoteStatus {
-    pub child_group_terminated: bool,
-    pub cwd: Option<String>,
-    pub shell_argv: Option<Vec<String>>,
-    pub foreground_argv: Option<Vec<String>>,
-}
-
-/// What git said about a remote pane's working directory, unparsed.
-///
-/// Carried to the plugins that attribute panes to projects, which already know
-/// how to read exactly this, by `PluginCommand::GetPaneGitProbe`. Kept raw so
-/// the parsing stays in one place rather than being duplicated for remote panes.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct RemoteGitProbe {
-    pub refresh_token: Option<String>,
-    /// The machine this was run on, so two checkouts at the same path on
-    /// different hosts stay distinct.
-    pub host: String,
-    pub cwd: String,
-    pub exit_code: Option<i32>,
-    pub metadata: Vec<u8>,
-    pub config: Vec<u8>,
-}
+pub use yinz_process_api::{RemoteGitProbe, RemoteStatus};
 
 /// Two queues rather than one, because control messages must overtake queued
 /// input.

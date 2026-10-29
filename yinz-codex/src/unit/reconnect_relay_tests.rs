@@ -29,6 +29,9 @@ async fn reconnect_relays_terminal_events_and_new_thread_without_reselection() {
             "YINZ_TEST_REPORT_OUTPUT".into(),
             reports.to_str().unwrap().into(),
         );
+        registration
+            .conversations
+            .replace(loaded_conversations(&registration, &["selected"]));
         registration.reporter = Some(reporter);
         for replacement in [false, true] {
             let (ui_stream, relay_stream) = tokio::net::UnixStream::pair().unwrap();
@@ -146,6 +149,9 @@ async fn reconnect_replays_cancelled_selection_reports_before_new_requests() {
             reports.to_str().unwrap().into(),
         ),
     ]);
+    registration
+        .conversations
+        .replace(loaded_conversations(&registration, &["selected"]));
     registration.reporter = Some(stalled);
     let (ui_stream, relay_stream) = tokio::net::UnixStream::pair().unwrap();
     let (backend_stream, server_stream) = tokio::io::duplex(16384);

@@ -765,7 +765,8 @@ fn command_palette_disconnect_discards_restore_state_without_unlocking_other_cli
     let session_data = Arc::new(RwLock::new(Some(session)));
     let session_state = Arc::new(RwLock::new(crate::SessionState::new()));
     let mut os: Box<dyn crate::os_input_output::ServerOsApi> = Box::new(CapturingOs::default());
-    crate::remove_client_and_flush_forwards(CLIENT_1, &mut os, &session_state, &session_data);
+    crate::remove_client_and_flush_forwards(CLIENT_1, &mut os, &session_state, &session_data)
+        .unwrap();
     let mut guard = session_data.write().unwrap();
     let session = guard.as_mut().unwrap();
     assert!(!session

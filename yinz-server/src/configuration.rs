@@ -430,7 +430,8 @@ pub(super) fn reconfigure_client(
                 session.config_file_path.as_deref(),
                 session.config_dir.as_deref(),
             )
-    }) else {
+    })?
+    else {
         return Ok(());
     };
     let (new_config, changed) = result.context("failed to reconfigure")?;
@@ -455,7 +456,11 @@ pub(super) fn reconfigure_all_clients(
     session_data: &Arc<RwLock<Option<SessionMetaData>>>,
 ) {
     let result = (|| -> Result<()> {
-        let client_ids = session_state.read().unwrap().interactive_client_ids();
+        let client_ids = session_state
+            .read()
+            .to_anyhow()
+            .context("read clients for reconfiguration")?
+            .interactive_client_ids();
         // Validate the whole change before mutating live configuration. Background
         // declarations are session-wide; notify the plugin thread once for the batch.
         let client_ids = if client_ids.is_empty() {
@@ -472,7 +477,7 @@ pub(super) fn reconfigure_all_clients(
                     session.config_file_path.as_deref(),
                     session.config_dir.as_deref(),
                 )
-            })
+            })?
             .context("session is unavailable")??;
             update_new_saved_config(
                 new_config,
@@ -499,11 +504,11 @@ pub(super) fn reconfigure_all_clients(
                 session.session_configuration = staged;
                 session.propagate_configuration_changes(changes, false);
                 Ok(())
-            })
+            })?
             .context("session is unavailable")??;
         }
         if config.contains("load_plugins") {
-            let senders = with_session(session_data, |session| session.senders.clone())
+            let senders = with_session(session_data, |session| session.senders.clone())?
                 .context("session is unavailable")?;
             let (reply, receiver) = std::sync::mpsc::channel();
             senders
@@ -599,7 +604,8 @@ pub(super) fn rebind_client_keys(
             .as_mut()
             .unwrap_or(&mut session.session_configuration)
             .rebind_keys(&target.client_id, keys_to_rebind, keys_to_unbind)
-    }) else {
+    })?
+    else {
         return Ok(());
     };
     update_new_saved_config(
@@ -720,7 +726,7 @@ fn update_new_saved_config(
         if let ConfigPersistence::Fragment(fragment) = persistence {
             let overlay_dir = {
                 let config_dir =
-                    with_session(session_data, |session| session.config_dir.clone()).flatten();
+                    with_session(session_data, |session| session.config_dir.clone())?.flatten();
                 yinz_runtime::home::get_config_overlay_dir(
                     config_dir.or_else(yinz_runtime::home::find_default_config_dir),
                 )
@@ -743,19 +749,19 @@ fn update_new_saved_config(
                 Ok(_) => {
                     // The session's saved config is the running one now, and every client
                     // hears that it was written.
-                    with_session_mut(session_data, |session| propagate_saved(session, new_config));
+                    with_session_mut(session_data, |session| propagate_saved(session, new_config))?;
                 },
                 Err((file_path, reason)) => {
                     with_session(session_data, |session| {
                         session.report_config_write_failure(file_path, Some(reason.clone()))
-                    });
+                    })?;
                     if runtime_config_changed {
                         with_session_mut(session_data, |session| {
                             session.propagate_configuration_changes(
                                 vec![(client_id, new_config)],
                                 false,
                             )
-                        });
+                        })?;
                     }
                     return Err(anyhow!("{reason}"));
                 },
@@ -765,14 +771,14 @@ fn update_new_saved_config(
         if matches!(persistence, ConfigPersistence::WholeConfig) {
             let add_comments = true;
             let config_file_path =
-                with_session(session_data, |session| session.config_file_path.clone()).flatten();
+                with_session(session_data, |session| session.config_file_path.clone())?.flatten();
 
             let Some(config_file_path) = config_file_path.as_ref() else {
                 let reason = "the session has no config file path to write to";
                 log::error!("{reason}");
                 with_session(session_data, |session| {
                     session.report_config_write_failure(None, Some(reason.to_owned()))
-                });
+                })?;
                 return Err(anyhow!("{reason}"));
             };
             // Serialized first, on its own: a binding whose action has no config spelling
@@ -789,7 +795,7 @@ fn update_new_saved_config(
                 Ok(written_config) => {
                     with_session_mut(session_data, |session| {
                         propagate_saved(session, written_config)
-                    });
+                    })?;
                 },
                 Err(ConfigWriteError { path, reason }) => {
                     Err::<(), _>(anyhow!("{reason}"))
@@ -802,7 +808,7 @@ fn update_new_saved_config(
                         .non_fatal();
                     with_session(session_data, |session| {
                         session.report_config_write_failure(path, Some(reason.clone()))
-                    });
+                    })?;
                     return Err(anyhow!("{reason}"));
                 },
             }
@@ -813,7 +819,7 @@ fn update_new_saved_config(
                     vec![(client_id, new_config)],
                     config_was_written_to_disk,
                 )
-            });
+            })?;
         }
     }
     Ok(())

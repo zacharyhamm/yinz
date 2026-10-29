@@ -1,7 +1,7 @@
 use super::{screen_thread_main, Screen, ScreenInstruction};
+use crate::os_input_output::{ReleasedPane, ReleasedPtyHost, ReleasedRemotePane};
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::{PaneFactory, PaneId};
-use crate::pty_host::client::{ReleasedPane, ReleasedPtyHost, ReleasedRemotePane};
 use crate::{
     channels::SenderWithContext,
     route::{actions_leave_clipboard_message, route_action},

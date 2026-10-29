@@ -14,7 +14,7 @@ pub use pty::{pty_thread_main, Pty};
 // The moved files keep their `crate::` paths to shared items through these aliases, as the
 // server's root did. `plugins` is the bus's instruction module, not the plugin runtime.
 pub(crate) use yinz_bus::{
-    background_jobs, global_async_runtime, os_input_output, plugins, pty_host, route, screen,
+    background_jobs, global_async_runtime, os_input_output, plugins, route, screen,
     session_layout_metadata, thread_bus, ServerInstruction,
 };
 pub(crate) use yinz_types::internal_ids::ClientId;

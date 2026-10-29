@@ -1,7 +1,7 @@
 use super::*;
 
 fn active_work(registration: &Registration, review: bool) -> Conversations {
-    let mut conversations = Conversations::default();
+    let mut conversations = loaded_conversations(registration, &["other", "selected"]);
     conversations
         .request(
             &json!({"id":7,"method":if review {"review/start"} else {"turn/start"},"params":{"threadId":"selected"}}),
@@ -532,7 +532,7 @@ fn reconnect_does_not_guess_review_identity_from_ambiguous_or_historical_resume_
     ] {
         let root = tempfile::tempdir().unwrap();
         let registration = registration(root.path(), "aaaaaaaaaaaa");
-        let mut conversations = Conversations::default();
+        let mut conversations = loaded_conversations(&registration, &["selected"]);
         conversations
             .request(
                 &json!({"id":9,"method":"review/start","params":{"threadId":"selected"}}),
