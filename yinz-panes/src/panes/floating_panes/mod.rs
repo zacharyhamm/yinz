@@ -660,6 +660,7 @@ impl FloatingPanes {
         help_text_visible: &HashMap<ClientId, bool>,
         mouse_scroll_resize: bool,
         same_worktree_panes: &HashMap<ClientId, HashSet<PaneId>>,
+        stack_list_header_rows: &HashMap<PaneId, usize>,
     ) -> Result<()> {
         let err_context = || "failed to render output";
         let mut connected_clients: HashSet<ClientId> =
@@ -753,6 +754,13 @@ impl FloatingPanes {
             } else {
                 true
             };
+            let reserved_rows = stack_list_header_rows.get(kind).copied().unwrap_or(0);
+            let frame_geom_override = (reserved_rows > 0).then(|| {
+                let mut geom = pane.render_geom();
+                geom.y += reserved_rows;
+                geom.rows.decrease_inner(reserved_rows);
+                geom
+            });
             let mut pane_contents_and_ui = PaneContentsAndUi::new(
                 pane,
                 output,
@@ -770,6 +778,9 @@ impl FloatingPanes {
                 mouse_scroll_resize,
                 self.dimmed_clients.clone(),
             );
+            // Keep the normal frame below stack entries even when their cached rows do not draw.
+            pane_contents_and_ui.set_frame_geom_override(frame_geom_override);
+            pane_contents_and_ui.set_blank_title(reserved_rows > 0);
             for client_id in &connected_clients {
                 pane_contents_and_ui.set_same_worktree(
                     same_worktree_panes

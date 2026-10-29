@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn scheme_test_errors_keep_the_cause_before_oversized_logs() {
+    let root = tempfile::tempdir().unwrap();
+    let entry = root.path().join("failure.test.scm");
+    std::fs::write(
+        &entry,
+        r#"(test "oversized error" (lambda ()
+          (error (string-append "failed condition and screen\n" (make-string 40000 #\λ)))))"#,
+    )
+    .unwrap();
+    let report = run(
+        crate::testing::fixture_data().path(),
+        &entry,
+        &Default::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(!report.passed(), "{report:#?}");
+    let error = report.tests[0].error.as_ref().unwrap();
+    assert!(error.contains("failed condition and screen"), "{error}");
+    assert!(error.len() <= OUTPUT_LIMIT);
+}
+
+#[test]
 fn scheme_installed_assert_rejects_checks_deferred_and_synchronous_errors() {
     let root = tempfile::tempdir().unwrap();
     let entry = root.path().join("assertions.test.scm");

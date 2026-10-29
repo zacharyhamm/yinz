@@ -57,7 +57,8 @@ fn waiting_agent_bells_render_in_both_tab_bars_pane_titles_and_stack_labels() {
                     lines[0].contains('🔔')
                         && if single {
                             lines[0].contains(&bell_title)
-                                && snapshot.text.matches('🔔').count() == 1
+                                && lines[1].contains(&bell_title)
+                                && snapshot.text.matches('🔔').count() == 2
                         } else {
                             lines.iter().skip(1).any(|line| line.contains(&bell_title))
                         }
@@ -85,14 +86,11 @@ fn waiting_agent_bells_render_in_both_tab_bars_pane_titles_and_stack_labels() {
                     let lines = snapshot.lines();
                     lines[0].contains('🔔')
                         && snapshot.contains("long-agent")
-                        && if single {
-                            snapshot.text.matches('🔔').count() == 1
-                        } else {
-                            lines
-                                .iter()
-                                .skip(1)
-                                .any(|line| line.contains('🔔') && line.contains("long-agent"))
-                        }
+                        && lines
+                            .iter()
+                            .skip(1)
+                            .any(|line| line.contains('🔔') && line.contains("long-agent"))
+                        && (!single || snapshot.text.matches('🔔').count() == 2)
                 },
             );
             let (code, output) = yinz.run_actions_reporting(vec![Action::SetPaneAgent {

@@ -410,6 +410,12 @@ impl Tab {
             for id in resize {
                 self.resize_stack_list_hidden_members(id);
             }
+            let stack_list_header_rows = self
+                .stack_lists
+                .values()
+                .filter(|list| self.floating_stack_headers_visible(list))
+                .map(|list| (list.visible, list.members.len()))
+                .collect();
             self.floating_panes.render(
                 output,
                 &self.mouse_hover_pane_id,
@@ -418,6 +424,7 @@ impl Tab {
                 &self.mouse_help_text_visible,
                 self.mouse_scroll_resize,
                 &same_worktree_panes,
+                &stack_list_header_rows,
             )?;
         }
         if self.has_floating_panes_to_render() {

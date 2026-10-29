@@ -443,6 +443,7 @@ fn plugin_fixtures_and_examples_declare_their_panes_at_the_top_level() {
                 "data_helpers.scm"
                 | "agent-provider.scm"
                 | "notification-policy.scm"
+                | "palette-table.scm"
                 | "marker-project.scm" => PaneDeclaration::None,
                 other => panic!("{folder}/{other} has no expected pane declaration"),
             };
@@ -454,7 +455,7 @@ fn plugin_fixtures_and_examples_declare_their_panes_at_the_top_level() {
         }
     }
     assert_eq!(
-        checked, 14,
+        checked, 15,
         "every fixture and example entry file was classified"
     );
 }

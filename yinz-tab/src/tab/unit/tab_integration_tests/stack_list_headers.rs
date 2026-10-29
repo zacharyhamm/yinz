@@ -158,6 +158,29 @@ fn same_worktree_stack_labels_follow_focus_in_tiled_and_floating_lists() {
     }
 }
 
+#[test]
+fn floating_stack_headers_survive_unchanged_frame_repaints() {
+    let size = Size { cols: 80, rows: 24 };
+    for frames in [
+        PaneFrameStyle::Full,
+        PaneFrameStyle::Titles,
+        PaneFrameStyle::None,
+    ] {
+        let mut tab = stack_tab(size, true, frames);
+        let members = tab.stack_lists.values().next().unwrap().members.clone();
+        let mut grid = host_grid(size);
+        for member in members {
+            tab.focus_pane_with_id(member, false, false, CLIENT)
+                .unwrap();
+            render_into(&mut tab, &mut grid);
+            assert_header_cells(&tab, &grid, false);
+            // Unchanged hidden headers may be cached while the visible pane draws its frame again.
+            render_into(&mut tab, &mut grid);
+            assert_header_cells(&tab, &grid, false);
+        }
+    }
+}
+
 fn stack_tab(size: Size, floating: bool, frames: PaneFrameStyle) -> Tab {
     let mut tab = create_new_tab_with_stacked_pane_list(size, ModeInfo::default(), true, None);
     tab.set_pane_frames(frames);

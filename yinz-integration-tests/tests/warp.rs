@@ -273,7 +273,7 @@ fn stack_list_entries(snapshot: &GridSnapshot) -> Vec<String> {
         .lines()
         .into_iter()
         .filter(|line| {
-            line.contains("Pane #") || (line.contains("│ [") && line.contains("EDITING SCROLLBACK"))
+            line.contains("│ [") && (line.contains("Pane #") || line.contains("EDITING SCROLLBACK"))
         })
         .map(|line| {
             let title = if let Some((_, suffix)) = line.split_once("Pane #") {
@@ -1211,7 +1211,13 @@ fn a_visible_stack_warps_to_the_floating_layer_with_selectable_members() {
     receiver.wait_until("select hidden floating member", |grid| {
         grid.contains("SECOND_FLOATING_MEMBER")
     });
-    assert_eq!(stack_list_entries(&receiver.snapshot()).len(), 3);
+    let stack_snapshot = receiver.snapshot();
+    assert_eq!(
+        stack_list_entries(&stack_snapshot).len(),
+        3,
+        "the floating stack has three entries:\n{}",
+        stack_snapshot.text,
+    );
     type_and_confirm(&receiver, second, b"hidden-after");
     second.exit(Some(0));
     receiver.wait_until("closing selected member promotes a survivor", |grid| {
