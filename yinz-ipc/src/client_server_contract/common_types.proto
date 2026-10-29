@@ -937,6 +937,7 @@ message CliAssets {
   map<string, string> host_terminal_env = 12;
   // The client handles ServerToClientMsg.session_request_json. Older clients omit it.
   bool supports_session_requests = 13;
+  optional string timezone = 14;
 }
 
 message LayoutInfo {

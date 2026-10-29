@@ -9,6 +9,8 @@ description = "Host facilities for Yinz"
 workspace = true
 
 [dependencies]
+jiff = { workspace = true }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
 serde_json = { workspace = true }
 libc = { workspace = true }
 shellexpand = { version = "3.0.0", default-features = false, features = ["base-0", "tilde"] }

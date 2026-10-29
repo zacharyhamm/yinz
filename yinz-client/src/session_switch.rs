@@ -328,6 +328,7 @@ impl<'a> Sessions<'a> {
                     }
                 };
                 assets.terminal_window_size = os.get_terminal_size();
+                assets.timezone = yinz_runtime::client_time::capture_timezone();
                 assets.host_terminal_env = yinz_runtime::host_terminal_env::host_terminal_env();
                 let config = self.cli_args.config.clone();
                 let termios = os.original_termios();

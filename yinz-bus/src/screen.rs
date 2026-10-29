@@ -448,6 +448,7 @@ pub enum ScreenInstruction {
     HostTerminalFocusChanged(ClientId, bool),
     /// The whitelisted environment of a client's host terminal (`HOST_TERMINAL_ENV_VARS`), from
     /// which the notification protocol the host speaks is resolved.
+    SetClientTimezone(ClientId, Option<String>),
     SetClientHostTerminalEnv(ClientId, BTreeMap<String, String>),
     /// Desktop notifications a pane asked for, to be rendered per client in the protocol that
     /// client's host speaks.

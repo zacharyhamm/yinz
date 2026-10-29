@@ -325,6 +325,50 @@ fn palette_is_private_to_each_client_and_dismisses_on_tab_change_or_disconnect()
 }
 
 #[test]
+fn agent_info_requests_keep_each_clients_timezone_and_clear_it_on_disconnect() {
+    use yinz_runtime::{
+        channels::{unbounded, SenderWithContext},
+        client_time::ClientTimeZone,
+    };
+    let mut screen = screen();
+    let second = ClientId::new(2);
+    screen.add_client(second).unwrap();
+    let (tx, rx) = unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    for (client, timezone, expected) in [
+        (CLIENT, "America/Chicago", "Dec. 31st, 1969, 6pm"),
+        (second, "Asia/Tokyo", "Jan. 1st, 1970, 9am"),
+    ] {
+        screen
+            .client_timezones
+            .insert(client, ClientTimeZone::from_client(Some(timezone)));
+        screen.toggle_command_palette(client);
+        screen.command_palette_handles_input(&None, b"codex project", false, client);
+        screen.command_palette_handles_input(
+            &Some(KeyWithModifier::new(BareKey::Enter)),
+            b"",
+            false,
+            client,
+        );
+        let request = rx
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PluginInstruction::PaletteAgent(request) => Some(request),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(request.client, client);
+        assert_eq!(request.timezone.timestamp(Some(0)), expected);
+    }
+    screen.remove_client(second).unwrap();
+    assert!(!screen.client_timezones.contains_key(&second));
+    assert_eq!(
+        screen.client_timezones[&CLIENT].timestamp(Some(0)),
+        "Dec. 31st, 1969, 6pm"
+    );
+}
+
+#[test]
 fn palette_paste_resize_and_outside_click_repaint_without_changing_focus() {
     let mut screen = screen();
     let other_pane = PaneId::Terminal(TerminalId::new(2));
