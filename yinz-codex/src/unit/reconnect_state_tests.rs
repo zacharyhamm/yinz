@@ -54,6 +54,130 @@ fn reconnect_keeps_failures_and_review_completions_without_reselection() {
 }
 
 #[test]
+fn reconnect_resume_recovers_terminal_work_without_a_completion_notification() {
+    for (review, status, event) in [
+        (true, "completed", Some("Stop")),
+        (true, "interrupted", Some("Interrupt")),
+        (true, "failed", Some("StopFailure")),
+        (false, "completed", None),
+        (false, "interrupted", None),
+        (false, "failed", Some("StopFailure")),
+    ] {
+        for children in [false, true] {
+            if children && !review {
+                continue;
+            }
+            let root = tempfile::tempdir().unwrap();
+            let registration = registration(root.path(), "aaaaaaaaaaaa");
+            let mut conversations = active_work(&registration, review);
+            conversations.reconnect();
+            let parent =
+                json!({"id":"parent","status":status,"error":{"message":"failure details"}});
+            let mut turns = vec![json!({"id":"older","status":"completed"}), parent.clone()];
+            if children {
+                for status in ["completed", "interrupted", "failed"] {
+                    turns.push(json!({"id":status,"rootTurnId":"parent","status":status}));
+                }
+            }
+            conversations
+                .request(
+                    &json!({"id":8,"method":"thread/resume","params":{"threadId":"selected"}}),
+                    &registration,
+                )
+                .unwrap();
+            let hooks = conversations
+                .response(
+                    &json!({"id":8,"result":{"thread":{"id":"selected","status":{"type":"idle"},"turns":turns}}}),
+                    &registration,
+                )
+                .unwrap();
+            let expected = event.map(|event| {
+                let mut hook =
+                    json!({"hook_event_name":event,"session_id":"selected","turn_id":"parent"});
+                if status == "failed" {
+                    hook["last_assistant_message"] = "failure details".into();
+                }
+                hook
+            });
+            assert_eq!(hooks, expected.into_iter().collect::<Vec<_>>());
+            assert!(conversations.outstanding_turn().is_none());
+            assert!(conversations.review.is_none());
+            assert!(conversations.current_turn.is_none());
+            assert!(conversations
+                .response(
+                    &json!({"method":"turn/completed","params":{"threadId":"selected","turn":parent}}),
+                    &registration,
+                )
+                .unwrap()
+                .is_empty());
+        }
+    }
+}
+
+#[test]
+fn reconnect_resume_requires_idle_status_and_unambiguous_terminal_history() {
+    let parent = json!({"id":"parent","status":"failed"});
+    let mut cases = vec![];
+    for status in [
+        Value::Null,
+        json!({}),
+        json!({"type":"active"}),
+        json!({"type":"unknown"}),
+    ] {
+        cases.push((status, json!([parent])));
+    }
+    for turns in [
+        Value::Null,
+        json!({}),
+        json!([]),
+        json!([{"id":"other","status":"completed"}]),
+        json!([{"id":"parent","status":"inProgress"}]),
+        json!([{"id":"parent","status":"unknown"}]),
+        json!([{"id":"parent"}]),
+        json!([parent, parent]),
+        json!([parent, {"id":"parent","rootTurnId":"parent","status":"completed"}]),
+        json!([parent, {"id":"child","rootTurnId":"parent","status":"inProgress"}]),
+        json!([parent, {"id":"child","rootTurnId":"parent","status":"unknown"}]),
+        json!([parent, {"id":"child","rootTurnId":"parent"}]),
+        json!([parent, {"id":"","rootTurnId":"parent","status":"completed"}]),
+        json!([parent, {"id":17,"rootTurnId":"parent","status":"completed"}]),
+        json!([parent, {"rootTurnId":"parent","status":"completed"}]),
+        json!([parent, {"id":"newer","status":"completed"}]),
+        json!([parent, {"id":"child","rootTurnId":"other","status":"failed"}]),
+    ] {
+        cases.push((json!({"type":"idle"}), turns));
+    }
+    for review in [false, true] {
+        let mut cases = cases.clone();
+        if !review {
+            cases.push((
+                json!({"type":"idle"}),
+                json!([parent, {"id":"child","rootTurnId":"parent","status":"completed"}]),
+            ));
+        }
+        for (status, turns) in &cases {
+            let root = tempfile::tempdir().unwrap();
+            let registration = registration(root.path(), "aaaaaaaaaaaa");
+            let mut conversations = active_work(&registration, review);
+            conversations.reconnect();
+            conversations
+                .request(
+                    &json!({"id":8,"method":"thread/resume","params":{"threadId":"selected"}}),
+                    &registration,
+                )
+                .unwrap();
+            assert!(conversations
+                .response(
+                    &json!({"id":8,"result":{"thread":{"id":"selected","status":status,"turns":turns}}}),
+                    &registration,
+                )
+                .unwrap()
+                .is_empty(), "review={review}, status={status}, turns={turns}");
+        }
+    }
+}
+
+#[test]
 fn reconnect_new_thread_clears_the_previous_selection() {
     let root = tempfile::tempdir().unwrap();
     let registration = registration(root.path(), "aaaaaaaaaaaa");

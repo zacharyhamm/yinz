@@ -568,6 +568,37 @@ impl Conversations {
                     );
                 }
             }
+            // Work can finish after the reconnect history check but before this resume.
+            if thread["status"]["type"] == "idle"
+                && let Some((_, outstanding)) = self.outstanding_turn()
+                && let Some(turns) = thread["turns"].as_array()
+                && let Some(index) = turns
+                    .iter()
+                    .position(|turn| turn["id"].as_str() == Some(outstanding))
+                && matches!(
+                    turns[index]["status"].as_str(),
+                    Some("completed" | "interrupted" | "failed")
+                )
+                && turns.iter().skip(index + 1).all(|turn| {
+                    self.review.is_some()
+                        && turn["id"]
+                            .as_str()
+                            .is_some_and(|id| !id.is_empty() && id != outstanding)
+                        && turn["rootTurnId"].as_str() == Some(outstanding)
+                        && matches!(
+                            turn["status"].as_str(),
+                            Some("completed" | "interrupted" | "failed")
+                        )
+                })
+            {
+                return self.response(
+                    &serde_json::json!({
+                        "method": "turn/completed",
+                        "params": {"threadId": id, "turn": turns[index]},
+                    }),
+                    registration,
+                );
+            }
             return Ok(Vec::new());
         }
         let source = match method.as_str() {
