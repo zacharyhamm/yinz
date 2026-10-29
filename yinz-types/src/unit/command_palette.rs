@@ -8,6 +8,7 @@ fn palette_display_validation_rejects_ambiguous_controls_and_oversize_payloads()
         label: "Action".into(),
         description: String::new(),
         handle: "1".into(),
+        cells: None,
     };
     assert!(Reply::Actions {
         actions: vec![action.clone()]
@@ -226,4 +227,91 @@ fn view_descriptions_default_to_empty_and_validate_display_text() {
             assert_eq!(Reply::View { view }.validate().is_ok(), valid);
         }
     }
+}
+
+#[test]
+fn table_round_trip_defaults_shapes_and_limits() {
+    let value = serde_json::json!({"type":"view", "view":{
+        "type":"actions", "title":"Records", "source":null,
+        "columns":[{"header":"Number","width":8}, {"header":"Subject","maxLines":3}],
+        "actions":[{"id":"1","label":"検索","handle":"original", "cells":["1","A long Unicode subject 雪 ❄"]},
+                   {"id":"jump","label":"Jump to number","handle":"jump"}]
+    }});
+    let reply: Reply = serde_json::from_value(value.clone()).unwrap();
+    assert!(reply.validate().is_ok());
+    assert_eq!(reply.handles(), ["original", "jump"]);
+    assert_eq!(
+        serde_json::from_value::<Reply>(serde_json::to_value(&reply).unwrap()).unwrap(),
+        reply
+    );
+    let Reply::View {
+        view: View::Actions {
+            columns, actions, ..
+        },
+    } = &reply
+    else {
+        panic!()
+    };
+    assert_eq!(columns[0].max_lines, 1);
+    assert!(actions[1].cells.is_none());
+    assert!(serde_json::to_value(&actions[1])
+        .unwrap()
+        .get("cells")
+        .is_none());
+    for bad in [
+        serde_json::json!([]),
+        serde_json::json!(["1"]),
+        serde_json::json!(["1", "bad\u{1b}"]),
+    ] {
+        let mut invalid = value.clone();
+        invalid["view"]["actions"][0]["cells"] = bad;
+        assert!(serde_json::from_value::<Reply>(invalid)
+            .unwrap()
+            .validate()
+            .is_err());
+    }
+    for bad in [serde_json::json!([1]), serde_json::json!("cells")] {
+        let mut invalid = value.clone();
+        invalid["view"]["actions"][0]["cells"] = bad;
+        assert!(serde_json::from_value::<Reply>(invalid).is_err());
+    }
+    for bad in [
+        serde_json::json!({"header":"Subject","width":0}),
+        serde_json::json!({"header":"Subject","width":513}),
+        serde_json::json!({"header":"Subject","maxLines":0}),
+        serde_json::json!({"header":"Subject","maxLines":4}),
+        serde_json::json!({"header":"bad\nheader"}),
+    ] {
+        let mut invalid = value.clone();
+        invalid["view"]["columns"][1] = bad;
+        assert!(serde_json::from_value::<Reply>(invalid)
+            .unwrap()
+            .validate()
+            .is_err());
+    }
+    assert!(validate_table(&[], actions).is_err());
+    let flexible = Column {
+        header: "Subject".into(),
+        width: None,
+        max_lines: 3,
+    };
+    assert!(validate_table(&[flexible.clone(), flexible.clone()], &[]).is_err());
+    assert!(validate_table(
+        &vec![
+            Column {
+                width: Some(8),
+                ..flexible
+            };
+            17
+        ],
+        &[]
+    )
+    .is_err());
+    let mut oversized = value;
+    oversized["view"]["actions"][0]["cells"][1] =
+        serde_json::json!("雪".repeat(MAX_DISPLAY_BYTES / 3));
+    assert!(serde_json::from_value::<Reply>(oversized)
+        .unwrap()
+        .validate()
+        .is_err());
 }

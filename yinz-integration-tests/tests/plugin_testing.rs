@@ -543,3 +543,48 @@ fn installed_headless_lifecycle_exercises_the_permission_modal() {
     .unwrap();
     assert!(report.passed(), "{report:#?}");
 }
+
+#[test]
+fn installed_palette_table_wraps_and_opens_original_action() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("table.scm"),
+        include_str!("../../docs/examples/palette-table.scm"),
+    )
+    .unwrap();
+    let path = root.path().join("table.integration.test.scm");
+    std::fs::write(
+        &path,
+        r#"
+(test "native selectable table" (hash "grants" '("ReadApplicationState")) (lambda ()
+  (test-session "start" (hash "backgroundPlugins" '("./table.scm")))
+  (test-session "resize" (hash "rows" 35 "columns" 100))
+  (test-session "key" "Ctrl Alt p") (test-session "text" "Table example")
+  (test-wait-for-text "Open table example")
+  (test-session "key" "Enter")
+  (test-wait-for "wrapped table" (lambda ()
+    (define screen (test-session "screen"))
+    (and (string-contains? screen "Subject")
+         (string-contains? screen "Submitter")
+         (string-contains? screen "Unicode 雪")
+         (string-contains? screen "…")
+         (string-contains? screen "Jump to number"))))
+  (test-session "key" "Enter")
+  (test-wait-for-text "Opened the original table action.")
+  (test-session "key" "Esc")
+  (test-wait-for-text "Jump to number")
+  (test-session "key" "Down") (test-session "key" "Enter")
+  (test-wait-for-text "An ordinary full-width action in a table view.")))
+"#,
+    )
+    .unwrap();
+    let report = yinz_server::plugin_testing::run(
+        &yinz_integration_tests::test_env::init().join("data"),
+        &path,
+        &Default::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(report.passed(), "{report:#?}");
+}

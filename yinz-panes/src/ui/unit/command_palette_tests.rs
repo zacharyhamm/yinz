@@ -3348,3 +3348,178 @@ fn worktree_search_offers_creation_after_matches_and_restores_navigation() {
     assert_eq!(palette.back(), Outcome::None);
     assert!(palette.worktree_creation.is_none());
 }
+
+fn table_palette() -> CommandPalette {
+    use yinz_types::command_palette::Column;
+    let mut palette = CommandPalette {
+        view: 1,
+        columns: vec![
+            Column {
+                header: "Issue".into(),
+                width: Some(8),
+                max_lines: 1,
+            },
+            Column {
+                header: "Type".into(),
+                width: Some(8),
+                max_lines: 1,
+            },
+            Column {
+                header: "Subject".into(),
+                width: None,
+                max_lines: 3,
+            },
+            Column {
+                header: "Submitter".into(),
+                width: Some(12),
+                max_lines: 1,
+            },
+            Column {
+                header: "Updated (UTC)".into(),
+                width: Some(16),
+                max_lines: 1,
+            },
+        ],
+        ..Default::default()
+    };
+    let entries = (0..12)
+        .map(|i| {
+            entry(
+                &format!("row-{i}"),
+                &format!("Record {i:02}"),
+                EntryKind::Plugin,
+            )
+        })
+        .collect::<Vec<_>>();
+    for row in &entries {
+        palette.table_cells.insert(row.id.clone(), vec!["123".into(), "Feature".into(),
+            "日本語 e\u{301} 🦀 a very long subject that wraps across three lines and continues far beyond the available space with more words to truncate".repeat(3),
+            "Zoë 雪".into(), "2026-10-29 12:00".into()]);
+    }
+    let mut entries = entries;
+    entries.push(entry("jump", "Jump to number", EntryKind::Plugin));
+    palette.set_sections(vec![PluginSection {
+        title: "Records".into(),
+        entries,
+        semantic: true,
+        status: None,
+    }]);
+    palette
+}
+
+#[test]
+fn table_columns_align_wrap_and_ellipsis_at_terminal_widths() {
+    use unicode_width::UnicodeWidthStr;
+    let palette = table_palette();
+    for width in 0..115 {
+        let lines = palette.entry_lines(0, width, 3);
+        assert!(!lines.is_empty());
+        assert!(lines.len() <= 3);
+        for line in &lines {
+            assert!(
+                line.text.width() <= width.saturating_sub(2),
+                "width {width}: {:?}",
+                line.text
+            );
+        }
+    }
+    let lines = palette.entry_lines(0, 100, 3);
+    assert_eq!(lines.len(), 3);
+    assert!(lines[0].text.contains("日本語"));
+    assert!(lines[0].text.contains("Zoë 雪"));
+    assert!(lines[1].text.starts_with(&" ".repeat(18)));
+    assert!(lines[2].text.contains('…'));
+    assert!(!lines[1].text.contains("123"));
+    let ordinary = palette.entry_lines(12, 100, 2);
+    assert_eq!(ordinary.len(), 1);
+    assert_eq!(ordinary[0].text, "Jump to number");
+}
+
+#[test]
+fn table_headers_scroll_with_whole_actions_and_original_activation() {
+    let mut palette = table_palette();
+    palette.page_rows.set(8);
+    palette.result_width.set(90);
+    for _ in 0..8 {
+        key(&mut palette, BareKey::Down);
+    }
+    let rows = palette.visible_result_rows(8, 90);
+    assert!(matches!(&rows[0], ResultRow::Heading(header) if header.contains("Subject")));
+    assert!(rows
+        .iter()
+        .any(|r| matches!(r, ResultRow::Entry(i, 0) if *i == palette.selected)));
+    assert_eq!(rows.iter().filter(|r| palette.row_selected(r)).count(), 3);
+    let selected = palette.selected_entry().unwrap().id.clone();
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+        Outcome::Activate(selected)
+    );
+    let before = palette.selected;
+    palette.page_selection(true);
+    assert!(palette.selected > before);
+    palette.page_selection(false);
+    assert!(palette.selected <= before);
+    for capacity in 1..10 {
+        let rows = palette.visible_result_rows(capacity, 9);
+        assert!(rows.len() <= capacity);
+        assert!(rows.iter().any(|r| palette.row_selected(r)));
+    }
+}
+
+#[test]
+fn table_mouse_geometry_and_selection_survive_small_surfaces() {
+    use unicode_width::UnicodeWidthStr;
+    let mut palette = table_palette();
+    for cols in [0, 1, 2, 3, 5, 9, 24, 64, 110] {
+        for rows in [0, 1, 3, 4, 5, 6, 8, 12, 24, 40] {
+            for selected in [0, 5, 11, 12] {
+                palette.selected = selected;
+                let layout = palette.layout(Viewport {
+                    cols,
+                    rows,
+                    ..Default::default()
+                });
+                assert!(layout.result_rows.len() <= layout.options_rows);
+                let lines = rendered_lines(&palette, &layout);
+                for line in lines {
+                    assert!(line.width() <= cols, "{cols}x{rows}: {line:?}");
+                }
+                if layout.options_rows == 0 {
+                    continue;
+                }
+                assert!(
+                    layout
+                        .result_rows
+                        .iter()
+                        .any(|row| palette.row_selected(row)),
+                    "{cols}x{rows}, selected {selected}"
+                );
+                if layout.options_rows >= 2 {
+                    assert!(matches!(
+                        layout.result_rows.first(),
+                        Some(ResultRow::Heading(_))
+                    ));
+                }
+                if cols == 0 {
+                    continue;
+                }
+                for (row, result) in layout.result_rows.iter().enumerate() {
+                    if let ResultRow::Entry(index, _) = result {
+                        palette.click(
+                            &layout,
+                            Position::new(
+                                (layout.options_y + row) as i32,
+                                (layout.rect.x + layout.border) as u16,
+                            ),
+                        );
+                        assert_eq!(palette.selected, *index);
+                        assert_eq!(
+                            palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+                            Outcome::Activate(palette.entries[palette.matches[*index]].id.clone())
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

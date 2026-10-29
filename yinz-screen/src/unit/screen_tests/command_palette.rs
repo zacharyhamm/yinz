@@ -2335,6 +2335,7 @@ fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening_with_sou
                     label: label.into(),
                     description: String::new(),
                     handle: "handle".into(),
+                    cells: None,
                 }],
             }),
         })
@@ -2541,6 +2542,7 @@ fn plugin_palette_sections_sort_by_title_then_owner_and_timeout_independently_wi
                             label: format!("Result {id}"),
                             description: String::new(),
                             handle: "1".into(),
+                            cells: None,
                         }],
                     }),
                 },
@@ -2720,6 +2722,7 @@ fn plugin_palette_filter_submission_refreshes_results_and_releases_old_handles()
                     label: label.into(),
                     description: String::new(),
                     handle: handle.into(),
+                    cells: None,
                 }],
             }),
         })
@@ -2817,6 +2820,7 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root_
         label: "Retained action".into(),
         description: String::new(),
         handle: handle.into(),
+        cells: None,
     };
     let next = || {
         requests
@@ -2898,6 +2902,7 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root_
         scope,
         result: Ok(Reply::View {
             view: View::Actions {
+                columns: vec![],
                 description: "Choose a configuration section.".into(),
                 initial_query: "nested query".into(),
                 title: "Nested".into(),
@@ -2945,6 +2950,7 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root_
         scope,
         result: Ok(Reply::View {
             view: View::Actions {
+                columns: vec![],
                 description: String::new(),
                 initial_query: String::new(),
                 title: "Nested again".into(),
@@ -3024,9 +3030,11 @@ fn plugin_palette_completion_clears_saved_searches_and_keeps_the_new_initial_que
                 description: String::new(),
                 aliases: vec![],
                 handle: "run".into(),
+                cells: None,
             }]
         };
         let view = |query: &str| View::Actions {
+            columns: vec![],
             title: "Provider results".into(),
             description: String::new(),
             actions: actions(),
@@ -3231,6 +3239,7 @@ fn root_palette_escape_cancels_discovery_and_debounce_with_source(static_actions
                     label: "Late".into(),
                     description: String::new(),
                     handle: "late".into(),
+                    cells: None,
                 }],
             }),
         }));
@@ -5159,6 +5168,7 @@ fn palette_completion_notifications_are_scoped_and_readable() {
                         description: String::new(),
                         aliases: vec![],
                         handle: "save".into(),
+                        cells: None,
                     }],
                 }),
             }));
@@ -5190,6 +5200,7 @@ fn palette_completion_notifications_are_scoped_and_readable() {
                     scope,
                     result: Ok(Reply::View {
                         view: View::Actions {
+                            columns: vec![],
                             title: "Report".into(),
                             description: String::new(),
                             actions: vec![Action {
@@ -5198,6 +5209,7 @@ fn palette_completion_notifications_are_scoped_and_readable() {
                                 description: String::new(),
                                 aliases: vec![],
                                 handle: "export".into(),
+                                cells: None,
                             }],
                             source: None,
                             initial_query: String::new(),
@@ -5520,6 +5532,7 @@ fn suspended_palette_keeps_notifications_hidden_and_releases_mode_only_on_close(
                     handle: "browse".into(),
                     description: String::new(),
                     aliases: vec![],
+                    cells: None,
                 }],
             }),
         }));
@@ -5625,6 +5638,7 @@ fn dynamic_palette_refresh_recovers_after_execution_error_and_stops_after_close(
         handle: id.into(),
         description: String::new(),
         aliases: vec![],
+        cells: None,
     };
     screen.plugin_palette_instruction(command(Command::Register {
         id: "test".into(),
@@ -5651,6 +5665,7 @@ fn dynamic_palette_refresh_recovers_after_execution_error_and_stops_after_close(
         scope,
         result: Ok(Reply::View {
             view: View::Actions {
+                columns: vec![],
                 description: String::new(),
                 initial_query: String::new(),
                 title: "Dynamic".into(),
@@ -5888,6 +5903,7 @@ fn plugin_markdown_survives_results_forms_and_text_view_transitions() {
                 description: "Use `Markdown`".into(),
                 aliases: vec![],
                 handle: "edit".into(),
+                cells: None,
             }],
         }),
     }));
@@ -7095,4 +7111,138 @@ fn open_agents_respects_permission_modal() {
     assert!(screen.permission_modal_open(CLIENT));
     screen.open_agents(CLIENT);
     assert!(!screen.command_palette_is_open(CLIENT));
+}
+
+#[test]
+fn plugin_table_refresh_validates_shape_and_preserves_original_handle() {
+    use std::sync::{atomic::AtomicBool, Arc};
+    use yinz_bus::command_palette::{Instruction, Owner};
+    use yinz_types::command_palette::{
+        Action as PaletteAction, Column, Command, Message, Reply, View,
+    };
+    let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let (sender, requests) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    let command = |command| Instruction::Command {
+        owner: Owner {
+            plugin_id: PluginId::new(50),
+            generation: 9,
+            client_id: Some(CLIENT),
+        },
+        client: CLIENT,
+        unavailable: Arc::new(AtomicBool::new(false)),
+        command,
+    };
+    let next = || {
+        requests
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PluginInstruction::PluginPalette(delivery) => match delivery.message {
+                    message @ (Message::Discover { .. } | Message::Execute { .. }) => Some(message),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("palette request")
+    };
+    let action = |id: &str, cells| PaletteAction {
+        id: id.into(),
+        label: id.into(),
+        handle: format!("handle-{id}"),
+        description: String::new(),
+        aliases: vec![],
+        cells,
+    };
+    screen.plugin_palette_instruction(command(Command::Register {
+        id: "table".into(),
+        title: "Table".into(),
+        registration: "1".into(),
+        static_actions: true,
+    }));
+    screen.toggle_command_palette(CLIENT);
+    let Message::Discover { scope, .. } = next() else {
+        panic!()
+    };
+    screen.plugin_palette_instruction(command(Command::Reply {
+        scope,
+        result: Ok(Reply::Actions {
+            actions: vec![action("unique-table", None)],
+        }),
+    }));
+    screen.command_palette_handles_input(&None, b"unique-table", false, CLIENT);
+    palette_key(&mut screen, BareKey::Enter);
+    let Message::Execute { scope, .. } = next() else {
+        panic!()
+    };
+    screen.plugin_palette_instruction(command(Command::Reply {
+        scope,
+        result: Ok(Reply::View {
+            view: View::Actions {
+                title: "Records".into(),
+                description: String::new(),
+                initial_query: String::new(),
+                source: Some("source".into()),
+                columns: vec![Column {
+                    header: "Subject".into(),
+                    width: None,
+                    max_lines: 3,
+                }],
+                actions: vec![],
+            },
+        }),
+    }));
+    let Message::Discover { scope, .. } = next() else {
+        panic!()
+    };
+    screen.plugin_palette_instruction(command(Command::Reply {
+        scope: scope.clone(),
+        result: Ok(Reply::Actions {
+            actions: vec![
+                action(
+                    "original",
+                    Some(vec!["A long Unicode 雪 subject ".repeat(20)]),
+                ),
+                action("jump", None),
+            ],
+        }),
+    }));
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(
+        frame.contains("Subject") && frame.contains("Unicode 雪"),
+        "{frame}"
+    );
+    assert!(screen.plugin_palette_instruction(Instruction::Refresh {
+        client: CLIENT,
+        scope
+    }));
+    let Message::Discover { scope, .. } = next() else {
+        panic!()
+    };
+    screen.plugin_palette_instruction(command(Command::Reply {
+        scope,
+        result: Ok(Reply::Actions {
+            actions: vec![action(
+                "malformed",
+                Some(vec!["extra".into(), "cell".into()]),
+            )],
+        }),
+    }));
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(
+        frame.contains("Unicode 雪") && !frame.contains("malformed"),
+        "{frame}"
+    );
+    assert!(requests
+        .try_iter()
+        .any(|(instruction, _)| matches!(instruction,
+        PluginInstruction::PluginPalette(yinz_bus::command_palette::Delivery {
+            message: Message::Release { handles }, ..
+        }) if handles == vec!["handle-malformed".to_string()])));
+    palette_key(&mut screen, BareKey::Enter);
+    let Message::Execute { handle, .. } = next() else {
+        panic!()
+    };
+    assert_eq!(handle, "handle-original");
 }

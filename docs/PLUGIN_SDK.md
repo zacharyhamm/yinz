@@ -714,6 +714,46 @@ descriptions support block Markdown, including headings, lists, code blocks, and
 tables. Result rows keep their two-line limit. Labels use a single logical line.
 Links show their destination but do not open it.
 
+Action views also accept optional ordered `"columns"`; actions accept optional
+ordered string `"cells"`. For example:
+
+```scheme
+(hash "type" "actions" "title" "Issues"
+  "columns" (list (hash "header" "Issue number" "width" 12)
+                  (hash "header" "Type" "width" 10)
+                  (hash "header" "Subject" "maxLines" 3)
+                  (hash "header" "Submitter" "width" 14)
+                  (hash "header" "Updated (UTC)" "width" 16))
+  "actions" (list (hash "id" "42" "label" "Issue 42: Unicode rendering"
+    "cells" '("42" "Feature" "A long subject with Unicode 雪" "Zoë" "2026-10-29 12:00")
+    "run" (lambda (values context)
+      (hash "type" "text" "title" "Issue 42" "text" "Opened issue 42")))))
+```
+
+Each column has a nonempty plain-text `"header"`, optional preferred `"width"`
+(1–512 terminal cells), and `"maxLines"` (1–3, default 1). At most one column may
+omit width; it fills remaining space. Preferred widths shrink in narrow terminals,
+and columns may disappear at extreme widths. Up to 16 columns are supported.
+Cells and headers are literal text, including Markdown punctuation. Cells wrap
+up to maxLines, with an ellipsis on truncation; metadata with maxLines 1 truncates.
+Permitted newlines and tabs in cells display as spaces. Headers stay visible
+while scrolling whenever space permits a header and an action.
+
+Every action with cells must supply exactly one string per column, including in
+`"source"` refresh results. Omit cells for ordinary full-width actions in the same
+view. Cells require columns on the containing action view; root provider results
+and form actions cannot use them. Omit both fields for the existing appearance
+and two-line label limit. Labels, descriptions, aliases, IDs and callbacks keep
+their existing roles; search uses labels and aliases, so include searchable cell
+content there as needed. A wrapped row remains one keyboard/mouse selection and
+executes its original callback. Display data, including cells and headers, shares
+the existing 256 KiB reply limit and terminal-control validation.
+
+The display wire API uses the same `columns`/`cells` keys and column object shape
+(`header`, optional `width`, `maxLines` defaulting to 1). The SDK replaces `run`
+with the private `handle` as usual. Absent cells and empty columns are omitted on
+wire serialization. See [the runnable generic table plugin](examples/palette-table.scm).
+
 Search matches displayed labels and aliases. Editable values, choice values,
 queries, IDs, and callback handles remain literal. Escape Markdown punctuation
 with a backslash when you need literal display text. In Scheme strings, write
