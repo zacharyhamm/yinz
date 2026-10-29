@@ -117,6 +117,103 @@ fn generated_codex_script_routes_without_daemon_pane_env_and_returns_neutral_jso
     std::fs::remove_dir_all(temp).unwrap();
 }
 
+#[test]
+fn generated_agy_script_preserves_json_and_defaults_only_a_missing_event() {
+    let temp = tempfile::tempdir().unwrap();
+    let reporter = temp.path().join("yinz");
+    let captured = temp.path().join("payload");
+    let argv = temp.path().join("argv");
+    yinz_test_support::write_warm_script(
+        &reporter,
+        "printf '%s' \"$*\" > \"$ARGV\"\ncat > \"$CAPTURE\"",
+    );
+    let hook = temp.path().join("yinz-hook.sh");
+    std::fs::write(&hook, script(HookAgent::Agy, &reporter)).unwrap();
+    let mut cases: Vec<_> = AGY_EVENTS
+        .iter()
+        .map(|event| {
+            let expected = if *event == "PreInvocation" {
+                "UserPromptSubmit"
+            } else {
+                event
+            };
+            (*event, "{}".to_owned(), expected)
+        })
+        .collect();
+    cases.extend([
+        ("Stop", " \n {\n }\n".into(), "Stop"),
+        (
+            "Stop",
+            "{\n\"hook_event_name\":\"PostToolUse\",\n\"conversationId\":\"conversation\"\n}"
+                .into(),
+            "PostToolUse",
+        ),
+        (
+            "Stop",
+            json!({"nested":{"hook_event_name":"PreToolUse"}, "text":"quotes \" and braces {} 雪"})
+                .to_string(),
+            "Stop",
+        ),
+        (
+            "Stop",
+            json!({"conversationId":"conversation", "payload":"x".repeat(200 * 1024)}).to_string(),
+            "Stop",
+        ),
+    ]);
+    for remote in [false, true] {
+        for (argument, payload, expected) in &cases {
+            let input = temp.path().join("input");
+            std::fs::write(&input, payload).unwrap();
+            let output = Command::new("/bin/sh")
+                .arg(&hook)
+                .arg(argument)
+                .env("YINZ_PANE_REF", "abcdef012345")
+                .env(
+                    yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV,
+                    if remote { "token" } else { "" },
+                )
+                .env("CAPTURE", &captured)
+                .env("ARGV", &argv)
+                .stdin(Stdio::from(std::fs::File::open(&input).unwrap()))
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let decision: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(
+                decision,
+                match *argument {
+                    "PreToolUse" => json!({"decision":"ask"}),
+                    "Stop" => json!({"decision":"stop"}),
+                    _ => json!({}),
+                }
+            );
+            assert_eq!(
+                std::fs::read_to_string(&argv).unwrap(),
+                if remote {
+                    "--pty-broker report agy"
+                } else {
+                    "action agent-report --hook-json --kind agy"
+                }
+            );
+            let raw = std::fs::read_to_string(&captured).unwrap();
+            let original: Value = serde_json::from_str(payload).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&raw).unwrap(),
+                json!([argument, original])
+            );
+            let (event, normalized) =
+                yinz_runtime::agent::hooks::parse_hook_event("agy", raw).unwrap();
+            assert_eq!(event.hook_event_name, *expected);
+            assert_eq!(
+                yinz_runtime::agent::hooks::parse_hook_event("agy", normalized)
+                    .unwrap()
+                    .0,
+                event
+            );
+        }
+    }
+}
+
 /// Run the generated script with a given environment and say what it invoked.
 fn hook_argv(agent: HookAgent, name: &str, env: &[(&str, &str)]) -> (String, String) {
     let temp = temp_dir(name);
@@ -500,10 +597,15 @@ fn an_agy_project_install_lands_in_agents_hooks_json() {
 fn installing_agy_hooks_preserves_existing_handlers_and_uninstall_retains_them() {
     let command = "/home/me/.gemini/yinz/yinz-hook.sh";
     let original = json!({
+        "env": {},
+        "permissions": { "allow": [] },
+        "unrelated": { "Stop": [{ "command": "yinz-hook.sh" }] },
         "other_block": {
             "SomeEvent": [{ "command": "echo other" }]
         },
         "hooks": {
+            "EmptyEvent": [],
+            "EmptyGroup": [{ "matcher": "Bash", "hooks": [] }],
             "Stop": [
                 { "command": "/usr/local/bin/custom-stop.sh", "timeout": 10 }
             ],
@@ -561,6 +663,10 @@ fn installing_agy_hooks_preserves_existing_handlers_and_uninstall_retains_them()
     let uninstalled = uninstall_agy_from(installed);
     assert_eq!(uninstalled, original);
     assert!(installed_agy_events(&uninstalled).is_empty());
+
+    let unrelated = json!({"env": {}, "other": {"Stop": [{"command":"yinz-hook.sh"}]}});
+    assert!(installed_agy_events(&unrelated).is_empty());
+    assert_eq!(uninstall_agy_from(unrelated.clone()), unrelated);
 }
 
 #[test]

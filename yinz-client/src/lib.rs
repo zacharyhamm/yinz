@@ -63,9 +63,9 @@ use yinz_types::envs::EnvironmentVariables;
 use yinz_types::keys::{KeyModifier, KeyWithModifier};
 use {
     yinz_config::config::Config, yinz_ipc::ipc::ClientToServerMsg, yinz_ipc::ipc::ExitReason,
-    yinz_ipc::ipc::ServerToClientMsg, yinz_runtime::consts::set_permissions,
-    yinz_runtime::consts::YINZ_SOCK_DIR, yinz_types::data::ClientId, yinz_types::data::LayoutInfo,
-    yinz_types::data::SessionConnection, yinz_types::input::options::Options,
+    yinz_ipc::ipc::ServerToClientMsg, yinz_runtime::consts::YINZ_SOCK_DIR,
+    yinz_types::data::ClientId, yinz_types::data::LayoutInfo, yinz_types::data::SessionConnection,
+    yinz_types::input::options::Options,
 };
 
 /// Instructions related to the client-side application
@@ -234,43 +234,21 @@ fn spawn_server_error_message(e: io::Error) -> String {
     )
 }
 
-/// Create the socket directory and restrict it to its owner. The `Err` is the diagnostic to
-/// show the user: both failures mean the directory is owned by someone else or is not writable,
-/// and `YINZ_SOCKET_DIR` is the way out.
+/// Create a private socket directory, or explain how to select a safe location.
 fn prepare_socket_dir(sock_dir: &Path) -> std::result::Result<(), String> {
-    use std::os::unix::fs::MetadataExt;
-
-    if let Err(e) = std::fs::create_dir_all(sock_dir) {
-        return Err(format!(
-            "Error: failed to create the Yinz socket directory:\n  {}\n\n\
-             Reason: {}\n\n\
+    yinz_runtime::shared::ensure_secure_dir(sock_dir).map_err(|e| {
+        format!(
+            "Error: failed to secure the Yinz socket directory:\n  {}\n\n\
+             Reason: {:#}\n\n\
              This usually means the directory (or one of its parents) is owned by \
-             another user or is not writable - for example if Yinz was previously \
+             another user, is shared, or is not writable - for example if Yinz was previously \
              run with `sudo`, or if $XDG_RUNTIME_DIR points to a directory you do not \
              own.\nTo fix this, remove or correct the offending directory, or set a \
              writable socket directory, eg.:\n  YINZ_SOCKET_DIR=/tmp/yinz-$USER yinz",
             sock_dir.display(),
             e
-        ));
-    }
-    // An already secured directory can be a read-only mount in a Bubblewrap client.
-    if std::fs::metadata(sock_dir).is_ok_and(|metadata| {
-        metadata.uid() == nix::unistd::geteuid().as_raw() && metadata.mode() & 0o7777 == 0o700
-    }) {
-        return Ok(());
-    }
-    if let Err(e) = set_permissions(sock_dir, 0o700) {
-        return Err(format!(
-            "Error: failed to set permissions (0700) on the Yinz socket directory:\n  {}\n\n\
-             Reason: {}\n\n\
-             This usually means the directory is owned by another user.\n\
-             To fix this, remove or correct the offending directory, or set a writable \
-             socket directory, eg.:\n  YINZ_SOCKET_DIR=/tmp/yinz-$USER yinz",
-            sock_dir.display(),
-            e
-        ));
-    }
-    Ok(())
+        )
+    })
 }
 
 /// The socket path for `session_name`, with the socket directory prepared first.

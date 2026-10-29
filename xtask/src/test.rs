@@ -11,6 +11,7 @@ use xshell::{cmd, Shell};
 pub const EXCLUDED: &[&str] = &["yinz-integration-tests"];
 
 pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
+    crate::test_run::private_creation_mask();
     let run = crate::test_run::TestRun::new()?;
     let _cache_root = sh.push_env(crate::owned_dir::TEST_CACHE_ROOT_ENV, run.path());
     let err_context = "failed to run task 'test'";

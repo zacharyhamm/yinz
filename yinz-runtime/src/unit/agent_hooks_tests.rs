@@ -740,6 +740,30 @@ fn agy_prompt_preserves_request_delimiters_in_submitted_prompt() {
 }
 
 #[test]
+fn agy_script_envelopes_require_an_event_string_and_object_payload() {
+    for raw in [
+        r#"["Stop"]"#,
+        r#"["Stop", {}, {}]"#,
+        r#"[null, {}]"#,
+        r#"["Stop", null]"#,
+        r#"["Stop", []]"#,
+        r#"["Stop", "payload"]"#,
+    ] {
+        assert!(parse_hook_event("agy", raw.into()).is_err(), "{raw}");
+    }
+    let (event, _) = parse_hook_event("agy", r#"["Stop", {}]"#.into()).unwrap();
+    assert_eq!(event.hook_event_name, "Stop");
+    let raw = r#"["Stop", {"hook_event_name":"PostToolUse","session_id":"conversation","future_field":true}]"#;
+    let (event, normalized) = parse_hook_event("agy", raw.into()).unwrap();
+    assert_eq!(event.hook_event_name, "PostToolUse");
+    assert_eq!(event.session_id, "conversation");
+    assert_eq!(
+        serde_json::from_str::<Value>(&normalized).unwrap()["future_field"],
+        true
+    );
+}
+
+#[test]
 fn agy_native_submissions_and_normalized_confirmations_round_trip() {
     let (submission, normalized) = parse_hook_event(
         "agy",

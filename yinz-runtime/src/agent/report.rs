@@ -182,7 +182,9 @@ fn append_diagnostic(_line: &str) {}
 #[cfg(unix)]
 fn append_diagnostic(line: &str) {
     use std::os::unix::fs::OpenOptionsExt;
-    let _ = std::fs::create_dir_all(&*crate::consts::YINZ_TMP_LOG_DIR);
+    if crate::shared::ensure_secure_dir(&crate::consts::YINZ_TMP_LOG_DIR).is_err() {
+        return;
+    }
     // O_NONBLOCK prevents opening a substituted FIFO from hanging. The watchdog also bounds
     // regular filesystem writes (which O_NONBLOCK cannot bound).
     if let Ok(mut file) = std::fs::OpenOptions::new()

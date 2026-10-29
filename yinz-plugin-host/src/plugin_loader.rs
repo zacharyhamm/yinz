@@ -5,7 +5,6 @@ use crate::{ClientId, PluginId};
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -32,13 +31,6 @@ fn create_plugin_fs_entries(plugin_own_data_dir: &PathBuf, plugin_own_cache_dir:
     if let Err(e) = fs::create_dir_all(plugin_own_cache_dir) {
         log::error!("Failed to create plugin cache dir: {}", e);
     }
-    // `/tmp` is shared by every plugin of this user, and by no one else.
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(YINZ_PLUGIN_TMP_DIR.as_path())
-        .context("failed to create plugin tmp dir")
-        .non_fatal();
 }
 
 pub(crate) fn script_source(
@@ -247,6 +239,9 @@ impl PluginLoader {
     }
 
     fn start_script_plugin(&mut self) -> Result<()> {
+        // `/tmp` is shared by every plugin of this user, and by no one else.
+        yinz_runtime::shared::ensure_secure_dir(&YINZ_PLUGIN_TMP_DIR)
+            .context("failed to secure plugin tmp dir")?;
         if self.script_client_disconnected() {
             return self.clone_instance_for_other_clients();
         }

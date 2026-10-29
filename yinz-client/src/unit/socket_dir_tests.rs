@@ -37,3 +37,23 @@ fn prepare_socket_dir_reports_a_parent_that_is_a_file() {
         "{message}"
     );
 }
+
+#[test]
+fn prepare_socket_dir_rejects_symlinks_and_replaceable_parents() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("target");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let link = dir.path().join("sockets");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let error = crate::prepare_socket_dir(&link).unwrap_err();
+    assert!(error.contains("socket directory"), "{error}");
+    assert_eq!(
+        target.metadata().unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(crate::prepare_socket_dir(&target.join("nested")).is_err());
+    assert!(!target.join("nested").exists());
+}

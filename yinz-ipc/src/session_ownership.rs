@@ -22,8 +22,8 @@ fn open_lock_file(socket: &Path, directory: &str) -> Result<File> {
         .parent()
         .context("session socket has no parent")?
         .join(directory);
-    std::fs::create_dir_all(&directory)
-        .with_context(|| format!("create session lock directory {directory:?}"))?;
+    yinz_runtime::shared::ensure_secure_dir(&directory)
+        .with_context(|| format!("secure session lock directory {directory:?}"))?;
     let name = socket.file_name().context("session socket has no name")?;
     // Never unlink: all contenders must lock the same inode, including after a crash.
     OpenOptions::new()

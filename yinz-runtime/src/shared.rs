@@ -14,6 +14,10 @@ mod unix_only {
     }
 }
 
+#[cfg(unix)]
+#[path = "secure_dir.rs"]
+mod secure_dir;
+
 #[cfg(not(unix))]
 pub fn set_permissions(_path: &std::path::Path, _mode: u32) -> std::io::Result<()> {
     Ok(())
@@ -22,11 +26,14 @@ pub fn set_permissions(_path: &std::path::Path, _mode: u32) -> std::io::Result<(
 use crate::errors::prelude::*;
 use yinz_types::internal_ids::SessionName;
 
-/// Create `path` with any missing parents, then make it accessible to its owner only.
+/// Create private directories beneath trusted ancestors, refusing symlinks at `path`.
 pub fn ensure_secure_dir(path: &std::path::Path) -> Result<()> {
-    std::fs::create_dir_all(path)
-        .with_context(|| format!("failed to create {}", path.display()))?;
-    set_permissions(path, 0o700).with_context(|| format!("failed to secure {}", path.display()))
+    #[cfg(unix)]
+    return secure_dir::ensure(path)
+        .with_context(|| format!("failed to secure {}", path.display()));
+
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(path).with_context(|| format!("failed to create {}", path.display()))
 }
 
 /// The OSC 0 sequence that sets the host terminal's title for a focused pane.
