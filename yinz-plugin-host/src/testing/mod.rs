@@ -190,8 +190,13 @@ pub fn run(
             test.kind = kind;
             test.duration_ms = started.elapsed().as_millis() as u64;
             if let Some(error) = &mut test.error {
-                let text = std::mem::take(error);
-                append_bounded(error, &text);
+                // Wait failures lead with the failed condition and screen, followed by logs.
+                // Keep that cause when the logs exceed the report's size limit.
+                let mut end = error.len().min(OUTPUT_LIMIT);
+                while !error.is_char_boundary(end) {
+                    end -= 1;
+                }
+                error.truncate(end);
             }
             let text = std::mem::take(&mut test.output);
             append_bounded(&mut test.output, &text);

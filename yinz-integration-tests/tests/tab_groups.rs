@@ -12,7 +12,7 @@ fn tab_groups_keyboard_mouse_and_last_pane_lifecycle() {
     yinz.wait_until("single group collapses to one row", |grid| {
         !grid.lines()[0].contains("Default")
             && grid.lines()[0].contains('+')
-            && grid.lines()[1].contains("DEFAULT_CONTENT")
+            && grid.lines()[2].contains("DEFAULT_CONTENT")
     });
     yinz.send_stdin(b"\x14g");
     let first = yinz.expect_pty_spawn();
@@ -60,7 +60,7 @@ fn tab_groups_keyboard_mouse_and_last_pane_lifecycle() {
     });
     first.exit(Some(0));
     yinz.wait_until("last pane exit removes group", |grid| {
-        grid.lines()[1].contains("DEFAULT_CONTENT")
+        grid.lines()[2].contains("DEFAULT_CONTENT")
             && !grid.contains("Group 1")
             && !grid.lines()[0].contains("Default")
     });
@@ -104,7 +104,7 @@ fn tab_groups_can_start_disabled_and_toggle_live_without_losing_groups() {
         |grid| {
             !grid.contains("Default")
                 && grid.lines()[0].contains("Tab #2")
-                && grid.lines()[1].contains("SECOND_CONTENT")
+                && grid.lines()[2].contains("SECOND_CONTENT")
         },
     );
     yinz.send_stdin(b"\x14g");

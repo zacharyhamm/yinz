@@ -2,6 +2,8 @@
 (define (open-command title)
   (s-key "Ctrl Alt p") (s-text title) (test-wait-for-text (string-append "› " title "…")) (s-key "Enter"))
 (define (select-fixture)
+  ;; The inventory arrives asynchronously; typing before it opens loses the search query.
+  (test-wait-for-text "palette-fixture.scm")
   (s-text "palette-fixture.scm")
   (test-wait-for "fixture plugin result selected"
     (lambda () (t-any (lambda (line)

@@ -266,9 +266,10 @@ fn resizing_the_terminal_while_nested_fullscreen_keeps_the_guest_filling_the_dis
         host_after_resize.row_count() > host_rows_before,
         "the host display must render more rows after the terminal grows",
     );
-    assert!(
-        host_after_resize.row_of_line("Pane #1").is_none(),
-        "no stray host pane-title line while the guest is fullscreened after resize",
+    assert_eq!(
+        host_after_resize.text.matches("Pane #1").count(),
+        1,
+        "only the guest's pane-title line remains while the guest is fullscreened after resize",
     );
     nested.guest.wait_until(
         "the guest re-renders filling the enlarged display while fullscreened",
@@ -428,6 +429,8 @@ fn closing_an_inner_guest_pane_while_descended_keeps_the_guest_live() {
 
     boot_and_descend_on_first_load(&nested);
 
+    // Claim the initial pane so the next queued spawn is the pane this test closes.
+    let _guest_first_pane = nested.guest.expect_pty_spawn();
     nested.host.send_stdin(&keys::alt('n'));
     let guest_second_pane = nested.guest.expect_pty_spawn();
     guest_second_pane.output(PROMPT);

@@ -65,7 +65,7 @@ fn marked_commands(count: usize) -> Vec<u8> {
 fn top_content_line(grid_snapshot: &GridSnapshot) -> String {
     grid_snapshot
         .lines()
-        .get(1)
+        .get(2) // The tab bar and pane title precede terminal content.
         .map(|line| line.trim_end().to_owned())
         .unwrap_or_default()
 }

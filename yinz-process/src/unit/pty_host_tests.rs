@@ -2347,9 +2347,18 @@ fn a_child_with_a_sigcont_handler_resumes_input_after_continuation() {
     );
     kill(pid, Some(Signal::SIGCONT)).unwrap();
     assert!(matches!(host.recv(), HostToServerMsg::ChildContinued));
-    read_until(&mut master, "continued");
+    // A shell can defer its CONT trap until the blocking read completes. Send input before
+    // waiting for the trap's output so the test does not keep that read blocked itself.
     master.write_all(b"after-resume\n").unwrap();
-    read_until(&mut master, "processed:after-resume");
+    let output = read_until(&mut master, "processed:after-resume");
+    assert!(
+        output.contains("continued"),
+        "CONT trap did not run: {output:?}"
+    );
+    assert!(
+        output.contains("processed:after-resume"),
+        "resumed child did not process input: {output:?}"
+    );
     host.send(&ServerToHostMsg::Terminate);
     host.join();
 }
