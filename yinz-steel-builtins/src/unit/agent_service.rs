@@ -365,13 +365,14 @@ fn publishing_and_persistence_keep_long_histories_and_other_live_agents() {
 }
 
 #[test]
-fn adoption_conflicts_merge_history_and_retry_without_losing_revision_guards() {
+fn run_conflicts_merge_history_and_retry_without_losing_revision_guards() {
     // The mock store checks the actual emitted guards and commits metadata and entries together.
     // Each case schedules commits/failures explicitly; no threads or sleeps control the race.
     for (retry_conflict, read_failure, completed, local_summary) in [
         (false, false, false, false),
         (true, false, false, true),
         (false, true, true, false),
+        (false, true, false, false),
     ] {
         let (mut runtime, host) = plugin_with_source(
             "agent-service",
@@ -392,7 +393,11 @@ fn adoption_conflicts_merge_history_and_retry_without_losing_revision_guards() {
               (as-map-set! "runs" 8 run) (as-map-set! "dirty-runs" "claude:handoff" run))
             (define (finish) (as-call "finish-run" 8 "Completed" 30))
             (define (persist-now) (as-call "persist"))
-            (define (snapshot) (list stored store-rev attempts (as-get "dirty-runs") (as-get "adoptions") (as-get "runs")))
+            (define (snapshot) (list stored store-rev attempts (as-get "dirty-runs") (as-get "adoptions") (as-get "runs")
+                (as-get "run-bases") (as-get "run-revisions") (as-get "persisted")))
+            (define (reload)
+              (as-reset!) (as-set! "host" "host") (as-set! "session" "destination")
+              (as-map-set! "runs" 8 (as-call "load-run" "claude:handoff")))
             (define (late-release original)
               (as-reset!) (as-set! "host" "host") (as-set! "session" "source")
               (as-map-set! "runs" 7 original) (as-map-set! "run-revisions" "claude:handoff" 10)
@@ -447,7 +452,9 @@ fn adoption_conflicts_merge_history_and_retry_without_losing_revision_guards() {
         let original = json!({
             "id":"claude:handoff", "pane_id":7, "kind":"claude", "session_id":"handoff",
             "host_id":"host", "yinz_session_name":"source", "started_at_ms":1,
-            "ended_at_ms":null, "outcome":"active", "revision":1, "summarized_revision":0,
+            "ended_at_ms":if read_failure { json!(5) } else { json!(null) },
+            "outcome":if read_failure { "completed" } else { "active" },
+            "revision":1, "summarized_revision":0,
             "summary":null, "entries":[entry(1, "original", None)],
         });
         runtime.invoke("setup", vec![original.clone()]).unwrap();
@@ -558,13 +565,110 @@ fn adoption_conflicts_merge_history_and_retry_without_losing_revision_guards() {
             runtime
                 .invoke("append-local", vec![json!("after adoption"), json!(null)])
                 .unwrap();
+            // A pending archive summary in the source session commits after adoption succeeded.
+            let mut archived = stored.clone();
+            let revision = archived["revision"].as_u64().unwrap() + 1;
+            archived["revision"] = json!(revision);
+            archived["summary"] = summary("late archive");
+            archived["summarized_revision"] = json!(revision);
+            archived["entries"].as_array_mut().unwrap().push(entry(
+                revision,
+                "late archive",
+                Some("archive"),
+            ));
+            let expected = state[1].as_u64().unwrap();
+            runtime
+                .invoke("set-store", vec![archived.clone(), json!(expected + 1)])
+                .unwrap();
+            runtime
+                .invoke("faults", vec![json!(read_failure), json!(retry_conflict)])
+                .unwrap();
             runtime.invoke("persist-now", vec![]).unwrap();
+            let mut attempts = state[2].as_array().unwrap().clone();
+            attempts.push(json!(expected));
+            if !read_failure {
+                attempts.push(json!(expected + 1));
+            }
+            if retry_conflict || read_failure {
+                let pending = runtime.invoke("snapshot", vec![]).unwrap();
+                assert!(pending[3].get("claude:handoff").is_some());
+                assert_eq!(pending[4], json!({}));
+                assert_eq!(pending[2], json!(attempts));
+                if read_failure {
+                    assert_eq!(pending[6], state[6]);
+                    assert_eq!(pending[7], state[7]);
+                    assert_eq!(pending[8], state[8]);
+                }
+                runtime
+                    .invoke("faults", vec![json!(false), json!(false)])
+                    .unwrap();
+                runtime.invoke("persist-now", vec![]).unwrap();
+                attempts.extend(if read_failure {
+                    [json!(expected), json!(expected + 1)]
+                } else {
+                    [json!(expected + 1), json!(expected + 2)]
+                });
+            }
             let after = runtime.invoke("snapshot", vec![]).unwrap();
-            assert_eq!(
-                after[0]["entries"].as_array().unwrap().last().unwrap()["text"],
-                "after adoption"
-            );
+            assert_eq!(after[2], json!(attempts));
+            assert_eq!(after[0]["summary"], archived["summary"]);
+            assert_eq!(after[0]["summarized_revision"], revision);
+            let mut expected_entries = archived["entries"].as_array().unwrap().clone();
+            if retry_conflict {
+                expected_entries.push(entry(revision + 1, "racing source", None));
+            }
+            expected_entries.push(entry(
+                expected_entries.len() as u64 + 1,
+                "after adoption",
+                None,
+            ));
+            assert_eq!(after[0]["entries"], json!(expected_entries));
+            assert_eq!(after[5]["8"], after[0]);
             assert_eq!(after[3], json!({}));
+            assert_eq!(after[4], json!({}));
+            assert_eq!(after[6]["claude:handoff"], after[0]);
+
+            // Reloading also supplies a baseline; an ordinary edit must preserve remote ownership.
+            runtime.invoke("reload", vec![]).unwrap();
+            let mut moved = after[0].clone();
+            moved["host_id"] = json!("other-host");
+            moved["yinz_session_name"] = json!("other-session");
+            moved["pane_id"] = json!(9);
+            runtime
+                .invoke(
+                    "set-store",
+                    vec![moved, json!(after[1].as_u64().unwrap() + 1)],
+                )
+                .unwrap();
+            runtime
+                .invoke("append-local", vec![json!("after move"), json!(null)])
+                .unwrap();
+            runtime.invoke("persist-now", vec![]).unwrap();
+            let moved = runtime.invoke("snapshot", vec![]).unwrap();
+            assert_eq!(moved[5]["8"], moved[0]);
+            assert_eq!(
+                moved[0]["entries"].as_array().unwrap().len(),
+                expected_entries.len() + 1
+            );
+            runtime
+                .invoke(
+                    "set-store",
+                    vec![moved[0].clone(), json!(moved[1].as_u64().unwrap() + 1)],
+                )
+                .unwrap();
+            runtime.invoke("finish", vec![]).unwrap();
+            runtime.invoke("persist-now", vec![]).unwrap();
+            let finished = runtime.invoke("snapshot", vec![]).unwrap();
+            assert_eq!(finished[0]["host_id"], "other-host");
+            assert_eq!(finished[0]["yinz_session_name"], "other-session");
+            assert_eq!(finished[0]["pane_id"], 9);
+            assert_eq!(finished[0]["outcome"], "completed");
+            assert_eq!(finished[0]["ended_at_ms"], 30);
+            assert_eq!(finished[0]["entries"], moved[0]["entries"]);
+            assert_eq!(finished[3], json!({}));
+            assert_eq!(finished[6], json!({}));
+            assert_eq!(finished[7], json!({}));
+            assert_eq!(finished[8], json!({}));
         }
         let before = runtime.invoke("snapshot", vec![]).unwrap();
         runtime.invoke("late-release", vec![original]).unwrap();
