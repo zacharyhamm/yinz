@@ -11,7 +11,7 @@ use std::{
         mpsc, Arc, Mutex,
     },
     thread::JoinHandle,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 use unicode_width::UnicodeWidthChar;
 use yinz_ipc::ipc::ClientToServerMsg;
@@ -21,6 +21,26 @@ use yinz_types::{input::cli_assets::CliAssets, pane_size::Size};
 pub(crate) const READ_POLL: Duration = Duration::from_millis(100);
 pub(crate) const WRITE_TIMEOUT: Duration = Duration::from_secs(3);
 const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Remote reads poll every 100ms, even when the server has nothing to send.
+/// A long gap means the client may have been suspended with a stale SSH tunnel.
+/// Use wall time because Instant does not include suspend on every platform.
+/// A forward clock adjustment or prolonged scheduling stall can also trigger a
+/// unnecessary reconnect; a backwards adjustment simply starts a new interval.
+pub(crate) struct ResumeDetector {
+    last_poll: SystemTime,
+}
+impl ResumeDetector {
+    pub(crate) fn new(now: SystemTime) -> Self {
+        Self { last_poll: now }
+    }
+
+    pub(crate) fn resumed(&mut self, now: SystemTime) -> bool {
+        let previous = std::mem::replace(&mut self.last_poll, now);
+        now.duration_since(previous)
+            .is_ok_and(|gap| gap >= Duration::from_secs(5))
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Phase {

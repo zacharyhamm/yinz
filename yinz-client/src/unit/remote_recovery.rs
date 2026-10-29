@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn resume_detection_ignores_idle_connections_and_detects_suspend() {
+    let start = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+    let mut detector = ResumeDetector::new(start);
+    // No server traffic is necessary: bounded reads keep sampling while idle.
+    for tick in 1..=600 {
+        assert!(!detector.resumed(start + READ_POLL * tick));
+    }
+    let wake = start + Duration::from_secs(3600);
+    assert!(detector.resumed(wake));
+    assert!(!detector.resumed(wake + READ_POLL));
+}
+
+#[test]
+fn resume_detection_recovers_from_backward_clock_adjustments() {
+    let start = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+    let mut detector = ResumeDetector::new(start);
+    let earlier = start - Duration::from_secs(60);
+    assert!(!detector.resumed(earlier));
+    assert!(!detector.resumed(earlier + READ_POLL));
+    assert!(detector.resumed(earlier + Duration::from_secs(6)));
+}
+
+#[test]
 fn backoff_has_bounded_jitter_and_resets_only_after_a_minute() {
     for sample in [0, 200, 400] {
         let mut backoff = Backoff::default();

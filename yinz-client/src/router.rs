@@ -165,6 +165,8 @@ fn route_with_initial(
     let mut budget_warnings = SlowWarnings::default();
     let mut drain_frames = 0;
     let mut drain_read_time = Duration::ZERO;
+    let mut resume_detector =
+        crate::remote_recovery::ResumeDetector::new(std::time::SystemTime::now());
     log::info!(
         "attach trace: client pid={} router started; waiting for first server message",
         std::process::id()
@@ -192,6 +194,14 @@ fn route_with_initial(
                 Some(generation) => os_input.recv_from_server_generation(generation),
                 None => os_input.recv_from_server(),
             });
+        if let Some((control, generation)) = &recovery
+            && resume_detector.resumed(std::time::SystemTime::now())
+        {
+            control.lost(
+                *generation,
+                "Client resumed after a pause; reconnecting the remote connection".to_owned(),
+            );
+        }
         if control.is_some_and(|control| !control.can_write()) {
             if matches!(&received, IpcRecv::Msg(..) | IpcRecv::Malformed) {
                 drain_frames += 1;
@@ -367,6 +377,9 @@ fn route_with_initial(
                 }
             },
         }
+        // Waiting for terminal output/render budget is deliberate backpressure,
+        // not evidence of a suspended client. Exclude it from the next sample.
+        resume_detector = crate::remote_recovery::ResumeDetector::new(std::time::SystemTime::now());
     }
     if let Some((suppressed, max_suppressed)) = slow_warnings.finish() {
         log::warn!("output pressure: client pid={} stage=router_enqueue final suppressed={suppressed} max_suppressed_ms={}", std::process::id(), max_suppressed.as_millis());
