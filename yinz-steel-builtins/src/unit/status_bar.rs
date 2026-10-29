@@ -333,7 +333,7 @@ fn classic_and_multi_row_tab_hints_preserve_group_navigation() {
 }
 
 #[test]
-fn status_mode_hints_prefer_tab_arrows_and_match_panel_message_name() {
+fn status_mode_hints_prefer_tab_arrows_and_open_agents() {
     let mut status = Status::new(true);
     status.tab();
     let mut mode = serde_json::to_value(ModeInfo::default()).unwrap();
@@ -356,26 +356,16 @@ fn status_mode_hints_prefer_tab_arrows_and_match_panel_message_name() {
     status.mode(mode.clone());
     let frame = status.render(2, 200);
     assert!(frame.contains("<←→> Change focus"), "{frame}");
-    let binding = |character: &str, name: &str| {
-        json!([
-            {"bare_key":{"Char":character},"key_modifiers":[]},[
-                {"KeybindPipe":{"name":name,"payload":null,"args":null,"plugin":null,"plugin_id":null,"configuration":null,
-                    "launch_new":false,"skip_cache":false,"floating":false,"in_place":null,"cwd":null,"pane_title":null}},
-                {"SwitchToMode":{"input_mode":"Normal"}}
-            ]
-        ])
-    };
     mode["mode"] = json!("Agent");
-    mode["keybinds"] = json!([["Agent", [binding("m", "something_else"), done]]]);
-    status.mode(mode.clone());
-    assert!(!status.render(2, 200).contains("Move panel"));
-    mode["keybinds"][0][1]
-        .as_array_mut()
-        .unwrap()
-        .push(binding("o", "agent_strip_reposition"));
+    mode["keybinds"] = json!([["Agent", [
+        [{"bare_key":{"Char":"a"},"key_modifiers":[]}, [
+            {"SwitchToMode":{"input_mode":"Normal"}}, "OpenAgents"
+        ]], done
+    ]]]);
     status.mode(mode);
     let frame = status.render(2, 200);
-    assert!(frame.contains("<o> Move panel"), "{frame}");
+    assert!(frame.contains("<a> Agents"), "{frame}");
+    assert!(!frame.contains("Move panel"), "{frame}");
 }
 
 #[test]

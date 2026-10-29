@@ -101,6 +101,7 @@ macro_rules! parse_kdl_action_arguments {
                 "ToggleFocusNoUiFullscreen" => Ok(Action::ToggleFocusNoUiFullscreen),
                 "TogglePaneFrames" => Ok(Action::TogglePaneFrames),
                 "ToggleCommandPalette" => Ok(Action::ToggleCommandPalette),
+                "OpenAgents" => Ok(Action::OpenAgents),
                 // Keep saved Mother bindings compatible after Mother's removal.
                 "ToggleMother" => Ok(Action::NoOp),
                 "ToggleActiveSyncTab" => Ok(Action::ToggleActiveSyncTab),

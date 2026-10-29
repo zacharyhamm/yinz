@@ -176,71 +176,10 @@ keybinds {
             };
             SwitchToMode "Normal"
         }
-        // Bring the panel up with the keyboard on the agent list, rather than
-        // in the conversation. The list is its own pane, the left half of the
-        // panel: this reveals it if it was hidden and opens one if there is
-        // none. It comes back with the keyboard in the Agents list, whichever stop had it
-        // when the panel went away. The conversation comes up beside it either
-        // way — the panel is one thing with one visibility — it simply does not
-        // take the focus.
-        //
-        // `awaits_placement` says agent puts this pane where it goes, so don't
-        // paint it at the centered default it is born with in the meantime —
-        // otherwise opening one half flashes in the middle of the screen, on
-        // top of the other. The key is part of plugin identity, like `overlay`,
-        // so it has to match what the halves launch each other with.
+        // Open Agents in the command palette.
         bind "a" {
-            LaunchOrFocusPlugin "agents" {
-                floating true
-                overlay true
-                awaits_placement true
-                move_to_focused_tab true
-            };
-            SwitchToMode "Normal"
-        }
-        // The same for the conversation, the right half of the panel: the whole
-        // panel comes up, cut at the split, with the keyboard here. An agent
-        // list that was hidden comes back with it, and a panel with no list at
-        // all — you closed its pane — opens one.
-        //
-        // These two are the way *in*, not the way across. Once the panel is up the
-        // keyboard moves with Tab and Shift+Tab, which walk one ring of five stops:
-        // the panel's own tab bar (Agents), the tab's list, its
-        // second half (the history on Agents), the chat tab
-        // bar and the box you type in - and round again. A tab with no second
-        // half has four. A box with a draft in it keeps Tab for completing a
-        // /command or an @agent — Esc lets go of the box, keeping the draft, and
-        // Tab walks again. Alt h and Alt l also cross between the list and the
-        // conversation. Past the panel's outer edge they carry on from the pane
-        // hidden under it, as they would without the panel: to a tiled pane that
-        // way, which puts the panel away as a click on it does, or nowhere, which
-        // changes nothing. While the panel has the keys they never switch tabs.
-        //
-        // Clicking a pane under the panel, or moving the keyboard to one, puts the
-        // whole panel away as Esc does, and these two bring it back. A modal
-        // opened over the panel, such as New agent, does not put it away. The
-        // panel follows you to another tab without the keyboard: moving the
-        // keyboard to another pane there puts it away, but clicking the pane
-        // that already has the keyboard changes nothing, so click the panel or
-        // press one of these two first, then Esc.
-        bind "c" {
-            LaunchOrFocusPlugin "agents" {
-                floating true
-                overlay true
-                awaits_placement true
-                move_to_focused_tab true
-            };
-            SwitchToMode "Normal"
-        }
-        // Move the panel one corner clockwise, wherever the keyboard is, while the
-        // panel is up. The message names no plugin, so it goes to the plugins
-        // already running and starts none: with agent not running this does
-        // nothing, and a hidden panel stays where it is. Inside the panel Ctrl o
-        // does the same, but only in Locked mode - in every other mode Ctrl o
-        // enters Session mode, and no plugin sees it.
-        bind "o" {
-            MessagePlugin { name "agent_strip_reposition"; };
-            SwitchToMode "Normal"
+            SwitchToMode "Normal";
+            OpenAgents
         }
     }
     notifications {
@@ -363,99 +302,6 @@ plugins {
     // `fzf_args` adds flags to fzf, and `x`/`y`/`width`/`height` size the overlay.
     // `file_command` and `fzf_args` are spliced into a shell script as written.
     file-finder location="yinz:file-finder"
-    // The agent conversation, bound to Ctrl e c above.
-    //
-    // agent draws itself as one overlay panel in the bottom-left corner of the
-    // screen — over a tab rather than beside it, so no tab is shrunk to make
-    // room. The panel is two panes butted together: the agent list on the left,
-    // the conversation on the right, with a divider between them. Drag the
-    // divider with the mouse to move it, or type `/split 40` (columns) or
-    // `/split 35%` in the conversation; a bare `/split` says where it is. Four
-    // keys size the panel, and agent re-places it whenever the terminal is
-    // resized:
-    //
-    //   width   the whole panel's width. A percentage of the screen ("60%",
-    //           the default) or a fixed number of columns ("120"). Never less
-    //           than 26 columns per half on screen, or as much of the screen
-    //           as there is when it is narrower than that.
-    //   height  the panel's height. A percentage of the screen ("66%", the
-    //           default) or a fixed number of rows ("30"). The panel is anchored
-    //           to the bottom, so this grows upward. Never less than 8 rows,
-    //           for the same reason: below that there is no conversation to
-    //           read. A smaller width or height than these is raised to them.
-    //   split   the agent list's share of the width. A percentage of the panel
-    //           ("50%", the default) or a fixed number of columns ("40"); the
-    //           conversation gets the rest. Neither half is drawn narrower than
-    //           24 columns while the panel has room for both; a narrower panel
-    //           is split evenly. A number of columns becomes a share of the
-    //           panel when it is set, so the list grows and shrinks with it.
-    //           This is the starting point: dragging the divider or `/split`
-    //           sets the split for the rest of the session, as a ratio, so it
-    //           survives a resize. Editing `split` here while the session runs
-    //           moves the divider too; an edit to anything else leaves it where
-    //           you put it.
-    //   pad     cells of clear screen left around the panel on every side.
-    //           Default 3, capped at a quarter of the screen - and shrunk
-    //           further, to nothing if need be, whenever what it would leave
-    //           is too small for the panel. The inset gives way before it does,
-    //           which is what keeps agent usable in a small terminal: below the
-    //           minimum the panel takes the whole screen and draws less around
-    //           the conversation - the rules around the input box first, then
-    //           the help line, then the title bar - rather than refusing to
-    //           draw at all.
-    //
-    // A value agent cannot read - "0.4", "60.5%", a word, a percentage for `pad` -
-    // is named in a notice in the conversation, and its default is used instead.
-    // Resize mode (`Ctrl n`, then the arrows) or a Ctrl + drag of the panel's
-    // border resizes the whole panel as well; a size set that way is kept for the
-    // rest of the session, over later `width` and `height` edits.
-    //
-    // Esc steps back before it hides. It leaves whatever the panel is in first -
-    // an event being read, a question, a search, the previous-runs or waiting
-    // view, a tab bar, the key sheet, a box with a draft in it - and only then
-    // puts the whole panel away, without unloading it: the conversation, the
-    // parked chats and anything still streaming are all still there. Clicking
-    // a pane under the panel, or moving the keyboard to one, puts it away the
-    // same way - on a tab the panel followed you to, a pane other than the one
-    // that already has the keyboard. `Ctrl e c` brings the whole of it back with
-    // the keyboard in the conversation and `Ctrl e a` with the keyboard on the
-    // agent list; either restores the split, and either opens the half that is
-    // missing if you closed one. A click moves the keyboard between the halves
-    // too, as Alt h and Alt l do.
-    //
-    // `Ctrl e o` moves the panel to the next corner, and every press moves it: it
-    // steps one corner clockwise around the four corners of the screen, at the
-    // size it already has, then starts over. A bare Ctrl o does the same from
-    // inside the panel, but only in Locked mode: everywhere else Ctrl o enters
-    // Session mode before the panel sees it. It works on a panel you have
-    // dragged, too - the press carries on from where the drag left it, and
-    // dragging either half's frame moves the whole panel, split and all.
-    agent location="yinz:agents" {
-        shared true
-        // DeepSeek v4 defaults to high-effort thinking. Disable it for shorter,
-        // more direct tool runs; both keys are omitted from API requests unless set.
-        // thinking "disabled"
-        // reasoning_effort "low"
-        //
-        // Which wire protocol the endpoint speaks. "chat" is /v1/chat/completions,
-        // which every OpenAI-compatible provider implements; "responses" is
-        // OpenAI's /v1/responses, the only endpoint that takes reasoning_effort and
-        // a tool set in the same request - on chat/completions OpenAI's reasoning
-        // models reject that pair with a 400. Both come off the same base_url.
-        //
-        // Against OpenAI's own endpoint (base_url api.openai.com, the default)
-        // agent already defaults to api "responses", and to reasoning_effort
-        // "medium" when the model reasons too (gpt-5, o1, o3, o4 - the default
-        // gpt-4o-mini does not, and rejects the field). Set either explicitly to
-        // override. Uncomment to force chat/completions against OpenAI instead:
-        // api "chat"
-    }
-    // The agent list, bound to Ctrl e a above — the left half of the panel, or
-    // the whole of it when there is no conversation beside it. Sized by agent's `width`,
-    // `height` and `split`, above.
-    agents location="yinz:agents" {
-        shared true
-    }
     new-agent location="yinz:new-agent"
     duplicate-agent location="yinz:new-agent" {
         duplicate_focused true

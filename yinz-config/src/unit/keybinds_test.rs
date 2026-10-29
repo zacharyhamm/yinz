@@ -247,6 +247,7 @@ mod props {
             ),
             ("TogglePaneFrames;", Action::TogglePaneFrames),
             ("ToggleCommandPalette;", Action::ToggleCommandPalette),
+            ("OpenAgents;", Action::OpenAgents),
             ("ToggleFocusFullscreen;", Action::ToggleFocusFullscreen),
             (
                 "MoveFocusOrTab \"Left\";",
@@ -570,38 +571,31 @@ fn session_pane_selector_checks_kdl_range() {
     }
 }
 
-/// `example/default.kdl` is the config people copy to start their own, and nothing else loads
-/// it, so a key the shipped config gains can go missing from it without anything failing.
-/// `Ctrl e o` did: the example's comments said Ctrl o moved the panel, and its Agent mode had
-/// no `o`.
 #[test]
-fn example_agent_mode_moves_the_panel() {
-    let config = Config::from_kdl(include_str!("../../../example/default.kdl"), None)
-        .expect("example/default.kdl parses");
-    let actions = config
-        .keybinds
-        .get_actions_for_key_in_mode(&InputMode::Agent, &KeyWithModifier::new(BareKey::Char('o')))
-        .expect("Agent mode binds o");
-    // A message that names no plugin, so it reaches the agent already running and starts
-    // none, then back to Normal as every other Agent-mode key goes.
-    assert!(
-        matches!(
-            &actions[..],
-            [
-                Action::KeybindPipe {
-                    name: Some(name),
-                    plugin: None,
-                    plugin_id: None,
-                    launch_new: false,
-                    ..
-                },
+fn shipped_and_example_agent_bindings_open_the_picker() {
+    for source in [
+        include_str!("../../assets/config/default.kdl"),
+        include_str!("../../../example/default.kdl"),
+    ] {
+        let config = Config::from_kdl(source, None).unwrap();
+        let actions = config
+            .keybinds
+            .get_actions_for_key_in_mode(
+                &InputMode::Agent,
+                &KeyWithModifier::new(BareKey::Char('a')),
+            )
+            .unwrap();
+        assert_eq!(
+            actions,
+            &vec![
                 Action::SwitchToMode {
                     input_mode: InputMode::Normal
                 },
-            ] if name == "agent_strip_reposition"
-        ),
-        "{actions:?}"
-    );
+                Action::OpenAgents
+            ]
+        );
+        assert!(!config.plugins.aliases.contains_key("agents"));
+    }
 }
 
 /// Duplicating an agent runs `new-agent` headless, and the instance closes itself once it has

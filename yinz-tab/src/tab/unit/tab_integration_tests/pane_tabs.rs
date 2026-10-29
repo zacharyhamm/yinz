@@ -1310,7 +1310,7 @@ fn panel_dismissal_finishes_in_the_focus_transition_before_reveal() {
             )
             .unwrap();
             let mut panel_layout = layout();
-            panel_layout.tabs[usize::from(companion_active)].location = "yinz:agents".into();
+            panel_layout.tabs[usize::from(companion_active)].location = "yinz:configuration".into();
             let info = tab.mount_pane_tabs(panel, panel_layout, 0, client).unwrap();
             tab.mark_overlay_tab_group(info.id).unwrap();
             assert_eq!(tab.get_active_pane_id(client), Some(panel));
@@ -1630,7 +1630,7 @@ fn add_agents_panel(tab: &mut Tab, companion_active: bool, client: ClientId) -> 
         if companion_active {
             "yinz:fixture-plugin-for-tests"
         } else {
-            "yinz:agents"
+            "yinz:configuration"
         },
         &None,
         None,
@@ -1650,7 +1650,7 @@ fn add_agents_panel(tab: &mut Tab, companion_active: bool, client: ClientId) -> 
     .unwrap();
     {
         let mut panel_layout = layout();
-        panel_layout.tabs[1].location = "yinz:agents".into();
+        panel_layout.tabs[1].location = "yinz:configuration".into();
         let info = tab.mount_pane_tabs(panel, panel_layout, 0, client).unwrap();
         tab.mark_overlay_tab_group(info.id).unwrap();
     }
@@ -1668,7 +1668,7 @@ fn panel_dismissal_preserves_modal_focus_and_unrelated_overlays() {
         let panel = PaneId::Plugin(PluginId::new(100));
         let other = PaneId::Plugin(PluginId::new(101));
         let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-            "yinz:agents",
+            "yinz:configuration",
             &None,
             None,
             None,

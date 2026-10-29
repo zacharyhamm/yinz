@@ -311,6 +311,7 @@ message Action {
     ActivateNotificationAction activate_notification = 166;
     ToggleNotificationDetailAction toggle_notification_detail = 167;
     ToggleCommandPaletteAction toggle_command_palette = 171;
+    OpenAgentsAction open_agents = 189;
     ActivateLastNotificationAction activate_last_notification = 173;
     NewTabGroupAction new_tab_group = 174;
     GoToNextTabGroupAction go_to_next_tab_group = 175;
@@ -374,6 +375,7 @@ message ToggleFocusFullscreenAction {}
 message ToggleFocusNoUiFullscreenAction {}
 message TogglePaneFramesAction {}
 message ToggleCommandPaletteAction {}
+message OpenAgentsAction {}
 message SetPaneFrameStyleAction {
   string style = 1;
 }

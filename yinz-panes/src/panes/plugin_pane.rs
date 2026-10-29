@@ -630,23 +630,6 @@ impl Pane for PluginPane {
                 ));
             }
         }
-        if self
-            .invoked_with
-            .as_ref()
-            .and_then(Run::get_run_plugin)
-            .is_some_and(|plugin| {
-                matches!(plugin.location, RunPluginLocation::Yinz(tag) if tag.as_str() == "agents")
-            })
-        {
-            // Unpainted agents cells use the semantic theme background while remaining
-            // eligible for overlay opacity. Explicit label and selection backgrounds win.
-            for chunk in &mut rendered.0 {
-                if chunk.pane_default_bg.is_none() {
-                    chunk.pane_default_bg = Some(self.style.colors.text_unselected.background.into());
-                    chunk.theme_background = true;
-                }
-            }
-        }
         self.should_render.insert(client_id, false);
         Ok(Some(rendered))
     }

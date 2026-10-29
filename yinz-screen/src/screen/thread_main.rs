@@ -438,15 +438,22 @@ pub fn screen_thread_main(
                 ScreenInstruction::ContextMenuHandleKeyIfOpen {
                     key,
                     toggle_command_palette,
+                    open_agents,
                     client_id,
                     completion,
                 } => {
-                    let handled = screen.command_palette_handles_input(
-                        &key,
-                        &[],
-                        toggle_command_palette,
-                        client_id,
-                    ) || screen.context_menu_handles_key(&key, client_id);
+                    let handled = if open_agents && screen.command_palette_is_open(client_id) {
+                        screen.open_agents(client_id);
+                        screen.render()?;
+                        true
+                    } else {
+                        screen.command_palette_handles_input(
+                            &key,
+                            &[],
+                            toggle_command_palette,
+                            client_id,
+                        ) || screen.context_menu_handles_key(&key, client_id)
+                    };
                     if let Some(mut completion) = completion {
                         completion.set_stdout_message(handled.to_string());
                     }
@@ -466,6 +473,10 @@ pub fn screen_thread_main(
                 },
                 ScreenInstruction::ToggleCommandPalette(client_id, _completion) => {
                     screen.toggle_command_palette(client_id);
+                    screen.render()?;
+                },
+                ScreenInstruction::OpenAgents(client_id, _completion) => {
+                    screen.open_agents(client_id);
                     screen.render()?;
                 },
                 ScreenInstruction::ResetAgentEscape(client_id) => {

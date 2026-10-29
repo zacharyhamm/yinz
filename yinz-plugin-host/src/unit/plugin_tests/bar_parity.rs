@@ -292,7 +292,7 @@ impl Pair {
                 "args":{"seq":seq.to_string()},"is_private":true})).unwrap()
         } else {
             self.steel
-                .update(serde_json::to_value(&event).unwrap())
+                .update(current_bar_event(&event, self.status_bar))
                 .unwrap()
         };
         // The frozen reference animates; Steel redraws timers only for clock or hint changes.
@@ -368,6 +368,12 @@ impl Pair {
         let left = cells(expected);
         let right = cells(&actual);
         let steel_cells = cells(&steel);
+        // The Agents mode recording contains the removed Move panel hint. Current
+        // picker bindings and hints are covered by the builtin bar tests.
+        if self.status_bar && self.mode.mode == InputMode::Agent {
+            assert_eq!(left, right);
+            return steel_cells;
+        }
         let mut steel_expected = left.clone();
         if self.status_bar && rows == 1 && self.steel.value("state").unwrap()["classic"] == false {
             // Preserve historical layout/style coverage while replacing the retired animation.
@@ -533,4 +539,46 @@ pub(super) fn rgb_theme(info: &mut ModeInfo) {
             emphasis_3: PaletteColor::Rgb((n + 16, 17, 18)),
         };
     }
+}
+
+fn current_bar_event(event: &Event, status_bar: bool) -> Value {
+    fn convert(value: &mut Value, status_bar: bool) {
+        match value {
+            Value::Array(values) => {
+                for value in values {
+                    convert(value, status_bar);
+                }
+            },
+            Value::Object(object) => {
+                if ["LaunchPlugin", "LaunchOrFocusPlugin"].iter().any(|kind| {
+                    object
+                        .get(*kind)
+                        .and_then(|value| value.pointer("/plugin/Alias/name"))
+                        .is_some_and(|name| name == "agents")
+                }) {
+                    if status_bar {
+                        *value = json!("OpenAgents");
+                    } else {
+                        // Preserve generic launch-payload grouping with a retained modal.
+                        for kind in ["LaunchPlugin", "LaunchOrFocusPlugin"] {
+                            if let Some(name) = object
+                                .get_mut(kind)
+                                .and_then(|value| value.pointer_mut("/plugin/Alias/name"))
+                            {
+                                *name = json!("new-agent");
+                            }
+                        }
+                    }
+                } else {
+                    for value in object.values_mut() {
+                        convert(value, status_bar);
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+    let mut value = serde_json::to_value(event).unwrap();
+    convert(&mut value, status_bar);
+    value
 }

@@ -4,12 +4,7 @@ use crate::config::Config;
 fn defaults_replacement_empty_and_round_trip() {
     let default = Config::from_kdl("", None).unwrap();
     let tabs = default.resolved_overlay_tab_plugins().unwrap();
-    assert_eq!(
-        tabs.iter()
-            .map(|tab| (tab.location.as_str(), tab.label.as_str()))
-            .collect::<Vec<_>>(),
-        vec![("yinz:agents", "Agents")]
-    );
+    assert!(tabs.is_empty());
     let custom = Config::from_kdl(
         r#"
         plugins { custom location="file:/custom.scm" { cwd "/work"; setting "value"; }; }
@@ -101,7 +96,7 @@ fn editor_replaces_ordered_entries_and_preserves_alias_configuration() {
     assert!(editor::document(&config)
         .unwrap()
         .iter()
-        .any(|node| node.name == "overlay_tab_plugins" && node.children.len() == 1));
+        .any(|node| node.name == "overlay_tab_plugins" && node.children.is_empty()));
 }
 
 #[test]

@@ -1062,7 +1062,6 @@ mod steel_services;
 mod steel_sources;
 mod tab_commands;
 
-mod agents_parity;
 pub(crate) mod data_parity;
 mod file_finder_parity;
 mod legacy_parity;

@@ -44,7 +44,7 @@ fn history_worker_releases_transcripts_between_refreshes() {
         "ended_at_ms":null, "entries":[]});
     let headers = json!({"columns":["payload"], "rows":[[{"Text":run.to_string()}]],
         "truncated":false, "next_cursor":null});
-    // A normal fetch can carry 2 MiB even though the panel keeps only 256 KiB.
+    // A normal fetch can carry 2 MiB while the worker retains only its newest entry.
     let entries = json!({"columns":["run_id","revision","kind","text"],
         "rows":[[{"Text":"history"},{"Int":1},{"Text":"message"},{"Text":"x".repeat(1_900_000)}],
                 [{"Text":"history"},{"Int":2},{"Text":"message"},{"Text":"newest"}]],
@@ -69,10 +69,15 @@ fn history_worker_releases_transcripts_between_refreshes() {
         Ok(json!(0))
     })
     .unwrap();
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../yinz-steel-builtins/assets/plugins/agents.scm");
-    worker.set_source_root(crate::modules::SourceRoot::file(&path, None).unwrap());
-    worker.eval("(require \"./agents/history-worker.scm\") (yinz-register-workers (hash \"history\" a-history-worker))").unwrap();
+    worker.eval(r#"
+        (define (keep-newest rows)
+          (if (null? (cdr rows)) (hash-ref (car rows) "text") (keep-newest (cdr rows))))
+        (define (history-worker name payload)
+          (define rows (hash-ref (yinz-command (hash "DataFetch" (hash "namespace" "shared:yinz" "request" (hash "entity" "agent_run_entry")))) "rows"))
+          (define entries (map (lambda (row) (hash "text" (hash-ref (list-ref row 3) "Text"))) rows))
+          (yinz-post-plugin name (yinz-json-string (hash "run" (hash "entries" (list (hash "text" (keep-newest entries))) "omitted_entries" (- (length entries) 1))))))
+        (yinz-register-workers (hash "history" history-worker))
+    "#).unwrap();
     worker
         .invoke("yinz-worker-bind", vec![json!("history")])
         .unwrap();

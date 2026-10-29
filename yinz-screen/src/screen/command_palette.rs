@@ -181,6 +181,24 @@ impl Screen {
         }
     }
 
+    pub(crate) fn open_agents(&mut self, client_id: ClientId) {
+        if self.permission_modal_open(client_id) {
+            return;
+        }
+        self.cancel_theme_preview(client_id);
+        if !self.command_palette_is_open(client_id) {
+            self.toggle_command_palette(client_id);
+        }
+        if let Some(state) = self.command_palettes.get_mut(&client_id) {
+            state.agents.cancel();
+            state.suspended = false;
+            state.widget = CommandPalette::default();
+            state.widget.open_picker(EntryKind::Agent);
+        }
+        self.refresh_command_palettes();
+        self.refresh_plugin_palette(client_id, false);
+    }
+
     pub(crate) fn close_command_palette(&mut self, client_id: ClientId) -> bool {
         self.take_command_palette(client_id).is_some()
     }

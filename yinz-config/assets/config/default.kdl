@@ -196,27 +196,12 @@ keybinds {
             };
             SwitchToMode "Normal"
         }
-        // Open the overlay and select Agents.
+        // Open Agents in the command palette.
         bind "a" {
-            LaunchOrFocusPlugin "agents" {
-                floating true
-                overlay true
-                awaits_placement true
-                move_to_focused_tab true
-            };
-            SwitchToMode "Normal"
+            SwitchToMode "Normal";
+            OpenAgents
         }
 
-        // Move the panel one corner clockwise, wherever the keyboard is, while the
-        // panel is up. The message names no plugin, so it goes to the plugins
-        // already running and starts none: with the panel not running this does
-        // nothing, and a hidden panel stays where it is. Inside the panel Ctrl o
-        // does the same, but only in Locked mode - in every other mode Ctrl o
-        // enters Session mode, and no plugin sees it.
-        bind "o" {
-            MessagePlugin { name "agent_strip_reposition"; };
-            SwitchToMode "Normal"
-        }
     }
     notifications {
         bind "Esc" { SwitchToMode "Normal"; }
@@ -397,13 +382,6 @@ plugins {
     // `fzf_args` adds flags to fzf, and `x`/`y`/`width`/`height` size the overlay.
     // `file_command` and `fzf_args` are spliced into a shell script as written.
     file-finder location="yinz:file-finder"
-    // The Agents overlay tab. Cell counts and percentages are accepted.
-    agents location="yinz:agents" {
-        shared true
-        // width "60%"
-        // height "66%"
-        // pad "3"
-    }
     configuration-palette location="yinz:configuration-palette" {
         shared true
     }
@@ -452,7 +430,7 @@ plugins {
 // replaces them instead
 // Ordered plugin tabs. An explicit block replaces the defaults; an empty block disables grouping.
 // overlay_tab_plugins {
-//     agents label="Agents"
+//     strider label="Files"
 // }
 
 load_plugins {

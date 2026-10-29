@@ -468,6 +468,10 @@ impl TryFrom<ProtobufAction> for Action {
                     None => Ok(Action::ToggleCommandPalette),
                 }
             },
+            Some(ProtobufActionName::OpenAgents) => match protobuf_action.optional_payload {
+                Some(_) => Err("OpenAgents should not have a payload"),
+                None => Ok(Action::OpenAgents),
+            },
             Some(ProtobufActionName::TogglePaneFrames) => match protobuf_action.optional_payload {
                 Some(_) => Err("TogglePaneFrames should not have a payload"),
                 None => Ok(Action::TogglePaneFrames),
@@ -1721,6 +1725,10 @@ impl TryFrom<Action> for ProtobufAction {
             }),
             Action::ToggleCommandPalette => Ok(ProtobufAction {
                 name: ProtobufActionName::ToggleCommandPalette as i32,
+                optional_payload: None,
+            }),
+            Action::OpenAgents => Ok(ProtobufAction {
+                name: ProtobufActionName::OpenAgents as i32,
                 optional_payload: None,
             }),
             Action::TogglePaneFrames => Ok(ProtobufAction {

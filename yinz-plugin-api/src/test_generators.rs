@@ -873,6 +873,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         ActionKind::ToggleFocusNoUiFullscreen => Action::ToggleFocusNoUiFullscreen,
         ActionKind::TogglePaneFrames => Action::TogglePaneFrames,
         ActionKind::ToggleCommandPalette => Action::ToggleCommandPalette,
+        ActionKind::OpenAgents => Action::OpenAgents,
         ActionKind::SetPaneFrameStyle => Action::SetPaneFrameStyle(pane_frame_styles(tc)),
         ActionKind::ToggleActiveSyncTab => Action::ToggleActiveSyncTab,
         ActionKind::NewPane => Action::NewPane {

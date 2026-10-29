@@ -404,7 +404,27 @@ fn agent_service_actual_runtimes_match_operation_authorization_and_registration(
             json!({"request_id":"unknown","op":"unknown","args":{}}),
         ),
     ] {
-        pair.pipe(message("agent_action", source, Some(payload.to_string())));
+        let message = message("agent_action", source.clone(), Some(payload.to_string()));
+        if matches!(source, PipeSource::Plugin(_)) {
+            // Consume the old recording, whose Agents exception was deliberately removed.
+            pair.wasm.pipe(&message);
+            pair.wasm.take_commands();
+            pair.steel.pipe(&message);
+            let commands = pair.steel.take_commands();
+            let reply = commands
+                .iter()
+                .find_map(|command| command.get("MessageToPlugin"))
+                .unwrap();
+            let result: Value =
+                serde_json::from_str(reply["message_payload"].as_str().unwrap()).unwrap();
+            assert_eq!(result["result"]["ok"], false);
+            assert_eq!(
+                result["result"]["error"],
+                "agent operations require a CLI caller"
+            );
+        } else {
+            pair.pipe(message);
+        }
         stored_equal(&wasm, &steel);
     }
     let expected = wasm.changed();

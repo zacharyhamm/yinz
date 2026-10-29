@@ -409,3 +409,20 @@ fn compact_tabs_render_flags_collapsed_neighbors_swap_and_nested_hints() {
         bar.render(1, cols);
     }
 }
+
+#[test]
+fn compact_agents_tooltip_accepts_the_base_mode_switch_before_opening() {
+    let mut bar = Compact::new(json!({"is_tooltip":"true"}));
+    for base in ["Normal", "Locked"] {
+        let mut mode = serde_json::to_value(ModeInfo::default()).unwrap();
+        mode["mode"] = json!("Agent");
+        mode["base_mode"] = json!(base);
+        mode["keybinds"] = json!([["Agent", [
+            [key("a"),[{"SwitchToMode":{"input_mode":base}},"OpenAgents"]]
+        ]]]);
+        assert_eq!(
+            bar.runtime.invoke("compact-actions", vec![mode]).unwrap(),
+            json!([["<a>", "Agents"]])
+        );
+    }
+}

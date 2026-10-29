@@ -112,6 +112,7 @@ pub enum ScreenInstruction {
     ContextMenuHandleKeyIfOpen {
         key: Option<KeyWithModifier>,
         toggle_command_palette: bool,
+        open_agents: bool,
         client_id: ClientId,
         completion: Option<NotificationEnd>,
     },
@@ -213,6 +214,7 @@ pub enum ScreenInstruction {
     ToggleActiveTerminalNoUiFullscreen(ClientId, Option<NotificationEnd>),
     TogglePaneFrames(Option<NotificationEnd>),
     ToggleCommandPalette(ClientId, Option<NotificationEnd>),
+    OpenAgents(ClientId, Option<NotificationEnd>),
     CommandPalette(crate::command_palette::Instruction),
     SetPaneFrameStyle(PaneFrameStyle, Option<NotificationEnd>),
     SetSelectable(PaneId, bool),

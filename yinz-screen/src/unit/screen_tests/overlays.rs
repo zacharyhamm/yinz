@@ -18,115 +18,6 @@ use yinz_types::internal_ids::TabPosition;
 use {yinz_types::data::OverlayKind, yinz_types::data::OverlayPlacement};
 
 #[test]
-fn agents_semantic_backgrounds_follow_themes_in_standalone_and_overlay_panes() {
-    use yinz_types::colors::PaletteColor;
-
-    let size = Size { cols: 80, rows: 16 };
-    let themes = yinz_config::assets::get_default_themes();
-    for overlay in [false, true] {
-        let (mut screen, _, server_rx) =
-            create_new_screen_with_capture(size, false, false, true, false);
-        let (plugin_tx, _plugin_rx) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
-        new_tab(&mut screen, 1, TabId::new(0));
-        let plugin_id = PluginId::new(9);
-        let pane_id = PaneId::Plugin(plugin_id);
-        let run = configured_overlay_run("yinz:agents");
-        let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
-        let mut backing = String::from("\x1b[?7l\x1b[38;2;200;210;220m\x1b[48;2;10;20;30m");
-        for row in 1..=size.rows {
-            backing.push_str(&format!("\x1b[{row};1H{}", "w".repeat(size.cols)));
-        }
-        tab.handle_pty_bytes(TerminalId::new(1), backing.into_bytes())
-            .unwrap();
-        let placement = if overlay {
-            NewPanePlacement::Overlay(OverlayPlacement {
-                background_opacity: Some(yinz_types::input::options::DEFAULT_BACKGROUND_OPACITY),
-                ..OverlayPlacement::dismissible(Some(FloatingPaneCoordinates {
-                    height: Some(PercentOrFixed::Fixed(8)),
-                    ..popup_coordinates()
-                }))
-            })
-        } else {
-            NewPanePlacement::default()
-        };
-        tab.new_pane(
-            pane_id,
-            None,
-            Some(Run::Plugin(run)),
-            false,
-            true,
-            placement,
-            Some(CLIENT_1),
-            None,
-        )
-        .unwrap();
-        let mut grid = grid_for_render_snapshot(size);
-        for name in ["gruvbox-light", "gruvbox-dark", "gruvbox-light"] {
-            let colors = themes.get_theme(name).unwrap().palette;
-            screen.repaint_theme(colors).unwrap();
-            for opacity in [100, 50] {
-                let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
-                tab.update_background_opacity(opacity);
-                let pane = tab.get_pane_with_id(pane_id).unwrap();
-                let (x, y, columns) = (
-                    pane.get_content_x(),
-                    pane.get_content_y(),
-                    pane.get_content_columns(),
-                );
-                let background = |color: PaletteColor| match color {
-                    PaletteColor::Rgb((r, g, b)) => format!("\x1b[48;2;{r};{g};{b}m"),
-                    PaletteColor::EightBit(index) => format!("\x1b[48;5;{index}m"),
-                };
-                tab.handle_plugin_bytes(
-                    plugin_id,
-                    CLIENT_1,
-                    format!(
-                        "\x1b[2J\x1b[H{}Label\x1b[2;1H{}{}\x1b[0m",
-                        background(colors.text_unselected.background),
-                        background(colors.text_selected.background),
-                        " ".repeat(columns),
-                    )
-                    .into_bytes(),
-                )
-                .unwrap();
-                render_frame_into(&mut screen, &server_rx, CLIENT_1, &mut grid);
-                let lines = grid.as_character_lines();
-                let blank = &lines[y + 2][x + columns - 1];
-                let translucent = overlay && opacity < 100;
-                assert_eq!(
-                    blank.character,
-                    if translucent { 'w' } else { ' ' },
-                    "{name}, overlay {overlay}, opacity {opacity}"
-                );
-                let expected = if translucent {
-                    yinz_types::animation::blend(
-                        PaletteColor::Rgb((10, 20, 30)),
-                        colors.text_unselected.background,
-                        0.5,
-                    )
-                } else {
-                    colors.text_unselected.background
-                };
-                assert_eq!(blank.styles.background, Some(expected.into()));
-                for cell in &lines[y][x..x + 5] {
-                    assert_eq!(
-                        cell.styles.background,
-                        Some(colors.text_unselected.background.into())
-                    );
-                }
-                for cell in &lines[y + 1][x..x + columns] {
-                    assert_eq!(
-                        cell.styles.background,
-                        Some(colors.text_selected.background.into())
-                    );
-                }
-            }
-        }
-    }
-}
-
-#[test]
 fn modal_plugin_configuration_requests_overlay() {
     let mut modal = yinz_runtime::plugin_location::run_plugin_from_url("yinz:quit-confirmation")
         .expect("test plugin");
@@ -7866,7 +7757,7 @@ fn configured_overlay_screen() -> (
         rows: 40,
     });
     let config = Config::from_kdl(
-        r#"overlay_tab_plugins { "yinz:agents" label="Agents"; "yinz:strider" label="Files"; }"#,
+        r#"overlay_tab_plugins { "yinz:configuration" label="Agents"; "yinz:strider" label="Files"; }"#,
         None,
     )
     .unwrap();
@@ -8106,7 +7997,7 @@ fn configured_overlay_load_failure_releases_pending_launch_and_retry_reuses_slot
             Ok((PluginId::new(100), configured_overlay_run("yinz:strider"))),
         )
         .unwrap();
-    launch_configured_overlay(&mut screen, "yinz:agents", CLIENT_1);
+    launch_configured_overlay(&mut screen, "yinz:configuration", CLIENT_1);
     let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
     screen
         .pane_tab_loaded(id, index, generation, Err("permission denied".into()))
@@ -8115,7 +8006,7 @@ fn configured_overlay_load_failure_releases_pending_launch_and_retry_reuses_slot
         screen.tabs[&TabId::new(0)].pane_tabs_info(id).unwrap().tabs[index].state,
         yinz_types::pane_tabs::PaneTabLoadState::Failed(_)
     ));
-    launch_configured_overlay(&mut screen, "yinz:agents", CLIENT_1);
+    launch_configured_overlay(&mut screen, "yinz:configuration", CLIENT_1);
     let (retry_id, retry_index, retry_generation, _) =
         next_overlay_load(&mut screen, &ptys, &events);
     assert_eq!((retry_id, retry_index), (id, index));
@@ -8195,7 +8086,7 @@ fn configured_overlay_skips_explicit_placement_and_background_launches() {
     ] {
         screen
             .launch_plugin(
-                configured_overlay_run("yinz:agents"),
+                configured_overlay_run("yinz:configuration"),
                 false,
                 in_place,
                 false,
@@ -8352,7 +8243,7 @@ fn launch_overlay_with_completion(
 fn configured_overlay_lazy_launch_completion_follows_requested_slot() {
     let (mut screen, events, ptys) = configured_overlay_screen();
     new_tab(&mut screen, 1, TabId::new(0));
-    let mut first = launch_overlay_with_completion(&mut screen, "yinz:agents");
+    let mut first = launch_overlay_with_completion(&mut screen, "yinz:configuration");
     let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
     assert!(first.try_recv().is_err());
     screen
@@ -8360,7 +8251,10 @@ fn configured_overlay_lazy_launch_completion_follows_requested_slot() {
             id,
             index,
             generation,
-            Ok((PluginId::new(100), configured_overlay_run("yinz:agents"))),
+            Ok((
+                PluginId::new(100),
+                configured_overlay_run("yinz:configuration"),
+            )),
         )
         .unwrap();
     assert_eq!(
@@ -8388,7 +8282,7 @@ fn configured_overlay_lazy_launch_completion_follows_requested_slot() {
     let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
     assert!(second.try_recv().is_err());
     let mut duplicate = launch_overlay_with_completion(&mut screen, "yinz:strider");
-    let mut loaded = launch_overlay_with_completion(&mut screen, "yinz:agents");
+    let mut loaded = launch_overlay_with_completion(&mut screen, "yinz:configuration");
     assert_eq!(
         loaded.try_recv().unwrap().affected_pane_id,
         Some(PaneId::Plugin(PluginId::new(100)))
@@ -8435,7 +8329,7 @@ fn configured_overlay_coalesced_completions_load_each_requested_slot() {
             configuration: Default::default(),
             initial_cwd: None,
         });
-    let mut first = launch_overlay_with_completion(&mut screen, "yinz:agents");
+    let mut first = launch_overlay_with_completion(&mut screen, "yinz:configuration");
     let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
     let mut second = launch_overlay_with_completion(&mut screen, "yinz:strider");
     let mut third = launch_overlay_with_completion(&mut screen, "yinz:about");
@@ -8444,7 +8338,10 @@ fn configured_overlay_coalesced_completions_load_each_requested_slot() {
             id,
             index,
             generation,
-            Ok((PluginId::new(100), configured_overlay_run("yinz:agents"))),
+            Ok((
+                PluginId::new(100),
+                configured_overlay_run("yinz:configuration"),
+            )),
         )
         .unwrap();
     assert_eq!(
@@ -8506,14 +8403,17 @@ fn configured_overlay_launch_completion_reports_failure_and_closure() {
     for close in [false, true] {
         let (mut screen, events, ptys) = configured_overlay_screen();
         new_tab(&mut screen, 1, TabId::new(0));
-        launch_configured_overlay(&mut screen, "yinz:agents", CLIENT_1);
+        launch_configured_overlay(&mut screen, "yinz:configuration", CLIENT_1);
         let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
         screen
             .pane_tab_loaded(
                 id,
                 index,
                 generation,
-                Ok((PluginId::new(100), configured_overlay_run("yinz:agents"))),
+                Ok((
+                    PluginId::new(100),
+                    configured_overlay_run("yinz:configuration"),
+                )),
             )
             .unwrap();
         let mut completion = launch_overlay_with_completion(&mut screen, "yinz:strider");
@@ -8673,7 +8573,7 @@ fn configured_overlay_coalesced_loads_keep_originating_clients() {
             let mut completions = vec![];
             let mut pending_id = None;
             for (index, location, client) in [
-                (0, "yinz:agents", CLIENT_1),
+                (0, "yinz:configuration", CLIENT_1),
                 (1, "yinz:strider", other),
                 (2, "yinz:about", CLIENT_1),
                 (2, "yinz:about", other),

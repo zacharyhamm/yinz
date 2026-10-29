@@ -1319,6 +1319,7 @@ pub const ACTION_NAMES: &[&str] = &[
     "ToggleFocusNoUiFullscreen",
     "TogglePaneFrames",
     "ToggleCommandPalette",
+    "OpenAgents",
     "ToggleMother",
     "ToggleActiveSyncTab",
     "TogglePaneEmbedOrFloating",

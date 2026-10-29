@@ -2011,3 +2011,52 @@ fn configuration_palette_locked_default_routes_later_client_input_in_locked_mode
     later.quit();
     yinz.quit();
 }
+
+#[test]
+fn agent_key_sequence_opens_picker_without_a_plugin_and_returns_to_normal() {
+    let yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\npane_animations false\nkeybinds { shared { bind \"Ctrl Alt a\" { OpenAgents; }; }; }")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let shell = yinz.expect_pty_spawn();
+    shell.output(PROMPT);
+    yinz.wait_until("shell ready", |screen| screen.contains("$"));
+    yinz.send_stdin(b"\x05a");
+    yinz.wait_until("empty Agents picker", |screen| {
+        screen.contains("Agents") && screen.contains("Agent filters…")
+    });
+    yinz.send_stdin(b"\x1b");
+    yinz.wait_until("palette root", |screen| {
+        screen.contains("Do · Project:") && !screen.contains("Agent filters…")
+    });
+    yinz.send_stdin(b"stale query");
+    yinz.send_stdin(b"\x1b[97;7u");
+    yinz.wait_until("already open palette navigates to Agents", |screen| {
+        screen.contains("Agent filters…") && !screen.contains("stale query")
+    });
+    let (status, panes) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: false,
+        geometry: false,
+        all: true,
+        json: true,
+    });
+    assert_eq!(status, 0);
+    let panes: serde_json::Value = serde_json::from_str(&panes).unwrap();
+    assert_eq!(
+        panes.as_array().unwrap().len(),
+        1,
+        "picker launches no plugin pane: {panes}"
+    );
+    yinz.send_stdin(b"\x1b");
+    yinz.wait_until("back to root again", |screen| {
+        screen.contains("Do · Project:") && !screen.contains("Agent filters…")
+    });
+    yinz.send_stdin(b"\x1b");
+    yinz.wait_until("palette closed", |screen| {
+        !screen.contains("Do · Project:") && !screen.contains("Agent filters…")
+    });
+    yinz.send_stdin(b"a");
+    shell.wait_for_stdin("normal mode forwards a", |bytes| bytes.ends_with(b"a"));
+}

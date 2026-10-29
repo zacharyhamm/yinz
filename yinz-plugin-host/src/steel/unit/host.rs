@@ -341,7 +341,7 @@ fn pane_declaration_is_read_from_the_evaluated_module_and_sealed() {
 /// The pane each builtin declares; every other builtin runs headless.
 fn expected_builtin_pane(name: &str) -> PaneDeclaration {
     match name {
-        "compact-bar" | "tab-bar" | "status-bar" | "strider" | "configuration" | "agents"
+        "compact-bar" | "tab-bar" | "status-bar" | "strider" | "configuration"
         | "multiple-select" | "agent-exit" | "quit-confirmation" | "shared-test" => {
             PaneDeclaration::Always
         },

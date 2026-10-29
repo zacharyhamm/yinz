@@ -1111,18 +1111,6 @@ mod tests;
 mod session_ownership_tests;
 
 #[cfg(test)]
-#[path = "unit/agents_hook_traffic.rs"]
-mod agents_hook_traffic;
-
-#[cfg(test)]
-#[path = "unit/agents_focus_cycle.rs"]
-mod agents_focus_cycle;
-
-#[cfg(test)]
-#[path = "unit/agents_search.rs"]
-mod agents_search;
-
-#[cfg(test)]
 #[path = "unit/tab_groups.rs"]
 mod tab_groups;
 
