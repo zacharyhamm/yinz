@@ -36,22 +36,44 @@ fn only_client_writes_require_an_input_barrier() {
                 chars: "x".into(),
                 pane_id,
             },
+            Action::Paste {
+                chars: "x".into(),
+                pane_id: Some(pane_id),
+            },
+            Action::Paste {
+                chars: "x".into(),
+                pane_id: None,
+            },
             Action::ToggleTab,
         ] {
             let expected_barrier = is_client_input
                 && matches!(action, Action::Write { .. } | Action::WriteChars { .. });
+            let expected_scroll_target = match &action {
+                Action::WriteToPaneId { pane_id, .. }
+                | Action::WriteCharsToPaneId { pane_id, .. } => Some(*pane_id),
+                Action::Paste { pane_id, .. } => *pane_id,
+                _ => None,
+            };
+            let clears_scroll = !matches!(action, Action::ToggleTab);
             let (screen_tx, screen_rx) = yinz_runtime::channels::unbounded();
             let senders = ThreadSenders {
                 to_screen: Some(SenderWithContext::new(screen_tx)),
                 should_silently_fail: true,
                 ..Default::default()
             };
-            let screen = std::thread::spawn(move || loop {
+            let screen = std::thread::spawn(move || {
+                if clears_scroll {
+                    let (instruction, _) = screen_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    assert!(matches!(instruction,
+                        ScreenInstruction::ClearScroll(target, client)
+                        if target == expected_scroll_target && client == ClientId::new(1)
+                    ));
+                }
                 let (instruction, _) = screen_rx.recv_timeout(Duration::from_secs(5)).unwrap();
                 let mut completion = match instruction {
-                    ScreenInstruction::ClearScroll(_) => continue,
                     ScreenInstruction::WriteCharacter(_, _, _, _, Some(completion))
                     | ScreenInstruction::WriteToPaneId(_, _, Some(completion))
+                    | ScreenInstruction::Paste(_, _, _, Some(completion))
                     | ScreenInstruction::ToggleTab(_, Some(completion)) => completion,
                     _ => panic!("unexpected screen instruction"),
                 };
@@ -61,7 +83,6 @@ fn only_client_writes_require_an_input_barrier() {
                     expected_barrier
                 );
                 completion.set_affected_pane_id(pane_id);
-                break;
             });
             let (_, result) = route_action(
                 action,

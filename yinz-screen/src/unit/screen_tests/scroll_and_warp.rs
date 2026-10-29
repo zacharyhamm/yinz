@@ -21,6 +21,96 @@ fn warp_deadline() -> std::time::Instant {
 }
 
 #[test]
+fn clearing_targeted_scroll_flushes_output_and_syncs_only_target_viewers() {
+    for target_has_viewers in [false, true] {
+        let (mut screen, _, server) =
+            create_new_screen_with_capture(Size { cols: 80, rows: 10 }, false, false, true, false);
+        let target_tab = TabId::new(0);
+        let other_tab = TabId::new(1);
+        let target = PaneId::Terminal(TerminalId::new(1));
+        let other = PaneId::Terminal(TerminalId::new(2));
+        new_tab(&mut screen, 1, target_tab);
+        new_tab(&mut screen, 2, other_tab);
+        for (tab_id, terminal, pane_id) in [
+            (target_tab, TerminalId::new(1), target),
+            (other_tab, TerminalId::new(2), other),
+        ] {
+            let tab = screen.tabs.get_mut(&tab_id).unwrap();
+            tab.handle_pty_bytes(terminal, b"line\r\n".repeat(40))
+                .unwrap();
+            tab.get_pane_with_id_mut(pane_id)
+                .unwrap()
+                .scroll_up(3, None);
+            tab.handle_pty_bytes(terminal, b"pending output\r\n".to_vec())
+                .unwrap();
+            let pane = tab.get_pane_with_id(pane_id).unwrap();
+            assert!(pane.is_scrolled());
+            assert!(!pane.dump_screen(true, None).contains("pending output"));
+        }
+        screen.mode_info.insert(
+            ClientId::new(1),
+            ModeInfo {
+                mode: InputMode::Scroll,
+                ..Default::default()
+            },
+        );
+        assert_eq!(screen.active_pane_id(ClientId::new(1)), Some(other));
+        if target_has_viewers {
+            for client in [ClientId::new(2), ClientId::new(3)] {
+                let mode = ModeInfo {
+                    mode: InputMode::Scroll,
+                    ..Default::default()
+                };
+                screen
+                    .tabs
+                    .get_mut(&target_tab)
+                    .unwrap()
+                    .add_client(client, Some(mode.clone()))
+                    .unwrap();
+                screen.active_tab_ids.insert(client, target_tab);
+                screen.mode_info.insert(client, mode);
+            }
+        }
+        server.try_iter().for_each(drop);
+        assert!(!screen
+            .clear_scroll_for_pane_id(PaneId::Terminal(TerminalId::new(999)))
+            .unwrap());
+        assert!(!screen
+            .clear_scroll_for_pane_id(PaneId::Plugin(crate::PluginId::new(999)))
+            .unwrap());
+        assert!(server.is_empty());
+        assert!(screen.clear_scroll_for_pane_id(target).unwrap());
+        let pane = screen.tabs[&target_tab].get_pane_with_id(target).unwrap();
+        assert!(!pane.is_scrolled());
+        assert!(pane.dump_screen(true, None).contains("pending output"));
+        let pane = screen.tabs[&other_tab].get_pane_with_id(other).unwrap();
+        assert!(pane.is_scrolled());
+        assert!(!pane.dump_screen(true, None).contains("pending output"));
+        let mut changed_clients = server
+            .try_iter()
+            .map(|(instruction, _)| {
+                let ServerInstruction::ChangeMode(client, InputMode::Normal, _) = instruction
+                else {
+                    panic!("unexpected instruction after clearing scroll");
+                };
+                client
+            })
+            .collect::<Vec<_>>();
+        changed_clients.sort();
+        assert_eq!(
+            changed_clients,
+            if target_has_viewers {
+                vec![ClientId::new(2), ClientId::new(3)]
+            } else {
+                vec![]
+            }
+        );
+        assert!(!screen.clear_scroll_for_pane_id(target).unwrap());
+        assert!(server.is_empty());
+    }
+}
+
+#[test]
 fn warp_departures_notify_plugins_and_subscribers_without_closing_processes() {
     for scenario in ["single", "editor", "stack", "tab"] {
         for failed in [false, true] {

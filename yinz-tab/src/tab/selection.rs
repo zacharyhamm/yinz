@@ -113,11 +113,17 @@ impl Tab {
     /// Handler for `ScreenInstruction::ClearScroll`. Returns whether anything was
     /// scrolled, so the caller can skip a render when nothing changed.
     pub fn clear_active_terminal_scroll(&mut self, client_id: ClientId) -> Result<bool> {
-        let err_context =
-            || format!("failed to clear scroll in active pane for client {client_id}");
+        match self.get_active_pane_id(client_id) {
+            Some(pane_id) => self.clear_terminal_scroll(pane_id),
+            None => Ok(false),
+        }
+    }
+
+    pub fn clear_terminal_scroll(&mut self, pane_id: PaneId) -> Result<bool> {
+        let err_context = || format!("failed to clear scroll in pane {pane_id}");
 
         let mut was_scrolled = false;
-        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
+        if let Some(active_pane) = self.get_pane_with_id_mut(pane_id) {
             was_scrolled = active_pane.is_scrolled();
             active_pane.clear_scroll();
             if !active_pane.is_scrolled()

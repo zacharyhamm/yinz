@@ -208,7 +208,7 @@ pub enum ScreenInstruction {
     PageScrollDown(ClientId, Option<NotificationEnd>),
     HalfPageScrollUp(ClientId, Option<NotificationEnd>),
     HalfPageScrollDown(ClientId, Option<NotificationEnd>),
-    ClearScroll(ClientId),
+    ClearScroll(Option<PaneId>, ClientId),
     CloseFocusedPane(ClientId, Option<NotificationEnd>),
     ToggleActiveTerminalFullscreen(ClientId, Option<NotificationEnd>),
     ToggleActiveTerminalNoUiFullscreen(ClientId, Option<NotificationEnd>),

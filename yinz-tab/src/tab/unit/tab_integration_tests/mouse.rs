@@ -1348,6 +1348,72 @@ fn test_left_drag_moves_floating_pane() {
 }
 
 #[test]
+fn frame_drag_applies_the_release_position_before_ending_the_drag() {
+    let size = Size { cols: 80, rows: 20 };
+    let client_id = ClientId::new(1);
+    let pane_id = PaneId::Terminal(TerminalId::new(2));
+    let press = Position::new(4, 10);
+    for overlay in [false, true] {
+        for (motion, release, expected) in [
+            (None, Position::new(6, 14), (14, 6)),
+            (Some(Position::new(5, 12)), Position::new(7, 16), (16, 7)),
+            (Some(Position::new(5, 12)), press, (10, 4)),
+            (None, press, (10, 4)),
+            (None, Position::new(100, 100), (60, 12)),
+        ] {
+            let mut tab = create_new_tab(size, ModeInfo::default());
+            let coordinates = FloatingPaneCoordinates {
+                x: Some(PercentOrFixed::Fixed(10)),
+                y: Some(PercentOrFixed::Fixed(4)),
+                width: Some(PercentOrFixed::Fixed(20)),
+                height: Some(PercentOrFixed::Fixed(8)),
+                ..Default::default()
+            };
+            let placement = if overlay {
+                NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(coordinates)))
+            } else {
+                tab.toggle_floating_panes(Some(client_id), None, None)
+                    .unwrap();
+                NewPanePlacement::Floating(Some(coordinates))
+            };
+            tab.new_pane(
+                pane_id,
+                None,
+                None,
+                false,
+                true,
+                placement,
+                Some(client_id),
+                None,
+            )
+            .unwrap();
+            tab.handle_mouse_event(&MouseEvent::new_left_press_event(press), client_id)
+                .unwrap();
+            assert!(if overlay {
+                tab.overlay_panes.pane_is_being_moved_with_mouse()
+            } else {
+                tab.floating_panes.pane_is_being_moved_with_mouse()
+            });
+            if let Some(motion) = motion {
+                tab.handle_mouse_event(&MouseEvent::new_left_motion_event(motion), client_id)
+                    .unwrap();
+            }
+            tab.handle_mouse_event(&MouseEvent::new_left_release_event(release), client_id)
+                .unwrap();
+
+            let geom = tab.get_pane_with_id(pane_id).unwrap().current_geom();
+            assert_eq!(
+                (geom.x, geom.y),
+                expected,
+                "overlay={overlay}, motion={motion:?}, release={release:?}"
+            );
+            assert!(!tab.overlay_panes.pane_is_being_moved_with_mouse());
+            assert!(!tab.floating_panes.pane_is_being_moved_with_mouse());
+        }
+    }
+}
+
+#[test]
 fn test_left_click_on_floating_pane_changes_focus() {
     let size = Size {
         cols: 121,
