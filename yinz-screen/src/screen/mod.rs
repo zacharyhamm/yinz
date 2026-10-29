@@ -97,7 +97,6 @@ use crate::output::Output;
 use crate::pane_groups::PaneGroups;
 use crate::panes::grid::{namespace_notification_id, PendingNotification};
 use crate::panes::link_handler::LinkHandler;
-use crate::panes::terminal_pane::{BRACKETED_PASTE_BEGIN, BRACKETED_PASTE_END};
 use crate::session_layout_metadata::{PaneLayoutMetadata, SessionLayoutMetadata};
 
 use crate::{
@@ -1637,24 +1636,10 @@ impl Screen {
         client_id: Option<ClientId>,
         completion_tx: Option<NotificationEnd>,
     ) -> Result<()> {
-        self.write_to_pane_id(
-            &None,
-            BRACKETED_PASTE_BEGIN.to_vec(),
-            false,
-            pane_id,
-            client_id,
-            None,
-        )?;
-        self.write_to_pane_id(&None, bytes, false, pane_id, client_id, None)?;
-        self.write_to_pane_id(
-            &None,
-            BRACKETED_PASTE_END.to_vec(),
-            false,
-            pane_id,
-            client_id,
-            completion_tx,
-        )?;
-        Ok(())
+        match self.tab_containing_pane_mut(pane_id) {
+            Some(tab) => tab.paste_to_pane_id(bytes, pane_id, client_id, completion_tx),
+            None => Err(anyhow!("failed to find pane with id {pane_id:?}")),
+        }
     }
 
     /// Returns a mutable reference to this [`Screen`]'s tabs.

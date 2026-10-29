@@ -663,7 +663,7 @@ fn pane_tabs_block_clientless_keys_and_paste_until_content_is_available() {
             None,
         )
         .unwrap();
-        tab.paste_to_pane_id(b"paste".to_vec(), first, None)
+        tab.paste_to_pane_id(b"paste".to_vec(), first, None, None)
             .unwrap();
         let events = receiver
             .try_iter()
@@ -827,6 +827,8 @@ fn pane_tabs_highlight_is_per_client_and_only_enter_activates() {
         .unwrap());
     assert!(tab.pane_tabs_input(pane, &None, Some(client)).unwrap());
     tab.paste_to_active_terminal(b"ignored paste".to_vec(), client, None)
+        .unwrap();
+    tab.paste_to_pane_id(b"ignored paste".to_vec(), pane, Some(client), None)
         .unwrap();
     assert_eq!(tab.pane_tabs[&info.id].views[&client].highlight, 1);
     assert_eq!(tab.pane_tabs[&info.id].views[&other].highlight, 0);

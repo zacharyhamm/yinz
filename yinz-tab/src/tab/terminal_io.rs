@@ -313,6 +313,7 @@ impl Tab {
         &mut self,
         bytes: Vec<u8>,
         pane_id: PaneId,
+        client_id: Option<ClientId>,
         completion: Option<NotificationEnd>,
     ) -> Result<()> {
         let bracketed_paste_begin = vec![27, 91, 50, 48, 48, 126];
@@ -323,7 +324,7 @@ impl Tab {
             [bracketed_paste_begin, bytes, bracketed_paste_end],
             false,
             pane_id,
-            None,
+            client_id,
             completion,
             true,
         )?;
@@ -344,7 +345,7 @@ impl Tab {
         if self.pane_tabs_input(active_pane_id, &None, Some(client_id))? {
             return Ok(());
         }
-        self.paste_to_pane_id(bytes, active_pane_id, completion)
+        self.paste_to_pane_id(bytes, active_pane_id, None, completion)
     }
 
     /// Changes only for input delivered to the terminal, not terminal query replies.

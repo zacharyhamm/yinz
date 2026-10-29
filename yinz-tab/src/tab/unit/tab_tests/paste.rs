@@ -21,7 +21,7 @@ fn paste_preprocesses_chunks_before_sending_one_write_with_its_completion() {
         tab.handle_pty_bytes(terminal, modes.to_vec()).unwrap();
         let writes = install_pty_writer_capture(&mut tab);
         let (tx, mut result) = tokio::sync::oneshot::channel();
-        tab.paste_to_pane_id(b"\r".to_vec(), pane, Some(NotificationEnd::new(tx)))
+        tab.paste_to_pane_id(b"\r".to_vec(), pane, None, Some(NotificationEnd::new(tx)))
             .unwrap();
         let mut instructions = drain_pty_writer(&writes);
         assert_eq!(instructions.len(), 1);

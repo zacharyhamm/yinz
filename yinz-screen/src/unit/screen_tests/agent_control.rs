@@ -3275,6 +3275,54 @@ fn clear_tracking_is_discarded_on_unrelated_lifecycle_or_cleanup() {
 }
 
 #[test]
+fn screen_paste_sends_one_preprocessed_write_with_its_completion() {
+    for client in [None, Some(CLIENT)] {
+        for (modes, expected) in [
+            (b"\x1b[?2004l".as_slice(), b"\r".as_slice()),
+            (b"\x1b[?2004l\x1b[20h".as_slice(), b"\r\n".as_slice()),
+            (b"".as_slice(), b"\x1b[200~\r\x1b[201~".as_slice()),
+            (b"\x1b[20h".as_slice(), b"\x1b[200~\r\n\x1b[201~".as_slice()),
+        ] {
+            let (mut screen, _, writes) = setup("codex");
+            screen
+                .tab_containing_pane_mut(PANE)
+                .unwrap()
+                .handle_pty_bytes(TerminalId::new(7), modes.to_vec())
+                .unwrap();
+            writes.try_iter().for_each(drop);
+            let (tx, mut result) = tokio::sync::oneshot::channel();
+            screen
+                .paste_to_pane_id(
+                    b"\r".to_vec(),
+                    PANE,
+                    client,
+                    Some(yinz_bus::route::NotificationEnd::new(tx)),
+                )
+                .unwrap();
+            let mut instructions = writes.try_iter().collect::<Vec<_>>();
+            assert_eq!(instructions.len(), 1);
+            let (PtyWriteInstruction::Write(bytes, id, Some(mut completion)), _) =
+                instructions.pop().unwrap()
+            else {
+                panic!("paste must own one write completion");
+            };
+            assert_eq!(id, TerminalId::new(7));
+            assert_eq!(bytes, expected);
+            assert!(matches!(
+                result.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ));
+            completion.set_error_message("paste failed".into());
+            drop(completion);
+            assert_eq!(
+                result.try_recv().unwrap().error_message.as_deref(),
+                Some("paste failed")
+            );
+        }
+    }
+}
+
+#[test]
 fn paste_completion_and_delay_gate_enter_without_sleeping() {
     let (mut screen, messages, writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
@@ -3301,6 +3349,7 @@ fn enter_is_cancelled_on_input_failure_early_acknowledgement_or_replacement() {
     for reason in [
         "input",
         "failure",
+        "overflow",
         "ack",
         "replacement",
         "closed",
@@ -3309,16 +3358,23 @@ fn enter_is_cancelled_on_input_failure_early_acknowledgement_or_replacement() {
         let (mut screen, messages, writes) = setup("codex");
         report(&mut screen, hook("SessionStart"));
         screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
-        let mut completion = writes
+        let mut instructions = writes
             .try_iter()
-            .find_map(|(instruction, _)| match instruction {
-                PtyWriteInstruction::Write(_, _, Some(completion)) => Some(completion),
-                _ => None,
-            })
-            .unwrap();
+            .map(|(instruction, _)| instruction)
+            .filter(|instruction| matches!(instruction, PtyWriteInstruction::Write(..)))
+            .collect::<Vec<_>>();
+        assert_eq!(instructions.len(), 1);
+        let PtyWriteInstruction::Write(bytes, id, Some(mut completion)) =
+            instructions.pop().unwrap()
+        else {
+            panic!("agent paste must own one write completion");
+        };
+        assert_eq!(id, TerminalId::new(7));
+        assert_eq!(bytes, b"\x1b[200~review\x1b[201~");
         match reason {
             "input" => screen.agent_write_for_test(),
             "failure" => completion.set_error_message("partial write failed".into()),
+            "overflow" => completion.set_error_message("PTY write queue overflow".into()),
             "ack" => report(&mut screen, hook("UserPromptSubmit")),
             "replacement" => {
                 let tab = screen.tab_containing_pane_mut(PANE).unwrap();
@@ -3345,7 +3401,11 @@ fn enter_is_cancelled_on_input_failure_early_acknowledgement_or_replacement() {
         if reason == "ack" {
             assert!(replies(&messages, CLIENT).is_empty());
         } else {
-            assert_eq!(replies(&messages, CLIENT).len(), 1, "{reason}");
+            let responses = replies(&messages, CLIENT);
+            assert_eq!(responses.len(), 1, "{reason}");
+            if matches!(reason, "failure" | "overflow") {
+                assert_eq!(responses[0].outcome, AgentOutcome::Failed, "{reason}");
+            }
         }
     }
 }
@@ -3558,7 +3618,7 @@ fn claude_permission_enter_clears_wait_before_tool_completion_in_every_placement
                 screen
                     .tab_containing_pane_mut(PANE)
                     .unwrap()
-                    .paste_to_pane_id(b"yes\r\n".to_vec(), PANE, None)
+                    .paste_to_pane_id(b"yes\r\n".to_vec(), PANE, None, None)
                     .unwrap();
                 screen.refresh_agent_controls();
                 assert_eq!(screen.get_pane_info(PANE).unwrap().agent, Some(waiting));
