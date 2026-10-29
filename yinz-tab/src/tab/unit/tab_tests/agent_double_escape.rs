@@ -87,7 +87,8 @@ fn agent_double_escape_pairs_and_bypasses() {
             "unparsed/programmatic/modified input bypasses"
         );
     }
-    tab.paste_to_pane_id(b"\x1b".to_vec(), pane, None).unwrap();
+    tab.paste_to_pane_id(b"\x1b".to_vec(), pane, None, None)
+        .unwrap();
     assert!(drain_pty_writer(&rx)
         .iter()
         .any(|msg| matches!(msg, PtyWriteInstruction::Write(bytes, _, _) if bytes == b"\x1b")));
