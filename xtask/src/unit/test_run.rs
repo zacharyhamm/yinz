@@ -4,6 +4,31 @@ use std::io::{BufRead, Read};
 use std::process::{Command, Stdio};
 
 #[test]
+fn test_creation_mask_is_private() {
+    if std::env::var_os("YINZ_TEST_CREATION_MASK_CHILD").is_some() {
+        private_creation_mask();
+        let directory = tempfile::tempdir().unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            directory.path().metadata().unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        return;
+    }
+    let output = Command::new("sh")
+        .args(["-c", "umask 0002; exec \"$1\" --exact test_run::tests::test_creation_mask_is_private --nocapture", "sh"])
+        .arg(std::env::current_exe().unwrap())
+        .env("YINZ_TEST_CREATION_MASK_CHILD", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn test_child() {
     let Ok(mode) = std::env::var("YINZ_TEST_RUN_CHILD") else {
         return;

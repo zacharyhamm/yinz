@@ -272,6 +272,10 @@ fn conversation_marker(kind: &str, hook: &HookEvent) -> String {
 }
 
 fn update_conversation_marker(path: &Path, kind: &str, hook: &HookEvent) -> Result<()> {
+    yinz_runtime::shared::ensure_secure_dir(
+        path.parent().context("conversation marker has no parent")?,
+    )
+    .with_context(|| format!("secure {kind} observation directory"))?;
     if hook.hook_event_name == "SessionEnd" {
         let marker = match std::fs::read_to_string(path) {
             Ok(marker) => marker,
@@ -300,8 +304,6 @@ fn update_conversation_marker(path: &Path, kind: &str, hook: &HookEvent) -> Resu
                 .with_context(|| format!("end {kind} conversation observation"))?;
         }
     } else {
-        std::fs::create_dir_all(path.parent().context("conversation marker has no parent")?)
-            .with_context(|| format!("create {kind} observation directory"))?;
         let temporary = path.with_extension(uuid::Uuid::new_v4().to_string());
         let result = (|| {
             let mut marker = std::fs::File::create_new(&temporary)

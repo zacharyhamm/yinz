@@ -85,19 +85,7 @@ pub fn atomic_create_file(file_name: &Path) -> io::Result<()> {
 }
 
 pub fn atomic_create_dir(dir_name: &Path) -> io::Result<()> {
-    let result = if let Err(e) = fs::create_dir(dir_name) {
-        if e.kind() == std::io::ErrorKind::AlreadyExists {
-            Ok(())
-        } else {
-            Err(e)
-        }
-    } else {
-        Ok(())
-    };
-    if result.is_ok() {
-        set_permissions(dir_name, 0o700)?;
-    }
-    result
+    crate::shared::ensure_secure_dir(dir_name).map_err(io::Error::other)
 }
 
 pub fn debug_to_file(message: &[u8], terminal_id: i32) -> io::Result<()> {

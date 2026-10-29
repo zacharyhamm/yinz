@@ -4,6 +4,39 @@ use std::sync::{mpsc, Arc, Barrier};
 use std::time::Duration;
 
 #[test]
+fn session_locks_refuse_unsafe_directories_without_touching_targets() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("target");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for directory in [
+        crate::consts::SESSION_OWNERSHIP_DIR,
+        crate::consts::SESSION_CREATION_LOCK_DIR,
+    ] {
+        symlink(&target, root.path().join(directory)).unwrap();
+        assert!(open_lock_file(&root.path().join("session"), directory).is_err());
+        assert!(!target.join("session").exists());
+        assert_eq!(
+            target.metadata().unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+    }
+
+    let shared = root.path().join("shared");
+    std::fs::create_dir(&shared).unwrap();
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(SessionOwnership::acquire(&shared.join("session")).is_err());
+    assert!(lock_creation(&shared.join("session"), Instant::now()).is_err());
+    assert_eq!(std::fs::read_dir(&shared).unwrap().count(), 0);
+    assert_eq!(
+        shared.metadata().unwrap().permissions().mode() & 0o777,
+        0o777
+    );
+}
+
+#[test]
 fn startup_waits_for_retained_teardown_claim() {
     for stale in [false, true] {
         let root = tempfile::tempdir().unwrap();

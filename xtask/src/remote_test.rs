@@ -174,6 +174,8 @@ fn test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
         .run()
         .context("build the local interactive client for the SSH suite")?;
 
+    crate::test_run::private_creation_mask();
+
     // `--ignored` (not `--include-ignored`) runs *only* these tests, exactly as
     // the e2e phase does.
     //

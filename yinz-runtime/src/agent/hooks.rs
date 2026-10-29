@@ -66,7 +66,19 @@ fn parse_provider_hook_event(kind: &str, json: String) -> serde_json::Result<(Ho
         return parse_muse_hook_event(json);
     }
     if kind == "agy" {
-        let value: serde_json::Value = serde_json::from_str(&json)?;
+        let mut value: serde_json::Value = serde_json::from_str(&json)?;
+        let json = if value.is_array() {
+            // The installed shell hook streams [event argument, unchanged native JSON].
+            let (event_name, mut payload): (String, serde_json::Map<String, Value>) =
+                serde_json::from_value(value)?;
+            payload
+                .entry("hook_event_name")
+                .or_insert(Value::String(event_name));
+            value = Value::Object(payload);
+            serde_json::to_string(&value)?
+        } else {
+            json
+        };
         // Detached confirmations and broker deliveries already use HookEvent's shape.
         // Re-translating them as native hooks drops conversation and prompt identities.
         if value.get("session_id").is_some() {

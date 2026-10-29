@@ -353,6 +353,28 @@ fn claude_early_interruption_uses_idle_registry_without_a_transcript_boundary() 
 }
 
 #[test]
+fn conversation_markers_reject_symlink_directories_before_writing_or_removing() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = dir.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("marker"), "conversation").unwrap();
+    let link = dir.path().join("observations");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    for event in ["SessionStart", "SessionEnd"] {
+        let hook = HookEvent {
+            hook_event_name: event.into(),
+            session_id: "conversation".into(),
+            ..Default::default()
+        };
+        assert!(update_conversation_marker(&link.join("marker"), "claude", &hook).is_err());
+        assert_eq!(
+            std::fs::read_to_string(outside.join("marker")).unwrap(),
+            "conversation"
+        );
+    }
+}
+
+#[test]
 fn conversation_markers_are_removed_on_session_end_without_a_prompt_id() {
     for kind in ["agy", "claude"] {
         for event in ["UserPromptSubmit", "SessionStart"] {

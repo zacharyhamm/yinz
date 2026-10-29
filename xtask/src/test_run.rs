@@ -4,6 +4,12 @@ use std::{path::Path, sync::Arc};
 
 pub struct TestRun(Arc<OwnedDir>);
 
+/// Call in the serial test driver: fixtures and child servers must start with private directories.
+pub fn private_creation_mask() {
+    // SAFETY: umask has no memory preconditions; the CLI sets it before launching test processes.
+    unsafe { libc::umask(0o077) };
+}
+
 impl TestRun {
     pub fn new() -> anyhow::Result<Self> {
         // /tmp stays short on macOS too: its default temp_dir can exhaust sun_path.
