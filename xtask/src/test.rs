@@ -14,6 +14,7 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
     crate::test_run::private_creation_mask();
     let run = crate::test_run::TestRun::new()?;
     let _cache_root = sh.push_env(crate::owned_dir::TEST_CACHE_ROOT_ENV, run.path());
+    let _socket_root = sh.push_env("YINZ_SOCKET_DIR", run.path().join("sockets"));
     let err_context = "failed to run task 'test'";
 
     let _pd = sh.push_dir(crate::project_root());

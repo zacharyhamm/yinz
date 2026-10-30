@@ -1410,7 +1410,9 @@ pub fn start_server_impl(
                             .non_fatal();
                         session
                             .senders
-                            .send_to_screen(ScreenInstruction::SetClientTimezone(client_id, timezone))
+                            .send_to_screen(ScreenInstruction::SetClientTimezone(
+                                client_id, timezone,
+                            ))
                             .context("recording the first client timezone")
                             .non_fatal();
                         session

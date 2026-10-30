@@ -756,7 +756,7 @@ fn palette_history_formats_all_dates_in_the_requesting_clients_timezone() {
     data.plugin_data()
         .apply(
             project_data::store::SHARED,
-            &agent_proto::agents::rows::run_mutations(&recorded),
+            &agent_proto::agents::rows::run_mutations(&recorded, REV_ABSENT),
         )
         .unwrap();
     for (timezone, start, end) in [

@@ -514,7 +514,11 @@ fn recovery_status_fits_small_terminals_and_wide_host_names() {
         let os = crate::test_support::FakeClientOsApi::new()
             .capturing_stdout()
             .with_terminal_size(size);
-        let mut recovery = Recovery::new("遠隔".repeat(80), CommandIsExecuting::new());
+        let mut recovery = Recovery::new(
+            "遠隔".repeat(80),
+            CommandIsExecuting::new(),
+            Default::default(),
+        );
         recovery.control.lost(0, "outage".into());
         recovery.paint_status(&os, "work", Instant::now()).unwrap();
         let (_, message) = recovery.status.as_ref().unwrap();

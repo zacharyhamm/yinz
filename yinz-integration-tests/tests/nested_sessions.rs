@@ -876,8 +876,13 @@ fn descend_and_ascend_work_at_depth_three() {
             && composite_contains_settled_guest_grid(middle_grid, &inner_grid)
     };
     // Terminal titles lead with `host:session`.
+    let middle_title = format!(
+        "{}:{}",
+        test_env::TEST_HOSTNAME,
+        nested.middle.session_name()
+    );
     let inner_title = format!("{}:{}", test_env::TEST_HOSTNAME, inner_session_name);
-    let settled_outer_tab_title = format!("{inner_title} | {inner_title}");
+    let settled_outer_tab_title = format!("{middle_title} | {inner_title}");
     let outer_settled = |outer_grid: &GridSnapshot| {
         host_descended_bar_settled(outer_grid)
             && outer_grid
