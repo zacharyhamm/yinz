@@ -800,24 +800,28 @@ fn palette_history_formats_all_dates_in_the_requesting_clients_timezone() {
 }
 
 #[test]
-fn palette_history_automatically_loads_all_retained_revisions() {
+fn palette_history_opens_at_tail_and_loads_earlier_revisions_only_on_request() {
     use yinz_bus::command_palette::{HistoryAction, HistoryReply};
-    for (revisions, text, expected_starts) in [
+    for (revisions, text, expected_start) in [
         (
             vec![1].into_iter().chain(100..130).collect::<Vec<_>>(),
             "event",
-            vec![100, 1],
+            100,
         ),
         (
             (1..5).chain(100..130).chain(1000..1030).collect(),
             "event",
-            vec![1000, 100, 1],
+            1000,
         ),
-        ((1..=65).collect(), "event", vec![36, 6, 1]),
-        ((1..=65).collect(), &"x".repeat(4000), vec![52, 22, 1]),
+        ((1..=65).collect(), "event", 36),
+        ((1..=65).collect(), &"x".repeat(4000), 52),
     ] {
         let (temp, data) = repository();
         let mut recorded = recorded_run(temp.path());
+        if revisions.len() > 60 {
+            recorded.outcome = agent_proto::agents::RunOutcome::Active;
+            recorded.ended_at_ms = None;
+        }
         let entry = recorded.entries[0].clone();
         recorded.entries = revisions
             .iter()
@@ -835,7 +839,7 @@ fn palette_history_automatically_loads_all_retained_revisions() {
                 &agent_proto::agents::rows::run_mutations(&recorded),
             )
             .unwrap();
-        // Other runs must not contribute revisions to the backward cursor.
+        // Other runs must not contribute revisions to this timeline.
         let mut other = recorded.clone();
         other.id = "other-run".into();
         data.plugin_data()
@@ -870,14 +874,26 @@ fn palette_history_automatically_loads_all_retained_revisions() {
             );
             assert!(
                 starts.len() <= revisions.len() + 1,
-                "backward navigation failed to terminate: {starts:?}"
+                "history pagination failed to terminate: {starts:?}"
             );
+            if starts.len() == 1 {
+                assert!(!rows.iter().any(|row| row.id == "continue"));
+                let earlier = rows.iter().find(|row| row.id == "earlier").unwrap();
+                assert_eq!(earlier.label, "Load earlier messages");
+                assert!(matches!(
+                    earlier.action,
+                    HistoryAction::Run { from: Some(1), .. }
+                ));
+                action = earlier.action.clone();
+                continue;
+            }
+            assert!(!rows.iter().any(|row| row.id == "earlier"));
             let Some(older) = rows.iter().find(|row| row.id == "continue") else {
                 break;
             };
             action = older.action.clone();
         }
-        assert_eq!(starts[0], expected_starts[0]);
+        assert_eq!(starts[0], expected_start);
         assert_eq!(loaded.into_iter().collect::<Vec<_>>(), revisions);
     }
 }
@@ -1311,7 +1327,10 @@ fn palette_history_opens_merged_tools_exceeding_fetch_budget() {
         assert!(pages <= 30, "backfill must terminate");
         events.append(&mut loaded);
         loaded = events;
-        let Some(older) = rows.iter().find(|row| row.id == "continue") else {
+        let Some(older) = rows
+            .iter()
+            .find(|row| row.id == if pages == 1 { "earlier" } else { "continue" })
+        else {
             break;
         };
         action = older.action.clone();

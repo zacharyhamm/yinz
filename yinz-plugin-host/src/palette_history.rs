@@ -259,12 +259,17 @@ pub(super) fn execute(
             let status;
             if query.is_empty() {
                 let page = history::entry_page(&backend, id, *from, 30)?;
-                let next = if from.is_none() && page.earlier {
-                    Some(1)
-                } else {
-                    page.next_revision
-                };
-                if let Some(next) = next {
+                // Opening a run reads only its tail. Backfill is an explicit
+                // action so a long run does not keep loading on every open.
+                if from.is_none() && page.earlier {
+                    rows.push(row(
+                        "earlier".into(),
+                        "Load earlier messages",
+                        String::new(),
+                        run_action(id, Some(1)),
+                    ));
+                }
+                if let Some(next) = page.next_revision {
                     rows.push(row(
                         "continue".into(),
                         "Loading history…",
