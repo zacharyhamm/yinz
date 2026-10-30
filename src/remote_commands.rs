@@ -1,12 +1,13 @@
 //! Remote CLI routing. Inputs stay local; session requests use an owned SSH forward.
 use serde::{Deserialize, Serialize};
 use std::{
+    io::Write,
     path::PathBuf,
     process::{Command as ProcessCommand, Stdio},
     sync::OnceLock,
     time::Duration,
 };
-use yinz_cli::args::{Agent, CliArgs, Command, Plugins, Sessions};
+use yinz_cli::args::{Agent, CliAction, CliArgs, Command, Plugins, Sessions};
 use yinz_client::{
     cli_client::StreamEnd,
     remote_sessions::{self, StartupCancellation},
@@ -197,43 +198,62 @@ fn ssh_command(
     request: &Request,
     env: &yinz_types::envs::EnvironmentVariables,
 ) -> Result<ProcessCommand> {
-    ssh::validate_ssh_host(host)?;
     let json = serde_json::to_string(request).context("encode remote CLI request")?;
-    let command = ["yinz", "remote-command", &json]
-        .into_iter()
-        .map(ssh::shell_argument)
-        .collect::<Result<Vec<_>>>()?
-        .join(" ");
-    let mut process = ProcessCommand::new("ssh");
-    process
-        .envs(env.inner())
-        .args(ssh::ssh_forward_args(&Default::default()))
-        .args(["-T", "--", host, &command]);
-    Ok(process)
+    remote_sessions::ssh_command(host, &["yinz", "remote-command", &json], env)
 }
 
-fn run_host(mut command: ProcessCommand, cancellation: &StartupCancellation) -> Result<i32> {
+fn run_host(
+    host: &str,
+    mut command: ProcessCommand,
+    cancellation: &StartupCancellation,
+) -> Result<i32> {
     // No host command reads input, and an inherited stdin would be consumed by SSH: a caller's
     // `while read host; do yinz list-sessions --remote "$host"; done` would stop after one host.
     let mut child = command
         .stdin(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .context("start remote host command")?;
-    let result = (|| loop {
-        if cancellation.is_cancelled() {
-            return Ok(yinz_client::INTERRUPTED_EXIT_STATUS);
+    let result = (|| -> Result<_> {
+        let stderr = child
+            .stderr
+            .take()
+            .context("remote host stderr was unavailable")?;
+        let capture = ssh::SshOutputCapture::new(stderr).context("read remote host stderr")?;
+        loop {
+            if cancellation.is_cancelled() {
+                return Ok((yinz_client::INTERRUPTED_EXIT_STATUS, capture));
+            }
+            if let Some(status) = child.try_wait().context("wait for remote host command")? {
+                return Ok((status.code().unwrap_or(1), capture));
+            }
+            std::thread::sleep(Duration::from_millis(25));
         }
-        if let Some(status) = child.try_wait().context("wait for remote host command")? {
-            return Ok(status.code().unwrap_or(1));
-        }
-        std::thread::sleep(Duration::from_millis(25));
     })();
     // Also reap SSH when waiting failed or a signal interrupted it.
     if child.try_wait().ok().flatten().is_none() {
         let _ = child.kill();
         let _ = child.wait();
     }
-    result
+    let (status, mut capture) = result?;
+    let stderr = capture.finish().context("collect remote host stderr")?;
+    if let Some(error) = version_rejection(host, status, &stderr) {
+        return Err(error);
+    }
+    std::io::stderr()
+        .write_all(&stderr)
+        .context("forward remote host stderr")
+        .non_fatal();
+    Ok(status)
+}
+
+/// A remote older than `remote-command` rejects it before the request's versions can be compared.
+/// Only that rejection counts: a host command's own errors can name arguments as well.
+fn version_rejection(host: &str, status: i32, stderr: &[u8]) -> Option<anyhow::Error> {
+    if status == 0 || !String::from_utf8_lossy(stderr).contains("'remote-command'") {
+        return None;
+    }
+    remote_sessions::bootstrap_failure(host, stderr)
 }
 
 /// SSH runs host commands without a terminal, so an all-session prompt is answered here and
@@ -351,6 +371,22 @@ fn read_remote_config(
     parse_remote_config(&output.stdout)
 }
 
+/// The actions that pass their configuration on to `actions_from_cli`'s layout and config parsers.
+/// Reading it costs another SSH connection, which every other action can skip.
+fn reads_session_config(command: Option<&Command>) -> bool {
+    matches!(
+        command,
+        Some(Command::Action(action)) if matches!(
+            action.as_ref(),
+            CliAction::NewTab { .. }
+                | CliAction::OverrideLayout { .. }
+                | CliAction::SwitchSession { .. }
+                | CliAction::Reconfigure { .. }
+                | CliAction::SetHook { .. }
+        )
+    )
+}
+
 fn select_name(explicit: Option<&str>, names: Vec<SessionName>, host: &str) -> Result<SessionName> {
     if let Some(name) = explicit {
         remote_sessions::validate_name(name)?;
@@ -413,7 +449,7 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
             && opts.data_dir.is_none(),
         "remote commands do not support local server, layout, or data-directory overrides"
     );
-    let (local_config, _) = crate::remote_session::load_local_config(opts)?;
+    let local_config = crate::remote_session::read_local_config(opts)?;
     let mut request = Request {
         version: VERSION.into(),
         contract: CLIENT_SERVER_CONTRACT_VERSION,
@@ -434,6 +470,7 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
         let cancellation = StartupCancellation::new()?;
         confirm_all_sessions(&mut request.command, &host, &cancellation)?;
         std::process::exit(run_host(
+            &host,
             ssh_command(&host, &request, &local_config.env)?,
             &cancellation,
         )?);
@@ -456,9 +493,9 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
             vec![]
         };
         let name = select_name(explicit, names, &host)?;
-        // Only actions consume the session's configuration. As locally, one that cannot be read
-        // does not stop them, and connecting below reports any SSH or compatibility failure.
-        let config = matches!(opts.command, Some(Command::Action(_)))
+        // As locally, a configuration that cannot be read does not stop an action, and connecting
+        // below reports any SSH or compatibility failure.
+        let config = reads_session_config(opts.command.as_ref())
             .then(|| {
                 read_remote_config(&host, &request, &local_config.env, &cancellation.cancelled)
             })
@@ -486,7 +523,6 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
         std::process::exit(yinz_client::INTERRUPTED_EXIT_STATUS);
     }
     setup?;
-    drop(cancellation);
     // Interactive watchers already install terminal-aware signal handling.
     if !matches!(
         opts.command,
@@ -508,6 +544,10 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
                 }
             })
             .context("start remote command signal handler")?;
+    }
+    // Startup's flag stays armed until now, so no signal falls between it and the handler above.
+    if cancellation.is_cancelled() {
+        exit(yinz_client::INTERRUPTED_EXIT_STATUS);
     }
     Ok(())
 }

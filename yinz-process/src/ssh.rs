@@ -25,13 +25,13 @@ pub struct HostForward {
 
 /// Drain SSH output throughout its lifetime, retaining only the final 64 KiB.
 // shortcut: one polling thread per capture; share readiness polling if host counts grow large.
-pub(crate) struct SshOutputCapture {
+pub struct SshOutputCapture {
     stop: Arc<AtomicBool>,
     reader: Option<std::thread::JoinHandle<Vec<u8>>>,
 }
 
 impl SshOutputCapture {
-    pub(crate) fn new(mut pipe: impl Read + AsFd + Send + 'static) -> Result<Self> {
+    pub fn new(mut pipe: impl Read + AsFd + Send + 'static) -> Result<Self> {
         use nix::fcntl::{fcntl, FcntlArg, OFlag};
         let flags =
             fcntl(pipe.as_fd(), FcntlArg::F_GETFL).context("failed to read SSH output flags")?;
@@ -100,7 +100,7 @@ impl SshOutputCapture {
         })
     }
 
-    pub(crate) fn finish(&mut self) -> Result<Vec<u8>> {
+    pub fn finish(&mut self) -> Result<Vec<u8>> {
         self.stop.store(true, Ordering::Release);
         let Some(reader) = self.reader.take() else {
             return Ok(Vec::new());

@@ -257,7 +257,7 @@ fn focus_compares_canonical_identity_after_retargeting_a_declaration() {
 #[test]
 fn unresolved_plugin_locations_preserve_another_hosts_paths() {
     for path in ["relative/plugin.scm", "~/plugin.scm", "/remote/plugin.scm"] {
-        let plugin = run_plugin_from_url_unresolved(&format!("file:{path}")).unwrap();
+        let plugin = run_plugin_from_url_unresolved(&format!("file:{path}"), None).unwrap();
         assert_eq!(plugin.location, RunPluginLocation::File(path.into()));
         assert_eq!(plugin.declared_path, Some(path.into()));
     }
@@ -267,15 +267,31 @@ fn unresolved_plugin_locations_preserve_another_hosts_paths() {
     std::fs::write(&source, "(void)").unwrap();
     let link = root.join("alias.scm");
     std::os::unix::fs::symlink(&source, &link).unwrap();
-    let plugin = run_plugin_from_url_unresolved(&format!("file:{}", link.display())).unwrap();
+    let plugin = run_plugin_from_url_unresolved(&format!("file:{}", link.display()), None).unwrap();
     assert_eq!(plugin.location, RunPluginLocation::File(link));
     std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
+fn unresolved_relative_locations_join_a_directory_on_the_other_host() {
+    let cwd = || Some(PathBuf::from("/srv/project"));
+    let plugin = run_plugin_from_url_unresolved("file:relative/plugin.scm", cwd()).unwrap();
+    assert_eq!(
+        plugin.location,
+        RunPluginLocation::File("/srv/project/relative/plugin.scm".into())
+    );
+    assert_eq!(plugin.relative_path, Some("relative/plugin.scm".into()));
+    for path in ["~/plugin.scm", "/remote/plugin.scm"] {
+        let plugin = run_plugin_from_url_unresolved(&format!("file:{path}"), cwd()).unwrap();
+        assert_eq!(plugin.location, RunPluginLocation::File(path.into()));
+    }
+}
+
+#[test]
 fn deferred_home_locations_take_their_identity_on_the_loading_host() {
-    let mut request =
-        RunPluginOrAlias::RunPlugin(run_plugin_from_url_unresolved("file:~/plugin.scm").unwrap());
+    let mut request = RunPluginOrAlias::RunPlugin(
+        run_plugin_from_url_unresolved("file:~/plugin.scm", None).unwrap(),
+    );
     refresh_file_identity(&mut request);
     let RunPluginOrAlias::RunPlugin(plugin) = request else {
         panic!("expected a plugin")

@@ -41,7 +41,7 @@ fn plugin_from_url(
     current_dir: &Path,
 ) -> Result<yinz_types::input::layout::RunPlugin, yinz_types::input::plugins::PluginsConfigError> {
     if session_resolves_paths(current_dir) {
-        yinz_runtime::plugin_location::run_plugin_from_url_unresolved(url)
+        yinz_runtime::plugin_location::run_plugin_from_url_unresolved(url, cwd)
     } else {
         yinz_runtime::plugin_location::run_plugin_from_url_with_cwd(url, cwd)
     }

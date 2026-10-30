@@ -350,11 +350,11 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
                 ));
             }
             if crate::remote_commands::selected().is_some() {
-                // The session has no caller directory to fall back on: the server would start
-                // the agent in `/`.
-                if cwd.is_none() && project.is_none() && remote_host.is_none() {
-                    bail!("agent spawn on a remote session requires --cwd or --project");
-                }
+                check_remote_spawn_directory(
+                    cwd.as_deref(),
+                    project.is_some(),
+                    remote_host.is_some(),
+                )?;
             } else if remote_host.is_none() {
                 if let Some(path) = cwd {
                     cwd = Some(std::path::absolute(path).context("resolve cwd")?);
@@ -525,6 +525,24 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
         ),
     };
     Ok((request, json, timeout))
+}
+
+/// A remote session has no caller directory to resolve against: the server would start the agent
+/// in `/` without one, and resolve a relative one against its own working directory.
+fn check_remote_spawn_directory(
+    cwd: Option<&Path>,
+    project: bool,
+    remote_host: bool,
+) -> Result<()> {
+    match cwd {
+        Some(cwd) if cwd.is_relative() => {
+            bail!("agent spawn on a remote session requires an absolute --cwd")
+        },
+        None if !project && !remote_host => {
+            bail!("agent spawn on a remote session requires --cwd or --project")
+        },
+        _ => Ok(()),
+    }
 }
 
 fn timeout_millis(timeout: Duration) -> Result<u64> {

@@ -299,6 +299,26 @@ impl<'a> Request<'a> {
     }
 }
 
+/// SSH running `args` on `host`, quoted for its shell and without a remote terminal.
+pub fn ssh_command(
+    host: &str,
+    args: &[impl AsRef<str>],
+    env: &EnvironmentVariables,
+) -> Result<Command> {
+    ssh::validate_ssh_host(host)?;
+    let remote_command = args
+        .iter()
+        .map(|arg| ssh::shell_argument(arg.as_ref()))
+        .collect::<Result<Vec<_>>>()?
+        .join(" ");
+    let mut command = Command::new("ssh");
+    command
+        .envs(env.inner())
+        .args(ssh::ssh_forward_args(&SshOptions::default()))
+        .args(["-T", "--", host, &remote_command]);
+    Ok(command)
+}
+
 fn bootstrap_until(
     host: &str,
     request: Request,
@@ -325,17 +345,9 @@ fn bootstrap_until(
     if let Some(name) = name {
         args.extend(["--".to_owned(), name.to_owned()]);
     }
-    let remote_command = args
-        .iter()
-        .map(|s| ssh::shell_argument(s))
-        .collect::<Result<Vec<_>>>()?
-        .join(" ");
     let options = SshOptions::default();
     let output = ssh::bootstrap_output(
-        Command::new("ssh")
-            .envs(env.inner())
-            .args(ssh::ssh_forward_args(&options))
-            .args(["-T", "--", host, &remote_command]),
+        &mut ssh_command(host, &args, env)?,
         remaining(deadline)?.min(Duration::from_secs(60)),
         Some(cancelled),
     )
@@ -415,7 +427,6 @@ pub fn discover(
     cancelled: &AtomicBool,
     env: &EnvironmentVariables,
 ) -> Result<Vec<yinz_cli::session_picker::PickerRow>> {
-    ssh::validate_ssh_host(host)?;
     let args = [
         "yinz",
         "remote-sessions",
@@ -426,16 +437,8 @@ pub fn discover(
         "--bootstrap-version",
         &REMOTE_BOOTSTRAP_VERSION.to_string(),
     ];
-    let command = args
-        .iter()
-        .map(|arg| ssh::shell_argument(arg))
-        .collect::<Result<Vec<_>>>()?
-        .join(" ");
     let output = ssh::bootstrap_output(
-        Command::new("ssh")
-            .envs(env.inner())
-            .args(ssh::ssh_forward_args(&SshOptions::default()))
-            .args(["-T", "--", host, &command]),
+        &mut ssh_command(host, &args, env)?,
         Duration::from_secs(10),
         Some(cancelled),
     )

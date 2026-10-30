@@ -2714,6 +2714,33 @@ fn remote_action_paths_preserve_the_server_namespace() {
 }
 
 #[test]
+fn remote_plugin_locations_resolve_against_an_explicit_cwd() {
+    let parsed = parse_remote_cli([
+        "yinz",
+        "action",
+        "new-pane",
+        "--cwd",
+        "/srv/project",
+        "--plugin",
+        "file:relative/plugin.scm",
+    ])
+    .unwrap();
+    let Some(crate::args::Command::Action(action)) = parsed.command else {
+        panic!("expected action")
+    };
+    let actions = crate::actions::actions_from_cli(*action, Box::new(PathBuf::new), None).unwrap();
+    let Action::NewTiledPluginPane { plugin, .. } = &actions[0] else {
+        panic!("expected plugin: {:?}", actions[0])
+    };
+    assert_eq!(
+        plugin.get_run_plugin().unwrap().location,
+        yinz_types::input::layout::RunPluginLocation::File(
+            "/srv/project/relative/plugin.scm".into()
+        )
+    );
+}
+
+#[test]
 fn remote_plugin_locations_do_not_resolve_local_files() {
     let parsed = parse_remote_cli([
         "yinz",

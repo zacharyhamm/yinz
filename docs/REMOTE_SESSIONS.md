@@ -45,7 +45,7 @@ Input files (request JSON, agent prompts, config fragments, and layout source)
 and stdin are read locally. Paths used by the session, including working
 directories, edited files, and plugin locations, refer to the remote machine.
 An omitted working directory uses the remote session's defaults, except that
-`agent spawn` requires `--cwd` or `--project`. Plugin locations inside a layout
+`agent spawn` requires an absolute `--cwd` or `--project`. Plugin locations inside a layout
 file are the exception to remote paths: the layout is parsed locally, so `~` and
 relative `file:` locations resolve here. `--remote-host` and `pty-host --host`
 still select a pane's machine independently of the machine hosting the session.

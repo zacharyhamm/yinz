@@ -168,6 +168,63 @@ fn a_hosts_layout_directory_does_not_locate_local_layouts() {
 }
 
 #[test]
+fn only_config_consuming_actions_read_the_remote_configuration() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            for (tail, expected) in [
+                (vec!["action", "list-panes"], false),
+                (vec!["action", "new-tab"], true),
+                (
+                    vec!["action", "reconfigure", "--kdl", "pane_frames false"],
+                    true,
+                ),
+                (vec!["run", "--", "/usr/bin/true"], false),
+            ] {
+                let args: Vec<_> = ["yinz"].into_iter().chain(tail.iter().copied()).collect();
+                let opts = parse(&args);
+                assert_eq!(
+                    reads_session_config(opts.command.as_ref()),
+                    expected,
+                    "{args:?}"
+                );
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn only_a_rejected_helper_command_reports_a_version_mismatch() {
+    let rejected = b"error: unrecognized subcommand 'remote-command'\n";
+    assert!(version_rejection("host", 2, rejected)
+        .unwrap()
+        .to_string()
+        .contains("Yinz compatibility mismatch"));
+    assert!(version_rejection("host", 0, rejected).is_none());
+    assert!(version_rejection("host", 1, b"plugin: unexpected argument 'x'\n").is_none());
+}
+
+#[test]
+fn host_commands_keep_their_exit_status_and_forward_stderr() {
+    let cancellation = StartupCancellation::new().unwrap();
+    let mut command = ProcessCommand::new("sh");
+    command.args(["-c", "echo diagnostic >&2; exit 3"]);
+    assert_eq!(run_host("host", command, &cancellation).unwrap(), 3);
+    let mut command = ProcessCommand::new("sh");
+    command.args([
+        "-c",
+        "echo \"error: unrecognized subcommand 'remote-command'\" >&2; exit 2",
+    ]);
+    assert!(format!(
+        "{:#}",
+        run_host("host", command, &cancellation).unwrap_err()
+    )
+    .contains("Yinz compatibility mismatch"));
+}
+
+#[test]
 fn ssh_request_quotes_json_without_a_remote_terminal() {
     let request = Request {
         version: VERSION.into(),

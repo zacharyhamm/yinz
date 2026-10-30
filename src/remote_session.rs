@@ -376,9 +376,6 @@ fn validate_options(opts: &CliArgs) -> Result<()> {
             !local_overrides,
             "a remote session does not support layout, data-directory, or session option overrides; configure the session on the remote host"
         ),
-        Some(_) if opts.remote.is_some() => {
-            bail!("--remote starts a new session and takes no subcommand; use `yinz attach --remote HOST` to attach")
-        },
         _ => bail!("expected remote session arguments"),
     }
     Ok(())
@@ -542,14 +539,15 @@ pub(crate) fn attach(opts: &CliArgs, host: &str, name: Option<&str>, create: boo
 }
 
 /// The local configuration whose environment every SSH invocation for this attach uses.
+/// The local configuration file alone, for commands that only need its SSH environment.
+pub(crate) fn read_local_config(opts: &CliArgs) -> Result<yinz_config::config::Config> {
+    yinz_config::config::Config::load(opts.config.as_deref(), opts.config_dir.as_deref(), false)
+        .map_err(|e| anyhow!("{e}"))
+        .context("load local terminal configuration")
+}
+
 pub(crate) fn load_local_config(opts: &CliArgs) -> Result<(yinz_config::config::Config, Options)> {
-    let mut config = yinz_config::config::Config::load(
-        opts.config.as_deref(),
-        opts.config_dir.as_deref(),
-        false,
-    )
-    .map_err(|e| anyhow!("{e}"))
-    .context("load local terminal configuration")?;
+    let mut config = read_local_config(opts)?;
     let options = yinz_config::config::apply_themes(&mut config, None, opts.config_dir.clone())
         .map_err(|e| anyhow!("{e}"))
         .context("load local terminal theme")?;

@@ -28,7 +28,7 @@ fn main() {
     {
         if let Err(error) = yinz_steel::worker::run_worker() {
             eprintln!("{error:#}");
-            remote_commands::exit(1);
+            std::process::exit(1);
         }
         return;
     }
@@ -48,11 +48,11 @@ fn main() {
         if let Err(error) = result {
             eprintln!("Error: {error:#}");
         }
-        remote_commands::exit(1);
+        std::process::exit(1);
     }
     if std::env::args().nth(1).as_deref() == Some(yinz_process::claude_turn::OBSERVER_FLAG) {
         if yinz_process::claude_turn::run().is_err() {
-            remote_commands::exit(1);
+            std::process::exit(1);
         }
         return;
     }
@@ -108,10 +108,10 @@ fn main() {
             )),
         };
         match result {
-            Ok(()) => remote_commands::exit(0),
+            Ok(()) => std::process::exit(0),
             Err(e) => {
                 eprintln!("Error: {e:#}");
-                remote_commands::exit(1);
+                std::process::exit(1);
             },
         }
     }

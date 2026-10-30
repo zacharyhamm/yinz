@@ -23,7 +23,11 @@ pub fn run_plugin_or_alias_from_url_unresolved(
     url: &str,
     configuration: &Option<BTreeMap<String, String>>,
 ) -> Result<RunPluginOrAlias, String> {
-    plugin_or_alias(url, configuration, run_plugin_from_url_unresolved(url))
+    plugin_or_alias(
+        url,
+        configuration,
+        run_plugin_from_url_unresolved(url, None),
+    )
 }
 
 fn plugin_or_alias(
@@ -74,8 +78,12 @@ pub fn run_plugin_from_url_with_cwd(
 }
 
 /// Decode a location for another host without consulting this host's filesystem or home.
-pub fn run_plugin_from_url_unresolved(location: &str) -> Result<RunPlugin, PluginsConfigError> {
-    parse_location(location, None, false)
+/// A relative location is joined onto `cwd`, itself a directory on that host.
+pub fn run_plugin_from_url_unresolved(
+    location: &str,
+    cwd: Option<PathBuf>,
+) -> Result<RunPlugin, PluginsConfigError> {
+    parse_location(location, cwd, false)
 }
 
 fn parse_location(
@@ -127,7 +135,11 @@ fn parse_location(
                 path
             };
             let relative = is_relative.then(|| path.clone());
-            let path = cwd.map_or_else(|| path.clone(), |cwd| cwd.join(&path));
+            // A deferred home path is absolute on the host that expands it, so it ignores `cwd`.
+            let path = match cwd {
+                Some(cwd) if resolve || is_relative => cwd.join(&path),
+                _ => path,
+            };
             // Wasm plugins parse locations too, without access to the host filesystem.
             #[cfg(not(target_arch = "wasm32"))]
             let path = if resolve && path.is_relative() {

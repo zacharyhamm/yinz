@@ -1179,3 +1179,14 @@ fn suppressed_json_rejects_new_tab_and_invalid_values_before_launch() {
         }
     }
 }
+
+#[test]
+fn remote_agent_spawn_needs_a_directory_on_the_remote_machine() {
+    let absolute = Some(Path::new("/srv/project"));
+    let relative = Some(Path::new("project"));
+    assert!(check_remote_spawn_directory(absolute, false, false).is_ok());
+    assert!(check_remote_spawn_directory(None, true, false).is_ok());
+    assert!(check_remote_spawn_directory(None, false, true).is_ok());
+    assert!(check_remote_spawn_directory(None, false, false).is_err());
+    assert!(check_remote_spawn_directory(relative, true, false).is_err());
+}
