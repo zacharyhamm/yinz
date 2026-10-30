@@ -27,6 +27,40 @@ fn screen_with_a_settled_toast(size: Size, now: Instant) -> Screen {
     screen
 }
 
+#[test]
+fn toast_on_a_larger_tab_uses_that_tabs_bounds() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 20 };
+    let client = ClientId::new(1);
+    let now = Instant::now();
+    let mut screen = screen_with_a_settled_toast(large, now);
+    screen.notification_position = yinz_types::input::options::NotificationPosition::BottomRight;
+    screen.pinned_now = Some(now);
+    new_tab(&mut screen, 2, TabId::new(1));
+    screen.add_client(ClientId::new(2)).unwrap();
+    screen.set_client_size(ClientId::new(2), small).unwrap();
+    screen
+        .switch_active_tab(TabPosition::new(0), None, true, ClientId::new(2))
+        .unwrap();
+    let view = screen.session_surface_for_tab(TabId::new(1)).unwrap();
+    let layout = screen.notification_layout(view, now, client).remove(0);
+    let (x, y) = (layout.x, layout.y);
+    assert!(x > small.cols && y > small.rows);
+
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(large);
+    let snapshot = render_frame_into(&mut screen, &receiver, client, &mut grid);
+    assert_eq!(
+        grid.get_character_at(x + 2, y + 1)
+            .map(|cell| cell.character),
+        Some('b'),
+        "The toast must paint in its larger tab's corner:\n{snapshot}"
+    );
+}
+
 /// Every column the toasts cover, across all the damage rects, on the row they share.
 fn damaged_columns(damage: &[(Option<TabId>, Vec<CellRect>)]) -> Vec<usize> {
     let mut columns: Vec<usize> = damage

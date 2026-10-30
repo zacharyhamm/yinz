@@ -576,6 +576,42 @@ fn a_menu_covering_the_cursor_hides_it_until_it_closes() {
     );
 }
 
+#[test]
+fn menu_on_a_larger_tab_uses_that_tabs_bounds() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 20 };
+    let client = ClientId::new(1);
+    let mut screen = create_non_mirrored_screen(large);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    screen.add_client(ClientId::new(2)).unwrap();
+    screen.set_client_size(ClientId::new(2), small).unwrap();
+    screen
+        .switch_active_tab(TabPosition::new(0), None, true, ClientId::new(2))
+        .unwrap();
+    let request = screen.open_context_menu(
+        click_context(PaneId::Terminal(crate::TerminalId::new(2)), (120, 30)),
+        client,
+    );
+    screen.set_context_menu_items(request, menu_items(), None, client);
+    let view = screen.session_surface_for_tab(TabId::new(1)).unwrap();
+    let layout = screen.context_menu_layout_for(client, view).unwrap();
+    assert!(layout.x > small.cols && layout.y > small.rows);
+
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(large);
+    let snapshot = render_frame_into(&mut screen, &receiver, client, &mut grid);
+    assert_eq!(
+        grid.get_character_at(layout.x + 2, layout.y + 1)
+            .map(|cell| cell.character),
+        Some('C'),
+        "The Copy item must paint where it is hit-tested:\n{snapshot}"
+    );
+}
+
 /// The other client is looking at the same cells with nothing drawn over them, so one client's
 /// menu must not blank their cursor - which is what a session-wide rect list would have done.
 #[test]

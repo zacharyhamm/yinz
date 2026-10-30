@@ -420,8 +420,7 @@ fn attaching_client_records_the_surface_before_a_render_tick() {
          same surface"
     );
 
-    // render_to_clients lays every tab out against surface_size on each frame, so a stale value
-    // would not just be reported - it would snap the tabs back
+    // Rendering with no clients must preserve the last viewer-derived tab geometry.
     screen.render_to_clients().expect("TEST");
     assert_eq!(
         screen.tabs.get(&TabId::new(0)).unwrap().get_display_area(),
@@ -447,8 +446,7 @@ fn resize_to_clients_reflows_every_tab_and_survives_a_render() {
     let tab = screen.tabs.get(&TabId::new(0)).unwrap();
     assert_eq!(tab.get_display_area(), Size { cols: 40, rows: 10 });
 
-    // render_to_clients re-derives every tab's layout each frame, so a resize that did not reach
-    // the shared surface would be snapped back here
+    // Rendering re-derives the layout from this tab's viewers.
     screen.render_to_clients().expect("TEST");
     let tab = screen.tabs.get(&TabId::new(0)).unwrap();
     assert_eq!(tab.get_display_area(), Size { cols: 40, rows: 10 });
@@ -487,7 +485,7 @@ fn character_cell_size_is_derived_from_the_resized_screen() {
 }
 
 #[test]
-fn resize_to_clients_keeps_every_tab_within_smallest_client_bounds() {
+fn resize_to_clients_sizes_each_tab_from_its_viewers() {
     let initial_size = Size {
         cols: 200,
         rows: 60,
@@ -516,12 +514,15 @@ fn resize_to_clients_keeps_every_tab_within_smallest_client_bounds() {
     assert_eq!(
         screen.tabs.get(&TabId::new(1)).unwrap().size,
         Size { cols: 80, rows: 24 },
-        "The smaller client's tab uses the session bounds"
+        "The smaller client sizes only its own tab"
     );
     assert_eq!(
         screen.tabs.get(&TabId::new(0)).unwrap().size,
-        Size { cols: 80, rows: 24 },
-        "A tab viewed only by the larger client is still restricted to the session bounds"
+        Size {
+            cols: 160,
+            rows: 50
+        },
+        "A tab viewed only by the larger client fits that client"
     );
 
     screen
@@ -536,22 +537,38 @@ fn resize_to_clients_keeps_every_tab_within_smallest_client_bounds() {
     screen.resize_to_clients().expect("TEST");
     screen.render_to_clients().expect("TEST");
 
-    assert!(screen
-        .tabs
-        .values()
-        .all(|tab| tab.size == Size { cols: 80, rows: 24 }));
+    assert_eq!(
+        screen.tabs.get(&TabId::new(0)).unwrap().size,
+        Size {
+            cols: 240,
+            rows: 70
+        },
+        "The larger client's tab grows even while another tab has a smaller viewer"
+    );
+    assert_eq!(
+        screen.tabs.get(&TabId::new(1)).unwrap().size,
+        Size { cols: 80, rows: 24 }
+    );
 
     screen.remove_client(crate::ClientId::new(1)).expect("TEST");
     screen.resize_to_clients().expect("TEST");
+    screen.render_to_clients().expect("TEST");
 
-    assert!(screen.tabs.values().all(|tab| tab.size
-        == Size {
+    assert_eq!(
+        screen.tabs.get(&TabId::new(0)).unwrap().size,
+        Size {
             cols: 240,
             rows: 70
-        }));
+        }
+    );
+    assert_eq!(
+        screen.tabs.get(&TabId::new(1)).unwrap().size,
+        Size { cols: 80, rows: 24 },
+        "The vacated tab retains its last geometry after detach and render"
+    );
 }
 
-/// A read-only watcher observes the session without shrinking its shared surface.
+/// A read-only watcher observes the session without shrinking the tab it follows.
 #[test]
 fn watcher_size_does_not_constrain_session_bounds() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
@@ -570,7 +587,7 @@ fn watcher_size_does_not_constrain_session_bounds() {
 }
 
 #[test]
-fn switching_tabs_keeps_source_and_destination_at_session_bounds() {
+fn switching_tabs_recomputes_source_and_destination_from_viewers() {
     let initial_size = Size {
         cols: 200,
         rows: 60,
@@ -605,14 +622,82 @@ fn switching_tabs_keeps_source_and_destination_at_session_bounds() {
 
     assert_eq!(
         screen.tabs.get(&TabId::new(1)).unwrap().size,
-        Size { cols: 80, rows: 24 },
-        "Source tab remains inside the smallest client bounds"
+        Size {
+            cols: 160,
+            rows: 50
+        },
+        "Source tab grows to fit its remaining larger viewer"
     );
     assert_eq!(
         screen.tabs.get(&TabId::new(0)).unwrap().size,
         Size { cols: 80, rows: 24 },
-        "Destination tab remains inside the smallest client bounds"
+        "Destination tab fits the arriving smaller viewer"
     );
+
+    screen
+        .switch_active_tab(TabPosition::new(1), None, true, crate::ClientId::new(1))
+        .expect("TEST");
+    screen.render_to_clients().expect("TEST");
+    assert_eq!(
+        screen.tabs.get(&TabId::new(1)).unwrap().size,
+        Size { cols: 80, rows: 24 },
+        "Joining the larger viewer shrinks the destination tab"
+    );
+    assert_eq!(
+        screen.tabs.get(&TabId::new(0)).unwrap().size,
+        Size { cols: 80, rows: 24 },
+        "The now unviewed source tab keeps its last geometry"
+    );
+}
+
+#[test]
+fn unviewed_tab_keeps_its_size_until_visited() {
+    let small = Size { cols: 80, rows: 24 };
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let client = ClientId::new(1);
+    let mut screen = create_non_mirrored_screen(small);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+
+    screen.set_client_size(client, large).unwrap();
+    screen.resize_to_clients().expect("TEST");
+    screen.render_to_clients().expect("TEST");
+    assert_eq!(screen.tabs.get(&TabId::new(0)).unwrap().size, small);
+    assert_eq!(screen.tabs.get(&TabId::new(1)).unwrap().size, large);
+
+    screen
+        .switch_active_tab(TabPosition::new(0), None, true, client)
+        .expect("TEST");
+    screen.render_to_clients().expect("TEST");
+    assert_eq!(screen.tabs.get(&TabId::new(0)).unwrap().size, large);
+
+    screen.set_client_size(client, small).unwrap();
+    screen.resize_to_clients().expect("TEST");
+    screen.render_to_clients().expect("TEST");
+    assert_eq!(screen.tabs.get(&TabId::new(0)).unwrap().size, small);
+    assert_eq!(screen.tabs.get(&TabId::new(1)).unwrap().size, large);
+}
+
+#[test]
+fn attaching_smaller_client_only_resizes_the_tab_it_joins() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let mut screen = create_non_mirrored_screen(large);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    screen
+        .register_client_transaction(ClientId::new(2), None, Some(small), true)
+        .expect("TEST");
+    screen.render_to_clients().expect("TEST");
+
+    assert_eq!(screen.tabs.get(&TabId::new(0)).unwrap().size, large);
+    assert_eq!(screen.tabs.get(&TabId::new(1)).unwrap().size, small);
 }
 
 #[test]
@@ -648,8 +733,11 @@ fn break_pane_to_new_tab_recomputes_source_and_destination() {
     );
     assert_eq!(
         screen.tabs.get(&TabId::new(1)).unwrap().size,
-        Size { cols: 80, rows: 24 },
-        "Pre-condition: tab 1 is restricted by the smaller client on tab 0"
+        Size {
+            cols: 160,
+            rows: 50
+        },
+        "Pre-condition: tab 1 fits its larger viewer"
     );
 
     {
@@ -712,8 +800,11 @@ fn moving_panes_between_tabs_with_focus_change_recomputes_both() {
         .expect("TEST");
     assert_eq!(
         screen.tabs.get(&TabId::new(0)).unwrap().size,
-        Size { cols: 80, rows: 24 },
-        "Pre-condition: tab 0 is restricted by the smaller client on tab 1"
+        Size {
+            cols: 160,
+            rows: 50
+        },
+        "Pre-condition: tab 0 fits its larger viewer"
     );
     assert_eq!(
         screen.tabs.get(&TabId::new(1)).unwrap().size,

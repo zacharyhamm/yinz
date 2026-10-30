@@ -181,24 +181,10 @@ impl Screen {
         self.advance_frame_color_fades(now);
         self.advance_plugin_loading_animations();
 
-        // Every tab is laid out over the same session surface. Re-derive it here so a render tick
-        // cannot restore stale geometry.
-        self.remember_surface_size();
+        // Derive each tab's geometry from its viewers, preserving unviewed tabs' last layout.
+        self.reflow_all_tabs().context(err_context)?;
         let surface = self.surface_size();
         self.dismiss_stale_command_palettes();
-        for tab_id in self.tabs.keys().copied().collect::<Vec<_>>() {
-            // With no contributing client, fall back to the last known shared surface.
-            let tab_size = self.tab_surface_size(tab_id).unwrap_or(surface);
-            let Some(tab) = self.tabs.get_mut(&tab_id) else {
-                continue;
-            };
-            if tab.get_display_area() != tab_size {
-                tab.resize_whole_tab_to(tab_size).context(err_context)?;
-                // panes that moved without changing size have empty grid diffs - without a full
-                // repaint they paint nothing at their new position and leave a ghost at the old one
-                tab.set_force_render();
-            }
-        }
         if trace_attach {
             log::info!(
                 "attach trace: render frame setup and tab sizing complete after {:?}",
@@ -316,25 +302,26 @@ impl Screen {
             } else {
                 vec![]
             };
+            let client_surfaces: Vec<_> = regular_client_ids
+                .iter()
+                .map(|client| {
+                    let viewport = self
+                        .active_tab_ids
+                        .get(client)
+                        .and_then(|tab| self.session_surface_for_tab(*tab))
+                        .unwrap_or(session_surface);
+                    (*client, viewport)
+                })
+                .collect();
 
             // Set before pane rendering so fake cursors also respect this client's toast geometry.
             output.set_notification_rects(
-                regular_client_ids
+                client_surfaces
                     .iter()
-                    .map(|client| {
-                        let size = self
-                            .active_tab_ids
-                            .get(client)
-                            .and_then(|tab| self.tab_surface_size(*tab))
-                            .unwrap_or(surface);
-                        let viewport = Viewport {
-                            cols: size.cols,
-                            rows: size.rows,
-                            ..session_surface
-                        };
+                    .map(|(client, viewport)| {
                         (
                             *client,
-                            self.notification_occlusion_rects(viewport, now, *client),
+                            self.notification_occlusion_rects(*viewport, now, *client),
                         )
                     })
                     .collect(),
@@ -345,7 +332,12 @@ impl Screen {
             output.set_context_menu_rects(if self.context_menus.is_empty() {
                 HashMap::new()
             } else {
-                self.context_menu_cell_rects(&regular_client_ids, session_surface)
+                client_surfaces
+                    .iter()
+                    .flat_map(|(client, viewport)| {
+                        self.context_menu_cell_rects(&[*client], *viewport)
+                    })
+                    .collect()
             });
 
             // Only the panes here: the cursor is placed further down, once the toasts have painted
@@ -385,22 +377,15 @@ impl Screen {
 
             // notifications paint over the panes, so they're emitted once every tab has rendered
             if has_overlays {
-                self.render_notifications(
-                    &mut output,
-                    session_surface,
-                    &regular_client_ids
-                        .iter()
-                        .copied()
-                        .filter(|id| !self.palette_owns_input(*id))
-                        .collect::<Vec<_>>(),
-                    now,
-                )
-                .context(err_context)?;
-                // Above the toasts: a menu is something the user opened and is looking at right
-                // now, and a toast arriving underneath it must not cover the row they are about
-                // to click.
-                self.render_context_menus(&mut output, session_surface, &regular_client_ids)
-                    .context(err_context)?;
+                for (client, viewport) in &client_surfaces {
+                    if !self.palette_owns_input(*client) {
+                        self.render_notifications(&mut output, *viewport, &[*client], now)
+                            .context(err_context)?;
+                    }
+                    // Menus paint above the toasts in this client's tab geometry.
+                    self.render_context_menus(&mut output, *viewport, &[*client])
+                        .context(err_context)?;
+                }
             }
 
             // The cursor goes after the toasts, not inside each tab's render. `render_cursor` only
@@ -434,8 +419,15 @@ impl Screen {
             self.render_command_palettes(&mut output, palette_clients.iter().copied(), false)
                 .context(err_context)?;
 
-            self.render_notifications(&mut output, session_surface, &palette_clients, now)
-                .context(err_context)?;
+            for client in &palette_clients {
+                let viewport = self
+                    .active_tab_ids
+                    .get(client)
+                    .and_then(|tab| self.session_surface_for_tab(*tab))
+                    .unwrap_or(session_surface);
+                self.render_notifications(&mut output, viewport, &[*client], now)
+                    .context(err_context)?;
+            }
 
             self.render_permission_modals(&mut output)
                 .context("render permission modal")?;

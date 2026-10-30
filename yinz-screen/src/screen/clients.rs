@@ -41,7 +41,7 @@ impl Screen {
             self.register_client(client_id)
                 .context("registering the client with the screen")?;
             if client_size.is_some() {
-                // Attachment can shrink the shared surface; reflow every tab before committing.
+                // Reflow against the updated viewers before committing the attachment.
                 self.reflow_all_tabs()
                     .context("reflowing tabs for the attaching client")?;
             }

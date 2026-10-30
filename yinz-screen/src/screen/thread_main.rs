@@ -1790,7 +1790,7 @@ pub fn screen_thread_main(
                     }
                 },
                 ScreenInstruction::RecomputeTabSize(client_id, new_size) => {
-                    let previous_surface = screen.surface_size();
+                    let previous_tab_size = screen.size_of_tab_of_client(client_id);
                     screen
                         .set_client_size(client_id, new_size)
                         .context("failed to set client size for tab recomputation")?;
@@ -1798,13 +1798,11 @@ pub fn screen_thread_main(
                     if screen.tabs.is_empty() {
                         break 'instruction;
                     }
-                    // resize_to_clients reflows every tab against the new surface size, then
-                    // reports and renders - which is what render_to_clients would
-                    // otherwise undo, since it lays the tabs out against the surface on every frame
+                    // Reflow each tab against its viewers, then report and render.
                     screen.resize_to_clients()?;
-                    if screen.surface_size() == previous_surface {
-                        // another, smaller client is pinning the shared surface size, so the layout
-                        // does not change - but this client's terminal did, and it needs the
+                    if screen.size_of_tab_of_client(client_id) == previous_tab_size {
+                        // Another viewer can pin this tab's size, so its layout does not change,
+                        // but this client's terminal did, and it needs the
                         // unchanged layout painted over its new viewport
                         if let Ok(tab) = screen.get_active_tab_mut(client_id) {
                             tab.set_force_render();

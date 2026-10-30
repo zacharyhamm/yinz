@@ -475,21 +475,27 @@ impl Screen {
         Ok(())
     }
 
-    /// Every tab shares the smallest interactive client bounds, regardless of which tab each
-    /// client is viewing. Watchers and fit-disabled mobile clients are already handled by
-    /// `session_size`.
-    pub(super) fn tab_surface_size(&self, _tab_id: TabId) -> Option<Size> {
-        self.session_size()
+    /// Only interactive clients viewing this tab contribute to its bounds.
+    /// Without a contributing viewer, the tab retains its current geometry.
+    pub(super) fn tab_surface_size(&self, tab_id: TabId) -> Option<Size> {
+        let connected = self.connected_clients.borrow();
+        connected
+            .iter()
+            .filter(|client_id| !self.watcher_clients.contains_key(client_id))
+            .filter(|client_id| self.active_tab_ids.get(client_id) == Some(&tab_id))
+            .filter_map(|client_id| self.client_sizes.get(client_id).copied())
+            .reduce(|acc, size| Size {
+                rows: acc.rows.min(size.rows),
+                cols: acc.cols.min(size.cols),
+            })
     }
 
-    /// Lay every tab out over the shared session surface, and record that surface as the one the
-    /// tabs now sit on.
+    /// Reflow tabs against their viewers and remember a fallback size for creating detached tabs.
     ///
     /// The recording belongs here rather than at the debounced render that follows: a client that
     /// attaches and detaches inside that window would otherwise leave `last_surface_size` on its
-    /// pre-attach value, and `surface_size` / `size_for_client` stand in with it once every client
-    /// has detached - so the next render tick would snap the tabs back, and a `yinz action
-    /// new-tab` would build a tab the reattaching client cannot match.
+    /// pre-attach value. Once every client has detached, `size_for_client` uses it so a
+    /// `yinz action new-tab` can build a tab at the most recently recorded session minimum.
     pub(super) fn reflow_all_tabs(&mut self) -> Result<()> {
         for tab_id in self.tabs.keys().copied().collect::<Vec<_>>() {
             self.reflow_tab(tab_id)?;
@@ -498,7 +504,7 @@ impl Screen {
         Ok(())
     }
 
-    /// Lay tab `tab_id` out over the shared session surface.
+    /// Lay tab `tab_id` out against its interactive viewers' bounds.
     ///
     /// With no interactive client there is no size to derive, so the tab keeps its last layout.
     pub(super) fn reflow_tab(&mut self, tab_id: TabId) -> Result<()> {
@@ -514,8 +520,7 @@ impl Screen {
         Ok(())
     }
 
-    /// The whole session surface tab `tab_id` sits on. A tab is laid out over the entire surface,
-    /// so this is its display area at the screen origin.
+    /// This tab's display area at the screen origin.
     pub(super) fn session_surface_for_tab(&self, tab_id: TabId) -> Option<Viewport> {
         let tab = self.tabs.get(&tab_id)?;
         let size = self

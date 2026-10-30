@@ -3,11 +3,83 @@
 use insta::assert_snapshot;
 use yinz_integration_tests::{
     claim_first_terminal_and_wait_for_prompt, col, keys, normalized, start_yinz,
-    tab_bar_shows_no_lone_pane_id, GridSnapshot, TestRunner, PROMPT, TERMINAL_SIZE,
+    tab_bar_shows_no_lone_pane_id, GridSnapshot, LayoutInfo, Size, TestRunner, PROMPT,
+    TERMINAL_SIZE,
 };
 
 fn session_name_rendered(grid_snapshot: &GridSnapshot) -> bool {
     grid_snapshot.contains("(test-")
+}
+
+#[test]
+fn different_tabs_resize_their_ptys_from_their_own_clients() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let mut yinz = TestRunner::new(large)
+        .with_config(
+            "mirror_session false\npane_frame_style \"none\"\nload_plugins clear-defaults=true {}",
+        )
+        .with_layout(LayoutInfo::Stringified("layout { pane }".into()))
+        .start();
+    let first = yinz.expect_pty_spawn();
+    first.output(b"FIRST");
+    yinz.wait_until("first tab rendered", |grid| grid.contains("FIRST"));
+    // The default tab template reserves one row each for the tab and status bars.
+    first.wait_for_size("first tab fits its large viewer", |cols, rows| {
+        cols == 160 && rows == 48
+    });
+
+    let second_client = yinz.attach_client(small);
+    second_client.wait_until("small client joined the first tab", |grid| {
+        grid.contains("FIRST")
+    });
+    first.wait_for_size("shared tab fits the smaller viewer", |cols, rows| {
+        cols == 80 && rows == 22
+    });
+
+    second_client.send_stdin(&keys::ctrl('t'));
+    second_client.send_stdin(&keys::key('n'));
+    let second = yinz.expect_pty_spawn();
+    second.output(b"SECOND");
+    second_client.wait_until("small client moved to its own tab", |grid| {
+        grid.contains("SECOND")
+    });
+    second.wait_for_size("second tab fits its small viewer", |cols, rows| {
+        cols == 80 && rows == 22
+    });
+    first.wait_for_size(
+        "first tab grows after the smaller viewer leaves",
+        |cols, rows| cols == 160 && rows == 48,
+    );
+
+    yinz.resize(Size {
+        cols: 200,
+        rows: 60,
+    });
+    first.wait_for_size("first tab follows its viewer's resize", |cols, rows| {
+        cols == 200 && rows == 58
+    });
+    assert_eq!(second.size(), Some((80, 22)));
+
+    second_client.send_stdin(&keys::ctrl('t'));
+    second_client.send_stdin(&keys::key('h'));
+    second_client.send_stdin(&keys::ENTER);
+    second_client.wait_until("small client returned to the first tab", |grid| {
+        grid.contains("FIRST")
+    });
+    first.wait_for_size("first tab shrinks when viewers reunite", |cols, rows| {
+        cols == 80 && rows == 22
+    });
+    assert_eq!(second.size(), Some((80, 22)));
+    second_client.quit();
+    first.wait_for_size(
+        "first tab grows after the small client detaches",
+        |cols, rows| cols == 200 && rows == 58,
+    );
+    yinz.quit();
 }
 
 #[test]

@@ -937,99 +937,92 @@ fn failed_attach_preserves_retained_plugin_state_until_successful_commit() {
     let watcher = ClientId::new(2);
     let plugin = PLUGIN_2;
     for returning in [source, ClientId::new(3)] {
-        for during_reflow in [false, true] {
-            let (mut screen, _capture) = create_new_screen_with_theme_capture(size);
-            new_tab(&mut screen, 1, TabId::new(0));
-            new_tab(&mut screen, 2, TabId::new(1));
-            add_pane_to_tab(&mut screen, TabId::new(1), PaneId::Plugin(plugin), false);
-            screen.set_followed_client(source).unwrap();
-            screen.add_watcher_client(watcher).unwrap();
-            screen
-                .tabs
-                .get_mut(&TabId::new(1))
-                .unwrap()
-                .handle_plugin_bytes(plugin, source, b"retained-content".to_vec())
-                .unwrap();
-            screen.show_plugin_cursor(plugin, source, Some((1, 1)));
-            screen.remove_client(source).unwrap();
-            let receiver = screen_wired_to_server(&mut screen);
-            let mut grid = grid_for_render_snapshot(size);
-            watcher_frame(&mut screen, &receiver, watcher, &mut grid);
-            let mut pending = PendingEvents::default();
-            pending.waiting_for_pane.insert(
-                PaneId::Plugin(crate::PluginId::new(99)),
-                vec![
-                    ScreenInstruction::PluginBytes(vec![PluginRenderAsset::new(
-                        plugin,
-                        source,
-                        b"queued".to_vec(),
-                    )]),
-                    ScreenInstruction::ShowPluginCursor(plugin, source, Some((1, 1))),
-                ],
-            );
-            // Break the active tab's registration, or the other tab's subsequent reflow.
-            let failing_tab = TabId::new(if during_reflow { 0 } else { 1 });
-            let tab = screen.tabs.get_mut(&failing_tab).unwrap();
-            let saved_senders = tab.senders.clone();
-            tab.senders.should_silently_fail = false;
-            tab.senders.to_pty_writer = None;
-            let mut traces = HashMap::new();
-            screen
-                .attach_client(
-                    returning,
-                    attaching_size,
-                    None,
-                    None,
-                    &mut traces,
-                    &mut pending,
-                )
-                .unwrap();
-            screen.tabs.get_mut(&failing_tab).unwrap().senders = saved_senders;
-            if during_reflow {
-                assert_eq!(
-                    screen.tabs[&TabId::new(0)].get_display_area(),
-                    attaching_size
-                );
-            }
-            assert!(!screen.connected_clients.borrow().contains(&returning));
-            assert_eq!(screen.followed_client_id, Some(source));
-            assert_eq!(screen.departed_followed_tab_id, Some(TabId::new(1)));
-            assert_eq!(pending.waiting_for_pane.len(), 1);
-            let pane = screen.tabs[&TabId::new(1)]
-                .get_pane_with_id(PaneId::Plugin(plugin))
-                .unwrap();
-            assert_eq!(pane.cursor_coordinates(Some(source)), Some((1, 1, true)));
-            let pane = screen.tabs[&TabId::new(1)]
-                .get_pane_with_id(PaneId::Plugin(plugin))
-                .unwrap();
-            assert!(pane
-                .pane_contents(Some(source), false, None)
+        let (mut screen, _capture) = create_new_screen_with_theme_capture(size);
+        new_tab(&mut screen, 1, TabId::new(0));
+        new_tab(&mut screen, 2, TabId::new(1));
+        add_pane_to_tab(&mut screen, TabId::new(1), PaneId::Plugin(plugin), false);
+        screen.set_followed_client(source).unwrap();
+        screen.add_watcher_client(watcher).unwrap();
+        screen
+            .tabs
+            .get_mut(&TabId::new(1))
+            .unwrap()
+            .handle_plugin_bytes(plugin, source, b"retained-content".to_vec())
+            .unwrap();
+        screen.show_plugin_cursor(plugin, source, Some((1, 1)));
+        screen.remove_client(source).unwrap();
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(size);
+        watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+        let mut pending = PendingEvents::default();
+        pending.waiting_for_pane.insert(
+            PaneId::Plugin(crate::PluginId::new(99)),
+            vec![
+                ScreenInstruction::PluginBytes(vec![PluginRenderAsset::new(
+                    plugin,
+                    source,
+                    b"queued".to_vec(),
+                )]),
+                ScreenInstruction::ShowPluginCursor(plugin, source, Some((1, 1))),
+            ],
+        );
+        // Break registration on the tab the returning client joins. Hidden tabs no longer
+        // reflow when another tab gains a viewer.
+        let failing_tab = TabId::new(1);
+        let tab = screen.tabs.get_mut(&failing_tab).unwrap();
+        let saved_senders = tab.senders.clone();
+        tab.senders.should_silently_fail = false;
+        tab.senders.to_pty_writer = None;
+        let mut traces = HashMap::new();
+        screen
+            .attach_client(
+                returning,
+                attaching_size,
+                None,
+                None,
+                &mut traces,
+                &mut pending,
+            )
+            .unwrap();
+        screen.tabs.get_mut(&failing_tab).unwrap().senders = saved_senders;
+        assert!(!screen.connected_clients.borrow().contains(&returning));
+        assert_eq!(screen.followed_client_id, Some(source));
+        assert_eq!(screen.departed_followed_tab_id, Some(TabId::new(1)));
+        assert_eq!(pending.waiting_for_pane.len(), 1);
+        let pane = screen.tabs[&TabId::new(1)]
+            .get_pane_with_id(PaneId::Plugin(plugin))
+            .unwrap();
+        assert_eq!(pane.cursor_coordinates(Some(source)), Some((1, 1, true)));
+        let pane = screen.tabs[&TabId::new(1)]
+            .get_pane_with_id(PaneId::Plugin(plugin))
+            .unwrap();
+        assert!(pane
+            .pane_contents(Some(source), false, None)
+            .viewport
+            .concat()
+            .contains("retained-content"));
+        watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+        assert!(format!("{grid:?}").contains("retained-content"));
+        screen
+            .attach_client(returning, size, None, None, &mut traces, &mut pending)
+            .unwrap();
+        assert_eq!(screen.followed_client_id, Some(returning));
+        assert_eq!(screen.departed_followed_tab_id, None);
+        assert!(pending.waiting_for_pane.is_empty());
+        let pane = screen.tabs[&TabId::new(1)]
+            .get_pane_with_id(PaneId::Plugin(plugin))
+            .unwrap();
+        assert_eq!(
+            pane.cursor_coordinates(Some(source)),
+            (returning == source).then_some((1, 1, true))
+        );
+        assert_eq!(
+            pane.pane_contents(Some(source), false, None)
                 .viewport
                 .concat()
-                .contains("retained-content"));
-            watcher_frame(&mut screen, &receiver, watcher, &mut grid);
-            assert!(format!("{grid:?}").contains("retained-content"));
-            screen
-                .attach_client(returning, size, None, None, &mut traces, &mut pending)
-                .unwrap();
-            assert_eq!(screen.followed_client_id, Some(returning));
-            assert_eq!(screen.departed_followed_tab_id, None);
-            assert!(pending.waiting_for_pane.is_empty());
-            let pane = screen.tabs[&TabId::new(1)]
-                .get_pane_with_id(PaneId::Plugin(plugin))
-                .unwrap();
-            assert_eq!(
-                pane.cursor_coordinates(Some(source)),
-                (returning == source).then_some((1, 1, true))
-            );
-            assert_eq!(
-                pane.pane_contents(Some(source), false, None)
-                    .viewport
-                    .concat()
-                    .contains("retained-content"),
-                returning == source
-            );
-        }
+                .contains("retained-content"),
+            returning == source
+        );
     }
 }
 

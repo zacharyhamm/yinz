@@ -381,7 +381,7 @@ pub(crate) struct WatcherState {
     ///
     /// Plain bookkeeping, and deliberately not a reason to repaint: the cursor is the only thing
     /// the size cropping makes stateful across frames. Chunk clipping and the padding sweep are
-    /// recomputed every frame, and `content_size` is the shared session surface rather than
+    /// recomputed every frame, and `content_size` is the followed tab's display area rather than
     /// anything per-watcher - so the crop direction needs nothing either, serialization re-emitting
     /// `?25l` for as long as the cursor is out of range.
     cursor_was_cropped: bool,
@@ -657,7 +657,7 @@ pub(crate) struct Screen {
     /// The indices of this [`Screen`]'s active [`Tab`]s.
     active_tab_ids: BTreeMap<ClientId, TabId>,
     client_sizes: HashMap<ClientId, Size>,
-    /// The surface every tab was last laid out over, for when no client contributes a size at all:
+    /// The last session minimum, used to create tabs when no client contributes a size at all:
     /// before the first client reports one, and after every client has detached - a
     /// `yinz action new-tab` still has to build a tab somebody can see when they reattach.
     ///

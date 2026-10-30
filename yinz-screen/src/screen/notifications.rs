@@ -177,7 +177,7 @@ impl Screen {
             .collect()
     }
 
-    /// The heights of the current stack, at the width the whole session shares.
+    /// The heights of the current stack, at the session's minimum client width.
     ///
     /// Used only to work out how far a stack change moved each toast (`settled_row_delta`), which
     /// is why one canonical width is enough: the displacement it feeds is a transient, and every

@@ -262,9 +262,8 @@ impl Screen {
         self.context_menus.contains_key(&client_id)
     }
 
-    /// Nothing under a closed menu is dirty, so its cells would keep the menu's glyphs. Every tab,
-    /// not just the active ones: a menu is anchored in session-surface coordinates and the tabs
-    /// all share that surface, so the cells it painted are not necessarily this client's tab's.
+    /// Nothing under a closed menu is dirty, so its cells would keep the menu's glyphs.
+    /// Include inactive tabs in case the client switched tabs while the menu was open.
     pub(super) fn force_render_under_context_menu(&mut self) {
         for tab in self.tabs.values_mut() {
             tab.set_force_render();
