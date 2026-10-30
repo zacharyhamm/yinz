@@ -39,7 +39,7 @@ fn prepare_socket_dir_reports_a_parent_that_is_a_file() {
 }
 
 #[test]
-fn prepare_socket_dir_rejects_symlinks_and_replaceable_parents() {
+fn prepare_socket_dir_rejects_symlinks_and_tightens_owned_parents() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("target");
     std::fs::create_dir(&target).unwrap();
@@ -53,7 +53,11 @@ fn prepare_socket_dir_rejects_symlinks_and_replaceable_parents() {
         0o755
     );
 
+    // Parents the user owns are tightened rather than refused.
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o777)).unwrap();
-    assert!(crate::prepare_socket_dir(&target.join("nested")).is_err());
-    assert!(!target.join("nested").exists());
+    crate::prepare_socket_dir(&target.join("nested")).unwrap();
+    assert_eq!(
+        target.metadata().unwrap().permissions().mode() & 0o777,
+        0o755
+    );
 }

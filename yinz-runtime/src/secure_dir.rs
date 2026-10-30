@@ -36,7 +36,8 @@ pub(super) fn ensure(path: &Path) -> io::Result<()> {
     while let Some(part) = pending.pop_front() {
         if part == "/" {
             directory = root.try_clone()?;
-            validate(&directory, uid, unmapped_uid, false)?;
+            let metadata = validate(&directory, uid, unmapped_uid, false)?;
+            tighten_ancestor(&directory, &metadata, uid)?;
             continue;
         }
         if part == "." {
@@ -116,13 +117,14 @@ pub(super) fn ensure(path: &Path) -> io::Result<()> {
             },
             Err(error) => return Err(error),
         };
-        validate(&child, uid, unmapped_uid, last)?;
+        let metadata = validate(&child, uid, unmapped_uid, last)?;
         if last {
-            if child.metadata()?.mode() & 0o7777 != 0o700 {
+            if metadata.mode() & 0o7777 != 0o700 {
                 child.set_permissions(Permissions::from_mode(0o700))?;
             }
             return Ok(());
         }
+        tighten_ancestor(&child, &metadata, uid)?;
         directory = child;
     }
     Err(io::Error::other("private directory must have a final name"))
@@ -179,18 +181,48 @@ fn trusted_ancestor_owner(owner: u32, uid: u32, unmapped_uid: Option<u32>) -> bo
     owner == uid || owner == 0 || Some(owner) == unmapped_uid
 }
 
-fn validate(directory: &File, uid: u32, unmapped_uid: Option<u32>, last: bool) -> io::Result<()> {
+// Only the owner (or root) can chmod, so shared write access on a directory the caller owns
+// is tightened rather than refused. Earlier versions created directories under the umask.
+fn validate(
+    directory: &File,
+    uid: u32,
+    unmapped_uid: Option<u32>,
+    last: bool,
+) -> io::Result<std::fs::Metadata> {
     let metadata = directory.metadata()?;
-    let trusted_owner = metadata.uid() == uid
-        || (!last && trusted_ancestor_owner(metadata.uid(), uid, unmapped_uid));
+    let owned = metadata.uid() == uid;
+    let trusted_owner =
+        owned || (!last && trusted_ancestor_owner(metadata.uid(), uid, unmapped_uid));
     let sticky_ancestor = !last && metadata.mode() & 0o1000 != 0;
-    if !trusted_owner || (metadata.mode() & 0o022 != 0 && !sticky_ancestor) {
+    if !trusted_owner || (metadata.mode() & 0o022 != 0 && !sticky_ancestor && !owned) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "directory must have a trusted owner and no group/other write access",
         ));
     }
-    Ok(())
+    Ok(metadata)
+}
+
+fn tighten_ancestor(directory: &File, metadata: &std::fs::Metadata, uid: u32) -> io::Result<()> {
+    let mode = metadata.mode() & 0o7777;
+    if metadata.uid() != uid || mode & 0o022 == 0 || mode & 0o1000 != 0 {
+        return Ok(());
+    }
+    // Ancestor descriptors may not support fchmod, so reopen the same directory through ".".
+    // SAFETY: directory remains open and the name is NUL-terminated. Success transfers a new descriptor.
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            c".".as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: openat returned a new owned descriptor.
+    let writable = unsafe { File::from_raw_fd(fd) };
+    writable.set_permissions(Permissions::from_mode(mode & !0o022))
 }
 
 #[cfg(test)]

@@ -116,7 +116,7 @@ fn secure_dirs_refuse_symlinks_at_the_final_name_without_changing_the_target() {
 
 #[cfg(unix)]
 #[test]
-fn secure_dirs_reject_shared_writable_paths_before_creating_or_chmodding() {
+fn secure_dirs_tighten_shared_writable_directories_the_user_owns() {
     use std::os::unix::fs::PermissionsExt;
 
     let temp = private_tempdir();
@@ -125,25 +125,23 @@ fn secure_dirs_reject_shared_writable_paths_before_creating_or_chmodding() {
     let leaf = shared.join("private");
     std::fs::create_dir(&leaf).unwrap();
     set_permissions(&shared, 0o777).unwrap();
-    set_permissions(&leaf, 0o755).unwrap();
-    assert!(ensure_secure_dir(&shared).is_err());
-    assert!(ensure_secure_dir(&leaf).is_err());
-    assert!(ensure_secure_dir(&shared.join("missing/child")).is_err());
-    assert!(!shared.join("missing").exists());
-    assert_eq!(
-        shared.metadata().unwrap().permissions().mode() & 0o7777,
-        0o777
-    );
-    assert_eq!(
-        leaf.metadata().unwrap().permissions().mode() & 0o7777,
-        0o755
-    );
+    set_permissions(&leaf, 0o775).unwrap();
+    ensure_secure_dir(&leaf).unwrap();
+    let mode = |path: &std::path::Path| path.metadata().unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode(&shared), 0o755);
+    assert_eq!(mode(&leaf), 0o700);
+
+    // Sticky ancestors already prevent replacing entries, so their access is preserved.
+    set_permissions(&shared, 0o1777).unwrap();
+    ensure_secure_dir(&shared.join("missing/child")).unwrap();
+    assert_eq!(mode(&shared), 0o1777);
+    assert_eq!(mode(&shared.join("missing")), 0o700);
 }
 
 #[cfg(unix)]
 #[test]
 fn secure_dirs_follow_trusted_ancestor_aliases_and_check_their_targets() {
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{symlink, PermissionsExt};
 
     let temp = private_tempdir();
     let target = temp.path().join("target");
@@ -157,8 +155,11 @@ fn secure_dirs_follow_trusted_ancestor_aliases_and_check_their_targets() {
     assert!(target.join("missing/private").is_dir());
 
     set_permissions(&target, 0o777).unwrap();
-    assert!(ensure_secure_dir(&relative.join("other")).is_err());
-    assert!(!target.join("other").exists());
+    ensure_secure_dir(&relative.join("other")).unwrap();
+    assert_eq!(
+        target.metadata().unwrap().permissions().mode() & 0o7777,
+        0o755
+    );
 
     let cycle = temp.path().join("cycle");
     symlink("cycle", &cycle).unwrap();

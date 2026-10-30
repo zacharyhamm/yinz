@@ -4,7 +4,7 @@ use std::sync::{mpsc, Arc, Barrier};
 use std::time::Duration;
 
 #[test]
-fn session_locks_refuse_unsafe_directories_without_touching_targets() {
+fn session_locks_refuse_symlinks_and_tighten_owned_directories() {
     use std::os::unix::fs::{symlink, PermissionsExt};
 
     let root = tempfile::tempdir().unwrap();
@@ -24,15 +24,24 @@ fn session_locks_refuse_unsafe_directories_without_touching_targets() {
         );
     }
 
+    // Directories the user owns, including lock directories older versions created under a
+    // permissive umask, are tightened rather than refused.
     let shared = root.path().join("shared");
-    std::fs::create_dir(&shared).unwrap();
-    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
-    assert!(SessionOwnership::acquire(&shared.join("session")).is_err());
-    assert!(lock_creation(&shared.join("session"), Instant::now()).is_err());
-    assert_eq!(std::fs::read_dir(&shared).unwrap().count(), 0);
+    let locks = shared.join(crate::consts::SESSION_OWNERSHIP_DIR);
+    std::fs::create_dir_all(&locks).unwrap();
+    for (path, mode) in [(&shared, 0o777), (&locks, 0o775)] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+    assert!(SessionOwnership::acquire(&shared.join("session"))
+        .unwrap()
+        .is_some());
+    lock_creation(&shared.join("session"), Instant::now()).unwrap();
+    let mode = |path: &std::path::Path| path.metadata().unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&shared), 0o755);
+    assert_eq!(mode(&locks), 0o700);
     assert_eq!(
-        shared.metadata().unwrap().permissions().mode() & 0o777,
-        0o777
+        mode(&shared.join(crate::consts::SESSION_CREATION_LOCK_DIR)),
+        0o700
     );
 }
 
