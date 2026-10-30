@@ -308,10 +308,9 @@ pub(super) fn get_session_environment_variables(env: &mut PluginEnv) {
     use yinz_plugin_api::plugin_command::EnvVariable as ProtobufEnvVariable;
 
     let mut session_env_vars = env.session_env_vars.clone();
-    session_env_vars.insert("YINZ".into(), "0".into());
-    session_env_vars.insert(
-        "YINZ_SESSION_NAME".into(),
-        env.server_session.current().to_string(),
+    session_env_vars.extend(
+        yinz_runtime::envs::child_session_env(&env.server_session.current())
+            .map(|(name, value)| (name.to_owned(), value)),
     );
     let env_vars: Vec<ProtobufEnvVariable> = session_env_vars
         .iter()

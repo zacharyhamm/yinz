@@ -2787,10 +2787,9 @@ fn init_session(
     let mut session_env_vars: std::collections::BTreeMap<String, String> = std::env::vars_os()
         .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
         .collect();
-    session_env_vars.insert("YINZ".into(), "0".into());
-    session_env_vars.insert(
-        "YINZ_SESSION_NAME".into(),
-        session_identity.current().to_string(),
+    session_env_vars.extend(
+        envs::child_session_env(&session_identity.current())
+            .map(|(name, value)| (name.to_owned(), value)),
     );
     // CLI paths are not necessarily present in the server's inherited environment.
     // Expose them to plugins so their child CLI commands use this session's config.
