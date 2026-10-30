@@ -18,10 +18,10 @@ pub fn get_session_name() -> Result<SessionName> {
 /// Overrides for a child of a server: inside Yinz, in the session's current name.
 ///
 /// The process environment keeps its startup name after a rename, so every spawn applies these.
-pub fn child_session_env(session_name: &SessionName) -> [(&'static str, String); 2] {
+pub fn child_session_env(session_name: &SessionName) -> [(String, String); 2] {
     [
-        (YINZ_ENV_KEY, "0".to_owned()),
-        (SESSION_NAME_ENV_KEY, session_name.to_string()),
+        (YINZ_ENV_KEY.to_owned(), "0".to_owned()),
+        (SESSION_NAME_ENV_KEY.to_owned(), session_name.to_string()),
     ]
 }
 

@@ -547,10 +547,13 @@ impl UnixPtyBackend {
             }
             .into());
         }
+        // One read, so a rename cannot label the supervisor and the pane's env differently.
+        let session_name = self.session_name();
+        let env = yinz_runtime::envs::child_session_env(&session_name).into();
         pty_host_client::spawn(SpawnParams {
             host_bin,
             terminal_id,
-            session_name: Some(self.session_name()),
+            session_name: Some(session_name),
             cmd: cmd.clone(),
             termios: self.wire_termios.clone(),
             // Left unset on purpose: today's `openpty(None, ..)` means a pane
@@ -561,9 +564,7 @@ impl UnixPtyBackend {
             // has. Only the remote broker asks for a login shell's argv[0].
             arg0: None,
             // The inherited environment keeps its startup name after a rename.
-            env: yinz_runtime::envs::child_session_env(&self.session_name())
-                .map(|(name, value)| (name.to_owned(), value))
-                .into(),
+            env,
             login_session: false,
             // This server listens for the stops job control makes possible and
             // can send `SIGCONT` back, so a pane that suspends is recoverable.
