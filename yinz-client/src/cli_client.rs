@@ -310,11 +310,18 @@ fn output_error_status(error: io::Error) -> i32 {
     2
 }
 
+/// How a session stream ended. `Disconnected` is a transport close without the server's `Exit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamEnd {
+    Finished,
+    Disconnected,
+}
+
 pub fn start_subscribe_client_at(
     os_input: Box<dyn CliClientOs>,
     session_name: &impl SessionEndpoint,
     subscribe_cli: SubscribeCli,
-) {
+) -> StreamEnd {
     let yinz_ipc_pipe = session_name.socket();
     if let Err(e) = os_input.connect_to_server(&yinz_ipc_pipe) {
         eprintln!("{e}");
@@ -347,7 +354,7 @@ pub fn start_subscribe_client_at(
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
 
-    loop {
+    let end = loop {
         match os_input.recv_from_server() {
             IpcRecv::Msg(
                 ServerToClientMsg::PaneRenderUpdate {
@@ -395,10 +402,11 @@ pub fn start_subscribe_client_at(
                     },
                 }
                 if remaining_panes.is_empty() {
-                    break;
+                    break StreamEnd::Finished;
                 }
             },
-            IpcRecv::Msg(ServerToClientMsg::Exit { .. }, _) | IpcRecv::Eof => break,
+            IpcRecv::Msg(ServerToClientMsg::Exit { .. }, _) => break StreamEnd::Finished,
+            IpcRecv::Eof => break StreamEnd::Disconnected,
             IpcRecv::Msg(ServerToClientMsg::LogError { lines }, _) => {
                 for line in lines {
                     eprintln!("{}", line);
@@ -407,9 +415,10 @@ pub fn start_subscribe_client_at(
             },
             _ => {},
         }
-    }
+    };
 
     os_input.send_to_server(ClientToServerMsg::ClientExited);
+    end
 }
 
 /// `yinz events`: every state event the session reports to plugins, one JSON object per line
@@ -418,7 +427,7 @@ pub fn start_events_client_at(
     os_input: Box<dyn CliClientOs>,
     session_name: &impl SessionEndpoint,
     events_cli: EventsCli,
-) {
+) -> StreamEnd {
     let yinz_ipc_pipe = session_name.socket();
 
     // Refused here, before connecting, so a typo costs nothing but the message.
@@ -461,7 +470,7 @@ pub fn start_events_client_at(
 
     // Locked per line rather than for the loop: a lock held while blocking on the server would
     // stop anything else in the process printing, which is one client too many in a test.
-    loop {
+    let end = loop {
         match os_input.recv_from_server() {
             IpcRecv::Msg(
                 ServerToClientMsg::EventUpdate {
@@ -486,7 +495,7 @@ pub fn start_events_client_at(
                         .and_then(|_| stdout.flush())
                         .is_err()
                     {
-                        break;
+                        break StreamEnd::Finished;
                     }
                     continue;
                 }
@@ -498,7 +507,7 @@ pub fn start_events_client_at(
                 .and_then(|_| stdout.flush())
                 .is_err()
                 {
-                    break;
+                    break StreamEnd::Finished;
                 }
             },
             IpcRecv::Msg(ServerToClientMsg::LogError { lines }, _) => {
@@ -507,11 +516,13 @@ pub fn start_events_client_at(
                 }
                 process::exit(2);
             },
-            IpcRecv::Msg(ServerToClientMsg::Exit { .. }, _) | IpcRecv::Eof => break,
+            IpcRecv::Msg(ServerToClientMsg::Exit { .. }, _) => break StreamEnd::Finished,
+            IpcRecv::Eof => break StreamEnd::Disconnected,
             _ => {},
         }
-    }
+    };
     os_input.send_to_server(ClientToServerMsg::ClientExited);
+    end
 }
 
 pub fn start_cli_client(
@@ -529,9 +540,9 @@ pub fn start_subscribe_client(
     options: SubscribeCli,
 ) {
     let _ = crate::ipc_pipe_for_session(session, None);
-    start_subscribe_client_at(os, session, options)
+    start_subscribe_client_at(os, session, options);
 }
 pub fn start_events_client(os: Box<dyn CliClientOs>, session: &SessionName, options: EventsCli) {
     let _ = crate::ipc_pipe_for_session(session, None);
-    start_events_client_at(os, session, options)
+    start_events_client_at(os, session, options);
 }

@@ -26,11 +26,7 @@ pub fn run(mut action: CliAction, session: Option<String>, started: Instant) -> 
             .lock()
             .map_err(|_| anyhow!("report trace poisoned"))?
             .enter("pane_owner");
-        let (session, caller) = if let Some(target) = crate::remote_commands::selected() {
-            (Some(target.name.clone()), None)
-        } else {
-            yinz_process::pane_context::target(session.map(Into::into))?
-        };
+        let (session, caller) = crate::remote_commands::pane_target(session.map(Into::into))?;
         crate::commands::fill_caller_pane(&mut action, caller);
         {
             let mut t = trace.lock().map_err(|_| anyhow!("report trace poisoned"))?;

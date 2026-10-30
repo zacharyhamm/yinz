@@ -6,7 +6,7 @@ mod layouts;
 mod panes;
 
 use crate::args::CliAction;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use uuid::Uuid;
 use yinz_config::config::Config;
@@ -25,12 +25,22 @@ fn parse_pane_id(pane_id: &str) -> Result<PaneId, String> {
     })
 }
 
+/// An empty current directory leaves session-side paths for the server to resolve.
+fn session_resolves_paths(current_dir: &Path) -> bool {
+    current_dir.as_os_str().is_empty()
+}
+
+/// The directory a path defaults to, unless the session resolves paths itself.
+fn default_dir(current_dir: &Path) -> Option<PathBuf> {
+    (!session_resolves_paths(current_dir)).then(|| current_dir.to_owned())
+}
+
 fn plugin_from_url(
     url: &str,
     cwd: Option<PathBuf>,
-    remote: bool,
+    current_dir: &Path,
 ) -> Result<yinz_types::input::layout::RunPlugin, yinz_types::input::plugins::PluginsConfigError> {
-    if remote {
+    if session_resolves_paths(current_dir) {
         yinz_runtime::plugin_location::run_plugin_from_url_unresolved(url)
     } else {
         yinz_runtime::plugin_location::run_plugin_from_url_with_cwd(url, cwd)
@@ -40,30 +50,22 @@ fn plugin_from_url(
 fn plugin_or_alias(
     url: &str,
     configuration: &Option<std::collections::BTreeMap<String, String>>,
-    cwd: Option<PathBuf>,
+    current_dir: PathBuf,
 ) -> Result<yinz_types::input::layout::RunPluginOrAlias, String> {
-    use yinz_types::input::{
-        layout::{PluginAlias, RunPlugin, RunPluginOrAlias},
-        plugins::PluginsConfigError,
-    };
-    let remote = cwd.as_ref().is_some_and(|p| p.as_os_str().is_empty());
-    match plugin_from_url(url, cwd, remote) {
-        Ok(plugin) => Ok(RunPluginOrAlias::RunPlugin(RunPlugin {
-            configuration: configuration
-                .as_ref()
-                .map(|c| PluginUserConfiguration::new(c.clone()))
-                .unwrap_or_default(),
-            ..plugin
-        })),
-        Err(PluginsConfigError::InvalidUrlScheme(_) | PluginsConfigError::InvalidUrl(..)) => Ok(
-            RunPluginOrAlias::Alias(PluginAlias::new(url, configuration, None)),
-        ),
-        Err(error) => Err(format!("Failed to parse plugin location {url}: {error}")),
+    if session_resolves_paths(&current_dir) {
+        yinz_runtime::plugin_location::run_plugin_or_alias_from_url_unresolved(url, configuration)
+    } else {
+        yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+            url,
+            configuration,
+            None,
+            Some(current_dir),
+        )
     }
 }
 
-/// An empty directory leaves session-side paths for the server to resolve. Input files
-/// (layouts, request JSON, config fragments) are still read by this local process.
+/// Session-side paths stay unresolved when `get_current_dir` is empty. Input files (layouts,
+/// request JSON, config fragments) are still read by this local process.
 pub fn actions_from_cli(
     cli_action: CliAction,
     get_current_dir: Box<dyn Fn() -> PathBuf>,
@@ -405,7 +407,7 @@ pub fn actions_from_cli(
             let current_dir = get_current_dir();
             let cwd = cwd
                 .map(|cwd| current_dir.join(cwd))
-                .or_else(|| (!current_dir.as_os_str().is_empty()).then_some(current_dir));
+                .or_else(|| default_dir(&current_dir));
             if file.is_relative()
                 && let Some(cwd) = cwd.as_ref()
             {
@@ -586,7 +588,7 @@ pub fn actions_from_cli(
             let run_plugin_or_alias = plugin_or_alias(
                 &url,
                 &configuration.map(PluginUserConfiguration::into_inner),
-                Some(current_dir),
+                current_dir,
             )?;
             Ok(vec![Action::StartOrReloadPlugin {
                 plugin: run_plugin_or_alias,
@@ -608,7 +610,7 @@ pub fn actions_from_cli(
             let run_plugin_or_alias = plugin_or_alias(
                 url.as_str(),
                 &configuration.map(PluginUserConfiguration::into_inner),
-                Some(current_dir),
+                current_dir,
             )?;
             Ok(vec![Action::LaunchOrFocusPlugin {
                 plugin: run_plugin_or_alias,
@@ -636,7 +638,7 @@ pub fn actions_from_cli(
             let run_plugin_or_alias = plugin_or_alias(
                 url.as_str(),
                 &configuration.map(PluginUserConfiguration::into_inner),
-                Some(current_dir.clone()),
+                current_dir.clone(),
             )?;
             Ok(vec![Action::LaunchPlugin {
                 plugin: run_plugin_or_alias,
@@ -644,7 +646,7 @@ pub fn actions_from_cli(
                 should_open_in_place: in_place,
                 close_replaced_pane,
                 skip_cache: skip_plugin_cache,
-                cwd: (!current_dir.as_os_str().is_empty()).then_some(current_dir),
+                cwd: default_dir(&current_dir),
                 no_focus,
                 tab_id,
             }])
@@ -699,7 +701,7 @@ pub fn actions_from_cli(
             let current_dir = get_current_dir();
             let cwd = plugin_cwd
                 .map(|cwd| current_dir.join(cwd))
-                .or_else(|| (!current_dir.as_os_str().is_empty()).then_some(current_dir));
+                .or_else(|| default_dir(&current_dir));
             let skip_cache = skip_plugin_cache;
             let pipe_id = Uuid::new_v4().to_string();
             Ok(vec![Action::CliPipe {

@@ -5,7 +5,7 @@ use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, ServerToClientMsg};
 use yinz_runtime::errors::prelude::*;
 use yinz_types::{input::actions::Action, internal_ids::SessionName};
 
-pub fn request_at(
+pub fn request(
     session: &impl SessionEndpoint,
     action: Action,
     caller: Option<yinz_types::internal_ids::TerminalId>,
@@ -13,7 +13,7 @@ pub fn request_at(
     pipe_request(session, action, caller, decode_reply)
 }
 
-pub fn raw_request_at(
+pub fn raw_request(
     session: &impl SessionEndpoint,
     action: Action,
     caller: Option<yinz_types::internal_ids::TerminalId>,
@@ -68,8 +68,9 @@ impl std::fmt::Display for PluginRequestRejected {
 }
 impl std::error::Error for PluginRequestRejected {}
 
-pub fn plugin_request_at(
-    session: &impl SessionEndpoint,
+/// Plugin lifecycle commands run on the machine hosting the session, so this is always local.
+pub fn plugin_request(
+    session: &SessionName,
     request: yinz_types::cli::PluginRequest,
 ) -> Result<yinz_types::cli::PluginResponse> {
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -97,7 +98,7 @@ pub fn plugin_request_at(
     serde_json::from_value(value).context("decode plugin response")
 }
 
-pub fn data_request_at(
+pub fn data_request(
     session: &impl SessionEndpoint,
     request: yinz_types::cli::DataRequest,
 ) -> Result<serde_json::Value> {
@@ -204,30 +205,3 @@ mod tests;
 #[cfg(test)]
 #[path = "unit/cli_transport.rs"]
 mod transport_tests;
-
-pub fn request(
-    session: &SessionName,
-    action: Action,
-    caller: Option<yinz_types::internal_ids::TerminalId>,
-) -> Result<serde_json::Value> {
-    request_at(session, action, caller)
-}
-pub fn raw_request(
-    session: &SessionName,
-    action: Action,
-    caller: Option<yinz_types::internal_ids::TerminalId>,
-) -> Result<serde_json::Value> {
-    raw_request_at(session, action, caller)
-}
-pub fn plugin_request(
-    session: &SessionName,
-    request: yinz_types::cli::PluginRequest,
-) -> Result<yinz_types::cli::PluginResponse> {
-    plugin_request_at(session, request)
-}
-pub fn data_request(
-    session: &SessionName,
-    request: yinz_types::cli::DataRequest,
-) -> Result<serde_json::Value> {
-    data_request_at(session, request)
-}

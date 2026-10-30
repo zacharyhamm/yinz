@@ -113,24 +113,28 @@ impl PluginConfig {
                 initial_cwd: run_plugin.initial_cwd.clone(),
                 relative_path: None,
             }),
-            RunPluginLocation::File(path) => Some(PluginConfig {
-                repository_root: None,
-                installed_commit: None,
-                path: {
-                    let declared = run_plugin.declared_path.as_ref().unwrap_or(path);
-                    // Remote CLI locations defer home expansion until they reach this host.
-                    if declared.is_relative() {
-                        yinz_runtime::plugin_location::expand_plugin_path(declared.clone())
+            RunPluginLocation::File(path) => {
+                let declared = run_plugin.declared_path.as_ref().unwrap_or(path);
+                let resolved = yinz_runtime::plugin_location::path_on_this_host(declared);
+                Some(PluginConfig {
+                    repository_root: None,
+                    installed_commit: None,
+                    // Data ownership and focus follow the location, so a deferred home path must
+                    // not split from the same file launched any other way.
+                    location: if resolved != *declared {
+                        RunPluginLocation::File(
+                            resolved.canonicalize().unwrap_or_else(|_| resolved.clone()),
+                        )
                     } else {
-                        declared.clone()
-                    }
-                },
-                _allow_exec_host_cmd: run_plugin._allow_exec_host_cmd,
-                location: run_plugin.location.clone(),
-                initial_userspace_configuration: run_plugin.configuration.clone(),
-                initial_cwd: run_plugin.initial_cwd.clone(),
-                relative_path: run_plugin.relative_path.clone(),
-            }),
+                        run_plugin.location.clone()
+                    },
+                    path: resolved,
+                    _allow_exec_host_cmd: run_plugin._allow_exec_host_cmd,
+                    initial_userspace_configuration: run_plugin.configuration.clone(),
+                    initial_cwd: run_plugin.initial_cwd.clone(),
+                    relative_path: run_plugin.relative_path.clone(),
+                })
+            },
             RunPluginLocation::Yinz(tag) => {
                 let tag = tag.to_string();
                 if BUILTIN_PLUGIN_NAMES.contains(&tag.as_str()) {

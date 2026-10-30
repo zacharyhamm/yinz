@@ -97,7 +97,78 @@ fn remote_helper_rejects_incompatible_and_non_host_requests_before_dispatch() {
 }
 
 #[test]
-fn ssh_request_quotes_json_and_leaves_stdin_available() {
+fn remote_helper_reports_a_peers_undecodable_command_as_a_mismatch() {
+    let request = serde_json::json!({
+        "version": "other",
+        "contract": CLIENT_SERVER_CONTRACT_VERSION,
+        "bootstrap": REMOTE_BOOTSTRAP_VERSION,
+        "command": {"CommandFromAnotherVersion": {}},
+        "session": null,
+    })
+    .to_string();
+    let error = handle(&request, &mut CliArgs::default()).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("Yinz compatibility mismatch"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn remote_helper_keeps_this_hosts_configuration_location() {
+    let parsed = CliArgs {
+        config: Some("/host/config.kdl".into()),
+        config_dir: Some("/host/config".into()),
+        session: Some("ignored".into()),
+        ..Default::default()
+    };
+    let opts = host_options(
+        Command::Sessions(Sessions::ListSessions {
+            no_formatting: false,
+            short: false,
+            exited: false,
+            reverse: false,
+        }),
+        Some("work".into()),
+        &parsed,
+    );
+    assert_eq!(opts.config, parsed.config);
+    assert_eq!(opts.config_dir, parsed.config_dir);
+    assert_eq!(opts.session.as_deref(), Some("work"));
+}
+
+#[test]
+fn only_running_sessions_can_be_selected_implicitly() {
+    use yinz_cli::{
+        session_picker::{Destination, PickerRow},
+        sessions::SessionListing,
+    };
+    let row = |name: &str, listing| PickerRow {
+        label: name.into(),
+        destination: Some(Destination::Remote {
+            host: "host".into(),
+            name: name.into(),
+        }),
+        status: None,
+        age: Duration::ZERO,
+        listing,
+        current: false,
+    };
+    let names = running_names(vec![
+        row("wedged", SessionListing::Unresponsive),
+        row("work", SessionListing::Running),
+        row("sandboxed", SessionListing::Denied),
+    ]);
+    assert_eq!(names, vec![SessionName::new("work")]);
+}
+
+#[test]
+fn a_hosts_layout_directory_does_not_locate_local_layouts() {
+    let kdl = serde_json::to_vec(r#"layout_dir "/only/on/the/host""#).unwrap();
+    assert_eq!(parse_remote_config(&kdl).unwrap().options.layout_dir, None);
+}
+
+#[test]
+fn ssh_request_quotes_json_without_a_remote_terminal() {
     let request = Request {
         version: VERSION.into(),
         contract: CLIENT_SERVER_CONTRACT_VERSION,

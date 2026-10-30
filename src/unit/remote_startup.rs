@@ -942,6 +942,15 @@ fn remote_cli_uses_forwarded_sessions_and_local_inputs() {
         .unwrap_or(1)
         .to_string();
     call(&["agent", "list", "--json"]);
+    // The server would otherwise start an agent with no directory in `/`.
+    let spawn = command(&["agent", "spawn", "--kind", "codex"])
+        .output()
+        .unwrap();
+    assert!(!spawn.status.success(), "{spawn:?}");
+    assert!(
+        String::from_utf8_lossy(&spawn.stderr).contains("--cwd or --project"),
+        "{spawn:?}"
+    );
     call(&["data", "catalog"]);
     let fragment = local.0.path().join("fragment.kdl");
     fs::write(&fragment, "pane_frames false\n").unwrap();
@@ -967,6 +976,13 @@ fn remote_cli_uses_forwarded_sessions_and_local_inputs() {
         "--state",
         "idle",
     ]);
+    // SSH gives the host no terminal, so the question is asked here; nobody can answer this one.
+    let refused = command(&["kill-all-sessions"]).output().unwrap();
+    assert!(!refused.status.success(), "{refused:?}");
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("--yes"),
+        "{refused:?}"
+    );
     let out = call(&["list-sessions", "--short"]);
     assert!(String::from_utf8_lossy(&out.stdout).contains(NAME));
     let created = call(&[

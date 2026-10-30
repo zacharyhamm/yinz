@@ -419,10 +419,7 @@ pub(crate) fn send_action_to_session(
 pub(crate) fn command_target(
     explicit: Option<String>,
 ) -> (Option<SessionName>, Option<TerminalId>) {
-    if let Some(target) = crate::remote_commands::selected() {
-        return (Some(target.name.clone()), None);
-    }
-    yinz_process::pane_context::target(explicit.map(SessionName::new)).unwrap_or_else(|error| {
+    crate::remote_commands::pane_target(explicit.map(SessionName::new)).unwrap_or_else(|error| {
         eprintln!("{error:#}");
         crate::remote_commands::exit(1);
     })
@@ -549,11 +546,20 @@ pub(crate) fn subscribe_to_session(
 ) {
     let session_name = resolve_session_for_stream(requested_session_name, "subscribe to");
     let os_input = get_os_input(yinz_client::os_input_output::get_cli_client_os_input);
-    yinz_client::cli_client::start_subscribe_client_at(
-        Box::new(os_input),
-        &crate::remote_commands::target(&session_name),
-        subscribe_cli,
-    );
+    match crate::remote_commands::selected() {
+        Some(target) => crate::remote_commands::finish_stream(
+            yinz_client::cli_client::start_subscribe_client_at(
+                Box::new(os_input),
+                target,
+                subscribe_cli,
+            ),
+        ),
+        None => yinz_client::cli_client::start_subscribe_client(
+            Box::new(os_input),
+            &session_name,
+            subscribe_cli,
+        ),
+    }
 }
 
 pub(crate) fn stream_session_events(
@@ -563,11 +569,16 @@ pub(crate) fn stream_session_events(
 ) {
     let session_name = resolve_session_for_stream(requested_session_name, "stream events from");
     let os_input = get_os_input(yinz_client::os_input_output::get_cli_client_os_input);
-    yinz_client::cli_client::start_events_client_at(
-        Box::new(os_input),
-        &crate::remote_commands::target(&session_name),
-        events_cli,
-    );
+    match crate::remote_commands::selected() {
+        Some(target) => crate::remote_commands::finish_stream(
+            yinz_client::cli_client::start_events_client_at(Box::new(os_input), target, events_cli),
+        ),
+        None => yinz_client::cli_client::start_events_client(
+            Box::new(os_input),
+            &session_name,
+            events_cli,
+        ),
+    }
 }
 
 fn attach_with_cli_client(
@@ -577,10 +588,8 @@ fn attach_with_cli_client(
     caller: Option<TerminalId>,
 ) {
     if let yinz_cli::args::CliAction::Wait(request) = cli_action {
-        match yinz_client::wait_client::wait_at(
-            &crate::remote_commands::target(session_name),
-            request,
-        ) {
+        match yinz_client::wait_client::wait(&crate::remote_commands::target(session_name), request)
+        {
             Ok(result) => {
                 println!("{result}");
                 crate::remote_commands::exit(0);
@@ -600,7 +609,7 @@ fn attach_with_cli_client(
     };
     if let Some(action) = service_action {
         let result = action.map_err(anyhow::Error::msg).and_then(|action| {
-            yinz_client::store_client::request_at(
+            yinz_client::store_client::request(
                 &crate::remote_commands::target(session_name),
                 action,
                 caller,
@@ -627,12 +636,20 @@ fn attach_with_cli_client(
     };
     match yinz_cli::actions::actions_from_cli(cli_action, Box::new(get_current_dir), config) {
         Ok(actions) => {
-            let exit_status = yinz_client::cli_client::start_cli_client_at(
-                Box::new(os_input),
-                &crate::remote_commands::target(session_name),
-                actions,
-                caller,
-            );
+            let exit_status = match crate::remote_commands::selected() {
+                Some(target) => yinz_client::cli_client::start_cli_client_at(
+                    Box::new(os_input),
+                    target,
+                    actions,
+                    caller,
+                ),
+                None => yinz_client::cli_client::start_cli_client(
+                    Box::new(os_input),
+                    session_name,
+                    actions,
+                    caller,
+                ),
+            };
             crate::remote_commands::exit(exit_status);
         },
         Err(e) => {
@@ -1247,7 +1264,7 @@ pub(crate) fn pty_host_adopt(
     };
 
     let os_input = get_os_input(yinz_client::os_input_output::get_cli_client_os_input);
-    let exit_status = yinz_client::cli_client::start_cli_client_at(
+    let exit_status = yinz_client::cli_client::start_cli_client(
         Box::new(os_input),
         &SessionName::new(session),
         vec![Action::AdoptPane {
@@ -1988,7 +2005,7 @@ pub(crate) fn data(command: yinz_cli::args::Data, opts: &CliArgs) -> anyhow::Res
     let session = resolve_session_for_stream(opts.session.clone(), "query data in");
     println!(
         "{}",
-        yinz_client::store_client::data_request_at(
+        yinz_client::store_client::data_request(
             &crate::remote_commands::target(&session),
             request
         )?

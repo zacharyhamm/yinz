@@ -1,10 +1,16 @@
 //! Remote CLI routing. Inputs stay local; session requests use an owned SSH forward.
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, process::Command as ProcessCommand, sync::OnceLock, time::Duration};
+use std::{
+    path::PathBuf,
+    process::{Command as ProcessCommand, Stdio},
+    sync::OnceLock,
+    time::Duration,
+};
 use yinz_cli::args::{Agent, CliArgs, Command, Plugins, Sessions};
 use yinz_client::{
+    cli_client::StreamEnd,
     remote_sessions::{self, StartupCancellation},
-    session_target::SessionTarget,
+    session_target::{SessionEndpoint, SessionTarget},
 };
 use yinz_config::config::Config;
 use yinz_process::ssh;
@@ -12,7 +18,7 @@ use yinz_runtime::{
     consts::{CLIENT_SERVER_CONTRACT_VERSION, REMOTE_BOOTSTRAP_VERSION, VERSION},
     errors::prelude::*,
 };
-use yinz_types::internal_ids::SessionName;
+use yinz_types::internal_ids::{SessionName, TerminalId};
 
 #[derive(Debug, PartialEq, Eq)]
 enum Route {
@@ -117,9 +123,16 @@ struct Request {
     command: Option<Command>, // None reads remote configuration; no user input on stdin.
     session: Option<String>,
 }
+/// Decoded first: a peer's `Command` may not decode here, which is the mismatch to report.
+#[derive(Deserialize)]
+struct RequestVersions {
+    version: String,
+    contract: usize,
+    bootstrap: usize,
+}
 struct RemoteContext {
     target: SessionTarget,
-    config: Config,
+    config: Option<Config>,
 }
 static CONTEXT: OnceLock<RemoteContext> = OnceLock::new();
 // Publish termination before closing SSH: EOF can wake the main thread first.
@@ -144,7 +157,7 @@ pub(crate) fn selected() -> Option<&'static SessionTarget> {
     CONTEXT.get().map(|c| &c.target)
 }
 pub(crate) fn config() -> Option<&'static Config> {
-    CONTEXT.get().map(|c| &c.config)
+    CONTEXT.get().and_then(|c| c.config.as_ref())
 }
 pub(crate) fn local_cwd() -> Option<PathBuf> {
     if selected().is_some() {
@@ -156,8 +169,27 @@ pub(crate) fn local_cwd() -> Option<PathBuf> {
 pub(crate) fn target(name: &SessionName) -> SessionTarget {
     selected().cloned().unwrap_or_else(|| SessionTarget {
         name: name.clone(),
-        socket: yinz_runtime::consts::YINZ_SOCK_DIR.join(name),
+        socket: name.socket(),
     })
+}
+/// The session a command addresses and the pane calling it. A local shell's session and pane
+/// identity never apply to a selected remote session.
+pub(crate) fn pane_target(
+    explicit: Option<SessionName>,
+) -> Result<(Option<SessionName>, Option<TerminalId>)> {
+    match selected() {
+        Some(target) => Ok((Some(target.name.clone()), None)),
+        None => yinz_process::pane_context::target(explicit),
+    }
+}
+/// Local streams end when the server closes them. Through SSH, a close without the server's
+/// `Exit` means the link dropped, which a caller must be able to tell from a finished stream.
+pub(crate) fn finish_stream(end: StreamEnd) {
+    if end == StreamEnd::Disconnected && EXIT_SIGNAL.load(std::sync::atomic::Ordering::Acquire) == 0
+    {
+        eprintln!("Lost the connection to the remote session");
+        exit(1);
+    }
 }
 
 fn ssh_command(
@@ -180,9 +212,13 @@ fn ssh_command(
     Ok(process)
 }
 
-fn run_host(mut command: ProcessCommand) -> Result<i32> {
-    let cancellation = StartupCancellation::new()?;
-    let mut child = command.spawn().context("start remote host command")?;
+fn run_host(mut command: ProcessCommand, cancellation: &StartupCancellation) -> Result<i32> {
+    // No host command reads input, and an inherited stdin would be consumed by SSH: a caller's
+    // `while read host; do yinz list-sessions --remote "$host"; done` would stop after one host.
+    let mut child = command
+        .stdin(Stdio::null())
+        .spawn()
+        .context("start remote host command")?;
     let result = (|| loop {
         if cancellation.is_cancelled() {
             return Ok(yinz_client::INTERRUPTED_EXIT_STATUS);
@@ -192,7 +228,7 @@ fn run_host(mut command: ProcessCommand) -> Result<i32> {
         }
         std::thread::sleep(Duration::from_millis(25));
     })();
-    // Also reap SSH when waiting failed or a signal interrupted a confirmation prompt.
+    // Also reap SSH when waiting failed or a signal interrupted it.
     if child.try_wait().ok().flatten().is_none() {
         let _ = child.kill();
         let _ = child.wait();
@@ -200,12 +236,49 @@ fn run_host(mut command: ProcessCommand) -> Result<i32> {
     result
 }
 
+/// SSH runs host commands without a terminal, so an all-session prompt is answered here and
+/// the host receives the answer. Exits when the person declines or interrupts the question.
+fn confirm_all_sessions(
+    command: &mut Option<Command>,
+    host: &str,
+    cancellation: &StartupCancellation,
+) -> Result<()> {
+    let (yes, action) = match command {
+        Some(Command::Sessions(Sessions::KillAllSessions { yes })) => (yes, "kill all sessions"),
+        Some(Command::Sessions(Sessions::DeleteAllSessions { yes, .. })) => {
+            (yes, "delete all resurrectable sessions")
+        },
+        _ => return Ok(()),
+    };
+    if *yes {
+        return Ok(());
+    }
+    let answer = crate::remote_session::confirm(
+        format!("WARNING: this action will {action} on {host}. Do you want to continue?"),
+        false,
+    );
+    // A signal can end the question with an error as well as an answer.
+    if cancellation.is_cancelled() {
+        std::process::exit(yinz_client::INTERRUPTED_EXIT_STATUS);
+    }
+    match answer.context("confirm on a terminal, or pass --yes")? {
+        Some(true) => *yes = true,
+        Some(false) => {
+            println!("Abort.");
+            std::process::exit(1);
+        },
+        None => std::process::exit(yinz_client::INTERRUPTED_EXIT_STATUS),
+    }
+    Ok(())
+}
+
 fn handle(request: &str, opts: &mut CliArgs) -> Result<()> {
+    let versions: RequestVersions =
+        serde_json::from_str(request).context("decode remote CLI request versions")?;
+    remote_sessions::check_versions(&versions.version, versions.contract, versions.bootstrap)?;
     let request: Request = serde_json::from_str(request).context("decode remote CLI request")?;
-    remote_sessions::check_versions(&request.version, request.contract, request.bootstrap)?;
     let Some(command) = request.command else {
-        let config =
-            yinz_cli::setup::load_config(&CliArgs::default()).map_err(|e| anyhow!("{e}"))?;
+        let config = yinz_cli::setup::load_config(opts).map_err(|e| anyhow!("{e}"))?;
         println!(
             "{}",
             serde_json::to_string(&config.to_string(false).map_err(|e| anyhow!("{e}"))?)
@@ -223,12 +296,59 @@ fn handle(request: &str, opts: &mut CliArgs) -> Result<()> {
         // SAFETY: dispatch runs at process startup, before any threads are spawned.
         unsafe { std::env::remove_var(key) };
     }
-    *opts = CliArgs {
-        command: Some(command),
-        session: request.session,
-        ..Default::default()
-    };
+    *opts = host_options(command, request.session, opts);
     Ok(())
+}
+
+/// The request selects the command and session. The configuration location comes from this
+/// host's own YINZ_CONFIG_* environment, which clap has already read into `parsed`.
+fn host_options(command: Command, session: Option<String>, parsed: &CliArgs) -> CliArgs {
+    CliArgs {
+        command: Some(command),
+        session,
+        config: parsed.config.clone(),
+        config_dir: parsed.config_dir.clone(),
+        ..Default::default()
+    }
+}
+
+/// An unresponsive or denied session cannot serve a command, so it never counts as the only one.
+fn running_names(rows: Vec<yinz_cli::session_picker::PickerRow>) -> Vec<SessionName> {
+    rows.into_iter()
+        .filter(|row| row.listing == yinz_cli::sessions::SessionListing::Running)
+        .filter_map(|row| match row.destination {
+            Some(yinz_cli::session_picker::Destination::Remote { name, .. }) => Some(name),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Layouts are input files read on this machine, so the host's `layout_dir` must not name
+/// where to find them here.
+fn parse_remote_config(stdout: &[u8]) -> Result<Config> {
+    let kdl: String = serde_json::from_slice(stdout).context("decode remote configuration")?;
+    let mut config = Config::from_kdl(&kdl, None).map_err(|e| anyhow!("{e}"))?;
+    config.options.layout_dir = None;
+    Ok(config)
+}
+
+fn read_remote_config(
+    host: &str,
+    request: &Request,
+    env: &yinz_types::envs::EnvironmentVariables,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<Config> {
+    let output = ssh::bootstrap_output(
+        &mut ssh_command(host, request, env)?,
+        Duration::from_secs(25),
+        Some(cancelled),
+    )?;
+    anyhow::ensure!(
+        output.status.success(),
+        "read remote configuration: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    parse_remote_config(&output.stdout)
 }
 
 fn select_name(explicit: Option<&str>, names: Vec<SessionName>, host: &str) -> Result<SessionName> {
@@ -311,7 +431,12 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
         {
             *target_session = target_session.clone().or(opts.session.clone());
         }
-        std::process::exit(run_host(ssh_command(&host, &request, &local_config.env)?)?);
+        let cancellation = StartupCancellation::new()?;
+        confirm_all_sessions(&mut request.command, &host, &cancellation)?;
+        std::process::exit(run_host(
+            ssh_command(&host, &request, &local_config.env)?,
+            &cancellation,
+        )?);
     }
     let cancellation = StartupCancellation::new()?;
     let setup = (|| -> Result<()> {
@@ -322,30 +447,22 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
             _ => opts.session.as_deref(),
         };
         let names = if explicit.is_none() {
-            remote_sessions::discover(&host, &cancellation.cancelled, &local_config.env)?
-                .into_iter()
-                .filter_map(|row| match row.destination {
-                    Some(yinz_cli::session_picker::Destination::Remote { name, .. }) => Some(name),
-                    _ => None,
-                })
-                .collect()
+            running_names(remote_sessions::discover(
+                &host,
+                &cancellation.cancelled,
+                &local_config.env,
+            )?)
         } else {
             vec![]
         };
         let name = select_name(explicit, names, &host)?;
-        let output = ssh::bootstrap_output(
-            &mut ssh_command(&host, &request, &local_config.env)?,
-            Duration::from_secs(25),
-            Some(&cancellation.cancelled),
-        )?;
-        anyhow::ensure!(
-            output.status.success(),
-            "read remote configuration: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let kdl: String =
-            serde_json::from_slice(&output.stdout).context("decode remote configuration")?;
-        let config = Config::from_kdl(&kdl, None).map_err(|e| anyhow!("{e}"))?;
+        // Only actions consume the session's configuration. As locally, one that cannot be read
+        // does not stop them, and connecting below reports any SSH or compatibility failure.
+        let config = matches!(opts.command, Some(Command::Action(_)))
+            .then(|| {
+                read_remote_config(&host, &request, &local_config.env, &cancellation.cancelled)
+            })
+            .and_then(Result::ok);
         let forward = remote_sessions::connect(
             &host,
             name.as_str(),

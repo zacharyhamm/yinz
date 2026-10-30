@@ -98,11 +98,8 @@ impl std::fmt::Display for RequestFailed {
 impl std::error::Error for RequestFailed {}
 
 fn run_inner(command: Agent, opts: &CliArgs) -> Result<i32> {
-    let (explicit, caller) = if let Some(target) = crate::remote_commands::selected() {
-        (Some(target.name.clone()), None)
-    } else {
-        yinz_process::pane_context::target(opts.session.clone().map(Into::into))?
-    };
+    let (explicit, caller) =
+        crate::remote_commands::pane_target(opts.session.clone().map(Into::into))?;
     let explicit = explicit.map(|session| session.into_string());
     let session = match explicit {
         Some(session) => session,
@@ -125,7 +122,7 @@ fn run_inner(command: Agent, opts: &CliArgs) -> Result<i32> {
         _ => None,
     };
     if let Some(action) = action {
-        let reply = yinz_client::store_client::request_at(
+        let reply = yinz_client::store_client::request(
             &crate::remote_commands::target(&session.into()),
             action,
             caller,
@@ -352,7 +349,13 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
                     timeout,
                 ));
             }
-            if remote_host.is_none() && crate::remote_commands::selected().is_none() {
+            if crate::remote_commands::selected().is_some() {
+                // The session has no caller directory to fall back on: the server would start
+                // the agent in `/`.
+                if cwd.is_none() && project.is_none() && remote_host.is_none() {
+                    bail!("agent spawn on a remote session requires --cwd or --project");
+                }
+            } else if remote_host.is_none() {
                 if let Some(path) = cwd {
                     cwd = Some(std::path::absolute(path).context("resolve cwd")?);
                 } else if project.is_none() {

@@ -13,23 +13,41 @@ pub fn run_plugin_or_alias_from_url(
     alias_dict: Option<&PluginAliases>,
     cwd: Option<PathBuf>,
 ) -> Result<RunPluginOrAlias, String> {
-    let mut plugin =
-        match run_plugin_from_url_with_cwd(url, cwd) {
-            Ok(plugin) => Ok(RunPluginOrAlias::RunPlugin(RunPlugin {
-                configuration: configuration
-                    .as_ref()
-                    .map(|c| PluginUserConfiguration::new(c.clone()))
-                    .unwrap_or_default(),
-                ..plugin
-            })),
-            Err(PluginsConfigError::InvalidUrlScheme(_))
-            | Err(PluginsConfigError::InvalidUrl(..)) => Ok(RunPluginOrAlias::Alias(
-                PluginAlias::new(url, configuration, None),
-            )),
-            Err(e) => Err(format!("Failed to parse plugin location {url}: {}", e)),
-        }?;
+    let mut plugin = plugin_or_alias(url, configuration, run_plugin_from_url_with_cwd(url, cwd))?;
     plugin.populate_run_plugin_if_needed(alias_dict.unwrap_or(&PluginAliases::default()));
     Ok(plugin)
+}
+
+/// [`run_plugin_or_alias_from_url`] for another host; see [`run_plugin_from_url_unresolved`].
+pub fn run_plugin_or_alias_from_url_unresolved(
+    url: &str,
+    configuration: &Option<BTreeMap<String, String>>,
+) -> Result<RunPluginOrAlias, String> {
+    plugin_or_alias(url, configuration, run_plugin_from_url_unresolved(url))
+}
+
+fn plugin_or_alias(
+    url: &str,
+    configuration: &Option<BTreeMap<String, String>>,
+    parsed: Result<RunPlugin, PluginsConfigError>,
+) -> Result<RunPluginOrAlias, String> {
+    match parsed {
+        Ok(plugin) => Ok(RunPluginOrAlias::RunPlugin(RunPlugin {
+            configuration: configuration
+                .as_ref()
+                .map(|c| PluginUserConfiguration::new(c.clone()))
+                .unwrap_or_default(),
+            ..plugin
+        })),
+        Err(PluginsConfigError::InvalidUrlScheme(_)) | Err(PluginsConfigError::InvalidUrl(..)) => {
+            Ok(RunPluginOrAlias::Alias(PluginAlias::new(
+                url,
+                configuration,
+                None,
+            )))
+        },
+        Err(e) => Err(format!("Failed to parse plugin location {url}: {}", e)),
+    }
 }
 pub fn run_plugin_from_url(url: &str) -> Result<RunPlugin, PluginsConfigError> {
     run_plugin_from_url_with_cwd(url, None)
@@ -150,13 +168,23 @@ pub fn refresh_file_identity(request: &mut RunPluginOrAlias) {
     if let Some(plugin) = plugin
         && let RunPluginLocation::File(location) = &mut plugin.location
     {
-        let declared = plugin.declared_path.as_ref().unwrap_or(location);
-        *location = declared.canonicalize().unwrap_or_else(|_| declared.clone());
+        let declared = path_on_this_host(plugin.declared_path.as_ref().unwrap_or(location));
+        *location = declared.canonicalize().unwrap_or(declared);
+    }
+}
+
+/// A declared file location on the machine loading it. A remote CLI defers home expansion to
+/// that host, leaving the path relative; an absolute one is final and taken literally.
+pub fn path_on_this_host(declared: &std::path::Path) -> PathBuf {
+    if declared.is_relative() {
+        expand_plugin_path(declared.to_owned())
+    } else {
+        declared.to_owned()
     }
 }
 
 /// Expand a plugin path using the home directory of the machine loading it.
-pub fn expand_plugin_path(path: PathBuf) -> PathBuf {
+fn expand_plugin_path(path: PathBuf) -> PathBuf {
     match shellexpand::full(&path.to_string_lossy()) {
         Ok(expanded) => PathBuf::from(expanded.as_ref()),
         Err(e) => {

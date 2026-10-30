@@ -38,14 +38,17 @@ Actions, pane run/edit/plugin/pipe commands, agent control and archives, data,
 REPL, render subscriptions, event streams, and read-only watchers use the remote
 session. Plugin lifecycle commands and logs, pane adoption, session listing,
 and session kill/delete commands also support `--remote`. All-session lifecycle
-commands apply to the selected SSH host and retain their confirmation prompts.
+commands apply to the selected SSH host and ask for confirmation on the local
+terminal unless `--yes` is given.
 
 Input files (request JSON, agent prompts, config fragments, and layout source)
 and stdin are read locally. Paths used by the session, including working
 directories, edited files, and plugin locations, refer to the remote machine.
-An omitted working directory uses the remote session's defaults. `--remote-host`
-and `pty-host --host` still select a pane's machine independently of the machine
-hosting the session.
+An omitted working directory uses the remote session's defaults, except that
+`agent spawn` requires `--cwd` or `--project`. Plugin locations inside a layout
+file are the exception to remote paths: the layout is parsed locally, so `~` and
+relative `file:` locations resolve here. `--remote-host` and `pty-host --host`
+still select a pane's machine independently of the machine hosting the session.
 
 Local setup, skills, hook installation, plugin authoring/repository commands,
 standalone agent launchers, and supervisor administration without a live-session

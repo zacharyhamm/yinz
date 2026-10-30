@@ -271,3 +271,18 @@ fn unresolved_plugin_locations_preserve_another_hosts_paths() {
     assert_eq!(plugin.location, RunPluginLocation::File(link));
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn deferred_home_locations_take_their_identity_on_the_loading_host() {
+    let mut request =
+        RunPluginOrAlias::RunPlugin(run_plugin_from_url_unresolved("file:~/plugin.scm").unwrap());
+    refresh_file_identity(&mut request);
+    let RunPluginOrAlias::RunPlugin(plugin) = request else {
+        panic!("expected a plugin")
+    };
+    let RunPluginLocation::File(location) = plugin.location else {
+        panic!("expected a file")
+    };
+    assert_eq!(location, expand_plugin_path("~/plugin.scm".into()));
+    assert!(location.is_absolute(), "{location:?}");
+}

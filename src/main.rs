@@ -319,14 +319,13 @@ fn main() {
     }
 
     {
-        let config = if let Some(config) = remote_commands::config() {
-            Ok(config.clone())
+        let config = if remote_commands::selected().is_some() {
+            remote_commands::config().cloned()
         } else if startup_kind.is_some() {
-            startup_stage("cli.initial_config", || yinz_cli::setup::load_config(&opts))
+            startup_stage("cli.initial_config", || yinz_cli::setup::load_config(&opts)).ok()
         } else {
-            yinz_cli::setup::load_config(&opts)
-        }
-        .ok();
+            yinz_cli::setup::load_config(&opts).ok()
+        };
         if let Some(Command::Action(cli_action)) = opts.command {
             commands::send_action_to_session(*cli_action, opts.session, config);
             remote_commands::exit(0);
@@ -509,13 +508,8 @@ fn main() {
             tab_id,
         })) = opts.command
         {
-            let mut file = file;
+            // The action joins a relative file onto this directory.
             let cwd = cwd.or_else(remote_commands::local_cwd);
-            if file.is_relative()
-                && let Some(cwd) = cwd.as_ref()
-            {
-                file = cwd.join(file);
-            }
             let command_cli_action = CliAction::Edit {
                 file,
                 direction,

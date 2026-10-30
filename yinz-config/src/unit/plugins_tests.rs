@@ -34,6 +34,24 @@ fn steel_sources_resolve_by_extension_and_user_plugin_directory() {
 }
 
 #[test]
+fn only_deferred_home_paths_replace_a_declared_location() {
+    let deferred = yinz_runtime::plugin_location::run_plugin_from_url_unresolved("file:~/keys.scm")
+        .map(|run| PluginConfig::from_run_plugin(&run).unwrap())
+        .unwrap();
+    assert_eq!(deferred.location, RunPluginLocation::File(deferred.path));
+    assert!(deferred.location.to_string().starts_with('/'));
+
+    let relative = RunPlugin {
+        location: RunPluginLocation::File("relative/keys.scm".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        PluginConfig::from_run_plugin(&relative).unwrap().location,
+        relative.location
+    );
+}
+
+#[test]
 fn unsupported_source_extensions_are_rejected() {
     for name in [
         "keys",

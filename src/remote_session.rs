@@ -432,17 +432,23 @@ fn select_discovered_session(
         .context("choose a remote session")
 }
 
-/// `None` when the person interrupted the question.
 fn confirm_new_session(host: &str) -> Result<Option<bool>> {
+    confirm(
+        format!("No active yinz sessions found on {host}. Create a new session?"),
+        true,
+    )
+    .context("ask whether to create a remote session")
+}
+
+/// `None` when the person interrupted the question.
+pub(crate) fn confirm(prompt: String, default: bool) -> Result<Option<bool>> {
     use nix::sys::termios::{tcgetattr, tcsetattr, SetArg};
     let stdin = std::io::stdin();
     let original = tcgetattr(&stdin).context("read terminal settings")?;
     let term = console::Term::stderr();
     let answer = dialoguer::Confirm::new()
-        .with_prompt(format!(
-            "No active yinz sessions found on {host}. Create a new session?"
-        ))
-        .default(true)
+        .with_prompt(prompt)
+        .default(default)
         .interact_on_opt(&term);
     if answer.is_err() {
         // console's key reader returns early on Ctrl-C or a signal, leaving the terminal in raw
@@ -458,7 +464,7 @@ fn confirm_new_session(host: &str) -> Result<Option<bool>> {
         Err(dialoguer::Error::IO(error)) if error.kind() == std::io::ErrorKind::Interrupted => {
             Ok(None)
         },
-        Err(error) => Err(error).context("ask whether to create a remote session"),
+        Err(error) => Err(error).context("read the answer from the terminal"),
     }
 }
 

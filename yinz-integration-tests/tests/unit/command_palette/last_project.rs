@@ -39,7 +39,12 @@ fn last_project_survives_restart_and_yields_to_a_known_folder() {
         }
         .action()
         .unwrap();
-        yinz_client::store_client::request(&first.session_name().into(), action, None).unwrap();
+        yinz_client::store_client::request(
+            &yinz_types::internal_ids::SessionName::new(first.session_name()),
+            action,
+            None,
+        )
+        .unwrap();
     }
     first.send_stdin(DO);
     first.wait_until("alphabetical fallback", |grid| {
