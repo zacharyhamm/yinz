@@ -216,8 +216,7 @@ fn handle_openpty(
             .env_remove(crate::pty_host::remote::broker::PANE_TOKEN_ENV)
             // Structured launches set this again through their env wrapper.
             .env_remove("YINZ_CLAUDE_INLINE_HOOKS")
-            .env("YINZ", "0")
-            .env("YINZ_SESSION_NAME", session_name.as_str())
+            .envs(yinz_runtime::envs::child_session_env(session_name))
             .env("YINZ_PANE_ID", format!("{}", terminal_id))
             .pre_exec(move || crate::pty_host::terminal::prepare_child(pid_secondary, false))
             .spawn()
@@ -562,13 +561,9 @@ impl UnixPtyBackend {
             // has. Only the remote broker asks for a login shell's argv[0].
             arg0: None,
             // The inherited environment keeps its startup name after a rename.
-            env: vec![
-                ("YINZ".to_owned(), "0".to_owned()),
-                (
-                    "YINZ_SESSION_NAME".to_owned(),
-                    self.session_name().to_string(),
-                ),
-            ],
+            env: yinz_runtime::envs::child_session_env(&self.session_name())
+                .map(|(name, value)| (name.to_owned(), value))
+                .into(),
             login_session: false,
             // This server listens for the stops job control makes possible and
             // can send `SIGCONT` back, so a pane that suspends is recoverable.

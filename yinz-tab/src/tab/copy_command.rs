@@ -3,7 +3,7 @@ use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 
-use yinz_runtime::envs::{SessionState, SESSION_NAME_ENV_KEY};
+use yinz_runtime::envs::{child_session_env, SessionState};
 use yinz_runtime::errors::prelude::*;
 
 type TransferCompletion = Arc<Mutex<mpsc::Receiver<()>>>;
@@ -50,7 +50,7 @@ impl CopyCommand {
                 }
                 let mut process = match Command::new(&command)
                     .args(args)
-                    .env(SESSION_NAME_ENV_KEY, session.current().as_str())
+                    .envs(child_session_env(&session.current()))
                     .stdin(Stdio::piped())
                     .spawn()
                     .with_context(|| format!("couldn't spawn {command}"))

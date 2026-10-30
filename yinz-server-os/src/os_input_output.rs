@@ -1694,8 +1694,7 @@ fn run_command_hook(
         .arg("-c")
         .arg(hook_script)
         .env("RESURRECT_COMMAND", original_command)
-        .env("YINZ", "0")
-        .env("YINZ_SESSION_NAME", session_name.as_str())
+        .envs(yinz_runtime::envs::child_session_env(session_name))
         .output()?;
 
     if !output.status.success() {

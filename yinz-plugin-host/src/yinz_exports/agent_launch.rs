@@ -1267,9 +1267,7 @@ pub(super) fn run_git(
 ) -> Result<(), String> {
     let mut command = process::Command::new("git");
     if let Some(session_name) = session_name {
-        command
-            .env("YINZ", "0")
-            .env("YINZ_SESSION_NAME", session_name.as_str());
+        command.envs(yinz_runtime::envs::child_session_env(session_name));
     }
     let output = command
         .arg("-C")

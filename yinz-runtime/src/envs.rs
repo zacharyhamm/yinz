@@ -15,6 +15,16 @@ pub fn get_session_name() -> Result<SessionName> {
     Ok(SessionName::new(var(SESSION_NAME_ENV_KEY)?))
 }
 
+/// Overrides for a child of a server: inside Yinz, in the session's current name.
+///
+/// The process environment keeps its startup name after a rename, so every spawn applies these.
+pub fn child_session_env(session_name: &SessionName) -> [(&'static str, String); 2] {
+    [
+        (YINZ_ENV_KEY, "0".to_owned()),
+        (SESSION_NAME_ENV_KEY, session_name.to_string()),
+    ]
+}
+
 pub const SOCKET_DIR_ENV_KEY: &str = "YINZ_SOCKET_DIR";
 pub fn get_socket_dir() -> Result<String> {
     Ok(var(SOCKET_DIR_ENV_KEY)?)

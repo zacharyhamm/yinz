@@ -89,8 +89,9 @@ pub(super) fn exec_cmd(env: &PluginEnv, mut command_line: Vec<String>) {
     // Here, we don't wait the command to finish
     process::Command::new(command)
         .args(command_line)
-        .env("YINZ", "0")
-        .env("YINZ_SESSION_NAME", env.server_session.current().as_str())
+        .envs(yinz_runtime::envs::child_session_env(
+            &env.server_session.current(),
+        ))
         .spawn()
         .with_context(err_context)
         .non_fatal();

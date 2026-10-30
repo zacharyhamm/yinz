@@ -346,8 +346,7 @@ fn server_command(
     let mut cmd = Command::new(current_exe()?);
     cmd.arg("--server").arg(socket_path);
     cmd.envs(env.inner())
-        .env(envs::YINZ_ENV_KEY, "0")
-        .env(envs::SESSION_NAME_ENV_KEY, session_name.as_str());
+        .envs(envs::child_session_env(session_name));
     if let Some(termios) = termios {
         cmd.arg("--server-termios")
             .arg(serde_json::to_string(termios).map_err(io::Error::other)?);
