@@ -89,11 +89,16 @@ impl Drop for Screen {
 
 /// Shows the menu until the person picks a session or leaves. `verb` is what
 /// Enter does, for the footer.
-pub fn run(rows: Vec<PickerRow>, verb: &'static str, hosts: Vec<String>) -> io::Result<Outcome> {
+pub fn run(
+    rows: Vec<PickerRow>,
+    verb: &'static str,
+    hosts: Vec<String>,
+    env: yinz_types::envs::EnvironmentVariables,
+) -> io::Result<Outcome> {
     let cancellation =
         yinz_client::remote_sessions::StartupCancellation::new().map_err(io::Error::other)?;
     let mut screen = Screen::enter()?;
-    let mut discovery = Discovery::start(hosts);
+    let mut discovery = Discovery::start(hosts, env);
     let mut state = PickerState::new(discovery.rows(&rows), verb);
     let mut parser = KeyParser::default();
     // Read unbuffered: bytes held in `StdinLock`'s buffer are invisible to

@@ -1392,8 +1392,9 @@ impl Screen {
             copy_clipboard.unwrap_or_default(),
             copy_on_select,
         );
-        let session_name = mode_info.session_name.clone().unwrap_or_default();
-        bus.senders.session.set(session_name.clone());
+        // The shared identity is the server's; the screen reads it rather than resetting it.
+        let session_name = bus.senders.session.current();
+        mode_info.session_name = Some(session_name.clone());
         let session_info = SessionInfo::new(session_name.clone());
         let mut peer_sessions_cache = BTreeMap::new();
         let resurrectable_sessions_cache = BTreeMap::new();

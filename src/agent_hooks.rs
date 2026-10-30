@@ -630,11 +630,10 @@ pub(crate) fn uninstall_from(mut settings: Value) -> Value {
         });
         !removed || !groups.is_empty()
     });
-    if hooks.is_empty() {
-        settings
-            .as_object_mut()
-            .expect("made an object above")
-            .remove("hooks");
+    if hooks.is_empty()
+        && let Some(root) = settings.as_object_mut()
+    {
+        root.remove("hooks");
     }
     settings
 }
@@ -727,11 +726,10 @@ pub(crate) fn uninstall_agy_from(mut settings: Value) -> Value {
         });
         !removed || !items.is_empty()
     });
-    if hooks.is_empty() {
-        settings
-            .as_object_mut()
-            .expect("made an object above")
-            .remove("hooks");
+    if hooks.is_empty()
+        && let Some(root) = settings.as_object_mut()
+    {
+        root.remove("hooks");
     }
     settings
 }

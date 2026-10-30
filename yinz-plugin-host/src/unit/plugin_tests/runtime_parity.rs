@@ -573,28 +573,27 @@ impl Pair {
 // Compare the original ordered mutations while checking the new revision contract separately.
 fn normalize_run_persistence(commands: Vec<Value>, current: bool) -> Vec<Value> {
     let mut normalized = Vec::new();
-    let mut hydrating: Vec<Value> = Vec::new();
+    let mut hydrating: Option<Value> = None;
     for mut command in commands {
         let entity = command.pointer("/DataFetch/request/entity").cloned();
-        // Hydration revalidates each run's rev after reading its paginated entries;
+        // Hydration revalidates its runs' revs in one read after their paginated entries;
         // the legacy runtime had no such read.
-        if current && entity == Some(serde_json::json!("agent_run")) {
-            let filter = command.pointer("/DataFetch/request/filter/Eq");
-            if let Some(index) = hydrating
-                .iter()
-                .position(|id| filter == Some(&serde_json::json!(["uid", {"Text": id}])))
-            {
-                hydrating.remove(index);
-                continue;
-            }
+        if current
+            && entity == Some(serde_json::json!("agent_run"))
+            && hydrating.is_some()
+            && command.pointer("/DataFetch/request/filter/In")
+                == Some(&serde_json::json!(["uid", hydrating.take()]))
+        {
+            assert_eq!(
+                command["DataFetch"]["request"]["select"],
+                serde_json::json!(["uid", "rev"])
+            );
+            continue;
         }
-        hydrating = match command.pointer("/DataFetch/request/filter/In/1") {
-            Some(Value::Array(ids)) if entity == Some(serde_json::json!("agent_run_entry")) => ids
-                .iter()
-                .filter_map(|id| id.get("Text").cloned())
-                .collect(),
-            _ => Vec::new(),
-        };
+        hydrating = command
+            .pointer("/DataFetch/request/filter/In/1")
+            .filter(|_| entity == Some(serde_json::json!("agent_run_entry")))
+            .cloned();
         if current && entity == Some(serde_json::json!("agent_run")) {
             assert_eq!(
                 command["DataFetch"]["request"]["select"],

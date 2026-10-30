@@ -1939,6 +1939,39 @@ fn stored_run(local: &impl crate::store::Backend, id: &str) -> AgentRun {
 }
 
 #[test]
+fn run_revisions_request_reads_every_listed_run_in_one_fetch() {
+    use crate::store::{self, Backend};
+    use yinz_tile::prelude::DataValue;
+
+    let local = store::Local::shared("agent-service");
+    local.define_all(&store::shared_defs()).unwrap();
+    for id in ["claude:one", "claude:two", "claude:unlisted"] {
+        let run = a_run_with_entries(id, "here", 7, &["prompt"]);
+        local.apply(rows::run_mutations(&run, REV_ABSENT)).unwrap();
+    }
+    let fetched = local
+        .fetch(&rows::run_revisions_request([
+            "claude:one".to_owned(),
+            "claude:two".to_owned(),
+            "claude:missing".to_owned(),
+        ]))
+        .unwrap();
+    let mut seen: Vec<_> = fetched
+        .rows
+        .iter()
+        .map(|row| {
+            let Some(DataValue::Text(uid)) = fetched.get(row, "uid") else {
+                panic!("each row names its run")
+            };
+            assert!(matches!(fetched.get(row, "rev"), Some(DataValue::Int(_))));
+            uid.clone()
+        })
+        .collect();
+    seen.sort();
+    assert_eq!(seen, ["claude:one", "claude:two"]);
+}
+
+#[test]
 fn run_writes_reject_stale_metadata_and_roll_back_its_entries() {
     use crate::store::{self, Backend};
     use yinz_tile::prelude::DataValue;

@@ -98,7 +98,15 @@ fn pick_session_to_attach(remote: Option<(&CliArgs, Vec<String>)>) -> SessionNam
         Some((opts, hosts)) => (Some(opts), hosts),
         None => (None, Vec::new()),
     };
-    match crate::session_menu::run(rows, verb, hosts) {
+    // Discovery runs the same SSH as the attach it leads to, so both use the configured env.
+    // A config that fails to load is reported by that attach; local picks do not need it.
+    let env = match opts {
+        Some(opts) if !hosts.is_empty() => crate::remote_session::load_local_config(opts)
+            .map(|(config, _)| config.env)
+            .unwrap_or_default(),
+        _ => Default::default(),
+    };
+    match crate::session_menu::run(rows, verb, hosts, env) {
         Ok(Outcome::Picked(Destination::Remote { host, name })) => {
             let mut opts = opts.expect("remote picker options").clone();
             if let Some(Command::Sessions(Sessions::Attach {
