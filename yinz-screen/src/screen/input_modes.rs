@@ -45,7 +45,9 @@ impl Screen {
                     }, ?
                 );
                 self.sync_scroll_mode_if_scroll_changed(client_id, was_scrolled)?;
-                self.close_context_menu(client_id);
+                if self.close_context_menu(client_id) {
+                    self.render()?;
+                }
                 let mut state_changed = false;
                 active_tab_and_connected_client_id!(
                     self,

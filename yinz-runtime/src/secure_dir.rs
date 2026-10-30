@@ -36,8 +36,7 @@ pub(super) fn ensure(path: &Path) -> io::Result<()> {
     while let Some(part) = pending.pop_front() {
         if part == "/" {
             directory = root.try_clone()?;
-            let metadata = validate(&directory, uid, unmapped_uid, false)?;
-            tighten_ancestor(&directory, &metadata, uid)?;
+            validate(&directory, uid, unmapped_uid, false)?;
             continue;
         }
         if part == "." {
@@ -124,7 +123,6 @@ pub(super) fn ensure(path: &Path) -> io::Result<()> {
             }
             return Ok(());
         }
-        tighten_ancestor(&child, &metadata, uid)?;
         directory = child;
     }
     Err(io::Error::other("private directory must have a final name"))
@@ -181,8 +179,8 @@ fn trusted_ancestor_owner(owner: u32, uid: u32, unmapped_uid: Option<u32>) -> bo
     owner == uid || owner == 0 || Some(owner) == unmapped_uid
 }
 
-// Only the owner (or root) can chmod, so shared write access on a directory the caller owns
-// is tightened rather than refused. Earlier versions created directories under the umask.
+// Directories the caller owns are under the caller's control: ancestors such as $HOME keep
+// their mode, and the final directory is chmodded to 0700 by the caller.
 fn validate(
     directory: &File,
     uid: u32,
@@ -201,28 +199,6 @@ fn validate(
         ));
     }
     Ok(metadata)
-}
-
-fn tighten_ancestor(directory: &File, metadata: &std::fs::Metadata, uid: u32) -> io::Result<()> {
-    let mode = metadata.mode() & 0o7777;
-    if metadata.uid() != uid || mode & 0o022 == 0 || mode & 0o1000 != 0 {
-        return Ok(());
-    }
-    // Ancestor descriptors may not support fchmod, so reopen the same directory through ".".
-    // SAFETY: directory remains open and the name is NUL-terminated. Success transfers a new descriptor.
-    let fd = unsafe {
-        libc::openat(
-            directory.as_raw_fd(),
-            c".".as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
-        )
-    };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: openat returned a new owned descriptor.
-    let writable = unsafe { File::from_raw_fd(fd) };
-    writable.set_permissions(Permissions::from_mode(mode & !0o022))
 }
 
 #[cfg(test)]

@@ -317,16 +317,21 @@ pub fn list_runs(
     Ok(list_runs_page(filter, limit, &fetched))
 }
 
-/// The same bounded listing request for native readers and permission-checked guest reads.
-pub fn list_runs_request(filter: &Filter, limit: usize, offset: usize) -> FetchRequest {
+/// How many rows one listing fetch asks the store for.
+fn list_runs_window(filter: &Filter, limit: usize) -> usize {
     let limit = limit.clamp(1, MAX_RUNS);
     // A guest-side narrowing throws rows away after the store has counted them, so ask for
     // more than the page when one is in play. Bounded: an over-fetch that pages the whole
     // archive to find nothing is worse than an honest "no runs here" with an offset to retry.
-    let want = match filter.narrows_in_guest() {
+    match filter.narrows_in_guest() {
         true => limit.saturating_mul(8).min(MAX_RUN_SCAN),
         false => limit.saturating_add(1),
-    };
+    }
+}
+
+/// The same bounded listing request for native readers and permission-checked guest reads.
+pub fn list_runs_request(filter: &Filter, limit: usize, offset: usize) -> FetchRequest {
+    let want = list_runs_window(filter, limit);
     let mut request = FetchRequest::entity(rows::RUN_ENTITY)
         // A run written before `header` existed has none to list, and its payload is the only
         // other copy — the same filter the panel's archive pager applies.
@@ -375,8 +380,11 @@ pub fn list_runs_page(filter: &Filter, limit: usize, fetched: &DataRows) -> RunP
         0 => 0,
         raw => scanned.clamp(1, raw),
     };
-    // The store's byte budget can truncate a fetch before the requested row count.
-    let more = overflowed || fetched.truncated;
+    // The store's byte budget can truncate a fetch before the requested row count, and a
+    // guest-side narrowing that filled its whole over-fetch window may have rows beyond it.
+    let more = overflowed
+        || fetched.truncated
+        || (filter.narrows_in_guest() && raw >= list_runs_window(filter, limit));
     RunPage {
         headers,
         more,
