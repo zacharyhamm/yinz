@@ -376,7 +376,8 @@ impl Tab {
         if self.pane_tabs_input(active_pane_id, &None, Some(client_id))? {
             return Ok(());
         }
-        self.paste_to_pane_id(bytes, active_pane_id, None, completion)
+        // Attribute the paste so a plugin pane buffers it per client, as the targeted path does.
+        self.paste_to_pane_id(bytes, active_pane_id, Some(client_id), completion)
             .map(|_| ())
     }
 

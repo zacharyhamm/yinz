@@ -573,10 +573,29 @@ impl Pair {
 // Compare the original ordered mutations while checking the new revision contract separately.
 fn normalize_run_persistence(commands: Vec<Value>, current: bool) -> Vec<Value> {
     let mut normalized = Vec::new();
+    let mut hydrating: Vec<Value> = Vec::new();
     for mut command in commands {
-        if current
-            && command.pointer("/DataFetch/request/entity") == Some(&serde_json::json!("agent_run"))
-        {
+        let entity = command.pointer("/DataFetch/request/entity").cloned();
+        // Hydration revalidates each run's rev after reading its paginated entries;
+        // the legacy runtime had no such read.
+        if current && entity == Some(serde_json::json!("agent_run")) {
+            let filter = command.pointer("/DataFetch/request/filter/Eq");
+            if let Some(index) = hydrating
+                .iter()
+                .position(|id| filter == Some(&serde_json::json!(["uid", {"Text": id}])))
+            {
+                hydrating.remove(index);
+                continue;
+            }
+        }
+        hydrating = match command.pointer("/DataFetch/request/filter/In/1") {
+            Some(Value::Array(ids)) if entity == Some(serde_json::json!("agent_run_entry")) => ids
+                .iter()
+                .filter_map(|id| id.get("Text").cloned())
+                .collect(),
+            _ => Vec::new(),
+        };
+        if current && entity == Some(serde_json::json!("agent_run")) {
             assert_eq!(
                 command["DataFetch"]["request"]["select"],
                 serde_json::json!(["uid", "rev", "payload", "host_id", "yinz_session_name"])
@@ -662,6 +681,27 @@ fn run_persistence_comparison_preserves_writes_and_requires_current_guards() {
     assert!(
         std::panic::catch_unwind(|| normalize_run_persistence(vec![batch(vec![first])], true))
             .is_err()
+    );
+
+    let fetch = |entity: &str, filter: Value, select: Value| json!({"DataFetch":{"request":{"entity":entity,"filter":filter,"select":select}}});
+    let run =
+        |uid: &str, select: Value| fetch("agent_run", json!({"Eq":["uid",{"Text":uid}]}), select);
+    let columns = json!(["uid", "rev", "payload", "host_id", "yinz_session_name"]);
+    let entries = fetch(
+        "agent_run_entry",
+        json!({"In":["run_id",[{"Text":"one"},{"Text":"two"}]]}),
+        json!([]),
+    );
+    let legacy = vec![run("one", json!(["payload"])), entries.clone()];
+    let current = vec![
+        run("one", columns.clone()),
+        entries,
+        run("one", columns.clone()),
+        run("two", columns),
+    ];
+    assert_eq!(
+        normalize_run_persistence(current, true),
+        normalize_run_persistence(legacy, false)
     );
 }
 

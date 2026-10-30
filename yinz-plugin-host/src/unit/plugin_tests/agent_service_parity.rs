@@ -701,7 +701,7 @@ fn seed(data: &Arc<DataHost>) {
 }
 
 #[test]
-fn agent_service_keeps_original_revisions_on_conflict_and_other_runs_progress() {
+fn agent_service_merges_conflicting_run_and_other_runs_progress() {
     use super::runtime_parity::SteelReference;
     use agent_proto::agents::{rows, AgentRun};
 
@@ -754,38 +754,42 @@ fn agent_service_keeps_original_revisions_on_conflict_and_other_runs_progress() 
         1
     );
     let fetch = |id: &str| data.fetch(&rows::run_by_id_request(id).in_namespace("shared:yinz"));
-    for expected in [2, 3] {
+    let entries = |id: &str| {
+        data.fetch(&rows::entries_request([id.into()]).in_namespace("shared:yinz"))
+            .rows
+            .len()
+    };
+    // The conflicting write merges its local entry onto the winner and retries with the winner's rev.
+    for (expected, conflict) in [(2, true), (3, false)] {
         service.runtime.invoke("edit", vec![json!(8)]).unwrap();
         service.runtime.invoke("persist", vec![]).unwrap();
         assert_eq!(
             service.runtime.invoke("pending", vec![]).unwrap(),
-            json!(["stale"])
+            json!([])
         );
         assert_eq!(
             service.runtime.invoke("revisions", vec![]).unwrap(),
-            json!({"stale":1,"healthy":expected})
+            json!({"stale":3,"healthy":expected})
         );
         let saved = rows::runs_from_rows(&fetch("stale")).remove(0);
         assert_eq!(saved.cwd, winner.cwd);
-        assert_eq!(saved.revision, 1);
+        assert_eq!(saved.revision, 2);
+        assert_eq!(entries("stale"), 2, "the merge keeps both timelines");
         assert_eq!(
             rows::runs_from_rows(&fetch("healthy"))[0].revision,
             expected
         );
-        let entries =
-            data.fetch(&rows::entries_request(["stale".into()]).in_namespace("shared:yinz"));
         assert_eq!(
-            entries.rows.len(),
-            1,
-            "a conflict rolls back the stale timeline too"
+            service.runtime.take_logs().unwrap().contains("conflict"),
+            conflict
         );
-        assert!(service.runtime.take_logs().unwrap().contains("conflict"));
     }
+    let mut winner = rows::runs_from_rows(&fetch("stale")).remove(0);
     winner.host_id = "other-host".into();
     winner.yinz_session_name = "other-session".into();
     data.apply(
         "shared:yinz",
-        &rows::run_mutations(&winner, DataRevision::new(2)),
+        &rows::run_mutations(&winner, DataRevision::new(3)),
     );
     service.runtime.invoke("release", vec![]).unwrap();
     assert_eq!(
@@ -865,7 +869,13 @@ fn agent_service_actual_runtimes_match_reload_claim_and_released_run_ownership()
     let event = Event::PaneUpdate(PaneManifest::default());
     assert_eq!(pair.steel.update(&event), pair.wasm.update(&event));
     pair.compare_commands_for_event(false, |actual, expected| {
-        // The foreign owner now prevents the stale write; the original owner-filtered update wrote zero rows.
+        // Both runtimes send the owner-filtered release, which the foreign owner turns into a no-op.
+        // The current runtime then reconciles: it rereads the run and its timeline and drops the stale release.
+        let timeline = PluginCommand::DataFetch {
+            request: agent_proto::agents::rows::entries_request([run.id.clone()])
+                .in_namespace("shared:yinz"),
+        };
+        assert_eq!(actual.pop(), Some(serde_json::to_value(timeline).unwrap()));
         let lookup = PluginCommand::DataFetch {
             request: FetchRequest {
                 select: vec!["payload".into()],
@@ -881,7 +891,7 @@ fn agent_service_actual_runtimes_match_reload_claim_and_released_run_ownership()
         })
         .unwrap();
         no_op["DataApply"]["mutations"][0]["Update"]["expect_rev"] = Value::Null;
-        assert_eq!(expected.pop(), Some(no_op));
+        assert_eq!(expected.last(), Some(&no_op));
     });
     stored_equal(&wasm, &steel);
     let rows = wasm.fetch(&FetchRequest {

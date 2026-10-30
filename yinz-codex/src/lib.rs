@@ -1540,7 +1540,8 @@ async fn forward(yinz: &Path, env: &HashMap<String, String>, raw: &[u8]) -> Resu
     .await
     .context("timed out forwarding Codex hook to its pane")
     .and_then(|result| result);
-    if result.is_err() {
+    // A reporter that already exited (a rejected report) has been reaped; only stop a live one.
+    if result.is_err() && !matches!(child.try_wait(), Ok(Some(_))) {
         child
             .start_kill()
             .context("stop failed Codex hook reporter")
