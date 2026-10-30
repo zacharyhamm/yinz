@@ -1147,6 +1147,7 @@ impl Screen {
             );
         }
         let mut tab_to_close = self.tabs.remove(&tab_id).with_context(err_context)?;
+        self.tabs_needing_reflow.remove(&tab_id);
         if self.departed_followed_tab_id == Some(tab_id) {
             self.departed_followed_tab_id = self.tabs.keys().next().copied();
             for watcher in self.watcher_clients.values_mut() {

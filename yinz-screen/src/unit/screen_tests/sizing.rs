@@ -1168,3 +1168,175 @@ fn a_pixel_dimensions_reply_arriving_before_the_client_size_still_derives_the_ce
         "a later resize must not divide the stale text area by the new grid"
     );
 }
+
+#[test]
+fn failed_destination_sizing_disconnects_without_replaying_pending_events() {
+    use crate::screen::thread_main::PendingEvents;
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let tab_id = TabId::new(0);
+    let attaching = ClientId::new(2);
+    for focus_pane in [false, true] {
+        let mut screen = create_non_mirrored_screen(large);
+        new_tab(&mut screen, 1, tab_id);
+        new_tab(&mut screen, 2, TabId::new(1));
+        let receiver = screen_wired_to_server(&mut screen);
+        let (plugin, _plugin_receiver) = channels::unbounded();
+        let tab = screen.tabs.get_mut(&tab_id).unwrap();
+        let saved_senders = tab.senders.clone();
+        tab.senders.should_silently_fail = false;
+        tab.senders.to_plugin = Some(SenderWithContext::new(plugin));
+        tab.senders.to_pty_writer = None;
+        let mut traces = HashMap::new();
+        let mut pending = PendingEvents::default();
+        pending
+            .waiting_for_client
+            .push(ScreenInstruction::ShowPluginCursor(
+                crate::PluginId::new(2),
+                attaching,
+                Some((2, 2)),
+            ));
+
+        screen
+            .attach_client(
+                attaching,
+                small,
+                (!focus_pane).then_some(TabNumber::new(1)),
+                focus_pane.then_some(PaneId::Terminal(TerminalId::new(1))),
+                &mut traces,
+                &mut pending,
+            )
+            .unwrap();
+
+        assert!(traces.is_empty());
+        assert_eq!(pending.waiting_for_client.len(), 1);
+        assert!(screen.connected_clients.borrow().contains(&attaching));
+        assert_eq!(screen.active_tab_ids.get(&attaching), Some(&tab_id));
+        assert!(screen.tabs_needing_reflow.contains(&tab_id));
+        assert_eq!(
+            receiver
+                .try_iter()
+                .filter(|(instruction, _)| matches!(instruction,
+            ServerInstruction::ClientExit(id, None) if *id == attaching))
+                .count(),
+            1
+        );
+
+        screen.tabs.get_mut(&tab_id).unwrap().senders = saved_senders;
+        screen.remove_client(attaching).unwrap();
+        assert!(!screen.connected_clients.borrow().contains(&attaching));
+    }
+}
+
+#[test]
+fn incomplete_reflow_retries_at_the_same_display_size() {
+    let original = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let requested = Size { cols: 80, rows: 24 };
+    let client = ClientId::new(1);
+    let tab_id = TabId::new(0);
+    let mut screen = create_non_mirrored_screen(original);
+    new_tab(&mut screen, 1, tab_id);
+    let tab = screen.tabs.get_mut(&tab_id).unwrap();
+    let saved_senders = tab.senders.clone();
+    tab.senders.should_silently_fail = false;
+    tab.senders.to_pty_writer = None;
+    screen.set_client_size(client, requested).unwrap();
+    for _ in 0..2 {
+        assert!(screen.reflow_all_tabs().is_err());
+        assert_eq!(screen.tabs[&tab_id].get_display_area(), requested);
+        assert!(screen.tabs_needing_reflow.contains(&tab_id));
+        assert_eq!(screen.last_surface_size, original);
+    }
+    // No viewers must preserve the incomplete reflow for the next visit.
+    screen.client_sizes.remove(&client);
+    screen.reflow_all_tabs().unwrap();
+    assert!(screen.tabs_needing_reflow.contains(&tab_id));
+    screen.set_client_size(client, requested).unwrap();
+    screen.tabs.get_mut(&tab_id).unwrap().senders = saved_senders;
+    screen.reflow_all_tabs().unwrap();
+    assert!(!screen.tabs_needing_reflow.contains(&tab_id));
+    assert_eq!(screen.last_surface_size, requested);
+    assert_tab_geometry(&screen, tab_id, requested);
+
+    screen
+        .tabs
+        .get_mut(&tab_id)
+        .unwrap()
+        .senders
+        .should_silently_fail = false;
+    screen.set_client_size(client, original).unwrap();
+    assert!(screen.reflow_all_tabs().is_err());
+    screen.close_tab_by_id(tab_id).unwrap();
+    assert!(!screen.tabs_needing_reflow.contains(&tab_id));
+}
+
+fn assert_tab_geometry(screen: &Screen, tab_id: TabId, size: Size) {
+    let tab = &screen.tabs[&tab_id];
+    assert_eq!(tab.size, size);
+    assert_eq!(tab.get_display_area(), size);
+    let geom = tab.get_tiled_panes().next().unwrap().1.position_and_size();
+    assert_eq!(geom.cols.as_usize(), size.cols);
+    assert_eq!(geom.rows.as_usize(), size.rows);
+}
+
+#[test]
+fn removal_retries_reflow_after_floating_pty_failure_before_tiled_resize() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let tab_id = TabId::new(0);
+    let attaching = ClientId::new(2);
+    let mut screen = create_non_mirrored_screen(large);
+    let saved_senders = screen.bus.senders.clone();
+    let shutdown = Shutdown::default();
+    let (writer, writer_receiver) = channels::unbounded();
+    let (plugin, _plugin_receiver) = channels::unbounded();
+    let (pty, _pty_receiver) = channels::unbounded();
+    let (background, _background_receiver) = channels::unbounded();
+    let (server, _server_receiver) = channels::unbounded();
+    screen.bus.senders.to_pty_writer = Some(shutdown.sender(writer));
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin));
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty));
+    screen.bus.senders.to_background_jobs = Some(SenderWithContext::new(background));
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server));
+    screen.bus.senders.should_silently_fail = false;
+    new_tab(&mut screen, 1, tab_id);
+    add_pane_to_tab(
+        &mut screen,
+        tab_id,
+        PaneId::Terminal(TerminalId::new(3)),
+        true,
+    );
+    screen.bus.senders = saved_senders;
+    screen_wired_to_server(&mut screen);
+    drop(writer_receiver);
+    let mut traces = HashMap::new();
+    screen
+        .attach_client(
+            attaching,
+            small,
+            Some(TabNumber::new(1)),
+            None,
+            &mut traces,
+            &mut crate::screen::thread_main::PendingEvents::default(),
+        )
+        .unwrap();
+    assert_eq!(screen.tabs[&tab_id].size, small);
+    assert_eq!(screen.tabs[&tab_id].get_display_area(), large);
+    assert!(screen.tabs_needing_reflow.contains(&tab_id));
+    // Recover sends through the writer's normal shutdown tolerance, without replacing the tab.
+    shutdown.begin();
+    screen.remove_client(attaching).unwrap();
+    screen.reflow_all_tabs().unwrap();
+    assert_eq!(screen.client_sizes.get(&ClientId::new(1)), Some(&large));
+    assert_tab_geometry(&screen, tab_id, large);
+    assert!(!screen.tabs_needing_reflow.contains(&tab_id));
+}

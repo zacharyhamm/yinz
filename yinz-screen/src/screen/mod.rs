@@ -601,6 +601,8 @@ pub(crate) struct Screen {
     max_panes: Option<usize>,
     /// A map between this [`Screen`]'s tabs and their ID/key.
     tabs: BTreeMap<TabId, Tab>,
+    /// Failed resizes can leave the display area updated before the layout is complete.
+    tabs_needing_reflow: HashSet<TabId>,
     // A closed last tab must not be mistaken for startup.
     has_created_tab: bool,
     /// Where each terminal pane's process is, as pty last reported it. Stamped
@@ -1448,6 +1450,7 @@ impl Screen {
             agent_hook_flashes: HashMap::new(),
             global_last_active_tab_id: TabId::new(0),
             tabs: BTreeMap::new(),
+            tabs_needing_reflow: HashSet::new(),
             has_created_tab: false,
             terminal_cwds: HashMap::new(),
             terminal_foreground_cmds: HashMap::new(),

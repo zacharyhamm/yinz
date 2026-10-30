@@ -11,6 +11,7 @@ use crate::pty::PtyInstruction;
 use crate::route::NotificationEnd;
 use crate::session_layout_metadata::SessionLayoutMetadata;
 use crate::ClientId;
+use crate::ServerInstruction;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use yinz_ipc::ipc::ServerToClientMsg;
@@ -202,9 +203,9 @@ impl Screen {
         Ok(())
     }
 
-    /// A client has attached: size the surface for it, reflow every tab, restore the focus it
-    /// asked for, replay what was waiting for a client, and report and render on the way out.
-    /// Rejects the client if its size leaves nothing to lay out.
+    /// Register a client, restore its requested focus, and size its destination before replaying
+    /// what was waiting for a client, reporting, and rendering. Reject failed sizing through
+    /// normal client removal; destination sizing follows the registration commit.
     ///
     /// The trace lines around each step feed `attach_traces_waiting_for_first_render`, which
     /// the first render after this closes.
@@ -254,11 +255,21 @@ impl Screen {
         );
             self.go_to_tab(tab_number_to_focus, client_id)?;
         }
-        if passing_through {
-            self.set_client_size(client_id, client_size)
+        if passing_through
+            && let Err(error) = self
+                .set_client_size(client_id, client_size)
                 .and_then(|()| self.reflow_all_tabs())
+        {
+            Err::<(), _>(error)
                 .context("sizing the attaching client at its destination")
                 .non_fatal();
+            attach_traces_waiting_for_first_render.remove(&client_id);
+            self.bus
+                .senders
+                .send_to_server(ServerInstruction::ClientExit(client_id, None))
+                .context("disconnecting client after failed destination sizing")
+                .non_fatal();
+            return Ok(());
         }
         log::info!(
             "attach trace: screen client_id={client_id} focus restoration complete after {:?}",

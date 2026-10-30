@@ -3,6 +3,7 @@ const PLUGIN_2: yinz_types::internal_ids::PluginId = yinz_types::internal_ids::P
 
 use super::*;
 use yinz_types::internal_ids::TabId;
+use yinz_types::internal_ids::TabNumber;
 
 #[test]
 fn watchers_resume_incremental_output_when_a_regular_client_returns() {
@@ -1738,5 +1739,56 @@ fn a_client_that_leaves_before_its_layout_lands_is_not_registered() {
             .copied()
             .collect::<Vec<_>>(),
         vec![joining]
+    );
+}
+
+#[test]
+fn failed_destination_sizing_preserves_committed_follow_state_and_retires_source_output() {
+    use crate::screen::thread_main::PendingEvents;
+    let source = ClientId::new(1);
+    let returning = ClientId::new(3);
+    let tab_id = TabId::new(0);
+    let (mut screen, _capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 24 });
+    new_tab(&mut screen, 1, tab_id);
+    screen.set_followed_client(source).unwrap();
+    screen.add_watcher_client(ClientId::new(2)).unwrap();
+    screen.remove_client(source).unwrap();
+    let receiver = screen_wired_to_server(&mut screen);
+    let tab = screen.tabs.get_mut(&tab_id).unwrap();
+    tab.senders.should_silently_fail = false;
+    tab.senders.to_pty_writer = None;
+    let mut pending = PendingEvents::default();
+    pending.waiting_for_pane.insert(
+        PaneId::Plugin(PLUGIN_2),
+        vec![ScreenInstruction::ShowPluginCursor(
+            PLUGIN_2,
+            source,
+            Some((2, 2)),
+        )],
+    );
+    let mut traces = HashMap::new();
+    screen
+        .attach_client(
+            returning,
+            Size { cols: 79, rows: 24 },
+            Some(TabNumber::new(1)),
+            None,
+            &mut traces,
+            &mut pending,
+        )
+        .unwrap();
+
+    assert_eq!(screen.followed_client_id, Some(returning));
+    assert_eq!(screen.departed_followed_tab_id, None);
+    assert!(screen.connected_clients.borrow().contains(&returning));
+    assert!(pending.waiting_for_pane.is_empty());
+    assert!(traces.is_empty());
+    assert_eq!(
+        receiver
+            .try_iter()
+            .filter(|(instruction, _)| matches!(instruction,
+        ServerInstruction::ClientExit(id, None) if *id == returning))
+            .count(),
+        1
     );
 }

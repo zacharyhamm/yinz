@@ -506,15 +506,19 @@ impl Screen {
 
     /// Lay tab `tab_id` out against its interactive viewers' bounds.
     ///
-    /// With no interactive client there is no size to derive, so the tab keeps its last layout.
+    /// With no interactive client there is no size to derive, so the tab keeps its last layout
+    /// and any pending retry until a viewer returns.
     pub(super) fn reflow_tab(&mut self, tab_id: TabId) -> Result<()> {
         let Some(tab_size) = self.tab_surface_size(tab_id) else {
             return Ok(());
         };
         if let Some(tab) = self.tabs.get_mut(&tab_id)
-            && tab.get_display_area() != tab_size
+            && (tab.get_display_area() != tab_size || self.tabs_needing_reflow.contains(&tab_id))
         {
+            // Resizing can fail after updating the display area but before finishing the layout.
+            self.tabs_needing_reflow.insert(tab_id);
             tab.resize_whole_tab_to(tab_size)?;
+            self.tabs_needing_reflow.remove(&tab_id);
             tab.set_force_render();
         }
         Ok(())
