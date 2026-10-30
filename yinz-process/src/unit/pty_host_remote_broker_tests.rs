@@ -916,6 +916,24 @@ fn stalled_output_and_control_writes_close_the_wire_and_wake_its_reader() {
 }
 
 #[test]
+fn a_frame_rejected_before_writing_keeps_the_wire_open() {
+    let (mut peer, socket) = UnixStream::pair().unwrap();
+    let wire: Wire = Arc::new(Mutex::new(socket));
+    // An oversized control frame fails validation before any byte reaches the socket.
+    let oversized = send(
+        &wire,
+        &BrokerToServerMsg::AgentReport {
+            kind: "agy".to_owned(),
+            json: "x".repeat(protocol::MAX_FRAME_LEN as usize),
+        },
+    );
+    assert!(oversized.is_err());
+    send(&wire, &BrokerToServerMsg::Released).unwrap();
+    let frame = protocol::read_frame(&mut peer).unwrap().unwrap();
+    assert!(matches!(frame, protocol::Frame::Control(_)));
+}
+
+#[test]
 fn partial_progress_does_not_extend_a_remote_frames_write_deadline() {
     use nix::sys::socket::{setsockopt, sockopt::SndBuf};
     use std::time::{Duration, Instant};

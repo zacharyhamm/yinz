@@ -82,6 +82,8 @@ fn send_output(wire: &Wire, bytes: &[u8]) -> Result<()> {
 struct WireWriter<'a> {
     socket: &'a mut UnixStream,
     deadline: std::time::Instant,
+    /// Whether any write reached the socket; a frame rejected before writing leaves it intact.
+    attempted: bool,
 }
 
 impl Write for WireWriter<'_> {
@@ -95,6 +97,7 @@ impl Write for WireWriter<'_> {
         let flags = MsgFlags::MSG_DONTWAIT;
         #[cfg(not(target_vendor = "apple"))]
         let flags = flags | MsgFlags::MSG_NOSIGNAL;
+        self.attempted = true;
         loop {
             let remaining = self
                 .deadline
@@ -129,11 +132,13 @@ fn write_wire(wire: &Wire, write: impl FnOnce(&mut WireWriter<'_>) -> Result<()>
         .lock()
         .to_anyhow()
         .context("failed to lock a remote pane's wire")?;
-    let result = write(&mut WireWriter {
+    let mut writer = WireWriter {
         socket: &mut sock,
         deadline: std::time::Instant::now() + WIRE_WRITE_TIMEOUT,
-    });
-    if result.is_err() {
+        attempted: false,
+    };
+    let result = write(&mut writer);
+    if result.is_err() && writer.attempted {
         // A partial frame cannot be reused; shutdown also wakes the control reader to detach.
         sock.shutdown(std::net::Shutdown::Both)
             .context("failed to shut down a remote pane's broken wire")
