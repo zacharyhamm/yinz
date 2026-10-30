@@ -5,7 +5,7 @@ use crate::ui::command_palette::{
 use std::collections::{BTreeMap, HashMap};
 use yinz_bus::command_palette::{
     query::{AgentQuery, ARCHIVE_FIELDS, LIVE_FIELDS},
-    AgentAction, HistoryAction, HistoryHeader, HistoryReply, Instruction,
+    AgentAction, HistoryAction, HistoryHeader, HistoryReply, HistoryRow, Instruction,
 };
 use yinz_runtime::errors::prelude::*;
 use yinz_types::{
@@ -116,12 +116,19 @@ pub(super) struct Browser {
     history_scope: Option<(String, String)>,
     continuation: Option<HistoryAction>,
     pages_since_tail: usize,
-    events: BTreeMap<u64, yinz_bus::command_palette::HistoryEvent>,
-    cached_history:
-        HashMap<(String, String), BTreeMap<u64, yinz_bus::command_palette::HistoryEvent>>,
+    history: HistoryCache,
+    cached_history: HashMap<(String, String), HistoryCache>,
     usage_checked: Option<std::time::Instant>,
     usage: Option<yinz_types::agent::control::ProviderUsage>,
     prompt: Option<PromptSubmission>,
+}
+
+#[derive(Default)]
+struct HistoryCache {
+    events: BTreeMap<u64, yinz_bus::command_palette::HistoryEvent>,
+    earlier: Option<HistoryRow>,
+    // Highest revision covered by reads connected to the beginning of the run.
+    prefix_through: u64,
 }
 
 struct PromptSubmission {
@@ -357,7 +364,7 @@ impl Screen {
                 history_scope: None,
                 continuation: None,
                 pages_since_tail: 0,
-                events: BTreeMap::new(),
+                history: HistoryCache::default(),
                 usage_checked: None,
                 usage: None,
                 prompt: None,
@@ -421,7 +428,7 @@ impl Screen {
                 let mut rows = rows;
                 let mut events = events;
                 let mut status = status;
-                if let Some(HistoryAction::Run { id, query, .. }) = &request {
+                if let Some(HistoryAction::Run { id, from, query }) = &request {
                     let scope = (id.clone(), query.clone());
                     if browser.history_scope.as_ref() != Some(&scope) {
                         if let Some(old_scope) = browser.history_scope.take()
@@ -429,28 +436,86 @@ impl Screen {
                         {
                             browser
                                 .cached_history
-                                .insert(old_scope, std::mem::take(&mut browser.events));
+                                .insert(old_scope, std::mem::take(&mut browser.history));
                         }
                         browser.continuation = None;
-                        browser.events = browser.cached_history.remove(&scope).unwrap_or_default();
+                        browser.history = browser.cached_history.remove(&scope).unwrap_or_default();
                         browser.rows.clear();
                         browser.history_scope = Some(scope);
                     }
-                    for event in events {
-                        browser.events.insert(event.revision, event);
-                    }
-                    events = browser.events.values().cloned().collect();
-                    if query.is_empty() {
-                        events = yinz_bus::command_palette::collapse_tools(events);
-                    }
+                    let page_start = events.iter().map(|event| event.revision).min();
+                    let page_end = events.iter().map(|event| event.revision).max();
+                    let covers_prefix = page_start.is_some_and(|first| {
+                        browser.history.prefix_through.saturating_add(1) >= first
+                    });
+                    let mut has_earlier = false;
                     rows.retain(|row| {
                         if row.id == "continue" {
                             continuation = Some(row.action.clone());
+                            false
+                        } else if row.id == "earlier" {
+                            has_earlier = true;
+                            if browser.history.earlier.is_none() && !covers_prefix {
+                                browser.history.earlier = Some(row.clone());
+                            }
                             false
                         } else {
                             true
                         }
                     });
+                    let extends_prefix = match from {
+                        Some(from) => *from <= browser.history.prefix_through.saturating_add(1),
+                        None => !has_earlier || covers_prefix,
+                    };
+                    if query.is_empty() && extends_prefix {
+                        let through = match &continuation {
+                            Some(HistoryAction::Run {
+                                from: Some(next), ..
+                            }) => page_end.unwrap_or(0).max(next.saturating_sub(1)),
+                            _ => page_end.unwrap_or(0).max(
+                                browser
+                                    .history
+                                    .events
+                                    .last_key_value()
+                                    .map_or(0, |(&revision, _)| revision),
+                            ),
+                        };
+                        browser.history.prefix_through =
+                            browser.history.prefix_through.max(through);
+                    }
+                    if let Some(earlier) = &mut browser.history.earlier {
+                        if from.is_some() && extends_prefix {
+                            if let Some(action) = &continuation {
+                                earlier.action = action.clone();
+                            } else {
+                                browser.history.earlier = None;
+                            }
+                        } else if from.is_none() {
+                            if extends_prefix {
+                                browser.history.earlier = None;
+                            } else if let Some(
+                                action @ HistoryAction::Run {
+                                    from: Some(cursor), ..
+                                },
+                            ) = &browser.continuation
+                                && *cursor <= browser.history.prefix_through.saturating_add(1)
+                            {
+                                // A tail read may introduce this action midway
+                                // through automatic hit backfill.
+                                earlier.action = action.clone();
+                            }
+                        }
+                    }
+                    // Incremental tail replies do not repeat this action. Keep it
+                    // until the user loads the prefix, including across searches.
+                    rows.extend(browser.history.earlier.clone());
+                    for event in events {
+                        browser.history.events.insert(event.revision, event);
+                    }
+                    events = browser.history.events.values().cloned().collect();
+                    if query.is_empty() {
+                        events = yinz_bus::command_palette::collapse_tools(events);
+                    }
                     if matches!(request, Some(HistoryAction::Run { from: None, .. }))
                         && browser.continuation.is_some()
                     {
@@ -469,8 +534,10 @@ impl Screen {
                                 query: String::new(),
                             });
                         }
-                        status =
-                            format!("{} events loaded · Loading history…", browser.events.len());
+                        status = format!(
+                            "{} events loaded · Loading history…",
+                            browser.history.events.len()
+                        );
                     }
                     // Rebuild event actions from the complete merged timeline, including
                     // tool groups that cross page boundaries.
@@ -849,7 +916,7 @@ impl Screen {
             {
                 *id = current.run().unwrap_or_default();
                 *from = None;
-                browser.events.clear();
+                browser.history = HistoryCache::default();
                 browser.cached_history.clear();
                 browser.continuation = None;
                 browser.history_scope = None;
@@ -884,6 +951,7 @@ impl Screen {
                 && query.is_empty()
             {
                 *from = browser
+                    .history
                     .events
                     .last_key_value()
                     .map(|(revision, _)| revision.saturating_add(1));

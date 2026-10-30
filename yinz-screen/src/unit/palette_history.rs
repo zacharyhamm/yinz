@@ -64,7 +64,7 @@ fn retained_prompt_identity_changes_with_target_but_survives_metadata_and_run_di
         history_scope: None,
         continuation: None,
         pages_since_tail: 0,
-        events: BTreeMap::new(),
+        history: HistoryCache::default(),
         usage_checked: None,
         usage: None,
         prompt: None,

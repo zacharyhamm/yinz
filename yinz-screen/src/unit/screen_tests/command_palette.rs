@@ -5103,7 +5103,7 @@ fn history_run(
 }
 
 #[test]
-fn history_backfill_merges_pages_and_polling_preserves_manual_scroll() {
+fn history_opens_at_tail_and_polls_before_explicit_backfill_preserving_manual_scroll() {
     use yinz_bus::command_palette::{
         AgentAction, AgentReply, HistoryAction, HistoryRow, Instruction,
     };
@@ -5168,8 +5168,8 @@ fn history_backfill_merges_pages_and_polling_preserves_manual_scroll() {
     } = &mut first
     {
         rows.push(HistoryRow {
-            id: "continue".into(),
-            label: String::new(),
+            id: "earlier".into(),
+            label: "Load earlier messages".into(),
             description: String::new(),
             action: HistoryAction::Run {
                 id: "run".into(),
@@ -5179,49 +5179,521 @@ fn history_backfill_merges_pages_and_polling_preserves_manual_scroll() {
         });
     }
     screen.plugin_palette_instruction(first);
-    let backfill = next();
-    assert!(matches!(
-        backfill.action,
-        AgentAction::History(HistoryAction::Run { from: Some(1), .. })
-    ));
-    palette_key(&mut screen, BareKey::Tab);
-    palette_key(&mut screen, BareKey::Up);
-    let receiver = screen_wired_to_server(&mut screen);
-    let mut grid = grid_for_render_snapshot(SIZE);
-    let before = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    screen.plugin_palette_instruction(reply(&backfill, 1));
-    assert_eq!(
-        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
-        before
-    );
-    let view = loop {
+    let next_tick = || loop {
         let (instruction, _) = tick_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        if let ScreenInstruction::CommandPalette(Instruction::HistoryTick { view, .. }) =
+        if let ScreenInstruction::CommandPalette(tick @ Instruction::HistoryTick { .. }) =
             instruction
         {
-            break view;
+            break tick;
         }
     };
-    screen.plugin_palette_instruction(Instruction::HistoryTick {
-        client: CLIENT,
-        opening: initial.opening,
-        view,
-        generation: 2,
-    });
+    let tick = next_tick();
+    // The scheduled live tick also gives any accidental automatic backfill time
+    // to pass the request debounce and appear on the plugin channel.
+    assert!(!rx.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        PluginInstruction::PaletteAgent(request) if matches!(request.action, AgentAction::History(_))
+    )));
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("Event 79"), "{frame}");
+    assert!(frame.contains("Load earlier messages"), "{frame}");
+    assert!(!frame.contains("Loading history"), "{frame}");
+    screen.plugin_palette_instruction(tick);
     let latest = next();
     assert!(matches!(
         latest.action,
         AgentAction::History(HistoryAction::Run { from: Some(80), .. })
     ));
     screen.plugin_palette_instruction(reply(&latest, 80));
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("Event 109"), "{frame}");
+    assert!(frame.contains("Load earlier messages"), "{frame}");
+
+    palette_key(&mut screen, BareKey::Tab);
+    palette_key(&mut screen, BareKey::Up);
+    let before = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    screen.plugin_palette_instruction(next_tick());
+    let latest = next();
+    assert!(matches!(
+        latest.action,
+        AgentAction::History(HistoryAction::Run {
+            from: Some(110),
+            ..
+        })
+    ));
+    screen.plugin_palette_instruction(reply(&latest, 110));
     assert_eq!(
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
         before
     );
+
+    palette_key(&mut screen, BareKey::Tab); // Messages -> prompt.
+    palette_key(&mut screen, BareKey::Tab); // Prompt -> Focus.
+    palette_key(&mut screen, BareKey::Right); // Focus -> Load earlier messages.
+    palette_key(&mut screen, BareKey::Enter);
+    let backfill = next();
+    assert!(matches!(
+        backfill.action,
+        AgentAction::History(HistoryAction::Run { from: Some(1), .. })
+    ));
+    screen.plugin_palette_instruction(reply(&backfill, 1));
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("Event 108"), "{frame}");
+    assert!(!frame.contains("Load earlier messages"), "{frame}");
     palette_key(&mut screen, BareKey::End);
     let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(frame.contains("Event 109"), "{frame}");
+    assert!(frame.contains("Event 139"), "{frame}");
+    palette_key(&mut screen, BareKey::Home);
+    palette_key(&mut screen, BareKey::Enter);
+    assert!(matches!(
+        next().action,
+        AgentAction::History(HistoryAction::Event { revision: 1, .. })
+    ));
     drop(tick_rx);
+}
+
+#[test]
+fn live_history_restores_backfill_after_search_only_when_new_tail_leaves_a_gap() {
+    use yinz_bus::command_palette::{
+        AgentAction, AgentReply, AgentRequest, HistoryAction, HistoryRow, Instruction,
+    };
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+    for tail_start in [10, 11, 71] {
+        let mut screen = screen();
+        screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
+            PaneId::Terminal(TerminalId::new(1)),
+            Some(AgentInfo {
+                kind: "codex".into(),
+                state: AgentState::Idle,
+                source: AgentSource::Reported,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                session_id: Some("session".into()),
+                run_id: Some("run".into()),
+            }),
+        );
+        let (tx, rx) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+        let next = || loop {
+            let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if let PluginInstruction::PaletteAgent(request) = instruction
+                && matches!(request.action, AgentAction::History(_))
+            {
+                break *request;
+            }
+        };
+        let reply =
+            |request: &AgentRequest, revisions: std::ops::RangeInclusive<u64>, earlier, next| {
+                let mut rows: Vec<_> = revisions
+                    .map(|revision| HistoryRow {
+                        id: format!("event:{revision}"),
+                        label: format!("Event {revision}"),
+                        description: String::new(),
+                        action: HistoryAction::Event {
+                            id: "run".into(),
+                            revision,
+                        },
+                    })
+                    .collect();
+                for (id, label, from) in [
+                    ("earlier", "Load earlier messages", earlier),
+                    ("continue", "Loading history…", next),
+                ] {
+                    if let Some(from) = from {
+                        rows.push(HistoryRow {
+                            id: id.into(),
+                            label: label.into(),
+                            description: String::new(),
+                            action: HistoryAction::Run {
+                                id: "run".into(),
+                                from: Some(from),
+                                query: String::new(),
+                            },
+                        });
+                    }
+                }
+                Instruction::AgentReply {
+                    client: CLIENT,
+                    opening: request.opening,
+                    step: request.step,
+                    reply: Ok(AgentReply::History(history_run(rows))),
+                }
+            };
+        palette_search(&mut screen, "provider:codex");
+        palette_key(&mut screen, BareKey::Enter);
+        screen.plugin_palette_instruction(reply(&next(), 1..=10, None, None));
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        let search_and_clear = |screen: &mut Screen| {
+            palette_key(screen, BareKey::Enter); // Expand Search.
+            screen.command_palette_handles_input(&None, b"needle", false, CLIENT);
+            let search = next();
+            assert!(matches!(&search.action,
+                AgentAction::History(HistoryAction::Run { query, .. }) if query == "needle"));
+            screen.plugin_palette_instruction(reply(&search, 1..=1, None, None));
+            palette_key(screen, BareKey::Esc);
+            let latest = next();
+            assert!(matches!(&latest.action,
+                AgentAction::History(HistoryAction::Run { from: None, query, .. }) if query.is_empty()));
+            screen.plugin_palette_instruction(reply(
+                &latest,
+                tail_start..=tail_start + 29,
+                Some(1),
+                None,
+            ));
+        };
+        search_and_clear(&mut screen);
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        let has_gap = tail_start == 71;
+        assert_eq!(frame.contains("Load earlier messages"), has_gap, "{frame}");
+        if !has_gap {
+            continue;
+        }
+
+        // Backfill is explicit, and its cursor must survive another search.
+        for from in [1, 31] {
+            palette_key(&mut screen, BareKey::Tab); // Search -> messages.
+            palette_key(&mut screen, BareKey::Tab); // Messages -> prompt.
+            palette_key(&mut screen, BareKey::Tab); // Prompt -> Focus.
+            palette_key(&mut screen, BareKey::Right); // Focus -> Load earlier messages.
+            palette_key(&mut screen, BareKey::Enter);
+            let request = next();
+            assert!(matches!(request.action,
+                AgentAction::History(HistoryAction::Run { from: Some(actual), .. }) if actual == from));
+            screen.plugin_palette_instruction(reply(
+                &request,
+                from..=from + 29,
+                None,
+                Some(from + 30),
+            ));
+            let pending = next();
+            assert!(matches!(pending.action,
+                AgentAction::History(HistoryAction::Run { from: Some(actual), .. }) if actual == from + 30));
+            if from == 1 {
+                screen.command_palette_handles_input(
+                    &Some(KeyWithModifier::new_with_modifiers(
+                        BareKey::Tab,
+                        [yinz_types::keys::KeyModifier::Shift].into(),
+                    )),
+                    b"",
+                    false,
+                    CLIENT,
+                );
+                search_and_clear(&mut screen);
+                let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+                assert!(frame.contains("Load earlier messages"), "{frame}");
+            } else {
+                screen.plugin_palette_instruction(reply(&pending, 61..=100, None, None));
+            }
+        }
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(!frame.contains("Load earlier messages"), "{frame}");
+        palette_key(&mut screen, BareKey::Home);
+        for _ in 0..10 {
+            palette_key(&mut screen, BareKey::Down);
+        }
+        palette_key(&mut screen, BareKey::Enter);
+        assert!(matches!(
+            next().action,
+            AgentAction::History(HistoryAction::Event { revision: 11, .. })
+        ));
+    }
+}
+
+#[test]
+fn archived_history_keeps_earlier_action_across_search_until_prefix_is_loaded() {
+    use yinz_bus::command_palette::{
+        AgentAction, AgentReply, AgentRequest, HistoryAction, HistoryRow, Instruction,
+    };
+    let mut screen = screen();
+    let (tx, rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let next = || loop {
+        let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let PluginInstruction::PaletteAgent(request) = instruction {
+            break *request;
+        }
+    };
+    let reply = |request: &AgentRequest, rows| Instruction::AgentReply {
+        client: CLIENT,
+        opening: request.opening,
+        step: request.step,
+        reply: Ok(AgentReply::History(history_run(rows))),
+    };
+    let event = |revision| HistoryRow {
+        id: format!("event:{revision}"),
+        label: format!("Event {revision}"),
+        description: String::new(),
+        action: HistoryAction::Event {
+            id: "run".into(),
+            revision,
+        },
+    };
+    let latest_rows = || {
+        vec![
+            event(80),
+            HistoryRow {
+                id: "earlier".into(),
+                label: "Load earlier messages".into(),
+                description: String::new(),
+                action: HistoryAction::Run {
+                    id: "run".into(),
+                    from: Some(1),
+                    query: String::new(),
+                },
+            },
+        ]
+    };
+    screen.toggle_command_palette(CLIENT);
+    screen.open_palette_history(
+        CLIENT,
+        None,
+        Some(HistoryAction::Run {
+            id: "run".into(),
+            from: None,
+            query: String::new(),
+        }),
+    );
+    screen.plugin_palette_instruction(reply(&next(), latest_rows()));
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    for load_from in [Some(1), Some(31), None] {
+        for query in ["needle", ""] {
+            if query.is_empty() {
+                palette_key(&mut screen, BareKey::Esc);
+            } else {
+                palette_key(&mut screen, BareKey::Enter);
+                screen.command_palette_handles_input(&None, query.as_bytes(), false, CLIENT);
+            }
+            let request = next();
+            assert!(matches!(&request.action,
+                AgentAction::History(HistoryAction::Run { query: actual, .. }) if actual == query));
+            screen.plugin_palette_instruction(reply(
+                &request,
+                if query.is_empty() {
+                    latest_rows()
+                } else {
+                    vec![event(80)]
+                },
+            ));
+        }
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert_eq!(
+            frame.contains("Load earlier messages"),
+            load_from.is_some(),
+            "{frame}"
+        );
+        if let Some(load_from) = load_from {
+            palette_key(&mut screen, BareKey::Tab); // Search -> messages.
+            palette_key(&mut screen, BareKey::Tab); // Messages -> Load earlier messages.
+            palette_key(&mut screen, BareKey::Enter);
+            let request = next();
+            assert!(matches!(
+                request.action,
+                AgentAction::History(HistoryAction::Run { from: Some(actual), .. }) if actual == load_from
+            ));
+            let mut rows = vec![event(load_from)];
+            if load_from == 1 {
+                rows.push(HistoryRow {
+                    id: "continue".into(),
+                    label: "Loading history…".into(),
+                    description: String::new(),
+                    action: HistoryAction::Run {
+                        id: "run".into(),
+                        from: Some(31),
+                        query: String::new(),
+                    },
+                });
+            }
+            screen.plugin_palette_instruction(reply(&request, rows));
+            if load_from == 1 {
+                // The next search interrupts backfill. Returning must preserve
+                // its next unread revision without restarting it automatically.
+                let pending = next();
+                assert!(matches!(
+                    pending.action,
+                    AgentAction::History(HistoryAction::Run { from: Some(31), .. })
+                ));
+            }
+            screen.command_palette_handles_input(
+                &Some(KeyWithModifier::new_with_modifiers(
+                    BareKey::Tab,
+                    [yinz_types::keys::KeyModifier::Shift].into(),
+                )),
+                b"",
+                false,
+                CLIENT,
+            );
+        }
+    }
+}
+
+// Build realistic run pages while keeping pagination requests visible to the tests.
+fn history_page_rows(
+    revisions: std::ops::RangeInclusive<u64>,
+    earlier: bool,
+    next: Option<u64>,
+) -> Vec<yinz_bus::command_palette::HistoryRow> {
+    use yinz_bus::command_palette::{HistoryAction, HistoryRow};
+    let mut rows: Vec<_> = revisions
+        .map(|revision| HistoryRow {
+            id: format!("event:{revision}"),
+            label: format!("Event {revision}"),
+            description: String::new(),
+            action: HistoryAction::Event {
+                id: "run".into(),
+                revision,
+            },
+        })
+        .collect();
+    for (id, label, from) in [
+        ("earlier", "Load earlier messages", earlier.then_some(1)),
+        ("continue", "Loading history…", next),
+    ] {
+        if let Some(from) = from {
+            rows.push(HistoryRow {
+                id: id.into(),
+                label: label.into(),
+                description: String::new(),
+                action: HistoryAction::Run {
+                    id: "run".into(),
+                    from: Some(from),
+                    query: String::new(),
+                },
+            });
+        }
+    }
+    rows
+}
+
+#[test]
+fn history_hit_interrupted_by_search_keeps_access_to_missing_prefix_with_overlapping_tail() {
+    use yinz_bus::command_palette::{
+        AgentAction, AgentReply, AgentRequest, HistoryAction, Instruction,
+    };
+    let mut screen = screen();
+    let (tx, rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let next = || loop {
+        let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let PluginInstruction::PaletteAgent(request) = instruction {
+            break *request;
+        }
+    };
+    let reply = |request: &AgentRequest, rows| Instruction::AgentReply {
+        client: CLIENT,
+        opening: request.opening,
+        step: request.step,
+        reply: Ok(AgentReply::History(history_run(rows))),
+    };
+    screen.toggle_command_palette(CLIENT);
+    screen.open_palette_history(
+        CLIENT,
+        None,
+        Some(HistoryAction::Hit {
+            id: "run".into(),
+            revision: 43,
+        }),
+    );
+    screen.plugin_palette_instruction(reply(&next(), history_page_rows(41..=70, false, Some(1))));
+    let pending = next();
+    assert!(matches!(
+        pending.action,
+        AgentAction::History(HistoryAction::Run { from: Some(1), .. })
+    ));
+    palette_key(&mut screen, BareKey::Enter); // Expand Search.
+    screen.command_palette_handles_input(&None, b"needle", false, CLIENT);
+    screen.plugin_palette_instruction(reply(&next(), history_page_rows(43..=43, false, None)));
+    palette_key(&mut screen, BareKey::Esc);
+    screen.plugin_palette_instruction(reply(&next(), history_page_rows(51..=80, true, None)));
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("Load earlier messages"), "{frame}");
+    palette_key(&mut screen, BareKey::Tab); // Search -> messages.
+    palette_key(&mut screen, BareKey::Tab); // Messages -> Load earlier messages.
+    palette_key(&mut screen, BareKey::Enter);
+    let prefix = next();
+    assert!(matches!(
+        prefix.action,
+        AgentAction::History(HistoryAction::Run { from: Some(1), .. })
+    ));
+    screen.plugin_palette_instruction(reply(&prefix, history_page_rows(1..=80, false, None)));
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(!frame.contains("Load earlier messages"), "{frame}");
+}
+
+#[test]
+fn history_hit_backfill_advances_earlier_action_introduced_by_interleaved_tail() {
+    use yinz_bus::command_palette::{
+        AgentAction, AgentReply, AgentRequest, HistoryAction, Instruction,
+    };
+    let mut screen = screen();
+    let (tx, rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let next = || loop {
+        let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let PluginInstruction::PaletteAgent(request) = instruction {
+            break *request;
+        }
+    };
+    let reply = |request: &AgentRequest, rows| Instruction::AgentReply {
+        client: CLIENT,
+        opening: request.opening,
+        step: request.step,
+        reply: Ok(AgentReply::History(history_run(rows))),
+    };
+    screen.toggle_command_palette(CLIENT);
+    screen.open_palette_history(
+        CLIENT,
+        None,
+        Some(HistoryAction::Hit {
+            id: "run".into(),
+            revision: 400,
+        }),
+    );
+    screen.plugin_palette_instruction(reply(&next(), history_page_rows(398..=427, false, Some(1))));
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let mut cursor = 1;
+    let mut tail_reads = 0;
+    loop {
+        let request = next();
+        match &request.action {
+            AgentAction::History(HistoryAction::Run { from: None, .. }) => {
+                tail_reads += 1;
+                screen.plugin_palette_instruction(reply(
+                    &request,
+                    history_page_rows(421..=450, true, None),
+                ));
+                let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+                assert!(frame.contains("Load earlier messages"), "{frame}");
+            },
+            AgentAction::History(HistoryAction::Run {
+                from: Some(from), ..
+            }) => {
+                assert_eq!(*from, cursor);
+                let end = (cursor + 29).min(450);
+                screen.plugin_palette_instruction(reply(
+                    &request,
+                    history_page_rows(cursor..=end, false, (end < 450).then_some(end + 1)),
+                ));
+                cursor = end + 1;
+                if end == 450 {
+                    break;
+                }
+            },
+            action => panic!("unexpected action: {action:?}"),
+        }
+    }
+    assert!(tail_reads > 0);
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(!frame.contains("Load earlier messages"), "{frame}");
+    assert!(!frame.contains("Loading history…"), "{frame}");
 }
 
 #[test]
