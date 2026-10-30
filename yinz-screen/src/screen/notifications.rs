@@ -336,15 +336,15 @@ impl Screen {
 
         let mut damage_by_tab = vec![];
         for (tab_id, client_ids) in clients_by_tab {
-            let tab_size = tab_id
-                .and_then(|tab_id| self.tab_surface_size(tab_id))
-                .unwrap_or(surface);
-            let viewport = Viewport {
-                x: 0,
-                y: 0,
-                cols: tab_size.cols,
-                rows: tab_size.rows,
-            };
+            // The same viewport `render_to_clients` paints these clients' toasts into.
+            let viewport = tab_id
+                .and_then(|tab_id| self.session_surface_for_tab(tab_id))
+                .unwrap_or(Viewport {
+                    x: 0,
+                    y: 0,
+                    cols: surface.cols,
+                    rows: surface.rows,
+                });
             let mut damage: Vec<CellRect> = vec![];
             for client_id in &client_ids {
                 // a browsing client is shown its browser instead of the toasts, so that is what

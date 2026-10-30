@@ -305,11 +305,7 @@ impl Screen {
             let client_surfaces: Vec<_> = regular_client_ids
                 .iter()
                 .map(|client| {
-                    let viewport = self
-                        .active_tab_ids
-                        .get(client)
-                        .and_then(|tab| self.session_surface_for_tab(*tab))
-                        .unwrap_or(session_surface);
+                    let viewport = self.client_surface(*client).unwrap_or(session_surface);
                     (*client, viewport)
                 })
                 .collect();
@@ -420,11 +416,7 @@ impl Screen {
                 .context(err_context)?;
 
             for client in &palette_clients {
-                let viewport = self
-                    .active_tab_ids
-                    .get(client)
-                    .and_then(|tab| self.session_surface_for_tab(*tab))
-                    .unwrap_or(session_surface);
+                let viewport = self.client_surface(*client).unwrap_or(session_surface);
                 self.render_notifications(&mut output, viewport, &[*client], now)
                     .context(err_context)?;
             }

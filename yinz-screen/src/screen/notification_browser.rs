@@ -146,10 +146,7 @@ impl Screen {
     /// The viewport a client's keyboard action lays the browser out against - the same one its
     /// mouse events are hit-tested in.
     pub(super) fn notification_browser_viewport(&self, client_id: ClientId) -> Option<Viewport> {
-        self.active_tab_ids
-            .get(&client_id)
-            .copied()
-            .and_then(|tab_id| self.session_surface_for_tab(tab_id))
+        self.client_surface(client_id)
     }
 
     /// Remember where the window ended up, so the next move only scrolls if it has to.

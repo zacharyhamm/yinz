@@ -2165,8 +2165,8 @@ impl Screen {
                 // after the drained clients have joined, so the plugins in this tab hear
                 // about their modes too and not only about the client that opened it
                 tab.update_input_modes().non_fatal();
-                // the tab keeps the size its viewers gave it here; `recompute_tab_size` below
-                // reflows it against the session surface
+                // the tab keeps the size it was created at here; `recompute_tab_size` below
+                // reflows it against its viewers
                 let tab_size = tab.size;
                 tab.resize_whole_tab(tab_size)
                     .with_context(err_context)

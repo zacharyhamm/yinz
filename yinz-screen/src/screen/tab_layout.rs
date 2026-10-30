@@ -533,4 +533,11 @@ impl Screen {
             rows: size.rows,
         })
     }
+
+    /// The display area of the tab this client is viewing, which its overlays are laid out against.
+    pub(super) fn client_surface(&self, client_id: ClientId) -> Option<Viewport> {
+        self.active_tab_ids
+            .get(&client_id)
+            .and_then(|tab_id| self.session_surface_for_tab(*tab_id))
+    }
 }

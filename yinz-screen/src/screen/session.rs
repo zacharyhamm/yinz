@@ -223,8 +223,14 @@ impl Screen {
             "attach trace: screen client_id={client_id} AddClient begin size={client_size:?}"
         );
         let departed = self.departed_follow_source();
+        // Registering joins a tab another client may be viewing. A client only passing through it
+        // on the way to the tab it named must not lay that tab out at its own size and back, so
+        // its size counts from its destination.
+        let passing_through = pane_id_to_focus.is_some() || tab_number_to_focus.is_some();
+        let size_at_registration = (!passing_through).then_some(client_size);
         let retired_source =
-            match self.register_client_transaction(client_id, departed, Some(client_size), true) {
+            match self.register_client_transaction(client_id, departed, size_at_registration, true)
+            {
                 Ok(source) => source,
                 Err(error) => {
                     Err::<(), _>(error)
@@ -247,6 +253,12 @@ impl Screen {
             "attach trace: screen client_id={client_id} restoring tab focus number={tab_number_to_focus}"
         );
             self.go_to_tab(tab_number_to_focus, client_id)?;
+        }
+        if passing_through {
+            self.set_client_size(client_id, client_size)
+                .and_then(|()| self.reflow_all_tabs())
+                .context("sizing the attaching client at its destination")
+                .non_fatal();
         }
         log::info!(
             "attach trace: screen client_id={client_id} focus restoration complete after {:?}",

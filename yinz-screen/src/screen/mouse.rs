@@ -46,11 +46,7 @@ impl Screen {
             && !event.wheel_down;
         let active_pane_id_before = self.active_pane_id(client_id);
         let active_pane_was_scrolled = self.active_pane_is_scrolled(client_id);
-        let session_surface = self
-            .active_tab_ids
-            .get(&client_id)
-            .copied()
-            .and_then(|tab_id| self.session_surface_for_tab(tab_id));
+        let session_surface = self.client_surface(client_id);
         // An open context menu owns the mouse outright - ahead of toasts and the tab. That is
         // what a menu is: while it is up, a click means "a row of this menu, or dismiss", and
         // never also "focus whatever happened to be underneath". The event is consumed either

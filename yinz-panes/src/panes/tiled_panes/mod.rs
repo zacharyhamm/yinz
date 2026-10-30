@@ -91,8 +91,8 @@ fn resized_viewport_axis(
     (start, extent)
 }
 
-/// The tab's display area as a viewport. A tab is laid out over the whole session surface, so its
-/// origin is always `(0, 0)`.
+/// The tab's display area as a viewport. A tab is laid out from the screen's origin, so its origin
+/// is always `(0, 0)`.
 fn display_area_viewport(display_area: &Rc<RefCell<Size>>) -> Viewport {
     let display_area = display_area.borrow();
     Viewport {

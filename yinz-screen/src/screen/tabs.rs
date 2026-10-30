@@ -567,16 +567,6 @@ impl Screen {
         } else {
             vec![client]
         };
-        let overlay = source
-            .and_then(|source| self.tabs.get(&source))
-            .and_then(|tab| {
-                tab.pane_tabs_infos().find(|info| {
-                    info.overlay_group
-                        && tab
-                            .get_pane_info(info.pane_id)
-                            .is_some_and(|pane| !pane.is_suppressed)
-                })
-            });
         let old_focus = affected
             .iter()
             .map(|id| (*id, self.get_active_pane_id(id)))
@@ -596,7 +586,19 @@ impl Screen {
                 }
                 clients
             });
-        // Detach clients first so a following overlay does not carry their keyboard focus.
+        // Leave the shared overlay with any remaining viewers. After the last client detaches,
+        // it can follow without carrying the departing clients' keyboard focus.
+        let overlay = source
+            .and_then(|source| self.tabs.get(&source))
+            .filter(|tab| tab.has_no_connected_clients())
+            .and_then(|tab| {
+                tab.pane_tabs_infos().find(|info| {
+                    info.overlay_group
+                        && tab
+                            .get_pane_info(info.pane_id)
+                            .is_some_and(|pane| !pane.is_suppressed)
+                })
+            });
         if let Some(info) =
             overlay.filter(|_| source != Some(destination) && self.tabs.contains_key(&destination))
         {
@@ -661,7 +663,7 @@ impl Screen {
                 self.active_tab_ids.insert(client_id, new_tab_index);
                 if old_active_index != new_tab_index {
                     self.close_command_palette(client_id);
-                    self.repaint_after_leaving_tab(old_active_index, new_tab_index);
+                    self.repaint_after_leaving_tab(client_id, old_active_index, new_tab_index);
                 }
                 let client_tab_history = self.tab_history.entry(client_id).or_default();
                 client_tab_history.retain(|&e| e != new_tab_index);
@@ -674,24 +676,37 @@ impl Screen {
         self.clear_bell_for_focused_pane(client_id);
     }
 
-    /// Repaint the tab a client is switching *to*, if the tab it is leaving was painting a
-    /// floating pane outside its own viewport.
+    /// Clear and repaint the tab a client is switching *to*, if something would otherwise stay on
+    /// its host terminal outside what that tab paints.
     ///
     /// A floating pane can be placed - or dragged - onto the tab bar or the status bar, which no
     /// pane's grid owns. The tab being left stops rendering the moment its last client is gone,
     /// which is right: the pane belongs to that tab. But the tab being entered renders diff-based,
     /// so if nothing in it changed it emits nothing and the pane stays on the host terminal over a
     /// tab it is not in.
-    fn repaint_after_leaving_tab(&mut self, left_tab_id: TabId, entered_tab_id: TabId) {
-        if !self
+    ///
+    /// The same goes for a tab narrower or shorter than the client's terminal because a smaller
+    /// viewer pins it: nothing paints that margin, so the last tab's cells would stay there. This
+    /// is judged from the terminal rather than the tab being left, which may already be closed. A
+    /// tab about to grow pays one needless clear, and one about to shrink clears when it resizes.
+    fn repaint_after_leaving_tab(
+        &mut self,
+        client_id: ClientId,
+        left_tab_id: TabId,
+        entered_tab_id: TabId,
+    ) {
+        let left_tab_painted_outside_viewport = self
             .tabs
             .get(&left_tab_id)
-            .map(|tab| tab.has_floating_panes_outside_viewport())
-            .unwrap_or(false)
-        {
+            .is_some_and(|tab| tab.has_floating_panes_outside_viewport());
+        let client_size = self.client_sizes.get(&client_id).copied();
+        let Some(tab) = self.tabs.get_mut(&entered_tab_id) else {
             return;
-        }
-        if let Some(tab) = self.tabs.get_mut(&entered_tab_id) {
+        };
+        let tab_size = tab.get_display_area();
+        let leaves_a_margin =
+            client_size.is_some_and(|size| size.cols > tab_size.cols || size.rows > tab_size.rows);
+        if left_tab_painted_outside_viewport || leaves_a_margin {
             tab.set_should_clear_display_before_rendering();
             tab.set_force_render();
         }

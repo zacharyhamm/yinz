@@ -1,6 +1,7 @@
 use super::*;
 use yinz_panes::pane::TerminalPaneIo;
 use yinz_types::internal_ids::TabId;
+use yinz_types::internal_ids::TabNumber;
 use yinz_types::internal_ids::TabPosition;
 
 #[test]
@@ -698,6 +699,141 @@ fn attaching_smaller_client_only_resizes_the_tab_it_joins() {
 
     assert_eq!(screen.tabs.get(&TabId::new(0)).unwrap().size, large);
     assert_eq!(screen.tabs.get(&TabId::new(1)).unwrap().size, small);
+}
+
+/// A large client viewing its own tab, with text past the bounds of a smaller client's tab.
+fn large_client_with_margin_text(large: Size, small: Size) -> Screen {
+    let mut screen = create_non_mirrored_screen(large);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    screen.add_client(ClientId::new(2)).unwrap();
+    screen.set_client_size(ClientId::new(2), small).unwrap();
+    screen
+        .switch_active_tab(TabPosition::new(0), None, true, ClientId::new(2))
+        .unwrap();
+    screen
+        .tabs
+        .get_mut(&TabId::new(1))
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(2), b"\x1b[40;120HMARGIN".to_vec())
+        .unwrap();
+    screen
+}
+
+/// The destination paints only its own bounds, so whatever the larger tab left beyond them stays
+/// on the host unless the arrival clears it.
+#[test]
+fn arriving_at_a_tab_pinned_smaller_clears_the_uncovered_margin() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let client = ClientId::new(1);
+    let mut screen = large_client_with_margin_text(large, small);
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(large);
+    render_frame_into(&mut screen, &receiver, client, &mut grid);
+    assert!(format!("{grid:?}").contains("MARGIN"));
+
+    screen
+        .switch_active_tab(TabPosition::new(0), None, true, client)
+        .unwrap();
+    render_frame_into(&mut screen, &receiver, client, &mut grid);
+
+    assert_eq!(screen.tabs.get(&TabId::new(0)).unwrap().size, small);
+    assert!(
+        !format!("{grid:?}").contains("MARGIN"),
+        "The source tab's text must not survive beside the smaller destination"
+    );
+}
+
+/// A watcher repaints whole from the same clear, so it does not keep the source tab's text either.
+#[test]
+fn a_watcher_following_a_client_to_a_tab_pinned_smaller_loses_the_uncovered_margin() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let client = ClientId::new(1);
+    let watcher = ClientId::new(3);
+    let mut screen = large_client_with_margin_text(large, small);
+    screen.set_followed_client(client).unwrap();
+    screen.add_watcher_client(watcher).unwrap();
+    screen.set_watcher_size(watcher, large);
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(large);
+    render_frame_into(&mut screen, &receiver, watcher, &mut grid);
+    assert!(format!("{grid:?}").contains("MARGIN"));
+
+    screen
+        .switch_active_tab(TabPosition::new(0), None, true, client)
+        .unwrap();
+    render_frame_into(&mut screen, &receiver, watcher, &mut grid);
+
+    assert!(!format!("{grid:?}").contains("MARGIN"));
+}
+
+#[test]
+fn closing_a_large_tab_clears_the_margin_of_the_pinned_tab_its_client_lands_on() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let client = ClientId::new(1);
+    let mut screen = large_client_with_margin_text(large, small);
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(large);
+    render_frame_into(&mut screen, &receiver, client, &mut grid);
+    assert!(format!("{grid:?}").contains("MARGIN"));
+
+    screen.close_tab_by_id(TabId::new(1)).unwrap();
+    render_frame_into(&mut screen, &receiver, client, &mut grid);
+
+    assert_eq!(screen.active_tab_ids.get(&client), Some(&TabId::new(0)));
+    assert!(
+        !format!("{grid:?}").contains("MARGIN"),
+        "The closed tab's text must not survive beside the smaller destination"
+    );
+}
+
+/// An attach naming its tab belongs there from the start. Passing through another client's tab on
+/// the way would lay that tab out at the attaching client's size and back again.
+#[test]
+fn attaching_with_a_focus_target_leaves_other_tabs_alone() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let attaching = ClientId::new(2);
+    let mut screen = create_non_mirrored_screen(large);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    screen.render_to_clients().expect("TEST");
+    assert!(!screen.tabs[&TabId::new(1)].should_clear_display_before_rendering());
+
+    let mut traces = HashMap::new();
+    screen
+        .attach_client(
+            attaching,
+            small,
+            Some(TabNumber::new(1)),
+            None,
+            &mut traces,
+            &mut crate::screen::thread_main::PendingEvents::default(),
+        )
+        .expect("TEST");
+
+    assert_eq!(screen.active_tab_ids.get(&attaching), Some(&TabId::new(0)));
+    assert_eq!(screen.tabs[&TabId::new(0)].size, small);
+    assert_eq!(screen.tabs[&TabId::new(1)].size, large);
+    assert!(
+        !screen.tabs[&TabId::new(1)].should_clear_display_before_rendering(),
+        "The other client's tab must not be resized by a client that never stays on it"
+    );
 }
 
 #[test]

@@ -8022,6 +8022,11 @@ fn configured_overlay_follows_tabs_without_agents_and_preserves_geometry() {
         new_tab(&mut screen, 2, TabId::new(1));
         let other = ClientId::new(2);
         screen.add_client(other).unwrap();
+        if !mirrored {
+            screen
+                .switch_active_tab(screen.tabs[&TabId::new(0)].position, None, true, other)
+                .unwrap();
+        }
         screen.overlay_tab_plugins =
             Config::from_kdl("overlay_tab_plugins { \"file:/custom.scm\"; }", None)
                 .unwrap()
@@ -8059,14 +8064,85 @@ fn configured_overlay_follows_tabs_without_agents_and_preserves_geometry() {
         assert_eq!(screen.tabs[&target].overlay_placement_for(pane), placement);
         assert!(!screen.tabs[&source].pane_is_overlay(pane));
         assert_eq!(screen.get_active_pane_id(&CLIENT_1), destination_focus);
+        assert_eq!(screen.active_tab_ids[&other], target);
         if mirrored {
-            assert_eq!(screen.active_tab_ids[&other], target);
             assert_eq!(screen.get_active_pane_id(&other), destination_focus);
-        } else {
-            assert_eq!(screen.active_tab_ids[&other], source);
         }
         launch_configured_overlay(&mut screen, "file:/custom.scm", CLIENT_1);
         assert_eq!(screen.get_active_pane_id(&CLIENT_1), Some(pane));
+    }
+}
+
+#[test]
+fn configured_overlay_stays_with_remaining_viewer_until_the_last_client_leaves() {
+    for new_destination in [false, true] {
+        for focus_other in [false, true] {
+            let (mut screen, events, ptys) = configured_overlay_screen();
+            new_tab(&mut screen, 1, TabId::new(0));
+            new_tab(&mut screen, 2, TabId::new(1));
+            let source = TabId::new(1);
+            let other = ClientId::new(2);
+            screen.add_client(other).unwrap();
+            launch_configured_overlay(&mut screen, "yinz:strider", CLIENT_1);
+            let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
+            screen
+                .pane_tab_loaded(
+                    id,
+                    index,
+                    generation,
+                    Ok((PluginId::new(100), configured_overlay_run("yinz:strider"))),
+                )
+                .unwrap();
+            let pane = PaneId::Plugin(PluginId::new(100));
+            screen.change_overlay_coordinates(vec![(pane, popup_coordinates())], true);
+            let id = screen.tabs[&source].pane_tabs_of(pane).unwrap();
+            if focus_other {
+                screen
+                    .tabs
+                    .get_mut(&source)
+                    .unwrap()
+                    .focus_pane_tabs(id, true, other)
+                    .unwrap();
+            }
+            let remaining_focus = screen.get_active_pane_id(&other);
+            assert_eq!(remaining_focus == Some(pane), focus_other);
+            let info = screen.tabs[&source].pane_tabs_info(id).unwrap();
+            let placement = screen.tabs[&source].overlay_placement_for(pane);
+            let target = if new_destination {
+                new_tab(&mut screen, 3, TabId::new(2));
+                TabId::new(2)
+            } else {
+                screen
+                    .switch_active_tab(screen.tabs[&TabId::new(0)].position, None, true, CLIENT_1)
+                    .unwrap();
+                TabId::new(0)
+            };
+
+            assert_eq!(screen.active_tab_ids[&CLIENT_1], target);
+            assert_eq!(screen.active_tab_ids[&other], source);
+            assert!(screen.tabs[&source].has_connected_client(&other));
+            assert!(screen.tabs[&source].pane_is_overlay(pane));
+            assert_eq!(screen.tabs[&source].pane_tabs_info(id), Some(info));
+            assert_eq!(screen.tabs[&source].overlay_placement_for(pane), placement);
+            assert_eq!(screen.get_active_pane_id(&other), remaining_focus);
+            assert!(!screen.tabs[&target].pane_is_overlay(pane));
+
+            let destination_focus = screen.get_active_pane_id(&CLIENT_1);
+            assert!(matches!(destination_focus, Some(PaneId::Terminal(_))));
+            screen
+                .switch_active_tab(screen.tabs[&target].position, None, true, other)
+                .unwrap();
+            assert!(screen.tabs[&source].has_no_connected_clients());
+            assert!(!screen.tabs[&source].pane_is_overlay(pane));
+            assert!(screen.tabs[&target].pane_is_overlay(pane));
+            assert!(screen.tabs[&target].pane_tabs_info(id).is_some());
+            assert_eq!(screen.tabs[&target].overlay_placement_for(pane), placement);
+            assert_eq!(screen.get_active_pane_id(&CLIENT_1), destination_focus);
+            assert!(matches!(
+                screen.get_active_pane_id(&other),
+                Some(PaneId::Terminal(_))
+            ));
+        }
     }
 }
 
