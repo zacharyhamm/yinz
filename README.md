@@ -23,7 +23,7 @@ makes use of the kitty graphics protocol.
 Yinz is pretty fast! It runs `notcurses-demo` pretty well, which causes upstream
 zellij to panic.
 
-Yinz is plugin driven. Plugins are written in scheme using a fork of "steel":
+Yinz is plugin driven. Plugins are written in scheme using a fork of "steel". It has a vim approach to plugins, just point it at a git repository (local or remote): [Load Scheme plugins from Git repositories](docs/GIT_PLUGINS.md)
 
 Yinz has good remote support. Use something like tailscale to make your remote
 server accessible over the internet. Build yinz on the remote (we have no
@@ -49,7 +49,6 @@ Yinz works best with agents if you install the skills and hooks:
 `yinz hooks install`
 `yinz skills install`
 
-[Load Scheme plugins from Git repositories](docs/GIT_PLUGINS.md)
 
 ## Install
 
