@@ -395,11 +395,21 @@ const RUN_STORE_PRELUDE: &str = r#"
         (rows '("run_id" "revision" "event_id" "kind" "text" "created_at_ms")
           (map (lambda (entry) (cons (hash "Text" "claude:handoff") (entry-row entry))) (hash-ref stored "entries")))))
     (define (yinz-data-fetch-all namespace request) (yinz-data-fetch namespace request))
+    (define (matches-owner predicate)
+      (cond ((hash-contains? predicate "And")
+          (foldl (lambda (part matches) (and matches (matches-owner part))) #t (hash-ref predicate "And")))
+        ((hash-contains? predicate "Or")
+          (foldl (lambda (part matches) (or matches (matches-owner part))) #f (hash-ref predicate "Or")))
+        (else
+          (define eq (hash-ref predicate "Eq"))
+          (equal? (hash-ref stored (if (equal? (car eq) "uid") "id" (car eq))) (hash-ref (cadr eq) "Text")))))
     (define (yinz-data-apply namespace mutations)
-      (define put (hash-ref (car mutations) "Put"))
+      (define owned (hash-contains? (car mutations) "Update"))
+      (define put (hash-ref (car mutations) (if owned "Update" "Put")))
       (define expected (hash-ref put "expect_rev"))
       (set! attempts (append attempts (list expected)))
       (when fail-writes (error "injected write failure"))
+      (when (and owned (not (matches-owner (hash-ref put "filter")))) (error "owner conflict"))
       (when (and race-retry (= expected store-rev))
         (set! race-retry #f) (set! store-rev (+ store-rev 1))
         (define revision (+ 1 (hash-ref stored "revision")))
@@ -561,6 +571,261 @@ fn adopting_a_dirty_run_preserves_unsaved_history_across_failed_retries() {
 }
 
 #[test]
+fn obsolete_releases_persist_pending_entries_without_overwriting_the_destination() {
+    for fault in [
+        None,
+        Some("entries"),
+        Some("validation"),
+        Some("missing"),
+        Some("retry"),
+    ] {
+        let (mut runtime, _) = plugin_with_source(
+            "agent-service",
+            r#"
+            (require "./agent-service/state.scm" "./agent-service/messages.scm" "./agent-service/runs.scm")
+            (define (setup run)
+              (set-store run 10) (as-set! "host" "source-host") (as-set! "session" "source")
+              (as-map-set! "runs" 7 (as-call "load-run" "claude:handoff")))
+            (define (append-local)
+              (define run (append-entry (as-map-get "runs" 7 #f) "result" "shared event" "shared" json-null 20))
+              (set! run (append-entry run "result" "pending" #f json-null 20))
+              (set! run (hash-insert (hash-insert run "cwd" "/source") "summarized_revision" 3))
+              (set! run (hash-insert run "summary" (hash "text" "source" "awaiting" #f "title" "" "hash" 0 "created_at_ms" 20)))
+              (as-map-set! "adoptions" "claude:handoff" #t)
+              (as-map-set! "runs" 7 run) (as-map-set! "dirty-runs" "claude:handoff" run))
+            (define (release) (as-call "finish-run" 7 "Released" 30))
+            (define (persist-now) (as-call "persist"))
+            (define (snapshot) (hash "stored" stored "rev" store-rev "attempts" attempts
+              "dirty" (as-get "dirty-runs") "released" (as-get "released-runs") "adoptions" (as-get "adoptions")
+              "bases" (as-get "run-bases") "revisions" (as-get "run-revisions") "persisted" (as-get "persisted")))
+            "#,
+            json!({}),
+            BTreeMap::new(),
+            RUN_STORE_PRELUDE,
+        );
+        let entry = |revision, text: &str, event_id: Option<&str>| json!({"revision":revision, "kind":"result", "text":text, "event_id":event_id, "created_at_ms":20});
+        let id = "claude:handoff";
+        let original = json!({
+            "id":id, "pane_id":7, "kind":"claude", "session_id":"handoff",
+            "host_id":"source-host", "yinz_session_name":"source", "started_at_ms":1,
+            "ended_at_ms":null, "outcome":"active", "revision":1, "summarized_revision":0,
+            "cwd":null, "host":null,
+            "summary":null, "entries":[entry(1, "original", None)],
+        });
+        runtime.invoke("setup", vec![original.clone()]).unwrap();
+        runtime.invoke("append-local", vec![]).unwrap();
+        runtime.invoke("write-failures", vec![json!(true)]).unwrap();
+        runtime.invoke("persist-now", vec![]).unwrap();
+        runtime.invoke("release", vec![]).unwrap();
+        let pending = runtime.invoke("snapshot", vec![]).unwrap();
+        assert_eq!(pending["dirty"][id]["entries"].as_array().unwrap().len(), 3);
+
+        // A different host with the same session name must also suppress the stale close.
+        let mut destination = original;
+        destination["host_id"] = json!("destination-host");
+        destination["pane_id"] = json!(8);
+        destination["cwd"] = json!("/destination");
+        destination["revision"] = json!(3);
+        destination["summarized_revision"] = json!(3);
+        destination["summary"] = json!({"text":"destination", "awaiting":false, "title":"", "hash":0, "created_at_ms":20});
+        destination["entries"] = json!([
+            entry(1, "original", None),
+            entry(2, "shared event", Some("shared")),
+            entry(3, "destination", None),
+        ]);
+        runtime
+            .invoke("set-store", vec![destination.clone(), json!(11)])
+            .unwrap();
+        runtime
+            .invoke("write-failures", vec![json!(false)])
+            .unwrap();
+        runtime
+            .invoke(
+                "faults",
+                vec![
+                    json!(fault.filter(|value| *value != "retry")),
+                    json!(fault == Some("retry")),
+                ],
+            )
+            .unwrap();
+        runtime.invoke("persist-now", vec![]).unwrap();
+        if let Some(fault) = fault {
+            let failed = runtime.invoke("snapshot", vec![]).unwrap();
+            assert!(failed["dirty"][id]["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["text"] == "pending"));
+            if fault == "retry" {
+                assert_eq!(failed["released"], json!({}));
+                assert_eq!(failed["adoptions"], json!({}));
+                assert_eq!(failed["dirty"][id]["host_id"], "destination-host");
+                assert_eq!(failed["revisions"][id], 11);
+                // Another handoff before retry must not revive the source's adoption intent.
+                let mut moved = failed["stored"].clone();
+                moved["host_id"] = json!("third-host");
+                moved["yinz_session_name"] = json!("third-session");
+                moved["pane_id"] = json!(9);
+                runtime.invoke("set-store", vec![moved, json!(13)]).unwrap();
+                destination["host_id"] = json!("third-host");
+                destination["yinz_session_name"] = json!("third-session");
+                destination["pane_id"] = json!(9);
+            } else {
+                assert_eq!(failed["dirty"], pending["dirty"]);
+                assert_eq!(failed["released"], pending["released"]);
+                assert_eq!(failed["adoptions"], pending["adoptions"]);
+                assert_eq!(failed["bases"], pending["bases"]);
+                assert_eq!(failed["revisions"], pending["revisions"]);
+                assert_eq!(failed["persisted"], pending["persisted"]);
+            }
+            runtime
+                .invoke("faults", vec![json!(false), json!(false)])
+                .unwrap();
+            runtime.invoke("persist-now", vec![]).unwrap();
+        }
+        let committed = runtime.invoke("snapshot", vec![]).unwrap();
+        let mut entries = destination["entries"].as_array().unwrap().clone();
+        if fault == Some("retry") {
+            entries.push(entry(4, "racing source", None));
+        }
+        entries.push(entry(entries.len() + 1, "pending", None));
+        destination["revision"] = json!(entries.len());
+        destination["entries"] = json!(entries);
+        assert_eq!(committed["stored"], destination, "fault: {fault:?}");
+        assert_eq!(committed["dirty"], json!({}));
+        assert_eq!(committed["released"], json!({}));
+        assert_eq!(committed["adoptions"], json!({}));
+        assert_eq!(committed["bases"], json!({}));
+        runtime.invoke("persist-now", vec![]).unwrap();
+        assert_eq!(runtime.invoke("snapshot", vec![]).unwrap(), committed);
+    }
+}
+
+#[test]
+fn initial_run_hydration_validates_before_caching_or_claiming_entries() {
+    for mode in ["load", "restore", "adopt"] {
+        for fault in [
+            "race",
+            "race-moved",
+            "race-closed",
+            "metadata",
+            "entries",
+            "validation",
+            "missing",
+        ] {
+            let (mut runtime, _) = plugin_with_source(
+                "agent-service",
+                r#"
+                (require "./agent-service/state.scm" "./agent-service/messages.scm" "./agent-service/runs.scm")
+                (define (setup run)
+                  (set-store run 10) (as-set! "host" "host") (as-set! "session" "source")
+                  (as-set! "panes" (list (hash "pane_id" 7 "agent" (hash "run_id" "claude:handoff" "kind" "claude" "state" "Busy" "source" "Reported")))))
+                (define (load-now mode)
+                  (cond ((equal? mode "restore") (as-call "restore-runs"))
+                    ((equal? mode "adopt") (as-call "adopt-arrived-runs"))
+                    (else (define run (as-call "load-run" "claude:handoff"))
+                      (when run (as-map-set! "runs" 7 run)))))
+                (define (append-local)
+                  (define run (append-entry (as-map-get "runs" 7 #f) "result" "local" #f json-null 20))
+                  (as-map-set! "runs" 7 run) (as-map-set! "dirty-runs" "claude:handoff" run))
+                (define (persist-now) (as-call "persist"))
+                (define (snapshot) (hash "stored" stored "rev" store-rev "attempts" attempts
+                  "cache" (list (as-get "runs") (as-get "run-bases") (as-get "run-revisions")
+                    (as-get "persisted") (as-get "dirty-runs") (as-get "adoptions") (as-get "run-lookups"))))
+                "#,
+                json!({}),
+                BTreeMap::new(),
+                RUN_STORE_PRELUDE,
+            );
+            let entry = |revision, text: &str| json!({"revision":revision, "kind":"result", "text":text, "event_id":null, "created_at_ms":20});
+            let id = "claude:handoff";
+            // Restoration must remember the stored owner before claiming legacy rows.
+            let original = json!({
+                "id":id, "pane_id":7, "kind":"claude", "session_id":"handoff",
+                "host_id":"", "yinz_session_name":"source", "started_at_ms":1,
+                "ended_at_ms":null, "outcome":"active", "revision":1, "summarized_revision":0,
+                "cwd":null, "host":null,
+                "summary":null, "entries":[entry(1, "original")],
+            });
+            runtime.invoke("setup", vec![original.clone()]).unwrap();
+            let before = runtime.invoke("snapshot", vec![]).unwrap();
+            let mut concurrent = original.clone();
+            concurrent["revision"] = json!(2);
+            concurrent["entries"] = json!([entry(1, "original"), entry(2, "imported")]);
+            if fault == "race-moved" {
+                concurrent["host_id"] = json!("other-host");
+                concurrent["yinz_session_name"] = json!("other-session");
+            } else if fault == "race-closed" {
+                concurrent["ended_at_ms"] = json!(30);
+                concurrent["outcome"] = json!("closed");
+            }
+            if fault.starts_with("race") {
+                runtime
+                    .invoke("commit-during-read", vec![concurrent.clone()])
+                    .unwrap();
+            } else {
+                runtime
+                    .invoke("faults", vec![json!(fault), json!(false)])
+                    .unwrap();
+            }
+            runtime.invoke("load-now", vec![json!(mode)]).unwrap();
+            let rejected = runtime.invoke("snapshot", vec![]).unwrap();
+            assert_eq!(
+                rejected["cache"], before["cache"],
+                "mode: {mode}; fault: {fault}"
+            );
+            runtime
+                .invoke("faults", vec![json!(false), json!(false)])
+                .unwrap();
+            runtime.invoke("load-now", vec![json!(mode)]).unwrap();
+            let mut loaded = runtime.invoke("snapshot", vec![]).unwrap();
+            let baseline = if mode == "restore" && matches!(fault, "race-moved" | "race-closed") {
+                assert_eq!(
+                    loaded["cache"], before["cache"],
+                    "ineligible runs must not be restored"
+                );
+                runtime
+                    .invoke("set-store", vec![original.clone(), json!(12)])
+                    .unwrap();
+                runtime.invoke("load-now", vec![json!(mode)]).unwrap();
+                loaded = runtime.invoke("snapshot", vec![]).unwrap();
+                original
+            } else if fault.starts_with("race") {
+                concurrent
+            } else {
+                original
+            };
+            assert_eq!(loaded["cache"][1][id], baseline);
+            assert_eq!(loaded["cache"][2][id], loaded["rev"]);
+            assert_eq!(loaded["cache"][3][id], baseline["revision"]);
+            if mode == "restore" {
+                assert_eq!(loaded["cache"][0]["7"]["host_id"], "host");
+            }
+            runtime.invoke("append-local", vec![]).unwrap();
+            // Force reconciliation after the successful load; anonymous imported entries stay stored.
+            runtime
+                .invoke(
+                    "set-store",
+                    vec![baseline.clone(), json!(loaded["rev"].as_u64().unwrap() + 1)],
+                )
+                .unwrap();
+            runtime.invoke("persist-now", vec![]).unwrap();
+            let committed = runtime.invoke("snapshot", vec![]).unwrap();
+            let mut entries = baseline["entries"].as_array().unwrap().clone();
+            entries.push(entry(entries.len() + 1, "local"));
+            assert_eq!(
+                committed["stored"]["entries"],
+                json!(entries),
+                "mode: {mode}; fault: {fault}"
+            );
+            assert_eq!(committed["cache"][4], json!({}));
+            runtime.invoke("persist-now", vec![]).unwrap();
+            assert_eq!(runtime.invoke("snapshot", vec![]).unwrap(), committed);
+        }
+    }
+}
+
+#[test]
 fn run_conflicts_merge_history_and_retry_without_losing_revision_guards() {
     // The mock store checks the actual emitted guards and commits metadata and entries together.
     // Each case schedules commits/failures explicitly; no threads or sleeps control the race.
@@ -602,6 +867,7 @@ fn run_conflicts_merge_history_and_retry_without_losing_revision_guards() {
             (define (late-release original)
               (as-reset!) (as-set! "host" "host") (as-set! "session" "source")
               (as-map-set! "runs" 7 original) (as-map-set! "run-revisions" "claude:handoff" 10)
+              (as-map-set! "run-bases" "claude:handoff" original) (as-map-set! "persisted" "claude:handoff" 1)
               (as-call "finish-run" 7 "Released" 50) (as-call "persist"))
             "#,
             json!({}),
@@ -886,7 +1152,9 @@ fn run_conflicts_merge_history_and_retry_without_losing_revision_guards() {
         runtime.invoke("late-release", vec![original]).unwrap();
         let after = runtime.invoke("snapshot", vec![]).unwrap();
         assert_eq!(after[0], before[0]);
-        assert_eq!(after[2], before[2]);
+        let mut attempts = before[2].as_array().unwrap().clone();
+        attempts.push(json!(10));
+        assert_eq!(after[2], json!(attempts));
         assert_eq!(after[3], json!({}));
         assert_eq!(after[4], json!({}));
     }
