@@ -116,7 +116,7 @@ fn secure_dirs_refuse_symlinks_at_the_final_name_without_changing_the_target() {
 
 #[cfg(unix)]
 #[test]
-fn secure_dirs_tighten_shared_writable_directories_the_user_owns() {
+fn secure_dirs_make_the_leaf_private_and_leave_owned_ancestors_alone() {
     use std::os::unix::fs::PermissionsExt;
 
     let temp = private_tempdir();
@@ -128,10 +128,9 @@ fn secure_dirs_tighten_shared_writable_directories_the_user_owns() {
     set_permissions(&leaf, 0o775).unwrap();
     ensure_secure_dir(&leaf).unwrap();
     let mode = |path: &std::path::Path| path.metadata().unwrap().permissions().mode() & 0o7777;
-    assert_eq!(mode(&shared), 0o755);
+    assert_eq!(mode(&shared), 0o777);
     assert_eq!(mode(&leaf), 0o700);
 
-    // Sticky ancestors already prevent replacing entries, so their access is preserved.
     set_permissions(&shared, 0o1777).unwrap();
     ensure_secure_dir(&shared.join("missing/child")).unwrap();
     assert_eq!(mode(&shared), 0o1777);
@@ -158,7 +157,7 @@ fn secure_dirs_follow_trusted_ancestor_aliases_and_check_their_targets() {
     ensure_secure_dir(&relative.join("other")).unwrap();
     assert_eq!(
         target.metadata().unwrap().permissions().mode() & 0o7777,
-        0o755
+        0o777
     );
 
     let cycle = temp.path().join("cycle");

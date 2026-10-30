@@ -1118,6 +1118,31 @@ fn a_listing_keeps_raw_offsets_across_invalid_and_filtered_headers() {
     assert!(!page.more);
 }
 
+/// A narrowed page that filled its whole over-fetch window with other projects' runs has not
+/// reached the end of the archive.
+#[test]
+fn a_narrowed_listing_that_fills_its_window_reports_more() {
+    use yinz_tile::prelude::DataValue;
+    let mut other = run("other", "claude", "main", 0);
+    other.cwd = Some("/other".into());
+    let other = vec![DataValue::Text(
+        serde_json::to_string(&other.header()).unwrap(),
+    )];
+    let filter = Filter {
+        root: Some(RootScope::new("/work/agent", HostId::new(HOST))),
+        ..Default::default()
+    };
+    let fetched = DataRows {
+        columns: vec!["header".into()],
+        rows: vec![other; 8],
+        ..Default::default()
+    };
+    let page = list_runs_page(&filter, 1, &fetched);
+    assert!(page.headers.is_empty());
+    assert_eq!(page.scanned, 8);
+    assert!(page.more, "rows beyond the over-fetch window remain unread");
+}
+
 /// Paging a narrowed listing has to advance by the rows it *scanned*, not the runs it
 /// kept, or every page starts a few rows in and hands back the same runs for ever.
 #[test]

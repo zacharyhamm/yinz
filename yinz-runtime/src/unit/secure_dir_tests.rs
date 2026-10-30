@@ -11,7 +11,7 @@ fn private_directory_requires_the_effective_owner() {
     assert!(validate(&directory, owner, None, true).is_ok());
     assert!(validate(&directory, owner.wrapping_add(1), None, true).is_err());
     assert!(validate(&directory, owner.wrapping_add(1), Some(owner), true).is_err());
-    // The owner can tighten shared write access, so only other owners are refused for it.
+    // Shared write access is only refused when another user owns the directory.
     directory
         .set_permissions(Permissions::from_mode(0o777))
         .unwrap();

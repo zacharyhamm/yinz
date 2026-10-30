@@ -4,7 +4,7 @@ use std::sync::{mpsc, Arc, Barrier};
 use std::time::Duration;
 
 #[test]
-fn session_locks_refuse_symlinks_and_tighten_owned_directories() {
+fn session_locks_refuse_symlinks_and_accept_owned_directories() {
     use std::os::unix::fs::{symlink, PermissionsExt};
 
     let root = tempfile::tempdir().unwrap();
@@ -24,8 +24,8 @@ fn session_locks_refuse_symlinks_and_tighten_owned_directories() {
         );
     }
 
-    // Directories the user owns, including lock directories older versions created under a
-    // permissive umask, are tightened rather than refused.
+    // Directories the user owns are accepted. Lock directories older versions created under a
+    // permissive umask are made private; their parent keeps its mode.
     let shared = root.path().join("shared");
     let locks = shared.join(crate::consts::SESSION_OWNERSHIP_DIR);
     std::fs::create_dir_all(&locks).unwrap();
@@ -37,7 +37,7 @@ fn session_locks_refuse_symlinks_and_tighten_owned_directories() {
         .is_some());
     lock_creation(&shared.join("session"), Instant::now()).unwrap();
     let mode = |path: &std::path::Path| path.metadata().unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode(&shared), 0o755);
+    assert_eq!(mode(&shared), 0o777);
     assert_eq!(mode(&locks), 0o700);
     assert_eq!(
         mode(&shared.join(crate::consts::SESSION_CREATION_LOCK_DIR)),
