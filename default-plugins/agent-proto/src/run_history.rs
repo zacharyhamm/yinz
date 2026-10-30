@@ -381,10 +381,9 @@ pub fn list_runs_page(filter: &Filter, limit: usize, fetched: &DataRows) -> RunP
         raw => scanned.clamp(1, raw),
     };
     // The store's byte budget can truncate a fetch before the requested row count, and a
-    // guest-side narrowing that filled its whole over-fetch window may have rows beyond it.
-    let more = overflowed
-        || fetched.truncated
-        || (filter.narrows_in_guest() && raw >= list_runs_window(filter, limit));
+    // fetch that filled its whole window may have rows beyond it even when skipped rows
+    // (other projects' runs, or headers that no longer decode) kept the page from overflowing.
+    let more = overflowed || fetched.truncated || raw >= list_runs_window(filter, limit);
     RunPage {
         headers,
         more,

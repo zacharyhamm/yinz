@@ -11,15 +11,18 @@
   (define revisions (foldl (lambda (row revisions)
         (hash-insert revisions (as-row-value rows row "uid") (as-row-value rows row "rev"))) (hash) (hash-ref rows "rows")))
   (if (null? runs) '()
-    (let* ((entries (as-model "EntriesFromRows"
-            (yinz-data-fetch-all "shared:yinz" (as-model "EntriesRequest" (map (lambda (run) (hash-ref run "id")) runs)))))
+    (let* ((ids (map (lambda (run) (hash-ref run "id")) runs))
+        (entries (as-model "EntriesFromRows"
+            (yinz-data-fetch-all "shared:yinz" (as-model "EntriesRequest" ids))))
+        ;; Validate paginated entries before publishing any baseline or cached run.
+        (checked (as-fetch (as-model "RunRevisionsRequest" ids)))
+        (current (foldl (lambda (row current)
+              (hash-insert current (as-row-value checked row "uid") (as-row-value checked row "rev"))) (hash) (hash-ref checked "rows")))
         (snapshots (map (lambda (run)
               (define id (hash-ref run "id"))
               (define revision (hash-ref revisions id))
-              (define checked (as-fetch (as-model "RunByIdRequest" id)))
-              ;; Validate paginated entries before publishing any baseline or cached run.
-              (and (pair? (hash-ref checked "rows"))
-                (= revision (as-row-value checked (car (hash-ref checked "rows")) "rev"))
+              (define stored (as-field current id #f))
+              (and (as-present? stored) (= revision stored)
                 (list (hash-insert run "entries" (as-field entries id (hash-ref run "entries"))) revision))) runs)))
       ;; Each run validates independently; one concurrent write must not drop the others.
       (filter (lambda (snapshot) snapshot) snapshots))))

@@ -72,6 +72,15 @@ pub fn run_by_id_request(run_id: &str) -> FetchRequest {
         .limit(1)
 }
 
+/// The current revision of each listed run, to confirm in one fetch that a hydrated batch
+/// is unchanged. Holds at most [`MAX_FETCH_ROWS`] ids, like [`entries_request`].
+pub fn run_revisions_request(run_ids: impl IntoIterator<Item = String>) -> FetchRequest {
+    FetchRequest::entity(RUN_ENTITY)
+        .filter(Pred::is_in("uid", run_ids))
+        .select(["uid", "rev"])
+        .limit(MAX_FETCH_ROWS)
+}
+
 /// One entry's row key. Run-scoped and revision-keyed, so re-writing an entry the store
 /// already holds upserts it rather than making a second copy of it — the same shape, and
 /// for the same reason, as agent's `message_uid`.

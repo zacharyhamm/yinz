@@ -230,6 +230,9 @@ pub(super) fn run(op: &str, args: Value) -> Result<Value> {
         "EntryEventId" => encode(agents::entry_event_id(&arg(&args, 0)?)),
         "ActiveRunsRequest" => encode(agents::rows::active_runs_request(&owner(args[0].clone())?)),
         "RunByIdRequest" => encode(agents::rows::run_by_id_request(&arg::<String>(&args, 0)?)),
+        "RunRevisionsRequest" => encode(agents::rows::run_revisions_request(arg::<Vec<String>>(
+            &args, 0,
+        )?)),
         "EntriesRequest" => encode(agents::rows::entries_request(arg::<Vec<String>>(&args, 0)?)),
         "NewestEntriesRequest" => encode(agents::rows::newest_entries_request(&arg::<String>(
             &args, 0,

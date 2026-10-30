@@ -60,7 +60,7 @@ pub(crate) fn run_proto_codegen(sh: &Shell, force: bool) {
         ),
         (
             "yinz-host-protocol/assets/prost_nested_session",
-            "yinz-ipc/src/nested_session_contract",
+            "yinz-host-protocol/src/nested_session_contract",
             "generated_nested_session_api.rs",
         ),
     ];

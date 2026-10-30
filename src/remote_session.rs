@@ -428,7 +428,7 @@ fn select_discovered_session(
         "Specify a session name with `yinz attach --remote {host} SESSION`, or use a terminal to choose. Sessions on {host}: {}",
         rows.iter().map(|row| row.label.as_str()).collect::<Vec<_>>().join(", ")
     );
-    crate::session_menu::run(rows, "attach", Vec::new())
+    crate::session_menu::run(rows, "attach", Vec::new(), Default::default())
         .map(Some)
         .context("choose a remote session")
 }
@@ -537,7 +537,7 @@ pub(crate) fn attach(opts: &CliArgs, host: &str, name: Option<&str>, create: boo
 }
 
 /// The local configuration whose environment every SSH invocation for this attach uses.
-fn load_local_config(opts: &CliArgs) -> Result<(yinz_config::config::Config, Options)> {
+pub(crate) fn load_local_config(opts: &CliArgs) -> Result<(yinz_config::config::Config, Options)> {
     let mut config = yinz_config::config::Config::load(
         opts.config.as_deref(),
         opts.config_dir.as_deref(),

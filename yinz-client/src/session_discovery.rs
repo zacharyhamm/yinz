@@ -18,9 +18,10 @@ fn host_status(host: &str, status: &str) -> Vec<PickerRow> {
 }
 
 impl Discovery {
-    pub fn start(hosts: Vec<String>) -> Self {
-        Self::start_with(hosts, |host, cancelled| {
-            crate::remote_sessions::discover(host, cancelled, &Default::default())
+    /// Discover over the same SSH environment the attach that follows will use.
+    pub fn start(hosts: Vec<String>, env: yinz_types::envs::EnvironmentVariables) -> Self {
+        Self::start_with(hosts, move |host, cancelled| {
+            crate::remote_sessions::discover(host, cancelled, &env)
         })
     }
 

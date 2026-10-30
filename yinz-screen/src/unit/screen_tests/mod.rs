@@ -474,6 +474,7 @@ fn create_new_screen_with_capture(
     screen_config.mouse_hover_effects = mouse_hover_effects;
     screen_config.support_kitty_graphics_protocol = support_kitty_graphics_protocol;
     screen_config.session_is_mirrored = session_is_mirrored;
+    bus.senders.session = yinz_runtime::envs::SessionState::new("yinz-test".into());
     let screen = Screen::new(
         bus,
         &client_attributes,
@@ -1111,6 +1112,7 @@ fn create_new_screen_with_message_capture(size: Size) -> (Screen, CapturedClient
     let debug = false;
     let mut screen_config = test_screen_config();
     screen_config.session_is_mirrored = true;
+    bus.senders.session = yinz_runtime::envs::SessionState::new("yinz-test".into());
     let screen = Screen::new(
         bus,
         &client_attributes,
@@ -1212,6 +1214,7 @@ fn create_new_screen_with_forward_capture(size: Size) -> (Screen, ForwardCapture
     let debug = false;
     let mut screen_config = test_screen_config();
     screen_config.session_is_mirrored = true;
+    bus.senders.session = yinz_runtime::envs::SessionState::new("yinz-test".into());
     let screen = Screen::new(
         bus,
         &client_attributes,
@@ -1331,6 +1334,7 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
     let default_layout = Box::new(Layout::default());
     let mut screen_config = test_screen_config();
     screen_config.session_is_mirrored = true;
+    bus.senders.session = yinz_runtime::envs::SessionState::new("yinz-test".into());
     let screen = Screen::new(
         bus,
         &client_attributes,
@@ -1431,6 +1435,7 @@ fn create_non_mirrored_screen(size: Size) -> Screen {
         ..Default::default()
     };
     let screen_config = test_screen_config();
+    bus.senders.session = yinz_runtime::envs::SessionState::new("yinz-test".into());
     let screen = Screen::new(
         bus,
         &client_attributes,
