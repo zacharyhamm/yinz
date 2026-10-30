@@ -486,18 +486,27 @@ fn prepare(opts: &CliArgs, host: &str, name: Option<&str>) -> Result<StartupCanc
 /// `yinz --remote HOST`: a new session on the host, named by `--session` or by the host.
 pub(crate) fn start(opts: &CliArgs, host: &str) -> Result<i32> {
     let cancellation = prepare(opts, host, opts.session.as_deref())?;
-    run(opts, host, Target::New(opts.session.clone()), &cancellation)
+    let local = load_local_config(opts)?;
+    run(
+        opts,
+        host,
+        Target::New(opts.session.clone()),
+        &cancellation,
+        local,
+    )
 }
 
 pub(crate) fn attach(opts: &CliArgs, host: &str, name: Option<&str>, create: bool) -> Result<i32> {
     let cancellation = prepare(opts, host, name)?;
+    // Discovery and attachment run the same SSH, so both use the configured environment.
+    let local = load_local_config(opts)?;
     let target = match name {
         Some(name) => Target::Named {
             name: name.to_owned(),
             create,
         },
         None => {
-            let rows = discover(host, &cancellation.cancelled, &Default::default());
+            let rows = discover(host, &cancellation.cancelled, &local.0.env);
             if cancellation.is_cancelled() {
                 return Ok(yinz_client::INTERRUPTED_EXIT_STATUS);
             }
@@ -524,15 +533,11 @@ pub(crate) fn attach(opts: &CliArgs, host: &str, name: Option<&str>, create: boo
             }
         },
     };
-    run(opts, host, target, &cancellation)
+    run(opts, host, target, &cancellation, local)
 }
 
-fn run(
-    opts: &CliArgs,
-    host: &str,
-    mut target: Target,
-    cancellation: &StartupCancellation,
-) -> Result<i32> {
+/// The local configuration whose environment every SSH invocation for this attach uses.
+fn load_local_config(opts: &CliArgs) -> Result<(yinz_config::config::Config, Options)> {
     let mut config = yinz_config::config::Config::load(
         opts.config.as_deref(),
         opts.config_dir.as_deref(),
@@ -543,6 +548,16 @@ fn run(
     let options = yinz_config::config::apply_themes(&mut config, None, opts.config_dir.clone())
         .map_err(|e| anyhow!("{e}"))
         .context("load local terminal theme")?;
+    Ok((config, options))
+}
+
+fn run(
+    opts: &CliArgs,
+    host: &str,
+    mut target: Target,
+    cancellation: &StartupCancellation,
+    (config, options): (yinz_config::config::Config, Options),
+) -> Result<i32> {
     let os = get_client_os_input().context("open local terminal")?;
     let mut tab = None;
     let mut pane = None;
