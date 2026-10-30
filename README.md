@@ -44,6 +44,11 @@ extensive plugin hooks, and can be heavily customized.
 It surely has bugs. When I run into an issue, I tend to fix it on the spot. It
 is pretty stable though, I haven't run into a panic in a long time.
 
+Yinz works best with agents if you install the skills and hooks:
+
+`yinz hooks install`
+`yinz skills install`
+
 [Load Scheme plugins from Git repositories](docs/GIT_PLUGINS.md)
 
 ## Install
