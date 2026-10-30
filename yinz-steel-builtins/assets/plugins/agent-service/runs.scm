@@ -49,8 +49,7 @@
             (publish-id pane-id (hash-ref run "id"))
             (as-set! "run-lookups" (as-unique (cons pane-id (as-get "run-lookups")))))) (hydrate runs))) #f))
 (define (adopt-run id run)
-  (unless (as-map-get "adoptions" (hash-ref run "id") #f)
-    (as-map-set! "adoptions" (hash-ref run "id") run))
+  (as-map-set! "adoptions" (hash-ref run "id") #t)
   (set! run (as-model "AdoptRun" run id (as-owner)))
   (as-map-remove! "predecessors" id)
   (as-set! "observed-runs" (filter (lambda (other) (not (= id other))) (as-get "observed-runs")))
@@ -97,7 +96,7 @@
 (define (reconcile-run run)
   (define id (hash-ref run "id"))
   (define adoption (as-map-get "adoptions" id #f))
-  (define base (or adoption (as-map-get "run-bases" id #f)))
+  (define base (as-map-get "run-bases" id #f))
   (and base (as-log-safe (string-append "reconcile run " id) (lambda ()
         ;; Metadata and paginated entries must share one revision before any cache changes.
         (define rows (as-fetch (as-model "RunByIdRequest" id)))
@@ -127,7 +126,6 @@
                       (when (= (hash-ref entry "revision") (hash-ref run "summarized_revision"))
                         (set! merged (hash-insert merged "summarized_revision"
                             (if duplicate (hash-ref duplicate "revision") (hash-ref merged "revision"))))))) (hash-ref run "entries"))
-                (when adoption (as-map-set! "adoptions" id stored))
                 (as-map-set! "run-bases" id stored)
                 (as-map-set! "run-revisions" id revision)
                 (as-map-set! "persisted" id (hash-ref stored "revision"))

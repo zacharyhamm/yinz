@@ -364,6 +364,202 @@ fn publishing_and_persistence_keep_long_histories_and_other_live_agents() {
     }
 }
 
+const RUN_STORE_PRELUDE: &str = r#"
+    (define fail-writes #f)
+    (define (write-failures enabled) (set! fail-writes enabled))
+    (define stored #f) (define store-rev 0) (define attempts '())
+    (define fail-read #f) (define race-retry #f) (define race-read #f) (define metadata-reads 0)
+    (define (set-store run rev) (set! stored run) (set! store-rev rev))
+    (define (faults read race) (set! fail-read read) (set! race-retry race) (set! metadata-reads 0))
+    (define (commit-during-read run) (set! race-read run))
+    (define (rows columns values) (hash "columns" columns "rows" values "truncated" #f "next_cursor" json-null))
+    (define (entry-row entry)
+      (map (lambda (key)
+          (define value (hash-ref entry key))
+          (cond ((json-null? value) "Null") ((number? value) (hash "Int" value)) (else (hash "Text" value))))
+        '("revision" "event_id" "kind" "text" "created_at_ms")))
+    (define (yinz-data-fetch namespace request)
+      (when (and (equal? fail-read "entries") (equal? (hash-ref request "entity") "agent_run_entry")) (error "injected read failure"))
+      (when (and race-read (equal? (hash-ref request "entity") "agent_run_entry"))
+        (set-store race-read (+ store-rev 1)) (set! race-read #f))
+      (if (equal? (hash-ref request "entity") "agent_run")
+        (begin
+          (set! metadata-reads (+ metadata-reads 1))
+          (when (or (equal? fail-read "metadata") (and (equal? fail-read "validation") (= metadata-reads 2)))
+            (error "injected metadata read failure"))
+          (rows '("uid" "rev" "payload" "host_id" "yinz_session_name")
+            (if (and (equal? fail-read "missing") (= metadata-reads 2)) '()
+              (list (list (hash "Text" "claude:handoff") (hash "Int" store-rev)
+                (hash "Text" (yinz-json-string (hash-insert stored "entries" '())))
+                (hash "Text" (hash-ref stored "host_id")) (hash "Text" (hash-ref stored "yinz_session_name")))))))
+        (rows '("run_id" "revision" "event_id" "kind" "text" "created_at_ms")
+          (map (lambda (entry) (cons (hash "Text" "claude:handoff") (entry-row entry))) (hash-ref stored "entries")))))
+    (define (yinz-data-fetch-all namespace request) (yinz-data-fetch namespace request))
+    (define (yinz-data-apply namespace mutations)
+      (define put (hash-ref (car mutations) "Put"))
+      (define expected (hash-ref put "expect_rev"))
+      (set! attempts (append attempts (list expected)))
+      (when fail-writes (error "injected write failure"))
+      (when (and race-retry (= expected store-rev))
+        (set! race-retry #f) (set! store-rev (+ store-rev 1))
+        (define revision (+ 1 (hash-ref stored "revision")))
+        (set! stored (hash-insert (hash-insert stored "revision" revision) "entries"
+            (append (hash-ref stored "entries") (list (hash "revision" revision "event_id" json-null
+                "kind" "result" "text" "racing source" "created_at_ms" 20))))))
+      (unless (= expected store-rev) (error "conflict"))
+      (define payload (cadr (car (filter (lambda (pair) (equal? (car pair) "payload")) (hash-ref put "values")))))
+      (define entries (hash-ref stored "entries"))
+      (for-each (lambda (mutation)
+          (define values (hash-ref (hash-ref mutation "Put") "values"))
+          (define decoded (yinz-agent-model "agents" "EntriesFromRows"
+              (list (rows (map car values) (list (map cadr values))))))
+          (set! entries (append entries (hash-ref decoded "claude:handoff")))) (cdr mutations))
+      (set! stored (hash-insert (yinz-json-parse (hash-ref payload "Text")) "entries" entries))
+      (set! store-rev (+ store-rev 1)) #t)
+"#;
+
+#[test]
+fn adopting_a_dirty_run_preserves_unsaved_history_across_failed_retries() {
+    let (mut runtime, _) = plugin_with_source(
+        "agent-service",
+        r#"
+        (require "./agent-service/state.scm" "./agent-service/messages.scm" "./agent-service/runs.scm")
+        (define (setup run)
+          (set-store run 0)
+          (as-set! "host" "source-host") (as-set! "session" "source")
+          (as-map-set! "runs" 7 run) (as-map-set! "run-bases" "claude:handoff" run))
+        (define (append-local text)
+          (define run (append-entry (as-map-get "runs" 7 #f) "result" text #f json-null 20))
+          (as-map-set! "runs" 7 run) (as-map-set! "dirty-runs" "claude:handoff" run))
+        (define (finish) (as-call "finish-run" 7 "Completed" 30))
+        (define (resume)
+          (as-set! "host" "destination-host") (as-set! "session" "destination")
+          (as-set! "panes" (list (hash "pane_id" 8 "agent" (hash "run_id" "claude:handoff" "kind" "claude" "state" "Busy" "source" "Reported"))))
+          (as-call "adopt-arrived-runs"))
+        (define (persist-now) (as-call "persist"))
+        (define (snapshot)
+          (hash "stored" stored "store-rev" store-rev "attempts" attempts
+            "dirty" (as-get "dirty-runs") "adoptions" (as-get "adoptions") "runs" (as-get "runs")
+            "bases" (as-get "run-bases") "revisions" (as-get "run-revisions") "persisted" (as-get "persisted")))
+        "#,
+        json!({}),
+        BTreeMap::new(),
+        RUN_STORE_PRELUDE,
+    );
+    let entry = |revision, text: &str| json!({"revision":revision, "kind":"result", "text":text, "event_id":null, "created_at_ms":20});
+    let id = "claude:handoff";
+    let original = json!({
+        "id":id, "pane_id":7, "kind":"claude", "session_id":"handoff",
+        "host_id":"source-host", "yinz_session_name":"source", "started_at_ms":1,
+        "ended_at_ms":null, "outcome":"active", "revision":0, "summarized_revision":0,
+        "cwd":null, "host":null, "bubblewrap":null, "origin_run_id":null, "previous_run_id":null,
+        "summary":null, "entries":[],
+    });
+    runtime.invoke("setup", vec![original]).unwrap();
+    runtime
+        .invoke("append-local", vec![json!("persisted")])
+        .unwrap();
+    runtime.invoke("persist-now", vec![]).unwrap();
+    let saved = runtime.invoke("snapshot", vec![]).unwrap();
+    assert_eq!(saved["stored"]["entries"], json!([entry(1, "persisted")]));
+    assert_eq!(saved["store-rev"], 1);
+    assert_eq!(saved["dirty"], json!({}));
+
+    runtime
+        .invoke("append-local", vec![json!("pending")])
+        .unwrap();
+    runtime.invoke("finish", vec![]).unwrap();
+    runtime.invoke("write-failures", vec![json!(true)]).unwrap();
+    runtime.invoke("persist-now", vec![]).unwrap();
+    let ended = runtime.invoke("snapshot", vec![]).unwrap();
+    assert_eq!(ended["stored"], saved["stored"]);
+    assert_eq!(ended["attempts"], json!([0, 1, 1]));
+    assert_eq!(ended["dirty"][id]["outcome"], "completed");
+    assert_eq!(ended["dirty"][id]["ended_at_ms"], 30);
+    assert_eq!(
+        ended["dirty"][id]["entries"],
+        json!([entry(1, "persisted"), entry(2, "pending")])
+    );
+    assert_eq!(ended["runs"], json!({}));
+    runtime.invoke("resume", vec![]).unwrap();
+    let adopted = runtime.invoke("snapshot", vec![]).unwrap();
+    assert_eq!(adopted["bases"], ended["bases"]);
+    assert_eq!(adopted["bases"][id], saved["stored"]);
+    assert_eq!(adopted["revisions"][id], 1);
+    assert_eq!(
+        adopted["dirty"][id]["entries"],
+        ended["dirty"][id]["entries"]
+    );
+
+    // Another server commits after adoption, then races the guarded reconciliation retry.
+    let mut concurrent = saved["stored"].clone();
+    concurrent["host_id"] = json!("other-host");
+    concurrent["yinz_session_name"] = json!("other-session");
+    concurrent["pane_id"] = json!(9);
+    concurrent["outcome"] = json!("completed");
+    concurrent["ended_at_ms"] = json!(40);
+    concurrent["revision"] = json!(2);
+    concurrent["entries"] = json!([entry(1, "persisted"), entry(2, "concurrent")]);
+    runtime
+        .invoke("set-store", vec![concurrent.clone(), json!(2)])
+        .unwrap();
+    runtime
+        .invoke("write-failures", vec![json!(false)])
+        .unwrap();
+    runtime
+        .invoke("faults", vec![json!(false), json!(true)])
+        .unwrap();
+    runtime.invoke("persist-now", vec![]).unwrap();
+    let pending = runtime.invoke("snapshot", vec![]).unwrap();
+    assert_eq!(
+        pending["dirty"][id]["entries"],
+        json!([
+            entry(1, "persisted"),
+            entry(2, "concurrent"),
+            entry(3, "pending")
+        ])
+    );
+    assert_eq!(pending["attempts"], json!([0, 1, 1, 1, 2]));
+    assert_eq!(pending["store-rev"], 3);
+    assert_eq!(pending["stored"]["host_id"], "other-host");
+    assert_eq!(pending["adoptions"][id], true);
+    assert_eq!(adopted["adoptions"][id], true);
+    assert_eq!(pending["bases"][id], concurrent);
+    assert_eq!(pending["revisions"][id], 2);
+    assert_eq!(pending["persisted"][id], 2);
+    assert_eq!(pending["runs"]["8"], pending["dirty"][id]);
+
+    runtime.invoke("persist-now", vec![]).unwrap();
+    let committed = runtime.invoke("snapshot", vec![]).unwrap();
+    assert_eq!(committed["attempts"], json!([0, 1, 1, 1, 2, 2, 3]));
+    assert_eq!(committed["store-rev"], 4);
+    assert_eq!(
+        committed["stored"]["entries"],
+        json!([
+            entry(1, "persisted"),
+            entry(2, "concurrent"),
+            entry(3, "racing source"),
+            entry(4, "pending")
+        ])
+    );
+    for run in [&pending["dirty"][id], &committed["stored"]] {
+        assert_eq!(run["host_id"], "destination-host");
+        assert_eq!(run["yinz_session_name"], "destination");
+        assert_eq!(run["pane_id"], 8);
+        assert_eq!(run["outcome"], "active");
+        assert_eq!(run["ended_at_ms"], json!(null));
+    }
+    assert_eq!(committed["stored"]["revision"], 4);
+    assert_eq!(committed["dirty"], json!({}));
+    assert_eq!(committed["adoptions"], json!({}));
+    assert_eq!(committed["bases"][id], committed["stored"]);
+    assert_eq!(committed["runs"]["8"], committed["stored"]);
+    assert_eq!(committed["revisions"][id], 4);
+    assert_eq!(committed["persisted"][id], 4);
+    runtime.invoke("persist-now", vec![]).unwrap();
+    assert_eq!(runtime.invoke("snapshot", vec![]).unwrap(), committed);
+}
+
 #[test]
 fn run_conflicts_merge_history_and_retry_without_losing_revision_guards() {
     // The mock store checks the actual emitted guards and commits metadata and entries together.
@@ -410,56 +606,7 @@ fn run_conflicts_merge_history_and_retry_without_losing_revision_guards() {
             "#,
             json!({}),
             BTreeMap::new(),
-            r#"
-            (define stored #f) (define store-rev 0) (define attempts '())
-            (define fail-read #f) (define race-retry #f) (define race-read #f) (define metadata-reads 0)
-            (define (set-store run rev) (set! stored run) (set! store-rev rev))
-            (define (faults read race) (set! fail-read read) (set! race-retry race) (set! metadata-reads 0))
-            (define (commit-during-read run) (set! race-read run))
-            (define (rows columns values) (hash "columns" columns "rows" values "truncated" #f "next_cursor" json-null))
-            (define (entry-row entry)
-              (map (lambda (key)
-                  (define value (hash-ref entry key))
-                  (cond ((json-null? value) "Null") ((number? value) (hash "Int" value)) (else (hash "Text" value))))
-                '("revision" "event_id" "kind" "text" "created_at_ms")))
-            (define (yinz-data-fetch namespace request)
-              (when (and (equal? fail-read "entries") (equal? (hash-ref request "entity") "agent_run_entry")) (error "injected read failure"))
-              (when (and race-read (equal? (hash-ref request "entity") "agent_run_entry"))
-                (set-store race-read (+ store-rev 1)) (set! race-read #f))
-              (if (equal? (hash-ref request "entity") "agent_run")
-                (begin
-                  (set! metadata-reads (+ metadata-reads 1))
-                  (when (or (equal? fail-read "metadata") (and (equal? fail-read "validation") (= metadata-reads 2)))
-                    (error "injected metadata read failure"))
-                  (rows '("uid" "rev" "payload" "host_id" "yinz_session_name")
-                    (if (and (equal? fail-read "missing") (= metadata-reads 2)) '()
-                      (list (list (hash "Text" "claude:handoff") (hash "Int" store-rev)
-                        (hash "Text" (yinz-json-string (hash-insert stored "entries" '())))
-                        (hash "Text" (hash-ref stored "host_id")) (hash "Text" (hash-ref stored "yinz_session_name")))))))
-                (rows '("run_id" "revision" "event_id" "kind" "text" "created_at_ms")
-                  (map (lambda (entry) (cons (hash "Text" "claude:handoff") (entry-row entry))) (hash-ref stored "entries")))))
-            (define (yinz-data-fetch-all namespace request) (yinz-data-fetch namespace request))
-            (define (yinz-data-apply namespace mutations)
-              (define put (hash-ref (car mutations) "Put"))
-              (define expected (hash-ref put "expect_rev"))
-              (set! attempts (append attempts (list expected)))
-              (when (and race-retry (= expected store-rev))
-                (set! race-retry #f) (set! store-rev (+ store-rev 1))
-                (define revision (+ 1 (hash-ref stored "revision")))
-                (set! stored (hash-insert (hash-insert stored "revision" revision) "entries"
-                    (append (hash-ref stored "entries") (list (hash "revision" revision "event_id" json-null
-                        "kind" "result" "text" "racing source" "created_at_ms" 20))))))
-              (unless (= expected store-rev) (error "conflict"))
-              (define payload (cadr (car (filter (lambda (pair) (equal? (car pair) "payload")) (hash-ref put "values")))))
-              (define entries (hash-ref stored "entries"))
-              (for-each (lambda (mutation)
-                  (define values (hash-ref (hash-ref mutation "Put") "values"))
-                  (define decoded (yinz-agent-model "agents" "EntriesFromRows"
-                      (list (rows (map car values) (list (map cadr values))))))
-                  (set! entries (append entries (hash-ref decoded "claude:handoff")))) (cdr mutations))
-              (set! stored (hash-insert (yinz-json-parse (hash-ref payload "Text")) "entries" entries))
-              (set! store-rev (+ store-rev 1)) #t)
-            "#,
+            RUN_STORE_PRELUDE,
         );
         let entry = |revision, text: &str, event_id: Option<&str>| json!({"revision":revision, "kind":"result", "text":text, "event_id":event_id, "created_at_ms":20});
         let original = json!({
@@ -555,7 +702,7 @@ fn run_conflicts_merge_history_and_retry_without_losing_revision_guards() {
                 );
             }
             if read_race {
-                assert_eq!(pending[4]["claude:handoff"], concurrent);
+                assert_eq!(pending[4]["claude:handoff"], true);
                 assert_eq!(pending[6]["claude:handoff"], concurrent);
                 assert_eq!(pending[7]["claude:handoff"], 12);
                 assert_eq!(pending[8]["claude:handoff"], 4);
