@@ -1,79 +1,73 @@
 yinz is not zellij
 
+A terminal multiplexer for managing agents. Started as a zellij plugin, but
+zellij plugins couldn't do what I wanted, so I forked zellij. Many agent turns
+later, we have yinz.
+
+Hit "Ctrl+o+l" to launch the command palette. Or Ctrl+alt+p. Projects register
+automatically when you launch an agent in a git repository. A project is defined
+by the git remote, or if that is not set, just the path.
+
+Yinz automatically rethemes agents launched via "Spawn". Type "theme" in the
+command palette to choose a theme.
+
+Type "config" in the command palette to access configuration options. One you
+might want to set: max_agent_width, which controls how wide an agent panel can
+be, so that agents stay readable.
+
+See running agents with "Ctrl+e+a".
+
+Yinz works best with a modern terminal emulator. I use kitty and ghostty. Yinz
+makes use of the kitty graphics protocol.
+
+Yinz is pretty fast! It runs `notcurses-demo` pretty well, which causes upstream
+zellij to panic.
+
+Yinz is plugin driven. Plugins are written in scheme using a fork of "steel":
+
+Yinz has good remote support. Use something like tailscale to make your remote
+server accessible over the internet. Build yinz on the remote (we have no
+automation for this right now), and on the client. Then from the client type:
+
+`yinz attach --remote $HOSTNAME`
+
+yinz will forward its unix socket over SSH back to the client. It will
+automatically reconnect if the SSH connection is dropped. Feel free to close
+your laptop and let it sleep. When you open it back up, yinz will reconnect to
+your remote session automatically.
+
+Yinz is mostly developed on Linux, although the client is tested on macOS a bit.
+
+This is a personal project: it does what I want it to for my work. But it has
+extensive plugin hooks, and can be heavily customized.
+
+It surely has bugs. When I run into an issue, I tend to fix it on the spot. It
+is pretty stable though, I haven't run into a panic in a long time.
+
 [Load Scheme plugins from Git repositories](docs/GIT_PLUGINS.md)
 
 ## Install
 
-From this checkout, run:
+There are no binary releases at this time. From this checkout, run:
 
 ```sh
 cargo x install "$HOME/.local/bin/yinz"
 ```
 
-This builds a release binary and installs builtin Scheme files into the default Yinz data directory, under `plugins/builtins/`.
-Choose another binary destination by changing the path. To select a data directory, use:
+This builds a release binary and installs builtin Scheme files into the default
+Yinz data directory, under `plugins/builtins/`. Choose another binary
+destination by changing the path. To select a data directory, use:
 
 ```sh
 cargo x install "$HOME/.local/bin/yinz" --data-dir /path/to/data
 yinz --data-dir /path/to/data
 ```
 
-Reinstalling replaces shipped builtin files, including local edits. It preserves unrelated files and user plugins.
-The sources are installed before the binary. Copying only the binary does not produce a complete installation.
-There is no embedded fallback or automatic runtime installation.
+Reinstalling replaces shipped builtin files, including local edits. It preserves
+unrelated files and user plugins. The sources are installed before the binary.
+Copying only the binary does not produce a complete installation. There is no
+embedded fallback or automatic runtime installation.
 
-For development, `cargo x run` installs builtin files into its selected data directory.
-Use `cargo x run --quick-run` for `target/dev-data`. `cargo x build` does not install builtin files.
-
-## Tab groups
-
-The upper tab-bar row selects a group. The lower row shows that group's tabs.
-Startup tabs belong to **Default**. Press **Ctrl+t**, then **g** to create a group
-with a fresh terminal tab. **Alt+Shift+h** and **Alt+Shift+l** switch to the previous
-or next group without changing modes, except in Locked and Select modes. In Tab
-mode, **1–9** and the usual tab navigation keys select tabs within the current
-group. Switching groups restores the last tab you used there.
-Press **Ctrl+t**, then **{** or **}** to move the focused pane to the previous or next group.
-The pane moves to that group's last-used tab, and focus follows it in Normal mode.
-These shortcuts wrap around and skip groups without a loaded tab.
-
-Use the command palette to create, switch, rename, or close a tab group. Closing a
-group asks for confirmation and closes its tabs and panes. A group also disappears
-when its last tab closes. Names and membership survive session resurrection.
-
-Custom layouts need `pane size=2` for the `tab-bar` plugin to show both rows.
-A one-row tab bar still shows the current group's tabs. Custom keymaps can bind
-`NewTabGroup`, `GoToPreviousTabGroup`, `GoToNextTabGroup`, and `GoToTabInGroup 1`.
-Explicit tab IDs, names, and existing `GoToTab` positions remain session-wide.
-
-## Agent exit
-
-The default agent-exit hook keeps the pane available. Press Enter to restart the agent or Esc to close the pane.
-For a local or sandboxed secondary worktree, Delete opens a cleanup confirmation.
-Cleanup requires a clean worktree and commits merged into the local base branch or its freshly fetched origin branch.
-The hook checks the checkout identity again before removal and guards branch deletion with its recorded revision.
-
-Set the base branch in the primary checkout's `.yinz/agent-exit.kdl`:
-
-```kdl
-agent_exit {
-    default_branch "main"
-}
-```
-
-The default is `main`. The `agent_exit` block accepts only `default_branch`.
-Other top-level nodes hold plugin-owned settings, for example:
-
-```kdl
-agent_exit { default_branch "main"; }
-merge_queue { ci_command "cargo x ci check"; review_prompt "Review this branch against main"; merge "ff"; }
-```
-
-Plugins receive these nodes in `config.sections`; Yinz does not execute their
-values. Duplicate top-level names are errors. A file containing only plugin
-sections is valid and retains the `main` default. The historical filename stays
-`.yinz/agent-exit.kdl`. See [per-project configuration](docs/PLUGIN_SDK.md#per-project-configuration)
-for the node shape, permissions, and write semantics.
-
-Managed Swamp commands, plugins, and bundled assets have been removed without compatibility aliases or migration tooling.
-Existing external runtime data and running Swamp processes are not deleted or stopped automatically.
+For development, `cargo x run` installs builtin files into its selected data
+directory. Use `cargo x run --quick-run` for `target/dev-data`. `cargo x build`
+does not install builtin files.
