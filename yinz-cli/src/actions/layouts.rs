@@ -30,7 +30,7 @@ pub(super) fn new_tab(
     let current_dir = get_current_dir();
     let cwd = cwd
         .map(|cwd| current_dir.join(cwd))
-        .or_else(|| Some(current_dir.clone()));
+        .or_else(|| (!current_dir.as_os_str().is_empty()).then(|| current_dir.clone()));
 
     // Map CLI flags to UnblockCondition
     let first_pane_unblock_condition = if block_until_exit_success {
@@ -45,9 +45,10 @@ pub(super) fn new_tab(
 
     // Parse initial_panes from initial_command or initial_plugin
     let initial_panes = if let Some(plugin_url) = initial_plugin {
-        let plugin = match yinz_runtime::plugin_location::run_plugin_from_url_with_cwd(
+        let plugin = match super::plugin_from_url(
             &plugin_url,
             cwd.clone(),
+            current_dir.as_os_str().is_empty(),
         ) {
             Ok(run_plugin) => RunPluginOrAlias::RunPlugin(RunPlugin {
                 initial_cwd: cwd.clone(),
@@ -55,7 +56,9 @@ pub(super) fn new_tab(
             }),
             Err(_) => {
                 let mut plugin_alias = PluginAlias::new(&plugin_url, &None, cwd.clone());
-                plugin_alias.set_caller_cwd_if_not_set(Some(current_dir.clone()));
+                plugin_alias.set_caller_cwd_if_not_set(
+                    (!current_dir.as_os_str().is_empty()).then(|| current_dir.clone()),
+                );
                 RunPluginOrAlias::Alias(plugin_alias)
             },
         };

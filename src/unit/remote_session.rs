@@ -278,7 +278,7 @@ fn remote_attach_cli_combinations() {
                     "--force-run-commands",
                 ],
             ] {
-                assert!(CliArgs::try_parse_from(args).is_err());
+                assert!(validate_options(&CliArgs::try_parse_from(args).unwrap()).is_err());
             }
             for args in [
                 vec!["yinz", "attach", "--remote", "host", "--create"],
@@ -351,8 +351,6 @@ fn remote_start_cli_combinations() {
                     "--mouse-mode",
                     "false",
                 ],
-                vec!["yinz", "--remote", "host", "attach", "work"],
-                vec!["yinz", "--remote", "host", "attach", "--remote", "other"],
                 vec!["yinz", "--remote", "host", "list-sessions"],
             ] {
                 assert!(validate_options(&CliArgs::try_parse_from(args).unwrap()).is_err());

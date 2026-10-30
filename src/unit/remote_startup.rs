@@ -203,10 +203,10 @@ fn bare_remote_start_asks_the_host_for_a_new_session() {
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("takes no subcommand"),
+        String::from_utf8_lossy(&output.stderr).contains("selected-session-bootstrap"),
         "{output:?}"
     );
-    assert!(!session.0.path().join("ssh-args").exists());
+    assert!(session.0.path().join("ssh-args").exists());
 }
 
 #[test]
@@ -864,4 +864,265 @@ while True:
                         connected = False
                         break
                     (remote if source is client else client).sendall(data)
+"#;
+
+/// Two separate session namespaces connected through an SSH-shaped Unix-socket relay.
+/// The CLI still runs locally, so local-only input paths cannot be read by the peer.
+#[test]
+fn remote_cli_uses_forwarded_sessions_and_local_inputs() {
+    let remote = Session::new();
+    remote.remote_layout();
+    yinz_steel_builtins::install(
+        &yinz_steel_builtins::asset_dir(),
+        &remote.0.path().join("data/yinz"),
+    )
+    .unwrap();
+    let config_dir = remote.0.path().join("config/yinz");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::copy(
+        remote.0.path().join("config.kdl"),
+        config_dir.join("config.kdl"),
+    )
+    .unwrap();
+    remote.remote_endpoint(true);
+    remote.wait_for_panes(false);
+    let local = Session::new();
+    let stub = local.0.path().join("ssh.py");
+    fs::write(&stub, CLI_SSH_STUB).unwrap();
+    yinz_test_support::write_warm_script(
+        &local.0.path().join("ssh"),
+        "exec python3 \"$YINZ_TEST_RELAY\" \"$@\"",
+    );
+    let mut env: std::collections::BTreeMap<_, _> = remote
+        .command()
+        .get_envs()
+        .filter_map(|(k, v)| {
+            v.map(|v| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.to_string_lossy().into_owned(),
+                )
+            })
+        })
+        .collect();
+    // Exercise SSH configurations that forward the invoking shell's Yinz variables.
+    env.insert("YINZ_PANE_REF".into(), "invalid-forwarded-pane".into());
+    let mut path = vec![local.0.path().to_path_buf()];
+    path.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let path = std::env::join_paths(path).unwrap();
+    let command = |args: &[&str]| {
+        let mut cmd = local.command();
+        cmd.env("PATH", &path)
+            .env("YINZ_TEST_RELAY", &stub)
+            .env("YINZ_TEST_REMOTE_ENV", serde_json::to_string(&env).unwrap())
+            .env("YINZ_TEST_BINARY", env!("CARGO_BIN_EXE_yinz"))
+            .env("YINZ_TEST_FORWARD_LOG", local.0.path().join("forwards"))
+            // Invalid inherited local context must have no bearing on remote selection.
+            .env("YINZ_PANE_REF", "invalid-local-pane")
+            .args(["--remote", "fixture"])
+            .args(args);
+        cmd
+    };
+    let call = |args: &[&str]| {
+        let output = command(args).output().unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        output
+    };
+    let out = call(&["action", "list-panes", "--json"]);
+    let panes: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let pane = panes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["is_plugin"] == false)
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap_or(1)
+        .to_string();
+    call(&["agent", "list", "--json"]);
+    call(&["data", "catalog"]);
+    let fragment = local.0.path().join("fragment.kdl");
+    fs::write(&fragment, "pane_frames false\n").unwrap();
+    call(&[
+        "action",
+        "reconfigure",
+        "--file",
+        fragment.to_str().unwrap(),
+    ]);
+    let out = call(&["repl", "--eval", "(+ 20 22)"]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("42"),
+        "{out:?}"
+    );
+    call(&["plugins", "list", "--running", "--json"]);
+    call(&[
+        "action",
+        "agent-report",
+        "--pane-id",
+        &pane,
+        "--kind",
+        "claude",
+        "--state",
+        "idle",
+    ]);
+    let out = call(&["list-sessions", "--short"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains(NAME));
+    let created = call(&[
+        "run",
+        "--",
+        "/bin/sh",
+        "-c",
+        "printf remote-stream-marker; read ignored",
+    ]);
+    let created = String::from_utf8(created.stdout).unwrap();
+    let pane_id = created.lines().last().unwrap().trim();
+    for args in [
+        vec!["subscribe", "--pane-id", pane_id],
+        vec!["events", "--type", "agent_lifecycle"],
+    ] {
+        let mut child = command(&args).spawn().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        let content = Watched::new(Vec::<u8>::new());
+        let captured = content.clone();
+        let reader = std::thread::spawn(move || {
+            let mut buffer = [0; 4096];
+            while let Ok(count) = stdout.read(&mut buffer) {
+                if count == 0 {
+                    break;
+                }
+                captured.lock().extend_from_slice(&buffer[..count]);
+            }
+        });
+        content.wait_until(
+            &format!("remote stream content for {args:?}"),
+            default_timeout(),
+            |bytes| {
+                let text = String::from_utf8_lossy(bytes);
+                (text.contains("remote-stream-marker") || text.contains("agent_lifecycle"))
+                    .then_some(())
+            },
+        );
+        kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(128 + signal_hook::consts::SIGTERM),
+            "{output:?}"
+        );
+        reader.join().unwrap();
+    }
+    // Watchers mirror an interactive client; a background-only session has no view to follow.
+    let socket = yinz_ipc::consts::ipc_connect(&remote.socket()).unwrap();
+    socket.set_recv_timeout(Some(default_timeout())).unwrap();
+    let mut source = IpcSenderWithContext::<ClientToServerMsg>::new(socket);
+    let mut source_messages = source.get_receiver::<ServerToClientMsg>().unwrap();
+    source
+        .send_client_msg(ClientToServerMsg::AttachClient {
+            cli_assets: yinz_types::input::cli_assets::CliAssets {
+                config_file_path: Some(remote.0.path().join("config.kdl")),
+                config_dir: Some(remote.0.path().join("config")),
+                data_dir: Some(remote.0.path().join("data/yinz")),
+                terminal_window_size: yinz_types::pane_size::Size { rows: 24, cols: 80 },
+                ..Default::default()
+            },
+            tab_number_to_focus: None,
+            pane_to_focus: None,
+        })
+        .unwrap();
+    let source_reader = std::thread::spawn(move || {
+        while let IpcRecv::Msg(message, _) = source_messages.recv_server_msg() {
+            if matches!(message, ServerToClientMsg::Exit { .. }) {
+                break;
+            }
+        }
+    });
+    let pty = nix::pty::openpty(
+        Some(&nix::pty::Winsize {
+            ws_row: 24,
+            ws_col: 80,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        }),
+        None,
+    )
+    .unwrap();
+    let slave = fs::File::from(pty.slave);
+    let mut master = fs::File::from(pty.master);
+    let mut watcher = command(&["watch"])
+        .stdin(slave.try_clone().unwrap())
+        .stdout(slave.try_clone().unwrap())
+        .stderr(slave.try_clone().unwrap())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    drop(slave);
+    let content = Watched::new(Vec::<u8>::new());
+    let captured = content.clone();
+    let reader = std::thread::spawn(move || {
+        let mut buffer = [0; 4096];
+        while let Ok(count) = master.read(&mut buffer) {
+            if count == 0 {
+                break;
+            }
+            captured.lock().extend_from_slice(&buffer[..count]);
+        }
+    });
+    content.wait_until_described(
+        "remote watcher render",
+        default_timeout(),
+        |bytes| {
+            String::from_utf8_lossy(bytes)
+                .contains("remote-stream-marker")
+                .then_some(())
+        },
+        |bytes| String::from_utf8_lossy(bytes).into_owned(),
+    );
+    killpg(Pid::from_raw(watcher.id() as i32), Signal::SIGTERM).unwrap();
+    watcher.wait().unwrap();
+    reader.join().unwrap();
+    source
+        .send_client_msg(ClientToServerMsg::ClientExited)
+        .unwrap();
+    drop(source);
+    source_reader.join().unwrap();
+    call(&["--session", NAME, "kill-session", NAME]);
+    assert!(!remote.socket().exists());
+    for socket in fs::read_to_string(local.0.path().join("forwards"))
+        .unwrap()
+        .lines()
+    {
+        assert!(
+            !std::path::Path::new(socket).exists(),
+            "forward leaked: {socket}"
+        );
+    }
+    assert!(!local.socket().exists());
+}
+
+const CLI_SSH_STUB: &str = r#"
+import json, os, select, shlex, socket, sys, threading
+if '-L' not in sys.argv:
+    args = shlex.split(sys.argv[-1])
+    binary = os.environ['YINZ_TEST_BINARY']
+    os.execve(binary, [binary] + args[1:], json.loads(os.environ['YINZ_TEST_REMOTE_ENV']))
+path, peer = sys.argv[sys.argv.index('-L') + 1].split(':', 1)
+with open(os.environ['YINZ_TEST_FORWARD_LOG'], 'a') as log:
+    log.write(path + '\n')
+listener = socket.socket(socket.AF_UNIX)
+listener.bind(path)
+listener.listen()
+def relay(client):
+    with client, socket.socket(socket.AF_UNIX) as remote:
+        remote.connect(peer)
+        while True:
+            for source in select.select([client, remote], [], [])[0]:
+                data = source.recv(65536)
+                if not data:
+                    return
+                (remote if source is client else client).sendall(data)
+while True:
+    client, _ = listener.accept()
+    threading.Thread(target=relay, args=(client,), daemon=True).start()
 "#;

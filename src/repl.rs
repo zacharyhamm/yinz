@@ -9,7 +9,10 @@ pub(crate) fn run(options: &CliArgs, expression: Option<&str>) -> Result<()> {
         "connect the REPL to",
     );
     let mut runtime = SessionEvaluator {
-        client: yinz_client::repl::Client::connect(&session, caller)?,
+        client: yinz_client::repl::Client::connect_target(
+            &crate::remote_commands::target(&session),
+            caller,
+        )?,
         output: String::new(),
     };
     if expression.is_none() && std::io::stdin().is_terminal() {

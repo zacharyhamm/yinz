@@ -12,15 +12,51 @@ yinz --remote user@host --session work
 
 Without a session name, Yinz discovers sessions on the specified host. It attaches to the only running session, or opens a picker on a terminal when there are several. The picker only shows sessions from that host. If no sessions are active, Yinz asks on a terminal whether to create a new session, which the remote host names; noninteractive callers get an error instead. Noninteractive callers must supply a name when discovery returns several sessions.
 
-`yinz --remote HOST` always starts a new session on the host and attaches to it. The remote host names the session unless `--session` names it. It refuses a name that is already taken on the host, whether the session is running or can be resurrected. It takes no subcommand and rejects the same local overrides as remote attach.
+`yinz --remote HOST` always starts a new session on the host and attaches to it. The remote host names the session unless `--session` names it. It refuses a name that is already taken on the host, whether the session is running or can be resurrected. Without a subcommand it rejects the same local overrides as remote attach.
 
 `--create` requires a session name. It attaches to an existing session, restores an exited session, or creates a new session. It refuses to replace an unresponsive server. Restored commands retain the normal suspended state.
+
+## CLI commands
+
+`--remote HOST` works before or after subcommands. Select a running session with
+`--session NAME`; otherwise commands use the only running session on that host.
+Zero or multiple sessions produce an error. A local shell's session and pane
+identity never select a remote target.
+
+```sh
+yinz --remote build-box --session work action list-panes --json
+yinz --session work events --remote build-box
+yinz --remote build-box --session work agent list --json
+yinz --remote build-box --session work data catalog
+yinz --remote build-box --session work repl --eval '(+ 1 2)'
+yinz --remote build-box --session work run --cwd /srv/project -- make test
+yinz list-sessions --remote build-box --short
+yinz kill-session --remote build-box work
+```
+
+Actions, pane run/edit/plugin/pipe commands, agent control and archives, data,
+REPL, render subscriptions, event streams, and read-only watchers use the remote
+session. Plugin lifecycle commands and logs, pane adoption, session listing,
+and session kill/delete commands also support `--remote`. All-session lifecycle
+commands apply to the selected SSH host and retain their confirmation prompts.
+
+Input files (request JSON, agent prompts, config fragments, and layout source)
+and stdin are read locally. Paths used by the session, including working
+directories, edited files, and plugin locations, refer to the remote machine.
+An omitted working directory uses the remote session's defaults. `--remote-host`
+and `pty-host --host` still select a pane's machine independently of the machine
+hosting the session.
+
+Local setup, skills, hook installation, plugin authoring/repository commands,
+standalone agent launchers, and supervisor administration without a live-session
+target reject `--remote`. Ordinary session commands never create a missing
+session or replay a request after a connection failure.
 
 ## Setup
 
 Install compatible Yinz versions, including the builtin plugins, on both machines. The Yinz version, client/server contract version, and remote bootstrap version must match. The remote installation must be available on the SSH command's `PATH`.
 
-The remote bootstrap version covers the `yinz remote-session` and `yinz remote-sessions` commands that SSH runs, and their JSON replies. It changes independently of the client/server contract, which stays the same across additive IPC changes. A remote that predates bootstrap versioning rejects the `--bootstrap-version` flag before it starts anything. Yinz reports that rejection as a compatibility mismatch rather than a command-line error.
+The remote bootstrap version covers the `yinz remote-session`, `yinz remote-sessions`, and `yinz remote-command` commands that SSH runs, and their JSON replies. It changes independently of the client/server contract, which stays the same across additive IPC changes. A remote that predates bootstrap versioning rejects the `--bootstrap-version` flag before it starts anything. Yinz reports that rejection as a compatibility mismatch rather than a command-line error.
 
 Use OpenSSH on both machines. The SSH server must allow Unix-socket forwarding (`AllowStreamLocalForwarding yes`). macOS and Linux can serve either role. Windows is not supported.
 

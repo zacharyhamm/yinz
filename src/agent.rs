@@ -98,8 +98,11 @@ impl std::fmt::Display for RequestFailed {
 impl std::error::Error for RequestFailed {}
 
 fn run_inner(command: Agent, opts: &CliArgs) -> Result<i32> {
-    let (explicit, caller) =
-        yinz_process::pane_context::target(opts.session.clone().map(Into::into))?;
+    let (explicit, caller) = if let Some(target) = crate::remote_commands::selected() {
+        (Some(target.name.clone()), None)
+    } else {
+        yinz_process::pane_context::target(opts.session.clone().map(Into::into))?
+    };
     let explicit = explicit.map(|session| session.into_string());
     let session = match explicit {
         Some(session) => session,
@@ -122,8 +125,12 @@ fn run_inner(command: Agent, opts: &CliArgs) -> Result<i32> {
         _ => None,
     };
     if let Some(action) = action {
-        let reply = yinz_client::store_client::request(&session.into(), action, caller)
-            .map_err(|error| anyhow!(RequestFailed(error)))?;
+        let reply = yinz_client::store_client::request_at(
+            &crate::remote_commands::target(&session.into()),
+            action,
+            caller,
+        )
+        .map_err(|error| anyhow!(RequestFailed(error)))?;
         allow_closed_stdout(
             writeln!(std::io::stdout().lock(), "{reply}").context("cannot write agent reply"),
         )?;
@@ -333,8 +340,11 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
                 return Ok((
                     AgentRequest::SpawnNewProject {
                         name,
-                        destination: std::path::absolute(destination)
-                            .context("resolve destination")?,
+                        destination: if crate::remote_commands::selected().is_some() {
+                            destination
+                        } else {
+                            std::path::absolute(destination).context("resolve destination")?
+                        },
                         spec,
                         placement,
                     },
@@ -342,7 +352,7 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
                     timeout,
                 ));
             }
-            if remote_host.is_none() {
+            if remote_host.is_none() && crate::remote_commands::selected().is_none() {
                 if let Some(path) = cwd {
                     cwd = Some(std::path::absolute(path).context("resolve cwd")?);
                 } else if project.is_none() {
@@ -568,16 +578,17 @@ fn allow_sandboxed_yinz(spec: &mut AgentSpawnSpec) -> Result<()> {
 }
 
 fn exchange(session: &str, request: AgentRequest, timeout: Duration) -> Result<AgentResponse> {
-    let socket =
-        match yinz_ipc::consts::ipc_connect(&yinz_runtime::consts::YINZ_SOCK_DIR.join(session)) {
-            Ok(socket) => socket,
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-                bail!(yinz_cli::sessions::denied_session_message(session))
-            },
-            Err(error) => {
-                return Err(error).with_context(|| format!("cannot connect to session {session}"))
-            },
-        };
+    let socket = match yinz_ipc::consts::ipc_connect(
+        &crate::remote_commands::target(&session.into()).socket,
+    ) {
+        Ok(socket) => socket,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            bail!(yinz_cli::sessions::denied_session_message(session))
+        },
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot connect to session {session}"))
+        },
+    };
     exchange_on_socket(socket, request, timeout)
 }
 

@@ -27,7 +27,13 @@ pub struct Client {
 
 impl Client {
     pub fn connect(session: &SessionName, caller: Option<TerminalId>) -> Result<Self> {
-        Self::connect_at(&yinz_runtime::consts::YINZ_SOCK_DIR.join(session), caller)
+        Self::connect_target(session, caller)
+    }
+    pub fn connect_target(
+        session: &impl crate::session_target::SessionEndpoint,
+        caller: Option<TerminalId>,
+    ) -> Result<Self> {
+        Self::connect_at(&session.socket(), caller)
     }
 
     fn connect_at(path: &Path, caller: Option<TerminalId>) -> Result<Self> {

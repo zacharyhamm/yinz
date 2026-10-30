@@ -33,7 +33,7 @@ pub const CLIENT_SERVER_CONTRACT_VERSION: usize = 1;
 ///
 /// Bump it whenever either side would misread the other's bootstrap: a new required flag, a
 /// changed reply, or changed startup semantics.
-pub const REMOTE_BOOTSTRAP_VERSION: usize = 1;
+pub const REMOTE_BOOTSTRAP_VERSION: usize = 2;
 
 /// Maximum protobuf frame length, excluding its four-byte length prefix. `yinz_ipc` re-exports
 /// it for the socket transport; the plugin compilation worker bounds its requests and responses

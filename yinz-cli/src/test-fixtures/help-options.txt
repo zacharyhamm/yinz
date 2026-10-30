@@ -11,7 +11,7 @@ Options:
       --simplified-ui <SIMPLIFIED_UI>
           Allow plugins to use a more simplified layout that is compatible with more fonts (true or
           false)
-          
+
           [possible values: true, false]
 
       --disable-splash-screen <DISABLE_SPLASH_SCREEN>
@@ -52,6 +52,12 @@ Options:
       --layout-dir <LAYOUT_DIR>
           Set the layout_dir, defaults to subdirectory of config dir
 
+      --remote <HOST>
+          Operate on sessions on this host or SSH config alias through OpenSSH. Without a
+          subcommand, start a new session and attach to it. The remote host names the session unless
+          --session names it; a name that is already taken there, running or resurrectable, is
+          refused. Configure the session on the remote host
+
       --theme-dir <THEME_DIR>
           Set the theme_dir, defaults to subdirectory of config dir
 
@@ -62,21 +68,21 @@ Options:
       --mouse-mode <MOUSE_MODE>
           Set the handling of mouse events (true or false) Can be temporarily bypassed by the
           [SHIFT] key
-          
+
           [possible values: true, false]
 
       --agent-double-escape <AGENT_DOUBLE_ESCAPE>
           Require two plain Escape presses within one second in agent panes (default: false)
-          
+
           [possible values: true, false]
 
       --pane-frames <PANE_FRAMES>
           Set display of the pane frames (true or false)
-          
+
           [possible values: true, false]
 
       --pane-frame-style <PANE_FRAME_STYLE>
-          
+
 
       --notification-position <NOTIFICATION_POSITION>
           The corner notifications appear in (top-left, top-right, bottom-left or bottom-right)
@@ -86,14 +92,14 @@ Options:
 
       --mirror-session <MIRROR_SESSION>
           Mirror session when multiple users are connected (true or false)
-          
+
           [possible values: true, false]
 
       --on-force-close <ON_FORCE_CLOSE>
           Set behaviour on force close (quit or detach)
 
       --scroll-buffer-size <SCROLL_BUFFER_SIZE>
-          
+
 
       --max-agent-width <MAX_AGENT_WIDTH>
           Maximum text columns for any agent pane (values below 80 disable the limit)
@@ -103,17 +109,17 @@ Options:
 
       --copy-clipboard <COPY_CLIPBOARD>
           OSC52 destination clipboard
-          
+
           [possible values: system, primary]
 
       --copy-on-select <COPY_ON_SELECT>
           Automatically copy when selecting text (true or false)
-          
+
           [possible values: true, false]
 
       --osc8-hyperlinks <OSC8_HYPERLINKS>
           Enable OSC8 hyperlink output (true or false)
-          
+
           [possible values: true, false]
 
       --scrollback-editor <SCROLLBACK_EDITOR>
@@ -124,23 +130,23 @@ Options:
 
       --attach-to-session <ATTACH_TO_SESSION>
           Whether to attach to a session specified in "session-name" if it exists
-          
+
           [possible values: true, false]
 
       --auto-layout <AUTO_LAYOUT>
           Whether to lay out panes in a predefined set of layouts whenever possible
-          
+
           [possible values: true, false]
 
       --session-serialization <SESSION_SERIALIZATION>
           Whether sessions should be serialized to the HD so that they can be later resurrected,
           default is true
-          
+
           [possible values: true, false]
 
       --serialize-pane-viewport <SERIALIZE_PANE_VIEWPORT>
           Whether pane viewports are serialized along with the session, default is false
-          
+
           [possible values: true, false]
 
       --scrollback-lines-to-serialize <SCROLLBACK_LINES_TO_SERIALIZE>
@@ -150,7 +156,7 @@ Options:
 
       --styled-underlines <STYLED_UNDERLINES>
           Whether to use ANSI styled underlines
-          
+
           [possible values: true, false]
 
       --serialization-interval <SERIALIZATION_INTERVAL>
@@ -158,13 +164,13 @@ Options:
 
       --disable-session-metadata <DISABLE_SESSION_METADATA>
           If true, will disable writing session metadata to disk
-          
+
           [possible values: true, false]
 
       --support-kitty-keyboard-protocol <SUPPORT_KITTY_KEYBOARD_PROTOCOL>
           Whether to enable support for the Kitty keyboard protocol (must also be supported by the
           host terminal), defaults to true if the terminal supports it
-          
+
           [possible values: true, false]
 
       --report-modifier-keys <REPORT_MODIFIER_KEYS>
@@ -172,18 +178,18 @@ Options:
           know that eg. Alt is being held rather than only that it was part of a chord. Defaults to
           false: it needs Kitty keyboard flags that also make every printable key arrive as an
           escape code, which US-ASCII survives but AltGr glyphs, dead keys and IME commits do not
-          
+
           [possible values: true, false]
 
       --support-kitty-graphics-protocol <SUPPORT_KITTY_GRAPHICS_PROTOCOL>
           Whether to enable support for the Kitty graphics (image) protocol (must also be supported
           by the host terminal), defaults to true if the terminal supports it
-          
+
           [possible values: true, false]
 
       --stacked-resize <STACKED_RESIZE>
           Whether to stack panes when resizing beyond a certain size default is true
-          
+
           [possible values: true, false]
 
       --agent-pane-min-columns <AGENT_PANE_MIN_COLUMNS>
@@ -201,40 +207,40 @@ Options:
 
       --advanced-mouse-actions <ADVANCED_MOUSE_ACTIONS>
           Whether to enable mouse hover effects and pane grouping functionality default is true
-          
+
           [possible values: true, false]
 
       --mouse-scroll-resize <MOUSE_SCROLL_RESIZE>
           Whether Ctrl+ScrollWheel resizes panes default is true
-          
+
           [possible values: true, false]
 
       --mouse-hover-effects <MOUSE_HOVER_EFFECTS>
           Whether to enable mouse hover visual effects (frame highlight and help text) default is
           true
-          
+
           [possible values: true, false]
 
       --visual-bell <VISUAL_BELL>
           Whether to show visual bell indicators (pane/tab frame flash and [!] suffix) default is
           true
-          
+
           [possible values: true, false]
 
       --focus-follows-mouse <FOCUS_FOLLOWS_MOUSE>
           Whether to focus panes on mouse hover (true or false) default is false
-          
+
           [possible values: true, false]
 
       --mouse-click-through <MOUSE_CLICK_THROUGH>
           Whether clicking a pane to focus it also sends the click into the pane (true or false)
           default is false
-          
+
           [possible values: true, false]
 
       --context-menu-on-right-click <CONTEXT_MENU_ON_RIGHT_CLICK>
           Whether right-clicking a pane opens a context menu; default is true.
-          
+
           Mouse-tracking programs keep right-click, except recognized agents when
           context_menu_override_agent_mouse is enabled.
 
@@ -243,13 +249,13 @@ Options:
       --context-menu-override-agent-mouse <CONTEXT_MENU_OVERRIDE_AGENT_MOUSE>
           Whether recognized agents use the context menu even while tracking the mouse. Requires
           context_menu_on_right_click; default is true
-          
+
           [possible values: true, false]
 
       --osc133-command-selection <OSC133_COMMAND_SELECTION>
           Whether triple-clicking inside shell-marked (OSC 133) command output selects the command
           and its output rather than the logical line default is true
-          
+
           [possible values: true, false]
 
       --agent-theme-mapping <AGENT_THEME_MAPPING>

@@ -1,6 +1,6 @@
 Send actions to a specific session
 
-Usage: yinz action <COMMAND>
+Usage: yinz action [OPTIONS] <COMMAND>
 
 Commands:
   pane-wait                         Wait for literal viewport content, process exit, or pane
@@ -64,7 +64,7 @@ Commands:
   toggle-no-ui-fullscreen           Toggle between fullscreen over the entire display (including the
                                     UI bars) and normal layout
   toggle-pane-frames                Toggle frames around panes in the UI
-  set-pane-frame-style              
+  set-pane-frame-style
   toggle-active-sync-tab            Toggle between sending text commands to all panes on the current
                                     tab and normal mode
   new-pane                          Open a new pane in the specified direction [right|down] If no
@@ -119,15 +119,15 @@ Commands:
   new-tab                           Create a new tab, optionally with a specified tab layout and
                                     name
   move-tab                          Move the focused tab in the specified direction. [right|left]
-  previous-swap-layout              
-  next-swap-layout                  
+  previous-swap-layout
+  next-swap-layout
   override-layout                   Override the layout of the active tab
   query-tab-names                   Query all tab names
-  start-or-reload-plugin            
+  start-or-reload-plugin
   launch-or-focus-plugin            Returns: Plugin pane ID (format: plugin_<id>) when creating or
                                     focusing plugin
   launch-plugin                     Returns: Plugin pane ID (format: plugin_<id>)
-  rename-session                    
+  rename-session
   reconfigure                       Apply a KDL config fragment to the running session: options,
                                     keybinds, hooks, plugins, anything config.kdl takes. Give it as
                                     --kdl, --file, or on stdin. A fragment that does not parse is
@@ -141,21 +141,21 @@ Commands:
                                     `notification_timeout` config options
   pipe                              Send data to one or more plugins, launch them if they are not
                                     running
-  list-clients                      
+  list-clients
   list-panes                        List all panes in the current session
   list-tabs                         List all tabs with their information
   current-tab-info                  Get information about the currently active tab
   arrange-panes-by-project          Group terminal panes into project tabs, with branches and
                                     worktrees together
-  toggle-pane-pinned                
+  toggle-pane-pinned
   stack-panes                       Stack pane ids Ids are a space separated list of pane ids. They
                                     should either be in the form of `terminal_<int>` (eg.
                                     terminal_1), `plugin_<int>` (eg. plugin_1) or bare integers in
                                     which case they'll be considered terminals (eg. 1 is the
                                     equivalent of terminal_1)
-  change-floating-pane-coordinates  
-  toggle-pane-borderless            
-  set-pane-borderless               
+  change-floating-pane-coordinates
+  toggle-pane-borderless
+  set-pane-borderless
   detach                            Detach from the current session
   set-dark-theme                    Switch the theme to dark (uses configured `theme_dark`)
   set-light-theme                   Switch the theme to light (uses configured `theme_light`)
@@ -170,4 +170,9 @@ Commands:
   help                              Print this message or the help of the given subcommand(s)
 
 Options:
-  -h, --help  Print help
+      --remote <HOST>  Operate on sessions on this host or SSH config alias through OpenSSH. Without
+                       a subcommand, start a new session and attach to it. The remote host names the
+                       session unless --session names it; a name that is already taken there,
+                       running or resurrectable, is refused. Configure the session on the remote
+                       host
+  -h, --help           Print help

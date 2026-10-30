@@ -4,9 +4,12 @@ use std::time::Duration;
 use yinz_cli::args::Wait;
 use yinz_ipc::ipc::{ClientToServerMsg, ServerToClientMsg};
 use yinz_runtime::errors::prelude::*;
-use yinz_types::{data::Event, internal_ids::SessionName, pane_id::PaneId};
+use yinz_types::{data::Event, pane_id::PaneId};
 
-pub fn wait(session: &SessionName, request: Wait) -> Result<serde_json::Value> {
+pub fn wait_at(
+    session: &impl crate::session_target::SessionEndpoint,
+    request: Wait,
+) -> Result<serde_json::Value> {
     let (pane, timeout, message) = match &request {
         Wait::PaneWait {
             pane_id,
@@ -107,3 +110,10 @@ fn observe(
 #[cfg(test)]
 #[path = "unit/wait_client.rs"]
 mod tests;
+
+pub fn wait(
+    session: &yinz_types::internal_ids::SessionName,
+    request: Wait,
+) -> Result<serde_json::Value> {
+    wait_at(session, request)
+}

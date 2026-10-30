@@ -26,7 +26,11 @@ pub fn run(mut action: CliAction, session: Option<String>, started: Instant) -> 
             .lock()
             .map_err(|_| anyhow!("report trace poisoned"))?
             .enter("pane_owner");
-        let (session, caller) = yinz_process::pane_context::target(session.map(Into::into))?;
+        let (session, caller) = if let Some(target) = crate::remote_commands::selected() {
+            (Some(target.name.clone()), None)
+        } else {
+            yinz_process::pane_context::target(session.map(Into::into))?
+        };
         crate::commands::fill_caller_pane(&mut action, caller);
         {
             let mut t = trace.lock().map_err(|_| anyhow!("report trace poisoned"))?;
@@ -92,7 +96,7 @@ pub fn run(mut action: CliAction, session: Option<String>, started: Instant) -> 
             .map_err(|_| anyhow!("report trace poisoned"))?
             .enter("connect");
         let socket =
-            yinz_ipc::consts::ipc_connect(&yinz_runtime::consts::YINZ_SOCK_DIR.join(&session))
+            yinz_ipc::consts::ipc_connect(&crate::remote_commands::target(&session).socket)
                 .context("connect report session")?;
         let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(socket);
         let mut receiver = sender
@@ -149,7 +153,9 @@ pub fn run(mut action: CliAction, session: Option<String>, started: Instant) -> 
                 },
                 _,
             ) if accepted == report_id => {
-                if let Some(hook) = observation {
+                if let Some(hook) =
+                    observation.filter(|_| crate::remote_commands::selected().is_none())
+                {
                     yinz_process::claude_turn::start(&kind, &hook, observer_route)
                         .with_context(|| format!("observe {kind} turn completion"))?;
                 }

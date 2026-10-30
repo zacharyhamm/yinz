@@ -357,14 +357,13 @@ fn validate_options(opts: &CliArgs) -> Result<()> {
         || opts.data_dir.is_some();
     match &opts.command {
         Some(yinz_cli::args::Command::Sessions(Sessions::Attach {
-            remote: Some(_),
             session_name,
             create,
             index,
             create_background,
             force_run_commands,
             options,
-        })) if opts.remote.is_none() => {
+        })) => {
             anyhow::ensure!(index.is_none() && !create_background && !force_run_commands && options.is_none()
                 && !local_overrides && opts.session.is_none(),
                 "remote attach does not support local session selection, layout, data-directory, or session option overrides; configure the session on the remote host");

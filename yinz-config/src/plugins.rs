@@ -116,7 +116,15 @@ impl PluginConfig {
             RunPluginLocation::File(path) => Some(PluginConfig {
                 repository_root: None,
                 installed_commit: None,
-                path: run_plugin.declared_path.as_ref().unwrap_or(path).clone(),
+                path: {
+                    let declared = run_plugin.declared_path.as_ref().unwrap_or(path);
+                    // Remote CLI locations defer home expansion until they reach this host.
+                    if declared.is_relative() {
+                        yinz_runtime::plugin_location::expand_plugin_path(declared.clone())
+                    } else {
+                        declared.clone()
+                    }
+                },
                 _allow_exec_host_cmd: run_plugin._allow_exec_host_cmd,
                 location: run_plugin.location.clone(),
                 initial_userspace_configuration: run_plugin.configuration.clone(),

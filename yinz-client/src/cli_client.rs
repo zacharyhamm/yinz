@@ -1,5 +1,6 @@
 //! The `[cli_client]` is used to attach to a running server session
 //! and dispatch actions, that are specified through the command line.
+use crate::session_target::SessionEndpoint;
 use std::collections::{BTreeMap, HashSet};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
@@ -16,13 +17,13 @@ use {
     yinz_types::input::actions::Action,
 };
 
-pub fn start_cli_client(
+pub fn start_cli_client_at(
     mut os_input: Box<dyn CliClientOs>,
-    session_name: &SessionName,
+    session_name: &impl SessionEndpoint,
     actions: Vec<Action>,
     pane_id: Option<yinz_types::internal_ids::TerminalId>,
 ) -> i32 {
-    let yinz_ipc_pipe = crate::ipc_pipe_for_session(session_name, None);
+    let yinz_ipc_pipe = session_name.socket();
     if let Err(e) = os_input.connect_to_server(&yinz_ipc_pipe) {
         eprintln!("{e}");
         return 1;
@@ -309,12 +310,12 @@ fn output_error_status(error: io::Error) -> i32 {
     2
 }
 
-pub fn start_subscribe_client(
+pub fn start_subscribe_client_at(
     os_input: Box<dyn CliClientOs>,
-    session_name: &SessionName,
+    session_name: &impl SessionEndpoint,
     subscribe_cli: SubscribeCli,
 ) {
-    let yinz_ipc_pipe = crate::ipc_pipe_for_session(session_name, None);
+    let yinz_ipc_pipe = session_name.socket();
     if let Err(e) = os_input.connect_to_server(&yinz_ipc_pipe) {
         eprintln!("{e}");
         std::process::exit(1);
@@ -413,12 +414,12 @@ pub fn start_subscribe_client(
 
 /// `yinz events`: every state event the session reports to plugins, one JSON object per line
 /// on stdout, until the session ends or stdout goes away.
-pub fn start_events_client(
+pub fn start_events_client_at(
     os_input: Box<dyn CliClientOs>,
-    session_name: &SessionName,
+    session_name: &impl SessionEndpoint,
     events_cli: EventsCli,
 ) {
-    let yinz_ipc_pipe = crate::ipc_pipe_for_session(session_name, None);
+    let yinz_ipc_pipe = session_name.socket();
 
     // Refused here, before connecting, so a typo costs nothing but the message.
     let event_types: Vec<String> = events_cli
@@ -511,4 +512,26 @@ pub fn start_events_client(
         }
     }
     os_input.send_to_server(ClientToServerMsg::ClientExited);
+}
+
+pub fn start_cli_client(
+    os: Box<dyn CliClientOs>,
+    session: &SessionName,
+    actions: Vec<Action>,
+    caller: Option<yinz_types::internal_ids::TerminalId>,
+) -> i32 {
+    let _ = crate::ipc_pipe_for_session(session, None);
+    start_cli_client_at(os, session, actions, caller)
+}
+pub fn start_subscribe_client(
+    os: Box<dyn CliClientOs>,
+    session: &SessionName,
+    options: SubscribeCli,
+) {
+    let _ = crate::ipc_pipe_for_session(session, None);
+    start_subscribe_client_at(os, session, options)
+}
+pub fn start_events_client(os: Box<dyn CliClientOs>, session: &SessionName, options: EventsCli) {
+    let _ = crate::ipc_pipe_for_session(session, None);
+    start_events_client_at(os, session, options)
 }

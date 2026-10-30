@@ -253,3 +253,21 @@ fn focus_compares_canonical_identity_after_retargeting_a_declaration() {
         2
     );
 }
+
+#[test]
+fn unresolved_plugin_locations_preserve_another_hosts_paths() {
+    for path in ["relative/plugin.scm", "~/plugin.scm", "/remote/plugin.scm"] {
+        let plugin = run_plugin_from_url_unresolved(&format!("file:{path}")).unwrap();
+        assert_eq!(plugin.location, RunPluginLocation::File(path.into()));
+        assert_eq!(plugin.declared_path, Some(path.into()));
+    }
+    let root = std::env::temp_dir().join(format!("yinz-unresolved-plugin-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let source = root.join("source.scm");
+    std::fs::write(&source, "(void)").unwrap();
+    let link = root.join("alias.scm");
+    std::os::unix::fs::symlink(&source, &link).unwrap();
+    let plugin = run_plugin_from_url_unresolved(&format!("file:{}", link.display())).unwrap();
+    assert_eq!(plugin.location, RunPluginLocation::File(link));
+    std::fs::remove_dir_all(root).unwrap();
+}

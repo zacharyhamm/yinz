@@ -52,6 +52,19 @@ pub fn run_plugin_from_url_with_cwd(
     location: &str,
     cwd: Option<PathBuf>,
 ) -> Result<RunPlugin, PluginsConfigError> {
+    parse_location(location, cwd, true)
+}
+
+/// Decode a location for another host without consulting this host's filesystem or home.
+pub fn run_plugin_from_url_unresolved(location: &str) -> Result<RunPlugin, PluginsConfigError> {
+    parse_location(location, None, false)
+}
+
+fn parse_location(
+    location: &str,
+    cwd: Option<PathBuf>,
+    resolve: bool,
+) -> Result<RunPlugin, PluginsConfigError> {
     let url = Url::parse(location);
     let path = url.as_ref().map(|url| url.path()).unwrap_or(location);
     let decoded_path = percent_encoding::percent_decode_str(path)
@@ -90,12 +103,16 @@ pub fn run_plugin_from_url_with_cwd(
                 // Relative file locations are literal paths, including percent signs.
                 PathBuf::from(raw_path)
             };
-            let path = expand_plugin_path(path);
+            let path = if resolve {
+                expand_plugin_path(path)
+            } else {
+                path
+            };
             let relative = is_relative.then(|| path.clone());
             let path = cwd.map_or_else(|| path.clone(), |cwd| cwd.join(&path));
             // Wasm plugins parse locations too, without access to the host filesystem.
             #[cfg(not(target_arch = "wasm32"))]
-            let path = if path.is_relative() {
+            let path = if resolve && path.is_relative() {
                 std::env::current_dir()
                     .map_err(|_| PluginsConfigError::InvalidPluginLocation(path.clone()))?
                     .join(path)
@@ -104,7 +121,11 @@ pub fn run_plugin_from_url_with_cwd(
             };
             let declared_path = Some(path.clone());
             #[cfg(not(target_arch = "wasm32"))]
-            let path = path.canonicalize().unwrap_or(path);
+            let path = if resolve {
+                path.canonicalize().unwrap_or(path)
+            } else {
+                path
+            };
             Ok(RunPlugin {
                 location: RunPluginLocation::File(path),
                 relative_path: relative,
@@ -134,7 +155,8 @@ pub fn refresh_file_identity(request: &mut RunPluginOrAlias) {
     }
 }
 
-fn expand_plugin_path(path: PathBuf) -> PathBuf {
+/// Expand a plugin path using the home directory of the machine loading it.
+pub fn expand_plugin_path(path: PathBuf) -> PathBuf {
     match shellexpand::full(&path.to_string_lossy()) {
         Ok(expanded) => PathBuf::from(expanded.as_ref()),
         Err(e) => {

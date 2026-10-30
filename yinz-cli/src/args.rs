@@ -4,7 +4,6 @@ use clap::builder::styling::{AnsiColor, Color, Style, Styles};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use url::Url;
 use yinz_types::geometry::{Direction, Resize};
 use yinz_types::input::options::Options;
 use yinz_types::internal_ids::TabId;
@@ -112,10 +111,11 @@ pub struct CliArgs {
     #[clap(long, overrides_with = "config_dir", env = YINZ_CONFIG_DIR_ENV, value_parser)]
     pub config_dir: Option<PathBuf>,
 
-    /// Start a new session on this host or SSH config alias through OpenSSH and attach to it.
+    /// Operate on sessions on this host or SSH config alias through OpenSSH.
+    /// Without a subcommand, start a new session and attach to it.
     /// The remote host names the session unless --session names it; a name that is already
     /// taken there, running or resurrectable, is refused. Configure the session on the remote host.
-    #[clap(long, value_name = "HOST", overrides_with = "remote")]
+    #[clap(long, global = true, value_name = "HOST", overrides_with = "remote")]
     pub remote: Option<String>,
 
     #[clap(subcommand)]
@@ -432,6 +432,9 @@ pub enum PtyHosts {
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Command {
+    /// Internal versioned remote CLI administration.
+    #[clap(hide = true)]
+    RemoteCommand { request: String },
     /// Internal read-only SSH session discovery.
     #[clap(hide = true)]
     RemoteSessions {
@@ -1049,14 +1052,6 @@ pub enum Sessions {
         /// switch sessions when invoked inside Yinz.
         #[clap(value_parser)]
         session_name: Option<String>,
-
-        /// Attach through OpenSSH to this host or SSH config alias. Without a session name,
-        /// discover sessions on this host, attaching to the only running session or opening
-        /// a picker on a terminal. When the host has no sessions, offer to create one on a
-        /// terminal. --create requires a session name.
-        /// Successful attachments remember the host for interactive session discovery.
-        #[clap(long, value_name = "HOST", conflicts_with_all = ["index", "create_background", "force_run_commands"])]
-        remote: Option<String>,
 
         /// Create a session if one does not exist.
         #[clap(short, long, value_parser)]
@@ -2247,7 +2242,7 @@ pub enum CliAction {
         /// Close the replaced pane instead of suspending it (only effective with --in-place)
         #[clap(long, requires("in_place"))]
         close_replaced_pane: bool,
-        url: Url,
+        url: String,
         #[clap(short, long, value_parser)]
         configuration: Option<PluginUserConfiguration>,
         /// Plugin configuration as a JSON object of strings. Mutually exclusive with

@@ -1,19 +1,20 @@
 //! Correlated requests to session services, with no stdin loop or mutation retries.
+use crate::session_target::SessionEndpoint;
 use std::time::{Duration, Instant};
 use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, ServerToClientMsg};
 use yinz_runtime::errors::prelude::*;
 use yinz_types::{input::actions::Action, internal_ids::SessionName};
 
-pub fn request(
-    session: &SessionName,
+pub fn request_at(
+    session: &impl SessionEndpoint,
     action: Action,
     caller: Option<yinz_types::internal_ids::TerminalId>,
 ) -> Result<serde_json::Value> {
     pipe_request(session, action, caller, decode_reply)
 }
 
-pub fn raw_request(
-    session: &SessionName,
+pub fn raw_request_at(
+    session: &impl SessionEndpoint,
     action: Action,
     caller: Option<yinz_types::internal_ids::TerminalId>,
 ) -> Result<serde_json::Value> {
@@ -28,7 +29,7 @@ pub fn raw_request(
 }
 
 fn pipe_request(
-    session: &SessionName,
+    session: &impl SessionEndpoint,
     action: Action,
     caller: Option<yinz_types::internal_ids::TerminalId>,
     decode: impl Fn(&str) -> Result<serde_json::Value>,
@@ -67,8 +68,8 @@ impl std::fmt::Display for PluginRequestRejected {
 }
 impl std::error::Error for PluginRequestRejected {}
 
-pub fn plugin_request(
-    session: &SessionName,
+pub fn plugin_request_at(
+    session: &impl SessionEndpoint,
     request: yinz_types::cli::PluginRequest,
 ) -> Result<yinz_types::cli::PluginResponse> {
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -96,8 +97,8 @@ pub fn plugin_request(
     serde_json::from_value(value).context("decode plugin response")
 }
 
-pub fn data_request(
-    session: &SessionName,
+pub fn data_request_at(
+    session: &impl SessionEndpoint,
     request: yinz_types::cli::DataRequest,
 ) -> Result<serde_json::Value> {
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -123,18 +124,12 @@ pub fn data_request(
 }
 
 pub(crate) fn exchange(
-    session: &SessionName,
+    session: &impl SessionEndpoint,
     timeout: Duration,
     message: ClientToServerMsg,
     decode: impl FnMut(ServerToClientMsg) -> Option<Result<serde_json::Value>>,
 ) -> Result<serde_json::Value> {
-    exchange_at(
-        &yinz_runtime::consts::YINZ_SOCK_DIR.join(session),
-        session,
-        timeout,
-        message,
-        decode,
-    )
+    exchange_at(&session.socket(), session.name(), timeout, message, decode)
 }
 
 fn exchange_at(
@@ -209,3 +204,30 @@ mod tests;
 #[cfg(test)]
 #[path = "unit/cli_transport.rs"]
 mod transport_tests;
+
+pub fn request(
+    session: &SessionName,
+    action: Action,
+    caller: Option<yinz_types::internal_ids::TerminalId>,
+) -> Result<serde_json::Value> {
+    request_at(session, action, caller)
+}
+pub fn raw_request(
+    session: &SessionName,
+    action: Action,
+    caller: Option<yinz_types::internal_ids::TerminalId>,
+) -> Result<serde_json::Value> {
+    raw_request_at(session, action, caller)
+}
+pub fn plugin_request(
+    session: &SessionName,
+    request: yinz_types::cli::PluginRequest,
+) -> Result<yinz_types::cli::PluginResponse> {
+    plugin_request_at(session, request)
+}
+pub fn data_request(
+    session: &SessionName,
+    request: yinz_types::cli::DataRequest,
+) -> Result<serde_json::Value> {
+    data_request_at(session, request)
+}

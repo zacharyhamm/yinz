@@ -198,6 +198,15 @@ impl<'a> StartupContext<'a> {
                     ipc_pipe,
                 )
             },
+            ClientInfo::RemoteWatch(target) => {
+                os_input.update_session_name(target.name);
+                (
+                    ClientToServerMsg::AttachWatcherClient {
+                        terminal_size: self.terminal_window_size,
+                    },
+                    target.socket,
+                )
+            },
             ClientInfo::Watch(name, _config_options) => {
                 let ipc_pipe = ipc_pipe_for_session(&name, self.teardown);
                 os_input.update_session_name(name);

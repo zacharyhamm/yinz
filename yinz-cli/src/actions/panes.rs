@@ -66,11 +66,11 @@ pub(super) fn new_pane(
     } else {
         cwd.clone()
             .map(|cwd| current_dir.join(cwd))
-            .or_else(|| Some(current_dir.clone()))
+            .or_else(|| (!current_dir.as_os_str().is_empty()).then(|| current_dir.clone()))
     };
     let cwd = cwd
         .map(|cwd| current_dir.join(cwd))
-        .or_else(|| Some(current_dir.clone()));
+        .or_else(|| (!current_dir.as_os_str().is_empty()).then(|| current_dir.clone()));
     // One construction for both the blocking and the ordinary pane,
     // so that "no command, but a host" means the same thing in each.
     let terminal_run_command = if !command.is_empty() {
@@ -156,27 +156,31 @@ pub(super) fn new_pane(
             tab_id,
         }])
     } else if let Some(plugin) = plugin {
-        let plugin =
-            match yinz_runtime::plugin_location::run_plugin_from_url_with_cwd(&plugin, cwd.clone())
-            {
-                Ok(run_plugin) => {
-                    let user_configuration = configuration.unwrap_or_default();
-                    RunPluginOrAlias::RunPlugin(RunPlugin {
-                        configuration: user_configuration,
-                        initial_cwd: cwd.clone(),
-                        ..run_plugin
-                    })
-                },
-                Err(_) => {
-                    let mut plugin_alias = PluginAlias::new(
-                        &plugin,
-                        &configuration.map(PluginUserConfiguration::into_inner),
-                        alias_cwd,
-                    );
-                    plugin_alias.set_caller_cwd_if_not_set(Some(current_dir));
-                    RunPluginOrAlias::Alias(plugin_alias)
-                },
-            };
+        let plugin = match super::plugin_from_url(
+            &plugin,
+            cwd.clone(),
+            current_dir.as_os_str().is_empty(),
+        ) {
+            Ok(run_plugin) => {
+                let user_configuration = configuration.unwrap_or_default();
+                RunPluginOrAlias::RunPlugin(RunPlugin {
+                    configuration: user_configuration,
+                    initial_cwd: cwd.clone(),
+                    ..run_plugin
+                })
+            },
+            Err(_) => {
+                let mut plugin_alias = PluginAlias::new(
+                    &plugin,
+                    &configuration.map(PluginUserConfiguration::into_inner),
+                    alias_cwd,
+                );
+                plugin_alias.set_caller_cwd_if_not_set(
+                    (!current_dir.as_os_str().is_empty()).then_some(current_dir),
+                );
+                RunPluginOrAlias::Alias(plugin_alias)
+            },
+        };
         if floating {
             Ok(vec![Action::NewFloatingPluginPane {
                 plugin,

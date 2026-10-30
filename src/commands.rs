@@ -1,7 +1,6 @@
 use dialoguer::Confirm;
 use std::{
     path::{Path, PathBuf},
-    process,
     time::Duration,
 };
 use yinz_runtime::logging::startup_stage;
@@ -69,11 +68,11 @@ fn pick_session_to_attach(remote: Option<(&CliArgs, Vec<String>)>) -> SessionNam
     use yinz_cli::session_picker::{Destination, Outcome, PickerRow};
     let mut sessions = yinz_cli::sessions::collect_sessions(false).unwrap_or_else(|e| {
         eprintln!("Error occurred: {:?}", e);
-        process::exit(1);
+        crate::remote_commands::exit(1);
     });
     if sessions.is_empty() && remote.is_none() {
         eprintln!("No active yinz sessions found.");
-        process::exit(1);
+        crate::remote_commands::exit(1);
     }
     // Newest first, as the listing this replaces printed them.
     yinz_cli::sessions::sort_sessions(&mut sessions, true);
@@ -109,20 +108,17 @@ fn pick_session_to_attach(remote: Option<(&CliArgs, Vec<String>)>) -> SessionNam
     match crate::session_menu::run(rows, verb, hosts, env) {
         Ok(Outcome::Picked(Destination::Remote { host, name })) => {
             let mut opts = opts.expect("remote picker options").clone();
-            if let Some(Command::Sessions(Sessions::Attach {
-                remote,
-                session_name,
-                ..
-            })) = &mut opts.command
+            if let Some(Command::Sessions(Sessions::Attach { session_name, .. })) =
+                &mut opts.command
             {
-                *remote = Some(host.clone());
+                opts.remote = Some(host.clone());
                 *session_name = Some(name.to_string());
             }
             match crate::remote_session::attach(&opts, &host, Some(name.as_str()), false) {
-                Ok(code) => process::exit(code),
+                Ok(code) => crate::remote_commands::exit(code),
                 Err(error) => {
                     eprintln!("Error: {error:#}");
-                    process::exit(1);
+                    crate::remote_commands::exit(1);
                 },
             }
         },
@@ -131,13 +127,13 @@ fn pick_session_to_attach(remote: Option<(&CliArgs, Vec<String>)>) -> SessionNam
             if let Some(message) = message {
                 eprintln!("{message}");
             }
-            process::exit(0);
+            crate::remote_commands::exit(0);
         },
-        Ok(Outcome::Interrupted) => process::exit(130),
-        Ok(Outcome::Continue) => process::exit(0),
+        Ok(Outcome::Interrupted) => crate::remote_commands::exit(130),
+        Ok(Outcome::Continue) => crate::remote_commands::exit(0),
         Err(e) => {
             eprintln!("Error occurred: {e}");
-            process::exit(1);
+            crate::remote_commands::exit(1);
         },
     }
 }
@@ -158,7 +154,7 @@ fn attach_picked_local_session(
             cwd: None,
         };
         send_action_to_session(switch, None, Some(config.clone()));
-        process::exit(0);
+        crate::remote_commands::exit(0);
     }
     ClientInfo::Attach(name, config_options)
 }
@@ -179,7 +175,7 @@ pub(crate) fn kill_all_sessions(yes: bool) {
     match sessions_to_kill(get_sessions_with_status) {
         Ok(sessions) if sessions.is_empty() => {
             eprintln!("No active yinz sessions found.");
-            process::exit(1);
+            crate::remote_commands::exit(1);
         },
         Ok(sessions) => {
             if !yes {
@@ -189,11 +185,11 @@ pub(crate) fn kill_all_sessions(yes: bool) {
                     .interact()
                     .unwrap_or_else(|error| {
                         eprintln!("Could not confirm session termination: {error}");
-                        process::exit(1);
+                        crate::remote_commands::exit(1);
                     })
                 {
                     println!("Abort.");
-                    process::exit(1);
+                    crate::remote_commands::exit(1);
                 }
             }
             let mut all_delivered = true;
@@ -206,11 +202,11 @@ pub(crate) fn kill_all_sessions(yes: bool) {
                     all_delivered = false;
                 }
             }
-            process::exit(if all_delivered { 0 } else { 1 });
+            crate::remote_commands::exit(if all_delivered { 0 } else { 1 });
         },
         Err(e) => {
             eprintln!("Error occurred: {:?}", e);
-            process::exit(1);
+            crate::remote_commands::exit(1);
         },
     }
 }
@@ -234,7 +230,7 @@ pub(crate) fn delete_all_sessions(yes: bool, force: bool) {
         Ok(dead_sessions) => dead_sessions,
         Err(kind) => {
             eprintln!("{}", session_listing_error_message(kind));
-            process::exit(1);
+            crate::remote_commands::exit(1);
         },
     };
     if !yes {
@@ -244,17 +240,17 @@ pub(crate) fn delete_all_sessions(yes: bool, force: bool) {
             .interact()
             .unwrap_or_else(|error| {
                 eprintln!("Could not confirm session deletion: {error}");
-                process::exit(1);
+                crate::remote_commands::exit(1);
             })
         {
             println!("Abort.");
-            process::exit(1);
+            crate::remote_commands::exit(1);
         }
     }
     for session in &dead_sessions {
         delete_session_impl(session.0.as_str(), force);
     }
-    process::exit(0);
+    crate::remote_commands::exit(0);
 }
 
 fn sessions_to_delete(
@@ -303,11 +299,11 @@ fn kill_outcome(
 pub(crate) fn kill_session(target_session: &Option<String>) {
     let Some(name) = target_session else {
         eprintln!("Please specify the session name to kill.");
-        process::exit(1);
+        crate::remote_commands::exit(1);
     };
     if let Err(e) = validate_session_name(name) {
         eprintln!("{e}");
-        process::exit(1);
+        crate::remote_commands::exit(1);
     }
     let outcome = kill_outcome(
         session_status(&SessionName::new(name.clone())),
@@ -323,10 +319,10 @@ pub(crate) fn kill_session(target_session: &Option<String>) {
         },
     );
     match outcome {
-        Ok(()) => process::exit(0),
+        Ok(()) => crate::remote_commands::exit(0),
         Err(e) => {
             eprintln!("Failed to kill session {name:?}: {e}");
-            process::exit(1);
+            crate::remote_commands::exit(1);
         },
     }
 }
@@ -336,15 +332,15 @@ pub(crate) fn delete_session(target_session: &Option<String>, force: bool) {
         Some(target_session) => {
             if let Err(e) = validate_session_name(target_session) {
                 eprintln!("{}", e);
-                process::exit(1);
+                crate::remote_commands::exit(1);
             }
             assert_dead_session(target_session, force);
             delete_session_impl(target_session, force);
-            process::exit(0);
+            crate::remote_commands::exit(0);
         },
         None => {
             println!("Please specify the session name to delete.");
-            process::exit(1);
+            crate::remote_commands::exit(1);
         },
     }
 }
@@ -356,7 +352,7 @@ fn get_os_input<OsInputOutput>(
         Ok(os_input) => os_input,
         Err(e) => {
             eprintln!("failed to open terminal:\n{}", e);
-            process::exit(1);
+            crate::remote_commands::exit(1);
         },
     }
 }
@@ -369,7 +365,7 @@ pub(crate) fn start_server(path: PathBuf, debug: bool, termios: Option<String>) 
     });
     if let Err(error) = start_server_impl(Box::new(os_input), path) {
         eprintln!("Could not start server: {error:#}");
-        process::exit(1);
+        crate::remote_commands::exit(1);
     }
 }
 
@@ -392,7 +388,7 @@ fn find_indexed_session(
                 index
             );
             print_sessions_with_index(sessions, current_session().as_ref());
-            process::exit(1);
+            crate::remote_commands::exit(1);
         },
     }
 }
@@ -423,9 +419,12 @@ pub(crate) fn send_action_to_session(
 pub(crate) fn command_target(
     explicit: Option<String>,
 ) -> (Option<SessionName>, Option<TerminalId>) {
+    if let Some(target) = crate::remote_commands::selected() {
+        return (Some(target.name.clone()), None);
+    }
     yinz_process::pane_context::target(explicit.map(SessionName::new)).unwrap_or_else(|error| {
         eprintln!("{error:#}");
-        process::exit(1);
+        crate::remote_commands::exit(1);
     })
 }
 
@@ -470,6 +469,9 @@ fn resolve_command_session(
     purpose: &str,
     names_only: bool,
 ) -> (SessionName, Option<TerminalId>) {
+    if let Some(target) = crate::remote_commands::selected() {
+        return (target.name.clone(), None);
+    }
     let (requested_session_name, caller) = command_target(requested_session_name);
     if let Some(session_name) = requested_session_name {
         wait_for_command_session(&session_name);
@@ -478,7 +480,7 @@ fn resolve_command_session(
     let session = match get_active_session() {
         ActiveSession::None => {
             eprintln!("{}", no_active_session_message());
-            std::process::exit(1);
+            crate::remote_commands::exit(1);
         },
         ActiveSession::One(session_name) => session_name,
         ActiveSession::Many => {
@@ -495,7 +497,7 @@ fn resolve_command_session(
                     Err(error) => eprintln!("Error occurred: {error:?}"),
                 }
             }
-            std::process::exit(1);
+            crate::remote_commands::exit(1);
         },
     };
     (session, caller)
@@ -505,7 +507,7 @@ fn wait_for_command_session(session_name: &SessionName) {
     command_session_ready(session_name, Duration::from_secs(30), session_status).unwrap_or_else(
         |error| {
             eprintln!("{error}");
-            process::exit(1);
+            crate::remote_commands::exit(1);
         },
     );
 }
@@ -547,9 +549,9 @@ pub(crate) fn subscribe_to_session(
 ) {
     let session_name = resolve_session_for_stream(requested_session_name, "subscribe to");
     let os_input = get_os_input(yinz_client::os_input_output::get_cli_client_os_input);
-    yinz_client::cli_client::start_subscribe_client(
+    yinz_client::cli_client::start_subscribe_client_at(
         Box::new(os_input),
-        &session_name,
+        &crate::remote_commands::target(&session_name),
         subscribe_cli,
     );
 }
@@ -561,7 +563,11 @@ pub(crate) fn stream_session_events(
 ) {
     let session_name = resolve_session_for_stream(requested_session_name, "stream events from");
     let os_input = get_os_input(yinz_client::os_input_output::get_cli_client_os_input);
-    yinz_client::cli_client::start_events_client(Box::new(os_input), &session_name, events_cli);
+    yinz_client::cli_client::start_events_client_at(
+        Box::new(os_input),
+        &crate::remote_commands::target(&session_name),
+        events_cli,
+    );
 }
 
 fn attach_with_cli_client(
@@ -571,14 +577,17 @@ fn attach_with_cli_client(
     caller: Option<TerminalId>,
 ) {
     if let yinz_cli::args::CliAction::Wait(request) = cli_action {
-        match yinz_client::wait_client::wait(session_name, request) {
+        match yinz_client::wait_client::wait_at(
+            &crate::remote_commands::target(session_name),
+            request,
+        ) {
             Ok(result) => {
                 println!("{result}");
-                std::process::exit(0);
+                crate::remote_commands::exit(0);
             },
             Err(error) => {
                 eprintln!("{error:#}");
-                std::process::exit(1);
+                crate::remote_commands::exit(1);
             },
         }
     }
@@ -590,36 +599,46 @@ fn attach_with_cli_client(
         _ => None,
     };
     if let Some(action) = service_action {
-        let result = action
-            .map_err(anyhow::Error::msg)
-            .and_then(|action| yinz_client::store_client::request(session_name, action, caller));
+        let result = action.map_err(anyhow::Error::msg).and_then(|action| {
+            yinz_client::store_client::request_at(
+                &crate::remote_commands::target(session_name),
+                action,
+                caller,
+            )
+        });
         match result {
             Ok(data) => {
                 println!("{data}");
-                std::process::exit(0);
+                crate::remote_commands::exit(0);
             },
             Err(error) => {
                 eprintln!("{error:#}");
-                std::process::exit(1);
+                crate::remote_commands::exit(1);
             },
         }
     }
     let os_input = get_os_input(yinz_client::os_input_output::get_cli_client_os_input);
-    let get_current_dir = || std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let get_current_dir = || {
+        if crate::remote_commands::selected().is_some() {
+            PathBuf::new()
+        } else {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        }
+    };
     match yinz_cli::actions::actions_from_cli(cli_action, Box::new(get_current_dir), config) {
         Ok(actions) => {
-            let exit_status = yinz_client::cli_client::start_cli_client(
+            let exit_status = yinz_client::cli_client::start_cli_client_at(
                 Box::new(os_input),
-                session_name,
+                &crate::remote_commands::target(session_name),
                 actions,
                 caller,
             );
-            std::process::exit(exit_status);
+            crate::remote_commands::exit(exit_status);
         },
         Err(e) => {
             eprintln!("{}", e);
             log::error!("Error sending action: {}", e);
-            std::process::exit(2);
+            crate::remote_commands::exit(2);
         },
     }
 }
@@ -632,13 +651,13 @@ fn attach_with_session_index(config_options: Options, index: usize, create: bool
                 create_new_client()
             } else {
                 eprintln!("No active yinz sessions found.");
-                process::exit(1);
+                crate::remote_commands::exit(1);
             }
         },
         Ok(sessions) => find_indexed_session(sessions, config_options, index, create),
         Err(e) => {
             eprintln!("Error occurred: {:?}", e);
-            process::exit(1);
+            crate::remote_commands::exit(1);
         },
     }
 }
@@ -669,7 +688,7 @@ fn attach_with_session_name(
             let session_exists = named_session_exists_or_error(session, session_status(session))
                 .unwrap_or_else(|error| {
                     eprintln!("{error}");
-                    process::exit(1);
+                    crate::remote_commands::exit(1);
                 });
             if session_exists {
                 ClientInfo::Attach(session_name.unwrap(), config_options)
@@ -696,22 +715,22 @@ fn attach_with_session_name(
                     true,
                     current_session().as_ref(),
                 );
-                process::exit(1);
+                crate::remote_commands::exit(1);
             },
             Ok(SessionNameMatch::None) => {
                 eprintln!("No session with the name '{}' found!", prefix);
-                process::exit(1);
+                crate::remote_commands::exit(1);
             },
             Err(kind) => {
                 eprintln!("{}", session_listing_error_message(kind));
-                process::exit(1);
+                crate::remote_commands::exit(1);
             },
         },
         None => match get_active_session() {
             ActiveSession::None if create => create_new_client(),
             ActiveSession::None => {
                 eprintln!("No active yinz sessions found.");
-                process::exit(1);
+                crate::remote_commands::exit(1);
             },
             ActiveSession::One(session_name) => ClientInfo::Attach(session_name, config_options),
             ActiveSession::Many => match picker {
@@ -723,7 +742,7 @@ fn attach_with_session_name(
                 None => {
                     println!("Please specify the session to attach to, either by using the full name or a unique prefix.\nThe following sessions are active:");
                     list_sessions(false, false, true, false);
-                    process::exit(1);
+                    crate::remote_commands::exit(1);
                 },
             },
         },
@@ -732,7 +751,7 @@ fn attach_with_session_name(
 
 fn handle_client_outcome(outcome: yinz_client::ClientOutcome) -> Option<SessionConnection> {
     if outcome.exit_status != 0 {
-        std::process::exit(outcome.exit_status);
+        crate::remote_commands::exit(outcome.exit_status);
     }
     outcome.reconnect_to_session
 }
@@ -743,7 +762,6 @@ pub(crate) fn start_client(opts: CliArgs) {
         &opts.command,
         Some(Command::Sessions(Sessions::Attach {
             session_name: None,
-            remote: None,
             index: None,
             create: false,
             create_background: false,
@@ -783,7 +801,7 @@ pub(crate) fn start_client(opts: CliArgs) {
             } else {
                 eprintln!("{}", e);
             }
-            process::exit(1);
+            crate::remote_commands::exit(1);
         },
     };
 
@@ -816,7 +834,6 @@ pub(crate) fn start_client(opts: CliArgs) {
                         .clone()
                         .map(SessionName::into_string),
                     create: true,
-                    remote: None,
                     create_background: false,
                     force_run_commands: false,
                     index: None,
@@ -852,7 +869,6 @@ pub(crate) fn start_client(opts: CliArgs) {
             force_run_commands,
             index,
             options,
-            remote: _,
         })) = opts.command.clone()
         {
             let config_options = match options.as_deref() {
@@ -879,7 +895,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                         named_session_exists_or_error(session_name, session_status(session_name))
                             .unwrap_or_else(|error| {
                                 eprintln!("{error}");
-                                process::exit(1);
+                                crate::remote_commands::exit(1);
                             })
                     })
                     .unwrap_or(false);
@@ -890,7 +906,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                             Ok(layout) => layout,
                             Err(e) => {
                                 eprintln!("{}", e);
-                                process::exit(2);
+                                crate::remote_commands::exit(2);
                             },
                         });
                 if (create || should_create_detached)
@@ -924,7 +940,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                 && &val == client.get_session_name()
             {
                 eprintln!("You are trying to attach to the current session (\"{}\"). Yinz does not support nesting a session in itself.", val);
-                process::exit(1);
+                crate::remote_commands::exit(1);
             }
 
             if let Some(layout_info) = layout_info {
@@ -974,7 +990,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                         // clients with infinite `Render` requests.
                         if *session_name == val {
                             eprintln!("You are trying to attach to the current session (\"{}\"). Yinz does not support nesting a session in itself.", session_name);
-                            process::exit(1);
+                            crate::remote_commands::exit(1);
                         }
                     }
                     match config_options.attach_to_session {
@@ -1017,7 +1033,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                     }
                     // after we detach, this happens and so we need to exit before the rest of the
                     // function happens
-                    process::exit(0);
+                    crate::remote_commands::exit(0);
                 }
 
                 let session_name = generate_unique_session_name_or_exit();
@@ -1044,7 +1060,7 @@ pub(crate) fn start_client(opts: CliArgs) {
 fn generate_unique_session_name_or_exit() -> SessionName {
     let Some(unique_session_name) = generate_unique_session_name() else {
         eprintln!("Failed to generate a unique session name, giving up");
-        process::exit(1);
+        crate::remote_commands::exit(1);
     };
     unique_session_name
 }
@@ -1060,13 +1076,13 @@ pub(crate) fn list_aliases(opts: CliArgs) {
                 } else {
                     eprintln!("{}", e);
                 }
-                process::exit(1);
+                crate::remote_commands::exit(1);
             },
         };
     for alias in config.plugins.list() {
         println!("{}", alias);
     }
-    process::exit(0);
+    crate::remote_commands::exit(0);
 }
 
 pub(crate) fn watch_session(session_name: Option<String>, opts: CliArgs) {
@@ -1079,60 +1095,63 @@ pub(crate) fn watch_session(session_name: Option<String>, opts: CliArgs) {
             } else {
                 eprintln!("{}", e);
             }
-            process::exit(1);
+            crate::remote_commands::exit(1);
         },
     };
 
     let session_name = session_name.or(opts.session.clone());
     // Resolve the session name to watch
-    let client_info = match &session_name {
-        Some(prefix) => match match_session_name(prefix.as_str()) {
-            Ok(SessionNameMatch::UniquePrefix(s)) | Ok(SessionNameMatch::Exact(s)) => {
-                ClientInfo::Watch(s, config_options.clone())
+    let client_info = if let Some(target) = crate::remote_commands::selected() {
+        ClientInfo::RemoteWatch(target.clone())
+    } else {
+        match &session_name {
+            Some(prefix) => match match_session_name(prefix.as_str()) {
+                Ok(SessionNameMatch::UniquePrefix(s)) | Ok(SessionNameMatch::Exact(s)) => {
+                    ClientInfo::Watch(s, config_options.clone())
+                },
+                Ok(SessionNameMatch::AmbiguousPrefix(sessions)) => {
+                    eprintln!(
+                        "Ambiguous selection: multiple sessions names start with '{}':",
+                        prefix
+                    );
+                    print_sessions(
+                        sessions
+                            .iter()
+                            .map(|s| (s.clone(), Duration::default(), SessionListing::Running))
+                            .collect(),
+                        false,
+                        false,
+                        true,
+                        current_session().as_ref(),
+                    );
+                    crate::remote_commands::exit(1);
+                },
+                Ok(SessionNameMatch::None) => {
+                    eprintln!("No session with the name '{}' found!", prefix);
+                    crate::remote_commands::exit(1);
+                },
+                Err(kind) => {
+                    eprintln!("{}", session_listing_error_message(kind));
+                    crate::remote_commands::exit(1);
+                },
             },
-            Ok(SessionNameMatch::AmbiguousPrefix(sessions)) => {
-                eprintln!(
-                    "Ambiguous selection: multiple sessions names start with '{}':",
-                    prefix
-                );
-                print_sessions(
-                    sessions
-                        .iter()
-                        .map(|s| (s.clone(), Duration::default(), SessionListing::Running))
-                        .collect(),
-                    false,
-                    false,
-                    true,
-                    current_session().as_ref(),
-                );
-                process::exit(1);
+            None if yinz_process::pane_context::inside_pane() => ClientInfo::Watch(
+                resolve_session_for_stream(None, "watch"),
+                config_options.clone(),
+            ),
+            None => match get_active_session() {
+                ActiveSession::None => {
+                    eprintln!("No active yinz sessions found.");
+                    crate::remote_commands::exit(1);
+                },
+                ActiveSession::One(name) => ClientInfo::Watch(name, config_options.clone()),
+                ActiveSession::Many => {
+                    eprintln!("Please specify the session name to watch.");
+                    crate::remote_commands::exit(1);
+                },
             },
-            Ok(SessionNameMatch::None) => {
-                eprintln!("No session with the name '{}' found!", prefix);
-                process::exit(1);
-            },
-            Err(kind) => {
-                eprintln!("{}", session_listing_error_message(kind));
-                process::exit(1);
-            },
-        },
-        None if yinz_process::pane_context::inside_pane() => ClientInfo::Watch(
-            resolve_session_for_stream(None, "watch"),
-            config_options.clone(),
-        ),
-        None => match get_active_session() {
-            ActiveSession::None => {
-                eprintln!("No active yinz sessions found.");
-                process::exit(1);
-            },
-            ActiveSession::One(name) => ClientInfo::Watch(name, config_options.clone()),
-            ActiveSession::Many => {
-                eprintln!("Please specify the session name to watch.");
-                process::exit(1);
-            },
-        },
+        }
     };
-
     let mut opts = opts.clone();
     opts.session = Some(client_info.get_session_name().to_string());
 
@@ -1223,12 +1242,12 @@ pub(crate) fn pty_host_adopt(
         Ok(resolved) => resolved,
         Err(e) => {
             eprintln!("Error: {e:#}");
-            std::process::exit(1);
+            crate::remote_commands::exit(1);
         },
     };
 
     let os_input = get_os_input(yinz_client::os_input_output::get_cli_client_os_input);
-    let exit_status = yinz_client::cli_client::start_cli_client(
+    let exit_status = yinz_client::cli_client::start_cli_client_at(
         Box::new(os_input),
         &SessionName::new(session),
         vec![Action::AdoptPane {
@@ -1238,7 +1257,7 @@ pub(crate) fn pty_host_adopt(
         caller,
     );
     let _ = config;
-    std::process::exit(exit_status);
+    crate::remote_commands::exit(exit_status);
 }
 
 /// `yinz plugins ...`: the plugin folder is the session's - `user_plugin_dir` in the config,
@@ -1969,7 +1988,10 @@ pub(crate) fn data(command: yinz_cli::args::Data, opts: &CliArgs) -> anyhow::Res
     let session = resolve_session_for_stream(opts.session.clone(), "query data in");
     println!(
         "{}",
-        yinz_client::store_client::data_request(&session, request)?
+        yinz_client::store_client::data_request_at(
+            &crate::remote_commands::target(&session),
+            request
+        )?
     );
     Ok(())
 }

@@ -1309,7 +1309,6 @@ fn local_switch_options_exclude_the_source_layout_and_reload_without_losing_cli_
         Some(Command::Sessions(CliSessions::Attach {
             session_name: Some("source".into()),
             create: false,
-            remote: None,
             index: None,
             create_background: false,
             force_run_commands: false,

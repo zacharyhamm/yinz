@@ -2677,3 +2677,78 @@ mod props {
         );
     }
 }
+
+#[test]
+fn remote_action_paths_preserve_the_server_namespace() {
+    for cwd in [None, Some("relative/work")] {
+        let mut args = vec!["yinz", "action", "new-pane"];
+        if let Some(cwd) = cwd {
+            args.extend(["--cwd", cwd]);
+        }
+        args.extend(["--", "/usr/bin/true"]);
+        let parsed = parse_remote_cli(args).unwrap();
+        let Some(crate::args::Command::Action(action)) = parsed.command else {
+            panic!("expected action")
+        };
+        let actions =
+            crate::actions::actions_from_cli(*action, Box::new(PathBuf::new), None).unwrap();
+        let Action::NewTiledPane {
+            command: Some(command),
+            ..
+        } = &actions[0]
+        else {
+            panic!("expected pane: {:?}", actions[0])
+        };
+        assert_eq!(command.cwd, cwd.map(PathBuf::from));
+    }
+    let parsed = parse_remote_cli(["yinz", "action", "edit", "relative/file.rs"]).unwrap();
+    let Some(crate::args::Command::Action(action)) = parsed.command else {
+        panic!("expected action")
+    };
+    let actions = crate::actions::actions_from_cli(*action, Box::new(PathBuf::new), None).unwrap();
+    let Action::EditFile { payload, .. } = &actions[0] else {
+        panic!("expected editor")
+    };
+    assert_eq!(payload.path, PathBuf::from("relative/file.rs"));
+    assert_eq!(payload.cwd, None);
+}
+
+#[test]
+fn remote_plugin_locations_do_not_resolve_local_files() {
+    let parsed = parse_remote_cli([
+        "yinz",
+        "action",
+        "launch-plugin",
+        "--",
+        "file:relative/plugin.scm",
+    ])
+    .unwrap();
+    let Some(crate::args::Command::Action(action)) = parsed.command else {
+        panic!("expected action")
+    };
+    let actions = crate::actions::actions_from_cli(*action, Box::new(PathBuf::new), None).unwrap();
+    let Action::LaunchPlugin { plugin, cwd, .. } = &actions[0] else {
+        panic!("expected plugin")
+    };
+    let run = plugin.get_run_plugin().unwrap();
+    assert_eq!(
+        run.location,
+        yinz_types::input::layout::RunPluginLocation::File("relative/plugin.scm".into())
+    );
+    assert_eq!(*cwd, None);
+}
+
+fn parse_remote_cli<I, S>(args: I) -> Result<crate::args::CliArgs, clap::Error>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    use clap::Parser;
+    let args: Vec<String> = args.into_iter().map(Into::into).collect();
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || crate::args::CliArgs::try_parse_from(args))
+        .unwrap()
+        .join()
+        .unwrap()
+}

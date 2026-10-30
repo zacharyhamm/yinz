@@ -2736,3 +2736,73 @@ mod remote_client_ssh;
 
 #[path = "../src/unit/remote_pane_forward_ssh.rs"]
 mod remote_pane_forward_ssh;
+
+/// Session CLI requests use the far server while their file inputs remain on this machine.
+#[test]
+#[ignore = "requires the Docker SSH fixture"]
+fn remote_cli_session_commands() {
+    let _hosts = start();
+    let name = format!("remote-cli-{}", std::process::id());
+    struct Cleanup(String);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            remote_exec(&["yinz", "delete-session", "--force", &self.0]);
+        }
+    }
+    let _cleanup = Cleanup(name.clone());
+    let created = remote_exec(&[
+        "yinz",
+        "--layout-string",
+        "layout { pane; }",
+        "attach",
+        "--create-background",
+        &name,
+    ]);
+    assert!(!created.contains("Error:"), "{created}");
+    let local = tempfile::tempdir().unwrap();
+    let config = local.path().join("config.kdl");
+    std::fs::write(&config, "load_plugins clear-defaults=true\n").unwrap();
+    let cli = |args: &[&str]| {
+        let mut command = Command::new(repo_root().join("target/debug/yinz"));
+        command
+            .args(["--config"])
+            .arg(&config)
+            .args(["--remote", HOST, "--session", &name])
+            .args(args)
+            .stdin(Stdio::null());
+        for key in ["YINZ", "YINZ_SESSION_NAME", "YINZ_PANE_ID", "YINZ_PANE_REF"] {
+            command.env_remove(key);
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    assert!(cli(&["list-sessions", "--short"]).contains(&name));
+    let panes: serde_json::Value =
+        serde_json::from_str(&cli(&["action", "list-panes", "--json"])).unwrap();
+    assert!(!panes.as_array().unwrap().is_empty());
+    cli(&["agent", "list", "--json"]);
+    cli(&["data", "catalog"]);
+    assert!(cli(&["repl", "--eval", "(+ 20 22)"]).contains("42"));
+    cli(&["plugins", "list", "--running", "--json"]);
+    let fragment = local.path().join("fragment.kdl");
+    std::fs::write(&fragment, "pane_frames false\n").unwrap();
+    cli(&[
+        "action",
+        "reconfigure",
+        "--file",
+        fragment.to_str().unwrap(),
+    ]);
+    cli(&[
+        "run",
+        "--cwd",
+        "/tmp",
+        "--",
+        "/usr/bin/printf",
+        "remote-cli-pane",
+    ]);
+    cli(&["kill-session", &name]);
+    assert!(!remote_exec(&["yinz", "list-sessions", "--short"])
+        .lines()
+        .any(|line| line == name));
+}

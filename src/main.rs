@@ -4,6 +4,7 @@ mod agent_hooks;
 mod agent_report;
 mod commands;
 mod portable_skills;
+mod remote_commands;
 mod remote_session;
 mod repl;
 mod session_menu;
@@ -27,7 +28,7 @@ fn main() {
     {
         if let Err(error) = yinz_steel::worker::run_worker() {
             eprintln!("{error:#}");
-            std::process::exit(1);
+            remote_commands::exit(1);
         }
         return;
     }
@@ -47,11 +48,11 @@ fn main() {
         if let Err(error) = result {
             eprintln!("Error: {error:#}");
         }
-        std::process::exit(1);
+        remote_commands::exit(1);
     }
     if std::env::args().nth(1).as_deref() == Some(yinz_process::claude_turn::OBSERVER_FLAG) {
         if yinz_process::claude_turn::run().is_err() {
-            std::process::exit(1);
+            remote_commands::exit(1);
         }
         return;
     }
@@ -107,24 +108,18 @@ fn main() {
             )),
         };
         match result {
-            Ok(()) => std::process::exit(0),
+            Ok(()) => remote_commands::exit(0),
             Err(e) => {
                 eprintln!("Error: {e:#}");
-                std::process::exit(1);
+                remote_commands::exit(1);
             },
         }
     }
 
-    let opts = CliArgs::parse();
-    if let Some(host) = &opts.remote {
-        configure_logger();
-        match remote_session::start(&opts, host) {
-            Ok(code) => std::process::exit(code),
-            Err(error) => {
-                eprintln!("Error: {error:#}");
-                std::process::exit(1);
-            },
-        }
+    let mut opts = CliArgs::parse();
+    if let Err(error) = remote_commands::dispatch(&mut opts) {
+        eprintln!("Error: {error:#}");
+        remote_commands::exit(1);
     }
     if let Some(Command::RemoteSessions {
         client_version,
@@ -136,7 +131,7 @@ fn main() {
             remote_session::list(client_version, *contract_version, *bootstrap_version)
         {
             eprintln!("Error: {error:#}");
-            std::process::exit(1);
+            remote_commands::exit(1);
         }
         return;
     }
@@ -166,40 +161,28 @@ fn main() {
         );
         if let Err(error) = result {
             yinz_client::remote_failure::report_bootstrap_error(&error);
-            std::process::exit(1);
+            remote_commands::exit(1);
         }
         return;
-    }
-    if let Some(Command::Sessions(Sessions::Attach {
-        remote: Some(host),
-        session_name,
-        create,
-        ..
-    })) = &opts.command
-    {
-        configure_logger();
-        let result = remote_session::attach(&opts, host, session_name.as_deref(), *create);
-        match result {
-            Ok(code) => std::process::exit(code),
-            Err(error) => {
-                eprintln!("Error: {error:#}");
-                std::process::exit(1);
-            },
-        }
     }
     if let Some(Command::Repl { eval }) = &opts.command {
         if let Err(error) = repl::run(&opts, eval.as_deref()) {
             eprintln!("Error: {error:#}");
-            std::process::exit(1);
+            remote_commands::exit(1);
         }
         return;
     }
     if let Some(Command::Action(action)) = &opts.command
         && matches!(action.as_ref(), CliAction::AgentReport { .. })
     {
-        let result = agent_report::run(*action.clone(), opts.session.clone(), process_started);
+        let started = if remote_commands::selected().is_some() {
+            std::time::Instant::now()
+        } else {
+            process_started
+        };
+        let result = agent_report::run(*action.clone(), opts.session.clone(), started);
         // Errors are recorded without echoing hook input or other sensitive arguments.
-        std::process::exit(if result.is_ok() { 0 } else { 1 });
+        remote_commands::exit(if result.is_ok() { 0 } else { 1 });
     }
     if matches!(
         &opts.command,
@@ -208,7 +191,7 @@ fn main() {
         let result = std::env::current_exe()
             .context("find this yinz binary")
             .and_then(|binary| yinz_codex::report(&binary));
-        std::process::exit(if result.is_ok() { 0 } else { 1 });
+        remote_commands::exit(if result.is_ok() { 0 } else { 1 });
     }
     if let Some(Command::Bubblewrap(yinz_cli::args::Bubblewrap::Prepare { project })) =
         &opts.command
@@ -228,10 +211,10 @@ fn main() {
                 .prepare(config.as_deref())
         })();
         match result {
-            Ok(()) => std::process::exit(0),
+            Ok(()) => remote_commands::exit(0),
             Err(error) => {
                 eprintln!("Error: {error:#}");
-                std::process::exit(1);
+                remote_commands::exit(1);
             },
         }
     }
@@ -269,10 +252,10 @@ fn main() {
 
     if let Some(Command::Agent(command)) = opts.command.clone() {
         match agent::run(command, &opts) {
-            Ok(code) => std::process::exit(code),
+            Ok(code) => remote_commands::exit(code),
             Err(error) => {
                 eprintln!("Error: {error:#}");
-                std::process::exit(1);
+                remote_commands::exit(1);
             },
         }
     }
@@ -289,9 +272,9 @@ fn main() {
     {
         if let Err(e) = commands::pty_hosts(pty_hosts) {
             eprintln!("Error: {e:#}");
-            std::process::exit(1);
+            remote_commands::exit(1);
         }
-        std::process::exit(0);
+        remote_commands::exit(0);
     }
 
     // Local file work only - a hook is installed into Claude Code's settings, not
@@ -306,37 +289,39 @@ fn main() {
                 .unwrap_or_else(yinz_runtime::home::get_default_data_dir),
         ) {
             eprintln!("Error: {e:#}");
-            std::process::exit(1);
+            remote_commands::exit(1);
         }
-        std::process::exit(0);
+        remote_commands::exit(0);
     }
 
     if let Some(Command::Skills(command)) = opts.command.clone() {
         if let Err(error) = portable_skills::run(command) {
             eprintln!("{error:#}");
-            std::process::exit(1);
+            remote_commands::exit(1);
         }
-        std::process::exit(0);
+        remote_commands::exit(0);
     }
     if let Some(Command::Data(command)) = opts.command.clone() {
         if let Err(error) = commands::data(command, &opts) {
             eprintln!("{error:#}");
-            std::process::exit(1);
+            remote_commands::exit(1);
         }
-        std::process::exit(0);
+        remote_commands::exit(0);
     }
 
     // Plugin authoring: local file work, plus one action sent to a session for `reload`.
     if let Some(Command::Plugins(plugins)) = opts.command.clone() {
         if let Err(e) = commands::plugins(plugins, &opts) {
             eprintln!("Error: {e:#}");
-            std::process::exit(1);
+            remote_commands::exit(1);
         }
-        std::process::exit(0);
+        remote_commands::exit(0);
     }
 
     {
-        let config = if startup_kind.is_some() {
+        let config = if let Some(config) = remote_commands::config() {
+            Ok(config.clone())
+        } else if startup_kind.is_some() {
             startup_stage("cli.initial_config", || yinz_cli::setup::load_config(&opts))
         } else {
             yinz_cli::setup::load_config(&opts)
@@ -344,20 +329,20 @@ fn main() {
         .ok();
         if let Some(Command::Action(cli_action)) = opts.command {
             commands::send_action_to_session(*cli_action, opts.session, config);
-            std::process::exit(0);
+            remote_commands::exit(0);
         }
         #[cfg(unix)]
         if let Some(Command::PtyHosts(pty_hosts)) = opts.command.clone() {
             commands::pty_host_adopt(pty_hosts, opts.session, config);
-            std::process::exit(0);
+            remote_commands::exit(0);
         }
         if let Some(Command::Subscribe(subscribe_cli)) = opts.command {
             commands::subscribe_to_session(subscribe_cli, opts.session, config);
-            std::process::exit(0);
+            remote_commands::exit(0);
         }
         if let Some(Command::Events(events_cli)) = opts.command {
             commands::stream_session_events(events_cli, opts.session, config);
-            std::process::exit(0);
+            remote_commands::exit(0);
         }
         if let Some(Command::Sessions(Sessions::Run {
             command,
@@ -387,7 +372,7 @@ fn main() {
             tab_id,
         })) = opts.command
         {
-            let cwd = cwd.or_else(|| std::env::current_dir().ok());
+            let cwd = cwd.or_else(remote_commands::local_cwd);
             let skip_plugin_cache = false; // N/A for this action
 
             // Compute the unblock condition
@@ -403,8 +388,8 @@ fn main() {
 
             let command_cli_action = CliAction::NewPane {
                 command,
-                // `yinz run`/`edit` stay local for now; remote panes are
-                // reached through `yinz action new-pane --remote-host`.
+                // Run on the selected session host; --remote-host independently selects
+                // a pane host through `yinz action new-pane`.
                 remote_host: None,
 
                 plugin: None,
@@ -439,7 +424,7 @@ fn main() {
                 tab_id,
             };
             commands::send_action_to_session(command_cli_action, opts.session, config);
-            std::process::exit(0);
+            remote_commands::exit(0);
         }
         if let Some(Command::Sessions(Sessions::Plugin {
             url,
@@ -501,7 +486,7 @@ fn main() {
                 tab_id,
             };
             commands::send_action_to_session(command_cli_action, opts.session, config);
-            std::process::exit(0);
+            remote_commands::exit(0);
         }
         if let Some(Command::Sessions(Sessions::Edit {
             file,
@@ -525,7 +510,7 @@ fn main() {
         })) = opts.command
         {
             let mut file = file;
-            let cwd = cwd.or_else(|| std::env::current_dir().ok());
+            let cwd = cwd.or_else(remote_commands::local_cwd);
             if file.is_relative()
                 && let Some(cwd) = cwd.as_ref()
             {
@@ -552,7 +537,7 @@ fn main() {
                 tab_id,
             };
             commands::send_action_to_session(command_cli_action, opts.session, config);
-            std::process::exit(0);
+            remote_commands::exit(0);
         }
         if let Some(Command::Sessions(Sessions::Pipe {
             focus_plugin,
@@ -581,7 +566,7 @@ fn main() {
                 plugin_title: None,
             };
             commands::send_action_to_session(command_cli_action, opts.session, config);
-            std::process::exit(0);
+            remote_commands::exit(0);
         }
     }
 
@@ -622,7 +607,7 @@ fn main() {
             "--pty-host is an internal flag: yinz spawns pane supervisors itself. \
              There is nothing to run by hand."
         );
-        std::process::exit(1);
+        remote_commands::exit(1);
     } else if opts.layout.is_some() || opts.layout_string.is_some() {
         if opts.session.is_some() || yinz_process::pane_context::inside_pane() {
             let config = yinz_cli::setup::load_config(&opts).ok();

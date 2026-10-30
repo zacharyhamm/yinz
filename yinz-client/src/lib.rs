@@ -9,6 +9,7 @@ compile_error!("Yinz does not support Windows");
 pub mod cli_client;
 mod client_loop;
 pub mod repl;
+pub mod session_target;
 pub use client_loop::ClientOutcome;
 pub use startup_signals::INTERRUPTED_EXIT_STATUS;
 mod command_is_executing;
@@ -368,7 +369,8 @@ pub enum ClientInfo {
     },
     New(SessionName, Option<LayoutInfo>, Option<PathBuf>), // PathBuf -> explicit cwd
     Resurrect(SessionName, PathBuf, bool, Option<PathBuf>), // (name, path_to_layout, force_run_commands, cwd)
-    Watch(SessionName, Options),                            // Watch mode (read-only)
+    RemoteWatch(session_target::SessionTarget),
+    Watch(SessionName, Options), // Watch mode (read-only)
 }
 
 impl ClientInfo {
@@ -379,6 +381,7 @@ impl ClientInfo {
             Self::New(name, _layout_info, _layout_cwd) => name,
             Self::Resurrect(name, _, _, _) => name,
             Self::Watch(name, _) => name,
+            Self::RemoteWatch(target) => &target.name,
         }
     }
     pub fn set_layout_info(&mut self, new_layout_info: LayoutInfo) {
@@ -572,7 +575,7 @@ fn run_client(
         ClientInfo::New(..) => "new",
         ClientInfo::Attach(..) | ClientInfo::Remote { .. } => "attach",
         ClientInfo::Resurrect(..) => "resurrect",
-        ClientInfo::Watch(..) => "watch",
+        ClientInfo::Watch(..) | ClientInfo::RemoteWatch(..) => "watch",
     };
     log::info!("startup trace: client session={own_session_name:?} kind={kind} detached={start_detached_and_exit} reconnect={is_a_reconnect}");
     if start_detached_and_exit {
@@ -1032,7 +1035,10 @@ pub fn start_server_detached(
     // attaching needs a controlling terminal to attach to.
     if matches!(
         info,
-        ClientInfo::Attach(..) | ClientInfo::Watch(..) | ClientInfo::Remote { .. }
+        ClientInfo::Attach(..)
+            | ClientInfo::Watch(..)
+            | ClientInfo::RemoteWatch(..)
+            | ClientInfo::Remote { .. }
     ) {
         eprintln!("Session already exists");
         std::process::exit(1);
