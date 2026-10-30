@@ -57,7 +57,7 @@ fn page_scroll_down() {
         grid_snapshot.contains("PgDn|PgUp")
             && !grid_snapshot.contains(LAST_LINE)
             && first_terminal_line_is(grid_snapshot, "$ line01")
-            && grid_snapshot.contains("SCROLL 19/")
+            && grid_snapshot.contains("SCROLL 20/")
     });
 
     yinz.send_stdin(&keys::ctrl('f'));
@@ -67,7 +67,7 @@ fn page_scroll_down() {
     let grid_snapshot = yinz.wait_until("scrolled back down toward the bottom", |grid_snapshot| {
         grid_snapshot.contains(LAST_LINE)
             && grid_snapshot.status_bar_appears()
-            && first_terminal_line_is(grid_snapshot, "line20")
+            && first_terminal_line_is(grid_snapshot, "line21")
             && grid_snapshot.contains("SCROLL 0/")
     });
     assert_snapshot!(normalized(&grid_snapshot));
@@ -85,7 +85,7 @@ fn half_page_scroll_up() {
     let grid_snapshot = yinz.wait_until("scrolled up by half a page", |grid_snapshot| {
         grid_snapshot.contains("PgDn|PgUp")
             && !grid_snapshot.contains(LAST_LINE)
-            && first_terminal_line_is(grid_snapshot, "line10")
+            && first_terminal_line_is(grid_snapshot, "line11")
             && grid_snapshot.contains("SCROLL 10/")
     });
     assert_snapshot!(normalized(&grid_snapshot));
@@ -102,7 +102,7 @@ fn half_page_scroll_down() {
     yinz.wait_until("scrolled up by half a page", |grid_snapshot| {
         grid_snapshot.contains("PgDn|PgUp")
             && !grid_snapshot.contains(LAST_LINE)
-            && first_terminal_line_is(grid_snapshot, "line10")
+            && first_terminal_line_is(grid_snapshot, "line11")
             && grid_snapshot.contains("SCROLL 10/")
     });
 
@@ -112,7 +112,7 @@ fn half_page_scroll_down() {
     let grid_snapshot = yinz.wait_until("scrolled back down toward the bottom", |grid_snapshot| {
         grid_snapshot.contains(LAST_LINE)
             && grid_snapshot.status_bar_appears()
-            && first_terminal_line_is(grid_snapshot, "line20")
+            && first_terminal_line_is(grid_snapshot, "line21")
             && grid_snapshot.contains("SCROLL 0/")
     });
     assert_snapshot!(normalized(&grid_snapshot));
@@ -128,7 +128,7 @@ fn scroll_down_one_line() {
     yinz.send_stdin(&keys::key('k'));
     yinz.send_stdin(&keys::key('k'));
     yinz.wait_until("scrolled up two lines", |grid_snapshot| {
-        first_terminal_line_is(grid_snapshot, "line18")
+        first_terminal_line_is(grid_snapshot, "line19")
             && grid_snapshot.contains("PgDn|PgUp")
             && grid_snapshot.contains("SCROLL 2/")
     });
@@ -136,7 +136,7 @@ fn scroll_down_one_line() {
     yinz.send_stdin(&keys::key('j'));
 
     let grid_snapshot = yinz.wait_until("scrolled back down one line", |grid_snapshot| {
-        first_terminal_line_is(grid_snapshot, "line19")
+        first_terminal_line_is(grid_snapshot, "line20")
             && grid_snapshot.contains("PgDn|PgUp")
             && grid_snapshot.contains("SCROLL 1/")
     });
@@ -155,7 +155,7 @@ fn scroll_to_bottom() {
         grid_snapshot.contains("PgDn|PgUp")
             && !grid_snapshot.contains(LAST_LINE)
             && first_terminal_line_is(grid_snapshot, "$ line01")
-            && grid_snapshot.contains("SCROLL 19/")
+            && grid_snapshot.contains("SCROLL 20/")
     });
 
     yinz.send_stdin(&keys::ctrl('c'));
@@ -163,7 +163,7 @@ fn scroll_to_bottom() {
     let grid_snapshot = yinz.wait_until("returned to the bottom in normal mode", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
             && grid_snapshot.contains(LAST_LINE)
-            && first_terminal_line_is(grid_snapshot, "line20")
+            && first_terminal_line_is(grid_snapshot, "line21")
             && grid_snapshot.contains("SCROLL 0/")
     });
     assert_snapshot!(normalized(&grid_snapshot));

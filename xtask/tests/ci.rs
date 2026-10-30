@@ -76,6 +76,9 @@ case "$*" in
   'metadata '*) cat "$GATE_METADATA" ;;
   'tree -q -p yinz -e '*) [ "$GATE_FAILURE" = 1 ] && echo 'nix v0.30.1 [ioctl]' || echo 'nix v0.30.1 []' ;;
   'tree -q -p yinz-integration-tests '*) echo 'nix v0.30.1 []' ;;
+  'nextest run --profile unit'*|'test --no-fail-fast'*|'test --doc'*)
+    [ "$YINZ_SOCKET_DIR" = "$YINZ_TEST_CACHE_ROOT/sockets" ] || exit 99
+    exit "$GATE_FAILURE" ;;
   'fmt '*|'clippy '*|'nextest run '*) exit "$GATE_FAILURE" ;;
   'nextest --version') exit "$GATE_NO_NEXTEST" ;;
 esac

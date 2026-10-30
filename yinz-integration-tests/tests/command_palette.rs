@@ -1056,10 +1056,14 @@ fn command_palette_agent_history_event_back_focus_and_archive_resume() {
     yinz.send_stdin(b"\r");
     yinz.wait_until("archive browser", |s| s.contains("Ended runs"));
     yinz.send_stdin(b"Unique retained palette conversation");
+    // The query can render with old rows before the debounced search completes.
     yinz.wait_until("archive search hit", |s| {
-        s.contains("Completed") && s.contains("Unique retained")
+        s.contains("> Unique retained palette conversation")
+            && s.contains("Completed")
+            && !s.contains("Loading")
     });
     yinz.send_stdin(b"\x1b[B"); // Filters, then the matching run.
+    yinz.wait_until("archive run selected", |s| s.contains("› agent run"));
     yinz.send_stdin(b"\r");
     yinz.wait_until("archived info", |s| {
         s.contains("Resume") && s.contains("Latest / Refresh")
