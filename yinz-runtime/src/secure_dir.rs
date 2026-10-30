@@ -146,9 +146,13 @@ fn open_directory(parent: &File, name: &CString, last: bool) -> io::Result<File>
 
 #[cfg(target_os = "linux")]
 fn unmapped_ancestor_uid() -> Option<u32> {
-    let uid_map = std::fs::read_to_string("/proc/self/uid_map").ok()?;
-    let overflow_uid = std::fs::read_to_string("/proc/sys/kernel/overflowuid").ok()?;
-    namespace_overflow_uid(&uid_map, &overflow_uid)
+    // A multithreaded process cannot change user namespaces, so read the mapping once.
+    static UNMAPPED: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *UNMAPPED.get_or_init(|| {
+        let uid_map = std::fs::read_to_string("/proc/self/uid_map").ok()?;
+        let overflow_uid = std::fs::read_to_string("/proc/sys/kernel/overflowuid").ok()?;
+        namespace_overflow_uid(&uid_map, &overflow_uid)
+    })
 }
 
 #[cfg(target_os = "linux")]

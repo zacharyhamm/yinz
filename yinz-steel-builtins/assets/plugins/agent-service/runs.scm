@@ -21,7 +21,8 @@
               (and (pair? (hash-ref checked "rows"))
                 (= revision (as-row-value checked (car (hash-ref checked "rows")) "rev"))
                 (list (hash-insert run "entries" (as-field entries id (hash-ref run "entries"))) revision))) runs)))
-      (and (not (member #f snapshots)) snapshots))))
+      ;; Each run validates independently; one concurrent write must not drop the others.
+      (filter (lambda (snapshot) snapshot) snapshots))))
 (define (remember-run snapshot)
   (define run (car snapshot))
   (define id (hash-ref run "id"))
