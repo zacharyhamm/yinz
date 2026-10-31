@@ -86,6 +86,58 @@ fn initial_ticks(test: &TestBridge) {
 }
 
 #[test]
+fn loading_context_uses_canonical_file_identity_for_storage_and_cache() {
+    let test = TestBridge::new();
+    let cwd = std::env::current_dir().unwrap();
+    let directory = tempfile::tempdir_in(&cwd).unwrap();
+    let relative = directory
+        .path()
+        .strip_prefix(&cwd)
+        .unwrap()
+        .join("plugin.scm");
+    std::fs::write(&relative, "(void)").unwrap();
+    let absolute = relative.canonicalize().unwrap();
+    let link = relative.with_file_name("linked.scm");
+    std::os::unix::fs::symlink(&absolute, &link).unwrap();
+    let location = RunPluginLocation::File(absolute.clone());
+    let owner = Url::from(&location);
+    let cache = YINZ_CACHE_DIR.join(owner.to_string()).join("plugin_cache");
+
+    assert!(relative.is_relative());
+    for (id, path) in [(1, relative), (2, absolute), (3, link)] {
+        let run = yinz_runtime::plugin_location::run_plugin_from_url_unresolved(
+            &format!("file:{}", path.display()),
+            None,
+        )
+        .unwrap();
+        let context = LoadingContext::new(
+            &test.bridge,
+            None,
+            PluginConfig::from_run_plugin(&run).unwrap(),
+            PluginId::new(id),
+            ClientId::new(1),
+            None,
+            Size { rows: 5, cols: 20 },
+        )
+        .unwrap();
+
+        // These values must agree before loading reads and resolves the source file.
+        assert_eq!(context.plugin_config.location, location);
+        assert_eq!(context.data_owner, owner);
+        assert_eq!(context.plugin_own_cache_dir, cache);
+        let metadata = test
+            .bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .reload_metadata(PluginId::new(id))
+            .unwrap();
+        assert_eq!(metadata.data_owner, owner);
+        assert_eq!(metadata.cache_dir, cache);
+    }
+}
+
+#[test]
 fn initialization_does_not_block_another_plugins_event_render_or_load() {
     let mut test = TestBridge::new();
     let first = test.context(1, 1, SOURCE);

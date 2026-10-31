@@ -6365,7 +6365,7 @@ fn background_storage_preserves_initial_owner_on_reload() {
             .unwrap();
         }
         let mut reloaded_source = source.clone();
-        let owner = Url::from(&run.location).to_string();
+        let owner = Url::from(&RunPluginLocation::File(source.canonicalize().unwrap())).to_string();
         let namespace = yinz_storage::plugin_data_store::private_namespace(&owner);
         let store = test.bridge.data_access.plugin_data();
         store
@@ -6401,11 +6401,7 @@ fn background_storage_preserves_initial_owner_on_reload() {
             let loaded = test.bridge.run_plugin_of_plugin_id(id).unwrap();
             assert_eq!(
                 loaded.location,
-                if expected == "size seed!" {
-                    run.location.clone()
-                } else {
-                    RunPluginLocation::File(reloaded_source.canonicalize().unwrap())
-                }
+                RunPluginLocation::File(reloaded_source.canonicalize().unwrap())
             );
             assert_eq!(
                 loaded.declared_path,

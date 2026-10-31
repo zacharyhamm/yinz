@@ -2103,6 +2103,36 @@ fn note_file_editor_precedence_and_arguments_use_executable_stubs() {
 }
 
 #[test]
+fn editor_paths_resolve_relative_cwd_once_against_the_server_directory() {
+    use yinz_types::input::command::OpenFilePayload;
+
+    let server_cwd = env::current_dir().unwrap();
+    for cwd in [
+        None,
+        Some(PathBuf::from("work")),
+        Some(server_cwd.join("work")),
+    ] {
+        for file in [
+            PathBuf::from("note.md"),
+            server_cwd.join("elsewhere/note.md"),
+        ] {
+            let expected_cwd = cwd.as_ref().map(|cwd| server_cwd.join(cwd));
+            let expected_file = expected_cwd
+                .as_ref()
+                .map_or_else(|| file.clone(), |cwd| cwd.join(&file));
+            let command = build_command(
+                TerminalAction::OpenFile(OpenFilePayload::new(file, None, cwd.clone())),
+                Some("/usr/bin/vi".into()),
+            )
+            .unwrap();
+
+            assert_eq!(command.args, [expected_file.to_str().unwrap()]);
+            assert_eq!(command.cwd, expected_cwd);
+        }
+    }
+}
+
+#[test]
 fn editor_commands_preserve_configured_arguments_and_line_syntax() {
     use yinz_types::input::command::OpenFilePayload;
 

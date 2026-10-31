@@ -77,10 +77,15 @@ fn build_command(
 ) -> Result<RunCommand> {
     Ok(match terminal_action {
         TerminalAction::OpenFile(mut payload) => {
-            if payload.path.is_relative()
-                && let Some(cwd) = payload.cwd.as_ref()
-            {
-                payload.path = cwd.join(payload.path);
+            if let Some(cwd) = payload.cwd.as_mut() {
+                if cwd.is_relative() {
+                    *cwd = env::current_dir()
+                        .context("failed to get server working directory for editor")?
+                        .join(&*cwd);
+                }
+                if payload.path.is_relative() {
+                    payload.path = cwd.join(payload.path);
+                }
             }
             let mut command = default_editor.unwrap_or_else(|| {
                 PathBuf::from(

@@ -116,18 +116,17 @@ impl PluginConfig {
             RunPluginLocation::File(path) => {
                 let declared = run_plugin.declared_path.as_ref().unwrap_or(path);
                 let resolved = yinz_runtime::plugin_location::path_on_this_host(declared);
+                // Ownership and cache paths are created before source loading canonicalizes
+                // the entrypoint. Every spelling of an existing file must share its identity.
+                let location = match resolved.canonicalize() {
+                    Ok(path) => RunPluginLocation::File(path),
+                    Err(_) if resolved != *declared => RunPluginLocation::File(resolved.clone()),
+                    Err(_) => run_plugin.location.clone(),
+                };
                 Some(PluginConfig {
                     repository_root: None,
                     installed_commit: None,
-                    // Data ownership and focus follow the location, so a deferred home path must
-                    // not split from the same file launched any other way.
-                    location: if resolved != *declared {
-                        RunPluginLocation::File(
-                            resolved.canonicalize().unwrap_or_else(|_| resolved.clone()),
-                        )
-                    } else {
-                        run_plugin.location.clone()
-                    },
+                    location,
                     path: resolved,
                     _allow_exec_host_cmd: run_plugin._allow_exec_host_cmd,
                     initial_userspace_configuration: run_plugin.configuration.clone(),

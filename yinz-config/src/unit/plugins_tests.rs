@@ -34,22 +34,69 @@ fn steel_sources_resolve_by_extension_and_user_plugin_directory() {
 }
 
 #[test]
-fn only_deferred_home_paths_replace_a_declared_location() {
+fn deferred_home_paths_expand_on_the_loading_host() {
     let deferred =
         yinz_runtime::plugin_location::run_plugin_from_url_unresolved("file:~/keys.scm", None)
             .map(|run| PluginConfig::from_run_plugin(&run).unwrap())
             .unwrap();
     assert_eq!(deferred.location, RunPluginLocation::File(deferred.path));
     assert!(deferred.location.to_string().starts_with('/'));
+}
 
-    let relative = RunPlugin {
-        location: RunPluginLocation::File("relative/keys.scm".into()),
-        ..Default::default()
-    };
-    assert_eq!(
-        PluginConfig::from_run_plugin(&relative).unwrap().location,
-        relative.location
-    );
+#[test]
+fn existing_relative_absolute_and_symlink_sources_share_a_canonical_identity() {
+    let cwd = std::env::current_dir().unwrap();
+    let directory = tempfile::tempdir_in(&cwd).unwrap();
+    let relative = directory
+        .path()
+        .strip_prefix(&cwd)
+        .unwrap()
+        .join("keys.scm");
+    fs::write(&relative, "(void)").unwrap();
+    let absolute = relative.canonicalize().unwrap();
+    let link = relative.with_file_name("linked.scm");
+    std::os::unix::fs::symlink(&absolute, &link).unwrap();
+
+    assert!(relative.is_relative());
+    for path in [&relative, &absolute, &link] {
+        let run = yinz_runtime::plugin_location::run_plugin_from_url_unresolved(
+            &format!("file:{}", path.display()),
+            None,
+        )
+        .unwrap();
+        let plugin = PluginConfig::from_run_plugin(&run).unwrap();
+        assert_eq!(plugin.location, RunPluginLocation::File(absolute.clone()));
+        assert_eq!(
+            &plugin.path, path,
+            "source lookup retains the declared path"
+        );
+        assert_eq!(plugin.relative_path, run.relative_path);
+        assert_eq!(run.declared_path.as_ref(), Some(path));
+    }
+}
+
+#[test]
+fn missing_sources_preserve_location_and_relative_fallback_metadata() {
+    let cwd = std::env::current_dir().unwrap();
+    let directory = tempfile::tempdir_in(&cwd).unwrap();
+    let missing = directory
+        .path()
+        .strip_prefix(&cwd)
+        .unwrap()
+        .join("keys.scm");
+    let mut run = yinz_runtime::plugin_location::run_plugin_from_url_unresolved(
+        &format!("file:{}", missing.display()),
+        None,
+    )
+    .unwrap();
+    // A retained identity may differ from its declaration after the source disappears.
+    for location in [missing.clone(), missing.with_file_name("retained.scm")] {
+        run.location = RunPluginLocation::File(location);
+        let plugin = PluginConfig::from_run_plugin(&run).unwrap();
+        assert_eq!(plugin.location, run.location);
+        assert_eq!(plugin.path, missing);
+        assert_eq!(plugin.relative_path, run.relative_path);
+    }
 }
 
 #[test]

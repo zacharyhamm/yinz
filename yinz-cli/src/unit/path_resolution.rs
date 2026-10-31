@@ -81,9 +81,10 @@ fn edit_paths_follow_the_selected_cwd() {
                     Some(base) => Some(PathBuf::from(base).join(cwd.unwrap_or(""))),
                     None => cwd.map(PathBuf::from),
                 };
-                let expected_file = expected_cwd
-                    .as_ref()
-                    .map_or_else(|| PathBuf::from(file), |cwd| cwd.join(file));
+                let expected_file = match base {
+                    Some(_) => expected_cwd.as_ref().unwrap().join(file),
+                    None => PathBuf::from(file),
+                };
                 let Action::EditFile { payload, .. } = &actions[0] else {
                     panic!("expected edit action")
                 };
@@ -92,6 +93,19 @@ fn edit_paths_follow_the_selected_cwd() {
             }
         }
     }
+}
+
+#[test]
+fn session_edit_keeps_filename_and_relative_cwd_separate() {
+    let actions = translate(
+        &["edit", "note.md", "--cwd", "work"],
+        PathResolution::Session,
+    );
+    let Action::EditFile { payload, .. } = &actions[0] else {
+        panic!("expected edit action")
+    };
+    assert_eq!(payload.path, PathBuf::from("note.md"));
+    assert_eq!(payload.cwd, Some(PathBuf::from("work")));
 }
 
 #[test]

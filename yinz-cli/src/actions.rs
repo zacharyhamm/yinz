@@ -448,7 +448,8 @@ pub fn actions_from_cli(
             let cwd = cwd
                 .map(|cwd| paths.join(cwd))
                 .or_else(|| paths.default_dir());
-            if file.is_relative()
+            if matches!(paths, ResolvedPaths::Local(_))
+                && file.is_relative()
                 && let Some(cwd) = cwd.as_ref()
             {
                 file = cwd.join(file);
