@@ -723,6 +723,11 @@ impl Screen {
         let same_tab = self
             .get_active_tab(client_id)
             .is_ok_and(|tab| tab.position == position);
+        if let Some(tab_id) = self.get_tab_id_at_position(position) {
+            self.size_empty_tab_for_arrival(tab_id, client_id)
+                .context("failed to size tab for arriving client")
+                .non_fatal();
+        }
         if let Some(tab) = self.tabs.values_mut().find(|tab| tab.position == position) {
             let recovered = match tab
                 .recover_suppressed_terminal_for_navigation(client_id)

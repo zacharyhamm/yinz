@@ -2995,6 +2995,77 @@ fn centered_agent_over_chrome_keeps_displayed_anchor_on_resize() {
 }
 
 #[test]
+fn floating_pane_over_chrome_keeps_its_place_through_a_failed_resize() {
+    let client = ClientId::new(1);
+    let id = PaneId::Terminal(TerminalId::new(3));
+    for bottom in [false, true] {
+        let mut tab = create_new_tab_with_layout(
+            Size {
+                cols: 400,
+                rows: 30,
+            },
+            ModeInfo::default(),
+            r#"
+            layout {
+                pane size=1 borderless=true
+                pane
+                pane size=1 borderless=true
+            }
+            "#,
+        );
+        for chrome in [0, 2] {
+            tab.set_pane_selectable(PaneId::Terminal(TerminalId::new(chrome)), false);
+        }
+        tab.new_pane(
+            id,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Floating(Some(FloatingPaneCoordinates {
+                x: Some(PercentOrFixed::Fixed(100)),
+                y: Some(PercentOrFixed::Fixed(3)),
+                width: Some(PercentOrFixed::Fixed(200)),
+                height: Some(PercentOrFixed::Fixed(10)),
+                ..Default::default()
+            })),
+            Some(client),
+            None,
+        )
+        .unwrap();
+        draw(&mut tab);
+
+        let geom = tab.get_pane_with_id(id).unwrap().render_geom();
+        let from = Position::new((geom.y + 1) as i32, geom.x as u16);
+        let to = Position::new(if bottom { 21 } else { 1 }, 399);
+        tab.handle_mouse_event(&MouseEvent::new_left_press_event(from), client)
+            .unwrap();
+        tab.handle_mouse_event(&MouseEvent::new_left_motion_event(to), client)
+            .unwrap();
+        tab.handle_mouse_event(&MouseEvent::new_left_release_event(to), client)
+            .unwrap();
+        draw(&mut tab);
+        assert!(tab.floating_panes.has_panes_outside_viewport());
+
+        let (cols, rows) = (350, 28);
+        let expected = (cols - 200, if bottom { rows - 10 } else { 0 });
+        let senders = tab.senders.clone();
+        tab.senders.should_silently_fail = false;
+        tab.senders.to_pty_writer = None;
+        assert!(tab.resize_whole_tab(Size { cols, rows }).is_err());
+        tab.senders = senders;
+        for retry in [false, true] {
+            if retry {
+                tab.resize_whole_tab(Size { cols, rows }).unwrap();
+            }
+            draw(&mut tab);
+            let geom = tab.get_pane_with_id(id).unwrap().render_geom();
+            assert_eq!((geom.x, geom.y), expected, "bottom={bottom}, retry={retry}");
+        }
+    }
+}
+
+#[test]
 fn centered_agent_movement_reaches_displayed_edges_without_losing_requested_width() {
     let client = ClientId::new(1);
     let id = PaneId::Terminal(TerminalId::new(2));

@@ -181,8 +181,10 @@ impl Screen {
         self.advance_frame_color_fades(now);
         self.advance_plugin_loading_animations();
 
-        // Derive each tab's geometry from its viewers, preserving unviewed tabs' last layout.
-        self.reflow_all_tabs().context(err_context)?;
+        // Derive each tab's geometry from its viewers, preserving unviewed tabs' last layout. An
+        // incomplete reflow retries on the next frame, so it must not abort this one: the screen
+        // thread treats a failed frame as fatal, and a rejected client is still on its way out.
+        self.reflow_all_tabs().context(err_context).non_fatal();
         let surface = self.surface_size();
         self.dismiss_stale_command_palettes();
         if trace_attach {
@@ -330,8 +332,8 @@ impl Screen {
             } else {
                 client_surfaces
                     .iter()
-                    .flat_map(|(client, viewport)| {
-                        self.context_menu_cell_rects(&[*client], *viewport)
+                    .filter_map(|(client, viewport)| {
+                        self.context_menu_cell_rect(*client, *viewport)
                     })
                     .collect()
             });
@@ -375,11 +377,11 @@ impl Screen {
             if has_overlays {
                 for (client, viewport) in &client_surfaces {
                     if !self.palette_owns_input(*client) {
-                        self.render_notifications(&mut output, *viewport, &[*client], now)
+                        self.render_notifications(&mut output, *viewport, *client, now)
                             .context(err_context)?;
                     }
                     // Menus paint above the toasts in this client's tab geometry.
-                    self.render_context_menus(&mut output, *viewport, &[*client])
+                    self.render_context_menu(&mut output, *viewport, *client)
                         .context(err_context)?;
                 }
             }
@@ -417,7 +419,7 @@ impl Screen {
 
             for client in &palette_clients {
                 let viewport = self.client_surface(*client).unwrap_or(session_surface);
-                self.render_notifications(&mut output, viewport, &[*client], now)
+                self.render_notifications(&mut output, viewport, *client, now)
                     .context(err_context)?;
             }
 
@@ -614,14 +616,15 @@ impl Screen {
             // A watcher is watching a particular client's screen, so it sees that client's
             // menu too - otherwise the watcher would see a pane the followed user is plainly
             // interacting with and no sign of what they are interacting with it through.
-            let watcher_surface =
-                self.session_surface_for_tab(focused_tab_index_of_followed_client_id);
+            let watcher_surface = self.tab_surface(focused_tab_index_of_followed_client_id);
             // Before the tab renders, for the reason the regular path gives: the cursor this
             // output places is the followed client's, and it must not be placed on a cell that
             // client's own menu is about to cover.
             if let Some(watcher_surface) = watcher_surface {
                 watcher_output.set_context_menu_rects(
-                    self.context_menu_cell_rects(&[followed_client_id], watcher_surface),
+                    self.context_menu_cell_rect(followed_client_id, watcher_surface)
+                        .into_iter()
+                        .collect(),
                 );
             }
             watcher_output.set_input_overlay_clients(
@@ -692,12 +695,8 @@ impl Screen {
                     .context(err_context)?;
             }
             if let Some(watcher_surface) = watcher_surface {
-                self.render_context_menus(
-                    &mut watcher_output,
-                    watcher_surface,
-                    &[followed_client_id],
-                )
-                .context(err_context)?;
+                self.render_context_menu(&mut watcher_output, watcher_surface, followed_client_id)
+                    .context(err_context)?;
             }
             if let Some(tab) = self.tabs.get_mut(&focused_tab_index_of_followed_client_id) {
                 tab.render_cursor_last(&mut watcher_output, Some(followed_client_id));

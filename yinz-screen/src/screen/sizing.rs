@@ -17,10 +17,16 @@ impl Screen {
     }
 
     pub(super) fn session_size(&self) -> Option<Size> {
+        self.min_client_size(|_| true)
+    }
+
+    /// The smallest bounds among the connected interactive clients `counts` selects.
+    pub(super) fn min_client_size(&self, counts: impl Fn(&ClientId) -> bool) -> Option<Size> {
         let connected = self.connected_clients.borrow();
         connected
             .iter()
             .filter(|client_id| !self.watcher_clients.contains_key(client_id))
+            .filter(|client_id| counts(client_id))
             .filter_map(|client_id| self.client_sizes.get(client_id).copied())
             .reduce(|acc, size| Size {
                 rows: acc.rows.min(size.rows),

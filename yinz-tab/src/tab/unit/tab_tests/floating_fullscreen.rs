@@ -472,6 +472,36 @@ pub fn resize_whole_tab_while_floating_no_ui_fullscreen_preserves_no_ui() {
 }
 
 #[test]
+pub fn failed_resize_whole_tab_preserves_floating_fullscreen() {
+    for no_ui in [false, true] {
+        let mut tab = create_tab_with_two_floating_panes();
+        let active_pane_id = tab
+            .floating_panes
+            .active_pane_id(crate::ClientId::new(1))
+            .expect("a floating pane is focused");
+        if no_ui {
+            tab.toggle_active_pane_no_ui_fullscreen(crate::ClientId::new(1));
+        } else {
+            tab.toggle_active_pane_fullscreen(crate::ClientId::new(1));
+        }
+
+        let new_size = Size { cols: 80, rows: 30 };
+        resize_whole_tab_failing_once(&mut tab, new_size, |tab| {
+            assert_eq!(
+                tab.floating_panes.fullscreen_pane_id(),
+                Some(active_pane_id)
+            );
+            assert_eq!(tab.fullscreen_covers_ui(), no_ui);
+            let geom = floating_pane_geom(tab, active_pane_id);
+            assert_eq!(
+                (geom.cols.as_usize(), geom.rows.as_usize()),
+                (new_size.cols, new_size.rows),
+            );
+        });
+    }
+}
+
+#[test]
 pub fn pane_info_reports_floating_fullscreen() {
     let mut tab = create_tab_with_two_floating_panes();
     let active_pane_id = tab

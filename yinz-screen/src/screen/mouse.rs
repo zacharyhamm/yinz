@@ -46,14 +46,14 @@ impl Screen {
             && !event.wheel_down;
         let active_pane_id_before = self.active_pane_id(client_id);
         let active_pane_was_scrolled = self.active_pane_is_scrolled(client_id);
-        let session_surface = self.client_surface(client_id);
+        let surface = self.client_surface(client_id);
         // An open context menu owns the mouse outright - ahead of toasts and the tab. That is
         // what a menu is: while it is up, a click means "a row of this menu, or dismiss", and
         // never also "focus whatever happened to be underneath". The event is consumed either
         // way: with no surface there is nothing to hit-test against, but letting it fall through
         // to the pane under the menu is the one thing it must not do.
         if self.context_menu_is_open(client_id) {
-            if let Some(surface) = session_surface {
+            if let Some(surface) = surface {
                 self.handle_context_menu_mouse_event(&event, surface, client_id);
             }
             return;
@@ -64,7 +64,7 @@ impl Screen {
         // A browsing client sees the browser in place of its toasts, so the browser is what gets
         // hit-tested - never the toasts it is covering.
         if self.notification_browser_is_visible(client_id) {
-            if session_surface.is_some_and(|surface| {
+            if surface.is_some_and(|surface| {
                 self.handle_notification_browser_mouse(&event, surface, client_id, now)
             }) {
                 if event.event_type == MouseEventType::Press && event.left {
@@ -72,14 +72,14 @@ impl Screen {
                 }
                 return;
             }
-        } else if session_surface.is_some_and(|surface| {
+        } else if surface.is_some_and(|surface| {
             self.handle_pane_notification_click(&event, surface, client_id, now)
         }) {
             self.notification_mouse_captures.insert(client_id);
             return;
         }
         if self.command_palettes.contains_key(&client_id)
-            && session_surface.is_some_and(|surface| {
+            && surface.is_some_and(|surface| {
                 usize::try_from(event.position.line())
                     .ok()
                     .is_some_and(|line| {

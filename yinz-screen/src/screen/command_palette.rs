@@ -279,7 +279,7 @@ impl Screen {
             return None;
         }
         let tab_id = *self.active_tab_ids.get(&client_id)?;
-        let mut surface = self.session_surface_for_tab(tab_id)?;
+        let mut surface = self.tab_surface(tab_id)?;
         if let Some(size) = self.client_sizes.get(&client_id) {
             surface.cols = surface.cols.min(size.cols);
             surface.rows = surface.rows.min(size.rows);

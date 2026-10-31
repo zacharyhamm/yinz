@@ -259,6 +259,27 @@ pub fn resize_whole_tab_while_fullscreen_preserves_fullscreen() {
 }
 
 #[test]
+pub fn failed_resize_whole_tab_preserves_fullscreen() {
+    for no_ui in [false, true] {
+        let mut tab = create_tab_with_four_panes();
+        if no_ui {
+            tab.toggle_active_pane_no_ui_fullscreen(crate::ClientId::new(1));
+        } else {
+            tab.toggle_active_pane_fullscreen(crate::ClientId::new(1));
+        }
+        let active_pane_id = tab.fullscreen_pane_id().expect("a pane is fullscreen");
+
+        let new_size = Size { cols: 80, rows: 30 };
+        resize_whole_tab_failing_once(&mut tab, new_size, |tab| {
+            assert_eq!(tab.fullscreen_pane_id(), Some(active_pane_id));
+            assert_eq!(tab.fullscreen_covers_ui(), no_ui);
+            let pane = tab.tiled_panes.panes.get(&active_pane_id).unwrap();
+            assert_eq!((pane.cols(), pane.rows()), (new_size.cols, new_size.rows));
+        });
+    }
+}
+
+#[test]
 pub fn resize_while_fullscreen_updates_hidden_pane_geometry() {
     // When a host-terminal resize arrives while a pane is fullscreen, every
     // hidden pane's geometry must be updated to match the new display area.

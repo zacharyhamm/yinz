@@ -597,7 +597,7 @@ fn menu_on_a_larger_tab_uses_that_tabs_bounds() {
         client,
     );
     screen.set_context_menu_items(request, menu_items(), None, client);
-    let view = screen.session_surface_for_tab(TabId::new(1)).unwrap();
+    let view = screen.tab_surface(TabId::new(1)).unwrap();
     let layout = screen.context_menu_layout_for(client, view).unwrap();
     assert!(layout.x > small.cols && layout.y > small.rows);
 

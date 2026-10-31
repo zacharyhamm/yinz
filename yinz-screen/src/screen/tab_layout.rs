@@ -478,16 +478,7 @@ impl Screen {
     /// Only interactive clients viewing this tab contribute to its bounds.
     /// Without a contributing viewer, the tab retains its current geometry.
     pub(super) fn tab_surface_size(&self, tab_id: TabId) -> Option<Size> {
-        let connected = self.connected_clients.borrow();
-        connected
-            .iter()
-            .filter(|client_id| !self.watcher_clients.contains_key(client_id))
-            .filter(|client_id| self.active_tab_ids.get(client_id) == Some(&tab_id))
-            .filter_map(|client_id| self.client_sizes.get(client_id).copied())
-            .reduce(|acc, size| Size {
-                rows: acc.rows.min(size.rows),
-                cols: acc.cols.min(size.cols),
-            })
+        self.min_client_size(|client_id| self.active_tab_ids.get(client_id) == Some(&tab_id))
     }
 
     /// Reflow tabs against their viewers and remember a fallback size for creating detached tabs.
@@ -497,9 +488,13 @@ impl Screen {
     /// pre-attach value. Once every client has detached, `size_for_client` uses it so a
     /// `yinz action new-tab` can build a tab at the most recently recorded session minimum.
     pub(super) fn reflow_all_tabs(&mut self) -> Result<()> {
+        // `and` evaluates every tab while retaining the first error: tabs are sized independently,
+        // so one that cannot finish must not strand the others at a stale size.
+        let mut result = Ok(());
         for tab_id in self.tabs.keys().copied().collect::<Vec<_>>() {
-            self.reflow_tab(tab_id)?;
+            result = result.and(self.reflow_tab(tab_id));
         }
+        result?;
         self.remember_surface_size();
         Ok(())
     }
@@ -512,10 +507,40 @@ impl Screen {
         let Some(tab_size) = self.tab_surface_size(tab_id) else {
             return Ok(());
         };
+        self.reflow_tab_to(tab_id, tab_size)
+    }
+
+    /// Lay out a tab with nothing selectable at the size it will have once `client_id` arrives, so
+    /// that recovering parked work judges the room this client will really have. An unviewed tab's
+    /// geometry is whatever its last viewers left it, and only a visit changes it - so a refusal
+    /// based on that alone could never clear. A tab the client then does not enter is put back by
+    /// the next reflow if it has viewers, and otherwise waits for its next visit like any other.
+    pub(super) fn size_empty_tab_for_arrival(
+        &mut self,
+        tab_id: TabId,
+        client_id: ClientId,
+    ) -> Result<()> {
+        if self
+            .tabs
+            .get(&tab_id)
+            .is_none_or(|tab| tab.is_pending() || tab.has_selectable_panes())
+        {
+            return Ok(());
+        }
+        let everyone_moves = self.session_is_mirrored;
+        let Some(tab_size) = self.min_client_size(|id| {
+            everyone_moves || *id == client_id || self.active_tab_ids.get(id) == Some(&tab_id)
+        }) else {
+            return Ok(());
+        };
+        self.reflow_tab_to(tab_id, tab_size)
+    }
+
+    fn reflow_tab_to(&mut self, tab_id: TabId, tab_size: Size) -> Result<()> {
         if let Some(tab) = self.tabs.get_mut(&tab_id)
             && (tab.get_display_area() != tab_size || self.tabs_needing_reflow.contains(&tab_id))
         {
-            // Resizing can fail after updating the display area but before finishing the layout.
+            // A failed resize finishes the layout but still has pane sizes left to send.
             self.tabs_needing_reflow.insert(tab_id);
             tab.resize_whole_tab_to(tab_size)?;
             self.tabs_needing_reflow.remove(&tab_id);
@@ -525,7 +550,7 @@ impl Screen {
     }
 
     /// This tab's display area at the screen origin.
-    pub(super) fn session_surface_for_tab(&self, tab_id: TabId) -> Option<Viewport> {
+    pub(super) fn tab_surface(&self, tab_id: TabId) -> Option<Viewport> {
         let tab = self.tabs.get(&tab_id)?;
         let size = self
             .tab_surface_size(tab_id)
@@ -542,6 +567,6 @@ impl Screen {
     pub(super) fn client_surface(&self, client_id: ClientId) -> Option<Viewport> {
         self.active_tab_ids
             .get(&client_id)
-            .and_then(|tab_id| self.session_surface_for_tab(*tab_id))
+            .and_then(|tab_id| self.tab_surface(*tab_id))
     }
 }

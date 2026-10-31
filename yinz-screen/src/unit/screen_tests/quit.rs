@@ -2294,7 +2294,10 @@ fn navigation_with_no_floating_room_preserves_hidden_terminal_for_retry() {
         screen_with_plugin_senders_and_clients(&[source, TabId::new(2)], &[client]);
     let tab = screen.tabs.get_mut(&source).unwrap();
     tab.suppress_pane(hidden, None);
-    tab.resize_whole_tab(Size { cols: 1, rows: 1 }).unwrap();
+    // The room is the arriving client's: the tab is sized for it before recovery is judged.
+    screen
+        .set_client_size(client, Size { cols: 1, rows: 1 })
+        .unwrap();
     screen.settle_tabs().unwrap();
     screen
         .go_to_tab(yinz_types::internal_ids::TabNumber::new(1), client)
@@ -2307,10 +2310,7 @@ fn navigation_with_no_floating_room_preserves_hidden_terminal_for_retry() {
             .is_suppressed
     );
     screen
-        .tabs
-        .get_mut(&source)
-        .unwrap()
-        .resize_whole_tab(Size { cols: 80, rows: 24 })
+        .set_client_size(client, Size { cols: 80, rows: 24 })
         .unwrap();
     screen
         .go_to_tab(yinz_types::internal_ids::TabNumber::new(1), client)

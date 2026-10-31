@@ -338,7 +338,7 @@ impl Screen {
         for (tab_id, client_ids) in clients_by_tab {
             // The same viewport `render_to_clients` paints these clients' toasts into.
             let viewport = tab_id
-                .and_then(|tab_id| self.session_surface_for_tab(tab_id))
+                .and_then(|tab_id| self.tab_surface(tab_id))
                 .unwrap_or(Viewport {
                     x: 0,
                     y: 0,
@@ -404,44 +404,39 @@ impl Screen {
         &self,
         output: &mut Output,
         viewport: Viewport,
-        client_ids: &[ClientId],
+        client_id: ClientId,
         now: Instant,
     ) -> Result<()> {
-        if client_ids.is_empty()
-            || (self.notifications.is_empty() && self.notification_browsers.is_empty())
-        {
+        if self.notifications.is_empty() && self.notification_browsers.is_empty() {
             return Ok(());
         }
         let previous_stack = output.set_floating_panes_stack(None);
         let result = (|| -> Result<()> {
-            for client_id in client_ids.iter().copied() {
-                if self.notification_browser_is_visible(client_id) {
-                    self.render_notification_browser(output, viewport, client_id)?;
-                    continue;
-                }
-                for layout in self.notification_layout(viewport, now, client_id) {
-                    let chunks = notification_chunks(
-                        &layout.lines,
-                        layout.footer.as_deref(),
-                        layout.x,
-                        layout.y,
-                        layout.width,
-                        &self.style,
-                        layout.reveal,
-                    );
-                    let (chunks, _) = notification_reveal(
-                        &chunks,
-                        layout.x,
-                        layout.width,
-                        self.notification_position,
-                        layout.reveal,
-                    );
-                    output.add_character_chunks_to_multiple_clients(
-                        chunks,
-                        std::iter::once(client_id),
-                        None,
-                    )?;
-                }
+            if self.notification_browser_is_visible(client_id) {
+                return self.render_notification_browser(output, viewport, client_id);
+            }
+            for layout in self.notification_layout(viewport, now, client_id) {
+                let chunks = notification_chunks(
+                    &layout.lines,
+                    layout.footer.as_deref(),
+                    layout.x,
+                    layout.y,
+                    layout.width,
+                    &self.style,
+                    layout.reveal,
+                );
+                let (chunks, _) = notification_reveal(
+                    &chunks,
+                    layout.x,
+                    layout.width,
+                    self.notification_position,
+                    layout.reveal,
+                );
+                output.add_character_chunks_to_multiple_clients(
+                    chunks,
+                    std::iter::once(client_id),
+                    None,
+                )?;
             }
             Ok(())
         })();

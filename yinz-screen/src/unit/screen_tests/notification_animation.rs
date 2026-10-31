@@ -45,7 +45,7 @@ fn toast_on_a_larger_tab_uses_that_tabs_bounds() {
     screen
         .switch_active_tab(TabPosition::new(0), None, true, ClientId::new(2))
         .unwrap();
-    let view = screen.session_surface_for_tab(TabId::new(1)).unwrap();
+    let view = screen.tab_surface(TabId::new(1)).unwrap();
     let layout = screen.notification_layout(view, now, client).remove(0);
     let (x, y) = (layout.x, layout.y);
     assert!(x > small.cols && y > small.rows);

@@ -2575,10 +2575,10 @@ impl Tab {
         // a floating pane outside the tab's viewport (over the tab bar, say) is not laid out by
         // the solver at all - it is taken out and put back once the tab has been resized
         let floating_panes_outside_viewport = self.floating_panes.geoms_outside_viewport();
-        self.resize_whole_tab_locally(display_area)?;
+        let result = self.resize_whole_tab_locally(display_area);
         self.floating_panes
             .restore_geoms_outside_viewport(floating_panes_outside_viewport);
-        Ok(())
+        result
     }
     fn resize_whole_tab_locally(&mut self, new_screen_size: Size) -> Result<()> {
         let err_context = || format!("failed to resize whole tab (id {})", self.id);
@@ -2601,9 +2601,12 @@ impl Tab {
         }
         self.floating_panes.resize(new_screen_size);
         // we need to do this explicitly because floating_panes.resize does not do this
-        self.floating_panes
+        // a failed send is only reported at the end: fullscreen was unset above and has to be
+        // restored whatever happens here, and the caller retries the sends
+        let floating_ptys = self
+            .floating_panes
             .resize_pty_all_panes(&mut self.os_api)
-            .with_context(err_context)?;
+            .with_context(err_context);
         self.tiled_panes.resize(new_screen_size);
         // after `tiled_panes.resize`, which is what updates the shared `display_area` cell the
         // surface is computed from. `FloatingPanes::reapply_overlay_coordinates` used to run from
@@ -2627,9 +2630,10 @@ impl Tab {
         let group_count = self.visible_tab_group_count();
         self.tiled_panes.resize_tab_bar(group_count).non_fatal();
         self.set_should_clear_display_before_rendering();
-        self.senders
+        let caching_resizes = self
+            .senders
             .send_to_pty_writer(PtyWriteInstruction::StartCachingResizes)
-            .context("keep pane resizes batched until the screen event ends")?;
+            .context("keep pane resizes batched until the screen event ends");
         LayoutApplier::offset_viewport(
             self.viewport.clone(),
             self.display_area.clone(),
@@ -2660,7 +2664,7 @@ impl Tab {
         // are the last thing that can move it.
         self.refresh_overlay_expansion();
         self.resize_all_stack_list_hidden_members();
-        Ok(())
+        floating_ptys.and(caching_resizes)
     }
     /// Re-derive an overlay expansion against `self.viewport` as it is now.
     ///

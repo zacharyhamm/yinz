@@ -468,6 +468,19 @@ fn floating_pane_geom(tab: &Tab, pane_id: PaneId) -> PaneGeom {
         .current_geom()
 }
 
+/// Fail a whole-tab resize at its `StartCachingResizes` send, then retry it once the send works.
+/// `check` runs after both attempts: a failure must leave the tab as a success would.
+fn resize_whole_tab_failing_once(tab: &mut Tab, new_size: Size, check: impl Fn(&Tab)) {
+    let senders = tab.senders.clone();
+    tab.senders.should_silently_fail = false;
+    tab.senders.to_pty_writer = None;
+    assert!(tab.resize_whole_tab(new_size).is_err());
+    tab.senders = senders;
+    check(tab);
+    tab.resize_whole_tab(new_size).unwrap();
+    check(tab);
+}
+
 fn create_tab_with_four_panes() -> Tab {
     let size = Size {
         cols: 121,

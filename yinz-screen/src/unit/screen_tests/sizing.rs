@@ -809,31 +809,37 @@ fn attaching_with_a_focus_target_leaves_other_tabs_alone() {
     };
     let small = Size { cols: 80, rows: 24 };
     let attaching = ClientId::new(2);
-    let mut screen = create_non_mirrored_screen(large);
-    new_tab(&mut screen, 1, TabId::new(0));
-    new_tab(&mut screen, 2, TabId::new(1));
-    screen.render_to_clients().expect("TEST");
-    assert!(!screen.tabs[&TabId::new(1)].should_clear_display_before_rendering());
+    // The client router sends resizes straight to the screen, so one can overtake the attach.
+    for resize_overtook_attach in [false, true] {
+        let mut screen = create_non_mirrored_screen(large);
+        new_tab(&mut screen, 1, TabId::new(0));
+        new_tab(&mut screen, 2, TabId::new(1));
+        screen.render_to_clients().expect("TEST");
+        assert!(!screen.tabs[&TabId::new(1)].should_clear_display_before_rendering());
+        if resize_overtook_attach {
+            screen.set_client_size(attaching, small).expect("TEST");
+        }
 
-    let mut traces = HashMap::new();
-    screen
-        .attach_client(
-            attaching,
-            small,
-            Some(TabNumber::new(1)),
-            None,
-            &mut traces,
-            &mut crate::screen::thread_main::PendingEvents::default(),
-        )
-        .expect("TEST");
+        let mut traces = HashMap::new();
+        screen
+            .attach_client(
+                attaching,
+                small,
+                Some(TabNumber::new(1)),
+                None,
+                &mut traces,
+                &mut crate::screen::thread_main::PendingEvents::default(),
+            )
+            .expect("TEST");
 
-    assert_eq!(screen.active_tab_ids.get(&attaching), Some(&TabId::new(0)));
-    assert_eq!(screen.tabs[&TabId::new(0)].size, small);
-    assert_eq!(screen.tabs[&TabId::new(1)].size, large);
-    assert!(
-        !screen.tabs[&TabId::new(1)].should_clear_display_before_rendering(),
-        "The other client's tab must not be resized by a client that never stays on it"
-    );
+        assert_eq!(screen.active_tab_ids.get(&attaching), Some(&TabId::new(0)));
+        assert_eq!(screen.tabs[&TabId::new(0)].size, small);
+        assert_eq!(screen.tabs[&TabId::new(1)].size, large);
+        assert!(
+            !screen.tabs[&TabId::new(1)].should_clear_display_before_rendering(),
+            "The other client's tab must not be resized by a client that never stays on it"
+        );
+    }
 }
 
 #[test]
@@ -1231,6 +1237,107 @@ fn failed_destination_sizing_disconnects_without_replaying_pending_events() {
     }
 }
 
+/// Switching tabs reflows the destination, which another viewer can keep failing. The attaching
+/// client is rejected for that like any other failure to place it, and the session survives.
+#[test]
+fn failed_switch_to_the_destination_disconnects_the_attaching_client() {
+    use crate::screen::thread_main::PendingEvents;
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let client = ClientId::new(1);
+    let viewer = ClientId::new(3);
+    let failing_tab = TabId::new(1);
+    let attaching = ClientId::new(2);
+    let mut screen = create_non_mirrored_screen(large);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, failing_tab);
+    screen.add_client(viewer).unwrap();
+    screen.set_client_size(viewer, large).unwrap();
+    // The attaching client registers on this client's tab, and has to leave it for the failing one.
+    screen
+        .switch_active_tab(screen.tabs[&TabId::new(0)].position, None, true, client)
+        .unwrap();
+    let receiver = screen_wired_to_server(&mut screen);
+    let (plugin, _plugin_receiver) = channels::unbounded();
+    let (pty, _pty_receiver) = channels::unbounded();
+    let tab = screen.tabs.get_mut(&failing_tab).unwrap();
+    let saved_senders = tab.senders.clone();
+    tab.senders.should_silently_fail = false;
+    tab.senders.to_plugin = Some(SenderWithContext::new(plugin));
+    tab.senders.to_pty = Some(SenderWithContext::new(pty));
+    tab.senders.to_pty_writer = None;
+    screen.tabs_needing_reflow.insert(failing_tab);
+
+    screen
+        .attach_client(
+            attaching,
+            small,
+            Some(TabNumber::new(2)),
+            None,
+            &mut HashMap::new(),
+            &mut PendingEvents::default(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        receiver
+            .try_iter()
+            .filter(|(instruction, _)| matches!(instruction,
+            ServerInstruction::ClientExit(id, None) if *id == attaching))
+            .count(),
+        1
+    );
+    screen.tabs.get_mut(&failing_tab).unwrap().senders = saved_senders;
+    screen.remove_client(attaching).unwrap();
+}
+
+/// Tabs are sized independently: one that cannot finish must not hold the others back, or abort a
+/// frame while it waits for its retry.
+#[test]
+fn failed_reflow_leaves_other_tabs_and_the_frame_alone() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let client = ClientId::new(1);
+    let other = ClientId::new(2);
+    let failing_tab = TabId::new(0);
+    let later_tab = TabId::new(1);
+    let mut screen = create_non_mirrored_screen(large);
+    new_tab(&mut screen, 1, failing_tab);
+    new_tab(&mut screen, 2, later_tab);
+    screen.add_client(other).unwrap();
+    screen.set_client_size(other, large).unwrap();
+    screen
+        .switch_active_tab(screen.tabs[&failing_tab].position, None, true, client)
+        .unwrap();
+    let (pty, _pty_receiver) = channels::unbounded();
+    let (plugin, _plugin_receiver) = channels::unbounded();
+    let (background, _background_receiver) = channels::unbounded();
+    let (server, _server_receiver) = channels::unbounded();
+    let tab = screen.tabs.get_mut(&failing_tab).unwrap();
+    tab.senders.should_silently_fail = false;
+    tab.senders.to_pty_writer = None;
+    tab.senders.to_pty = Some(SenderWithContext::new(pty));
+    tab.senders.to_plugin = Some(SenderWithContext::new(plugin));
+    tab.senders.to_background_jobs = Some(SenderWithContext::new(background));
+    tab.senders.to_server = Some(SenderWithContext::new(server));
+
+    screen.set_client_size(client, small).unwrap();
+    screen.set_client_size(other, small).unwrap();
+    assert!(screen.reflow_all_tabs().is_err());
+    assert!(screen.tabs_needing_reflow.contains(&failing_tab));
+    assert_eq!(screen.tabs[&later_tab].size, small);
+    assert_eq!(screen.last_surface_size, large);
+
+    screen.render_to_clients().unwrap();
+    assert!(screen.tabs_needing_reflow.contains(&failing_tab));
+}
+
 #[test]
 fn incomplete_reflow_retries_at_the_same_display_size() {
     let original = Size {
@@ -1285,23 +1392,25 @@ fn assert_tab_geometry(screen: &Screen, tab_id: TabId, size: Size) {
     assert_eq!(geom.rows.as_usize(), size.rows);
 }
 
-#[test]
-fn removal_retries_reflow_after_floating_pty_failure_before_tiled_resize() {
-    let large = Size {
-        cols: 160,
-        rows: 50,
-    };
-    let small = Size { cols: 80, rows: 24 };
-    let tab_id = TabId::new(0);
+/// A screen whose only tab has a floating pane, with client 2 attaching at `small` after the
+/// writer's receiver has gone. Floating panes clone their senders when the tab is built, so this
+/// is the one way to fail their PTY resizes. Begin `Shutdown` to recover them through the writer's
+/// normal shutdown tolerance, without replacing the tab.
+fn screen_attaching_to_failing_floating_pty(
+    large: Size,
+    small: Size,
+    tab_id: TabId,
+    before_attach: impl FnOnce(&mut Screen),
+) -> (Screen, Shutdown, impl Sized) {
     let attaching = ClientId::new(2);
     let mut screen = create_non_mirrored_screen(large);
     let saved_senders = screen.bus.senders.clone();
     let shutdown = Shutdown::default();
     let (writer, writer_receiver) = channels::unbounded();
-    let (plugin, _plugin_receiver) = channels::unbounded();
-    let (pty, _pty_receiver) = channels::unbounded();
-    let (background, _background_receiver) = channels::unbounded();
-    let (server, _server_receiver) = channels::unbounded();
+    let (plugin, plugin_receiver) = channels::unbounded();
+    let (pty, pty_receiver) = channels::unbounded();
+    let (background, background_receiver) = channels::unbounded();
+    let (server, server_receiver) = channels::unbounded();
     screen.bus.senders.to_pty_writer = Some(shutdown.sender(writer));
     screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin));
     screen.bus.senders.to_pty = Some(SenderWithContext::new(pty));
@@ -1315,6 +1424,7 @@ fn removal_retries_reflow_after_floating_pty_failure_before_tiled_resize() {
         PaneId::Terminal(TerminalId::new(3)),
         true,
     );
+    before_attach(&mut screen);
     screen.bus.senders = saved_senders;
     screen_wired_to_server(&mut screen);
     drop(writer_receiver);
@@ -1329,14 +1439,64 @@ fn removal_retries_reflow_after_floating_pty_failure_before_tiled_resize() {
             &mut crate::screen::thread_main::PendingEvents::default(),
         )
         .unwrap();
+    let receivers = (
+        plugin_receiver,
+        pty_receiver,
+        background_receiver,
+        server_receiver,
+    );
+    (screen, shutdown, receivers)
+}
+
+#[test]
+fn removal_retries_reflow_after_floating_pty_failure() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let tab_id = TabId::new(0);
+    let (mut screen, shutdown, _receivers) =
+        screen_attaching_to_failing_floating_pty(large, small, tab_id, |_| {});
     assert_eq!(screen.tabs[&tab_id].size, small);
-    assert_eq!(screen.tabs[&tab_id].get_display_area(), large);
+    assert_eq!(screen.tabs[&tab_id].get_display_area(), small);
     assert!(screen.tabs_needing_reflow.contains(&tab_id));
-    // Recover sends through the writer's normal shutdown tolerance, without replacing the tab.
     shutdown.begin();
-    screen.remove_client(attaching).unwrap();
+    screen.remove_client(ClientId::new(2)).unwrap();
     screen.reflow_all_tabs().unwrap();
     assert_eq!(screen.client_sizes.get(&ClientId::new(1)), Some(&large));
     assert_tab_geometry(&screen, tab_id, large);
     assert!(!screen.tabs_needing_reflow.contains(&tab_id));
+}
+
+#[test]
+fn floating_pty_failure_keeps_fullscreen_through_the_retry() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let tab_id = TabId::new(0);
+    let pane_id = PaneId::Terminal(TerminalId::new(3));
+    let (mut screen, shutdown, _receivers) =
+        screen_attaching_to_failing_floating_pty(large, small, tab_id, |screen| {
+            let tab = screen.tabs.get_mut(&tab_id).unwrap();
+            tab.toggle_pane_fullscreen(pane_id);
+            assert_eq!(tab.fullscreen_pane_id(), Some(pane_id));
+        });
+    let assert_fullscreen_at_small = |screen: &Screen| {
+        let tab = &screen.tabs[&tab_id];
+        assert_eq!(tab.fullscreen_pane_id(), Some(pane_id));
+        let geom = tab.get_pane_with_id(pane_id).unwrap().current_geom();
+        assert_eq!(
+            (geom.cols.as_usize(), geom.rows.as_usize()),
+            (small.cols, small.rows),
+        );
+    };
+    assert!(screen.tabs_needing_reflow.contains(&tab_id));
+    assert_fullscreen_at_small(&screen);
+    shutdown.begin();
+    screen.reflow_all_tabs().unwrap();
+    assert!(!screen.tabs_needing_reflow.contains(&tab_id));
+    assert_fullscreen_at_small(&screen);
 }

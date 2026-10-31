@@ -24,7 +24,6 @@
 //!   would keep its glyphs. [`Screen::close_context_menu`] force-renders every tab and the global
 //!   panes, exactly as `advance_notification_animations` does when a toast leaves.
 
-use std::collections::HashMap;
 use std::thread;
 use yinz_types::internal_ids::ContextMenuRequestId;
 use yinz_types::internal_ids::PluginId;
@@ -292,63 +291,50 @@ impl Screen {
 
     /// The cells these clients' menus will paint into `viewport`.
     ///
-    /// The same relationship to `render_context_menus` that `notification_cell_rects` has to
+    /// The same relationship to `render_context_menu` that `notification_cell_rects` has to
     /// `render_notifications`: one mapping, derived from the one layout function, so what occludes
     /// the cursor and what is drawn cannot drift apart. Told to `Output` before anything renders,
     /// because a fake cursor is decided while the panes draw.
-    pub(super) fn context_menu_cell_rects(
+    pub(super) fn context_menu_cell_rect(
         &self,
-        client_ids: &[ClientId],
+        client_id: ClientId,
         viewport: Viewport,
-    ) -> HashMap<ClientId, Vec<CellRect>> {
-        client_ids
-            .iter()
-            .filter_map(|client_id| {
-                let layout = self.context_menu_layout_for(*client_id, viewport)?;
-                Some((
-                    *client_id,
-                    vec![CellRect {
-                        x: layout.x,
-                        y: layout.y,
-                        cols: layout.width,
-                        rows: layout.height(),
-                    }],
-                ))
-            })
-            .collect()
+    ) -> Option<(ClientId, Vec<CellRect>)> {
+        let layout = self.context_menu_layout_for(client_id, viewport)?;
+        Some((
+            client_id,
+            vec![CellRect {
+                x: layout.x,
+                y: layout.y,
+                cols: layout.width,
+                rows: layout.height(),
+            }],
+        ))
     }
 
-    /// Paint the menus for these clients, on top of everything already in the frame.
+    /// Paint this client's menu, on top of everything already in the frame.
     ///
     /// The floating pane stack is cleared first for the same reason `render_notifications` clears
     /// it: `Output` would otherwise clip these chunks behind a floating pane the menu is over,
     /// which for a menu opened *by right-clicking that pane* is every time.
-    pub(super) fn render_context_menus(
+    pub(super) fn render_context_menu(
         &self,
         output: &mut Output,
         viewport: Viewport,
-        client_ids: &[ClientId],
+        client_id: ClientId,
     ) -> Result<()> {
-        if self.context_menus.is_empty() || client_ids.is_empty() {
+        let Some(layout) = self.context_menu_layout_for(client_id, viewport) else {
             return Ok(());
-        }
+        };
+        let selected = self
+            .context_menus
+            .get(&client_id)
+            .and_then(|menu| menu.selected);
+        let chunks = context_menu_chunks(&layout, selected, &self.style);
         let previous_stack = output.set_floating_panes_stack(None);
-        let result = (|| -> Result<()> {
-            for client_id in client_ids {
-                let Some(layout) = self.context_menu_layout_for(*client_id, viewport) else {
-                    continue;
-                };
-                let selected = self
-                    .context_menus
-                    .get(client_id)
-                    .and_then(|menu| menu.selected);
-                let chunks = context_menu_chunks(&layout, selected, &self.style);
-                output.add_character_chunks_to_client(*client_id, chunks, None)?;
-            }
-            Ok(())
-        })();
+        let result = output.add_character_chunks_to_client(client_id, chunks, None);
         output.set_floating_panes_stack(previous_stack);
-        result.context("failed to render context menus")
+        result.context("failed to render context menu")
     }
 
     /// Handle a mouse event while this client has a menu open. Always consumes the event.
