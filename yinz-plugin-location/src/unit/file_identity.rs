@@ -281,9 +281,10 @@ fn unresolved_relative_locations_join_a_directory_on_the_other_host() {
         RunPluginLocation::File("/srv/project/relative/plugin.scm".into())
     );
     assert_eq!(plugin.relative_path, Some("relative/plugin.scm".into()));
-    for path in ["~/plugin.scm", "/remote/plugin.scm"] {
+    for path in ["~/plugin.scm", "$HOME/plugin.scm", "/remote/plugin.scm"] {
         let plugin = run_plugin_from_url_unresolved(&format!("file:{path}"), cwd()).unwrap();
         assert_eq!(plugin.location, RunPluginLocation::File(path.into()));
+        assert_eq!(plugin.relative_path, None, "{path}");
     }
 }
 

@@ -232,8 +232,8 @@ fn run_host(
     })();
     // Also reap SSH when waiting failed or a signal interrupted it.
     if child.try_wait().ok().flatten().is_none() {
-        let _ = child.kill();
-        let _ = child.wait();
+        child.kill().context("kill remote host SSH").non_fatal();
+        child.wait().context("reap remote host SSH").non_fatal();
     }
     let (status, mut capture) = result?;
     let stderr = capture.finish().context("collect remote host stderr")?;
@@ -295,14 +295,20 @@ fn confirm_all_sessions(
 fn handle(request: &str, opts: &mut CliArgs) -> Result<()> {
     let versions: RequestVersions =
         serde_json::from_str(request).context("decode remote CLI request versions")?;
-    remote_sessions::check_versions(&versions.version, versions.contract, versions.bootstrap)?;
+    remote_sessions::check_versions(&versions.version, versions.contract, versions.bootstrap)
+        .context("check remote CLI request")?;
     let request: Request = serde_json::from_str(request).context("decode remote CLI request")?;
     let Some(command) = request.command else {
-        let config = yinz_cli::setup::load_config(opts).map_err(|e| anyhow!("{e}"))?;
+        let config = yinz_cli::setup::load_config(opts)
+            .map_err(|e| anyhow!("{e}"))
+            .context("load remote configuration")?;
+        let kdl = config
+            .to_string(false)
+            .map_err(|e| anyhow!("{e}"))
+            .context("render remote configuration")?;
         println!(
             "{}",
-            serde_json::to_string(&config.to_string(false).map_err(|e| anyhow!("{e}"))?)
-                .context("encode remote configuration")?
+            serde_json::to_string(&kdl).context("encode remote configuration")?
         );
         std::process::exit(0);
     };
@@ -343,13 +349,11 @@ fn running_names(rows: Vec<yinz_cli::session_picker::PickerRow>) -> Vec<SessionN
         .collect()
 }
 
-/// Layouts are input files read on this machine, so the host's `layout_dir` must not name
-/// where to find them here.
 fn parse_remote_config(stdout: &[u8]) -> Result<Config> {
     let kdl: String = serde_json::from_slice(stdout).context("decode remote configuration")?;
-    let mut config = Config::from_kdl(&kdl, None).map_err(|e| anyhow!("{e}"))?;
-    config.options.layout_dir = None;
-    Ok(config)
+    Config::from_kdl(&kdl, None)
+        .map_err(|e| anyhow!("{e}"))
+        .context("parse remote configuration")
 }
 
 fn read_remote_config(
@@ -359,10 +363,11 @@ fn read_remote_config(
     cancelled: &std::sync::atomic::AtomicBool,
 ) -> Result<Config> {
     let output = ssh::bootstrap_output(
-        &mut ssh_command(host, request, env)?,
+        &mut ssh_command(host, request, env).context("build remote configuration request")?,
         Duration::from_secs(25),
         Some(cancelled),
-    )?;
+    )
+    .context("run remote configuration request")?;
     anyhow::ensure!(
         output.status.success(),
         "read remote configuration: {}",
@@ -371,25 +376,22 @@ fn read_remote_config(
     parse_remote_config(&output.stdout)
 }
 
-/// The actions that pass their configuration on to `actions_from_cli`'s layout and config parsers.
-/// Reading it costs another SSH connection, which every other action can skip.
+/// The actions whose config fragment is checked against the session's configuration. Reading it
+/// costs another SSH connection, which every other action can skip. Layout actions only take
+/// `layout_dir` from it, and layouts are input files read on this machine, not the host's.
 fn reads_session_config(command: Option<&Command>) -> bool {
     matches!(
         command,
         Some(Command::Action(action)) if matches!(
             action.as_ref(),
-            CliAction::NewTab { .. }
-                | CliAction::OverrideLayout { .. }
-                | CliAction::SwitchSession { .. }
-                | CliAction::Reconfigure { .. }
-                | CliAction::SetHook { .. }
+            CliAction::Reconfigure { .. } | CliAction::SetHook { .. }
         )
     )
 }
 
 fn select_name(explicit: Option<&str>, names: Vec<SessionName>, host: &str) -> Result<SessionName> {
     if let Some(name) = explicit {
-        remote_sessions::validate_name(name)?;
+        remote_sessions::validate_name(name).context("validate remote session name")?;
         return Ok(SessionName::new(name));
     }
     match names.as_slice() {
@@ -426,7 +428,7 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
                 ..
             })) = &opts.command
             else {
-                unreachable!()
+                bail!("expected remote attach arguments")
             };
             std::process::exit(crate::remote_session::attach(
                 opts,

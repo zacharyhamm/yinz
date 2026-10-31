@@ -528,14 +528,15 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
 }
 
 /// A remote session has no caller directory to resolve against: the server would start the agent
-/// in `/` without one, and resolve a relative one against its own working directory.
+/// in `/` without one, and resolve a relative one against its own working directory. A pane on
+/// `--remote-host` keeps its directory as given, for that machine to resolve.
 fn check_remote_spawn_directory(
     cwd: Option<&Path>,
     project: bool,
     remote_host: bool,
 ) -> Result<()> {
     match cwd {
-        Some(cwd) if cwd.is_relative() => {
+        Some(cwd) if cwd.is_relative() && !remote_host => {
             bail!("agent spawn on a remote session requires an absolute --cwd")
         },
         None if !project && !remote_host => {

@@ -134,10 +134,12 @@ fn parse_location(
             } else {
                 path
             };
-            let relative = is_relative.then(|| path.clone());
-            // A deferred home path is absolute on the host that expands it, so it ignores `cwd`.
+            // A deferred home or variable path is absolute on the host that expands it, so it
+            // ignores `cwd`.
+            let deferred = !resolve && raw_path.starts_with(['~', '$']);
+            let relative = (is_relative && !deferred).then(|| path.clone());
             let path = match cwd {
-                Some(cwd) if resolve || is_relative => cwd.join(&path),
+                Some(cwd) if !deferred => cwd.join(&path),
                 _ => path,
             };
             // Wasm plugins parse locations too, without access to the host filesystem.

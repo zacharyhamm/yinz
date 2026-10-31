@@ -162,19 +162,15 @@ fn only_running_sessions_can_be_selected_implicitly() {
 }
 
 #[test]
-fn a_hosts_layout_directory_does_not_locate_local_layouts() {
-    let kdl = serde_json::to_vec(r#"layout_dir "/only/on/the/host""#).unwrap();
-    assert_eq!(parse_remote_config(&kdl).unwrap().options.layout_dir, None);
-}
-
-#[test]
 fn only_config_consuming_actions_read_the_remote_configuration() {
     std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
             for (tail, expected) in [
                 (vec!["action", "list-panes"], false),
-                (vec!["action", "new-tab"], true),
+                // Layouts are read here and name no host directory, so these need no read.
+                (vec!["action", "new-tab"], false),
+                (vec!["action", "switch-session", "other"], false),
                 (
                     vec!["action", "reconfigure", "--kdl", "pane_frames false"],
                     true,

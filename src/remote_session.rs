@@ -538,7 +538,6 @@ pub(crate) fn attach(opts: &CliArgs, host: &str, name: Option<&str>, create: boo
     run(opts, host, target, &cancellation, local)
 }
 
-/// The local configuration whose environment every SSH invocation for this attach uses.
 /// The local configuration file alone, for commands that only need its SSH environment.
 pub(crate) fn read_local_config(opts: &CliArgs) -> Result<yinz_config::config::Config> {
     yinz_config::config::Config::load(opts.config.as_deref(), opts.config_dir.as_deref(), false)
@@ -546,6 +545,7 @@ pub(crate) fn read_local_config(opts: &CliArgs) -> Result<yinz_config::config::C
         .context("load local terminal configuration")
 }
 
+/// The local configuration whose environment every SSH invocation for this attach uses.
 pub(crate) fn load_local_config(opts: &CliArgs) -> Result<(yinz_config::config::Config, Options)> {
     let mut config = read_local_config(opts)?;
     let options = yinz_config::config::apply_themes(&mut config, None, opts.config_dir.clone())
