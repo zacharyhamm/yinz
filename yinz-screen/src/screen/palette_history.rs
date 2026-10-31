@@ -1,7 +1,8 @@
 use super::{Builtin, Screen};
 use crate::ui::command_palette::{
-    escape_literal, Entry, EntryKind, Field, Form, Outcome, PluginSection,
+    escape_literal, Entry, EntryKind, Field, Form, Outcome, PluginSection, PROMPT_LIBRARY_ACTION,
 };
+use crate::ui::prompt_picker;
 use std::collections::{BTreeMap, HashMap};
 use yinz_bus::command_palette::{
     query::{AgentQuery, ARCHIVE_FIELDS, LIVE_FIELDS},
@@ -1093,6 +1094,13 @@ impl Screen {
         if id == "history-refresh" {
             self.refresh_palette_history(client, true);
             return true;
+        }
+        if id == PROMPT_LIBRARY_ACTION {
+            self.open_prompt_picker(client);
+            return true;
+        }
+        if let Some(index) = id.strip_prefix(prompt_picker::ENTRY_PREFIX) {
+            return self.accept_prompt_picker(client, index);
         }
         if id == "history-filters" {
             self.open_agent_filters(client);

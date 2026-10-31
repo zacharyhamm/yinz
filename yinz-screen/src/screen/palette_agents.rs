@@ -2,6 +2,7 @@ use super::Screen;
 use crate::ui::command_palette::{
     escape_literal, Entry, EntryKind, Field, Form, Outcome, PluginSection,
 };
+use crate::ui::prompt_picker;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -9,6 +10,7 @@ use std::sync::{
 };
 use yinz_bus::command_palette::{
     AgentAction, AgentLabelSource, AgentLabels, AgentLabelsRequest, AgentReply, AgentRequest,
+    Instruction, PromptRecord,
 };
 use yinz_bus::plugins::PluginInstruction;
 use yinz_runtime::errors::prelude::*;
@@ -16,6 +18,32 @@ use yinz_types::{agent::control::AgentOutcome, data::PaneInfo, internal_ids::Cli
 
 static OPENING: AtomicU64 = AtomicU64::new(1);
 const FIRST_VIEW: u64 = 1 << 63;
+
+/// The past-prompt picker's list, freed with its view. Scoring runs off the screen thread.
+struct PromptPicker {
+    view: u64,
+    /// `None` until the archive read returns.
+    prompts: Option<Arc<[PromptRecord]>>,
+    generation: u64,
+    /// The generation whose results are on screen.
+    shown: u64,
+    /// Clears the search in flight when a newer query or the picker's end replaces it.
+    active: Arc<AtomicBool>,
+}
+
+impl PromptPicker {
+    fn cancel(&self) {
+        self.active.store(false, Ordering::Release);
+    }
+}
+
+impl Drop for PromptPicker {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
+const PROMPTS_UNREADABLE: &str = "Could not read past prompts";
 
 pub(super) struct State {
     pub(super) opening: u64,
@@ -27,6 +55,7 @@ pub(super) struct State {
     submitted: bool,
     pub(super) values: HashMap<String, Vec<String>>,
     pub(super) labels: BTreeMap<String, AgentLabels>,
+    prompt_picker: Option<PromptPicker>,
     label_sources: Vec<AgentLabelSource>,
     label_revision: u64,
     labels_dirty: bool,
@@ -45,6 +74,7 @@ impl State {
             submitted: false,
             values: HashMap::new(),
             labels: BTreeMap::new(),
+            prompt_picker: None,
             label_sources: Vec::new(),
             label_revision: 0,
             labels_dirty: true,
@@ -128,6 +158,213 @@ impl State {
 }
 
 impl Screen {
+    /// Open the past-prompt picker over the agent view, which keeps its draft underneath.
+    pub(super) fn open_prompt_picker(&mut self, client: ClientId) {
+        let timezone = self
+            .client_timezones
+            .get(&client)
+            .cloned()
+            .unwrap_or_default();
+        let Some(state) = self.command_palettes.get_mut(&client) else {
+            return;
+        };
+        let Some(draft) = state.widget.agent_prompt_text() else {
+            return;
+        };
+        // A poll still pending would otherwise be dropped once the view changes.
+        state.agents.cancel();
+        state.agents.step += 1;
+        let view = FIRST_VIEW + state.agents.step;
+        state
+            .widget
+            .push_view(view, prompt_picker::TITLE.to_owned());
+        state.widget.set_query(prompt_picker::seed_query(&draft));
+        state
+            .widget
+            .set_ranked_section(prompt_picker::section(&[], &[], "Loading prompts…"));
+        state.agents.prompt_picker = Some(PromptPicker {
+            view,
+            prompts: None,
+            generation: 0,
+            shown: 0,
+            active: Arc::new(AtomicBool::new(true)),
+        });
+        let request = AgentRequest {
+            timezone,
+            client,
+            opening: state.agents.opening,
+            step: view,
+            source: state.agents.source.clone(),
+            action: AgentAction::PromptLibrary,
+            values: vec![],
+            active: Arc::new(AtomicBool::new(true)),
+        };
+        if let Err(error) = self
+            .bus
+            .senders
+            .send_to_plugin(PluginInstruction::PaletteAgent(Box::new(request)))
+        {
+            state
+                .widget
+                .set_ranked_section(prompt_picker::section(&[], &[], PROMPTS_UNREADABLE));
+            state
+                .widget
+                .set_error(format!("{PROMPTS_UNREADABLE}: {error}"));
+        }
+    }
+
+    pub(super) fn prompt_library_loaded(
+        &mut self,
+        client: ClientId,
+        opening: u64,
+        view: u64,
+        prompts: Result<Arc<[PromptRecord]>, String>,
+    ) {
+        let Some(state) = self
+            .command_palettes
+            .get_mut(&client)
+            .filter(|state| state.agents.opening == opening && state.widget.view == view)
+        else {
+            return;
+        };
+        let Some(picker) = state
+            .agents
+            .prompt_picker
+            .as_mut()
+            .filter(|picker| picker.view == view)
+        else {
+            return;
+        };
+        match prompts {
+            Ok(prompts) => {
+                picker.prompts = Some(prompts);
+                self.search_prompt_picker(client);
+            },
+            Err(error) => {
+                state.widget.set_ranked_section(prompt_picker::section(
+                    &[],
+                    &[],
+                    PROMPTS_UNREADABLE,
+                ));
+                state.widget.set_error(error);
+            },
+        }
+    }
+
+    /// Follow a view or query change: score the new query, or drop a picker no longer on screen.
+    pub(super) fn refresh_prompt_picker(&mut self, client: ClientId) {
+        let Some(state) = self.command_palettes.get_mut(&client) else {
+            return;
+        };
+        if state
+            .agents
+            .prompt_picker
+            .as_ref()
+            .is_some_and(|picker| picker.view != state.widget.view)
+        {
+            state.agents.prompt_picker = None;
+            return;
+        }
+        self.search_prompt_picker(client);
+    }
+
+    fn search_prompt_picker(&mut self, client: ClientId) {
+        let Some(state) = self.command_palettes.get_mut(&client) else {
+            return;
+        };
+        let opening = state.agents.opening;
+        let query = state.widget.query().to_owned();
+        let Some(picker) = state.agents.prompt_picker.as_mut() else {
+            return;
+        };
+        let Some(prompts) = picker.prompts.clone() else {
+            return;
+        };
+        picker.cancel();
+        picker.generation += 1;
+        picker.active = Arc::new(AtomicBool::new(true));
+        let (view, generation, active) = (picker.view, picker.generation, picker.active.clone());
+        let senders = self.bus.senders.clone();
+        crate::global_async_runtime::get_tokio_runtime().spawn_blocking(move || {
+            let Some(matches) = prompt_picker::matches(&prompts, &query, &active) else {
+                return;
+            };
+            senders
+                .send_to_screen(yinz_bus::screen::ScreenInstruction::CommandPalette(
+                    Instruction::PromptLibraryMatches {
+                        client,
+                        opening,
+                        view,
+                        generation,
+                        matches,
+                    },
+                ))
+                .context("replying with palette prompt matches")
+                .non_fatal();
+        });
+    }
+
+    pub(super) fn prompt_library_matches(
+        &mut self,
+        client: ClientId,
+        opening: u64,
+        view: u64,
+        generation: u64,
+        matches: Vec<usize>,
+    ) {
+        let Some(state) = self
+            .command_palettes
+            .get_mut(&client)
+            .filter(|state| state.agents.opening == opening && state.widget.view == view)
+        else {
+            return;
+        };
+        let Some(picker) = state
+            .agents
+            .prompt_picker
+            .as_mut()
+            .filter(|picker| picker.view == view && picker.generation == generation)
+        else {
+            return;
+        };
+        let Some(prompts) = picker.prompts.as_ref() else {
+            return;
+        };
+        picker.shown = generation;
+        state.widget.set_ranked_section(prompt_picker::section(
+            prompts,
+            &matches,
+            "No matching prompts",
+        ));
+    }
+
+    /// Put the chosen prompt in the draft for editing. Nothing is sent until Enter there.
+    pub(super) fn accept_prompt_picker(&mut self, client: ClientId, index: &str) -> bool {
+        let Some(state) = self.command_palettes.get_mut(&client) else {
+            return false;
+        };
+        let Some(picker) = &state.agents.prompt_picker else {
+            return false;
+        };
+        // The rows still rank an older query until its results arrive, so a quick Enter after
+        // typing would otherwise overwrite the draft with a prompt nobody searched for.
+        if picker.shown != picker.generation {
+            return true;
+        }
+        let text = index.parse::<usize>().ok().and_then(|index| {
+            let prompts = picker.prompts.as_ref()?;
+            Some(prompts.get(index)?.text.clone())
+        });
+        let Some(text) = text else {
+            return false;
+        };
+        state.agents.prompt_picker = None;
+        state.widget.back();
+        state.widget.set_agent_prompt(&text);
+        self.refresh_palette_history(client, false);
+        true
+    }
+
     pub(super) fn request_palette_agent(
         &mut self,
         client: ClientId,

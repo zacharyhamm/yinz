@@ -8,3 +8,4 @@ pub use yinz_bus::loading_indication;
 pub mod notification;
 pub mod pane_boundaries_frame;
 pub mod pane_contents_and_ui;
+pub mod prompt_picker;

@@ -1595,3 +1595,123 @@ fn search_run_pages_reach_all_matches_and_full_text() {
         (1..=95).collect::<Vec<_>>()
     );
 }
+
+fn prompt(revision: u64, text: &str, at: Option<i64>) -> RunEntry {
+    RunEntry {
+        created_at_ms: at,
+        ..entry(revision, RunEntryKind::Prompt, text, 0)
+    }
+}
+
+#[test]
+fn prompt_library_returns_distinct_prompts_from_every_run_newest_first() {
+    let backend = backend();
+    let mut live = run("claude:live", "claude", "main", 1);
+    live.entries = vec![
+        prompt(1, "first", Some(10)),
+        entry(2, RunEntryKind::Message, "an answer, not a prompt", 11),
+        prompt(3, "again", Some(20)),
+    ];
+    write(&backend, &live);
+    let mut closed = run("codex:closed", "codex", "elsewhere", 2);
+    closed.outcome = RunOutcome::Closed;
+    closed.entries = vec![
+        prompt(1, "again", Some(40)),
+        prompt(2, "line one\nline two", Some(30)),
+    ];
+    write(&backend, &closed);
+
+    let prompts = prompt_library(&backend).unwrap();
+
+    assert_eq!(
+        prompts
+            .iter()
+            .map(|p| (&*p.text, p.last_used_ms, p.agent.as_deref(), p.uses))
+            .collect::<Vec<_>>(),
+        [
+            ("again", Some(40), Some("codex"), 2),
+            ("line one\nline two", Some(30), Some("codex"), 1),
+            ("first", Some(10), Some("claude"), 1),
+        ]
+    );
+}
+
+#[test]
+fn prompt_library_keeps_prose_and_drops_harness_machinery() {
+    let backend = backend();
+    let envelope = "<task-notification>\n<status>completed</status>\n</task-notification>";
+    let mut recorded = run("claude:envelopes", "claude", "main", 1);
+    recorded.entries = vec![
+        prompt(1, envelope, Some(1)),
+        prompt(2, &format!("{envelope}\n\nwhat did it find?"), Some(2)),
+        prompt(3, "   ", Some(3)),
+    ];
+    write(&backend, &recorded);
+
+    let prompts = prompt_library(&backend).unwrap();
+
+    assert_eq!(
+        prompts.iter().map(|p| &*p.text).collect::<Vec<_>>(),
+        ["what did it find?"]
+    );
+}
+
+#[test]
+fn prompt_library_preserves_fenced_code_while_removing_adjacent_envelopes() {
+    let backend = backend();
+    let mut recorded = run("claude:code", "claude", "main", 1);
+    let code = "edit this component:\n\n```html\n<my-element>\n  <span>keep this code</span>\n</my-element>\n<system-reminder>example</system-reminder>\n```";
+    let raw = format!(
+        "<task-notification>done</task-notification>\n\n{code}\n\n<system-reminder>machinery</system-reminder>"
+    );
+    recorded.entries = vec![prompt(1, code, Some(1)), prompt(2, &raw, Some(2))];
+    write(&backend, &recorded);
+
+    let prompts = prompt_library(&backend).unwrap();
+
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(&*prompts[0].text, code);
+    assert_eq!(prompts[0].uses, 2);
+}
+
+#[test]
+fn prompt_library_orders_untimed_rows_after_timed_ones_by_reverse_id() {
+    let backend = backend();
+    let mut recorded = run("claude:legacy", "claude", "main", 1);
+    recorded.entries = vec![
+        prompt(1, "untimed older", None),
+        prompt(2, "untimed newer", None),
+        prompt(3, "timed", Some(5)),
+    ];
+    write(&backend, &recorded);
+
+    let prompts = prompt_library(&backend).unwrap();
+
+    assert_eq!(
+        prompts.iter().map(|p| &*p.text).collect::<Vec<_>>(),
+        ["timed", "untimed newer", "untimed older"]
+    );
+}
+
+#[test]
+fn prompt_library_reads_past_one_fetch_page() {
+    let backend = backend();
+    let total = store::LIST_FETCH_LIMIT as u64 + 5;
+    let mut recorded = run("claude:long", "claude", "main", 1);
+    recorded.entries = (1..=total)
+        .map(|revision| {
+            prompt(
+                revision,
+                &format!("prompt {revision}"),
+                Some(revision as i64),
+            )
+        })
+        .collect();
+    write(&backend, &recorded);
+
+    let prompts = prompt_library(&backend).unwrap();
+
+    assert_eq!(prompts.len(), total as usize);
+    assert_eq!(&*prompts[0].text, format!("prompt {total}"));
+    assert_eq!(&*prompts[total as usize - 1].text, "prompt 1");
+}

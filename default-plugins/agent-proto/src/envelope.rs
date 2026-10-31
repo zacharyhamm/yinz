@@ -120,7 +120,7 @@ pub struct Field<'a> {
 
 /// Read `text` apart into prose and envelopes.
 ///
-/// Not an XML parser — a line-anchored element scanner, and deliberately narrow. Four
+/// Not an XML parser — a line-anchored element scanner, and deliberately narrow. Five
 /// conditions, all required:
 ///
 /// 1. The opening tag begins a line: offset zero, or straight after a newline. Indentation is
@@ -130,6 +130,8 @@ pub struct Field<'a> {
 /// 3. The closing tag ends a line or hands over to the next element, **or** the text ends with
 ///    no closing tag at all.
 /// 4. Top level only. The scan does not descend into an element it has claimed.
+/// 5. Outside fenced code blocks. Backtick and tilde fences protect their contents as prose,
+///    including a fence with no closer in the recorded text.
 ///
 /// Condition 2 is what makes the unknown-tag fallback safe: `<div>`, `<b>`, `Vec<String>` and
 /// `if x < y` cannot be envelopes, and every envelope a harness actually emits is hyphenated
@@ -137,9 +139,8 @@ pub struct Field<'a> {
 /// by a person, from swallowing the rest of their prompt. Condition 4 is why a `<result>` full
 /// of markdown stays the markdown it is.
 ///
-/// The one shape this admits that nobody meant is a hyphenated lowercase tag alone on its lines
-/// inside a fenced code block. It costs a fold row that says so, and `r` shows the source, so
-/// it is not defended against.
+/// Fenced code must survive extraction verbatim: prompt recall uses the prose as an editable
+/// draft, so treating a component example as an envelope would remove code from the next send.
 pub fn parse(text: &str) -> Prompt<'_> {
     // Nothing to find, and the common case: one borrow, no allocation, no scan.
     if !text.contains('<') {
@@ -152,7 +153,27 @@ pub fn parse(text: &str) -> Prompt<'_> {
     let mut prose: Vec<&str> = Vec::new();
     let mut prose_from = 0;
     let mut at = 0;
+    let mut fence = None;
     while at < text.len() {
+        if let Some((marker, width, tail)) = fence_at(text, at) {
+            match fence {
+                Some((opening, length))
+                    if marker == opening
+                        && width >= length
+                        && tail.trim_matches([' ', '\t', '\r']).is_empty() =>
+                {
+                    fence = None;
+                },
+                None if marker == b'~' || !tail.contains('`') => fence = Some((marker, width)),
+                _ => {},
+            }
+            at = next_line(text, at);
+            continue;
+        }
+        if fence.is_some() {
+            at = next_line(text, at);
+            continue;
+        }
         let Some((tag, start, body_from)) = toplevel_opening_at(text, at) else {
             at = next_line(text, at);
             continue;
@@ -178,6 +199,28 @@ pub fn parse(text: &str) -> Prompt<'_> {
         prose: join_prose(prose),
         envelopes,
     })
+}
+
+/// A run of at least three backticks or tildes after up to three spaces of indentation.
+/// The tail distinguishes opening info strings from closing fences with only whitespace.
+fn fence_at(text: &str, at: usize) -> Option<(u8, usize, &str)> {
+    if at != 0 && text.as_bytes().get(at - 1) != Some(&b'\n') {
+        return None;
+    }
+    let line = text[at..].split('\n').next()?;
+    let unindented = line.trim_start_matches(' ');
+    if line.len() - unindented.len() > 3 {
+        return None;
+    }
+    let marker = *unindented.as_bytes().first()?;
+    if !matches!(marker, b'`' | b'~') {
+        return None;
+    }
+    let width = unindented
+        .bytes()
+        .take_while(|byte| *byte == marker)
+        .count();
+    (width >= 3).then_some((marker, width, &unindented[width..]))
 }
 
 /// Which rules an opening tag is held to.

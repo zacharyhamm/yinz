@@ -104,6 +104,9 @@ struct BrowsePosition {
     following: bool,
 }
 
+/// `Ctrl r` on the prompt field: asks the screen to open the past-prompt picker.
+pub const PROMPT_LIBRARY_ACTION: &str = "history-prompt-library";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Focus {
     Search,
@@ -357,6 +360,19 @@ impl AgentView {
         self.prompt.clear();
     }
 
+    pub fn prompt_text(&self) -> Option<&str> {
+        self.prompt_available.then(|| self.prompt.get_text())
+    }
+
+    /// Replace the draft, unlike a palette paste keeping line breaks, and leave it undoable.
+    ///
+    /// Inserting drops the controls agent control rejects. This field draws them as spaces, so
+    /// a recalled prompt holding one could be neither sent nor visibly corrected.
+    pub fn set_prompt(&mut self, text: &str) {
+        self.prompt.clear();
+        self.prompt.insert_text(text);
+    }
+
     pub fn insert_text(&mut self, input: &mut TextInput, text: &str) {
         if self.reader.is_some() {
             return;
@@ -495,6 +511,11 @@ impl AgentView {
                             values: vec![self.prompt.get_text().into()],
                         };
                     }
+                } else if self.prompt_available
+                    && bare == BareKey::Char('r')
+                    && key.has_only_modifiers(&[KeyModifier::Ctrl])
+                {
+                    return Outcome::Activate(PROMPT_LIBRARY_ACTION.into());
                 } else {
                     self.prompt.handle_key(key.clone());
                 }
@@ -852,7 +873,12 @@ impl AgentView {
             let row = layout.lines.len();
             let focused = self.focus == Focus::Prompt;
             let (line, cursor) = if self.prompt_available {
-                input_line("Prompt", &self.prompt, "Type a message…", width)
+                input_line(
+                    "Prompt",
+                    &self.prompt,
+                    "Type a message… (Ctrl r: past prompts)",
+                    width,
+                )
             } else {
                 (dim("Prompt unavailable"), None)
             };
@@ -928,9 +954,11 @@ fn input_line(
     width: usize,
 ) -> (MdLine, Option<usize>) {
     let prefix = format!("{label}: [ ");
+    // One char for one char, so the cursor's char index still holds.
+    let visible = input.get_text().replace('\n', "↵");
     let (text, cursor) = viewport(
         &prefix,
-        input.get_text(),
+        &visible,
         input.get_cursor_position(),
         width.saturating_sub(2),
     );

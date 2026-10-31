@@ -39,6 +39,20 @@ between separate commands.
 Registration returns the service's JSON acknowledgement; `--json` also structures
 its errors. It does not establish managed prompt readiness or accept a conversation guard.
 
+## Reusing past prompts in the Agents panel
+
+In a live agent's detail view, focus the prompt field and press `Ctrl r` to
+search every prompt recorded in this data directory, from all sessions and
+agents, including those still running. Matching is fuzzy over the whole prompt.
+Results rank by match quality, then by most recent use, and identical prompts
+appear once. Harness messages such as task notifications are left out.
+
+The current draft becomes the opening search, unless it is over 200 characters.
+Enter replaces the draft with the chosen prompt, line breaks included (shown as
+`↵`), for editing. Nothing is sent until you press Enter in the prompt field. Esc
+returns to the draft unchanged. A prompt only appears once the agent's
+`UserPromptSubmit` hook has recorded it.
+
 ## Provider quotas in the Agents panel
 
 Open the Agents panel with `Ctrl e a` and select a local Codex or Claude agent.
@@ -48,9 +62,9 @@ account. They are not per-agent token counts or spending totals.
 Compact layouts show the highest window percentage; enlarge the panel to see
 the individual windows and reset times.
 
-The panel checks the selected provider once a minute while visible. `Ctrl r`
-refreshes it immediately. A failed check keeps the last successful values and
-marks them stale with their original age. Missing limits appear as unavailable;
+The panel checks the selected provider once a minute while visible. A failed
+check keeps the last successful values and marks them stale with their original
+age. Missing limits appear as unavailable;
 they do not appear as zero usage. Hiding the panel stops further checks.
 
 Codex requires an installed CLI with the app-server protocol and a ChatGPT

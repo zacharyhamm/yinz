@@ -51,6 +51,13 @@ pub(super) struct CommandPaletteState {
     pub(super) shortcut_keymap_filters: usize,
 }
 
+#[cfg(test)]
+impl CommandPaletteState {
+    pub(super) fn widget(&self) -> &CommandPalette {
+        &self.widget
+    }
+}
+
 struct PaletteContext {
     tab_id: TabId,
     pane_id: PaneId,
@@ -325,6 +332,7 @@ impl Screen {
         if changed {
             self.refresh_palette_history(client_id, history_query_changed);
             self.refresh_plugin_palette(client_id, query_changed);
+            self.refresh_prompt_picker(client_id);
         }
         self.handle_palette_outcome(client_id, outcome);
         self.refresh_theme_preview(client_id);

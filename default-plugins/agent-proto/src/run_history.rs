@@ -16,14 +16,15 @@
 //! the crate.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 use yinz_tile::prelude::HostId;
 use yinz_types::internal_ids::SessionName;
 
 use crate::agents::{self, rows, AgentRunHeader, RunEntry, RunEntryKind};
 use crate::projects;
 use crate::store::{self, Backend};
-use yinz_tile::prelude::{DataRows, FetchRequest, Pred, SortDir};
+use yinz_tile::prelude::{DataRows, DataValue, FetchRequest, Pred, SortDir};
 
 /// Stable archive header shape shared by panel and CLI readers.
 pub fn header_reply(
@@ -1021,6 +1022,73 @@ pub fn search_runs_filtered(
                 .limit(PAGE.min((MAX_SCOPE_SCAN - scanned) as u32)),
         )?;
     }
+}
+
+/// One distinct prompt a person sent, however many times they sent it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LibraryPrompt {
+    /// The words as written, line breaks included. No harness envelopes.
+    pub text: Arc<str>,
+    /// The newest use that recorded a time.
+    pub last_used_ms: Option<i64>,
+    /// The agent kind of the newest use.
+    pub agent: Option<String>,
+    pub uses: u32,
+}
+
+/// Every prompt in the store, distinct and newest first, for a person looking for one to reuse.
+///
+/// Reads through the `kind` index in id order, so no sort runs in SQL. Rows with no recorded
+/// time predate `created_at_ms` and follow the rest in reverse id order. Whole-text scoring
+/// belongs to the caller: no SQL index answers a subsequence match.
+pub fn prompt_library(backend: &impl Backend) -> Result<Vec<LibraryPrompt>, String> {
+    let rows = store::fetch_all(
+        backend,
+        FetchRequest::entity(rows::ENTRY_ENTITY)
+            .filter(Pred::eq("kind", RunEntryKind::Prompt.label()))
+            .select(["text", "created_at_ms", "run_id"]),
+    )?;
+    let mut prompts: Vec<LibraryPrompt> = Vec::new();
+    let mut positions: HashMap<Arc<str>, usize> = HashMap::new();
+    for row in rows.rows.iter().rev() {
+        let Some(DataValue::Text(raw)) = rows.get(row, "text") else {
+            continue;
+        };
+        // Stored prompts keep their envelopes verbatim, so machinery is excluded on the way out.
+        let parsed = crate::envelope::parse(raw);
+        let text = parsed.prose.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let at = match rows.get(row, "created_at_ms") {
+            Some(DataValue::Int(at)) => Some(*at),
+            _ => None,
+        };
+        let agent = match rows.get(row, "run_id") {
+            Some(DataValue::Text(id)) => agents::run_id_kind(id).map(str::to_owned),
+            _ => None,
+        };
+        if let Some(position) = positions.get(text) {
+            let prompt = &mut prompts[*position];
+            prompt.uses = prompt.uses.saturating_add(1);
+            if at > prompt.last_used_ms {
+                prompt.last_used_ms = at;
+                prompt.agent = agent;
+            }
+            continue;
+        }
+        let text: Arc<str> = Arc::from(text);
+        positions.insert(text.clone(), prompts.len());
+        prompts.push(LibraryPrompt {
+            text,
+            last_used_ms: at,
+            agent,
+            uses: 1,
+        });
+    }
+    // Stable, so rows without a time stay in the reverse id order they were read in.
+    prompts.sort_by_key(|prompt| std::cmp::Reverse(prompt.last_used_ms));
+    Ok(prompts)
 }
 
 /// The matching entries, FTS first and a substring pass behind it.

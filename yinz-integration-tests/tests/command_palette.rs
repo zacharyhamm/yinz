@@ -387,6 +387,142 @@ fn command_palette_closed_paste_reaches_normal_locked_and_synchronized_terminals
     }
 }
 
+#[test]
+fn ctrl_r_recalls_a_past_prompt_from_the_archive_into_the_draft() {
+    use agent_proto::{
+        agents::{AgentRun, RunEntry, RunEntryKind, RunOutcome},
+        store,
+    };
+    use yinz_types::data::PaneId;
+    use yinz_types::plugin_data::REV_ABSENT;
+
+    const CTRL_R: &[u8] = b"\x12";
+    const BACKSPACE: &[u8] = b"\x7f";
+
+    let root = yinz_integration_tests::test_env::init();
+    let data = yinz_storage::data_access::DataAccess::sqlite(&root.join("data"));
+    for definition in store::shared_defs() {
+        data.plugin_data()
+            .define_entity(store::SHARED, "test", &definition, false)
+            .unwrap();
+    }
+    let prompt = |revision, text: &str| RunEntry {
+        revision,
+        event_id: None,
+        kind: RunEntryKind::Prompt,
+        text: text.into(),
+        created_at_ms: Some(100 + revision as i64),
+        tool: None,
+    };
+    let run = AgentRun {
+        id: "codex:past-prompts".into(),
+        pane_id: 1,
+        yinz_session_name: "archived-session".into(),
+        host_id: yinz_runtime::host_identity::host_id(),
+        origin_run_id: None,
+        previous_run_id: None,
+        session_id: "past-prompts".into(),
+        kind: "codex".into(),
+        cwd: Some(root.join("cwd").to_string_lossy().into_owned()),
+        host: None,
+        bubblewrap: None,
+        started_at_ms: 100,
+        ended_at_ms: None,
+        outcome: RunOutcome::Active,
+        revision: 3,
+        summarized_revision: 0,
+        summary: None,
+        omitted_entries: 0,
+        entries: vec![
+            prompt(1, "Deploy it\nreport back"),
+            prompt(
+                2,
+                "<task-notification>\n<status>done</status>\n</task-notification>",
+            ),
+            prompt(3, "fix the flaky render test"),
+        ],
+    };
+    data.plugin_data()
+        .apply(
+            store::SHARED,
+            &agent_proto::agents::rows::run_mutations(&run, REV_ABSENT),
+        )
+        .unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\npane_animations false")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let shell = yinz.expect_pty_spawn();
+    shell.output(PROMPT);
+    yinz.wait_until("shell ready", |s| s.contains("$"));
+    assert_eq!(
+        yinz.run_cli_action(CliAction::AgentReport {
+            pane_id: Some(PaneId::Terminal(shell.terminal_id()).to_string()),
+            kind: Some("codex".into()),
+            state: Some("idle".into()),
+            detail: Some("palettepicker".into()),
+            cwd: None,
+            hook_json: false,
+            clear: false,
+            run_id: Some(run.id.clone())
+        }),
+        0
+    );
+    yinz.send_stdin(DO);
+    yinz.send_stdin(b"palettepicker");
+    yinz.wait_until("live agent search", |s| {
+        s.contains("codex") && s.contains("idle")
+    });
+    yinz.send_stdin(b"\r");
+    yinz.wait_until("agent timeline", |s| s.contains("Latest / Refresh"));
+    yinz.send_stdin(b"\t\t"); // Search -> messages -> prompt.
+    yinz.send_stdin(b"draft");
+    yinz.wait_until("typed draft", |s| s.contains("Prompt: [ draft"));
+
+    // The draft seeds the search, and Esc returns to it untouched.
+    yinz.send_stdin(CTRL_R);
+    yinz.wait_until("seeded search finds nothing", |s| {
+        s.contains("Past prompts") && s.contains("> draft") && s.contains("No matching prompts")
+    });
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until("draft restored", |s| s.contains("Prompt: [ draft"));
+
+    yinz.send_stdin(CTRL_R);
+    yinz.wait_until("seeded picker reopened", |s| s.contains("> draft"));
+    yinz.send_stdin(&BACKSPACE.repeat("draft".len()));
+    let listing = yinz.wait_until("every prompt, without machinery", |s| {
+        s.contains("fix the flaky render test") && s.contains("Deploy it report back")
+    });
+    assert!(!listing.contains("task-notification"), "{listing}");
+    let line = |needle: &str| {
+        listing
+            .lines()
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap()
+    };
+    assert!(
+        line("fix the flaky render test") < line("Deploy it report back"),
+        "newest first: {listing}"
+    );
+
+    // Fuzzy, not substring. Accepting keeps the line break and sends nothing.
+    yinz.send_stdin(b"dply");
+    yinz.wait_until("fuzzy results replace the list", |s| {
+        s.contains("Deploy it report back") && !s.contains("fix the flaky render test")
+    });
+    yinz.send_stdin(b"\r");
+    yinz.wait_until("draft replaced", |s| {
+        s.contains("Prompt: [ Deploy it↵report back") && !s.contains("Past prompts")
+    });
+    // Focus stays on the prompt field, ready for editing.
+    yinz.send_stdin(b"!");
+    yinz.wait_until("still editing the prompt", |s| {
+        s.contains("Prompt: [ Deploy it↵report back!")
+    });
+    yinz.quit();
+}
+
 fn palette_query(yinz: &yinz_integration_tests::TestSession, query: &str) {
     yinz.send_stdin(DO);
     // A repeated query must not match the previous opening's results before input is processed.

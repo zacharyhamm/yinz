@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::atomic;
 use yinz_bus::command_palette::{AgentReply, AgentRequest};
 use yinz_bus::command_palette::{
-    HistoryAction, HistoryEvent, HistoryHeader, HistoryReply, HistoryRow,
+    HistoryAction, HistoryEvent, HistoryHeader, HistoryReply, HistoryRow, PromptRecord,
 };
 use yinz_bus::thread_bus::ThreadSenders;
 use yinz_storage::data_access::DataAccess;
@@ -69,6 +69,30 @@ fn run_action(id: &str, from: Option<u64>) -> HistoryAction {
         from,
         query: String::new(),
     }
+}
+
+/// Every distinct prompt in the archive, described for the palette's picker.
+pub(super) fn prompt_library(data: &DataAccess) -> Result<Vec<PromptRecord>, String> {
+    let now_ms = agent_proto::agents::now_ms();
+    Ok(history::prompt_library(&Reader(data))?
+        .into_iter()
+        .map(|prompt| {
+            let mut parts = Vec::with_capacity(3);
+            parts.extend(prompt.agent);
+            parts.extend(
+                prompt
+                    .last_used_ms
+                    .map(|at| agent_proto::agents::short_age(now_ms, at)),
+            );
+            if prompt.uses > 1 {
+                parts.push(format!("{}×", prompt.uses));
+            }
+            PromptRecord {
+                text: prompt.text,
+                description: parts.join(" · "),
+            }
+        })
+        .collect())
 }
 
 pub(super) fn execute(

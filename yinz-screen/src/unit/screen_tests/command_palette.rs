@@ -6816,6 +6816,212 @@ fn agent_info_usage_and_prompt_are_scoped_to_the_selected_agent() {
 }
 
 #[test]
+fn prompt_picker_searches_off_thread_and_fills_the_draft_without_sending() {
+    use std::sync::Arc;
+    use yinz_bus::command_palette::{AgentAction, AgentReply, Instruction, PromptRecord};
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+
+    let mut screen = screen();
+    screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
+        PaneId::Terminal(TerminalId::new(1)),
+        Some(AgentInfo {
+            kind: "codex".into(),
+            state: AgentState::Idle,
+            source: AgentSource::Reported,
+            detail: None,
+            waiting_on: None,
+            wait_needs_a_person: false,
+            cwd: None,
+            session_id: Some("conversation".into()),
+            run_id: Some("run".into()),
+        }),
+    );
+    let (tx, requests) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let next = || loop {
+        let (instruction, _) = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let PluginInstruction::PaletteAgent(request) = instruction
+            && !matches!(request.action, AgentAction::Usage { .. })
+        {
+            break *request;
+        }
+    };
+    let (tx, to_screen) = channels::unbounded();
+    screen.bus.senders.to_screen = Some(SenderWithContext::new(tx));
+    let next_matches = || loop {
+        let (instruction, _) = to_screen.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let ScreenInstruction::CommandPalette(
+            matches @ Instruction::PromptLibraryMatches { .. },
+        ) = instruction
+        {
+            break matches;
+        }
+    };
+    let ctrl_r = |screen: &mut Screen| {
+        assert!(screen.command_palette_handles_input(
+            &Some(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier()),
+            &[],
+            false,
+            CLIENT,
+        ));
+    };
+    fn widget(screen: &Screen) -> &crate::ui::command_palette::CommandPalette {
+        screen.command_palettes.get(&CLIENT).unwrap().widget()
+    }
+    let draft = |screen: &Screen| widget(screen).agent_prompt_text();
+
+    palette_search(&mut screen, "provider:codex");
+    palette_key(&mut screen, BareKey::Enter);
+    let open = next();
+    screen.plugin_palette_instruction(Instruction::AgentReply {
+        client: CLIENT,
+        opening: open.opening,
+        step: open.step,
+        reply: Ok(AgentReply::History(history_run(vec![]))),
+    });
+    for _ in 0..2 {
+        palette_key(&mut screen, BareKey::Tab);
+    }
+    screen.command_palette_handles_input(&None, b"my draft", false, CLIENT);
+    let agent_view = widget(&screen).view;
+
+    // Esc from the picker returns to the untouched draft, even with the list still loading.
+    ctrl_r(&mut screen);
+    let load = next();
+    assert!(matches!(load.action, AgentAction::PromptLibrary));
+    assert_eq!(widget(&screen).query(), "my draft");
+    assert_eq!(load.step, widget(&screen).view);
+    palette_key(&mut screen, BareKey::Esc);
+    assert_eq!(widget(&screen).view, agent_view);
+    assert_eq!(draft(&screen).as_deref(), Some("my draft"));
+    let oversized = "a".repeat(2_600);
+    let prompts: Arc<[PromptRecord]> = ["newest", "fix\nthe build", "fix the tests", &oversized]
+        .map(|text| PromptRecord {
+            text: Arc::from(text),
+            description: "codex · 1h".into(),
+        })
+        .into();
+    // A load finishing after its view closed is ignored.
+    screen.plugin_palette_instruction(Instruction::PromptLibraryLoaded {
+        client: CLIENT,
+        opening: load.opening,
+        view: load.step,
+        prompts: Ok(prompts.clone()),
+    });
+    assert_eq!(widget(&screen).view, agent_view);
+
+    ctrl_r(&mut screen);
+    let load = loop {
+        let request = next();
+        if matches!(request.action, AgentAction::PromptLibrary) {
+            break request;
+        }
+    };
+    for _ in 0.."my draft".len() {
+        palette_key(&mut screen, BareKey::Backspace);
+    }
+    screen.command_palette_handles_input(&None, oversized.as_bytes(), false, CLIENT);
+    screen.plugin_palette_instruction(Instruction::PromptLibraryLoaded {
+        client: CLIENT,
+        opening: load.opening,
+        view: load.step,
+        prompts: Ok(prompts),
+    });
+    // Oversized atoms still deliver a completed generation and leave the query intact.
+    let oversized_matches = next_matches();
+    assert!(matches!(
+        &oversized_matches,
+        Instruction::PromptLibraryMatches { matches, .. } if matches.is_empty()
+    ));
+    screen.plugin_palette_instruction(oversized_matches);
+    assert_eq!(widget(&screen).query(), oversized);
+    assert!(widget(&screen).selected_entry().is_none());
+    palette_key(&mut screen, BareKey::Enter);
+    assert_ne!(widget(&screen).view, agent_view);
+
+    screen.command_palette_handles_input(
+        &Some(KeyWithModifier::new(BareKey::Char('u')).with_ctrl_modifier()),
+        &[],
+        false,
+        CLIENT,
+    );
+    screen.plugin_palette_instruction(next_matches());
+    screen.command_palette_handles_input(&None, b"fix", false, CLIENT);
+    // A normal query after an oversized one can still search and accept a prompt.
+    let first = next_matches();
+    let Instruction::PromptLibraryMatches {
+        opening,
+        view,
+        generation,
+        ref matches,
+        ..
+    } = first
+    else {
+        unreachable!();
+    };
+    assert_eq!(matches, &[1, 2]);
+
+    // A newer query makes the earlier generation's results stale.
+    screen.command_palette_handles_input(&None, b" tests", false, CLIENT);
+    let second = next_matches();
+    screen.plugin_palette_instruction(second);
+    let shown = |screen: &Screen| {
+        widget(screen)
+            .selected_entry()
+            .map(|entry| entry.id.clone())
+    };
+    assert_eq!(shown(&screen).as_deref(), Some("prompt-library:2"));
+    screen.plugin_palette_instruction(first.clone());
+    assert_eq!(shown(&screen).as_deref(), Some("prompt-library:2"));
+
+    // New results start from the top, even with a lower row explicitly selected.
+    let results = Instruction::PromptLibraryMatches {
+        client: CLIENT,
+        opening,
+        view,
+        generation: generation + 1,
+        matches: vec![1, 2],
+    };
+    screen.plugin_palette_instruction(results.clone());
+    assert_eq!(shown(&screen).as_deref(), Some("prompt-library:1"));
+    palette_key(&mut screen, BareKey::Down);
+    assert_eq!(shown(&screen).as_deref(), Some("prompt-library:2"));
+    screen.plugin_palette_instruction(results);
+    assert_eq!(shown(&screen).as_deref(), Some("prompt-library:1"));
+
+    // Rows ranking an older query can't be accepted: Enter waits for the newer results.
+    screen.command_palette_handles_input(&None, b"!", false, CLIENT);
+    let newer = next_matches();
+    palette_key(&mut screen, BareKey::Enter);
+    assert_ne!(widget(&screen).view, agent_view);
+    assert_eq!(draft(&screen), None);
+    screen.plugin_palette_instruction(newer);
+    screen.plugin_palette_instruction(Instruction::PromptLibraryMatches {
+        client: CLIENT,
+        opening,
+        view,
+        generation: generation + 2,
+        matches: vec![1, 2],
+    });
+
+    // Enter fills the draft, line breaks intact, and returns to the prompt without sending.
+    palette_key(&mut screen, BareKey::Enter);
+    assert_eq!(widget(&screen).view, agent_view);
+    assert_eq!(draft(&screen).as_deref(), Some("fix\nthe build"));
+    // Polling restarts for the agent view, and only the next Enter submits.
+    let poll = next();
+    assert!(matches!(poll.action, AgentAction::History(_)), "{poll:?}");
+    palette_key(&mut screen, BareKey::Enter);
+    let submit = loop {
+        let request = next();
+        if matches!(request.action, AgentAction::Prompt { .. }) {
+            break request;
+        }
+    };
+    assert_eq!(submit.values, ["fix\nthe build"]);
+}
+
+#[test]
 fn agent_prompt_retries_keep_identity_and_unsuccessful_submissions_restart_polling() {
     use std::sync::atomic::Ordering;
     use yinz_bus::command_palette::{AgentAction, AgentReply, AgentRequest, Instruction};

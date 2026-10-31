@@ -1529,3 +1529,77 @@ fn palette_prompt_peer_bounds_sending_and_cleanup_when_peer_does_not_read() {
         fs::remove_file(socket).unwrap();
     }
 }
+
+#[test]
+fn palette_prompt_library_replies_with_described_prompts_from_a_real_store() {
+    use agent_proto::agents::{RunEntry, RunEntryKind, RunOutcome};
+    use yinz_bus::screen::ScreenInstruction;
+
+    let (temp, data) = repository();
+    let mut recorded = recorded_run(temp.path());
+    recorded.outcome = RunOutcome::Active;
+    recorded.revision = 3;
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+        - 2 * 60 * 60 * 1000;
+    let prompt = |revision, text: &str, at| RunEntry {
+        tool: None,
+        revision,
+        event_id: None,
+        kind: RunEntryKind::Prompt,
+        text: text.to_owned(),
+        created_at_ms: at,
+    };
+    recorded.entries = vec![
+        prompt(1, "once, long ago", None),
+        prompt(2, "again\nwith a break", Some(at - 1)),
+        prompt(3, "again\nwith a break", Some(at)),
+    ];
+    data.plugin_data()
+        .apply(
+            project_data::store::SHARED,
+            &agent_proto::agents::rows::run_mutations(&recorded, REV_ABSENT),
+        )
+        .unwrap();
+    let (tx, rx) = unbounded();
+    let senders = ThreadSenders {
+        to_screen: Some(SenderWithContext::new(tx)),
+        should_silently_fail: true,
+        ..Default::default()
+    };
+    let mut request = request(temp.path(), AgentAction::PromptLibrary);
+    request.step = 77;
+
+    handle(request, &senders, &data);
+
+    let (instruction, _) = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    let ScreenInstruction::CommandPalette(Instruction::PromptLibraryLoaded {
+        opening: 1,
+        view: 77,
+        prompts,
+        ..
+    }) = instruction
+    else {
+        panic!("expected the prompt library, got {instruction:?}");
+    };
+    let prompts = prompts.unwrap();
+    assert_eq!(
+        prompts
+            .iter()
+            .map(|p| (&*p.text, p.description.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("again\nwith a break", "codex · 2h · 2×"),
+            ("once, long ago", "codex"),
+        ]
+    );
+}
+
+#[test]
+fn palette_prompt_library_is_empty_before_the_archive_is_defined() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = DataAccess::sqlite(temp.path());
+    assert_eq!(history::prompt_library(&data).unwrap(), vec![]);
+}

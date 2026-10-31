@@ -46,6 +46,19 @@ pub enum Instruction {
         step: u64,
         reply: Result<AgentReply, String>,
     },
+    PromptLibraryLoaded {
+        client: ClientId,
+        opening: u64,
+        view: u64,
+        prompts: Result<Arc<[PromptRecord]>, String>,
+    },
+    PromptLibraryMatches {
+        client: ClientId,
+        opening: u64,
+        view: u64,
+        generation: u64,
+        matches: Vec<usize>,
+    },
     Command {
         owner: Owner,
         client: ClientId,
@@ -93,6 +106,13 @@ pub struct AgentLabelSource {
     pub cwd: Option<String>,
 }
 
+/// One distinct prompt offered for reuse, newest use first in its list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PromptRecord {
+    pub text: Arc<str>,
+    pub description: String,
+}
+
 /// Native palette requests never cross the plugin wire boundary.
 #[derive(Clone, Debug)]
 pub struct AgentRequest {
@@ -111,6 +131,7 @@ pub enum AgentAction {
     Usage {
         provider: String,
     },
+    PromptLibrary,
     Prompt {
         pane_id: yinz_types::pane_id::PaneId,
         session_id: Option<String>,

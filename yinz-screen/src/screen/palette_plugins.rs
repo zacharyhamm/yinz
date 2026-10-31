@@ -599,6 +599,25 @@ impl Screen {
                 self.agent_palette_reply(client, opening, step, reply);
                 true
             },
+            Instruction::PromptLibraryLoaded {
+                client,
+                opening,
+                view,
+                prompts,
+            } => {
+                self.prompt_library_loaded(client, opening, view, prompts);
+                true
+            },
+            Instruction::PromptLibraryMatches {
+                client,
+                opening,
+                view,
+                generation,
+                matches,
+            } => {
+                self.prompt_library_matches(client, opening, view, generation, matches);
+                true
+            },
             Instruction::UsageReply {
                 client,
                 opening,

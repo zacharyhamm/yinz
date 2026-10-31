@@ -31,6 +31,56 @@ fn names(sections: &[Section]) -> Vec<&str> {
 
 // -- the scanner --------------------------------------------------------
 
+#[test]
+fn fenced_code_keeps_both_known_and_unknown_tags_as_prose() {
+    for (opening, closing) in [
+        ("```html", "```"),
+        ("~~~xml", "~~~~"),
+        ("   ````html", "  ````` \t"),
+        ("  ~~~~xml", "   ~~~~"),
+    ] {
+        let text = format!(
+            "example:\n{opening}\n<my-element>\n  component code\n</my-element>\n<system-reminder>literal example</system-reminder>\n{closing}\nkeep this too"
+        );
+        let prompt = parse(&text);
+        assert_eq!(prompt.prose, text);
+        assert!(prompt.envelopes.is_empty(), "{opening}");
+    }
+}
+
+#[test]
+fn only_a_matching_fence_without_trailing_text_closes_code() {
+    let text = "````html\n```\n<my-element>shorter fence</my-element>\n~~~~\n<my-element>different marker</my-element>\n```` trailing text\n<system-reminder>still code</system-reminder>\n````\n<system-reminder>machinery</system-reminder>";
+    let prompt = parse(text);
+    assert_eq!(
+        prompt.prose,
+        text.strip_suffix("\n<system-reminder>machinery</system-reminder>")
+            .unwrap()
+    );
+    assert_eq!(prompt.envelopes.len(), 1);
+    assert_eq!(prompt.envelopes[0].body, "machinery");
+}
+
+#[test]
+fn an_unclosed_fence_protects_the_rest_of_the_prompt() {
+    for opening in ["```html", "~~~xml"] {
+        let code = format!("{opening}\n<my-element>\n<system-reminder>code</system-reminder>");
+        let text = format!("<system-reminder>machinery</system-reminder>\n\n{code}");
+        let prompt = parse(&text);
+        assert_eq!(prompt.prose, code);
+        assert_eq!(prompt.envelopes.len(), 1);
+        assert_eq!(prompt.envelopes[0].body, "machinery");
+    }
+}
+
+#[test]
+fn a_backtick_in_the_info_string_does_not_open_a_fence() {
+    let text = "```invalid`info\n<system-reminder>machinery</system-reminder>";
+    let prompt = parse(text);
+    assert_eq!(prompt.prose, "```invalid`info");
+    assert_eq!(prompt.envelopes.len(), 1);
+}
+
 /// The common case, and the one that must cost nothing: a prompt with no angle bracket in
 /// it is borrowed whole and never scanned.
 #[test]

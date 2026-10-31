@@ -26,7 +26,7 @@ expression: text
 │                                                                    │
 │                                                                    │
 │                                                                    │
-│ Prompt: [ Type a message…                                        ] │
+│ Prompt: [ Type a message… (Ctrl r: past prompts)                 ] │
 │  Focus    Latest / Refresh    Details                        │
 │ Tab Next · j/k Move · Enter Read · Esc Back                        │
 ╰────────────────────────────────────────────────────────────────────╯

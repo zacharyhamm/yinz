@@ -693,10 +693,13 @@ fn run_persistence_comparison_preserves_writes_and_requires_current_guards() {
     );
     let legacy = vec![run("one", json!(["payload"])), entries.clone()];
     let current = vec![
-        run("one", columns.clone()),
+        run("one", columns),
         entries,
-        run("one", columns.clone()),
-        run("two", columns),
+        fetch(
+            "agent_run",
+            json!({"In":["uid",[{"Text":"one"},{"Text":"two"}]]}),
+            json!(["uid", "rev"]),
+        ),
     ];
     assert_eq!(
         normalize_run_persistence(current, true),

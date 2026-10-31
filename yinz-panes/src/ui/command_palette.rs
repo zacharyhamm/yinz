@@ -10,6 +10,7 @@ mod agent;
 mod live_agent;
 #[path = "command_palette_quota.rs"]
 mod quota;
+pub use agent::PROMPT_LIBRARY_ACTION;
 pub use live_agent::AgentPresentation;
 pub use quota::QuotaImage;
 
@@ -401,6 +402,16 @@ impl CommandPalette {
     pub fn agent_following(&self) -> bool {
         self.agent.as_ref().is_some_and(|a| a.borrow().following)
     }
+    pub fn agent_prompt_text(&self) -> Option<String> {
+        self.agent
+            .as_ref()
+            .and_then(|agent| agent.borrow().prompt_text().map(str::to_owned))
+    }
+    pub fn set_agent_prompt(&mut self, text: &str) {
+        if let Some(agent) = &mut self.agent {
+            agent.get_mut().set_prompt(text);
+        }
+    }
     pub fn agent_prompt_sent(&mut self) -> bool {
         if let Some(agent) = &mut self.agent {
             agent.get_mut().prompt_sent();
@@ -514,6 +525,13 @@ impl CommandPalette {
         }
         self.sections = sections;
         self.rebuild_entries();
+    }
+
+    /// Show freshly ranked results from the top, whatever row the last ranking had selected.
+    pub fn set_ranked_section(&mut self, section: PluginSection) {
+        self.selection_explicit = false;
+        self.selected = 0;
+        self.set_sections(vec![section]);
     }
 
     pub fn set_section_status(&mut self, status: Option<String>) {

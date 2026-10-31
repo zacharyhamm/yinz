@@ -1867,3 +1867,78 @@ fn mouse_selection_survives_background_history_updates() {
         );
     }
 }
+
+fn ctrl_r(palette: &mut CommandPalette) -> Outcome {
+    palette.handle_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier())
+}
+
+#[test]
+fn ctrl_r_opens_past_prompts_only_from_an_available_focused_prompt() {
+    let mut palette = controls_palette(true);
+    assert_eq!(ctrl_r(&mut palette), Outcome::None, "search focus");
+    press(&mut palette, BareKey::Tab);
+    assert_eq!(ctrl_r(&mut palette), Outcome::None, "messages focus");
+    press(&mut palette, BareKey::Tab);
+    assert_eq!(focus(&palette), Focus::Prompt);
+    assert_eq!(
+        ctrl_r(&mut palette),
+        Outcome::Activate(PROMPT_LIBRARY_ACTION.into())
+    );
+    press(&mut palette, BareKey::Tab);
+    assert_eq!(ctrl_r(&mut palette), Outcome::None, "action focus");
+
+    let mut unavailable = controls_palette(false);
+    unavailable.agent.as_mut().unwrap().get_mut().focus = Focus::Prompt;
+    assert_eq!(ctrl_r(&mut unavailable), Outcome::None);
+    assert_eq!(unavailable.agent_prompt_text(), None);
+
+    // Only Ctrl r: the plain letter is still typed into the draft.
+    let mut typing = controls_palette(true);
+    press(&mut typing, BareKey::Tab);
+    press(&mut typing, BareKey::Tab);
+    assert_eq!(press(&mut typing, BareKey::Char('r')), Outcome::None);
+    assert_eq!(typing.agent_prompt_text().as_deref(), Some("r"));
+}
+
+#[test]
+fn a_recalled_prompt_drops_rejected_controls_and_undo_restores_the_draft() {
+    let mut palette = controls_palette(true);
+    press(&mut palette, BareKey::Tab);
+    press(&mut palette, BareKey::Tab);
+    palette.insert_text("old draft");
+    palette.set_agent_prompt("one\r\ntwo\tthree\x1b");
+    assert_eq!(
+        palette.agent_prompt_text().as_deref(),
+        Some("one\ntwo\tthree")
+    );
+
+    let undo = KeyWithModifier::new(BareKey::Char('z')).with_ctrl_modifier();
+    palette.handle_key(undo.clone());
+    palette.handle_key(undo);
+    assert_eq!(palette.agent_prompt_text().as_deref(), Some("old draft"));
+}
+
+#[test]
+fn a_recalled_prompt_keeps_line_breaks_and_shows_them_as_one_cell() {
+    let mut palette = controls_palette(true);
+    press(&mut palette, BareKey::Tab);
+    press(&mut palette, BareKey::Tab);
+    palette.insert_text("old draft");
+    palette.set_agent_prompt("one\ntwo");
+    assert_eq!(palette.agent_prompt_text().as_deref(), Some("one\ntwo"));
+
+    let view = palette.agent.as_ref().unwrap().borrow();
+    let (line, cursor) = input_line("Prompt", &view.prompt, "", 40);
+    assert!(line.text.starts_with("Prompt: [ one↵two"), "{}", line.text);
+    assert_eq!(cursor, Some("Prompt: [ one↵two".width()));
+    drop(view);
+
+    press(&mut palette, BareKey::Char('!'));
+    assert_eq!(
+        press(&mut palette, BareKey::Enter),
+        Outcome::Submit {
+            id: "history-prompt".into(),
+            values: vec!["one\ntwo!".into()],
+        }
+    );
+}

@@ -91,6 +91,20 @@ pub(crate) fn handle(mut request: AgentRequest, senders: &ThreadSenders, data: &
             .non_fatal();
         return;
     }
+    if matches!(request.action, AgentAction::PromptLibrary) {
+        senders
+            .send_to_screen(ScreenInstruction::CommandPalette(
+                Instruction::PromptLibraryLoaded {
+                    client: request.client,
+                    opening: request.opening,
+                    view: request.step,
+                    prompts: history::prompt_library(data).map(Into::into),
+                },
+            ))
+            .context("replying to palette prompt library query")
+            .non_fatal();
+        return;
+    }
     // A newly opened shell can precede the first cwd broadcast. Query the captured
     // pane, never whichever pane happens to be focused when this worker runs.
     if request.source.cwd.is_none()
@@ -227,7 +241,9 @@ fn execute(
     };
     let choices = |title: String, choices| Ok(AgentReply::Choices { title, choices });
     match &request.action {
-        History(_) | Prompt { .. } | Usage { .. } => unreachable!("handled above"),
+        History(_) | Prompt { .. } | Usage { .. } | PromptLibrary => {
+            unreachable!("handled above")
+        },
         NewProject { kind } => {
             if request.values.is_empty() {
                 return Ok(AgentReply::Form {
