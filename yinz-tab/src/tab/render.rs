@@ -229,6 +229,12 @@ impl Tab {
     pub fn prepare_full_render_for_client(&mut self, client_id: ClientId) {
         self.tiled_panes.invalidate_boundaries(client_id);
         self.tiled_panes.invalidate_frames(client_id);
+        // Hidden stack members still draw headers, but are absent from the visible pane pass.
+        for (pane_id, suppressed) in &mut self.suppressed_panes {
+            if self.stack_list_of_member.contains_key(pane_id) {
+                suppressed.pane.invalidate_frame(client_id);
+            }
+        }
         let display = *self.display_area.borrow();
         self.pending_render_damage.push(CellRect {
             x: 0,

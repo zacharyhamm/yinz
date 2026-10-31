@@ -991,6 +991,9 @@ fn watcher_replays_display_clear_created_during_stack_list_rendering() {
     .unwrap();
     tab.handle_pty_bytes(TerminalId::new(2), b"stack-content".to_vec())
         .unwrap();
+    tab.get_pane_with_id_mut(collapsed)
+        .unwrap()
+        .set_title("collapsed-caption".into());
     paced.screen.add_watcher_client(OTHER_CLIENT).unwrap();
     paced.screen.set_watcher_size(OTHER_CLIENT, SIZE);
     paced.screen.set_followed_client(CLIENT).unwrap();
@@ -1017,6 +1020,20 @@ fn watcher_replays_display_clear_created_during_stack_list_rendering() {
         let frame = &frames[&client];
         assert!(frame.contains("\x1b[2J"), "{client}: {frame:?}");
         assert!(frame.contains("stack-content"), "{client}: {frame:?}");
+        assert!(frame.contains("collapsed-caption"), "{client}: {frame:?}");
+    }
+
+    // Once the stack headers are cached, resizing a watcher clears its display again.
+    for cols in [SIZE.cols - 1, SIZE.cols] {
+        paced
+            .screen
+            .set_watcher_size(OTHER_CLIENT, Size { cols, ..SIZE });
+        paced_render(&mut paced.screen);
+        let frames = rendered_by_client(&paced.to_server);
+        let frame = &frames[&OTHER_CLIENT];
+        assert!(frame.contains("\x1b[2J"), "{frame:?}");
+        assert!(frame.contains("stack-content"), "{frame:?}");
+        assert!(frame.contains("collapsed-caption"), "{frame:?}");
     }
 }
 

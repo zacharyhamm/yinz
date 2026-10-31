@@ -181,6 +181,124 @@ fn floating_stack_headers_survive_unchanged_frame_repaints() {
     }
 }
 
+#[test]
+fn full_client_repaints_restore_cached_stack_headers_without_invalidating_other_clients() {
+    let size = Size {
+        cols: 120,
+        rows: 30,
+    };
+    let other = ClientId::new(2);
+    for floating in [false, true] {
+        let mut tab = stack_tab(size, floating, PaneFrameStyle::Full);
+        tab.connected_clients_in_app.borrow_mut().insert(other);
+        tab.add_client(other, None).unwrap();
+        let list = tab.stack_lists.values().next().unwrap().clone();
+        for (rank, member) in list.members.iter().enumerate() {
+            tab.get_pane_with_id_mut(*member)
+                .unwrap()
+                .set_title(format!("stack-caption-{rank}"));
+        }
+        // Warm both clients' caches before clearing only one client's display.
+        let mut output = Output::default();
+        tab.render(&mut output, None).unwrap();
+        tab.prepare_full_render_for_client(CLIENT);
+
+        let mut output = Output::default();
+        tab.render(&mut output, Some(other)).unwrap();
+        let serialized = output.serialize().unwrap();
+        for (rank, member) in list.members.iter().enumerate() {
+            if *member != list.visible {
+                assert!(!serialized[&other].contains(&format!("stack-caption-{rank}")));
+            }
+        }
+
+        let mut output = Output::default();
+        tab.render(&mut output, Some(CLIENT)).unwrap();
+        let serialized = output.serialize().unwrap();
+        assert!(!serialized.contains_key(&other));
+        // A fresh host grid models a display clear: cached text cannot hide missing output.
+        let mut grid = host_grid(size);
+        vte::Parser::new().advance(&mut grid, serialized[&CLIENT].as_bytes());
+        let text = format!("{grid:?}");
+        for rank in 0..list.members.len() {
+            assert!(text.contains(&format!("stack-caption-{rank}")), "{text}");
+        }
+    }
+}
+
+#[test]
+fn targeted_stack_headers_preserve_all_clients_focus_and_emphasis() {
+    let size = Size {
+        cols: 160,
+        rows: 40,
+    };
+    let other = ClientId::new(2);
+    for floating in [false, true] {
+        let mut tab = stack_tab(size, floating, PaneFrameStyle::Full);
+        tab.update_session_is_mirrored(false);
+        tab.connected_clients_in_app.borrow_mut().insert(other);
+        tab.add_client(other, None).unwrap();
+        let visible = tab.stack_lists.values().next().unwrap().visible;
+        tab.focus_pane_with_id(visible, false, false, other)
+            .unwrap();
+        let mut focus_targets = vec![visible];
+        // Floating panes share focus; tiled panes also allow only the other client on the stack.
+        if !floating {
+            let neighbor = PaneId::Terminal(TerminalId::new(4));
+            tab.new_pane(
+                neighbor,
+                None,
+                None,
+                false,
+                true,
+                NewPanePlacement::Tiled {
+                    direction: Some(Direction::Down),
+                    borderless: None,
+                },
+                Some(CLIENT),
+                None,
+            )
+            .unwrap();
+            focus_targets.push(neighbor);
+        }
+        for target in focus_targets {
+            let shared_focus = target == visible;
+            tab.focus_pane_with_id(target, false, false, CLIENT)
+                .unwrap();
+            tab.set_force_render();
+            let mut output = Output::default();
+            tab.render(&mut output, None).unwrap();
+            let serialized = output.serialize().unwrap();
+            let mut regular_grid = host_grid(size);
+            vte::Parser::new().advance(&mut regular_grid, serialized[&CLIENT].as_bytes());
+            if shared_focus {
+                assert!(format!("{regular_grid:?}").contains("MY FOCUS AND:"));
+            } else {
+                assert!(format!("{regular_grid:?}").contains("FOCUSED USER:"));
+            }
+
+            tab.prepare_full_render_for_client(CLIENT);
+            let mut output = Output::default();
+            tab.render(&mut output, Some(CLIENT)).unwrap();
+            let serialized = output.serialize().unwrap();
+            assert!(!serialized.contains_key(&other));
+            let mut targeted_grid = host_grid(size);
+            vte::Parser::new().advance(&mut targeted_grid, serialized[&CLIENT].as_bytes());
+            let list = tab.stack_lists.values().next().unwrap();
+            let rect = tab.get_pane_with_id(visible).unwrap().render_geom();
+            for y in rect.y..rect.y + list.members.len() {
+                for x in rect.x..rect.x + rect.cols.as_usize() {
+                    assert_eq!(
+                        targeted_grid.get_character_at(x, y),
+                        regular_grid.get_character_at(x, y),
+                        "floating={floating}, shared_focus={shared_focus}, ({x}, {y})"
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn stack_tab(size: Size, floating: bool, frames: PaneFrameStyle) -> Tab {
     let mut tab = create_new_tab_with_stacked_pane_list(size, ModeInfo::default(), true, None);
     tab.set_pane_frames(frames);

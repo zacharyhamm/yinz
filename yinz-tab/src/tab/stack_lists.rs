@@ -738,15 +738,20 @@ impl Tab {
         let session_is_mirrored = self.stack_list_session_is_mirrored;
         let current_pane_group: HashMap<ClientId, Vec<PaneId>> =
             { self.current_pane_group.borrow().clone_inner() };
-        let active_panes: HashMap<ClientId, PaneId> = connected_clients
+        // Limit output recipients above, but retain everyone's focus in the header state.
+        let active_panes: HashMap<ClientId, PaneId> = self
+            .connected_clients
+            .borrow()
             .iter()
+            .copied()
+            .chain(client_id_override)
             .filter_map(|c| {
                 let pane = if floating {
-                    self.floating_panes.active_pane_id(*c)
+                    self.floating_panes.active_pane_id(c)
                 } else {
-                    self.tiled_panes.get_active_pane_id(*c)
+                    self.tiled_panes.get_active_pane_id(c)
                 };
-                pane.map(|p| (*c, p))
+                pane.map(|p| (c, p))
             })
             .collect();
         let client_modes: Vec<(ClientId, InputMode)> = {
