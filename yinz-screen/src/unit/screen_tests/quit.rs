@@ -2323,6 +2323,42 @@ fn navigation_with_no_floating_room_preserves_hidden_terminal_for_retry() {
     );
 }
 
+/// An attach naming a parked tab has no recorded size while it registers, but its navigation still
+/// has to judge the room against that size: only a visit changes an unviewed tab's geometry.
+#[test]
+fn attaching_to_a_parked_tab_judges_room_at_the_attaching_clients_size() {
+    let parked = TabId::new(1);
+    let other_tab = TabId::new(2);
+    let viewer = ClientId::new(1);
+    let attaching = ClientId::new(2);
+    let hidden = PaneId::Terminal(TerminalId::new(1));
+    let (mut screen, _, _, _) =
+        screen_with_plugin_senders_and_clients(&[parked, other_tab], &[viewer]);
+    screen.session_is_mirrored = false;
+    let tab = screen.tabs.get_mut(&parked).unwrap();
+    tab.suppress_pane(hidden, None);
+    tab.resize_whole_tab(Size { cols: 1, rows: 1 }).unwrap();
+    screen.settle_tabs().unwrap();
+    assert_eq!(screen.active_tab_ids[&viewer], other_tab);
+
+    screen
+        .attach_client(
+            attaching,
+            Size { cols: 80, rows: 24 },
+            Some(yinz_types::internal_ids::TabNumber::new(1)),
+            None,
+            &mut HashMap::new(),
+            &mut crate::screen::thread_main::PendingEvents::default(),
+        )
+        .unwrap();
+
+    assert_eq!(screen.active_tab_ids[&attaching], parked);
+    assert_eq!(
+        screen.tabs[&parked].get_active_pane_id(attaching),
+        Some(hidden)
+    );
+}
+
 #[test]
 fn navigating_to_the_current_tab_recovers_its_hidden_terminal() {
     let source = TabId::new(1);

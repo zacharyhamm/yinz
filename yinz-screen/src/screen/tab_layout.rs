@@ -494,7 +494,7 @@ impl Screen {
         for tab_id in self.tabs.keys().copied().collect::<Vec<_>>() {
             result = result.and(self.reflow_tab(tab_id));
         }
-        result?;
+        result.context("failed to reflow every tab")?;
         self.remember_surface_size();
         Ok(())
     }
@@ -542,7 +542,8 @@ impl Screen {
         {
             // A failed resize finishes the layout but still has pane sizes left to send.
             self.tabs_needing_reflow.insert(tab_id);
-            tab.resize_whole_tab_to(tab_size)?;
+            tab.resize_whole_tab_to(tab_size)
+                .with_context(|| format!("failed to lay out tab {tab_id} at {tab_size:?}"))?;
             self.tabs_needing_reflow.remove(&tab_id);
             tab.set_force_render();
         }

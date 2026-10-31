@@ -2123,6 +2123,7 @@ impl Screen {
             }
 
             let client_departed = self.departed_before_layout.contains(&client_id);
+            let source_tab = self.active_tab_ids.get(&client_id).copied();
             let mut transition = (should_change_client_focus && !client_departed)
                 .then(|| self.begin_tab_transition(client_id, tab_id));
 
@@ -2171,9 +2172,12 @@ impl Screen {
                 // the tab keeps the size it was created at here; `recompute_tab_size` below
                 // reflows it against its viewers
                 let tab_size = tab.size;
-                tab.resize_whole_tab(tab_size)
-                    .with_context(err_context)
-                    .non_fatal();
+                let resized = tab.resize_whole_tab(tab_size).with_context(err_context);
+                if resized.is_err() {
+                    // The size will not change, so nothing else would resend what failed.
+                    self.tabs_needing_reflow.insert(tab_id);
+                }
+                resized.non_fatal();
                 tab.set_force_render();
             }
             if client_departed && let Some(tab) = self.tabs.get_mut(&tab_id) {
@@ -2198,6 +2202,13 @@ impl Screen {
             self.recompute_tab_size(tab_id)
                 .with_context(err_context)
                 .non_fatal();
+            // Its remaining viewers no longer share the opener's bounds, and the report below is
+            // the only one this reflow gets.
+            if let Some(source) = source_tab.filter(|_| transition.is_some()) {
+                self.recompute_tab_size(source)
+                    .with_context(err_context)
+                    .non_fatal();
+            }
 
             for (affected_client_id, old_pane_id) in
                 transition.into_iter().flat_map(|t| t.old_focus)

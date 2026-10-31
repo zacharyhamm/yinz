@@ -228,10 +228,9 @@ impl Screen {
         // on the way to the tab it named must not lay that tab out at its own size and back, so
         // its size counts from its destination.
         let passing_through = pane_id_to_focus.is_some() || tab_number_to_focus.is_some();
-        if passing_through {
-            // A resize can overtake this instruction and record a size for the unattached client.
-            self.client_sizes.remove(&client_id);
-        }
+        // A resize can overtake this instruction and record a size for the unattached client. The
+        // client sent it after the size this instruction carries, so it is the current one.
+        let client_size = self.client_sizes.remove(&client_id).unwrap_or(client_size);
         let size_at_registration = (!passing_through).then_some(client_size);
         let retired_source =
             match self.register_client_transaction(client_id, departed, size_at_registration, true)
@@ -248,26 +247,30 @@ impl Screen {
         if let Some(source) = retired_source {
             pending.remove_client_plugin_output(source);
         }
-        let focused = if let Some(pane_id) = pane_id_to_focus {
-            log::info!(
-                "attach trace: screen client_id={client_id} restoring pane focus {pane_id:?}"
-            );
-            self.focus_pane_with_id(pane_id, true, false, client_id)
-        } else if let Some(tab_number_to_focus) = tab_number_to_focus {
-            log::info!(
-            "attach trace: screen client_id={client_id} restoring tab focus number={tab_number_to_focus}"
-        );
-            self.go_to_tab(tab_number_to_focus, client_id)
+        // Recorded before moving, with nothing reflowing the tab it is leaving in between:
+        // navigation judges parked work at the room this client will really have. Moving and
+        // sizing reject the client the same way rather than taking the session down.
+        let sized = if passing_through {
+            self.set_client_size(client_id, client_size)
         } else {
             Ok(())
         };
-        // Switching reflows the tabs it touches, so it can fail for the same reasons sizing can,
-        // and rejects the client the same way rather than taking the session down.
-        if passing_through
-            && let Err(error) = focused
-                .and_then(|()| self.set_client_size(client_id, client_size))
-                .and_then(|()| self.reflow_all_tabs())
-        {
+        let focused = sized.and_then(|()| {
+            if let Some(pane_id) = pane_id_to_focus {
+                log::info!(
+                    "attach trace: screen client_id={client_id} restoring pane focus {pane_id:?}"
+                );
+                self.focus_pane_with_id(pane_id, true, false, client_id)
+            } else if let Some(tab_number_to_focus) = tab_number_to_focus {
+                log::info!(
+                    "attach trace: screen client_id={client_id} restoring tab focus number={tab_number_to_focus}"
+                );
+                self.go_to_tab(tab_number_to_focus, client_id)
+            } else {
+                Ok(())
+            }
+        });
+        if passing_through && let Err(error) = focused.and_then(|()| self.reflow_all_tabs()) {
             Err::<(), _>(error)
                 .context("placing the attaching client at its destination")
                 .non_fatal();

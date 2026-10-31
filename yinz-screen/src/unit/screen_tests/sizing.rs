@@ -842,6 +842,63 @@ fn attaching_with_a_focus_target_leaves_other_tabs_alone() {
     }
 }
 
+/// The resize was sent after the size the attach carries, so the attach must not undo it.
+#[test]
+fn a_resize_overtaking_an_attach_outlives_the_size_the_attach_carries() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let carried = Size { cols: 80, rows: 24 };
+    let current = Size {
+        cols: 100,
+        rows: 30,
+    };
+    let attaching = ClientId::new(2);
+    for tab_to_focus in [None, Some(TabNumber::new(1))] {
+        let mut screen = create_non_mirrored_screen(large);
+        new_tab(&mut screen, 1, TabId::new(0));
+        screen.set_client_size(attaching, current).expect("TEST");
+
+        screen
+            .attach_client(
+                attaching,
+                carried,
+                tab_to_focus,
+                None,
+                &mut HashMap::new(),
+                &mut crate::screen::thread_main::PendingEvents::default(),
+            )
+            .expect("TEST");
+
+        assert_eq!(screen.client_sizes[&attaching], current);
+        assert_eq!(screen.tabs[&TabId::new(0)].size, current);
+    }
+}
+
+/// The opener's departure frees its remaining viewers before the state report that follows it, not
+/// just on the next frame, which reports nothing.
+#[test]
+fn opening_a_tab_reflows_the_tab_its_opener_left() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let mut screen = create_non_mirrored_screen(small);
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.add_client(ClientId::new(2)).unwrap();
+    screen.set_client_size(ClientId::new(2), large).unwrap();
+    screen.resize_to_clients().expect("TEST");
+    assert_eq!(screen.tabs[&TabId::new(0)].size, small);
+
+    new_tab(&mut screen, 2, TabId::new(1));
+
+    assert_eq!(screen.active_tab_ids[&ClientId::new(1)], TabId::new(1));
+    assert_eq!(screen.tabs[&TabId::new(0)].size, large);
+    assert_eq!(screen.tabs[&TabId::new(1)].size, small);
+}
+
 #[test]
 fn break_pane_to_new_tab_recomputes_source_and_destination() {
     let initial_size = Size {
@@ -1381,6 +1438,86 @@ fn incomplete_reflow_retries_at_the_same_display_size() {
     assert!(screen.reflow_all_tabs().is_err());
     screen.close_tab_by_id(tab_id).unwrap();
     assert!(!screen.tabs_needing_reflow.contains(&tab_id));
+}
+
+/// Keeps a tab's PTY resizes failing while everything else it sends still gets through.
+fn fail_pty_resizes(screen: &mut Screen, tab_id: TabId) -> impl Sized + use<> {
+    let (pty, pty_receiver) = channels::unbounded();
+    let (plugin, plugin_receiver) = channels::unbounded();
+    let (background, background_receiver) = channels::unbounded();
+    let (server, server_receiver) = channels::unbounded();
+    let tab = screen.tabs.get_mut(&tab_id).unwrap();
+    tab.senders.should_silently_fail = false;
+    tab.senders.to_pty_writer = None;
+    tab.senders.to_pty = Some(SenderWithContext::new(pty));
+    tab.senders.to_plugin = Some(SenderWithContext::new(plugin));
+    tab.senders.to_background_jobs = Some(SenderWithContext::new(background));
+    tab.senders.to_server = Some(SenderWithContext::new(server));
+    (
+        pty_receiver,
+        plugin_receiver,
+        background_receiver,
+        server_receiver,
+    )
+}
+
+/// The switch has already moved the client, so the tab it left failing to grow for its remaining
+/// viewer must neither undo the arrival's sizing nor reach the screen thread as a fatal error.
+#[test]
+fn a_tab_failing_to_reflow_does_not_abandon_a_switch_away_from_it() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let leaving = ClientId::new(1);
+    let source = TabId::new(1);
+    let destination = TabId::new(0);
+    let mut screen = create_non_mirrored_screen(small);
+    new_tab(&mut screen, 1, destination);
+    new_tab(&mut screen, 2, source);
+    // Last laid out for a larger viewer, so arriving has to shrink it.
+    screen
+        .tabs
+        .get_mut(&destination)
+        .unwrap()
+        .resize_whole_tab(large)
+        .unwrap();
+    screen.add_client(ClientId::new(2)).unwrap();
+    screen.set_client_size(ClientId::new(2), large).unwrap();
+    screen.resize_to_clients().expect("TEST");
+    let _receivers = fail_pty_resizes(&mut screen, source);
+
+    screen
+        .switch_active_tab(screen.tabs[&destination].position, None, true, leaving)
+        .expect("a failed reflow retries on the next frame");
+
+    assert_eq!(screen.active_tab_ids[&leaving], destination);
+    assert_eq!(screen.tabs[&destination].size, small);
+    assert!(screen.tabs_needing_reflow.contains(&source));
+}
+
+/// Reports the failure to the caller, but still schedules the frame that retries it.
+#[test]
+fn an_incomplete_reflow_still_schedules_the_frame_that_retries_it() {
+    let tab_id = TabId::new(0);
+    let mut screen = create_non_mirrored_screen(Size {
+        cols: 160,
+        rows: 50,
+    });
+    new_tab(&mut screen, 1, tab_id);
+    let (background, background_receiver) = channels::unbounded();
+    screen.bus.senders.to_background_jobs = Some(SenderWithContext::new(background));
+    let _receivers = fail_pty_resizes(&mut screen, tab_id);
+    screen
+        .set_client_size(ClientId::new(1), Size { cols: 80, rows: 24 })
+        .unwrap();
+
+    assert!(screen.resize_to_clients().is_err());
+
+    assert!(background_receiver
+        .try_iter()
+        .any(|(job, _)| matches!(job, BackgroundJob::RenderToClients)));
 }
 
 fn assert_tab_geometry(screen: &Screen, tab_id: TabId, size: Size) {

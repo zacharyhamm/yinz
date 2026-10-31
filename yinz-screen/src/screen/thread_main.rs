@@ -1798,8 +1798,12 @@ pub fn screen_thread_main(
                     if screen.tabs.is_empty() {
                         break 'instruction;
                     }
-                    // Reflow each tab against its viewers, then report and render.
-                    screen.resize_to_clients()?;
+                    // Reflow each tab against its viewers, then report and render. An incomplete
+                    // reflow retries on that frame, so it must not take the session down.
+                    screen
+                        .resize_to_clients()
+                        .context("failed to resize tabs for a client")
+                        .non_fatal();
                     if screen.size_of_tab_of_client(client_id) == previous_tab_size {
                         // Another viewer can pin this tab's size, so its layout does not change,
                         // but this client's terminal did, and it needs the

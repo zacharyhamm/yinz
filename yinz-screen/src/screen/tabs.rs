@@ -813,10 +813,15 @@ impl Screen {
                             .send_to_background_jobs(BackgroundJob::StopFlashTabBell(tab_id));
                     }
 
+                    // Switching resizes both tabs now. An incomplete reflow retries on the frame
+                    // scheduled below, so it must neither strand the other tab nor abandon a
+                    // switch that has already moved the clients.
                     self.recompute_tab_size(current_tab_index)
-                        .with_context(err_context)?;
+                        .with_context(err_context)
+                        .non_fatal();
                     self.recompute_tab_size(new_tab_index)
-                        .with_context(err_context)?;
+                        .with_context(err_context)
+                        .non_fatal();
 
                     self.log_and_report_session_state()
                         .with_context(err_context)?;

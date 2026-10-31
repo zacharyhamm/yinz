@@ -62,10 +62,12 @@ impl Screen {
 
     pub fn resize_to_clients(&mut self) -> Result<()> {
         let err_context = || "failed to resize to client sizes".to_string();
-        self.reflow_all_tabs().with_context(err_context)?;
+        // Still report and render: the frame this schedules is what retries an incomplete reflow.
+        let reflowed = self.reflow_all_tabs().with_context(err_context);
         self.log_and_report_session_state()
             .with_context(err_context)?;
-        self.render().with_context(err_context)
+        self.render().with_context(err_context)?;
+        reflowed
     }
 
     pub(super) fn size_for_client(&self, client_id: Option<ClientId>) -> Size {
