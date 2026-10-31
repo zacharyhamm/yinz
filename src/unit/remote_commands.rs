@@ -200,6 +200,11 @@ fn only_a_rejected_helper_command_reports_a_version_mismatch() {
         .contains("Yinz compatibility mismatch"));
     assert!(version_rejection("host", 0, rejected).is_none());
     assert!(version_rejection("host", 1, b"plugin: unexpected argument 'x'\n").is_none());
+    let compared = b"Error: check remote CLI request: Yinz compatibility mismatch: this machine has Yinz 9; peer has Yinz 1.\n";
+    assert!(version_rejection("host", 1, compared)
+        .unwrap()
+        .to_string()
+        .starts_with("host reported: "));
 }
 
 #[test]

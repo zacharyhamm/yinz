@@ -547,7 +547,7 @@ pub(crate) fn read_local_config(opts: &CliArgs) -> Result<yinz_config::config::C
 
 /// The local configuration whose environment every SSH invocation for this attach uses.
 pub(crate) fn load_local_config(opts: &CliArgs) -> Result<(yinz_config::config::Config, Options)> {
-    let mut config = read_local_config(opts)?;
+    let mut config = read_local_config(opts).context("read local configuration")?;
     let options = yinz_config::config::apply_themes(&mut config, None, opts.config_dir.clone())
         .map_err(|e| anyhow!("{e}"))
         .context("load local terminal theme")?;

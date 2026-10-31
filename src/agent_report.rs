@@ -13,9 +13,18 @@ use {
     yinz_types::input::actions::Action,
 };
 
+/// Bounds the acknowledgement through SSH, where the link sets the pace and SSH keepalives bound
+/// a dead connection. A hook on this machine has [`REPORT_DEADLINE`] instead.
+const REMOTE_REPORT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub fn run(mut action: CliAction, session: Option<String>, started: Instant) -> Result<()> {
     let trace = Arc::new(Mutex::new(ReportTrace::new(started)));
-    reporting_watchdog(trace.clone())?;
+    let remote = crate::remote_commands::selected().is_some();
+    // The watchdog keeps a hook from stalling its agent. Its `_exit` also skips the atexit handler
+    // that tears down an SSH forward, and no local agent is waiting on a remote report.
+    if !remote {
+        reporting_watchdog(trace.clone())?;
+    }
     let result = (|| {
         let explicit_target = session.is_some();
         let explicit_pane = match &action {
@@ -46,9 +55,7 @@ pub fn run(mut action: CliAction, session: Option<String>, started: Instant) -> 
         // actions. These values are packaged, never dispatched as generic actions.
         let actions = yinz_cli::actions::actions_from_cli(
             action,
-            yinz_cli::actions::PathResolution::Local(Box::new(|| {
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-            })),
+            yinz_cli::actions::PathResolution::Session,
             None,
         )
         .map_err(|_| anyhow!("invalid agent report input"))?;
@@ -105,9 +112,13 @@ pub fn run(mut action: CliAction, session: Option<String>, started: Instant) -> 
             .context("set up report acknowledgement")?;
         receiver
             .set_recv_timeout(Some(
-                REPORT_DEADLINE
-                    .saturating_sub(started.elapsed())
-                    .max(std::time::Duration::from_millis(1)),
+                if remote {
+                    REMOTE_REPORT_DEADLINE
+                } else {
+                    REPORT_DEADLINE
+                }
+                .saturating_sub(started.elapsed())
+                .max(std::time::Duration::from_millis(1)),
             ))
             .context("bound report acknowledgement")?;
         trace

@@ -348,7 +348,7 @@ fn bootstrap_until(
     }
     let options = SshOptions::default();
     let output = ssh::bootstrap_output(
-        &mut ssh_command(host, &args, env)?,
+        &mut ssh_command(host, &args, env).context("build the remote session bootstrap")?,
         remaining(deadline)?.min(Duration::from_secs(60)),
         Some(cancelled),
     )
@@ -439,7 +439,7 @@ pub fn discover(
         &REMOTE_BOOTSTRAP_VERSION.to_string(),
     ];
     let output = ssh::bootstrap_output(
-        &mut ssh_command(host, &args, env)?,
+        &mut ssh_command(host, &args, env).context("build the session discovery")?,
         Duration::from_secs(10),
         Some(cancelled),
     )

@@ -1,6 +1,6 @@
 //! The `[cli_client]` is used to attach to a running server session
 //! and dispatch actions, that are specified through the command line.
-use crate::session_target::SessionEndpoint;
+use crate::session_target::{SessionEndpoint, SessionTarget};
 use std::collections::{BTreeMap, HashSet};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
@@ -525,24 +525,29 @@ pub fn start_events_client_at(
     end
 }
 
+/// A session on this machine, whose socket directory and path length are checked first.
+fn local_target(session: &SessionName) -> SessionTarget {
+    SessionTarget {
+        name: session.clone(),
+        socket: crate::ipc_pipe_for_session(session, None),
+    }
+}
+
 pub fn start_cli_client(
     os: Box<dyn CliClientOs>,
     session: &SessionName,
     actions: Vec<Action>,
     caller: Option<yinz_types::internal_ids::TerminalId>,
 ) -> i32 {
-    let _ = crate::ipc_pipe_for_session(session, None);
-    start_cli_client_at(os, session, actions, caller)
+    start_cli_client_at(os, &local_target(session), actions, caller)
 }
 pub fn start_subscribe_client(
     os: Box<dyn CliClientOs>,
     session: &SessionName,
     options: SubscribeCli,
 ) {
-    let _ = crate::ipc_pipe_for_session(session, None);
-    start_subscribe_client_at(os, session, options);
+    start_subscribe_client_at(os, &local_target(session), options);
 }
 pub fn start_events_client(os: Box<dyn CliClientOs>, session: &SessionName, options: EventsCli) {
-    let _ = crate::ipc_pipe_for_session(session, None);
-    start_events_client_at(os, session, options);
+    start_events_client_at(os, &local_target(session), options);
 }

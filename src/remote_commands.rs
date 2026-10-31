@@ -249,10 +249,15 @@ fn run_host(
     Ok(status)
 }
 
-/// A remote older than `remote-command` rejects it before the request's versions can be compared.
-/// Only that rejection counts: a host command's own errors can name arguments as well.
+/// A remote older than `remote-command` rejects it before the request's versions can be compared;
+/// a newer one compares them and speaks of itself as "this machine", so name it. Only these count:
+/// a host command's own errors can name arguments as well.
 fn version_rejection(host: &str, status: i32, stderr: &[u8]) -> Option<anyhow::Error> {
-    if status == 0 || !String::from_utf8_lossy(stderr).contains("'remote-command'") {
+    let stderr_text = String::from_utf8_lossy(stderr);
+    if status == 0
+        || !(stderr_text.contains("'remote-command'")
+            || stderr_text.contains("Yinz compatibility mismatch"))
+    {
         return None;
     }
     remote_sessions::bootstrap_failure(host, stderr)
@@ -421,7 +426,9 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
     match route(opts.command.as_ref()) {
         Route::New => {
             yinz_runtime::logging::configure_logger();
-            std::process::exit(crate::remote_session::start(opts, &host)?);
+            std::process::exit(
+                crate::remote_session::start(opts, &host).context("start a remote session")?,
+            );
         },
         Route::Attach => {
             yinz_runtime::logging::configure_logger();
@@ -433,12 +440,10 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
             else {
                 bail!("expected remote attach arguments")
             };
-            std::process::exit(crate::remote_session::attach(
-                opts,
-                &host,
-                session_name.as_deref(),
-                *create,
-            )?);
+            std::process::exit(
+                crate::remote_session::attach(opts, &host, session_name.as_deref(), *create)
+                    .context("attach to the remote session")?,
+            );
         },
         Route::Local => bail!("this command operates locally and does not support --remote"),
         Route::Host | Route::Session => {},
@@ -464,6 +469,8 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
         session: opts.session.clone(),
     };
     if route(opts.command.as_ref()) == Route::Host {
+        // This route exits below, before main would configure the logger.
+        yinz_runtime::logging::configure_logger();
         request.command = opts.command.clone();
         // Session-targeting host commands should be as explicit as local commands run outside a pane.
         if let Some(Command::Sessions(
@@ -512,9 +519,19 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
         )
         .context("connect to the remote session")?;
         // Connecting first reports an SSH or compatibility failure without a second timeout. As
-        // locally, a configuration that cannot be read does not stop an action.
+        // locally, a configuration that cannot be read does not stop an action, but the fragment
+        // is then checked against defaults and can be refused for that reason, so say why. The
+        // logger is not configured yet, so stderr is the only place to say it.
         let config = if reads_session_config(opts.command.as_ref()) {
-            read_remote_config(&host, &request, &local_config.env, &cancellation.cancelled).ok()
+            match read_remote_config(&host, &request, &local_config.env, &cancellation.cancelled) {
+                Ok(config) => Some(config),
+                Err(error) => {
+                    if !cancellation.is_cancelled() {
+                        eprintln!("Warning: checking against the default configuration: {error:#}");
+                    }
+                    None
+                },
+            }
         } else {
             Some(local_config)
         };
