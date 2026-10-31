@@ -315,7 +315,18 @@ pub(super) fn switch_session(
             layout_dir.clone(),
         )
         .map_err(|e| layout_error_report(e, None))?;
-        yinz_config::layout::layout_info_from_config(&layout_dir, &Some(layout_path))
+        if super::session_resolves_paths(&get_current_dir()) {
+            // The file is on this machine and the session is not, so its text has to travel.
+            // A stringified layout has no sibling swap layout file.
+            let (_, raw_layout, _) = yinz_config::layout::stringified_from_path_or_default(
+                Some(&layout_path),
+                layout_dir,
+            )
+            .map_err(|e| format!("Failed to load layout: {}", e))?;
+            Some(LayoutInfo::Stringified(raw_layout))
+        } else {
+            yinz_config::layout::layout_info_from_config(&layout_dir, &Some(layout_path))
+        }
     } else {
         None
     };

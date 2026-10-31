@@ -71,6 +71,21 @@ pub(crate) fn run(mut command: Agent, opts: &CliArgs) -> Result<i32> {
     }
 }
 
+/// A remote session that cannot be selected fails before any request leaves, which `--json`
+/// callers read as `rejected`. Returns whether it was reported; an event stream uses stderr, as it
+/// does locally.
+pub(crate) fn report_rejection(opts: &CliArgs, error: &anyhow::Error) -> bool {
+    let Some(yinz_cli::args::Command::Agent(command)) = &opts.command else {
+        return false;
+    };
+    if matches!(command, Agent::Watch { .. }) || !command.json() {
+        return false;
+    }
+    let mut response = AgentResponse::new(AgentOutcome::Rejected);
+    response.message = Some(format!("{error:#}"));
+    print_response(&response, true, &mut std::io::stdout().lock()).is_ok()
+}
+
 /// Establish an identity before any IPC so a lost response does not lose the submission.
 fn submission_id(command: &mut Agent) -> Option<String> {
     match command {

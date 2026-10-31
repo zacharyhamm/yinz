@@ -2765,6 +2765,37 @@ fn remote_plugin_locations_do_not_resolve_local_files() {
     assert_eq!(*cwd, None);
 }
 
+#[test]
+fn remote_switch_session_sends_the_local_layouts_text() {
+    let dir = std::env::temp_dir().join(format!("yinz-remote-switch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let layout = dir.join("local.kdl");
+    let source = "layout { pane; }\n";
+    std::fs::write(&layout, source).unwrap();
+    let parsed = parse_remote_cli([
+        "yinz",
+        "action",
+        "switch-session",
+        "other",
+        "--layout",
+        layout.to_str().unwrap(),
+    ])
+    .unwrap();
+    let Some(crate::args::Command::Action(action)) = parsed.command else {
+        panic!("expected action")
+    };
+    let actions = crate::actions::actions_from_cli(*action, Box::new(PathBuf::new), None).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let Action::SwitchSession {
+        layout: Some(yinz_types::data::LayoutInfo::Stringified(sent)),
+        ..
+    } = &actions[0]
+    else {
+        panic!("expected the layout's text: {:?}", actions[0])
+    };
+    assert_eq!(sent, source);
+}
+
 fn parse_remote_cli<I, S>(args: I) -> Result<crate::args::CliArgs, clap::Error>
 where
     I: IntoIterator<Item = S>,

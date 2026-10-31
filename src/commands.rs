@@ -111,7 +111,6 @@ fn pick_session_to_attach(remote: Option<(&CliArgs, Vec<String>)>) -> SessionNam
             if let Some(Command::Sessions(Sessions::Attach { session_name, .. })) =
                 &mut opts.command
             {
-                opts.remote = Some(host.clone());
                 *session_name = Some(name.to_string());
             }
             match crate::remote_session::attach(&opts, &host, Some(name.as_str()), false) {
@@ -1103,7 +1102,13 @@ pub(crate) fn list_aliases(opts: CliArgs) {
 }
 
 pub(crate) fn watch_session(session_name: Option<String>, opts: CliArgs) {
-    let (config, _, config_options, _, _) = match Setup::from_cli_args(&opts) {
+    // A remote session has its own layout: a local default layout must not stop a remote watcher.
+    let setup = if crate::remote_commands::selected().is_some() {
+        Setup::config_without_layout(&opts)
+    } else {
+        Setup::from_cli_args(&opts).map(|(config, _, options, _, _)| (config, options))
+    };
+    let (config, config_options) = match setup {
         Ok(results) => results,
         Err(e) => {
             if let ConfigError::KdlError(error) = e {

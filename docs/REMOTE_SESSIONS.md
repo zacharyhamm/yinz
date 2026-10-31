@@ -42,7 +42,9 @@ commands apply to the selected SSH host and ask for confirmation on the local
 terminal unless `--yes` is given.
 
 Input files (request JSON, agent prompts, config fragments, and layout source)
-and stdin are read locally. Paths used by the session, including working
+and stdin are read locally, and a layout name resolves through the local
+`layout_dir`. `switch-session --layout` sends the layout's text, without a
+sibling swap layout file. Paths used by the session, including working
 directories, edited files, and plugin locations, refer to the remote machine.
 An omitted working directory uses the remote session's defaults, except that
 `agent spawn` requires an absolute `--cwd` or `--project`. Plugin locations inside a layout

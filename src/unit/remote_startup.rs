@@ -887,6 +887,18 @@ fn remote_cli_uses_forwarded_sessions_and_local_inputs() {
     remote.remote_endpoint(true);
     remote.wait_for_panes(false);
     let local = Session::new();
+    // A local default layout means nothing to a remote session, and layout names resolve here.
+    let local_layouts = local.0.path().join("local-layouts");
+    fs::create_dir(&local_layouts).unwrap();
+    fs::write(local_layouts.join("only-local.kdl"), "layout { pane; }\n").unwrap();
+    fs::write(
+        local.0.path().join("config.kdl"),
+        format!(
+            "load_plugins clear-defaults=true\ndefault_layout \"/no/local/layout.kdl\"\nlayout_dir \"{}\"\n",
+            local_layouts.display()
+        ),
+    )
+    .unwrap();
     let stub = local.0.path().join("ssh.py");
     fs::write(&stub, CLI_SSH_STUB).unwrap();
     yinz_test_support::write_warm_script(
@@ -942,6 +954,13 @@ fn remote_cli_uses_forwarded_sessions_and_local_inputs() {
         .unwrap_or(1)
         .to_string();
     call(&["agent", "list", "--json"]);
+    // Nothing was sent, which `--json` callers read like any other rejection.
+    let rejected = command(&["--session", "../bad", "agent", "list", "--json"])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success(), "{rejected:?}");
+    let response: serde_json::Value = serde_json::from_slice(&rejected.stdout).unwrap();
+    assert_eq!(response["outcome"], "rejected", "{rejected:?}");
     // The server would otherwise start an agent with no directory in `/`.
     let spawn = command(&["agent", "spawn", "--kind", "codex"])
         .output()
@@ -1098,6 +1117,7 @@ fn remote_cli_uses_forwarded_sessions_and_local_inputs() {
     killpg(Pid::from_raw(watcher.id() as i32), Signal::SIGTERM).unwrap();
     watcher.wait().unwrap();
     reader.join().unwrap();
+    call(&["action", "new-tab", "--no-focus", "--layout", "only-local"]);
     source
         .send_client_msg(ClientToServerMsg::ClientExited)
         .unwrap();

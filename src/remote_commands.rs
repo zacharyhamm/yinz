@@ -2,7 +2,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
     io::Write,
-    path::PathBuf,
     process::{Command as ProcessCommand, Stdio},
     sync::OnceLock,
     time::Duration,
@@ -159,13 +158,6 @@ pub(crate) fn selected() -> Option<&'static SessionTarget> {
 }
 pub(crate) fn config() -> Option<&'static Config> {
     CONTEXT.get().and_then(|c| c.config.as_ref())
-}
-pub(crate) fn local_cwd() -> Option<PathBuf> {
-    if selected().is_some() {
-        None
-    } else {
-        std::env::current_dir().ok()
-    }
 }
 pub(crate) fn target(name: &SessionName) -> SessionTarget {
     selected().cloned().unwrap_or_else(|| SessionTarget {
@@ -378,7 +370,8 @@ fn read_remote_config(
 
 /// The actions whose config fragment is checked against the session's configuration. Reading it
 /// costs another SSH connection, which every other action can skip. Layout actions only take
-/// `layout_dir` from it, and layouts are input files read on this machine, not the host's.
+/// `layout_dir` from their configuration, and layouts are input files read on this machine, so
+/// they use the local one.
 fn reads_session_config(command: Option<&Command>) -> bool {
     matches!(
         command,
@@ -451,7 +444,8 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
             && opts.data_dir.is_none(),
         "remote commands do not support local server, layout, or data-directory overrides"
     );
-    let local_config = crate::remote_session::read_local_config(opts)?;
+    let local_config =
+        crate::remote_session::read_local_config(opts).context("read SSH configuration")?;
     let mut request = Request {
         version: VERSION.into(),
         contract: CLIENT_SERVER_CONTRACT_VERSION,
@@ -469,15 +463,20 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
         {
             *target_session = target_session.clone().or(opts.session.clone());
         }
-        let cancellation = StartupCancellation::new()?;
-        confirm_all_sessions(&mut request.command, &host, &cancellation)?;
-        std::process::exit(run_host(
-            &host,
-            ssh_command(&host, &request, &local_config.env)?,
-            &cancellation,
-        )?);
+        let cancellation = StartupCancellation::new().context("watch for host command signals")?;
+        confirm_all_sessions(&mut request.command, &host, &cancellation)
+            .context("confirm host command")?;
+        std::process::exit(
+            run_host(
+                &host,
+                ssh_command(&host, &request, &local_config.env)
+                    .context("build host command request")?,
+                &cancellation,
+            )
+            .context("run host command")?,
+        );
     }
-    let cancellation = StartupCancellation::new()?;
+    let cancellation = StartupCancellation::new().context("watch for remote startup signals")?;
     let setup = (|| -> Result<()> {
         let explicit = match &opts.command {
             Some(Command::Sessions(Sessions::Watch { session_name })) => {
@@ -486,29 +485,29 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
             _ => opts.session.as_deref(),
         };
         let names = if explicit.is_none() {
-            running_names(remote_sessions::discover(
-                &host,
-                &cancellation.cancelled,
-                &local_config.env,
-            )?)
+            running_names(
+                remote_sessions::discover(&host, &cancellation.cancelled, &local_config.env)
+                    .context("find the running session")?,
+            )
         } else {
             vec![]
         };
-        let name = select_name(explicit, names, &host)?;
-        // As locally, a configuration that cannot be read does not stop an action, and connecting
-        // below reports any SSH or compatibility failure.
-        let config = reads_session_config(opts.command.as_ref())
-            .then(|| {
-                read_remote_config(&host, &request, &local_config.env, &cancellation.cancelled)
-            })
-            .and_then(Result::ok);
+        let name = select_name(explicit, names, &host).context("select the remote session")?;
         let forward = remote_sessions::connect(
             &host,
             name.as_str(),
             false,
             &cancellation.cancelled,
             &local_config.env,
-        )?;
+        )
+        .context("connect to the remote session")?;
+        // Connecting first reports an SSH or compatibility failure without a second timeout. As
+        // locally, a configuration that cannot be read does not stop an action.
+        let config = if reads_session_config(opts.command.as_ref()) {
+            read_remote_config(&host, &request, &local_config.env, &cancellation.cancelled).ok()
+        } else {
+            Some(local_config)
+        };
         let target = SessionTarget {
             name: name.clone(),
             socket: forward.socket().to_owned(),

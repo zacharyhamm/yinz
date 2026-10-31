@@ -305,11 +305,12 @@ pub fn ssh_command(
     args: &[impl AsRef<str>],
     env: &EnvironmentVariables,
 ) -> Result<Command> {
-    ssh::validate_ssh_host(host)?;
+    ssh::validate_ssh_host(host).context("validate SSH host")?;
     let remote_command = args
         .iter()
         .map(|arg| ssh::shell_argument(arg.as_ref()))
-        .collect::<Result<Vec<_>>>()?
+        .collect::<Result<Vec<_>>>()
+        .context("quote remote command")?
         .join(" ");
     let mut command = Command::new("ssh");
     command

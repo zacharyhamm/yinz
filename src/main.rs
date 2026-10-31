@@ -118,7 +118,9 @@ fn main() {
 
     let mut opts = CliArgs::parse();
     if let Err(error) = remote_commands::dispatch(&mut opts) {
-        eprintln!("Error: {error:#}");
+        if !agent::report_rejection(&opts, &error) {
+            eprintln!("Error: {error:#}");
+        }
         remote_commands::exit(1);
     }
     if let Some(Command::RemoteSessions {
@@ -371,7 +373,6 @@ fn main() {
             tab_id,
         })) = opts.command
         {
-            let cwd = cwd.or_else(remote_commands::local_cwd);
             let skip_plugin_cache = false; // N/A for this action
 
             // Compute the unblock condition
@@ -508,8 +509,6 @@ fn main() {
             tab_id,
         })) = opts.command
         {
-            // The action joins a relative file onto this directory.
-            let cwd = cwd.or_else(remote_commands::local_cwd);
             let command_cli_action = CliAction::Edit {
                 file,
                 direction,
