@@ -1349,12 +1349,10 @@ impl TiledPanes {
     ) -> Result<()> {
         let err_context = || "failed to render tiled panes";
 
-        let connected_clients: HashSet<ClientId> = match client_id_override {
-            Some(client_id) => HashSet::from([client_id]),
+        let connected_clients: Vec<ClientId> = match client_id_override {
+            Some(client_id) => vec![client_id],
             None => self.connected_clients.borrow().iter().copied().collect(),
         };
-
-        let connected_clients: Vec<ClientId> = connected_clients.into_iter().collect();
         let multiplayer = self.connected_clients_in_app.borrow().snapshot();
         let boundary_viewport = self.boundary_viewport();
         let mut client_id_to_boundaries: HashMap<ClientId, Boundaries> = HashMap::new();
@@ -3164,6 +3162,13 @@ impl TiledPanes {
     }
     pub fn invalidate_boundaries(&mut self, client_id: ClientId) {
         self.client_id_to_boundaries.remove(&client_id);
+    }
+    /// Includes collapsed stack members, which `rendered_pane_ids` leaves out: their frame is all
+    /// they paint.
+    pub fn invalidate_frames(&mut self, client_id: ClientId) {
+        for pane in self.panes.values_mut() {
+            pane.invalidate_frame(client_id);
+        }
     }
     pub fn reset_boundaries(&mut self) {
         self.client_id_to_boundaries.clear();

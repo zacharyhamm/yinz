@@ -1341,8 +1341,12 @@ impl Screen {
                     t.position = TabPosition::new(t.position.get() - 1);
                 }
             }
+            // Incomplete reflows retry on the frame scheduled below; the clients have already
+            // moved, so one must neither strand the other tabs nor take the session down.
             for tab_id in visible_tab_indices {
-                self.recompute_tab_size(tab_id).with_context(err_context)?;
+                self.recompute_tab_size(tab_id)
+                    .with_context(err_context)
+                    .non_fatal();
             }
             self.log_and_report_session_state()
                 .with_context(err_context)?;

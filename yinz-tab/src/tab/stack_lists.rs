@@ -726,10 +726,10 @@ impl Tab {
         if self.stack_lists.is_empty() || (!floating && self.tiled_panes.fullscreen_is_active()) {
             return Ok(());
         }
-        let connected_clients: HashSet<ClientId> = match client_id_override {
-            Some(client_id) => HashSet::from([client_id]),
-            None => self.connected_clients.borrow().iter().copied().collect(),
-        };
+        let connected_clients: HashSet<ClientId> = self
+            .clients_in_frame(client_id_override)
+            .into_iter()
+            .collect();
         if connected_clients.is_empty() {
             return Ok(());
         }

@@ -42,7 +42,7 @@ impl Screen {
                 .context("registering the client with the screen")?;
             if client_size.is_some() {
                 // Reflow against the updated viewers before committing the attachment.
-                self.reflow_all_tabs()
+                self.reflow_tabs_for_arrival(client_id)
                     .context("reflowing tabs for the attaching client")?;
             }
             Ok(())

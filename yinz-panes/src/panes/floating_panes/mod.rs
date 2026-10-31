@@ -663,12 +663,10 @@ impl FloatingPanes {
         stack_list_header_rows: &HashMap<PaneId, usize>,
     ) -> Result<()> {
         let err_context = || "failed to render output";
-        let connected_clients: HashSet<ClientId> = match client_id_override {
-            Some(client_id) => HashSet::from([client_id]),
+        let connected_clients: Vec<ClientId> = match client_id_override {
+            Some(client_id) => vec![client_id],
             None => self.connected_clients.borrow().iter().copied().collect(),
         };
-
-        let connected_clients: Vec<ClientId> = connected_clients.into_iter().collect();
         let active_panes = if self.all_panes_are_visible() {
             self.active_panes.clone_active_panes()
         } else {

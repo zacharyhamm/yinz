@@ -31,6 +31,17 @@ fn different_tabs_resize_their_ptys_from_their_own_clients() {
     first.wait_for_size("first tab fits its large viewer", |cols, rows| {
         cols == 160 && rows == 48
     });
+    let first_history_start = first.size_history().len();
+    let expected_first_resizes = [(80, 22), (160, 48), (200, 58), (80, 22), (200, 58)];
+    // History records actual size changes, so duplicate requests for the same dimensions
+    // are harmless. A wrong intermediate size followed by recovery must still fail.
+    let assert_first_resizes = |completed| {
+        assert_eq!(
+            &first.size_history()[first_history_start..],
+            &expected_first_resizes[..completed],
+            "the first tab must reach each viewer-derived size without intermediate resizes"
+        );
+    };
 
     let second_client = yinz.attach_client(small);
     second_client.wait_until("small client joined the first tab", |grid| {
@@ -39,6 +50,7 @@ fn different_tabs_resize_their_ptys_from_their_own_clients() {
     first.wait_for_size("shared tab fits the smaller viewer", |cols, rows| {
         cols == 80 && rows == 22
     });
+    assert_first_resizes(1);
 
     second_client.send_stdin(&keys::ctrl('t'));
     second_client.send_stdin(&keys::key('n'));
@@ -50,10 +62,21 @@ fn different_tabs_resize_their_ptys_from_their_own_clients() {
     second.wait_for_size("second tab fits its small viewer", |cols, rows| {
         cols == 80 && rows == 22
     });
+    let second_history_start = second.size_history().len();
+    let assert_second_unchanged = || {
+        assert_eq!(second.size(), Some((80, 22)));
+        assert!(
+            second.size_history()[second_history_start..].is_empty(),
+            "the second tab must not resize even temporarily: {:?}",
+            second.size_history()
+        );
+    };
     first.wait_for_size(
         "first tab grows after the smaller viewer leaves",
         |cols, rows| cols == 160 && rows == 48,
     );
+    assert_first_resizes(2);
+    assert_second_unchanged();
 
     yinz.resize(Size {
         cols: 200,
@@ -62,7 +85,8 @@ fn different_tabs_resize_their_ptys_from_their_own_clients() {
     first.wait_for_size("first tab follows its viewer's resize", |cols, rows| {
         cols == 200 && rows == 58
     });
-    assert_eq!(second.size(), Some((80, 22)));
+    assert_first_resizes(3);
+    assert_second_unchanged();
 
     second_client.send_stdin(&keys::ctrl('t'));
     second_client.send_stdin(&keys::key('h'));
@@ -73,12 +97,15 @@ fn different_tabs_resize_their_ptys_from_their_own_clients() {
     first.wait_for_size("first tab shrinks when viewers reunite", |cols, rows| {
         cols == 80 && rows == 22
     });
-    assert_eq!(second.size(), Some((80, 22)));
+    assert_first_resizes(4);
+    assert_second_unchanged();
     second_client.quit();
     first.wait_for_size(
         "first tab grows after the small client detaches",
         |cols, rows| cols == 200 && rows == 58,
     );
+    assert_first_resizes(5);
+    assert_second_unchanged();
     yinz.quit();
 }
 

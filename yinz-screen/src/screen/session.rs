@@ -270,7 +270,9 @@ impl Screen {
                 Ok(())
             }
         });
-        if passing_through && let Err(error) = focused.and_then(|()| self.reflow_all_tabs()) {
+        if passing_through
+            && let Err(error) = focused.and_then(|()| self.reflow_tabs_for_arrival(client_id))
+        {
             Err::<(), _>(error)
                 .context("placing the attaching client at its destination")
                 .non_fatal();

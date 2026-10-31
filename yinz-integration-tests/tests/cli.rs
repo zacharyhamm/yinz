@@ -684,32 +684,55 @@ fn watcher_client_functionality() {
 
 #[test]
 fn watcher_larger_than_the_followed_content_has_blank_margins_without_padding() {
-    let mut yinz = start_yinz();
-    let first_terminal = claim_first_terminal_and_wait_for_prompt(&yinz);
-    first_terminal.output(b"\r\nWATCHER_MARGINS\r\n");
-    yinz.wait_until("followed client rendered", |grid_snapshot| {
-        grid_snapshot.contains("WATCHER_MARGINS")
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(
+            "pane_frame_style \"none\"\ndisable_splash_screen true\nload_plugins clear-defaults=true {}",
+        )
+        .with_layout(yinz_types::data::LayoutInfo::Stringified(
+            "layout { default_tab_template { children; }; pane; }".into(),
+        ))
+        .start();
+    let first_terminal = yinz.expect_pty_spawn();
+    first_terminal.wait_for_size("initial followed PTY size", |cols, rows| {
+        cols == 120 && rows == 24
+    });
+    first_terminal
+        .output(b"\x1b[3;5HWATCHER_MARGINS\x1b[5;105HRIGHT_MARGIN\x1b[21;5HBOTTOM_MARGIN\x1b[1;1H");
+
+    let watcher = yinz.attach_watcher(Size {
+        cols: TERMINAL_SIZE.cols + 20,
+        rows: TERMINAL_SIZE.rows + 6,
+    });
+    let before = watcher.wait_until("watcher has content in both future margins", |grid| {
+        grid.contains("WATCHER_MARGINS")
+            && grid.contains("RIGHT_MARGIN")
+            && grid.contains("BOTTOM_MARGIN")
     });
 
     let followed_size = Size {
         cols: TERMINAL_SIZE.cols - 20,
         rows: TERMINAL_SIZE.rows - 4,
     };
-    yinz.resize(followed_size);
-    yinz.wait_until(
-        "followed client re-rendered at its new size",
-        move |snapshot| {
-            snapshot.contains("WATCHER_MARGINS") && snapshot.row_count() == followed_size.rows
-        },
-    );
+    assert!(before.text.lines().any(|line| line
+        .find("RIGHT_MARGIN")
+        .is_some_and(|col| col >= followed_size.cols)));
+    assert!(before.row_of_line("BOTTOM_MARGIN").unwrap() >= followed_size.rows);
+    let output_start = watcher.raw_bytes().len();
 
-    let watcher = yinz.attach_watcher(Size {
-        cols: TERMINAL_SIZE.cols + 20,
-        rows: TERMINAL_SIZE.rows + 6,
+    yinz.resize(followed_size);
+    // Snapshot dimensions come from the harness's local size, even before the server
+    // handles the resize. Wait for its PTY request and then for fresh rendered content.
+    first_terminal.wait_for_size("followed PTY shrank", |cols, rows| {
+        cols == 100 && rows == 20
     });
-    let snapshot = watcher.wait_until("watcher connected and sees the output", |grid_snapshot| {
-        grid_snapshot.contains("Ctrl +") && grid_snapshot.contains("WATCHER_MARGINS")
+    // Model an application redrawing after SIGWINCH: discard text reflowed inside the
+    // smaller pane. Its local clear cannot erase the watcher's uncovered host margins.
+    first_terminal.output(b"\x1b[2J\x1b[3;5HWATCHER_MARGINS\x1b[7;5HAFTER_RESIZE\x1b[1;1H");
+    let snapshot = watcher.wait_until("watcher rendered content after resize", |grid| {
+        grid.contains("WATCHER_MARGINS") && grid.contains("AFTER_RESIZE")
     });
+    assert!(!snapshot.contains("RIGHT_MARGIN"), "{}", snapshot.text);
+    assert!(!snapshot.contains("BOTTOM_MARGIN"), "{}", snapshot.text);
     for (row, line) in snapshot.text.lines().enumerate() {
         let content_cols = if row < followed_size.rows {
             followed_size.cols
@@ -726,7 +749,7 @@ fn watcher_larger_than_the_followed_content_has_blank_margins_without_padding() 
     let clear_to_end_of_content_line =
         format!("\u{1b}[1;{}H\u{1b}[m\u{1b}[K", followed_size.cols + 1);
     let bytes = watcher.raw_bytes();
-    let output = String::from_utf8_lossy(&bytes);
+    let output = String::from_utf8_lossy(&bytes[output_start..]);
     assert!(output.contains("\x1b[2J"));
     assert!(!output.contains(&clear_below_content));
     assert!(!output.contains(&clear_to_end_of_content_line));

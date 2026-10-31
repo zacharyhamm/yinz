@@ -499,6 +499,18 @@ impl Screen {
         Ok(())
     }
 
+    /// Reflow for a client that is joining. Only its own tab failing is a reason to turn it away:
+    /// another viewer's tab retries on the next frame whether or not this client stays.
+    pub(super) fn reflow_tabs_for_arrival(&mut self, client_id: ClientId) -> Result<()> {
+        if let Some(tab_id) = self.active_tab_ids.get(&client_id).copied() {
+            self.reflow_tab(tab_id)?;
+        }
+        self.reflow_all_tabs()
+            .context("failed to reflow the tabs an arriving client is not joining")
+            .non_fatal();
+        Ok(())
+    }
+
     /// Lay tab `tab_id` out against its interactive viewers' bounds.
     ///
     /// With no interactive client there is no size to derive, so the tab keeps its last layout

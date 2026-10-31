@@ -2131,3 +2131,167 @@ fn arrival_preserves_incremental_updates_for_an_existing_viewer_and_its_watcher(
         assert!(!bytes.contains("\x1b[2J"), "{client}: {bytes:?}");
     }
 }
+
+/// A collapsed stack member has no contents, only a frame the followed client has already cached,
+/// so a watcher's whole repaint, which clears its display, must not skip it.
+#[test]
+fn a_watcher_repainted_whole_gets_collapsed_stack_titles() {
+    let size = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let followed = ClientId::new(2);
+    let watcher = ClientId::new(3);
+    let mut screen = large_client_with_margin_text(size, size);
+    let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+    tab.new_pane(
+        PaneId::Terminal(TerminalId::new(3)),
+        None,
+        None,
+        false,
+        false,
+        NewPanePlacement::Stacked {
+            pane_id_to_stack_under: Some(PaneId::Terminal(TerminalId::new(1))),
+            borderless: None,
+        },
+        Some(followed),
+        None,
+    )
+    .unwrap();
+    let collapsed = [TerminalId::new(1), TerminalId::new(3)]
+        .into_iter()
+        .find(|id| {
+            let geom = tab
+                .get_pane_with_id(PaneId::Terminal(*id))
+                .unwrap()
+                .current_geom();
+            geom.is_stacked() && geom.rows.is_fixed()
+        })
+        .expect("one stack member is collapsed");
+    tab.handle_pty_bytes(collapsed, b"\x1b]0;COLLAPSED-TITLE\x07".to_vec())
+        .unwrap();
+    let receiver = screen_wired_to_server(&mut screen);
+    screen.set_followed_client(followed).unwrap();
+    screen.add_watcher_client(watcher).unwrap();
+    screen.set_watcher_size(watcher, size);
+    client_frame_bytes(&mut screen, &receiver);
+    screen
+        .watcher_clients
+        .get_mut(&watcher)
+        .unwrap()
+        .set_force_render();
+
+    let streams = client_frame_bytes(&mut screen, &receiver);
+
+    assert!(
+        streams[&watcher].contains("COLLAPSED-TITLE"),
+        "{:?}",
+        streams[&watcher]
+    );
+}
+
+/// Another viewer's tab failing to reflow says nothing about whether this client can be placed.
+#[test]
+fn attaching_survives_a_reflow_failure_in_a_tab_it_is_not_joining() {
+    use crate::screen::thread_main::PendingEvents;
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let attaching = ClientId::new(3);
+    let failing_tab = TabId::new(0);
+    let destination = TabId::new(1);
+    let mut screen = large_client_with_margin_text(large, small);
+    let receiver = screen_wired_to_server(&mut screen);
+    let _receivers = fail_pty_resizes(&mut screen, failing_tab);
+    screen
+        .set_client_size(ClientId::new(2), Size { cols: 70, rows: 20 })
+        .unwrap();
+    assert!(screen.reflow_all_tabs().is_err());
+    let mut traces = HashMap::new();
+
+    screen
+        .attach_client(
+            attaching,
+            large,
+            Some(TabNumber::new(2)),
+            None,
+            &mut traces,
+            &mut PendingEvents::default(),
+        )
+        .unwrap();
+
+    assert_eq!(screen.active_tab_ids.get(&attaching), Some(&destination));
+    assert!(
+        !receiver.try_iter().any(|(instruction, _)| matches!(
+            instruction,
+            ServerInstruction::ClientExit(id, None) if id == attaching
+        )),
+        "The attaching client's own tab reflowed cleanly"
+    );
+}
+
+/// The client has already been re-homed, so a failed reflow retries on the frame this schedules.
+#[test]
+fn closing_a_tab_survives_a_reflow_failure_in_the_tab_its_client_lands_on() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let surviving_tab = TabId::new(0);
+    let mut screen = large_client_with_margin_text(large, small);
+    let _receivers = fail_pty_resizes(&mut screen, surviving_tab);
+    screen
+        .set_client_size(ClientId::new(2), Size { cols: 70, rows: 20 })
+        .unwrap();
+
+    screen.close_tab_by_id(TabId::new(1)).unwrap();
+
+    assert_eq!(
+        screen.active_tab_ids.get(&ClientId::new(1)),
+        Some(&surviving_tab)
+    );
+    assert!(screen.tabs_needing_reflow.contains(&surviving_tab));
+}
+
+/// A clear alone does not repaint tiled panes, so it cannot stand in for an arrival's repaint.
+#[test]
+fn a_clear_without_a_forced_repaint_keeps_the_arrival_repaint() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let client = ClientId::new(1);
+    let mut screen = large_client_with_margin_text(large, small);
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .handle_pty_bytes(
+            TerminalId::new(1),
+            b"\x1b[15;1HUNCHANGED-CONTENT\x1b[1;1H".to_vec(),
+        )
+        .unwrap();
+    let receiver = screen_wired_to_server(&mut screen);
+    client_frame_bytes(&mut screen, &receiver);
+    screen
+        .switch_active_tab(TabPosition::new(0), None, true, client)
+        .unwrap();
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .set_should_clear_display_before_rendering();
+
+    let streams = client_frame_bytes(&mut screen, &receiver);
+
+    assert!(
+        streams[&client].contains("UNCHANGED-CONTENT"),
+        "{:?}",
+        streams[&client]
+    );
+    assert_eq!(streams[&client].matches("\x1b[2J").count(), 1);
+}
