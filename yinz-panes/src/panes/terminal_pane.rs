@@ -550,6 +550,17 @@ impl Pane for TerminalPane {
     fn invalidate_frame(&mut self, client_id: ClientId) {
         self.frame.remove(&client_id);
     }
+    fn prepare_full_render_for_client(&mut self, client_id: ClientId) {
+        self.invalidate_frame(client_id);
+        self.grid.should_render = true;
+        self.grid.render_full_viewport();
+    }
+    fn take_rendered_lines(&mut self) -> Option<crate::output::RenderedLines> {
+        Some(self.grid.take_rendered_lines())
+    }
+    fn restore_rendered_lines(&mut self, rendered: crate::output::RenderedLines) {
+        self.grid.restore_rendered_lines(rendered);
+    }
     fn should_render(&self) -> bool {
         self.grid.should_render
     }

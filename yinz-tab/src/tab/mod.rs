@@ -357,6 +357,8 @@ pub struct Tab {
     pub senders: ThreadSenders,
     synchronize_is_active: bool,
     should_clear_display_before_rendering: bool,
+    // A true value also clears the host terminal, including margins outside this tab.
+    client_repaints: HashMap<ClientId, bool>,
     mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
     default_mode_info: ModeInfo,
     pub style: Style,
@@ -638,6 +640,7 @@ impl Tab {
             os_api,
             senders,
             should_clear_display_before_rendering: false,
+            client_repaints: HashMap::new(),
             style,
             mode_info,
             default_mode_info,
@@ -1182,7 +1185,7 @@ impl Tab {
             }
         }
         self.ensure_selectable_focus(client_id)?;
-        self.set_force_render();
+        self.request_client_repaint(client_id, false);
         Ok(())
     }
 
@@ -1281,6 +1284,7 @@ impl Tab {
         // `ModeInfo` on reattach, and one left behind per detach lived as long as the tab.
         self.mode_info.borrow_mut().remove(&client_id);
         self.connected_clients.borrow_mut().remove(&client_id);
+        self.client_repaints.remove(&client_id);
         self.mouse_help_text_visible.remove(&client_id);
         self.mouse_last_pane_id.remove(&client_id);
         self.last_mouse_activity_time.remove(&client_id);
@@ -1311,6 +1315,7 @@ impl Tab {
             .remove(&client_id)
             .unwrap_or_else(|| self.default_mode_info.clone());
         self.connected_clients.borrow_mut().remove(&client_id);
+        self.client_repaints.remove(&client_id);
         self.forget_host_cursor_state(client_id);
         (client_id, client_mode_info)
     }

@@ -1349,13 +1349,10 @@ impl TiledPanes {
     ) -> Result<()> {
         let err_context = || "failed to render tiled panes";
 
-        let mut connected_clients: HashSet<ClientId> =
-            { self.connected_clients.borrow().iter().copied().collect() };
-
-        // If we have a client_id_override (for watcher rendering), add it temporarily
-        if let Some(override_id) = client_id_override {
-            connected_clients.insert(override_id);
-        }
+        let connected_clients: HashSet<ClientId> = match client_id_override {
+            Some(client_id) => HashSet::from([client_id]),
+            None => self.connected_clients.borrow().iter().copied().collect(),
+        };
 
         let connected_clients: Vec<ClientId> = connected_clients.into_iter().collect();
         let multiplayer = self.connected_clients_in_app.borrow().snapshot();
@@ -1366,7 +1363,10 @@ impl TiledPanes {
         } else {
             self.active_panes
                 .iter()
-                .filter(|(client_id, _pane_id)| connected_clients.contains(client_id))
+                .filter(|(client_id, _)| {
+                    self.connected_clients.borrow().contains(client_id)
+                        || client_id_override == Some(**client_id)
+                })
                 .map(|(client_id, pane_id)| (*client_id, *pane_id))
                 .collect()
         };

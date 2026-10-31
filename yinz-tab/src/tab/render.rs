@@ -193,6 +193,9 @@ impl Tab {
         self.sync_pane_tab_titles();
         self.render_tiled_panes_and_chrome(output, client_id_override)?;
         self.render_floating_panes_and_overlays(output, client_id_override)?;
+        if client_id_override.is_none() {
+            self.render_client_repaints(output)?;
+        }
         for client in self.clients_in_frame(client_id_override) {
             let Some((x, y, true)) = self.get_active_terminal_cursor_position(client) else {
                 continue;
@@ -208,6 +211,68 @@ impl Tab {
         Ok(())
     }
 
+    pub fn request_client_repaint(&mut self, client_id: ClientId, clear_display: bool) {
+        *self.client_repaints.entry(client_id).or_default() |= clear_display;
+    }
+
+    /// Prepare a full pass without invalidating another client's plugin grid or frame caches.
+    pub fn prepare_full_render_for_client(&mut self, client_id: ClientId) {
+        self.tiled_panes.invalidate_boundaries(client_id);
+        let display = *self.display_area.borrow();
+        self.pending_render_damage.push(CellRect {
+            x: 0,
+            y: 0,
+            cols: display.cols,
+            rows: display.rows,
+        });
+        for pane_id in self.kitty_visible_pane_ids() {
+            if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
+                pane.prepare_full_render_for_client(client_id);
+            }
+        }
+    }
+
+    fn render_client_repaints(&mut self, output: &mut Output) -> Result<()> {
+        // Consume normal dirty contents first. Each targeted pass then consumes its shared
+        // terminal dirty state before another frame can send it to existing viewers.
+        let clients: Vec<_> = self.client_repaints.keys().copied().collect();
+        for client_id in clients {
+            if !self.has_connected_client(&client_id) {
+                self.client_repaints.remove(&client_id);
+                continue;
+            }
+            let saved_replay: Vec<_> = if output
+                .pane_change_client
+                .is_some_and(|followed| followed != client_id)
+            {
+                self.kitty_visible_pane_ids()
+                    .into_iter()
+                    .filter_map(|id| {
+                        self.get_pane_with_id_mut(id)
+                            .and_then(|pane| pane.take_rendered_lines())
+                            .map(|replay| (id, replay))
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
+            self.prepare_full_render_for_client(client_id);
+            if self.client_repaints[&client_id] {
+                output.add_pre_vte_instruction_to_client(client_id, "\u{1b}[m\u{1b}[2J");
+                output.mark_host_display_cleared_for_client(client_id);
+            }
+            let rendered = self.render_panes(output, Some(client_id));
+            for (id, replay) in saved_replay {
+                if let Some(pane) = self.get_pane_with_id_mut(id) {
+                    pane.restore_rendered_lines(replay);
+                }
+            }
+            rendered?;
+            self.client_repaints.remove(&client_id);
+        }
+        Ok(())
+    }
+
     pub(super) fn render_tiled_panes_and_chrome(
         &mut self,
         output: &mut Output,
@@ -216,13 +281,10 @@ impl Tab {
         let same_worktree_panes = self.same_worktree_panes(client_id_override);
         let err_context = || "failed to render tab".to_string();
 
-        let mut connected_clients: HashSet<ClientId> =
-            { self.connected_clients.borrow().iter().copied().collect() };
-
-        // If we have a client_id_override (for watcher rendering), add it temporarily
-        if let Some(override_id) = client_id_override {
-            connected_clients.insert(override_id);
-        }
+        let connected_clients: HashSet<ClientId> = match client_id_override {
+            Some(client_id) => HashSet::from([client_id]),
+            None => self.connected_clients.borrow().iter().copied().collect(),
+        };
 
         if connected_clients.is_empty() {
             return Ok(());
@@ -233,12 +295,16 @@ impl Tab {
         if !translucent.is_empty() {
             // ponytail: repaint intersecting panes on each requested frame; add persistent cell
             // caches only if measured panel repaint cost warrants their invalidation machinery.
-            self.force_render_panes_intersecting(
-                &translucent
-                    .iter()
-                    .map(|(_, rect, _)| *rect)
-                    .collect::<Vec<_>>(),
-            );
+            if let Some(client_id) = client_id_override {
+                self.prepare_full_render_for_client(client_id);
+            } else {
+                self.force_render_panes_intersecting(
+                    &translucent
+                        .iter()
+                        .map(|(_, rect, _)| *rect)
+                        .collect::<Vec<_>>(),
+                );
+            }
             let palette = *self.terminal_emulator_colors.borrow();
             output.begin_translucent_composition(
                 &connected_clients,
@@ -267,7 +333,9 @@ impl Tab {
             { self.current_pane_group.borrow().clone_inner() };
         if !self.pending_render_damage.is_empty() {
             // Margin clearing also covers gutter borders outside the pane geometry.
-            self.tiled_panes.reset_boundaries();
+            for client in &connected_clients {
+                self.tiled_panes.invalidate_boundaries(*client);
+            }
             let rect = |geom: PaneGeom| CellRect {
                 x: geom.x,
                 y: geom.y,
@@ -380,7 +448,7 @@ impl Tab {
         // `render_floating_panes_and_overlays`
 
         if output.has_rendered_assets() || self.should_clear_display_before_rendering {
-            self.hide_cursor_and_clear_display_as_needed(output);
+            self.hide_cursor_and_clear_display_as_needed(output, client_id_override);
         }
 
         self.emit_hint_text_if_changed().with_context(err_context)?;
@@ -521,9 +589,12 @@ impl Tab {
             None => self.connected_clients.borrow().iter().copied().collect(),
         }
     }
-    fn hide_cursor_and_clear_display_as_needed(&mut self, output: &mut Output) {
-        let connected_clients: Vec<ClientId> =
-            { self.connected_clients.borrow().iter().copied().collect() };
+    fn hide_cursor_and_clear_display_as_needed(
+        &mut self,
+        output: &mut Output,
+        client_id_override: Option<ClientId>,
+    ) {
+        let connected_clients = self.clients_in_frame(client_id_override);
         output.hide_cursor_for_clients(connected_clients.iter().copied());
         if self.should_clear_display_before_rendering {
             let clear_display = "\u{1b}[m\u{1b}[2J";
@@ -532,7 +603,19 @@ impl Tab {
                 clear_display,
             );
             output.mark_host_display_cleared_for_clients(connected_clients.iter().copied());
-            self.should_clear_display_before_rendering = false;
+            // A watcher alone can consume the clear; other viewers must still receive it.
+            if client_id_override.is_none()
+                || self
+                    .connected_clients
+                    .borrow()
+                    .iter()
+                    .all(|client| connected_clients.contains(client))
+            {
+                self.should_clear_display_before_rendering = false;
+            }
+            for client in connected_clients {
+                self.client_repaints.remove(&client);
+            }
         }
     }
     fn active_pane_z_index(&self, client_id: ClientId) -> Option<usize> {

@@ -1637,3 +1637,497 @@ fn floating_pty_failure_keeps_fullscreen_through_the_retry() {
     assert!(!screen.tabs_needing_reflow.contains(&tab_id));
     assert_fullscreen_at_small(&screen);
 }
+
+/// Capture each delivered stream, including the separate watcher pass.
+fn client_frame_bytes(screen: &mut Screen, receiver: &ServerReceiver) -> HashMap<ClientId, String> {
+    screen.render_to_clients().unwrap();
+    let mut bytes = HashMap::<ClientId, String>::new();
+    for (instruction, _) in receiver.try_iter() {
+        if let ServerInstruction::Render(Some(clients)) = instruction {
+            for (client, stream) in clients {
+                bytes.entry(client).or_default().push_str(&stream);
+            }
+        }
+    }
+    bytes
+}
+
+fn add_arrival_test_layers(screen: &mut Screen, tab_id: TabId) {
+    let (plugin, _receiver) = channels::unbounded();
+    let tab = screen.tabs.get_mut(&tab_id).unwrap();
+    tab.senders.to_plugin = Some(SenderWithContext::new(plugin));
+    for (pane, placement) in [
+        (
+            PaneId::Plugin(crate::PluginId::new(4)),
+            NewPanePlacement::default(),
+        ),
+        (
+            PaneId::Terminal(TerminalId::new(5)),
+            NewPanePlacement::Floating(Some(FloatingPaneCoordinates {
+                x: Some(PercentOrFixed::Fixed(4)),
+                y: Some(PercentOrFixed::Fixed(0)),
+                width: Some(PercentOrFixed::Fixed(28)),
+                height: Some(PercentOrFixed::Fixed(6)),
+                ..Default::default()
+            })),
+        ),
+        (
+            PaneId::Plugin(crate::PluginId::new(6)),
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(
+                FloatingPaneCoordinates {
+                    x: Some(PercentOrFixed::Fixed(44)),
+                    y: Some(PercentOrFixed::Fixed(2)),
+                    width: Some(PercentOrFixed::Fixed(28)),
+                    height: Some(PercentOrFixed::Fixed(6)),
+                    ..Default::default()
+                },
+            ))),
+        ),
+    ] {
+        tab.new_pane(
+            pane,
+            None,
+            None,
+            false,
+            true,
+            placement,
+            Some(ClientId::new(2)),
+            None,
+        )
+        .unwrap();
+    }
+    tab.show_floating_panes();
+    tab.handle_pty_bytes(
+        TerminalId::new(5),
+        b"\x1b[3;1HFLOATING-CONTENT\x1b[1;1H".to_vec(),
+    )
+    .unwrap();
+    for client in [ClientId::new(1), ClientId::new(2), ClientId::new(7)] {
+        for plugin in [crate::PluginId::new(4), crate::PluginId::new(6)] {
+            tab.handle_plugin_bytes(
+                plugin,
+                client,
+                format!("\x1b[3;1HPLUGIN-{plugin}-{client}\x1b[1;1H").into_bytes(),
+            )
+            .unwrap();
+        }
+    }
+}
+
+#[test]
+fn arrival_repaints_only_arriving_clients_and_their_watchers() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let arriving = ClientId::new(1);
+    let viewer = ClientId::new(2);
+    let watcher = ClientId::new(3);
+    let second_arrival = ClientId::new(7);
+    let destination = TabId::new(0);
+    for frame_style in [PaneFrameStyle::Full, PaneFrameStyle::None] {
+        for layered in [false, true] {
+            for followed in [arriving, viewer] {
+                let mut screen = large_client_with_margin_text(large, small);
+                screen.add_client(second_arrival).unwrap();
+                screen.set_client_size(second_arrival, large).unwrap();
+                if layered {
+                    add_arrival_test_layers(&mut screen, destination);
+                }
+                let tab = screen.tabs.get_mut(&destination).unwrap();
+                tab.set_pane_frames(frame_style);
+                tab.handle_pty_bytes(
+                    TerminalId::new(1),
+                    b"\x1b[10;1HDESTINATION-CONTENT".to_vec(),
+                )
+                .unwrap();
+                screen.set_followed_client(followed).unwrap();
+                screen.add_watcher_client(watcher).unwrap();
+                screen.set_watcher_size(watcher, large);
+                let receiver = screen_wired_to_server(&mut screen);
+                let mut grids: HashMap<_, _> = [arriving, viewer, watcher, second_arrival]
+                    .into_iter()
+                    .map(|client| (client, grid_for_render_snapshot(large)))
+                    .collect();
+                for (client, bytes) in client_frame_bytes(&mut screen, &receiver) {
+                    take_snapshot_and_cursor_coordinates(&bytes, grids.get_mut(&client).unwrap());
+                }
+                assert!(format!("{:?}", grids[&arriving]).contains("MARGIN"));
+                assert!(format!("{:?}", grids[&viewer]).contains("DESTINATION-CONTENT"));
+                for client in [arriving, second_arrival] {
+                    screen
+                        .switch_active_tab(TabPosition::new(0), None, true, client)
+                        .unwrap();
+                }
+                // Both arrivals queue before the same controlled frame. The destination stays
+                // pinned, so neither arrival is allowed to force a geometry repaint.
+                assert_eq!(screen.tabs[&destination].size, small);
+                let streams = client_frame_bytes(&mut screen, &receiver);
+                for client in [arriving, second_arrival] {
+                    let bytes = &streams[&client];
+                    assert!(bytes.contains("\x1b[2J"), "{client}: {bytes:?}");
+                    assert!(bytes.contains("DESTINATION-CONTENT"), "{client}: {bytes:?}");
+                    if layered {
+                        assert!(bytes.contains("FLOATING-CONTENT"), "{bytes:?}");
+                        assert!(bytes.contains(&format!("PLUGIN-6-{client}")), "{bytes:?}");
+                        assert!(bytes.contains(&format!("PLUGIN-4-{client}")), "{bytes:?}");
+                    }
+                }
+                for client in [viewer, watcher] {
+                    let bytes = streams.get(&client).map(String::as_str).unwrap_or_default();
+                    let repainted = client == watcher && followed == arriving;
+                    assert_eq!(bytes.contains("\x1b[2J"), repainted, "{client}: {bytes:?}");
+                    assert_eq!(
+                        bytes.contains("DESTINATION-CONTENT"),
+                        repainted,
+                        "{client}: {bytes:?}"
+                    );
+                    if layered && !repainted {
+                        assert!(!bytes.contains("FLOATING-CONTENT"), "style={frame_style:?} layered={layered} followed={followed} client={client}: {bytes:?}");
+                        assert!(!bytes.contains(&format!("PLUGIN-6-{viewer}")), "{bytes:?}");
+                    }
+                }
+                for (client, bytes) in streams {
+                    take_snapshot_and_cursor_coordinates(&bytes, grids.get_mut(&client).unwrap());
+                }
+                for client in [arriving, second_arrival] {
+                    let snapshot = format!("{:?}", grids[&client]);
+                    assert!(!snapshot.contains("MARGIN"), "{snapshot}");
+                    assert!(snapshot.contains("DESTINATION-CONTENT"), "{snapshot}");
+                    if layered {
+                        // The floating pane covers the top chrome, which must not overwrite it.
+                        assert!(snapshot.contains("FLOATING-CONTENT"), "{snapshot}");
+                        assert!(
+                            snapshot.contains(&format!("PLUGIN-6-{client}")),
+                            "{snapshot}"
+                        );
+                    }
+                }
+                // A full repaint must not leave another client's plugin grids, frames, or
+                // boundary caches invalidated for the following unchanged frame.
+                for bytes in client_frame_bytes(&mut screen, &receiver).values() {
+                    assert!(!bytes.contains("\x1b[2J"), "{bytes:?}");
+                    assert!(!bytes.contains("DESTINATION-CONTENT"), "{bytes:?}");
+                    assert!(!bytes.contains("FLOATING-CONTENT"), "{bytes:?}");
+                    assert!(!bytes.contains("PLUGIN-"), "{bytes:?}");
+                    assert!(!bytes.contains('┌') && !bytes.contains('└'), "{bytes:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn departure_cancels_an_arrival_repaint_before_the_frame() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let mut screen = large_client_with_margin_text(large, small);
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(1), b"\x1b[10;1HSTABLE-CONTENT".to_vec())
+        .unwrap();
+    let receiver = screen_wired_to_server(&mut screen);
+    client_frame_bytes(&mut screen, &receiver);
+    screen
+        .switch_active_tab(TabPosition::new(0), None, true, ClientId::new(1))
+        .unwrap();
+    screen
+        .switch_active_tab(TabPosition::new(1), None, true, ClientId::new(1))
+        .unwrap();
+    for _ in 0..2 {
+        let streams = client_frame_bytes(&mut screen, &receiver);
+        let bytes = streams
+            .get(&ClientId::new(2))
+            .map(String::as_str)
+            .unwrap_or_default();
+        assert!(!bytes.contains("\x1b[2J"), "{bytes:?}");
+        assert!(!bytes.contains("STABLE-CONTENT"), "{bytes:?}");
+    }
+}
+
+#[test]
+fn a_geometry_clear_satisfies_the_arrival_repaint() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let mut screen = large_client_with_margin_text(large, small);
+    let receiver = screen_wired_to_server(&mut screen);
+    client_frame_bytes(&mut screen, &receiver);
+    screen
+        .switch_active_tab(TabPosition::new(0), None, true, ClientId::new(1))
+        .unwrap();
+    screen.set_client_size(ClientId::new(2), large).unwrap();
+    screen.resize_to_clients().unwrap();
+    let streams = client_frame_bytes(&mut screen, &receiver);
+    for client in [ClientId::new(1), ClientId::new(2)] {
+        assert_eq!(
+            streams[&client].matches("\x1b[2J").count(),
+            1,
+            "{:?}",
+            streams[&client]
+        );
+    }
+    for bytes in client_frame_bytes(&mut screen, &receiver).values() {
+        assert!(!bytes.contains("\x1b[2J"), "{bytes:?}");
+    }
+}
+
+#[test]
+fn post_layout_resize_failure_keeps_the_committed_layout_and_retries_at_the_same_size() {
+    let size = Size { cols: 80, rows: 24 };
+    let tab_id = TabId::new(1);
+    let mut screen = create_non_mirrored_screen(size);
+    let (writer, writer_receiver) = channels::unbounded();
+    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(writer));
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen
+        .new_tab(tab_id, (vec![], vec![]), None, Some(ClientId::new(1)))
+        .unwrap();
+    let saved_senders = screen.tabs[&tab_id].senders.clone();
+    let _receivers = fail_pty_resizes(&mut screen, tab_id);
+    screen
+        .apply_layout(
+            TiledPaneLayout::default(),
+            vec![],
+            vec![(TerminalId::new(9), None)],
+            vec![],
+            HashMap::new(),
+            tab_id,
+            true,
+            ClientId::new(1),
+            None,
+        )
+        .expect("a committed layout must not be rejected by its post-layout resize");
+    assert!(!screen.tabs[&tab_id].is_pending());
+    assert!(screen.tabs[&tab_id]
+        .get_pane_with_id(PaneId::Terminal(TerminalId::new(9)))
+        .is_some());
+    assert_tab_geometry(&screen, tab_id, size);
+    for _ in 0..2 {
+        assert!(screen.tabs_needing_reflow.contains(&tab_id));
+        assert!(screen.recompute_tab_size(tab_id).is_err());
+        assert_tab_geometry(&screen, tab_id, size);
+    }
+    writer_receiver.try_iter().for_each(drop);
+    screen.tabs.get_mut(&tab_id).unwrap().senders = saved_senders;
+    screen.recompute_tab_size(tab_id).unwrap();
+    assert!(!screen.tabs_needing_reflow.contains(&tab_id));
+    assert_tab_geometry(&screen, tab_id, size);
+    assert!(writer_receiver.try_iter().any(|(instruction, _)| matches!(instruction,
+        PtyWriteInstruction::ResizePty(id, cols, rows, _, _) if id == TerminalId::new(9) && cols > 0 && rows > 0
+    )));
+}
+
+#[test]
+fn recompute_tab_size_instruction_survives_resize_failure_and_schedules_recovery() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let client = ClientId::new(1);
+    let terminal = TerminalId::new(0);
+    let mut mock = MockScreen::new(large);
+    let writer_shutdown = Shutdown::default();
+    let (writer, writer_receiver) = channels::unbounded();
+    let writer = writer_shutdown.sender(writer);
+    let (background, background_receiver) = channels::unbounded();
+    let background = SenderWithContext::new(background);
+    // Start the real instruction loop directly: no sleeps or simulated dispatch. The writer
+    // remains connected until the initial layout and content are visibly committed.
+    let mut bus = Bus::new(
+        vec![mock.screen_receiver.take().unwrap()],
+        Some(&mock.to_screen),
+        Some(&mock.to_pty),
+        Some(&mock.to_plugin),
+        Some(&mock.to_server),
+        Some(&writer),
+        Some(&background),
+        Some(Box::new(mock.os_input.clone())),
+    );
+    bus.senders.session = mock.session_metadata.senders.session.clone();
+    let attributes = mock.client_attributes.clone();
+    let mut config = mock.config.clone();
+    config.options.agent_pane_min_columns = Some(0);
+    config.options.agent_pane_min_rows = Some(0);
+    let thread = std::thread::spawn(move || {
+        screen_thread_main(
+            bus,
+            None,
+            attributes,
+            config,
+            false,
+            None,
+            None,
+            None,
+            Box::default(),
+        )
+        .expect("the screen thread must survive a failed resize");
+    });
+    let events = Watched::new(vec![]);
+    let server_receiver = mock.server_receiver.take().unwrap();
+    let server_thread =
+        log_actions_in_thread!(events, ServerInstruction::KillSession, server_receiver);
+    mock.to_screen
+        .send(ScreenInstruction::NewTab(
+            None,
+            None,
+            Some(TiledPaneLayout::default()),
+            vec![],
+            None,
+            (Some(vec![]), Some(vec![])),
+            None,
+            false,
+            true,
+            client,
+            None,
+        ))
+        .unwrap();
+    mock.to_screen
+        .send(ScreenInstruction::ApplyLayout(
+            TiledPaneLayout::default(),
+            vec![],
+            vec![(terminal, None)],
+            vec![],
+            vec![],
+            HashMap::new(),
+            TabId::new(0),
+            true,
+            client,
+            None,
+            None,
+        ))
+        .unwrap();
+    mock.to_screen
+        .send(ScreenInstruction::PtyBytes(terminal, b"READY".to_vec()))
+        .unwrap();
+    mock.to_screen
+        .send(ScreenInstruction::RenderToClients)
+        .unwrap();
+    wait_for_settled_render(&events, large, "initial layout", |frame| {
+        frame.contains("READY")
+    });
+    drop(writer_receiver);
+    background_receiver.try_iter().for_each(drop);
+    mock.to_screen
+        .send(ScreenInstruction::RecomputeTabSize(client, small))
+        .unwrap();
+    // This reply is a barrier: the resize handler has returned to the receive loop, and
+    // only its scheduling can have queued a retry since the initialization jobs were drained.
+    let (response, receiver) = crossbeam::channel::unbounded();
+    mock.to_screen
+        .send(ScreenInstruction::GetPaneInfo {
+            pane_id: PaneId::Terminal(terminal),
+            response_channel: response,
+        })
+        .unwrap();
+    assert!(receiver
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap()
+        .is_some());
+    assert!(background_receiver
+        .try_iter()
+        .any(|(job, _)| matches!(job, BackgroundJob::RenderToClients)));
+    mock.to_screen
+        .send(ScreenInstruction::PtyBytes(
+            terminal,
+            b"\x1b[10;1HALIVE-AFTER-FAILURE".to_vec(),
+        ))
+        .unwrap();
+    mock.to_screen
+        .send(ScreenInstruction::RenderToClients)
+        .unwrap();
+    wait_for_settled_render(
+        &events,
+        small,
+        "instructions after resize failure",
+        |frame| frame.contains("ALIVE-AFTER-FAILURE"),
+    );
+
+    // Recover the same sender using its normal shutdown tolerance, as the floating-resize
+    // regressions do. The separate layout test verifies actual size resends and retry removal.
+    writer_shutdown.begin();
+    mock.to_screen
+        .send(ScreenInstruction::PtyBytes(
+            terminal,
+            b"\x1b[20;60HRECOVERED".to_vec(),
+        ))
+        .unwrap();
+    mock.to_screen
+        .send(ScreenInstruction::RenderToClients)
+        .unwrap();
+    wait_for_settled_render(
+        &events,
+        small,
+        "render after resize dependency recovery",
+        |frame| frame.contains("ALIVE-AFTER-FAILURE") && frame.contains("RECOVERED"),
+    );
+    let (response, receiver) = crossbeam::channel::unbounded();
+    mock.to_screen
+        .send(ScreenInstruction::GetPaneInfo {
+            pane_id: PaneId::Terminal(terminal),
+            response_channel: response,
+        })
+        .unwrap();
+    let pane = receiver
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap()
+        .unwrap();
+    assert!(pane.pane_x.get() + pane.pane_columns.get() <= small.cols);
+    assert!(pane.pane_y.get() + pane.pane_rows.get() <= small.rows);
+    mock.teardown(vec![thread, server_thread]);
+}
+
+#[test]
+fn arrival_preserves_incremental_updates_for_an_existing_viewer_and_its_watcher() {
+    let large = Size {
+        cols: 160,
+        rows: 50,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let viewer = ClientId::new(2);
+    let watcher = ClientId::new(3);
+    let mut screen = large_client_with_margin_text(large, small);
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .handle_pty_bytes(
+            TerminalId::new(1),
+            b"\x1b[15;1HUNCHANGED-CONTENT\x1b[1;1H".to_vec(),
+        )
+        .unwrap();
+    screen.set_followed_client(viewer).unwrap();
+    screen.add_watcher_client(watcher).unwrap();
+    screen.set_watcher_size(watcher, small);
+    let receiver = screen_wired_to_server(&mut screen);
+    client_frame_bytes(&mut screen, &receiver);
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .handle_pty_bytes(
+            TerminalId::new(1),
+            b"\x1b[3;1HINCREMENTAL-UPDATE\x1b[1;1H".to_vec(),
+        )
+        .unwrap();
+    screen
+        .switch_active_tab(TabPosition::new(0), None, true, ClientId::new(1))
+        .unwrap();
+    let streams = client_frame_bytes(&mut screen, &receiver);
+    assert!(streams[&ClientId::new(1)].contains("UNCHANGED-CONTENT"));
+    for client in [viewer, watcher] {
+        let bytes = &streams[&client];
+        assert!(bytes.contains("INCREMENTAL-UPDATE"), "{client}: {bytes:?}");
+        assert!(!bytes.contains("UNCHANGED-CONTENT"), "{client}: {bytes:?}");
+        assert!(!bytes.contains("\x1b[2J"), "{client}: {bytes:?}");
+    }
+}

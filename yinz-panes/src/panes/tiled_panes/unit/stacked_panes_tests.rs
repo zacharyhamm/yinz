@@ -1075,6 +1075,9 @@ impl Pane for MockPane {
     fn reset_size_and_position_override(&mut self) {
         unimplemented!()
     }
+    fn prepare_full_render_for_client(&mut self, _client_id: ClientId) {
+        unimplemented!()
+    }
     fn prepare_content_replay(&mut self, _client_id: ClientId) {
         unimplemented!()
     }

@@ -511,6 +511,13 @@ impl Pane for PluginPane {
     fn invalidate_frame(&mut self, client_id: ClientId) {
         self.frame.remove(&client_id);
     }
+    fn prepare_full_render_for_client(&mut self, client_id: ClientId) {
+        self.invalidate_frame(client_id);
+        if let Some(grid) = self.grids.get_mut(&client_id) {
+            grid.render_full_viewport();
+            self.should_render.insert(client_id, true);
+        }
+    }
     fn should_render(&self) -> bool {
         // set should_render for all clients
         self.should_render.values().any(|v| *v)

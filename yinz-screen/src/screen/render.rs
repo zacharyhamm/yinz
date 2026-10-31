@@ -648,7 +648,7 @@ impl Screen {
                     // followed client, one entry for every watcher) can tell apart. State the
                     // cursor from scratch for it.
                     tab.forget_watcher_host_cursor_state(followed_client_id);
-                    tab.set_force_render();
+                    tab.prepare_full_render_for_client(followed_client_id);
                     // A forced pane repaint cannot erase overlays outside the panes.
                     watcher_output
                         .add_pre_vte_instruction_to_client(followed_client_id, "\u{1b}[m\u{1b}[2J");

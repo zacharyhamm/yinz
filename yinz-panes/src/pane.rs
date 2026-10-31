@@ -176,6 +176,14 @@ pub trait Pane {
     fn remove_client(&mut self, _client_id: ClientId) {}
     /// Replay consumed content for a watcher without invalidating frame caches.
     fn prepare_content_replay(&mut self, client_id: ClientId);
+    /// Redraw one client's contents and frame after its host display was lost.
+    /// Shared terminal dirty state must be consumed before rendering other clients again.
+    fn prepare_full_render_for_client(&mut self, client_id: ClientId);
+    /// Preserve shared terminal replay metadata while another client's targeted pass runs.
+    fn take_rendered_lines(&mut self) -> Option<yinz_terminal::output::RenderedLines> {
+        None
+    }
+    fn restore_rendered_lines(&mut self, _rendered: yinz_terminal::output::RenderedLines) {}
     /// Replay a frame without dirtying the pane's contents.
     fn invalidate_frame(&mut self, _client_id: ClientId) {}
     fn reset_size_and_position_override(&mut self);

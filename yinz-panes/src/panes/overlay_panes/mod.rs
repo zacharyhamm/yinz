@@ -935,7 +935,6 @@ impl OverlayPanes {
         }
         self.note_modal_return(client_id, None, pane_id);
         self.active_panes.insert(client_id, pane_id, &self.panes);
-        self.set_force_render();
     }
     pub fn focus_pane_for_all_clients(&mut self, pane_id: PaneId) {
         if !self.may_be_focused(&pane_id) {
@@ -1888,11 +1887,10 @@ impl OverlayPanes {
     ) -> Result<()> {
         let err_context = || "failed to render overlays";
 
-        let mut connected_clients: HashSet<ClientId> =
-            { self.connected_clients.borrow().iter().copied().collect() };
-        if let Some(override_id) = client_id_override {
-            connected_clients.insert(override_id);
-        }
+        let connected_clients: HashSet<ClientId> = match client_id_override {
+            Some(client_id) => HashSet::from([client_id]),
+            None => self.connected_clients.borrow().iter().copied().collect(),
+        };
         let connected_clients: Vec<ClientId> = connected_clients.into_iter().collect();
 
         let mut active_panes = self.active_panes.clone_active_panes();

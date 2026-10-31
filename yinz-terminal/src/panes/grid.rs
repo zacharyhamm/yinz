@@ -1089,6 +1089,12 @@ impl Grid {
             self.output_buffer.replay_last_read();
         }
     }
+    pub fn take_rendered_lines(&mut self) -> crate::output::RenderedLines {
+        self.output_buffer.take_rendered_lines()
+    }
+    pub fn restore_rendered_lines(&mut self, rendered: crate::output::RenderedLines) {
+        self.output_buffer.restore_rendered_lines(rendered);
+    }
     pub fn update_line_for_rendering(&mut self, line_index: usize) {
         self.output_buffer.update_line(line_index);
     }

@@ -633,13 +633,15 @@ impl Screen {
                 .tabs
                 .get_mut(&transition.destination)
                 .context("failed to find destination tab")?;
+            let arriving_clients: Vec<_> = clients.iter().map(|(client, _)| *client).collect();
             tab.add_multiple_clients(clients)
                 .context("failed to attach clients")?;
             tab.visible(true)
                 .context("failed to show destination tab")?;
-            tab.set_force_render();
             if tab.has_stack_lists() {
-                tab.set_should_clear_display_before_rendering();
+                for client in arriving_clients {
+                    tab.request_client_repaint(client, true);
+                }
             }
             if let Some(direction) = direction {
                 for (client, _) in &transition.old_focus {
@@ -707,8 +709,7 @@ impl Screen {
         let leaves_a_margin =
             client_size.is_some_and(|size| size.cols > tab_size.cols || size.rows > tab_size.rows);
         if left_tab_painted_outside_viewport || leaves_a_margin {
-            tab.set_should_clear_display_before_rendering();
-            tab.set_force_render();
+            tab.request_client_repaint(client_id, true);
         }
     }
 

@@ -2158,6 +2158,12 @@ pub struct OutputBuffer {
     styled_underlines: bool,
 }
 
+/// Row metadata retained across a targeted pass so watchers can replay the followed client.
+pub struct RenderedLines {
+    lines: ChangedLines,
+    all: bool,
+}
+
 impl Default for OutputBuffer {
     fn default() -> Self {
         OutputBuffer {
@@ -2171,6 +2177,18 @@ impl Default for OutputBuffer {
 }
 
 impl OutputBuffer {
+    pub fn take_rendered_lines(&mut self) -> RenderedLines {
+        RenderedLines {
+            lines: std::mem::take(&mut self.last_read),
+            all: self.last_read_all,
+        }
+    }
+
+    pub fn restore_rendered_lines(&mut self, rendered: RenderedLines) {
+        self.last_read = rendered.lines;
+        self.last_read_all = rendered.all;
+    }
+
     pub fn update_line(&mut self, line_index: usize) {
         if !self.should_update_all_lines {
             self.changed_lines.insert(line_index);
