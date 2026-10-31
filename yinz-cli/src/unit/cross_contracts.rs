@@ -1,3 +1,4 @@
+use crate::actions::PathResolution;
 use yinz_config::config::Config;
 use yinz_types::{
     data::InputMode,
@@ -28,7 +29,7 @@ fn cli_pipe_moves_arguments_and_configuration_without_cloning() {
             plugin_cwd: None,
             plugin_title: None,
         },
-        Box::new(std::path::PathBuf::new),
+        PathResolution::Local(Box::new(std::path::PathBuf::new)),
         None,
     )
     .unwrap();
@@ -194,7 +195,7 @@ fn cli_pipe_focus_is_opt_in_and_requires_a_destination() {
                 }
             ));
             let actions =
-                crate::actions::actions_from_cli(action, Box::new(std::path::PathBuf::new), None)
+                crate::actions::actions_from_cli(action, PathResolution::Local(Box::new(std::path::PathBuf::new)), None)
                     .unwrap();
             assert!(
                 matches!(actions[0], Action::CliPipe { focus_plugin, .. } if focus_plugin == focus)

@@ -1,3 +1,4 @@
+use crate::actions::PathResolution;
 use crate::args::{CliAction, CliArgs, Command, Sessions};
 use clap::Parser;
 use serde_json::{json, Value};
@@ -52,7 +53,11 @@ fn configuration(parsed: CliArgs) -> Value {
 }
 
 fn convert(action: CliAction) -> Result<Vec<Action>, String> {
-    crate::actions::actions_from_cli(action, Box::new(|| "/tmp".into()), None)
+    crate::actions::actions_from_cli(
+        action,
+        PathResolution::Local(Box::new(|| "/tmp".into())),
+        None,
+    )
 }
 
 fn runtime_configuration(action: Action) -> BTreeMap<String, String> {

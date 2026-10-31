@@ -1,3 +1,4 @@
+use crate::actions::PathResolution;
 use crate::args::{CliArgs, Command};
 use clap::Parser;
 use yinz_types::{input::actions::Action, internal_ids::TabNumber};
@@ -102,8 +103,12 @@ fn tab_group_commands_parse_and_convert() {
         let Some(Command::Action(action)) = parsed.command else {
             panic!("expected action");
         };
-        let actions =
-            crate::actions::actions_from_cli(*action, Box::new(|| "/tmp".into()), None).unwrap();
+        let actions = crate::actions::actions_from_cli(
+            *action,
+            PathResolution::Local(Box::new(|| "/tmp".into())),
+            None,
+        )
+        .unwrap();
         assert_eq!(actions, vec![expected]);
     }
 }

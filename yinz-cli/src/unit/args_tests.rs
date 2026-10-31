@@ -1,3 +1,4 @@
+use crate::actions::PathResolution;
 #[test]
 fn warp_tab_uses_tab_id() {
     use yinz_types::input::actions::Action;
@@ -26,7 +27,12 @@ fn warp_tab_uses_tab_id() {
             panic!("expected an action");
         };
         assert_eq!(
-            crate::actions::actions_from_cli(*action, Box::new(PathBuf::new), None).unwrap(),
+            crate::actions::actions_from_cli(
+                *action,
+                PathResolution::Local(Box::new(PathBuf::new)),
+                None
+            )
+            .unwrap(),
             vec![expected],
         );
         assert!(try_parse_cli([
@@ -47,7 +53,7 @@ fn warp_tab_uses_tab_id() {
                 to_session: None,
                 from_session: Some("work".into()),
             },
-            Box::new(PathBuf::new),
+            PathResolution::Local(Box::new(PathBuf::new)),
             None
         )
         .unwrap_err(),

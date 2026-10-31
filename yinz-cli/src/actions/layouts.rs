@@ -24,13 +24,13 @@ pub(super) fn new_tab(
     block_until_exit_failure: bool,
     block_until_exit: bool,
     no_focus: bool,
-    get_current_dir: &dyn Fn() -> PathBuf,
+    path_resolution: &super::PathResolution,
     config: Option<Config>,
 ) -> Result<Vec<Action>, String> {
-    let current_dir = get_current_dir();
+    let paths = path_resolution.resolve();
     let cwd = cwd
-        .map(|cwd| current_dir.join(cwd))
-        .or_else(|| super::default_dir(&current_dir));
+        .map(|cwd| paths.join(cwd))
+        .or_else(|| paths.default_dir());
 
     // Map CLI flags to UnblockCondition
     let first_pane_unblock_condition = if block_until_exit_success {
@@ -45,14 +45,14 @@ pub(super) fn new_tab(
 
     // Parse initial_panes from initial_command or initial_plugin
     let initial_panes = if let Some(plugin_url) = initial_plugin {
-        let plugin = match super::plugin_from_url(&plugin_url, cwd.clone(), &current_dir) {
+        let plugin = match super::plugin_from_url(&plugin_url, cwd.clone(), &paths) {
             Ok(run_plugin) => RunPluginOrAlias::RunPlugin(RunPlugin {
                 initial_cwd: cwd.clone(),
                 ..run_plugin
             }),
             Err(_) => {
                 let mut plugin_alias = PluginAlias::new(&plugin_url, &None, cwd.clone());
-                plugin_alias.set_caller_cwd_if_not_set(super::default_dir(&current_dir));
+                plugin_alias.set_caller_cwd_if_not_set(paths.default_dir());
                 RunPluginOrAlias::Alias(plugin_alias)
             },
         };
@@ -285,19 +285,19 @@ pub(super) fn switch_session(
     layout_string: Option<String>,
     layout_dir: Option<PathBuf>,
     cwd: Option<PathBuf>,
-    get_current_dir: &dyn Fn() -> PathBuf,
+    path_resolution: &super::PathResolution,
     config: Option<Config>,
 ) -> Result<Vec<Action>, String> {
     let pane_id = pane_id.as_deref().map(parse_pane_id).transpose()?;
 
     let cwd = cwd.map(|cwd| {
-        let current_dir = get_current_dir();
-        current_dir.join(cwd)
+        let paths = path_resolution.resolve();
+        paths.join(cwd)
     });
 
     let layout_dir = layout_dir.map(|layout_dir| {
-        let current_dir = get_current_dir();
-        current_dir.join(layout_dir)
+        let paths = path_resolution.resolve();
+        paths.join(layout_dir)
     });
 
     let layout_info = if let Some(layout_string) = layout_string {
@@ -315,7 +315,7 @@ pub(super) fn switch_session(
             layout_dir.clone(),
         )
         .map_err(|e| layout_error_report(e, None))?;
-        if super::session_resolves_paths(&get_current_dir()) {
+        if matches!(path_resolution, super::PathResolution::Session) {
             // The file is on this machine and the session is not, so its text has to travel.
             // A stringified layout has no sibling swap layout file.
             let (_, raw_layout, _) = yinz_config::layout::stringified_from_path_or_default(

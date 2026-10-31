@@ -729,7 +729,9 @@ impl TestSession {
     ) -> (JoinHandle<i32>, ClientScreen) {
         let actions = yinz_cli::actions::actions_from_cli(
             cli_action,
-            Box::new(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))),
+            yinz_cli::actions::PathResolution::Local(Box::new(|| {
+                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
+            })),
             Some(self.config.clone()),
         )
         .expect("failed to build cli actions");

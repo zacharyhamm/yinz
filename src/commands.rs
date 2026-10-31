@@ -626,14 +626,14 @@ fn attach_with_cli_client(
         }
     }
     let os_input = get_os_input(yinz_client::os_input_output::get_cli_client_os_input);
-    let get_current_dir = || {
-        if crate::remote_commands::selected().is_some() {
-            PathBuf::new()
-        } else {
+    let path_resolution = if crate::remote_commands::selected().is_some() {
+        yinz_cli::actions::PathResolution::Session
+    } else {
+        yinz_cli::actions::PathResolution::Local(Box::new(|| {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        }
+        }))
     };
-    match yinz_cli::actions::actions_from_cli(cli_action, Box::new(get_current_dir), config) {
+    match yinz_cli::actions::actions_from_cli(cli_action, path_resolution, config) {
         Ok(actions) => {
             let exit_status = match crate::remote_commands::selected() {
                 Some(target) => yinz_client::cli_client::start_cli_client_at(

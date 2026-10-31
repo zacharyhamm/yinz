@@ -44,9 +44,14 @@ pub fn run(mut action: CliAction, session: Option<String>, started: Instant) -> 
         }
         // Reuse the same parser, state mapping, and bounded event construction as manual
         // actions. These values are packaged, never dispatched as generic actions.
-        let actions =
-            yinz_cli::actions::actions_from_cli(action, Box::new(std::path::PathBuf::new), None)
-                .map_err(|_| anyhow!("invalid agent report input"))?;
+        let actions = yinz_cli::actions::actions_from_cli(
+            action,
+            yinz_cli::actions::PathResolution::Local(Box::new(|| {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            })),
+            None,
+        )
+        .map_err(|_| anyhow!("invalid agent report input"))?;
         let (pane_id, state, event) = report_parts(actions)?;
         let report = {
             let mut t = trace.lock().map_err(|_| anyhow!("report trace poisoned"))?;

@@ -7,6 +7,10 @@ use yinz_types::data::{BareKey, InputMode};
 use yinz_types::geometry::{Direction, Resize};
 use yinz_types::input::actions::hook_report_actions;
 
+fn local_paths() -> PathResolution {
+    PathResolution::Local(Box::new(|| PathBuf::from("/tmp")))
+}
+
 #[test]
 fn actions_that_leave_a_clipboard_message() {
     assert!(Action::Copy.leaves_clipboard_message());
@@ -32,8 +36,7 @@ fn test_send_keys_single_key() {
         keys: vec!["Enter".to_string()],
         pane_id: None,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -60,8 +63,7 @@ fn test_send_keys_with_modifier() {
         keys: vec!["Ctrl a".to_string()],
         pane_id: None,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -87,8 +89,7 @@ fn test_send_keys_multiple_keys() {
         keys: vec!["Ctrl a".to_string(), "F1".to_string(), "Enter".to_string()],
         pane_id: None,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 3);
@@ -111,8 +112,7 @@ fn test_send_keys_error_hyphen_syntax() {
         keys: vec!["Ctrl-a".to_string()],
         pane_id: None,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.contains("Use spaces instead of hyphens"));
@@ -124,8 +124,7 @@ fn test_send_keys_error_typo() {
         keys: vec!["Ctrll a".to_string()],
         pane_id: None,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.contains("Ctrl") || err.contains("modifier"));
@@ -137,8 +136,7 @@ fn test_send_keys_with_pane_id() {
         keys: vec!["a".to_string()],
         pane_id: Some("terminal_1".to_string()),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -160,8 +158,7 @@ fn test_send_keys_error_invalid_pane_id() {
         keys: vec!["a".to_string()],
         pane_id: Some("invalid_id".to_string()),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.contains("Malformed pane id"));
@@ -179,8 +176,7 @@ fn test_resize_with_pane_id() {
         direction: Some(Direction::Left),
         pane_id: Some("terminal_3".to_string()),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -208,8 +204,7 @@ fn test_resize_without_pane_id() {
         direction: Some(Direction::Left),
         pane_id: None,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -229,8 +224,7 @@ fn test_move_pane_with_pane_id() {
         direction: Some(Direction::Right),
         pane_id: Some("terminal_9".to_string()),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -252,8 +246,7 @@ fn test_move_pane_without_pane_id() {
         direction: Some(Direction::Right),
         pane_id: None,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -272,8 +265,7 @@ fn test_edit_scrollback_with_pane_id() {
         pane_id: Some("terminal_15".to_string()),
         ansi: false,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -295,8 +287,7 @@ fn test_rename_pane_with_pane_id() {
         name: "my-pane".to_string(),
         pane_id: Some("terminal_19".to_string()),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -320,8 +311,7 @@ fn test_rename_pane_without_pane_id() {
         name: "my-pane".to_string(),
         pane_id: None,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -340,8 +330,7 @@ fn test_scroll_up_with_invalid_pane_id() {
     let cli_action = CliAction::ScrollUp {
         pane_id: Some("invalid_id".to_string()),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.contains("Malformed pane id"));
@@ -357,8 +346,7 @@ fn test_close_tab_with_tab_id() {
     let cli_action = CliAction::CloseTab {
         tab_id: Some(TabId::new(5)),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -373,8 +361,7 @@ fn test_close_tab_with_tab_id() {
 #[test]
 fn test_close_tab_without_tab_id() {
     let cli_action = CliAction::CloseTab { tab_id: None };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -383,11 +370,7 @@ fn test_close_tab_without_tab_id() {
 
 #[test]
 fn test_set_dark_theme_cli_to_action() {
-    let result = crate::actions::actions_from_cli(
-        CliAction::SetDarkTheme,
-        Box::new(|| PathBuf::from("/tmp")),
-        None,
-    );
+    let result = crate::actions::actions_from_cli(CliAction::SetDarkTheme, local_paths(), None);
     let actions = result.expect("SetDarkTheme conversion should succeed");
     assert_eq!(actions.len(), 1);
     assert!(matches!(actions[0], Action::SetDarkTheme));
@@ -395,11 +378,7 @@ fn test_set_dark_theme_cli_to_action() {
 
 #[test]
 fn test_set_light_theme_cli_to_action() {
-    let result = crate::actions::actions_from_cli(
-        CliAction::SetLightTheme,
-        Box::new(|| PathBuf::from("/tmp")),
-        None,
-    );
+    let result = crate::actions::actions_from_cli(CliAction::SetLightTheme, local_paths(), None);
     let actions = result.expect("SetLightTheme conversion should succeed");
     assert_eq!(actions.len(), 1);
     assert!(matches!(actions[0], Action::SetLightTheme));
@@ -407,11 +386,7 @@ fn test_set_light_theme_cli_to_action() {
 
 #[test]
 fn test_toggle_theme_cli_to_action() {
-    let result = crate::actions::actions_from_cli(
-        CliAction::ToggleTheme,
-        Box::new(|| PathBuf::from("/tmp")),
-        None,
-    );
+    let result = crate::actions::actions_from_cli(CliAction::ToggleTheme, local_paths(), None);
     let actions = result.expect("ToggleTheme conversion should succeed");
     assert_eq!(actions.len(), 1);
     assert!(matches!(actions[0], Action::ToggleTheme));
@@ -424,8 +399,7 @@ fn test_rename_tab_with_tab_id() {
         name: "my-tab".to_string(),
         tab_id: Some(TabId::new(3)),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -444,8 +418,7 @@ fn test_rename_tab_without_tab_id() {
         name: "my-tab".to_string(),
         tab_id: None,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 2);
@@ -459,8 +432,7 @@ fn test_undo_rename_tab_with_tab_id() {
     let cli_action = CliAction::UndoRenameTab {
         tab_id: Some(TabId::new(7)),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -475,8 +447,7 @@ fn test_undo_rename_tab_with_tab_id() {
 #[test]
 fn test_undo_rename_tab_without_tab_id() {
     let cli_action = CliAction::UndoRenameTab { tab_id: None };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -489,8 +460,7 @@ fn test_toggle_active_sync_tab_with_tab_id() {
     let cli_action = CliAction::ToggleActiveSyncTab {
         tab_id: Some(TabId::new(2)),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -505,8 +475,7 @@ fn test_toggle_active_sync_tab_with_tab_id() {
 #[test]
 fn test_toggle_active_sync_tab_without_tab_id() {
     let cli_action = CliAction::ToggleActiveSyncTab { tab_id: None };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -519,8 +488,7 @@ fn test_toggle_floating_panes_with_tab_id() {
     let cli_action = CliAction::ToggleFloatingPanes {
         tab_id: Some(TabId::new(4)),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -535,8 +503,7 @@ fn test_toggle_floating_panes_with_tab_id() {
 #[test]
 fn test_toggle_floating_panes_without_tab_id() {
     let cli_action = CliAction::ToggleFloatingPanes { tab_id: None };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -549,8 +516,7 @@ fn test_previous_swap_layout_with_tab_id() {
     let cli_action = CliAction::PreviousSwapLayout {
         tab_id: Some(TabId::new(6)),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -565,8 +531,7 @@ fn test_previous_swap_layout_with_tab_id() {
 #[test]
 fn test_previous_swap_layout_without_tab_id() {
     let cli_action = CliAction::PreviousSwapLayout { tab_id: None };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -579,8 +544,7 @@ fn test_next_swap_layout_with_tab_id() {
     let cli_action = CliAction::NextSwapLayout {
         tab_id: Some(TabId::new(8)),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -595,8 +559,7 @@ fn test_next_swap_layout_with_tab_id() {
 #[test]
 fn test_next_swap_layout_without_tab_id() {
     let cli_action = CliAction::NextSwapLayout { tab_id: None };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -610,8 +573,7 @@ fn test_move_tab_with_tab_id() {
         direction: Direction::Right,
         tab_id: Some(TabId::new(10)),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -630,8 +592,7 @@ fn test_move_tab_without_tab_id() {
         direction: Direction::Right,
         tab_id: None,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -651,8 +612,7 @@ fn test_edit_scrollback_with_ansi_flag() {
         pane_id: None,
         ansi: true,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -665,8 +625,7 @@ fn test_edit_scrollback_with_pane_id_and_ansi() {
         pane_id: Some("terminal_15".to_string()),
         ansi: true,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -690,8 +649,7 @@ fn test_dump_screen_with_ansi_flag() {
         pane_id: None,
         ansi: true,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -716,8 +674,7 @@ fn test_dump_screen_with_pane_id_and_ansi() {
         pane_id: Some("terminal_5".to_string()),
         ansi: true,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -740,8 +697,7 @@ fn test_focus_pane_id() {
     let cli_action = CliAction::FocusPaneId {
         pane_id: "terminal_7".to_string(),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -761,8 +717,7 @@ fn test_focus_pane_id_bare_int() {
     let cli_action = CliAction::FocusPaneId {
         pane_id: "3".to_string(),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -782,8 +737,7 @@ fn test_focus_pane_id_plugin() {
     let cli_action = CliAction::FocusPaneId {
         pane_id: "plugin_2".to_string(),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -803,8 +757,7 @@ fn test_focus_pane_id_malformed() {
     let cli_action = CliAction::FocusPaneId {
         pane_id: "invalid_id".to_string(),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_err());
 }
 
@@ -825,8 +778,7 @@ fn test_new_tab_with_layout_string() {
         block_until_exit_failure: false,
         no_focus: false,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -864,8 +816,7 @@ fn test_new_tab_with_invalid_layout_string() {
         block_until_exit_failure: false,
         no_focus: false,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     let error = result.unwrap_err();
     assert!(error.contains("layout-string"), "{error}");
     assert!(error.contains("invalid { kdl"), "{error}");
@@ -907,10 +858,8 @@ fn layout_errors_are_reported_against_the_file_that_failed() {
         layout_dir: None,
         cwd: None,
     };
-    let report = |action| {
-        crate::actions::actions_from_cli(action, Box::new(|| PathBuf::from("/tmp")), None)
-            .unwrap_err()
-    };
+    let report =
+        |action| crate::actions::actions_from_cli(action, local_paths(), None).unwrap_err();
     std::fs::write(&layout, "layout {\n    pane\n}\n").unwrap();
     std::fs::write(
         root.path().join("broken.swap.kdl"),
@@ -948,8 +897,7 @@ fn test_override_layout_with_layout_string() {
         retain_existing_plugin_panes: false,
         apply_only_to_active_tab: false,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -972,7 +920,7 @@ fn test_override_layout_with_invalid_layout_string() {
             retain_existing_plugin_panes: false,
             apply_only_to_active_tab: false,
         },
-        Box::new(|| PathBuf::from("/tmp")),
+        local_paths(),
         None,
     )
     .unwrap_err();
@@ -991,8 +939,7 @@ fn test_switch_session_with_layout_string() {
         layout_dir: None,
         cwd: None,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -1018,8 +965,7 @@ fn test_switch_session_with_invalid_layout_string() {
         layout_dir: None,
         cwd: None,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     let error = result.unwrap_err();
     assert!(error.contains("layout-string"), "{error}");
     assert!(error.contains("invalid { kdl"), "{error}");
@@ -1067,9 +1013,8 @@ fn remote_new_pane(command: Vec<String>, cwd: Option<PathBuf>) -> CliAction {
 }
 
 fn tiled_run_command(cli_action: CliAction) -> RunCommandAction {
-    let actions =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None)
-            .expect("the cli action should be accepted");
+    let actions = crate::actions::actions_from_cli(cli_action, local_paths(), None)
+        .expect("the cli action should be accepted");
     match &actions[0] {
         Action::NewTiledPane {
             command: Some(command),
@@ -1125,9 +1070,8 @@ fn a_local_pane_with_no_command_is_still_commandless() {
     if let CliAction::NewPane { remote_host, .. } = &mut cli_action {
         *remote_host = None;
     }
-    let actions =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None)
-            .expect("the cli action should be accepted");
+    let actions = crate::actions::actions_from_cli(cli_action, local_paths(), None)
+        .expect("the cli action should be accepted");
     match &actions[0] {
         Action::NewTiledPane { command, .. } => assert!(command.is_none()),
         other => panic!("expected a tiled pane, got {other:?}"),
@@ -1173,8 +1117,7 @@ fn test_new_pane_tiled_with_tab_id() {
         borderless: None,
         tab_id: Some(TabId::new(3)),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -1223,8 +1166,7 @@ fn test_new_pane_tiled_without_tab_id() {
         borderless: None,
         tab_id: None,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -1273,8 +1215,7 @@ fn test_new_in_place_pane_with_pane_id_to_replace() {
         borderless: None,
         tab_id: None,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -1330,8 +1271,7 @@ fn test_new_in_place_pane_with_malformed_pane_id() {
         borderless: None,
         tab_id: None,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("Malformed pane id"));
 }
@@ -1373,8 +1313,7 @@ fn test_new_pane_floating_with_tab_id() {
         borderless: None,
         tab_id: Some(TabId::new(5)),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -1423,8 +1362,7 @@ fn test_new_pane_stacked_with_tab_id() {
         borderless: None,
         tab_id: Some(TabId::new(1)),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -1447,7 +1385,7 @@ fn reconfigure_takes_a_fragment_and_refuses_one_that_does_not_parse() {
                 file: None,
                 write,
             },
-            Box::new(|| PathBuf::from("/tmp")),
+            local_paths(),
             None,
         )
     };
@@ -1474,7 +1412,7 @@ fn set_hook_is_a_hooks_fragment() {
                 url: url.to_owned(),
                 write: false,
             },
-            Box::new(|| PathBuf::from("/tmp")),
+            local_paths(),
             None,
         )
     };
@@ -1725,7 +1663,7 @@ fn a_hook_event_too_big_to_hand_round_is_cut_rather_than_dropped() {
 /// `agent-report` is what an agent's hooks call: a state names the record, `--clear` ends
 /// it, and the pane is the one the caller is in unless it says otherwise.
 #[test]
-fn agent_report_sets_or_clears_the_panes_agent_record() {
+fn agent_report_sets_or_clears_without_reading_cwd() {
     let report = |state: Option<&str>, clear: bool| {
         crate::actions::actions_from_cli(
             CliAction::AgentReport {
@@ -1738,7 +1676,7 @@ fn agent_report_sets_or_clears_the_panes_agent_record() {
                 clear,
                 run_id: None,
             },
-            Box::new(|| PathBuf::from("/tmp")),
+            PathResolution::Local(Box::new(|| panic!("agent report must not read cwd"))),
             None,
         )
     };
@@ -1791,7 +1729,7 @@ fn agent_report_carries_the_run_id_it_was_given() {
                 clear: false,
                 run_id: run_id.map(str::to_owned),
             },
-            Box::new(|| PathBuf::from("/tmp")),
+            local_paths(),
             None,
         )
         .unwrap()
@@ -1848,9 +1786,7 @@ fn blocking_flags_map_to_their_unblock_condition() {
             borderless: None,
             tab_id: None,
         };
-        let actions =
-            crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None)
-                .unwrap();
+        let actions = crate::actions::actions_from_cli(cli_action, local_paths(), None).unwrap();
         match actions.as_slice() {
             [Action::NewBlockingPane {
                 unblock_condition, ..
@@ -1914,8 +1850,7 @@ fn test_new_pane_blocking_with_tab_id() {
         borderless: None,
         tab_id: Some(TabId::new(2)),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -1949,8 +1884,7 @@ fn test_edit_with_tab_id() {
         borderless: None,
         tab_id: Some(TabId::new(4)),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -1984,8 +1918,7 @@ fn test_edit_without_tab_id() {
         borderless: None,
         tab_id: None,
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -2034,8 +1967,7 @@ fn test_new_pane_plugin_tiled_with_tab_id() {
         borderless: None,
         tab_id: Some(TabId::new(2)),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -2084,8 +2016,7 @@ fn test_new_pane_plugin_floating_with_tab_id() {
         borderless: None,
         tab_id: Some(TabId::new(1)),
     };
-    let result =
-        crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
+    let result = crate::actions::actions_from_cli(cli_action, local_paths(), None);
     assert!(result.is_ok());
     let actions = result.unwrap();
     assert_eq!(actions.len(), 1);
@@ -2102,8 +2033,8 @@ mod props {
     use hegel::generators;
     use yinz_types::geometry::{Direction, Resize};
 
-    fn cwd() -> Box<dyn Fn() -> PathBuf> {
-        Box::new(|| PathBuf::from("/tmp"))
+    fn cwd() -> PathResolution {
+        local_paths()
     }
 
     /// Every `CliAction` carrying a single pane id. All the other
@@ -2572,7 +2503,12 @@ mod props {
     #[test]
     fn pane_validation_precedence_is_preserved() {
         let report = |action| {
-            actions_from_cli(action, Box::new(|| panic!("cwd must not be read")), None).unwrap_err()
+            actions_from_cli(
+                action,
+                PathResolution::Local(Box::new(|| panic!("cwd must not be read"))),
+                None,
+            )
+            .unwrap_err()
         };
         let pane_error = parse_pane_id("bad").unwrap_err();
         let mut coordinates = cli_action_with_pane_id(31, Some("bad".into()));
@@ -2691,7 +2627,7 @@ fn remote_action_paths_preserve_the_server_namespace() {
             panic!("expected action")
         };
         let actions =
-            crate::actions::actions_from_cli(*action, Box::new(PathBuf::new), None).unwrap();
+            crate::actions::actions_from_cli(*action, PathResolution::Session, None).unwrap();
         let Action::NewTiledPane {
             command: Some(command),
             ..
@@ -2705,7 +2641,7 @@ fn remote_action_paths_preserve_the_server_namespace() {
     let Some(crate::args::Command::Action(action)) = parsed.command else {
         panic!("expected action")
     };
-    let actions = crate::actions::actions_from_cli(*action, Box::new(PathBuf::new), None).unwrap();
+    let actions = crate::actions::actions_from_cli(*action, PathResolution::Session, None).unwrap();
     let Action::EditFile { payload, .. } = &actions[0] else {
         panic!("expected editor")
     };
@@ -2728,7 +2664,7 @@ fn remote_plugin_locations_resolve_against_an_explicit_cwd() {
     let Some(crate::args::Command::Action(action)) = parsed.command else {
         panic!("expected action")
     };
-    let actions = crate::actions::actions_from_cli(*action, Box::new(PathBuf::new), None).unwrap();
+    let actions = crate::actions::actions_from_cli(*action, PathResolution::Session, None).unwrap();
     let Action::NewTiledPluginPane { plugin, .. } = &actions[0] else {
         panic!("expected plugin: {:?}", actions[0])
     };
@@ -2753,7 +2689,7 @@ fn remote_plugin_locations_do_not_resolve_local_files() {
     let Some(crate::args::Command::Action(action)) = parsed.command else {
         panic!("expected action")
     };
-    let actions = crate::actions::actions_from_cli(*action, Box::new(PathBuf::new), None).unwrap();
+    let actions = crate::actions::actions_from_cli(*action, PathResolution::Session, None).unwrap();
     let Action::LaunchPlugin { plugin, cwd, .. } = &actions[0] else {
         panic!("expected plugin")
     };
@@ -2784,7 +2720,7 @@ fn remote_switch_session_sends_the_local_layouts_text() {
     let Some(crate::args::Command::Action(action)) = parsed.command else {
         panic!("expected action")
     };
-    let actions = crate::actions::actions_from_cli(*action, Box::new(PathBuf::new), None).unwrap();
+    let actions = crate::actions::actions_from_cli(*action, PathResolution::Session, None).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     let Action::SwitchSession {
         layout: Some(yinz_types::data::LayoutInfo::Stringified(sent)),

@@ -43,7 +43,7 @@ pub(super) fn new_pane(
     overlay: Option<bool>,
     modal: Option<bool>,
     tab_id: Option<TabId>,
-    get_current_dir: &dyn Fn() -> PathBuf,
+    path_resolution: &super::PathResolution,
 ) -> Result<Vec<Action>, String> {
     let configuration = select_configuration(configuration, configuration_json)?;
     let target = remote_host
@@ -52,10 +52,10 @@ pub(super) fn new_pane(
         .transpose()?
         .unwrap_or_default();
     let pane_id_to_replace = pane_id.as_deref().map(parse_pane_id).transpose()?;
-    let current_dir = get_current_dir();
+    let paths = path_resolution.resolve();
     // cwd should only be specified in a plugin alias if it was explicitly given to us,
     // otherwise the current_dir might override a cwd defined in the alias itself
-    let alias_cwd = cwd.clone().map(|cwd| current_dir.join(cwd));
+    let alias_cwd = cwd.clone().map(|cwd| paths.join(cwd));
     // A remote pane's cwd names a directory on the *other* machine,
     // so this machine's working directory is neither a sensible
     // default for it nor a sensible base to resolve a relative path
@@ -65,12 +65,12 @@ pub(super) fn new_pane(
         cwd.clone()
     } else {
         cwd.clone()
-            .map(|cwd| current_dir.join(cwd))
-            .or_else(|| super::default_dir(&current_dir))
+            .map(|cwd| paths.join(cwd))
+            .or_else(|| paths.default_dir())
     };
     let cwd = cwd
-        .map(|cwd| current_dir.join(cwd))
-        .or_else(|| super::default_dir(&current_dir));
+        .map(|cwd| paths.join(cwd))
+        .or_else(|| paths.default_dir());
     // One construction for both the blocking and the ordinary pane,
     // so that "no command, but a host" means the same thing in each.
     let terminal_run_command = if !command.is_empty() {
@@ -156,7 +156,7 @@ pub(super) fn new_pane(
             tab_id,
         }])
     } else if let Some(plugin) = plugin {
-        let plugin = match super::plugin_from_url(&plugin, cwd.clone(), &current_dir) {
+        let plugin = match super::plugin_from_url(&plugin, cwd.clone(), &paths) {
             Ok(run_plugin) => {
                 let user_configuration = configuration.unwrap_or_default();
                 RunPluginOrAlias::RunPlugin(RunPlugin {
@@ -171,7 +171,7 @@ pub(super) fn new_pane(
                     &configuration.map(PluginUserConfiguration::into_inner),
                     alias_cwd,
                 );
-                plugin_alias.set_caller_cwd_if_not_set(super::default_dir(&current_dir));
+                plugin_alias.set_caller_cwd_if_not_set(paths.default_dir());
                 RunPluginOrAlias::Alias(plugin_alias)
             },
         };

@@ -6,7 +6,7 @@ mod layouts;
 mod panes;
 
 use crate::args::CliAction;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 use uuid::Uuid;
 use yinz_config::config::Config;
@@ -25,50 +25,90 @@ fn parse_pane_id(pane_id: &str) -> Result<PaneId, String> {
     })
 }
 
-/// An empty current directory leaves session-side paths for the server to resolve.
-fn session_resolves_paths(current_dir: &Path) -> bool {
-    current_dir.as_os_str().is_empty()
+/// How session-side paths in CLI actions are resolved.
+///
+/// Input files (layouts, request JSON, config fragments) are still read locally.
+pub enum PathResolution {
+    /// Resolve paths against the caller's directory, read only when the action needs it.
+    Local(Box<dyn Fn() -> PathBuf>),
+    /// Leave paths for the target session to resolve, without a local cwd default.
+    Session,
 }
 
-/// The directory a path defaults to, unless the session resolves paths itself.
-fn default_dir(current_dir: &Path) -> Option<PathBuf> {
-    (!session_resolves_paths(current_dir)).then(|| current_dir.to_owned())
+impl PathResolution {
+    fn resolve(&self) -> ResolvedPaths {
+        match self {
+            Self::Local(get_current_dir) => ResolvedPaths::Local(get_current_dir()),
+            Self::Session => ResolvedPaths::Session,
+        }
+    }
+}
+
+/// A snapshot of the path context for an action that needs directory resolution.
+enum ResolvedPaths {
+    Local(PathBuf),
+    Session,
+}
+
+impl ResolvedPaths {
+    fn join(&self, path: PathBuf) -> PathBuf {
+        match self {
+            Self::Local(current_dir) => current_dir.join(path),
+            Self::Session => path,
+        }
+    }
+
+    fn default_dir(&self) -> Option<PathBuf> {
+        match self {
+            Self::Local(current_dir) => Some(current_dir.clone()),
+            Self::Session => None,
+        }
+    }
 }
 
 fn plugin_from_url(
     url: &str,
     cwd: Option<PathBuf>,
-    current_dir: &Path,
+    paths: &ResolvedPaths,
 ) -> Result<yinz_types::input::layout::RunPlugin, yinz_types::input::plugins::PluginsConfigError> {
-    if session_resolves_paths(current_dir) {
-        yinz_runtime::plugin_location::run_plugin_from_url_unresolved(url, cwd)
-    } else {
-        yinz_runtime::plugin_location::run_plugin_from_url_with_cwd(url, cwd)
+    match paths {
+        ResolvedPaths::Session => {
+            yinz_runtime::plugin_location::run_plugin_from_url_unresolved(url, cwd)
+        },
+        ResolvedPaths::Local(_) => {
+            yinz_runtime::plugin_location::run_plugin_from_url_with_cwd(url, cwd)
+        },
     }
 }
 
 fn plugin_or_alias(
     url: &str,
     configuration: &Option<std::collections::BTreeMap<String, String>>,
-    current_dir: PathBuf,
+    paths: &ResolvedPaths,
 ) -> Result<yinz_types::input::layout::RunPluginOrAlias, String> {
-    if session_resolves_paths(&current_dir) {
-        yinz_runtime::plugin_location::run_plugin_or_alias_from_url_unresolved(url, configuration)
-    } else {
-        yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-            url,
-            configuration,
-            None,
-            Some(current_dir),
-        )
+    match paths {
+        ResolvedPaths::Session => {
+            yinz_runtime::plugin_location::run_plugin_or_alias_from_url_unresolved(
+                url,
+                configuration,
+            )
+        },
+        ResolvedPaths::Local(current_dir) => {
+            yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+                url,
+                configuration,
+                None,
+                Some(current_dir.clone()),
+            )
+        },
     }
 }
 
-/// Session-side paths stay unresolved when `get_current_dir` is empty. Input files (layouts,
-/// request JSON, config fragments) are still read by this local process.
+/// Translate CLI actions using explicit local or session-side path resolution.
+/// Input files (layouts, request JSON, config fragments) are still read locally.
 pub fn actions_from_cli(
     cli_action: CliAction,
-    get_current_dir: Box<dyn Fn() -> PathBuf>,
+    path_resolution: PathResolution,
     config: Option<Config>,
 ) -> Result<Vec<Action>, String> {
     match cli_action {
@@ -381,7 +421,7 @@ pub fn actions_from_cli(
             overlay,
             modal,
             tab_id,
-            get_current_dir.as_ref(),
+            &path_resolution,
         ),
         CliAction::Edit {
             direction,
@@ -404,10 +444,10 @@ pub fn actions_from_cli(
             tab_id,
         } => {
             let mut file = file;
-            let current_dir = get_current_dir();
+            let paths = path_resolution.resolve();
             let cwd = cwd
-                .map(|cwd| current_dir.join(cwd))
-                .or_else(|| default_dir(&current_dir));
+                .map(|cwd| paths.join(cwd))
+                .or_else(|| paths.default_dir());
             if file.is_relative()
                 && let Some(cwd) = cwd.as_ref()
             {
@@ -550,7 +590,7 @@ pub fn actions_from_cli(
             block_until_exit_failure,
             block_until_exit,
             no_focus,
-            get_current_dir.as_ref(),
+            &path_resolution,
             config,
         ),
         CliAction::PreviousSwapLayout { tab_id } => match tab_id {
@@ -584,11 +624,11 @@ pub fn actions_from_cli(
             configuration_json,
         } => {
             let configuration = select_configuration(configuration, configuration_json)?;
-            let current_dir = get_current_dir();
+            let paths = path_resolution.resolve();
             let run_plugin_or_alias = plugin_or_alias(
                 &url,
                 &configuration.map(PluginUserConfiguration::into_inner),
-                current_dir,
+                &paths,
             )?;
             Ok(vec![Action::StartOrReloadPlugin {
                 plugin: run_plugin_or_alias,
@@ -606,11 +646,11 @@ pub fn actions_from_cli(
             tab_id,
         } => {
             let configuration = select_configuration(configuration, configuration_json)?;
-            let current_dir = get_current_dir();
+            let paths = path_resolution.resolve();
             let run_plugin_or_alias = plugin_or_alias(
                 url.as_str(),
                 &configuration.map(PluginUserConfiguration::into_inner),
-                current_dir,
+                &paths,
             )?;
             Ok(vec![Action::LaunchOrFocusPlugin {
                 plugin: run_plugin_or_alias,
@@ -634,11 +674,11 @@ pub fn actions_from_cli(
             tab_id,
         } => {
             let configuration = select_configuration(configuration, configuration_json)?;
-            let current_dir = get_current_dir();
+            let paths = path_resolution.resolve();
             let run_plugin_or_alias = plugin_or_alias(
                 url.as_str(),
                 &configuration.map(PluginUserConfiguration::into_inner),
-                current_dir.clone(),
+                &paths,
             )?;
             Ok(vec![Action::LaunchPlugin {
                 plugin: run_plugin_or_alias,
@@ -646,7 +686,7 @@ pub fn actions_from_cli(
                 should_open_in_place: in_place,
                 close_replaced_pane,
                 skip_cache: skip_plugin_cache,
-                cwd: default_dir(&current_dir),
+                cwd: paths.default_dir(),
                 no_focus,
                 tab_id,
             }])
@@ -698,10 +738,10 @@ pub fn actions_from_cli(
         } => {
             let plugin_configuration =
                 select_configuration(plugin_configuration, configuration_json)?;
-            let current_dir = get_current_dir();
+            let paths = path_resolution.resolve();
             let cwd = plugin_cwd
-                .map(|cwd| current_dir.join(cwd))
-                .or_else(|| default_dir(&current_dir));
+                .map(|cwd| paths.join(cwd))
+                .or_else(|| paths.default_dir());
             let skip_cache = skip_plugin_cache;
             let pipe_id = Uuid::new_v4().to_string();
             Ok(vec![Action::CliPipe {
@@ -871,7 +911,7 @@ pub fn actions_from_cli(
             layout_string,
             layout_dir,
             cwd,
-            get_current_dir.as_ref(),
+            &path_resolution,
             config,
         ),
     }
@@ -919,3 +959,7 @@ fn select_configuration(
 #[cfg(test)]
 #[path = "unit/actions.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "unit/path_resolution.rs"]
+mod path_resolution_tests;

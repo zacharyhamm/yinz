@@ -215,8 +215,12 @@ fn send_cli_action_to_server(
     client_id: ClientId,
 ) {
     let get_current_dir = || PathBuf::from(".");
-    let actions =
-        yinz_cli::actions::actions_from_cli(cli_action, Box::new(get_current_dir), None).unwrap();
+    let actions = yinz_cli::actions::actions_from_cli(
+        cli_action,
+        yinz_cli::actions::PathResolution::Local(Box::new(get_current_dir)),
+        None,
+    )
+    .unwrap();
     let senders = session_metadata.senders.clone();
     let default_shell = None;
     let default_mode = session_metadata.default_mode();
