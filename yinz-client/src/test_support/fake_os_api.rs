@@ -36,6 +36,7 @@ pub struct FakeClientOsApi {
     signal_rx: Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SignalEvent>>>>,
     blocking_signal_rx: Option<yinz_runtime::channels::Receiver<SignalEvent>>,
     signal_setup_error: bool,
+    before_signal_listener: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Default for FakeClientOsApi {
@@ -55,6 +56,7 @@ impl Default for FakeClientOsApi {
             signal_rx: None,
             blocking_signal_rx: None,
             signal_setup_error: false,
+            before_signal_listener: None,
         }
     }
 }
@@ -126,6 +128,14 @@ impl FakeClientOsApi {
 
     pub fn with_signal_setup_error(mut self) -> Self {
         self.signal_setup_error = true;
+        self
+    }
+
+    pub fn with_before_signal_listener(
+        mut self,
+        callback: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        self.before_signal_listener = Some(Arc::new(callback));
         self
     }
 
@@ -338,6 +348,9 @@ impl SignalSource for FakeClientOsApi {
         sigwinch_cb: Box<dyn Fn() + Send>,
         quit_cb: Box<dyn Fn() + Send>,
     ) -> anyhow::Result<SignalListener> {
+        if let Some(callback) = &self.before_signal_listener {
+            callback();
+        }
         if self.signal_setup_error {
             anyhow::bail!("signal registration failed");
         }

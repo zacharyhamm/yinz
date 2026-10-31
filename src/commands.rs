@@ -979,6 +979,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                 pane_id_to_focus,
                 is_a_reconnect,
                 should_create_detached,
+                None, // startup cancellation
             ));
         } else {
             if let Some(session_name) = opts.session.clone().map(SessionName::new) {
@@ -993,6 +994,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                     None,
                     is_a_reconnect,
                     should_create_detached,
+                    None, // startup cancellation
                 ));
             } else {
                 if let Some(session_name) = config_options.session_name.as_ref() {
@@ -1027,6 +1029,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                                 None,
                                 is_a_reconnect,
                                 should_create_detached,
+                                None, // startup cancellation
                             ));
                         },
                         _ => {
@@ -1041,6 +1044,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                                 None,
                                 is_a_reconnect,
                                 should_create_detached,
+                                None, // startup cancellation
                             ));
                         },
                     }
@@ -1064,6 +1068,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                     None,
                     is_a_reconnect,
                     should_create_detached,
+                    None, // startup cancellation
                 ));
             }
         }
@@ -1190,6 +1195,7 @@ pub(crate) fn watch_session(session_name: Option<String>, opts: CliArgs) {
         None,  // pane_id_to_focus
         false, // is_a_reconnect
         false, // should_create_detached
+        crate::remote_commands::take_startup_cancellation(),
     ));
 }
 

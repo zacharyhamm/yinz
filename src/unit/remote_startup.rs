@@ -626,6 +626,8 @@ impl Drop for Client {
 }
 
 fn interrupted_startup(stage: &str, signal: Signal) {
+    use std::io::Write;
+
     let session = Session::new();
     let root = session.0.path();
     let events_path = root.join("events");
@@ -644,8 +646,66 @@ fn interrupted_startup(stage: &str, signal: Signal) {
     });
     let peer_path = root.join("peer");
     let peer = yinz_ipc::consts::ipc_bind(&peer_path).unwrap();
-    let switching = (stage == "switch").then(|| {
-        std::thread::spawn(move || {
+    let watching = stage.starts_with("watch-");
+    let (resume_config, config_resumed) = mpsc::channel();
+    let mut peer_worker = if watching {
+        let root = root.to_owned();
+        let events = events.clone();
+        let before_guard = stage == "watch-config";
+        Some(std::thread::spawn(move || {
+            let stream = peer.accept().unwrap();
+            stream.set_recv_timeout(Some(default_timeout())).unwrap();
+            let mut sender = IpcSenderWithContext::<ServerToClientMsg>::new(stream);
+            let mut receiver = sender.get_receiver::<ClientToServerMsg>().unwrap();
+            assert!(matches!(
+                receiver.recv_client_msg(),
+                IpcRecv::Msg(ClientToServerMsg::ConnStatus, _)
+            ));
+            let (pid, socket) = events
+                .lock()
+                .iter()
+                .find_map(|event| {
+                    event
+                        .socket
+                        .as_ref()
+                        .map(|socket| (event.pid, socket.clone()))
+                })
+                .unwrap();
+            if before_guard {
+                // Dispatch has read the configuration already. Hold the watcher's next read
+                // after dispatch returns, before start_client can arm its terminal guard.
+                fs::remove_file(root.join("config.kdl")).unwrap();
+                nix::unistd::mkfifo(
+                    &root.join("config.kdl"),
+                    nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+                )
+                .unwrap();
+            } else {
+                // The startup guard must handle signals while the client retries connecting.
+                fs::remove_file(socket).unwrap();
+            }
+            sender
+                .send_server_msg(ServerToClientMsg::Connected {
+                    warp_companions: false,
+                    warp_held_terminals: false,
+                })
+                .unwrap();
+            if before_guard {
+                let mut config = fs::File::create(root.join("config.kdl")).unwrap();
+                events.lock().push(Event {
+                    stage: "blocked".into(),
+                    pid,
+                    socket: None,
+                });
+                config_resumed.recv_timeout(default_timeout()).unwrap();
+                config.write_all(b"show_startup_splash false\n").unwrap();
+                // start_client reloads local configuration once more before arming its guard.
+                fs::remove_file(root.join("config.kdl")).unwrap();
+                fs::write(root.join("config.kdl"), "show_startup_splash false\n").unwrap();
+            }
+        }))
+    } else if stage == "switch" {
+        Some(std::thread::spawn(move || {
             for probe in [true, false] {
                 let stream = peer.accept().unwrap();
                 stream.set_recv_timeout(Some(default_timeout())).unwrap();
@@ -689,8 +749,10 @@ fn interrupted_startup(stage: &str, signal: Signal) {
                         .unwrap();
                 }
             }
-        })
-    });
+        }))
+    } else {
+        None
+    };
     fs::write(root.join("ssh.py"), SSH_STUB).unwrap();
     // Resolve before isolating HOME so version-manager shims keep their configured interpreter.
     let python = Command::new("python3")
@@ -710,7 +772,7 @@ fn interrupted_startup(stage: &str, signal: Signal) {
     path.extend(std::env::split_paths(
         &std::env::var_os("PATH").unwrap_or_default(),
     ));
-    let child = session
+    let mut child = session
         .command()
         .env("PATH", std::env::join_paths(path).unwrap())
         .env("YINZ_TEST_PYTHON", python.trim())
@@ -729,11 +791,28 @@ fn interrupted_startup(stage: &str, signal: Signal) {
             })
             .to_string(),
         )
-        .args(["attach", "--remote", "example", NAME])
+        .args([
+            if watching { "watch" } else { "attach" },
+            "--remote",
+            "example",
+            NAME,
+        ])
         .stdin(slave.try_clone().unwrap())
         .process_group(0)
         .spawn()
         .unwrap();
+    let screen = Watched::new(Vec::new());
+    let captured = screen.clone();
+    let mut stdout = child.stdout.take().unwrap();
+    let capture = std::thread::spawn(move || {
+        let mut buffer = [0; 4096];
+        while let Ok(count) = stdout.read(&mut buffer) {
+            if count == 0 {
+                break;
+            }
+            captured.lock().extend_from_slice(&buffer[..count]);
+        }
+    });
     let client = Client {
         pid: Pid::from_raw(child.id() as i32),
         output: Watched::new(None),
@@ -745,21 +824,49 @@ fn interrupted_startup(stage: &str, signal: Signal) {
         *completed.lock() = Some(output);
         drop(changed.lock());
     });
-    events.wait_until_described(
-        "SSH stalled at the requested stage",
-        default_timeout(),
-        |events| {
-            if let Some(output) = &*client.output.lock() {
-                panic!("client exited before {stage}: {output:?}");
-            }
-            events
-                .iter()
-                .any(|event| event.stage == "blocked")
-                .then_some(())
-        },
-        |events| format!("{events:?}"),
-    );
+    if stage == "watch-connect" {
+        screen.wait_until(
+            "watcher to claim the terminal",
+            default_timeout(),
+            |bytes| {
+                bytes
+                    .windows(b"\x1b[?1049h".len())
+                    .any(|window| window == b"\x1b[?1049h")
+                    .then_some(())
+            },
+        );
+    } else {
+        events.wait_until_described(
+            "SSH stalled at the requested stage",
+            default_timeout(),
+            |events| {
+                if let Some(output) = &*client.output.lock() {
+                    panic!("client exited before {stage}: {output:?}");
+                }
+                events
+                    .iter()
+                    .any(|event| event.stage == "blocked")
+                    .then_some(())
+            },
+            |events| format!("{events:?}"),
+        );
+    }
+    if stage == "watch-config" {
+        // Queue SIGINT while stopped, then make the configuration readable. On resume the
+        // signal is delivered before userspace can continue into the client's guard.
+        kill(client.pid, Signal::SIGSTOP).unwrap();
+        assert!(matches!(
+            nix::sys::wait::waitpid(client.pid, Some(nix::sys::wait::WaitPidFlag::WUNTRACED))
+                .unwrap(),
+            nix::sys::wait::WaitStatus::Stopped(_, Signal::SIGSTOP)
+        ));
+    }
     kill(client.pid, signal).unwrap();
+    if stage == "watch-config" {
+        resume_config.send(()).unwrap();
+        peer_worker.take().unwrap().join().unwrap();
+        kill(client.pid, Signal::SIGCONT).unwrap();
+    }
     client
         .output
         .wait_until("interrupted client exit", default_timeout(), |out| {
@@ -768,8 +875,9 @@ fn interrupted_startup(stage: &str, signal: Signal) {
             })
         });
     waiter.join().unwrap();
-    if let Some(switching) = switching {
-        switching.join().unwrap();
+    capture.join().unwrap();
+    if let Some(worker) = peer_worker {
+        worker.join().unwrap();
     }
     drop(UnixStream::connect(&events_path).unwrap());
     event_reader.join().unwrap();
@@ -790,6 +898,16 @@ fn interrupted_startup(stage: &str, signal: Signal) {
             .unwrap_or(0),
         0
     );
+}
+
+#[test]
+fn interrupt_before_remote_watch_client_guard_reaps_ssh_and_removes_socket() {
+    interrupted_startup("watch-config", Signal::SIGINT);
+}
+
+#[test]
+fn interrupt_after_remote_watch_client_guard_reaps_ssh_and_restores_terminal() {
+    interrupted_startup("watch-connect", Signal::SIGINT);
 }
 
 #[test]

@@ -596,6 +596,7 @@ fn run(
             pane,
             false,
             false,
+            None, // startup cancellation
         );
         cleanup_forward();
         if outcome.exit_status != 0 {

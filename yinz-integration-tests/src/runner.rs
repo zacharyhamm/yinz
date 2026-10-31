@@ -231,6 +231,7 @@ fn spawn_client_thread(
                 pane_id_to_focus,
                 is_a_reconnect,
                 start_detached_and_exit,
+                None, // startup cancellation
             )
         })
         .unwrap()

@@ -87,6 +87,7 @@ fn legacy_reconnect_retains_options_when_configuration_on_disk_is_invalid() {
         None,
         true,
         false,
+        None, // startup cancellation
     );
     assert_eq!(outcome.exit_status, 0, "{}", outcome.exit_msg);
     assert!(os.sent_messages().iter().any(|msg| matches!(msg,
@@ -126,6 +127,7 @@ fn check_outcome(error: Option<ErrorKind>, reconnect: Option<SessionConnection>)
             None,
             true, // Reconnects write immediately, so the queued exit cannot bypass the frame.
             false,
+            None, // startup cancellation
         );
         done.send(outcome).unwrap();
     });
@@ -183,6 +185,7 @@ fn interactive_startup_respects_splash_option_and_detached_startup_stays_quiet()
                 None,
                 false,
                 false,
+                None, // startup cancellation
             );
             assert_eq!(outcome.exit_status, 0);
             assert_eq!(
@@ -205,6 +208,7 @@ fn interactive_startup_respects_splash_option_and_detached_startup_stays_quiet()
         None,
         false,
         true,
+        None, // startup cancellation
     );
     assert_eq!(outcome.exit_status, 0);
     assert!(os.stdout_bytes().is_empty());
@@ -252,6 +256,7 @@ fn remote_attach_sends_only_terminal_assets_and_restores_before_switching() {
         None,
         true,
         false,
+        None, // startup cancellation
     );
     assert_eq!(outcome.exit_status, 0);
     assert!(outcome.reconnect_to_session.is_some());
@@ -293,12 +298,80 @@ fn cancelled_remote_handoff_does_not_claim_the_terminal_or_connect() {
         None,
         false,
         false,
+        None, // startup cancellation
     );
     assert_eq!(outcome.exit_status, 130);
     assert!(outcome.reconnect_to_session.is_none());
     assert!(!os.raw_mode());
     assert!(os.stdout_bytes().is_empty());
     assert!(os.sent_messages().is_empty());
+}
+
+#[test]
+fn cancelled_remote_watch_handoff_does_not_claim_the_terminal_or_connect() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    let cancellation = crate::remote_sessions::StartupCancellation::new().unwrap();
+    signal_hook::low_level::raise(signal_hook::consts::SIGINT).unwrap();
+    assert!(cancellation.is_cancelled());
+    let os = FakeClientOsApi::new().capturing_stdout();
+    let outcome = start_client(
+        Box::new(os.clone()),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        ClientInfo::RemoteWatch(crate::session_target::SessionTarget {
+            name: "cancelled-watch".into(),
+            socket: "/forwarded/socket".into(),
+        }),
+        None,
+        None,
+        false,
+        false,
+        Some(cancellation),
+    );
+    assert_eq!(outcome.exit_status, 130);
+    assert!(outcome.reconnect_to_session.is_none());
+    assert!(!os.raw_mode());
+    assert!(os.stdout_bytes().is_empty());
+    assert!(os.sent_messages().is_empty());
+}
+
+#[test]
+fn startup_cancellation_stays_armed_until_the_regular_signal_listener_registers() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    let cancellation = crate::remote_sessions::StartupCancellation::new().unwrap();
+    // The fake skips the terminal startup guard, exercising its registration-failure fallback.
+    let os = FakeClientOsApi::new()
+        .capturing_stdout()
+        .with_before_signal_listener(|| {
+            signal_hook::low_level::raise(signal_hook::consts::SIGINT).unwrap();
+        });
+    let outcome = start_client(
+        Box::new(os.clone()),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        ClientInfo::RemoteWatch(crate::session_target::SessionTarget {
+            name: "interrupted-watch".into(),
+            socket: "/forwarded/socket".into(),
+        }),
+        None,
+        None,
+        false,
+        false,
+        Some(cancellation),
+    );
+    assert_eq!(outcome.exit_status, 130, "{}", outcome.exit_msg);
+    assert!(outcome.reconnect_to_session.is_none());
+    assert!(!os.raw_mode());
+    assert!(os
+        .sent_messages()
+        .iter()
+        .any(|msg| matches!(msg, ClientToServerMsg::ClientExited)));
 }
 
 #[test]
@@ -342,6 +415,7 @@ fn remote_hosts_are_remembered_only_after_a_successful_render() {
             None,
             true,
             false,
+            None, // startup cancellation
         );
         assert_eq!(outcome.exit_status, i32::from(fail));
     }
@@ -382,6 +456,7 @@ fn refused_destination_keeps_rendering_the_source_until_it_exits() {
         None,
         true,
         false,
+        None, // startup cancellation
     );
     assert_eq!(outcome.exit_status, 0);
     assert!(outcome.reconnect_to_session.is_none());
@@ -477,6 +552,7 @@ fn run_client(
         None,
         true,
         false,
+        None, // startup cancellation
     )
 }
 
@@ -670,6 +746,7 @@ fn a_stopped_remote_supervisor_cannot_suppress_the_next_attachment() {
             None,
             true,
             false,
+            None, // startup cancellation
         );
         assert_eq!(outcome.exit_status, 0, "{}", outcome.exit_msg);
     }

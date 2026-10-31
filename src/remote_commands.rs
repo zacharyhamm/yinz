@@ -133,6 +133,7 @@ struct RequestVersions {
 struct RemoteContext {
     target: SessionTarget,
     config: Option<Config>,
+    startup_cancellation: std::sync::Mutex<Option<StartupCancellation>>,
 }
 static CONTEXT: OnceLock<RemoteContext> = OnceLock::new();
 // Publish termination before closing SSH: EOF can wake the main thread first.
@@ -158,6 +159,15 @@ pub(crate) fn selected() -> Option<&'static SessionTarget> {
 }
 pub(crate) fn config() -> Option<&'static Config> {
     CONTEXT.get().and_then(|c| c.config.as_ref())
+}
+pub(crate) fn take_startup_cancellation() -> Option<StartupCancellation> {
+    CONTEXT.get().and_then(|context| {
+        context
+            .startup_cancellation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+    })
 }
 pub(crate) fn target(name: &SessionName) -> SessionTarget {
     selected().cloned().unwrap_or_else(|| SessionTarget {
@@ -514,7 +524,11 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
         };
         remote_sessions::set_forward(Some(forward));
         CONTEXT
-            .set(RemoteContext { target, config })
+            .set(RemoteContext {
+                target,
+                config,
+                startup_cancellation: std::sync::Mutex::new(None),
+            })
             .map_err(|_| anyhow!("remote target already selected"))?;
         opts.session = Some(name.into_string());
         opts.remote = None;
@@ -524,11 +538,12 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
         std::process::exit(yinz_client::INTERRUPTED_EXIT_STATUS);
     }
     setup?;
-    // Interactive watchers already install terminal-aware signal handling.
-    if !matches!(
+    let watching = matches!(
         opts.command,
         Some(Command::Sessions(Sessions::Watch { .. }))
-    ) {
+    );
+    // Watchers carry startup cancellation into the client for its terminal-aware handoff.
+    if !watching {
         let mut signals = signal_hook::iterator::Signals::new([
             signal_hook::consts::SIGINT,
             signal_hook::consts::SIGTERM,
@@ -546,9 +561,17 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
             })
             .context("start remote command signal handler")?;
     }
-    // Startup's flag stays armed until now, so no signal falls between it and the handler above.
+    // Ordinary commands have registered their handler; watchers keep the flag armed below.
     if cancellation.is_cancelled() {
         exit(yinz_client::INTERRUPTED_EXIT_STATUS);
+    }
+    if watching {
+        *CONTEXT
+            .get()
+            .context("remote target missing after setup")?
+            .startup_cancellation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(cancellation);
     }
     Ok(())
 }

@@ -424,6 +424,7 @@ pub(crate) enum InputInstruction {
     Exit,
 }
 
+/// Retains an optional startup cancellation guard until client signal handling takes over.
 #[allow(clippy::too_many_arguments)]
 pub fn start_client(
     os_input: Box<dyn ClientOsApi>,
@@ -435,6 +436,7 @@ pub fn start_client(
     pane_id_to_focus: Option<yinz_types::pane_id::PaneId>,
     is_a_reconnect: bool,
     start_detached_and_exit: bool,
+    mut cancellation: Option<remote_sessions::StartupCancellation>,
 ) -> ClientOutcome {
     let mut info = info;
     let mut tab = tab_number_to_focus;
@@ -442,7 +444,6 @@ pub fn start_client(
     let mut reconnect = is_a_reconnect;
     let mut prepared = None;
     let mut coordinated = false;
-    let mut cancellation = None;
     let local_config = if is_a_reconnect {
         Ok(session_switch::LocalConfig {
             config: config.clone(),
@@ -615,9 +616,11 @@ fn run_client(
         install_early_terminal_panic_guard(terminal_teardown);
         startup_signal_guard = StartupSignalGuard::arm(terminal_teardown);
     }
-    if let ClientInfo::Remote { cancelled, .. } = &info
-        && cancelled.load(Ordering::Acquire)
-    {
+    let interrupted = cancellation
+        .as_ref()
+        .is_some_and(remote_sessions::StartupCancellation::is_cancelled)
+        || matches!(&info, ClientInfo::Remote { cancelled, .. } if cancelled.load(Ordering::Acquire));
+    if interrupted {
         if let Some(guard) = startup_signal_guard.take() {
             guard.disarm();
         }
@@ -807,6 +810,16 @@ fn run_client(
                 }
             }),
         );
+        let listener = listener.and_then(|listener| {
+            if cancellation
+                .as_ref()
+                .is_some_and(remote_sessions::StartupCancellation::is_cancelled)
+            {
+                listener.stop().non_fatal();
+                bail!("Interrupted while starting up");
+            }
+            Ok(listener)
+        });
         match listener {
             Ok(listener) => Ok((listener, query_thread)),
             Err(error) => {
@@ -826,20 +839,32 @@ fn run_client(
             crate::terminal_escapes::abandon_stalled_output();
             nested_reannounce.stop();
             os_input.send_to_server(ClientToServerMsg::ClientExited);
-            let exit_msg = format!("Could not start client workers: {error:#}");
+            let interrupted = cancellation
+                .as_ref()
+                .is_some_and(remote_sessions::StartupCancellation::is_cancelled);
+            let exit_msg = if interrupted {
+                "Interrupted while starting up".to_owned()
+            } else {
+                format!("Could not start client workers: {error:#}")
+            };
             terminal_teardown.restore(&*os_input, &exit_msg);
             if let Some(guard) = startup_signal_guard.take() {
                 guard.disarm();
             }
             return ClientOutcome {
                 exit_msg,
-                exit_status: 1,
+                exit_status: if interrupted {
+                    INTERRUPTED_EXIT_STATUS
+                } else {
+                    1
+                },
                 reconnect_to_session: None,
                 prepared_connection: None,
             };
         },
     };
     // Registration is complete before the startup guard hands quit signals over.
+    cancellation.take();
     if let Some(guard) = startup_signal_guard.take() {
         guard.disarm();
     }
