@@ -34,14 +34,19 @@ fn a_one_cell_margin_is_required_and_small_terminals_have_no_splash() {
     }
     let stage = renderer::Stage::new(Size { rows: 10, cols: 28 }).unwrap();
     assert_eq!((stage.cols, stage.rows), (26, 8));
-    assert!(renderer::Renderer::new(stage, StyleDeclaration::default())
-        .frame(Duration::ZERO)
-        .contains("\x1b[2;2H"));
+    assert!(renderer::Renderer::new(
+        stage,
+        StyleDeclaration::default(),
+        PaletteColor::EightBit(2),
+    )
+    .frame(Duration::ZERO)
+    .contains("\x1b[2;2H"));
 }
 
 #[test]
 fn startup_theme_lookup_and_palette_fallback_are_used() {
-    let config = Config::from_default_assets().unwrap();
+    let mut config = Config::from_default_assets().unwrap();
+    config.themes = yinz_config::assets::get_default_themes().merge(config.themes);
     let size = Size { rows: 24, cols: 80 };
     for theme in [
         None,
@@ -56,29 +61,50 @@ fn startup_theme_lookup_and_palette_fallback_are_used() {
         };
         let os = FakeClientOsApi::new().capturing_stdout();
         let before = Instant::now();
-        let splash = show(&os, size, &config, &options).unwrap().unwrap();
+        let mut splash = show(&os, size, &config, &options).unwrap().unwrap();
+        assert_eq!(
+            splash.deadline() - splash.started,
+            Duration::from_millis(1400)
+        );
         assert!(splash.deadline() >= before + DURATION);
         assert!(splash.deadline() <= Instant::now() + DURATION);
-        let mut style = config
+        let theme = config
             .theme_config(options.theme.as_ref())
-            .unwrap_or_else(|| default_palette().into())
-            .text_unselected;
+            .unwrap_or_else(|| default_palette().into());
+        if matches!(options.theme.as_deref(), Some("dracula" | "ayu-light")) {
+            assert!(config.theme_config(options.theme.as_ref()).is_some());
+        }
+        let mut style = theme.text_unselected;
         if let Some(terminal) = config.terminal_theme_config(options.theme.as_ref()) {
             style.base = PaletteColor::Rgb(terminal.foreground);
             style.background = PaletteColor::Rgb(terminal.background);
         }
-        let mut renderer = renderer::Renderer::new(renderer::Stage::new(size).unwrap(), style);
+        let mut renderer = renderer::Renderer::new(
+            renderer::Stage::new(size).unwrap(),
+            style,
+            theme.frame_selected.base,
+        );
         assert_eq!(os.stdout_bytes(), renderer.frame(Duration::ZERO).as_bytes());
+        let elapsed = Duration::from_millis(1050);
+        let before = os.stdout_bytes().len();
+        splash.tick(&os, None, splash.started + elapsed).unwrap();
+        assert_eq!(
+            &os.stdout_bytes()[before..],
+            renderer.frame(elapsed).as_bytes()
+        );
     }
 }
 
 #[test]
 fn shared_color_code_supports_indexed_colors() {
-    assert_eq!(crate::terminal_escapes::color_code(PaletteColor::EightBit(255)), "5;255");
+    assert_eq!(
+        crate::terminal_escapes::color_code(PaletteColor::EightBit(255)),
+        "5;255"
+    );
 }
 
 #[test]
-fn terminal_colors_take_precedence_and_ui_colors_remain_the_fallback() {
+fn selected_frame_accent_is_used_with_terminal_overrides_and_ui_fallbacks() {
     let size = Size { rows: 24, cols: 80 };
     let ui = StyleDeclaration {
         base: PaletteColor::Rgb((225, 240, 200)),
@@ -95,11 +121,17 @@ fn terminal_colors_take_precedence_and_ui_colors_remain_the_fallback() {
         background: (245, 235, 230),
         ansi: [(0, 0, 0); 16],
     };
-    for (terminal, ui) in [(Some(terminal), ui), (None, ui), (None, indexed_ui)] {
+    for (terminal, ui, accent) in [
+        (Some(terminal), ui, PaletteColor::Rgb((80, 250, 123))),
+        (None, ui, PaletteColor::Rgb((185, 110, 230))),
+        (Some(terminal), indexed_ui, PaletteColor::EightBit(201)),
+        (None, indexed_ui, PaletteColor::EightBit(39)),
+    ] {
         for theme_name in [None, Some("custom")] {
             let mut config = Config::default();
             let mut palette = yinz_types::style::Styling::from(default_palette());
             palette.text_unselected = ui;
+            palette.frame_selected.base = accent;
             config.themes.insert(
                 theme_name.unwrap_or("default").into(),
                 Theme {
@@ -118,16 +150,27 @@ fn terminal_colors_take_precedence_and_ui_colors_remain_the_fallback() {
                 ..Default::default()
             };
             let os = FakeClientOsApi::new().capturing_stdout();
-            show(&os, size, &config, &options).unwrap().unwrap();
+            let mut splash = show(&os, size, &config, &options).unwrap().unwrap();
             let mut renderer =
-                renderer::Renderer::new(renderer::Stage::new(size).unwrap(), expected);
+                renderer::Renderer::new(renderer::Stage::new(size).unwrap(), expected, accent);
             assert_eq!(os.stdout_bytes(), renderer.frame(Duration::ZERO).as_bytes());
+            let elapsed = Duration::from_millis(1050);
+            let expected_shimmer = renderer.frame(elapsed);
+            let before = os.stdout_bytes().len();
+            splash.tick(&os, None, splash.started + elapsed).unwrap();
+            assert_eq!(&os.stdout_bytes()[before..], expected_shimmer.as_bytes());
+            let mut other_accent = renderer::Renderer::new(
+                renderer::Stage::new(size).unwrap(),
+                expected,
+                PaletteColor::Rgb((255, 160, 0)),
+            );
+            assert_ne!(expected_shimmer, other_accent.frame(elapsed));
         }
     }
 }
 
 #[test]
-fn ticks_skip_missed_frames_and_leave_the_final_pose_without_more_writes() {
+fn ticks_skip_missed_frames_and_wake_at_the_deadline() {
     let os = FakeClientOsApi::new().capturing_stdout();
     let mut splash = test_splash(Instant::now());
     let late = splash.started + Duration::from_millis(775);
@@ -140,15 +183,34 @@ fn ticks_skip_missed_frames_and_leave_the_final_pose_without_more_writes() {
         .tick(&os, None, late + Duration::from_millis(1))
         .unwrap();
     assert_eq!(bytes, os.stdout_bytes());
-    splash
-        .tick(&os, None, splash.deadline() + Duration::from_secs(1))
-        .unwrap();
-    let bytes = os.stdout_bytes();
-    assert!(splash.next_frame.is_none());
-    splash
-        .tick(&os, None, splash.deadline() + Duration::from_secs(2))
-        .unwrap();
-    assert_eq!(bytes, os.stdout_bytes());
+    assert!(splash
+        .tick(&os, None, splash.deadline() - Duration::from_millis(1))
+        .unwrap());
+    assert_eq!(splash.wake_at(), splash.deadline());
+}
+
+#[test]
+fn expiry_clears_once_even_when_the_wakeup_is_late_or_the_terminal_resizes() {
+    for delay in [Duration::ZERO, Duration::from_secs(1)] {
+        let os = FakeClientOsApi::new().capturing_stdout();
+        let mut splash = test_splash(Instant::now());
+        assert!(!splash
+            .tick(&os, Some(SyncOutput::Csi), splash.deadline() + delay)
+            .unwrap());
+        let expected = [
+            SyncOutput::Csi.start_seq(),
+            CLEAR.as_bytes(),
+            SyncOutput::Csi.end_seq(),
+        ]
+        .concat();
+        assert_eq!(os.stdout_bytes(), expected);
+        assert!(splash.next_frame.is_none());
+        let resized = os.clone().with_terminal_size(Size { rows: 14, cols: 41 });
+        assert!(!splash
+            .tick(&resized, None, splash.deadline() + Duration::from_secs(2))
+            .unwrap());
+        assert_eq!(os.stdout_bytes(), expected);
+    }
 }
 
 #[test]
@@ -180,12 +242,17 @@ fn splash_write_errors_are_reported() {
     .unwrap()
     .to_string()
     .contains("draw the startup splash"));
-    let mut splash = test_splash(Instant::now() - Duration::from_secs(1));
+    let mut splash = test_splash(Instant::now());
     assert!(splash
-        .tick(&os, None, Instant::now())
+        .tick(&os, None, splash.started + FRAME_INTERVAL)
         .unwrap_err()
         .to_string()
         .contains("draw the startup splash"));
+    assert!(splash
+        .tick(&os, None, splash.deadline())
+        .unwrap_err()
+        .to_string()
+        .contains("clear the startup splash"));
 }
 
 #[test]
@@ -196,7 +263,9 @@ fn eight_bit_theme_colors_are_resolved_for_shading() {
         base: PaletteColor::EightBit(255),
         ..Default::default()
     };
-    assert!(renderer::Renderer::new(stage, style)
-        .frame(Duration::ZERO)
-        .starts_with("\x1b[m\x1b[48;2;0;0;0m\x1b[2J"));
+    assert!(
+        renderer::Renderer::new(stage, style, PaletteColor::EightBit(2))
+            .frame(Duration::ZERO)
+            .starts_with("\x1b[m\x1b[48;2;0;0;0m\x1b[2J")
+    );
 }

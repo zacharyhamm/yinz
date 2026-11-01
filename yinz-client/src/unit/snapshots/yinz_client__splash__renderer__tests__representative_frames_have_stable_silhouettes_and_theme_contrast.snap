@@ -3,8 +3,6 @@ source: yinz-client/src/splash/../unit/splash_renderer_tests.rs
 expression: frames
 ---
 rest
-
-
                      ⢀⣤⣤⡀
                      ⣿⣿⣿⣿
                      ⠙⠛⠛⠁      ⢀⣀⣀⡀
@@ -18,78 +16,108 @@ rest
     ⢸⣿⣿⣿⣿⣿⡿⠃
     ⠘⠿⠿⠿⠛⠉
 
-
-y turning
-
-
-                     ⢀⣤⣤⡀
-                     ⣿⣿⣿⣿
-       ⢀⣀⡀           ⠙⠛⠛⠁      ⢀⣀⣀⡀
-       ⢸⣿⣿⣿⡇ ⢀⣼⣿⣿⣿⠇ ⣿⣿⣿⡿  ⢸⣿⣿⣧⣾⣿⣿⣿⣿⣧   ⣿⣿⣿⣿⣿⣿⣿⣿⡏
-       ⠘⣿⣿⣿⣇ ⣼⣿⣿⣿⠇ ⢸⣿⣿⣿⡇  ⣾⣿⣿⣿⡟⠛⢻⣿⣿⣿⡇ ⠘⠛⠛⢛⣿⣿⣿⣿⡟⠁
-        ⣿⣿⣿⣿⣸⣿⣿⣿⠏  ⣼⣿⣿⣿⠁ ⢰⣿⣿⣿⡟  ⣼⣿⣿⣿⠂   ⣠⣿⣿⣿⡿⠋
-        ⢻⣿⣿⣿⣿⣿⣿⠏  ⢠⣿⣿⣿⡏  ⣸⣿⣿⣿   ⣿⣿⣿⡟  ⢀⣾⣿⣿⣿⠏
-        ⢸⣿⣿⣿⣿⣿⠏   ⣸⣿⣿⣿⠁ ⢀⣿⣿⣿⡏  ⢸⣿⣿⣿⠇⢀⣴⣿⣿⣿⣿⣥⣤⣤⣤
-         ⣿⣿⣿⣿⠏    ⣿⣿⣿⡿  ⣸⣿⣿⣿⠃  ⣿⣿⣿⣿ ⢸⣿⣿⣿⣿⣿⣿⣿⣿⡏
-        ⣼⣿⣿⣿⠏
+ for if every tool could perform its own work when
+ ordered, or by seeing what to do in advance, like
+the statues of Daedalus in the story, or the tripods
+of Hephaestus which the poet says 'enter self-moved
+  the company divine,' — if thus shuttles wove and
+quills played harps of themselves, master-craftsmen
+would have no need of assistants and masters no need
+                     of slaves.
+            - Aristotle, Politics 1253b
+all turning
+                     ⣀⣀⣀⡀
+                    ⢸⣿⣿⣿⡇
+       ⢀⣀⣀          ⠈⠛⠛⠛⠁  ⢀⡀  ⢀⣀
+       ⢸⣿⣿⣿⡇ ⢀⣾⣿⣿⣿⠃⢀⣿⣿⣿⡿  ⢀⣿⣿⣿⣿⣿⣿⣿⣧    ⣸⣿⣿⣿⣿⣿⣿⠇
+       ⠘⣿⣿⣿⣇ ⣾⣿⣿⣿⠃ ⢸⣿⣿⣿⡇  ⢸⣿⣿⣿⣿⢻⣿⣿⣿⡄   ⠉⠛⣻⣿⣿⣿⡟
+        ⣿⣿⣿⣿⣼⣿⣿⣿⠏  ⣾⣿⣿⣿⠁  ⣾⣿⣿⣿⠃⢸⣿⣿⣿     ⣰⣿⣿⣿⡟
+        ⢸⣿⣿⣿⣿⣿⣿⠏  ⢠⣿⣿⣿⡿  ⢀⣿⣿⣿⡟ ⣿⣿⣿⡟    ⣰⣿⣿⣿⡏
+        ⢸⣿⣿⣿⣿⣿⠏   ⢸⣿⣿⣿⡇  ⢸⣿⣿⣿⡇⢰⣿⣿⣿⡇   ⣼⣿⣿⣿⣯⣤⣤⡄
+         ⣿⣿⣿⣿⠏    ⣿⣿⣿⣿   ⣾⣿⣿⣿ ⢸⣿⣿⣿⠁  ⢸⣿⣿⣿⣿⣿⣿⣿
+        ⣴⣿⣿⣿⠟     ⠉⠉⠁    ⠉⠉⠉⠉        ⠈⠉⠉⠉⠁
      ⣶⣶⣿⣿⣿⣿⠏
-     ⠿⠿⠿⠿⠛⠁
+     ⠿⡿⠿⠿⠛⠁
 
-
-i edge-on
-
-
+ for if every tool could perform its own work when
+ ordered, or by seeing what to do in advance, like
+the statues of Daedalus in the story, or the tripods
+of Hephaestus which the poet says 'enter self-moved
+  the company divine,' — if thus shuttles wove and
+quills played harps of themselves, master-craftsmen
+would have no need of assistants and masters no need
+                     of slaves.
+            - Aristotle, Politics 1253b
+all edge-on
                     ⣀⣀⡀
                     ⣿⣿⡇
-                    ⠛⠛⠃        ⢀⣀⣀⡀
-       ⢸⣿⣿⣿⡄  ⣰⣿⣿⣿⡟ ⣿⣿⡇   ⢸⣿⣿⣧⣾⣿⣿⣿⣿⣧   ⣿⣿⣿⣿⣿⣿⣿⣿⡏
-       ⢸⣿⣿⣿⡇ ⢰⣿⣿⣿⡟  ⣿⣿⡇   ⣾⣿⣿⣿⡟⠛⢻⣿⣿⣿⡇ ⠘⠛⠛⢛⣿⣿⣿⣿⡟⠁
-        ⣿⣿⣿⡇⣰⣿⣿⣿⡏   ⣿⣿⡇  ⢰⣿⣿⣿⡟  ⣼⣿⣿⣿⠂   ⣠⣿⣿⣿⡿⠋
-        ⢻⣿⣿⣧⣿⣿⣿⡏    ⣿⣿⡇  ⣸⣿⣿⣿   ⣿⣿⣿⡟  ⢀⣾⣿⣿⣿⠏
-        ⢸⣿⣿⣿⣿⣿⠏     ⣿⣿⡇ ⢀⣿⣿⣿⡏  ⢸⣿⣿⣿⠇⢀⣴⣿⣿⣿⣿⣥⣤⣤⣤
-         ⣿⣿⣿⣿⠏      ⣿⣿⡇ ⣸⣿⣿⣿⠃  ⣿⣿⣿⣿ ⢸⣿⣿⣿⣿⣿⣿⣿⣿⡏
-       ⢀⣼⣿⣿⣿⠏       ⠉⠉⠁
-    ⢸⣿⣿⣿⣿⣿⡿⠃
-    ⠘⠿⠿⠿⠛⠉
+          ⣀⣀⡀       ⠛⠛⠃      ⢀⣀⡀         ⢀⣀⡀
+          ⣿⣿⣿⣷      ⣿⣿⡇      ⣿⣿⡇        ⣾⣿⣿⣿
+          ⣿⣿⣿⣿      ⣿⣿⡇      ⣿⣿⡇        ⢿⣿⣿⠉
+          ⣿⣿⣿⡟      ⣿⣿⡇      ⣿⣿⣷        ⢸⣿⣿⡇
+          ⣿⣿⣿⡇      ⣿⣿⡇      ⣿⣿⣿        ⠘⣿⣿⣧
+          ⢸⣿⣿⡇      ⣿⣿⡇      ⣿⣿⣿        ⢠⣿⣿⣿
+          ⢸⣿⣿⠇      ⣿⣿⡇      ⣿⣿⣿        ⢸⣿⣿⣿⡇
+          ⣼⣿⣿       ⠉⠉⠁      ⠈⠉⠉         ⠈⠉⠉⠁
+         ⢠⣿⣿⣿
+         ⢸⣿⣿⠏
 
+ for if every tool could perform its own work when
+ ordered, or by seeing what to do in advance, like
+the statues of Daedalus in the story, or the tripods
+of Hephaestus which the poet says 'enter self-moved
+  the company divine,' — if thus shuttles wove and
+quills played harps of themselves, master-craftsmen
+would have no need of assistants and masters no need
+                     of slaves.
+            - Aristotle, Politics 1253b
+all half-turned
+                  ⣠⣤⣄⡀
+                  ⣿⣿⣿⣿
+                  ⠉⠛⠛⠋    ⣀⣀⣀
+    ⠈⢿⣿⣿⣿⣆  ⢠⣿⣿⣿⡇ ⠘⣿⣿⣿⣇ ⢠⣾⣿⣿⣿⣿⣦⣿⣿⣿⡀ ⢸⣿⣿⣿⣿⣿⣿⣿⣿⡆
+      ⢿⣿⣿⣿⡄ ⢸⣿⣿⣿⠃  ⢻⣿⣿⣿⡀⣾⣿⣿⣿⠛⠛⣿⣿⣿⣿⡇  ⠻⣿⣿⣿⣿⡛⠛⠛⠃
+       ⢻⣿⣿⣿⡆⣼⣿⣿⣿   ⢸⣿⣿⣿⡇⢸⣿⣿⣿⡄ ⠘⣿⣿⣿⣿   ⠈⢿⣿⣿⣿⣦
+        ⢻⣿⣿⣿⣿⣿⣿⡇    ⣿⣿⣿⣷⠈⣿⣿⣿⣇  ⢸⣿⣿⣿⡆    ⠙⣿⣿⣿⣷⣄
+         ⢻⣿⣿⣿⣿⣿⡇    ⢸⣿⣿⣿⡆⢹⣿⣿⣿   ⣿⣿⣿⣷  ⣤⣤⣤⣬⣿⣿⣿⣿⣦⡀
+          ⠹⣿⣿⣿⣿      ⣿⣿⣿⣗⠸⣿⣿⣿⡇  ⢻⣿⣿⣿⡄ ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣇
+           ⠹⣿⣿⣿⣧⡀
+            ⠙⢿⣿⣿⣿⣿⣿
+              ⠙⠛⠿⠿⠟
 
-n turning
+ for if every tool could perform its own work when
+ ordered, or by seeing what to do in advance, like
+the statues of Daedalus in the story, or the tripods
+of Hephaestus which the poet says 'enter self-moved
+  the company divine,' — if thus shuttles wove and
+quills played harps of themselves, master-craftsmen
+would have no need of assistants and masters no need
+                     of slaves.
+            - Aristotle, Politics 1253b
+all returning
+                     ⣠⣤⣤⡀
+                    ⢸⣿⣿⣿⡇
+              ⣀⣀⣀⡀  ⠈⠛⠛⠋       ⣀⣀⣀⡀         ⣀⣀⣀⡀
+        ⢸⣿⣿⣿ ⣼⣿⣿⣿⠇  ⣿⣿⣿⡿   ⣿⣿⣿⣿⣿⣿⣿⣿⡆   ⣿⣿⣿⣿⣿⣿⣿⣿⡇
+        ⢸⣿⣿⣿⢰⣿⣿⣿⡏  ⢸⣿⣿⣿⡇  ⢸⣿⣿⣿⣿⠻⣿⣿⣿⣷  ⠘⠛⠛⢛⣿⣿⣿⣿⠟
+        ⠘⣿⣿⣿⣿⣿⣿⡟   ⣼⣿⣿⣿⠁  ⣾⣿⣿⣿⠃⢰⣿⣿⣿⡇    ⣰⣿⣿⣿⡿⠋
+         ⣿⣿⣿⣿⣿⣿⠁   ⣿⣿⣿⡿  ⢀⣿⣿⣿⡏ ⣸⣿⣿⣿⠃  ⢀⣼⣿⣿⣿⠟
+         ⣿⣿⣿⣿⣿⠃   ⢰⣿⣿⣿⡇  ⢸⣿⣿⣿⠃ ⣿⣿⣿⣿  ⣠⣿⣿⣿⣿⣧⣤⣤⣤
+         ⢸⣿⣿⣿⡏    ⣸⣿⣿⣿⠁  ⣾⣿⣿⣿ ⢰⣿⣿⣿⡇  ⣿⣿⣿⣿⣿⣿⣿⣿⡏
+       ⣀⣠⣿⣿⣿⡟                  ⠉⠉⠉⠁        ⠉⠉
+      ⢸⣿⣿⣿⣿⡟⠁
+      ⠈⠛⠛⠛⠉
 
-
-                     ⢀⣤⣤⡀
-                     ⣿⣿⣿⣿
-                     ⠙⠛⠛⠁    ⣀⣀
-       ⢸⣿⣿⣿⡄  ⣰⣿⣿⣿⡟ ⣿⣿⣿⡿     ⣿⣿⡇       ⣿⣿⣿⣿⣿⣿⣿⣿⡏
-       ⢸⣿⣿⣿⡇ ⢰⣿⣿⣿⡟ ⢸⣿⣿⣿⡇     ⣿⣿⡇      ⠘⠛⠛⢛⣿⣿⣿⣿⡟⠁
-        ⣿⣿⣿⡇⣰⣿⣿⣿⡏  ⣼⣿⣿⣿⠁     ⣿⣿⡇        ⣠⣿⣿⣿⡿⠋
-        ⢻⣿⣿⣧⣿⣿⣿⡏  ⢠⣿⣿⣿⡏      ⣿⣿⡇      ⢀⣾⣿⣿⣿⠏
-        ⢸⣿⣿⣿⣿⣿⠏   ⣸⣿⣿⣿⠁      ⣿⣿⡇    ⢀⣴⣿⣿⣿⣿⣥⣤⣤⣤
-         ⣿⣿⣿⣿⠏    ⣿⣿⣿⡿      ⢠⣿⣿⡇    ⢸⣿⣿⣿⣿⣿⣿⣿⣿⡏
-       ⢀⣼⣿⣿⣿⠏                ⠉⠉⠁
-    ⢸⣿⣿⣿⣿⣿⡿⠃
-    ⠘⠿⠿⠿⠛⠉
-
-
-z turning
-
-
-                     ⢀⣤⣤⡀
-                     ⣿⣿⣿⣿
-                     ⠙⠛⠛⠁      ⢀⣀⣀⡀      ⢀⣀
-       ⢸⣿⣿⣿⡄  ⣰⣿⣿⣿⡟ ⣿⣿⣿⡿  ⢸⣿⣿⣧⣾⣿⣿⣿⣿⣧    ⢸⣿⣿⡇
-       ⢸⣿⣿⣿⡇ ⢰⣿⣿⣿⡟ ⢸⣿⣿⣿⡇  ⣾⣿⣿⣿⡟⠛⢻⣿⣿⣿⡇   ⢸⣿⣿⡁
-        ⣿⣿⣿⡇⣰⣿⣿⣿⡏  ⣼⣿⣿⣿⠁ ⢰⣿⣿⣿⡟  ⣼⣿⣿⣿⠂   ⢸⣿⣿⡇
-        ⢻⣿⣿⣧⣿⣿⣿⡏  ⢠⣿⣿⣿⡏  ⣸⣿⣿⣿   ⣿⣿⣿⡟    ⠈⣿⣿⡇
-        ⢸⣿⣿⣿⣿⣿⠏   ⣸⣿⣿⣿⠁ ⢀⣿⣿⣿⡏  ⢸⣿⣿⣿⠇    ⢠⣿⣿⣇
-         ⣿⣿⣿⣿⠏    ⣿⣿⣿⡿  ⣸⣿⣿⣿⠃  ⣿⣿⣿⣿     ⢸⣿⣿⣿
-       ⢀⣼⣿⣿⣿⠏                            ⠈⠉⠉
-    ⢸⣿⣿⣿⣿⣿⡿⠃
-    ⠘⠿⠿⠿⠛⠉
-
-
+ for if every tool could perform its own work when
+ ordered, or by seeing what to do in advance, like
+the statues of Daedalus in the story, or the tripods
+of Hephaestus which the poet says 'enter self-moved
+  the company divine,' — if thus shuttles wove and
+quills played harps of themselves, master-craftsmen
+would have no need of assistants and masters no need
+                     of slaves.
+            - Aristotle, Politics 1253b
 shimmer
-
-
                      ⢀⣤⣤⡀
                      ⣿⣿⣿⣿
                      ⠙⠛⠛⠁      ⢀⣀⣀⡀
@@ -102,3 +130,13 @@ shimmer
        ⢀⣼⣿⣿⣿⠏
     ⢸⣿⣿⣿⣿⣿⡿⠃
     ⠘⠿⠿⠿⠛⠉
+
+ for if every tool could perform its own work when
+ ordered, or by seeing what to do in advance, like
+the statues of Daedalus in the story, or the tripods
+of Hephaestus which the poet says 'enter self-moved
+  the company divine,' — if thus shuttles wove and
+quills played harps of themselves, master-craftsmen
+would have no need of assistants and masters no need
+                     of slaves.
+            - Aristotle, Politics 1253b

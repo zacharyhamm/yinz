@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::task::JoinHandle;
+use yinz_bus::pty_writer::PtyWriteInstruction;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::command::PaneTarget;
 use yinz_types::data::{Event, NewPanePlacement, OriginatingPlugin};
@@ -336,9 +337,9 @@ fn spawn_placed_terminal(
     default_editor: Option<PathBuf>,
     placement: &std::sync::mpsc::Receiver<TerminalSize>,
     cancelled: &std::sync::atomic::AtomicBool,
+    quit_cb: TerminalQuitCallback,
 ) -> Result<SpawnedTerminal> {
     let terminal_action = pending.terminal_action.clone();
-    let quit_cb = terminal_quit_callback(senders.clone(), &terminal_action);
     let mut report_progress = |phase: &str| {
         if let TerminalAction::RunCommand(command) = &terminal_action {
             send_remote_status(senders, pending.terminal_id, command, phase).non_fatal();
@@ -384,6 +385,7 @@ fn run_spawn_job(
     default_editor: Option<PathBuf>,
     placement: std::sync::mpsc::Receiver<TerminalSize>,
     cancelled: Arc<std::sync::atomic::AtomicBool>,
+    quit_cb: TerminalQuitCallback,
 ) -> (PendingSpawn, Vec<TerminalId>) {
     match job {
         SpawnJob::Terminal(pending) => {
@@ -394,6 +396,7 @@ fn run_spawn_job(
                 default_editor,
                 &placement,
                 &cancelled,
+                quit_cb,
             );
             let started = vec![pending.terminal_id];
             (
@@ -404,10 +407,6 @@ fn run_spawn_job(
         SpawnJob::Rerun(pending) => {
             let spawned = match pending.pane_id {
                 PaneId::Terminal(terminal_id) => {
-                    let quit_cb = terminal_quit_callback(
-                        senders.clone(),
-                        &TerminalAction::RunCommand(pending.run_command.clone()),
-                    );
                     let mut report_progress = |phase: &str| {
                         send_remote_status(senders, terminal_id, &pending.run_command, phase)
                             .non_fatal()
@@ -450,10 +449,49 @@ fn run_spawn_job(
     }
 }
 
+type TerminalQuitCallback = Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>;
+
+/// A child can exit inside spawn_resolved. Its notifications must wait until
+/// SpawnResolved is enqueued, so Screen's ClosePane cannot overtake startup.
+struct SpawnExitGate {
+    callback: TerminalQuitCallback,
+    handback: Option<bool>,
+    pending: Option<(PaneId, Option<i32>, RunCommand)>,
+}
+
+impl SpawnExitGate {
+    fn callback(gate: &Arc<std::sync::Mutex<Self>>) -> TerminalQuitCallback {
+        let gate = gate.clone();
+        Box::new(move |pane, status, command| {
+            let result = (|| -> Result<()> {
+                let mut gate = gate.lock().to_anyhow()?;
+                match gate.handback {
+                    Some(true) => (gate.callback)(pane, status, command),
+                    Some(false) => {},
+                    None => gate.pending = Some((pane, status, command)),
+                }
+                Ok(())
+            })();
+            result
+                .context("defer terminal exit until spawn handback")
+                .non_fatal();
+        })
+    }
+
+    fn release(&mut self, handed_back: bool) {
+        self.handback = Some(handed_back);
+        if let Some((pane, status, command)) = self.pending.take()
+            && handed_back
+        {
+            (self.callback)(pane, status, command);
+        }
+    }
+}
+
 fn terminal_quit_callback(
     senders: ThreadSenders,
     terminal_action: &TerminalAction,
-) -> Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send> {
+) -> TerminalQuitCallback {
     let (hold_on_close, command_plugin, edit_plugin) = match terminal_action {
         TerminalAction::RunCommand(command) => (
             command.hold_on_close,
@@ -532,6 +570,8 @@ pub struct Pty {
     awaiting_placement: HashMap<TerminalId, PendingPlacement>,
     /// Actions that wait for process startup as well as placement.
     pending_start_completions: HashMap<TerminalId, NotificationEnd>,
+    /// Failed launches keep reruns queued until the writer discards old input.
+    pending_write_cancellations: HashMap<TerminalId, u64>,
     /// Per pane, the rerun off-thread now and the ones waiting behind it.
     reruns: HashMap<TerminalId, RerunState>,
     next_rerun_generation: u64,
@@ -564,6 +604,7 @@ impl Pty {
             pending_terminal_spawns: HashMap::new(),
             awaiting_placement: HashMap::new(),
             pending_start_completions: HashMap::new(),
+            pending_write_cancellations: HashMap::new(),
             reruns: HashMap::new(),
             next_rerun_generation: 0,
         }
@@ -713,6 +754,15 @@ impl Pty {
                 }
             },
         }
+        let action = match &job {
+            SpawnJob::Terminal(pending) => pending.terminal_action.clone(),
+            SpawnJob::Rerun(pending) => TerminalAction::RunCommand(pending.run_command.clone()),
+        };
+        let exit_gate = Arc::new(std::sync::Mutex::new(SpawnExitGate {
+            callback: terminal_quit_callback(senders.clone(), &action),
+            handback: None,
+            pending: None,
+        }));
         self.reap_spawn_workers();
         self.spawn_workers.push(std::thread::spawn(move || {
             let (resolved, started) = run_spawn_job(
@@ -722,11 +772,20 @@ impl Pty {
                 default_editor,
                 placement_rx,
                 cancelled,
+                SpawnExitGate::callback(&exit_gate),
             );
-            if senders
+            let handed_back = senders
                 .send_to_pty(PtyInstruction::SpawnResolved(resolved))
-                .is_err()
+                .is_ok();
+            match exit_gate
+                .lock()
+                .to_anyhow()
+                .context("release spawn exit callback")
             {
+                Ok(mut gate) => gate.release(handed_back),
+                Err(error) => Err::<(), _>(error).non_fatal(),
+            }
+            if !handed_back {
                 Err::<(), _>(anyhow!(LOST_SPAWN_HANDBACK)).non_fatal();
                 for terminal_id in started {
                     os_input.clear_terminal_id(terminal_id).non_fatal();
@@ -811,7 +870,7 @@ impl Pty {
         }
         self.pending_terminal_spawns.remove(&terminal_id);
         self.awaiting_placement.remove(&terminal_id);
-        let queued = self
+        let mut queued = self
             .reruns
             .remove(&terminal_id)
             .map(|state| state.queued)
@@ -850,6 +909,31 @@ impl Pty {
                     .as_ref()
                     .is_some_and(|command| command.shows_start_failure() || command.defers_spawn());
                 if show_failure {
+                    // Tear down the failed reservation, but keep the pane for its
+                    // error display. A retry must wait for the writer's ack.
+                    self.bus
+                        .os_input
+                        .as_ref()
+                        .context("no OS I/O interface found")?
+                        .clear_terminal_id(terminal_id)
+                        .context("release failed terminal startup")
+                        .non_fatal();
+                    self.pending_write_cancellations
+                        .insert(terminal_id, pending.generation);
+                    self.reruns.insert(
+                        terminal_id,
+                        RerunState {
+                            generation: pending.generation,
+                            queued: std::mem::take(&mut queued),
+                        },
+                    );
+                    self.bus
+                        .senders
+                        .send_to_pty_writer(PtyWriteInstruction::CancelWrites {
+                            terminal_id,
+                            generation: pending.generation,
+                        })
+                        .context("cancel writes for failed terminal startup")?;
                     self.bus
                         .senders
                         .send_to_screen(ScreenInstruction::PtyBytes(
@@ -897,10 +981,23 @@ impl Pty {
                 }
             },
         }
-        if keep_pane {
+        if keep_pane && !self.pending_write_cancellations.contains_key(&terminal_id) {
             self.run_queued_reruns(PaneId::Terminal(terminal_id), queued)?;
         }
         Ok(())
+    }
+
+    fn startup_writes_cancelled(&mut self, terminal_id: TerminalId, generation: u64) -> Result<()> {
+        if self.pending_write_cancellations.get(&terminal_id) != Some(&generation) {
+            return Ok(());
+        }
+        self.pending_write_cancellations.remove(&terminal_id);
+        let queued = self
+            .reruns
+            .remove(&terminal_id)
+            .map(|state| state.queued)
+            .unwrap_or_default();
+        self.run_queued_reruns(PaneId::Terminal(terminal_id), queued)
     }
 
     /// The second half of a deferred rerun, once the worker has the command
@@ -1286,6 +1383,7 @@ impl Pty {
         match id {
             PaneId::Terminal(id) => {
                 self.pending_terminal_spawns.remove(&id);
+                self.pending_write_cancellations.remove(&id);
                 if let Some(placement) = self.awaiting_placement.remove(&id) {
                     placement
                         .cancelled

@@ -1,12 +1,38 @@
 use super::geometry::{Sample, GLYPHS};
 use super::outlines::OUTLINES;
 use std::time::Duration;
+use unicode_width::UnicodeWidthStr;
 use yinz_types::colors::{eightbit_to_rgb, PaletteColor};
 use yinz_types::pane_size::Size;
 use yinz_types::style::StyleDeclaration;
 
 const BITS: [u8; 8] = [1, 8, 2, 16, 4, 32, 64, 128];
 const MIN_CONTRAST: f64 = 4.5;
+const QUOTE: &str = "for if every tool could perform its own work when ordered, or by seeing what \
+    to do in advance, like the statues of Daedalus in the story, or the tripods of Hephaestus \
+    which the poet says 'enter self-moved the company divine,' — if thus shuttles wove and quills \
+    played harps of themselves, master-craftsmen would have no need of assistants and masters \
+    no need of slaves.";
+const ATTRIBUTION: &str = "- Aristotle, Politics 1253b";
+
+fn quote_lines(width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for paragraph in [QUOTE, ATTRIBUTION] {
+        let mut line = String::new();
+        for word in paragraph.split_whitespace() {
+            if !line.is_empty() && line.width() + 1 + word.width() > width {
+                lines.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+        lines.push(line);
+    }
+    lines
+}
+
 type Rgb = [f32; 3];
 
 #[derive(Clone, Copy)]
@@ -30,10 +56,31 @@ pub(super) struct Stage {
     pub rows: usize,
     left: usize,
     top: usize,
+    quote_rows: usize,
 }
 
 impl Stage {
     pub fn new(size: Size) -> Option<Self> {
+        let scale = ((size.cols.saturating_sub(2)) as f32 / 52.0).min(1.0);
+        if scale < 0.5 {
+            return None;
+        }
+        let cols = (52.0 * scale).floor() as usize;
+        // Trim the logo's vertical padding to leave room for the quotation,
+        // without changing the letter proportions or the width of its stage.
+        let rows = (12.0 * scale).ceil() as usize;
+        let quote_rows = quote_lines(cols).len();
+        let height = rows + 1 + quote_rows;
+        if height <= size.rows.saturating_sub(2) {
+            return Some(Self {
+                cols,
+                rows,
+                left: (size.cols - cols) / 2 + 1,
+                top: (size.rows - height) / 2 + 1,
+                quote_rows,
+            });
+        }
+        // Short terminals retain the logo rather than clipping the quotation.
         let scale = ((size.cols.saturating_sub(2)) as f32 / 52.0)
             .min((size.rows.saturating_sub(2)) as f32 / 16.0)
             .min(1.0);
@@ -47,6 +94,7 @@ impl Stage {
             rows,
             left: (size.cols - cols) / 2 + 1,
             top: (size.rows - rows) / 2 + 1,
+            quote_rows: 0,
         })
     }
 }
@@ -57,11 +105,13 @@ pub(super) struct Renderer {
     background_luminance: f64,
     foreground: Rgb,
     highlight: Rgb,
+    accent: Rgb,
     dots: Vec<Dot>,
+    quote: Vec<String>,
 }
 
 impl Renderer {
-    pub fn new(stage: Stage, style: StyleDeclaration) -> Self {
+    pub fn new(stage: Stage, style: StyleDeclaration, accent: PaletteColor) -> Self {
         let background = rgb(style.background);
         let background_luminance = luminance(background);
         let highlight = if contrast(0.0, background_luminance) > contrast(1.0, background_luminance)
@@ -76,12 +126,23 @@ impl Renderer {
             background_luminance,
             foreground: rgb(style.base),
             highlight,
+            accent: rgb(accent),
             dots: vec![Dot::default(); stage.cols * stage.rows * 8],
+            quote: if stage.quote_rows > 0 {
+                quote_lines(stage.cols)
+            } else {
+                Vec::new()
+            },
         }
     }
 
     pub fn resize(&mut self, stage: Stage) {
         self.stage = stage;
+        self.quote = if stage.quote_rows > 0 {
+            quote_lines(stage.cols)
+        } else {
+            Vec::new()
+        };
         self.dots
             .resize(stage.cols * stage.rows * 8, Dot::default());
     }
@@ -93,11 +154,11 @@ impl Renderer {
             .flat_map(|o| o.segments.iter().map(move |s| (s[0] + o.center).abs()))
             .fold(0.0, f32::max)
             * 2.0;
-        let scale =
-            (self.stage.cols as f32 * 2.0 / (width + 0.9)).min(self.stage.rows as f32 * 4.0 / 2.9);
-        for (letter, glyph) in GLYPHS.iter().enumerate() {
-            let angle = angle(elapsed, letter);
-            let (sin, cos) = angle.sin_cos();
+        let vertical_extent = if self.stage.quote_rows > 0 { 2.2 } else { 2.9 };
+        let scale = (self.stage.cols as f32 * 2.0 / (width + 0.9))
+            .min(self.stage.rows as f32 * 4.0 / vertical_extent);
+        let (sin, cos) = angle(elapsed).sin_cos();
+        for glyph in GLYPHS.iter() {
             for sample in &glyph.samples {
                 self.project(sample, glyph.center, sin, cos, scale, elapsed, width);
             }
@@ -129,6 +190,21 @@ impl Renderer {
                         char::from_u32(0x2800 + u32::from(mask)).unwrap_or(' ')
                     ));
                 }
+            }
+        }
+        if !self.quote.is_empty() {
+            let [r, g, b] = ensure_contrast(
+                self.foreground.map(|channel| channel.round() as u8),
+                self.background_luminance,
+                self.highlight,
+            );
+            output.push_str(&format!("\x1b[38;2;{r};{g};{b}m"));
+            for (row, line) in self.quote.iter().enumerate() {
+                output.push_str(&format!(
+                    "\x1b[{};{}H{line}",
+                    self.stage.top + self.stage.rows + 1 + row,
+                    self.stage.left + (self.stage.cols - line.width()) / 2,
+                ));
             }
         }
         output.push_str("\x1b[m");
@@ -169,17 +245,14 @@ impl Renderer {
             .max(0.0)
             .powi(18);
         let base = mix(self.background, self.foreground, 0.45 + 0.55 * diffuse);
-        let color = mix(
-            base,
-            self.highlight,
-            (0.22 * gloss + shimmer(elapsed, world_x, width) * 0.8).min(1.0),
-        );
+        let lit = mix(base, self.highlight, 0.22 * gloss);
+        let color = mix(lit, self.accent, shimmer(elapsed, world_x, width) * 0.8);
         self.dots[index] = Dot { depth: z, color };
     }
 }
 
-pub(super) fn angle(elapsed: Duration, letter: usize) -> f32 {
-    let t = ((elapsed.as_secs_f32() - letter as f32 * 0.5) / 0.5).clamp(0.0, 1.0);
+pub(super) fn angle(elapsed: Duration) -> f32 {
+    let t = (elapsed.as_secs_f32() / 0.7).clamp(0.0, 1.0);
     // Return exactly to the resting pose after a full turn.
     if t == 1.0 {
         0.0
@@ -193,7 +266,7 @@ fn smooth(t: f32) -> f32 {
 }
 
 pub(super) fn shimmer(elapsed: Duration, x: f32, width: f32) -> f32 {
-    let t = (elapsed.as_secs_f32() - 2.0) / 0.8;
+    let t = (elapsed.as_secs_f32() - 0.7) / 0.7;
     if !(0.0..1.0).contains(&t) {
         return 0.0;
     }

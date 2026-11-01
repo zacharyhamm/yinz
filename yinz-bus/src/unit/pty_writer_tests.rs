@@ -703,3 +703,67 @@ fn placement_is_acknowledged_only_after_the_resize_batch_is_applied() {
     sender.send(PtyWriteInstruction::Exit).unwrap();
     worker.join().unwrap();
 }
+
+#[test]
+fn cancelling_startup_writes_fails_waiters_before_ack_and_cannot_reach_a_retry() {
+    let mock = MockServerOsApi::new();
+    let id = TerminalId::new(1);
+    let other = TerminalId::new(2);
+    mock.set_behavior(id, WriteBehavior::AcceptNone);
+    let (mut bus, sender) = make_test_bus(mock.clone());
+    let (pty_tx, pty_rx) = channels::unbounded();
+    bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    let mut results = Vec::new();
+    for bytes in [b"old input".to_vec(), b"more old input".to_vec()] {
+        let (tx, result) = tokio::sync::oneshot::channel();
+        sender
+            .send(PtyWriteInstruction::Write(
+                bytes,
+                id,
+                Some(NotificationEnd::new(tx)),
+            ))
+            .unwrap();
+        results.push(result);
+    }
+    sender
+        .send(PtyWriteInstruction::Write(
+            b"other pane".to_vec(),
+            other,
+            None,
+        ))
+        .unwrap();
+    sender
+        .send(PtyWriteInstruction::CancelWrites {
+            terminal_id: id,
+            generation: 42,
+        })
+        .unwrap();
+    let worker = std::thread::spawn(move || pty_writer_main(bus).unwrap());
+    let (ack, _) = pty_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert!(
+        matches!(ack, crate::pty::PtyInstruction::StartupWritesCancelled { terminal_id, generation: 42 } if terminal_id == id)
+    );
+    for mut result in results {
+        assert!(result
+            .try_recv()
+            .unwrap()
+            .error_message
+            .unwrap()
+            .contains("cancelled"));
+    }
+    // Only after acknowledgement can the replacement accept input.
+    mock.set_behavior(id, WriteBehavior::AcceptAll);
+    let (tx, mut result) = tokio::sync::oneshot::channel();
+    sender
+        .send(PtyWriteInstruction::Write(
+            b"new input".to_vec(),
+            id,
+            Some(NotificationEnd::new(tx)),
+        ))
+        .unwrap();
+    sender.send(PtyWriteInstruction::Exit).unwrap();
+    worker.join().unwrap();
+    assert!(result.try_recv().unwrap().error_message.is_none());
+    assert_eq!(mock.get_written_bytes(id), b"new input");
+    assert_eq!(mock.get_written_bytes(other), b"other pane");
+}

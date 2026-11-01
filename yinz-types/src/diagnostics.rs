@@ -403,6 +403,7 @@ pub enum PtyContext {
     TerminalPlaced,
     SpawnTerminal,
     SpawnResolved,
+    StartupWritesCancelled,
     OpenInPlaceEditor,
     UpdateActivePane,
     RemoveClient,
@@ -604,6 +605,7 @@ pub enum ServerContext {
     strum_macros::VariantNames,
 )]
 pub enum PtyWriteContext {
+    CancelWrites,
     TerminalPlaced,
     Write,
     RetainAgentTheme,

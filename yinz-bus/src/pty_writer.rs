@@ -17,6 +17,11 @@ use crate::thread_bus::Bus;
 // here anyway, so
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PtyWriteInstruction {
+    /// Drop input from a failed launch before allowing a retry to start.
+    CancelWrites {
+        terminal_id: TerminalId,
+        generation: u64,
+    },
     Write(Vec<u8>, TerminalId, Option<NotificationEnd>),
     RetainAgentTheme(TerminalId, yinz_types::agent::theme::AgentThemeEvent),
     ResizePty(TerminalId, u16, u16, Option<u16>, Option<u16>),
@@ -107,6 +112,22 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
         if let Some((event, mut err_ctx)) = event {
             yinz_runtime::errors::add_call(&mut err_ctx, ContextType::PtyWrite((&event).into()));
             match event {
+                PtyWriteInstruction::CancelWrites {
+                    terminal_id,
+                    generation,
+                } => {
+                    if let Some(mut queue) = pending.remove(&terminal_id) {
+                        for write in &mut queue {
+                            write.fail("command failed to start; pending PTY write cancelled");
+                        }
+                    }
+                    bus.senders
+                        .send_to_pty(crate::pty::PtyInstruction::StartupWritesCancelled {
+                            terminal_id,
+                            generation,
+                        })
+                        .context("acknowledge cancelled startup writes")?;
+                },
                 PtyWriteInstruction::Write(bytes, terminal_id, mut completion) => {
                     let queue = pending.entry(terminal_id).or_default();
                     let queued: usize = queue

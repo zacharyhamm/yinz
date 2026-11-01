@@ -52,20 +52,25 @@ fn check_frames(deadline: Option<Instant>) {
         }
     });
     let splash =
-        deadline.map(|deadline| crate::splash::test_splash(deadline - Duration::from_secs(3)));
+        deadline.map(|deadline| crate::splash::test_splash(deadline - Duration::from_millis(1400)));
     let outcome = run(&os, &budget, splash, &rx, input_tx);
     producer.join().unwrap();
     assert_eq!(outcome.exit_status, 0);
-    let clear = if deadline.is_some() {
-        crate::splash::CLEAR
-    } else {
-        ""
-    };
     let sync = SyncOutput::Csi;
-    let expected = [format!("{clear}first"), "second".into(), "third".into()]
-        .into_iter()
-        .flat_map(|frame| [sync.start_seq(), frame.as_bytes(), sync.end_seq()].concat())
-        .collect::<Vec<_>>();
+    let mut expected = Vec::new();
+    if deadline.is_some() {
+        expected.extend(
+            [
+                sync.start_seq(),
+                crate::splash::CLEAR.as_bytes(),
+                sync.end_seq(),
+            ]
+            .concat(),
+        );
+    }
+    for frame in ["first", "second", "third"] {
+        expected.extend([sync.start_seq(), frame.as_bytes(), sync.end_seq()].concat());
+    }
     let bytes = os.stdout_bytes();
     assert!(bytes.ends_with(&expected));
     let text = String::from_utf8(bytes).unwrap();
@@ -75,14 +80,91 @@ fn check_frames(deadline: Option<Instant>) {
     if deadline.is_none() {
         assert_eq!(text.as_bytes(), expected);
     } else {
-        // At least one animation frame was painted before handing off. The number
-        // depends on scheduling, so only assert visible Braille content.
-        let before_session = text.split("first").next().unwrap();
-        assert!(before_session
-            .chars()
-            .any(|c| ('\u{2801}'..='\u{28ff}').contains(&c)));
+        assert_eq!(
+            os.stdout_attempts
+                .get()
+                .iter()
+                .filter(|write| write.as_slice() == crate::splash::CLEAR.as_bytes())
+                .count(),
+            1
+        );
     }
     // Both slots must be free after all three frames reached the terminal.
+    budget.reserve(100).unwrap();
+    budget.release(100).unwrap();
+}
+
+#[test]
+fn expiry_clears_without_a_server_render_and_does_not_clear_again_for_a_late_frame() {
+    let os = FakeClientOsApi::new().capturing_stdout();
+    let budget = Arc::new(RenderBudget::new(100));
+    let (tx, rx) = channels::unbounded();
+    let tx = SenderWithContext::new(tx);
+    let (input_tx, input_rx): channels::ChannelWithContext<InputInstruction> =
+        channels::unbounded();
+    let started = Instant::now();
+    let producer = std::thread::spawn({
+        let os = os.clone();
+        let budget = budget.clone();
+        move || {
+            os.stdout_attempts.wait_until(
+                "splash clear before any server render",
+                yinz_test_support::default_timeout(),
+                |writes| {
+                    writes
+                        .iter()
+                        .any(|write| write == crate::splash::CLEAR.as_bytes())
+                        .then_some(())
+                },
+            );
+            assert!(Instant::now() >= started + Duration::from_millis(1400));
+            // A control round trip confirms the clear finished and the loop is
+            // still responsive while the session's first render is pending.
+            tx.send(ClientInstruction::SetMouseMode(true)).unwrap();
+            assert!(matches!(
+                input_rx.recv_timeout(Duration::from_secs(30)).unwrap().0,
+                InputInstruction::SetMouseMode(true)
+            ));
+            budget.reserve(4).unwrap();
+            tx.send(ClientInstruction::Render("late".into())).unwrap();
+            tx.send(ClientInstruction::SetMouseMode(false)).unwrap();
+            assert!(matches!(
+                input_rx.recv_timeout(Duration::from_secs(30)).unwrap().0,
+                InputInstruction::SetMouseMode(false)
+            ));
+            tx.send(ClientInstruction::Exit(ExitReason::Normal))
+                .unwrap();
+        }
+    });
+    let outcome = run(
+        &os,
+        &budget,
+        Some(crate::splash::test_splash(started)),
+        &rx,
+        input_tx,
+    );
+    producer.join().unwrap();
+    assert_eq!(outcome.exit_status, 0);
+    let sync = SyncOutput::Csi;
+    assert!(os.stdout_bytes().ends_with(
+        &[
+            sync.start_seq(),
+            crate::splash::CLEAR.as_bytes(),
+            sync.end_seq(),
+            sync.start_seq(),
+            b"late",
+            sync.end_seq(),
+        ]
+        .concat()
+    ));
+    assert_eq!(
+        os.stdout_attempts
+            .get()
+            .iter()
+            .filter(|write| write.as_slice() == crate::splash::CLEAR.as_bytes())
+            .count(),
+        1
+    );
     budget.reserve(100).unwrap();
     budget.release(100).unwrap();
 }

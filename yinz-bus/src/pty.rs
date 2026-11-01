@@ -303,6 +303,11 @@ pub enum PtyInstruction {
     /// asked for are resolved and started (or failed), and the pty thread can
     /// finish the job the way it would have had the spawn been local.
     SpawnResolved(PendingSpawn),
+    /// The writer has discarded input from this failed launch.
+    StartupWritesCancelled {
+        terminal_id: TerminalId,
+        generation: u64,
+    },
     /// Screen has placed this launch and the writer has flushed its resize batch.
     TerminalPlaced {
         terminal_id: TerminalId,

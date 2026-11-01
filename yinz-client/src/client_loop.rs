@@ -116,11 +116,7 @@ impl ClientLoop<'_, '_> {
                     },
                 }
             }
-            let waiting_for_splash = self
-                .splash
-                .as_ref()
-                .filter(|splash| splash.waiting(now))
-                .map(|splash| splash.wake_at());
+            let waiting_for_splash = self.splash.as_ref().map(|splash| splash.wake_at());
             let next = if let Some(deadline) = waiting_for_splash {
                 match receive_client_instructions.recv_deadline(deadline) {
                     Ok(instruction) => instruction,
@@ -348,11 +344,8 @@ impl ClientLoop<'_, '_> {
                 return true;
             },
             ClientInstruction::Error(backtrace) => self.fail(backtrace),
-            ClientInstruction::Render(mut output) => {
+            ClientInstruction::Render(output) => {
                 let render_bytes = output.len();
-                if self.splash.take().is_some() {
-                    output.insert_str(0, crate::splash::CLEAR);
-                }
                 let started = Instant::now();
                 let mut stdout = self.os_input.get_stdout_writer();
                 let written =

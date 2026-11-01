@@ -27,6 +27,12 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
         let (event, mut err_ctx) = pty.bus.recv().expect("failed to receive event on channel");
         yinz_runtime::errors::add_call(&mut err_ctx, ContextType::Pty((&event).into()));
         match event {
+            PtyInstruction::StartupWritesCancelled {
+                terminal_id,
+                generation,
+            } => {
+                pty.startup_writes_cancelled(terminal_id, generation)?;
+            },
             PtyInstruction::TerminalPlaced {
                 terminal_id,
                 generation,

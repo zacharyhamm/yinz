@@ -114,6 +114,7 @@ struct MockOsApi {
     next_terminal_id: Arc<AtomicU32>,
     resolved_spawns: Arc<Mutex<Vec<TerminalId>>>,
     initial_sizes: Arc<Mutex<Vec<TerminalSize>>>,
+    exit_during_spawn: bool,
     fail_reservations: Arc<Mutex<bool>>,
     /// How many local spawns still succeed before they start failing the way
     /// `fail_local_spawns` makes them fail, so a test can spawn a pane for real
@@ -150,6 +151,7 @@ impl MockOsApi {
             next_terminal_id: Arc::new(AtomicU32::new(0)),
             resolved_spawns: Arc::new(Mutex::new(vec![])),
             initial_sizes: Arc::new(Mutex::new(vec![])),
+            exit_during_spawn: false,
             fail_reservations: Arc::new(Mutex::new(false)),
             reservations_to_allow: Arc::new(Mutex::new(0)),
             adopted_command: Arc::new(Mutex::new(None)),
@@ -294,13 +296,20 @@ impl TerminalProcesses for MockOsApi {
     fn spawn_resolved(
         &self,
         resolved: crate::os_input_output::ResolvedSpawn,
-        _: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         self.initial_sizes.lock().unwrap().push(
             resolved
                 .initial_size
                 .expect("launch must have a placed size"),
         );
+        if self.exit_during_spawn {
+            quit_cb(
+                PaneId::Terminal(resolved.terminal_id),
+                Some(0),
+                resolved.command.clone(),
+            );
+        }
         self.transport_started.wait();
         self.transport_release.wait();
         self.resolved_spawns
@@ -4862,7 +4871,10 @@ fn local_spawn_failure_closes_or_holds_the_placed_pane_and_completes_agent_contr
                 .any(|event| matches!(event, ScreenInstruction::ClosePane(..))),
             !hold
         );
-        assert_eq!(os.cleared_terminal_ids.lock().unwrap().is_empty(), hold);
+        assert_eq!(
+            *os.cleared_terminal_ids.lock().unwrap(),
+            [TerminalId::new(0)]
+        );
         assert!(pty.pending_start_completions.is_empty());
         assert!(pty.awaiting_placement.is_empty());
     }
@@ -4892,4 +4904,154 @@ fn closing_after_placement_still_cancels_a_command_whose_target_is_resolving() {
     };
     pty.handle_terminal_spawned(pending, spawned).unwrap();
     assert!(os.resolved_spawns.lock().unwrap().is_empty());
+}
+
+#[test]
+fn an_exit_inside_spawn_waits_for_handback_before_closing_or_holding_the_pane() {
+    for hold in [false, true] {
+        let mut os = MockOsApi::new();
+        os.exit_during_spawn = true;
+        os.transport_started = Arc::new(Barrier::new(2));
+        os.transport_release = Arc::new(Barrier::new(2));
+        let (mut pty, _, screen) = make_pty_with_screen_receiver(os.clone());
+        let (tx, rx) = channels::unbounded();
+        pty.bus.senders.to_pty = Some(SenderWithContext::new(tx));
+        let (completion, result) = tokio::sync::oneshot::channel();
+        let mut completion = NotificationEnd::new(completion);
+        completion.wait_for_agent_start = true;
+        let command = RunCommand {
+            command: "/usr/bin/true".into(),
+            hold_on_close: hold,
+            ..Default::default()
+        };
+        pty.spawn_pane(
+            Some(TerminalAction::RunCommand(command.clone())),
+            pending_control_agent(command, completion),
+        )
+        .unwrap();
+        place_launches(&mut pty);
+        os.transport_started.wait();
+        // The callback has returned, but the OS spawn has not. There must be
+        // no exit for Screen to turn into ClosePane before SpawnResolved.
+        assert!(!screen.try_iter().any(|(event, _)| matches!(
+            event,
+            ScreenInstruction::ClosePane(..) | ScreenInstruction::HoldPane(..)
+        )));
+        assert!(rx.try_recv().is_err());
+        os.transport_release.wait();
+        // Joining makes callback delivery deterministic after the handback.
+        for worker in pty.spawn_workers.drain(..) {
+            worker.join().unwrap();
+        }
+        let (event, _) = rx.try_recv().unwrap();
+        let PtyInstruction::SpawnResolved(PendingSpawn::Terminal(pending, spawned)) = event else {
+            panic!("expected startup handback");
+        };
+        let exits: Vec<_> = screen
+            .try_iter()
+            .map(|(event, _)| event)
+            .filter(|event| {
+                matches!(
+                    event,
+                    ScreenInstruction::ClosePane(..) | ScreenInstruction::HoldPane(..)
+                )
+            })
+            .collect();
+        assert_eq!(exits.len(), 1);
+        assert_eq!(matches!(exits[0], ScreenInstruction::HoldPane(..)), hold);
+        pty.handle_terminal_spawned(pending, spawned).unwrap();
+        if !hold {
+            pty.close_pane(PaneId::Terminal(TerminalId::new(0)))
+                .unwrap();
+        }
+        assert!(result.blocking_recv().unwrap().error_message.is_none());
+    }
+}
+
+#[test]
+fn a_lost_spawn_handback_discards_early_and_late_exit_callbacks() {
+    let (pty, plugins, screen) = make_pty_with_screen_receiver(MockOsApi::new());
+    let command = RunCommand::default();
+    let gate = Arc::new(Mutex::new(SpawnExitGate {
+        callback: terminal_quit_callback(
+            pty.bus.senders.clone(),
+            &TerminalAction::RunCommand(command.clone()),
+        ),
+        handback: None,
+        pending: None,
+    }));
+    let callback = SpawnExitGate::callback(&gate);
+    callback(PaneId::Terminal(TERMINAL_41), Some(0), command.clone());
+    gate.lock().unwrap().release(false);
+    callback(PaneId::Terminal(TERMINAL_41), Some(0), command);
+    assert!(screen.try_recv().is_err());
+    assert!(plugins.try_recv().is_err());
+}
+
+#[test]
+fn failed_startup_waits_for_write_cancellation_before_retry_and_ignores_stale_acks() {
+    for close in [false, true] {
+        for mut command in [
+            ssh_command(),
+            RunCommand {
+                target: PaneTarget::Bubblewrap {
+                    root: "/repo".into(),
+                },
+                ..Default::default()
+            },
+        ] {
+            command.hold_on_close = true;
+            let id = TerminalId::new(0);
+            let os = MockOsApi::new();
+            os.fail_rerun_of(id);
+            let (mut pty, _, screen) = make_pty_with_screen_receiver(os.clone());
+            let (tx, rx) = channels::unbounded();
+            pty.bus.senders.to_pty = Some(SenderWithContext::new(tx));
+            let (writer_tx, writer_rx) = channels::unbounded();
+            pty.bus.senders.to_pty_writer = Some(SenderWithContext::new(writer_tx));
+            pty.spawn_pane(
+                Some(TerminalAction::RunCommand(command.clone())),
+                in_place_spawn(Some(command), None),
+            )
+            .unwrap();
+            place_launches(&mut pty);
+            let (event, _) = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            let PtyInstruction::SpawnResolved(PendingSpawn::Terminal(pending, spawned)) = event
+            else {
+                panic!("expected startup handback");
+            };
+            let generation = pending.generation;
+            pty.request_rerun(PaneId::Terminal(id), RunCommand::default(), None)
+                .unwrap();
+            pty.handle_terminal_spawned(pending, spawned).unwrap();
+            assert_eq!(*os.cleared_terminal_ids.lock().unwrap(), [id]);
+            assert!(screen
+                .try_iter()
+                .any(|(event, _)| matches!(event, ScreenInstruction::HoldPane(..))));
+            assert!(
+                matches!(writer_rx.try_recv().unwrap().0, PtyWriteInstruction::CancelWrites { terminal_id, generation: g } if terminal_id == id && g == generation)
+            );
+            assert_eq!(pty.reruns[&id].queued.len(), 1);
+            pty.startup_writes_cancelled(id, generation.wrapping_add(1))
+                .unwrap();
+            assert!(pty.awaiting_placement.is_empty());
+            // Requests arriving after failure must wait behind the barrier too.
+            pty.request_rerun(PaneId::Terminal(id), RunCommand::default(), None)
+                .unwrap();
+            assert_eq!(pty.reruns[&id].queued.len(), 2);
+            if close {
+                pty.close_pane(PaneId::Terminal(id)).unwrap();
+            }
+            pty.startup_writes_cancelled(id, generation).unwrap();
+            assert!(pty.pending_write_cancellations.is_empty());
+            assert_eq!(pty.awaiting_placement.contains_key(&id), !close);
+            if !close {
+                assert_eq!(pty.reruns[&id].queued.len(), 1);
+                // A duplicate acknowledgement cannot release the next generation.
+                pty.startup_writes_cancelled(id, generation).unwrap();
+                assert!(pty.awaiting_placement.contains_key(&id));
+                pty.close_pane(PaneId::Terminal(id)).unwrap();
+            }
+        }
+    }
 }
