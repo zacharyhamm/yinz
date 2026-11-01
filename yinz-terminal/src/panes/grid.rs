@@ -620,6 +620,7 @@ pub struct Grid {
     agent_theme: Rc<crate::agent_theme::SourcePalette>,
     agent_palettes: Vec<std::rc::Weak<crate::agent_theme::SourcePalette>>,
     agent_launch: Option<yinz_types::agent::theme::AgentThemeLaunch>,
+    detected_theme_interval: Option<String>,
     pub pending_agent_theme_updates: Vec<yinz_types::agent::theme::AgentThemeEvent>,
     // The query owns this association, even if a different run starts before its reply.
     agent_color_queries: VecDeque<(u8, std::rc::Weak<crate::agent_theme::SourcePalette>)>,
@@ -1003,6 +1004,7 @@ impl Grid {
             agent_theme: Rc::new(crate::agent_theme::SourcePalette::new(None, style)),
             agent_palettes: vec![],
             agent_launch: None,
+            detected_theme_interval: None,
             pending_agent_theme_updates: vec![],
             agent_color_queries: VecDeque::new(),
             history_replay: None,
@@ -3703,6 +3705,99 @@ impl Grid {
             self.install_agent_palette(snapshot);
         }
     }
+    /// Out-of-band state never enters the VTE parser: a split escape sequence
+    /// in the application's output must not consume a discovery notification.
+    pub fn update_detected_agent_theme(
+        &mut self,
+        state: Option<yinz_types::agent::theme::DetectedAgentTheme>,
+    ) {
+        use yinz_types::agent::theme::*;
+        let previous_interval = self.detected_theme_interval.clone();
+        self.detected_theme_interval = state.as_ref().map(|s| s.launch_id.clone());
+        let managed = self
+            .agent_launch
+            .as_ref()
+            .is_some_and(|launch| !launch.launch_id.starts_with(DETECTED_LAUNCH_PREFIX));
+        if managed {
+            return;
+        }
+        let Some(state) = state else {
+            if let Some(launch) = self
+                .agent_launch
+                .clone()
+                .filter(|a| a.launch_id.starts_with(DETECTED_LAUNCH_PREFIX))
+            {
+                let event = AgentThemeEvent {
+                    version: EVENT_VERSION,
+                    launch_id: launch.launch_id,
+                    snapshot: None,
+                };
+                self.apply_agent_theme_event(event.clone());
+                self.pending_agent_theme_updates.push(event);
+            }
+            return;
+        };
+        if !state.launch_id.starts_with(DETECTED_LAUNCH_PREFIX)
+            || !matches!(state.provider.as_str(), "claude" | "codex")
+        {
+            return;
+        }
+        let same = self
+            .agent_launch
+            .as_ref()
+            .is_some_and(|a| a.launch_id == state.launch_id);
+        // A managed launch took precedence over this interval. Its eventual end
+        // must not let a delayed detection result reactivate that same run.
+        if !same && previous_interval.as_ref() == Some(&state.launch_id) {
+            return;
+        }
+        if same
+            && !self
+                .agent_launch
+                .as_ref()
+                .is_some_and(|launch| launch.snapshot.is_detection_pending())
+        {
+            return;
+        }
+        if !same {
+            let snapshot = state
+                .snapshot
+                .clone()
+                .unwrap_or_else(|| AgentThemeSnapshot {
+                    version: SNAPSHOT_VERSION,
+                    provider: state.provider.clone(),
+                    provider_version: String::new(),
+                    theme: String::new(),
+                    provenance: vec![],
+                    definitions: vec![],
+                    collisions: vec![],
+                    availability: Availability::Unavailable(DETECTED_THEME_PENDING.into()),
+                });
+            self.apply_agent_theme_event(AgentThemeEvent {
+                version: EVENT_VERSION,
+                launch_id: state.launch_id.clone(),
+                snapshot: Some(snapshot),
+            });
+        } else if let Some(snapshot) = state.snapshot {
+            self.agent_theme.resolve(snapshot, self.style);
+            if let (Some(launch), Some(snapshot)) =
+                (&mut self.agent_launch, self.agent_theme.snapshot())
+            {
+                launch.snapshot = snapshot.clone();
+            }
+        } else {
+            return;
+        }
+        if let Some(launch) = &self.agent_launch {
+            self.pending_agent_theme_updates.push(AgentThemeEvent {
+                version: EVENT_VERSION,
+                launch_id: launch.launch_id.clone(),
+                snapshot: Some(launch.snapshot.clone()),
+            });
+        }
+        self.recompile_agent_theme();
+    }
+
     fn install_agent_palette(
         &mut self,
         snapshot: Option<yinz_types::agent::theme::AgentThemeSnapshot>,
@@ -3712,6 +3807,7 @@ impl Grid {
         self.agent_palettes.push(Rc::downgrade(&self.agent_theme));
     }
     pub fn begin_agent_run(&mut self) {
+        self.detected_theme_interval = None;
         self.agent_launch = None;
         self.install_agent_palette(None);
     }

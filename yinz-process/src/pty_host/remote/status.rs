@@ -22,6 +22,7 @@ use super::protocol::BrokerToServerMsg;
 /// A pane's cwd and commands, as of now.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Probe {
+    pub detected_theme: Option<yinz_types::agent::theme::DetectedAgentTheme>,
     pub child_group_terminated: bool,
     pub cwd: Option<String>,
     /// The argv of the process the pane was started with.
@@ -34,6 +35,7 @@ pub struct Probe {
 impl Probe {
     pub fn into_report(self) -> BrokerToServerMsg {
         BrokerToServerMsg::StatusReport {
+            detected_theme: self.detected_theme,
             child_group_terminated: self.child_group_terminated,
             cwd: self.cwd,
             shell_argv: self.shell_argv,
@@ -48,7 +50,7 @@ impl Probe {
 /// Mirrors `ServerOsInputOutput::get_foreground_cmds`: a pgid equal to the
 /// pane's own pid means nothing else has taken the terminal, and reporting it
 /// would just be the shell again.
-fn foreground_pid(master_fd: RawFd, child_pid: ProcessId) -> Option<ProcessId> {
+pub(super) fn foreground_pid(master_fd: RawFd, child_pid: ProcessId) -> Option<ProcessId> {
     let pgid = nix::unistd::tcgetpgrp(unsafe { BorrowedFd::borrow_raw(master_fd) }).ok()?;
     let pgid = pgid.as_raw();
     let pgid = ProcessId::try_from(pgid).ok()?;
@@ -95,6 +97,7 @@ pub fn probe(master_fd: RawFd, child_pid: ProcessId) -> Probe {
         .and_then(|p| p.cwd().map(|c| c.to_string_lossy().to_string()));
 
     Probe {
+        detected_theme: None,
         child_group_terminated: crate::pty_host::process_group_terminated(child_pid),
         cwd,
         shell_argv: argv_of(child_pid),

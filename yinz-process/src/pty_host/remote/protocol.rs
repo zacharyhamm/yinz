@@ -55,7 +55,8 @@ use crate::pty_host::protocol::{SpawnFailureKind, WireWinsize};
 /// Both machines must run this protocol; there is no process-cwd fallback.
 /// v8 reports additional replay-buffer losses during catch-up with `OutputGap`, so later
 /// resumes include every lost byte in their stream offset.
-pub const REMOTE_PROTOCOL_VERSION: u32 = 8;
+/// v9 carries detected palettes in status and retains palette observations on the broker.
+pub const REMOTE_PROTOCOL_VERSION: u32 = 9;
 
 /// Frame kind tags. The tag is what lets pty bytes stay raw while everything
 /// else stays JSON.
@@ -163,6 +164,7 @@ pub enum ServerToBrokerMsg {
     },
     Resize(WireWinsize),
     SignalChild(ChildSignal),
+    AgentTheme(yinz_types::agent::theme::AgentThemeEvent),
     Terminate,
     /// Pick a pane back up on a fresh connection after the transport dropped.
     ///
@@ -267,6 +269,8 @@ pub enum BrokerToServerMsg {
     /// the local server would otherwise get from `sysinfo` and `tcgetpgrp`, and
     /// cannot, because the process is not local.
     StatusReport {
+        #[serde(default)]
+        detected_theme: Option<yinz_types::agent::theme::DetectedAgentTheme>,
         /// Absent on older brokers; only true verifies cancellation.
         #[serde(default)]
         child_group_terminated: bool,

@@ -729,6 +729,7 @@ pub struct ServerOsInputOutput {
     /// ssh forwards to the machines this session has remote panes on. One per
     /// host and option set, shared by every matching pane.
     remote_hosts: Arc<RemoteHosts>,
+    detected_themes: Arc<Mutex<HashMap<TerminalId, yinz_process::agent_theme::detected::Detector>>>,
 }
 
 #[cfg(not(windows))]
@@ -1316,6 +1317,10 @@ impl TerminalProcesses for ServerOsInputOutput {
         ServerOsInputOutput::rerun_resolved(self, resolved, quit_cb)
     }
     fn clear_terminal_id(&self, terminal_id: TerminalId) -> Result<()> {
+        self.detected_themes
+            .lock()
+            .to_anyhow()?
+            .remove(&terminal_id);
         self.pty_backend.clear_terminal_id(terminal_id)
     }
 }
@@ -1364,8 +1369,14 @@ impl TerminalSupervision for ServerOsInputOutput {
         terminal_id: TerminalId,
         budget: Duration,
     ) -> Result<ReleasedPane> {
-        self.pty_backend
-            .release_terminal_for_warp(terminal_id, budget)
+        let released = self
+            .pty_backend
+            .release_terminal_for_warp(terminal_id, budget)?;
+        self.detected_themes
+            .lock()
+            .to_anyhow()?
+            .remove(&terminal_id);
+        Ok(released)
     }
     #[cfg(not(windows))]
     fn check_terminal_can_be_warped(&self, terminal_id: TerminalId) -> Result<()> {
@@ -1377,7 +1388,20 @@ impl TerminalSupervision for ServerOsInputOutput {
         control_socket: &Path,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<AdoptedTerminal> {
-        self.pty_backend.adopt_terminal(control_socket, quit_cb)
+        let adopted = self.pty_backend.adopt_terminal(control_socket, quit_cb)?;
+        if let Some(launch) = adopted.cmd.agent_theme.clone().filter(|launch| {
+            launch
+                .launch_id
+                .starts_with(yinz_types::agent::theme::DETECTED_LAUNCH_PREFIX)
+        }) {
+            self.detected_themes
+                .lock()
+                .to_anyhow()?
+                .entry(adopted.terminal_id)
+                .or_default()
+                .adopt(launch);
+        }
+        Ok(adopted)
     }
     /// The remote half of `adopt_terminal`, and structurally the same operation:
     /// pick up a pane whose process someone else let go of.
@@ -1589,6 +1613,24 @@ impl ServerEnvironment for ServerOsInputOutput {
 
         (cwds, cmds)
     }
+    fn detected_agent_theme(
+        &self,
+        terminal_id: TerminalId,
+        child_pid: ProcessId,
+    ) -> Option<yinz_types::agent::theme::DetectedAgentTheme> {
+        let pid = self
+            .pty_backend
+            .tcgetpgrp(terminal_id)
+            .and_then(|pid| u32::try_from(pid).ok())
+            .filter(|pid| *pid > 0)
+            .unwrap_or(child_pid.get());
+        self.detected_themes
+            .lock()
+            .ok()?
+            .entry(terminal_id)
+            .or_default()
+            .poll(Some(pid), yinz_process::agent_theme::ExecutionTarget::Local)
+    }
     fn get_foreground_cmds(
         &self,
         panes: &[(TerminalId, ProcessId)],
@@ -1688,6 +1730,7 @@ fn server_os_input_with_backend(
     Ok(ServerOsInputOutput {
         pty_backend,
         remote_hosts: Arc::new(RemoteHosts::new()),
+        detected_themes: Default::default(),
         client_senders: Arc::new(Mutex::new(HashMap::new())),
         live_writers: Arc::new(LiveWriters::default()),
         cached_resizes: Arc::new(Mutex::new(None)),

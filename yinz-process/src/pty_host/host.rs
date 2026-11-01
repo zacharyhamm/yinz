@@ -728,6 +728,33 @@ fn handle_server_msg(
             // retain their start/end semantics, so a duplicate startup snapshot
             // cannot replace colors already learned by the server.
             if event.valid()
+                && event
+                    .launch_id
+                    .starts_with(yinz_types::agent::theme::DETECTED_LAUNCH_PREFIX)
+                && ctx
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.exit_status.is_none())
+            {
+                // Detection starts/ends on the attached server. It cannot displace
+                // a managed launch retained by its launcher on the named socket.
+                if ctx.cmd.agent_theme.as_ref().is_none_or(|active| {
+                    active
+                        .launch_id
+                        .starts_with(yinz_types::agent::theme::DETECTED_LAUNCH_PREFIX)
+                }) {
+                    if let (Some(active), Some(snapshot)) =
+                        (&mut ctx.cmd.agent_theme, &event.snapshot)
+                        && active.launch_id == event.launch_id
+                    {
+                        active.snapshot = snapshot.clone();
+                    } else {
+                        event.apply(&mut ctx.cmd.agent_theme);
+                    }
+                }
+                return Ok(ControlOutcome::Continue);
+            }
+            if event.valid()
                 && ctx
                     .session
                     .as_ref()

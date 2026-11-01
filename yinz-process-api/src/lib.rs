@@ -150,6 +150,7 @@ pub fn recovery_command(local_host_id: &SupervisorId, remote: Option<(&str, &str
 /// pty thread. A stale-but-plausible answer is the better failure mode.
 #[derive(Debug, Clone, Default)]
 pub struct RemoteStatus {
+    pub detected_theme: Option<yinz_types::agent::theme::DetectedAgentTheme>,
     pub child_group_terminated: bool,
     pub cwd: Option<String>,
     pub shell_argv: Option<Vec<String>>,

@@ -254,6 +254,10 @@ pub enum ScreenInstruction {
     /// Held here so `agent list` can name an agent someone started by hand in a shell,
     /// which has no agent record until it reports.
     UpdatePaneForegroundCommand(TerminalId, Vec<String>, Option<String>),
+    UpdateDetectedAgentTheme(
+        TerminalId,
+        Option<yinz_types::agent::theme::DetectedAgentTheme>,
+    ),
     /// The machine a pane's process runs on, for panes that are not local.
     /// Sent once when the pane is created and once when it closes.
     UpdatePaneHost(TerminalId, Option<String>),
@@ -1100,6 +1104,7 @@ impl From<&ScreenInstruction> for ScreenContext {
             // Instructions whose context is named differently from the instruction itself.
             ScreenInstruction::SubscribePaneOutput(..)
             | ScreenInstruction::UnsubscribePaneOutput(..)
+            | ScreenInstruction::UpdateDetectedAgentTheme(..)
             | ScreenInstruction::PtyBytes(..)
             | ScreenInstruction::RemotePaneReady(..) => ScreenContext::HandlePtyBytes,
             ScreenInstruction::RenderWriterReady => ScreenContext::RenderToClients,

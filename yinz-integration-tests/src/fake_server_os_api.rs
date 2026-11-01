@@ -144,6 +144,14 @@ impl TerminalIo for FakeServerOsApi {
             .map(|(terminal_id, (cols, rows))| (terminal_id, cols, rows))
             .collect()
     }
+    fn retain_agent_theme(
+        &self,
+        terminal_id: TerminalId,
+        event: yinz_types::agent::theme::AgentThemeEvent,
+    ) -> Result<()> {
+        self.shared_ptys.retain_agent_theme(terminal_id, event);
+        Ok(())
+    }
     fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize> {
         if self.shared_ptys.append_stdin(terminal_id, buf) {
             Ok(buf.len())
@@ -513,6 +521,13 @@ impl ServerEnvironment for FakeServerOsApi {
                 Some((*terminal_id, foreground_commands.get(terminal_id)?.clone()))
             })
             .collect()
+    }
+    fn detected_agent_theme(
+        &self,
+        terminal_id: TerminalId,
+        _child_pid: ProcessId,
+    ) -> Option<yinz_types::agent::theme::DetectedAgentTheme> {
+        self.shared_ptys.detected_theme(terminal_id)
     }
     fn write_to_file(&mut self, buf: String, file: Option<String>) -> Result<()> {
         if let Some(file) = file {

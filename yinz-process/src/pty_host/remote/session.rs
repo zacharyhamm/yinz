@@ -148,6 +148,7 @@ pub struct PaneSession {
     pub command: String,
     pub argv: Vec<String>,
     handle: Mutex<PtyHostHandle>,
+    pub(super) detected_theme: Mutex<Option<yinz_types::agent::theme::DetectedAgentTheme>>,
     /// Kept alive for as long as the pane exists. Both pumps borrow the raw
     /// descriptor; if either owned it, its exit would close a number the other
     /// might still be using — and by then it could belong to another pane.
@@ -197,6 +198,7 @@ impl PaneSession {
             command: argv.join(" "),
             argv,
             handle: Mutex::new(handle),
+            detected_theme: Mutex::new(None),
             _master: master,
             master_fd,
             child_pid,
@@ -420,6 +422,18 @@ impl PaneSession {
     }
 
     /// End the pane. The only thing that does.
+    pub fn retain_agent_theme(
+        &self,
+        event: yinz_types::agent::theme::AgentThemeEvent,
+    ) -> yinz_runtime::errors::prelude::Result<()> {
+        use yinz_runtime::errors::prelude::*;
+        if let Some(state) = self.detected_theme.lock().to_anyhow()?.as_mut()
+            && state.launch_id == event.launch_id
+        {
+            state.snapshot = event.snapshot.clone();
+        }
+        self.handle.lock().to_anyhow()?.retain_agent_theme(event)
+    }
     pub fn terminate(&self) {
         if self.terminated.swap(true, Ordering::SeqCst) {
             return;

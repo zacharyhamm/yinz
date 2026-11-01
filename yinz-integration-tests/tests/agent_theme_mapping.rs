@@ -364,3 +364,61 @@ fn codex_composer_and_footer_repaint_on_theme_switch_preview_cancel_and_typing()
     });
     yinz.quit();
 }
+
+#[test]
+fn manually_started_agent_palette_resolves_and_ends_without_pty_activity() {
+    let yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(
+            "load_plugins clear-defaults=true {}\npane_animations false\ntheme \"nightfox\"",
+        )
+        .start();
+    let pane = yinz.expect_pty_spawn();
+    pane.output(b"\x1b[38;2;18;52;86mSHELL-BEFORE\x1b[0m\r\n");
+    yinz.wait_until("shell output is visible", |grid| {
+        foreground(grid, "SHELL-BEFORE") == Some(AnsiCode::RgbCode((18, 52, 86)))
+    });
+    let pending = DetectedAgentTheme {
+        launch_id: "detected:manual".into(),
+        provider: "claude".into(),
+        snapshot: None,
+    };
+    pane.set_detected_theme(Some(pending.clone()));
+    pane.output(b"\x1b[38;2;18;52;86mMANUAL-COLOR\x1b[0m\r\n");
+    yinz.wait_until(
+        "pending agent output is visible in original colors",
+        |grid| foreground(grid, "MANUAL-COLOR") == Some(AnsiCode::RgbCode((18, 52, 86))),
+    );
+    // A resolved observation arriving with no new output must still produce a render.
+    let snapshot = AgentThemeSnapshot {
+        version: SNAPSHOT_VERSION,
+        provider: "claude".into(),
+        provider_version: "fixture".into(),
+        theme: "fixture".into(),
+        provenance: vec![],
+        availability: Availability::Available,
+        collisions: vec![],
+        definitions: vec![Definition {
+            token: "success".into(),
+            channel: Channel::Foreground,
+            color: SourceColor::Rgb(18, 52, 86),
+            pair: None,
+            target: Some(Role::Success.into()),
+        }],
+    };
+    pane.set_detected_theme(Some(DetectedAgentTheme {
+        snapshot: Some(snapshot),
+        ..pending
+    }));
+    yinz.wait_until(
+        "resolved palette repaints existing agent output without new bytes",
+        |grid| {
+            foreground(grid, "MANUAL-COLOR") == Some(AnsiCode::RgbCode((129, 178, 154)))
+                && foreground(grid, "SHELL-BEFORE") == Some(AnsiCode::RgbCode((18, 52, 86)))
+        },
+    );
+    pane.set_detected_theme(None);
+    pane.output(b"\x1b[38;2;18;52;86mSHELL-AFTER\x1b[0m\r\n");
+    yinz.wait_until("shell output is no longer mapped", |grid| {
+        foreground(grid, "SHELL-AFTER") == Some(AnsiCode::RgbCode((18, 52, 86)))
+    });
+}

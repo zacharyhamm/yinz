@@ -197,14 +197,33 @@ impl SourcePalette {
     pub fn has_snapshot(&self) -> bool {
         self.snapshot.borrow().is_some()
     }
-    /// Enrich the same palette held by existing rows and completed frames. The observed
-    /// source colors are immutable for this launch, even during theme previews.
+    /// Fill a pending palette in place so existing cells retain their ownership.
+    pub fn resolve(&self, mut snapshot: AgentThemeSnapshot, style: Style) {
+        if let Some(previous) = self.snapshot() {
+            for (code, rgb) in codex_0_162_1::terminal_colors(&previous) {
+                if let Some(rgb) = rgb {
+                    codex_0_162_1::observe(&mut snapshot, code, rgb);
+                }
+            }
+        }
+        *self.snapshot.borrow_mut() = Some(snapshot);
+        self.recompile(style);
+    }
     pub fn observe_terminal_color(&self, code: u8, rgb: (u8, u8, u8), style: Style) -> bool {
-        let changed = self
-            .snapshot
-            .borrow_mut()
-            .as_mut()
-            .is_some_and(|snapshot| codex_0_162_1::observe(snapshot, code, rgb));
+        let changed = self.snapshot.borrow_mut().as_mut().is_some_and(|snapshot| {
+            // Preserve observations in the existing snapshot format through
+            // handoffs while keeping pending output visually unchanged.
+            let pending = snapshot.is_detection_pending();
+            let availability = snapshot.availability.clone();
+            if pending {
+                snapshot.availability = yinz_types::agent::theme::Availability::Available;
+            }
+            let changed = codex_0_162_1::observe(snapshot, code, rgb);
+            if pending {
+                snapshot.availability = availability;
+            }
+            changed
+        });
         if changed {
             self.recompile(style);
         }
@@ -218,6 +237,7 @@ impl SourcePalette {
                 self.snapshot
                     .borrow()
                     .as_ref()
+                    .filter(|snapshot| !snapshot.is_detection_pending())
                     .map(|snapshot| Mapping::new(snapshot, style))
             };
     }

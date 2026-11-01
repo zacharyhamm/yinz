@@ -2724,3 +2724,78 @@ fn agent_theme_retention_clears_on_end_and_dedicated_child_exit() {
         host.join();
     }
 }
+
+#[test]
+fn detected_agent_theme_retention_starts_enriches_and_ends_on_control_channel() {
+    use yinz_types::agent::theme::*;
+    for outcome in ["resolved", "ended", "managed"] {
+        let (mut host, _, socket) = TestHost::start();
+        let socket = socket.unwrap();
+        let (_, master) = host.spawn(sh("read -r finish"));
+        let event = AgentThemeEvent {
+            version: EVENT_VERSION,
+            launch_id: "detected:test".into(),
+            snapshot: Some(AgentThemeSnapshot {
+                version: SNAPSHOT_VERSION,
+                provider: "claude".into(),
+                provider_version: "fixture".into(),
+                theme: "initial".into(),
+                provenance: vec![],
+                definitions: vec![],
+                collisions: vec![],
+                availability: Availability::Available,
+            }),
+        };
+        host.send(&ServerToHostMsg::AgentTheme(event.clone()));
+        let mut enriched = event.clone();
+        enriched.snapshot.as_mut().unwrap().theme = "resolved".into();
+        host.send(&ServerToHostMsg::AgentTheme(enriched.clone()));
+        // A stale end must not end the current detected interval.
+        host.send(&ServerToHostMsg::AgentTheme(AgentThemeEvent {
+            version: EVENT_VERSION,
+            launch_id: "detected:previous".into(),
+            snapshot: None,
+        }));
+        if outcome == "ended" {
+            host.send(&ServerToHostMsg::AgentTheme(AgentThemeEvent {
+                snapshot: None,
+                ..event.clone()
+            }));
+        } else if outcome == "managed" {
+            let mut stream = UnixStream::connect(&socket).unwrap();
+            stream.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+            let mut managed = enriched.clone();
+            managed.launch_id = "managed".into();
+            managed.snapshot.as_mut().unwrap().theme = "managed".into();
+            write_msg(&mut stream, &ServerToHostMsg::AgentTheme(managed)).unwrap();
+            assert!(matches!(
+                read_msg::<HostToServerMsg, _>(&mut stream).unwrap(),
+                Some(HostToServerMsg::Status(_))
+            ));
+            host.send(&ServerToHostMsg::AgentTheme(enriched));
+        }
+        host.send(&ServerToHostMsg::Query);
+        assert!(matches!(host.recv(), HostToServerMsg::Status(_)));
+        host.control.shutdown(std::net::Shutdown::Both).unwrap();
+        drop(master);
+        wait_until(
+            || !query_status(&socket).attached,
+            "detected palette detachment",
+        );
+        let (reply, adopted_master) =
+            attach_over_socket(&socket, yinz_types::internal_ids::TerminalId::new(42), None);
+        match reply {
+            HostToServerMsg::AttachAck { cmd, .. } => {
+                if outcome == "ended" {
+                    assert!(cmd.agent_theme.is_none());
+                } else {
+                    assert_eq!(cmd.agent_theme.as_ref().unwrap().snapshot.theme, outcome);
+                }
+            },
+            other => panic!("unexpected adoption: {other:?}"),
+        }
+        drop(adopted_master);
+        crate::pty_host::client::terminate_via_socket(&socket).unwrap();
+        host.join();
+    }
+}

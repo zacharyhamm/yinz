@@ -2309,3 +2309,73 @@ fn missing_agent_directory_is_a_recoverable_pane_start_failure() {
             && message.contains("Cannot resume claude session saved")
             && message.contains("working directory does not exist")));
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn detected_agent_theme_observes_an_agent_started_inside_a_shell() {
+    let root = tempfile::tempdir().unwrap();
+    let interpreter = root.path().join("python3");
+    std::os::unix::fs::symlink("/bin/sh", &interpreter).unwrap();
+    let script = root.path().join("claude");
+    yinz_test_support::write_warm_script(&script, "if [ \"$1\" = --version ]; then echo '2.1.296 (Claude Code)'; exit; fi\nprintf READY\nread -r hold");
+    let server = make_server();
+    let command = RunCommand {
+        command: "/bin/sh".into(),
+        args: vec![
+            "-mc".into(),
+            "\"$1\" \"$2\"; :".into(),
+            "--".into(),
+            interpreter.to_string_lossy().into_owned(),
+            script.to_string_lossy().into_owned(),
+        ],
+        cwd: Some(root.path().to_owned()),
+        ..Default::default()
+    };
+    let (id, mut reader, child_pid) = server
+        .spawn_terminal(
+            TerminalAction::RunCommand(command),
+            Box::new(|_, _, _| {}),
+            None,
+        )
+        .unwrap();
+    let ready = yinz_test_support::Watched::new(false);
+    let observed = ready.clone();
+    let reading = std::thread::spawn(move || {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async move {
+                let mut received = Vec::new();
+                let mut bytes = [0; 1024];
+                loop {
+                    let count = reader.read(&mut bytes).await.unwrap();
+                    if count == 0 {
+                        return;
+                    }
+                    received.extend_from_slice(&bytes[..count]);
+                    if received.windows(5).any(|w| w == b"READY") {
+                        *observed.lock() = true;
+                        return;
+                    }
+                }
+            });
+    });
+    ready.wait_until(
+        "agent child owns the shell terminal",
+        AMPLE_TIMEOUT,
+        |ready| ready.then_some(()),
+    );
+    let child_pid = child_pid.unwrap();
+    let foreground = ProcessId::try_from(server.pty_backend.tcgetpgrp(id).unwrap()).unwrap();
+    assert_ne!(
+        foreground, child_pid,
+        "the detected agent must be a foreground child, not the shell"
+    );
+    let state = server.detected_agent_theme(id, child_pid).unwrap();
+    assert_eq!(state.provider, "claude");
+    assert!(state
+        .launch_id
+        .starts_with(yinz_types::agent::theme::DETECTED_LAUNCH_PREFIX));
+    server.force_kill(foreground).unwrap();
+    server.clear_terminal_id(id).unwrap();
+    reading.join().unwrap();
+}

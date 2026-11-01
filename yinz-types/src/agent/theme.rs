@@ -21,6 +21,19 @@ pub struct AgentThemeLaunch {
     pub snapshot: AgentThemeSnapshot,
 }
 
+/// Execution-host observation. An absent snapshot reserves ownership while resolution runs.
+/// Only normalized palette data leaves the execution host.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DetectedAgentTheme {
+    pub launch_id: String,
+    pub provider: String,
+    pub snapshot: Option<AgentThemeSnapshot>,
+}
+
+/// Reserved namespace for detection-owned launches in retention and handoffs.
+pub const DETECTED_LAUNCH_PREFIX: &str = "detected:";
+pub const DETECTED_THEME_PENDING: &str = "palette resolution pending";
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentThemeEvent {
     pub version: u32,
@@ -276,6 +289,11 @@ pub struct AgentThemeSnapshot {
 }
 
 impl AgentThemeSnapshot {
+    pub fn is_detection_pending(&self) -> bool {
+        matches!(&self.availability, Availability::Unavailable(detail) if detail == DETECTED_THEME_PENDING)
+            && self.provider_version.is_empty()
+    }
+
     /// Decisions compare expressions, never the RGB values of a destination theme.
     /// BTreeMap/BTreeSet keep diagnostics and decisions independent of file order.
     pub fn compile(&self) -> (BTreeMap<MatchKey, Option<Target>>, Vec<Collision>) {

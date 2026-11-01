@@ -46,6 +46,9 @@ pub(super) fn replay_pending_pane_event(
         ScreenInstruction::AgentReport(report, accepted_at) => {
             apply_queued_agent_report(screen, &report, accepted_at)?;
         },
+        ScreenInstruction::UpdateDetectedAgentTheme(terminal_id, state) => {
+            super::agent_reports::apply_detected_agent_theme(screen, terminal_id, state)?;
+        },
         ScreenInstruction::UpdatePaneForegroundCommand(terminal_id, command, program) => {
             apply_pane_foreground_command(screen, terminal_id, command, program);
         },

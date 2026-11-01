@@ -102,12 +102,14 @@ fn broker_messages() -> Vec<BrokerToServerMsg> {
         BrokerToServerMsg::ChildExited { status: Some(130) },
         BrokerToServerMsg::ChildExited { status: None },
         BrokerToServerMsg::StatusReport {
+            detected_theme: None,
             child_group_terminated: false,
             cwd: Some("/home/me/work".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
             foreground_argv: Some(vec!["claude".to_owned(), "--resume".to_owned()]),
         },
         BrokerToServerMsg::StatusReport {
+            detected_theme: None,
             child_group_terminated: false,
             cwd: None,
             shell_argv: None,
@@ -208,7 +210,7 @@ fn pane_list_argv_is_compatible_with_legacy_readers_and_writers() {
         frame.decode_control::<BrokerToServerMsg>().unwrap(),
         message
     );
-    assert_eq!(REMOTE_PROTOCOL_VERSION, 8);
+    assert_eq!(REMOTE_PROTOCOL_VERSION, 9);
 }
 
 /// The kind byte is the whole reason pty bytes can stay raw. If output were ever
@@ -438,8 +440,9 @@ fn the_remote_protocol_versions_independently_of_the_supervisor_protocol() {
     // v6: `GetGitProbe` selects a directory independently of the process cwd.
     // v7: refresh tokens correlate requests with completed probes.
     // v8: OutputGap reports losses incurred during catch-up.
+    // v9: Detected palettes and palette retention on the execution host.
     assert_eq!(
-        REMOTE_PROTOCOL_VERSION, 8,
+        REMOTE_PROTOCOL_VERSION, 9,
         "bumping this is cheap; make sure it is deliberate"
     );
     assert_eq!(

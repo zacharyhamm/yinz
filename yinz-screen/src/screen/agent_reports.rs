@@ -449,3 +449,27 @@ pub(crate) fn apply_pane_agent_report(
     }
     Ok(true)
 }
+
+/// Apply discovery state through the same grid/retention path as managed palettes.
+pub(super) fn apply_detected_agent_theme(
+    screen: &mut Screen,
+    terminal_id: TerminalId,
+    state: Option<yinz_types::agent::theme::DetectedAgentTheme>,
+) -> Result<bool> {
+    let updates = screen.with_pane(PaneId::Terminal(terminal_id), |pane| {
+        let Some(terminal) = pane.terminal_io_mut() else {
+            return vec![];
+        };
+        terminal.update_detected_agent_theme(state);
+        terminal.drain_agent_theme_updates()
+    });
+    let Some(updates) = updates else {
+        return Ok(false);
+    };
+    for event in updates {
+        screen.bus.senders.send_to_pty_writer(
+            yinz_bus::pty_writer::PtyWriteInstruction::RetainAgentTheme(terminal_id, event),
+        )?;
+    }
+    Ok(true)
+}

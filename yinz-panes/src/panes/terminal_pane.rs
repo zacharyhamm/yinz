@@ -198,6 +198,12 @@ impl TerminalPaneIo for TerminalPane {
     fn drain_messages_to_pty(&mut self) -> Vec<Vec<u8>> {
         std::mem::take(&mut self.grid.pending_messages_to_pty)
     }
+    fn update_detected_agent_theme(
+        &mut self,
+        state: Option<yinz_types::agent::theme::DetectedAgentTheme>,
+    ) {
+        self.grid.update_detected_agent_theme(state);
+    }
     fn drain_agent_theme_updates(&mut self) -> Vec<yinz_types::agent::theme::AgentThemeEvent> {
         std::mem::take(&mut self.grid.pending_agent_theme_updates)
     }

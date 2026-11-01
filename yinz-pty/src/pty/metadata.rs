@@ -382,6 +382,7 @@ impl Pty {
     }
 
     pub(super) fn forget_terminal_foreground(&mut self, terminal_id: TerminalId) {
+        self.terminal_detected_themes.remove(&terminal_id);
         if self
             .terminal_reported_commands
             .remove(&terminal_id)
@@ -433,6 +434,28 @@ impl Pty {
         }
     }
 
+    fn report_detected_theme(
+        &mut self,
+        id: TerminalId,
+        state: Option<yinz_types::agent::theme::DetectedAgentTheme>,
+    ) {
+        if self.terminal_detected_themes.get(&id) == state.as_ref() {
+            return;
+        }
+        match &state {
+            Some(state) => {
+                self.terminal_detected_themes.insert(id, state.clone());
+            },
+            None => {
+                self.terminal_detected_themes.remove(&id);
+            },
+        }
+        let _ = self
+            .bus
+            .senders
+            .send_to_screen(ScreenInstruction::UpdateDetectedAgentTheme(id, state));
+    }
+
     pub(crate) fn update_and_report_cwds(&mut self) {
         use std::sync::atomic::Ordering;
 
@@ -460,6 +483,35 @@ impl Pty {
             .map(|os_input| os_input.remote_pane_ids())
             .unwrap_or_default();
 
+        // Theme discovery must continue while a local agent is silent. Do not
+        // couple lifecycle observation to PTY output activity.
+        let local_themes: Vec<_> = self
+            .id_to_child_pid
+            .iter()
+            .filter(|(id, _)| !remote_ids.contains(id))
+            .map(|(id, pid)| {
+                (
+                    *id,
+                    self.bus
+                        .os_input
+                        .as_ref()
+                        .and_then(|os| os.detected_agent_theme(*id, *pid)),
+                )
+            })
+            .collect();
+        for (id, state) in local_themes {
+            self.report_detected_theme(id, state);
+        }
+        for id in &remote_ids {
+            if let Some(status) = self
+                .bus
+                .os_input
+                .as_ref()
+                .and_then(|os| os.remote_pane_status(*id))
+            {
+                self.report_detected_theme(*id, status.detected_theme);
+            }
+        }
         if active_local.is_empty() && remote_ids.is_empty() {
             return;
         }

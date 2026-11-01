@@ -46,6 +46,10 @@ pub(super) fn observe(snapshot: &mut AgentThemeSnapshot, code: u8, rgb: Rgb) -> 
     true
 }
 
+pub(super) fn terminal_colors(snapshot: &AgentThemeSnapshot) -> [(u8, Option<Rgb>); 2] {
+    [(10, observed(snapshot, FG)), (11, observed(snapshot, BG))]
+}
+
 fn observed(snapshot: &AgentThemeSnapshot, token: &str) -> Option<Rgb> {
     snapshot
         .definitions

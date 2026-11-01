@@ -1,8 +1,14 @@
-# Managed agent colors
+# Agent colors
 
 `agent_theme_mapping "semantic"` is the default. Managed Claude and Codex
 launches capture their source palette on the execution host, after environment
-and working-directory setup. Reporting hooks can be disabled independently.
+and working-directory setup. Claude and Codex started directly in a terminal are
+also themed automatically, without shell wrappers or reporting hooks. Foreground
+process observation reserves a new output interval, then resolves its palette in
+a background worker on that process's execution host (including remote brokers).
+Resolution uses the agent's executable, arguments, environment and working directory;
+if these cannot be recovered, its original colors remain. Filesystem namespaces
+that cannot be resolved safely are skipped. Reporting hooks can be disabled independently.
 Use `agent_theme_mapping "off"` to restore the application colors immediately.
 Theme changes, previews, cancellation, selection, and translucent panes use the
 same rendering path. Original terminal cells and capture data are unchanged.
@@ -11,8 +17,15 @@ The snapshot belongs to one run. Restart/resume captures again; changing an
 agent's own theme while it runs is outside this feature. Existing scrollback
 keeps its original snapshot. Supervisors retain optional versioned metadata for
 adoption. Managed launches from existing shell panes use the same lifecycle as dedicated
-agent panes. Unmanaged programs and shell output between launches have no palette
-mapping. Piped or redirected stdout is passed through unchanged: palette probes,
+agent panes. Other programs and shell output outside observed agent intervals have no palette
+mapping. Automatic detection has a polling delay at startup and foreground changes:
+output before detection keeps its original colors, and output after detection shares
+a pending palette that repaints when resolution completes. Earlier shell text is
+never relabelled. A foreground change ends the interval when observed, even if the
+agent produces no output. Resuming a foreground agent captures a new palette.
+Managed launch metadata takes precedence over detection. On Linux, automatic
+detection also skips redirected stdout and different mount namespaces. Managed
+launches with piped or redirected stdout pass through unchanged: palette probes,
 retention, and terminal announcements are skipped entirely.
 Resolution errors never prevent a launch. The launcher supervises the provider,
 preserving exit status, signals, and foreground terminal stop/resume behavior.
@@ -20,7 +33,8 @@ preserving exit status, signals, and foreground terminal stop/resume behavior.
 Start/end events carry protocol version 1 and a unique launch ID. Duplicate starts
 are idempotent; a stale end cannot clear a newer launch. Matching end and dedicated
 pane teardown clear active metadata. PTY events work over local and remote sessions;
-supervisor retention is best effort.
+supervisor retention is best effort. Remote palette observation and retention use
+broker protocol version 9, requiring matching local and remote Yinz versions.
 
 Palette ownership is stored in compact column spans alongside the original cells.
 Writes and erasures take the active palette; untouched text, scrolling, reflow,

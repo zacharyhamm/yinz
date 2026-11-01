@@ -388,6 +388,14 @@ pub trait ServerEnvironment: Send + Sync {
     ) -> HashMap<TerminalId, Vec<String>> {
         HashMap::new()
     }
+    /// Execution-host detection state, including pending asynchronous resolution.
+    fn detected_agent_theme(
+        &self,
+        _terminal_id: TerminalId,
+        _child_pid: ProcessId,
+    ) -> Option<yinz_types::agent::theme::DetectedAgentTheme> {
+        None
+    }
     /// Writes the given buffer to a string
     fn write_to_file(&mut self, buf: String, file: Option<String>) -> Result<()>;
 }

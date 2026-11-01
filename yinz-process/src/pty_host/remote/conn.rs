@@ -385,6 +385,13 @@ impl RemoteConn {
         self.send_control(&ServerToBrokerMsg::SignalChild(signal))
     }
 
+    /// Retain palette lifecycle and observations on the execution host.
+    pub fn retain_agent_theme(
+        &self,
+        event: yinz_types::agent::theme::AgentThemeEvent,
+    ) -> Result<()> {
+        self.send_control(&ServerToBrokerMsg::AgentTheme(event))
+    }
     /// Ask the broker to end the pane. It owns termination and pty draining.
     pub fn terminate(&self) -> Result<()> {
         self.send_control(&ServerToBrokerMsg::Terminate)

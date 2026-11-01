@@ -2,6 +2,7 @@
 //! No provider configuration or environment is retained in pane metadata.
 mod child;
 mod claude;
+pub mod detected;
 pub use child::{exit_status, AgentChild};
 mod codex;
 

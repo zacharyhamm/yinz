@@ -358,12 +358,14 @@ impl RemoteReader {
                 false
             },
             BrokerToServerMsg::StatusReport {
+                detected_theme,
                 child_group_terminated,
                 cwd,
                 shell_argv,
                 foreground_argv,
             } => {
                 self.conn.set_status(RemoteStatus {
+                    detected_theme,
                     child_group_terminated,
                     cwd,
                     shell_argv,

@@ -97,6 +97,11 @@ pub type RenderedPane = (
 pub trait TerminalPaneIo {
     fn drain_messages_to_pty(&mut self) -> Vec<Vec<u8>>;
     /// Learned source palettes to retain in the pane's supervisor.
+    fn update_detected_agent_theme(
+        &mut self,
+        _state: Option<yinz_types::agent::theme::DetectedAgentTheme>,
+    ) {
+    }
     fn drain_agent_theme_updates(&mut self) -> Vec<yinz_types::agent::theme::AgentThemeEvent>;
     /// Whitelisted terminal queries to forward to the host terminal.
     fn drain_forwarded_queries(&mut self) -> Vec<crate::host_query::HostQuery>;

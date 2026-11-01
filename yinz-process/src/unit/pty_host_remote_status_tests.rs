@@ -149,6 +149,7 @@ fn probing_a_process_that_is_gone_reports_nothing() {
 #[test]
 fn a_probe_becomes_the_report_it_claims_to() {
     let probe = Probe {
+        detected_theme: None,
         child_group_terminated: false,
         cwd: Some("/home/me/work".to_owned()),
         shell_argv: Some(vec!["/bin/zsh".to_owned()]),
@@ -156,6 +157,7 @@ fn a_probe_becomes_the_report_it_claims_to() {
     };
     match probe.into_report() {
         BrokerToServerMsg::StatusReport {
+            detected_theme: None,
             child_group_terminated,
             cwd,
             shell_argv,

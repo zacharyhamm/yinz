@@ -315,6 +315,11 @@ async fn a_status_report_updates_the_cache_without_disturbing_the_stream() {
     write_control(
         &mut framed,
         &BrokerToServerMsg::StatusReport {
+            detected_theme: Some(yinz_types::agent::theme::DetectedAgentTheme {
+                launch_id: "detected:remote".into(),
+                provider: "claude".into(),
+                snapshot: None,
+            }),
             child_group_terminated: false,
             cwd: Some("/home/me/work".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
@@ -327,6 +332,10 @@ async fn a_status_report_updates_the_cache_without_disturbing_the_stream() {
 
     assert_eq!(read_to_string(&mut reader, 8).await, "prompt$ ");
     let status = conn.status();
+    assert_eq!(
+        status.detected_theme.as_ref().unwrap().launch_id,
+        "detected:remote"
+    );
     assert_eq!(status.cwd.as_deref(), Some("/home/me/work"));
     assert_eq!(status.foreground_argv, Some(vec!["claude".to_owned()]));
 }

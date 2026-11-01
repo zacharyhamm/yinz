@@ -754,7 +754,12 @@ fn catch_up_and_attach(
     // `RemoteConn`. The ticker only reports changes, so without this a pane
     // whose cwd and command are steady would look unknown until something about
     // it happened to change.
-    let probe = super::status::probe(session.master_fd(), session.child_pid);
+    let mut probe = super::status::probe(session.master_fd(), session.child_pid);
+    probe.detected_theme = session
+        .detected_theme
+        .lock()
+        .ok()
+        .and_then(|state| state.clone());
     send(wire, &probe.into_report())?;
     // The project a pane belongs to is discovered once, on a cwd change that may
     // have happened long before this reconnect. Replaying it means the pane is
@@ -905,6 +910,7 @@ fn start_status_pump(session: Arc<PaneSession>) -> Result<()> {
         .name("remote-pane-status".to_owned())
         .spawn(move || {
             let mut last: Option<super::status::Probe> = None;
+            let mut detector = crate::agent_theme::detected::Detector::default();
             let mut git = GitProbePump::new(git_refresh_interval());
             loop {
                 thread::sleep(STATUS_INTERVAL);
@@ -914,7 +920,30 @@ fn start_status_pump(session: Arc<PaneSession>) -> Result<()> {
                 {
                     return;
                 }
-                let probe = super::status::probe(session.master_fd(), session.child_pid);
+                let mut probe = super::status::probe(session.master_fd(), session.child_pid);
+                let pid = super::status::foreground_pid(session.master_fd(), session.child_pid)
+                    .unwrap_or(session.child_pid)
+                    .get();
+                probe.detected_theme =
+                    detector.poll(Some(pid), crate::agent_theme::ExecutionTarget::Remote);
+                if let Ok(mut state) = session.detected_theme.lock() {
+                    // The server may have enriched this launch with terminal-color
+                    // observations. A repeated resolver result cannot erase them.
+                    let enriched = state
+                        .as_ref()
+                        .zip(probe.detected_theme.as_ref())
+                        .is_some_and(|(cached, current)| {
+                            cached.launch_id == current.launch_id
+                                && cached.snapshot.as_ref().is_some_and(|snapshot| {
+                                    !snapshot.is_detection_pending() || current.snapshot.is_none()
+                                })
+                        });
+                    if enriched {
+                        probe.detected_theme = state.clone();
+                    } else {
+                        *state = probe.detected_theme.clone();
+                    }
+                }
 
                 if let Some((cwd, refresh_token)) = session.git_probe_target()
                     && let Some(ran) = git.tick_with_refresh(
@@ -1049,6 +1078,12 @@ fn pump_control(
                             return Err(anyhow!("git probe directory is empty"));
                         }
                         session.request_git_probe(cwd, refresh_token);
+                    },
+                    ServerToBrokerMsg::AgentTheme(event) => {
+                        session
+                            .retain_agent_theme(event)
+                            .context("retain remote agent palette")
+                            .non_fatal();
                     },
                     ServerToBrokerMsg::SignalChild(signal) => {
                         signal_child(child_pid, signal);

@@ -2129,6 +2129,7 @@ fn a_remote_panes_foreground_command_is_reported_like_any_other() {
     let (mut pty, _mock, plugin_rx, _screen_rx) = remote_pane(
         crate::TerminalId::new(7),
         RemoteStatus {
+            detected_theme: None,
             child_group_terminated: false,
             cwd: Some("/home/me/work".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
@@ -2231,6 +2232,7 @@ fn a_remote_pane_with_no_foreground_falls_back_to_its_own_command() {
     let (mut pty, _mock, plugin_rx, _screen_rx) = remote_pane(
         crate::TerminalId::new(7),
         RemoteStatus {
+            detected_theme: None,
             child_group_terminated: false,
             cwd: None,
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
@@ -2252,6 +2254,7 @@ fn a_remote_panes_cwd_is_reported_unchanged() {
     let (mut pty, _mock, _plugin_rx, screen_rx) = remote_pane(
         crate::TerminalId::new(7),
         RemoteStatus {
+            detected_theme: None,
             child_group_terminated: false,
             cwd: Some("/srv/build/project".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
@@ -2281,6 +2284,7 @@ fn a_silent_remote_pane_is_still_polled() {
     let (mut pty, mock, plugin_rx, _screen_rx) = remote_pane(
         crate::TerminalId::new(7),
         RemoteStatus {
+            detected_theme: None,
             child_group_terminated: false,
             cwd: Some("/home/me/work".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
@@ -2296,6 +2300,7 @@ fn a_silent_remote_pane_is_still_polled() {
     mock.set_remote_status(
         crate::TerminalId::new(7),
         RemoteStatus {
+            detected_theme: None,
             child_group_terminated: false,
             cwd: Some("/home/me/work".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
@@ -2314,6 +2319,7 @@ fn an_unchanged_remote_pane_emits_nothing_further() {
     let (mut pty, _mock, plugin_rx, _screen_rx) = remote_pane(
         crate::TerminalId::new(7),
         RemoteStatus {
+            detected_theme: None,
             child_group_terminated: false,
             cwd: Some("/home/me/work".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
@@ -2338,6 +2344,7 @@ fn a_remote_pane_answers_the_plugin_facing_accessors() {
     let (pty, _mock, _plugin_rx, _screen_rx) = remote_pane(
         crate::TerminalId::new(7),
         RemoteStatus {
+            detected_theme: None,
             child_group_terminated: false,
             cwd: Some("/srv/build/project".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
@@ -2366,6 +2373,7 @@ fn batched_pane_metadata_matches_the_single_pane_accessors() {
     let (mut pty, mock, _plugin_rx, _screen_rx) = remote_pane(
         remote,
         RemoteStatus {
+            detected_theme: None,
             child_group_terminated: false,
             cwd: Some("/srv/build/project".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
@@ -2504,6 +2512,7 @@ fn a_remote_panes_host_is_announced_to_screen() {
     mock.set_remote_status(
         crate::TerminalId::new(7),
         RemoteStatus {
+            detected_theme: None,
             child_group_terminated: false,
             cwd: Some("/home/me/work".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
@@ -5145,4 +5154,38 @@ fn failed_agent_resume_keeps_pane_and_reports_error() {
         ScreenInstruction::HoldPane(PaneId::Terminal(held), Some(1), _)
     ] if *id == TerminalId::new(41) && *held == *id
         && String::from_utf8_lossy(message).contains("Resumed agent exited with status 1")));
+}
+
+#[test]
+fn remote_detected_theme_changes_are_reported_without_output_and_only_once() {
+    use yinz_types::agent::theme::DetectedAgentTheme;
+    let id = TerminalId::new(7);
+    let state = DetectedAgentTheme {
+        launch_id: "detected:remote".into(),
+        provider: "codex".into(),
+        snapshot: None,
+    };
+    let (mut pty, mock, _, screen_rx) = remote_pane(
+        id,
+        RemoteStatus {
+            detected_theme: Some(state.clone()),
+            ..Default::default()
+        },
+    );
+    pty.update_and_report_cwds();
+    let updates: Vec<_> = screen_rx
+        .try_iter()
+        .filter_map(|(msg, _)| match msg {
+            ScreenInstruction::UpdateDetectedAgentTheme(id, state) => Some((id, state)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(updates, vec![(id, Some(state))]);
+    pty.update_and_report_cwds();
+    assert!(screen_rx
+        .try_iter()
+        .all(|(msg, _)| !matches!(msg, ScreenInstruction::UpdateDetectedAgentTheme(..))));
+    mock.set_remote_status(id, RemoteStatus::default());
+    pty.update_and_report_cwds();
+    assert!(screen_rx.try_iter().any(|(msg, _)| matches!(msg, ScreenInstruction::UpdateDetectedAgentTheme(terminal, None) if terminal == id)));
 }

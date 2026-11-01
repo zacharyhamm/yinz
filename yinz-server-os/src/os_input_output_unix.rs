@@ -775,6 +775,16 @@ impl UnixPtyBackend {
         terminal_id: TerminalId,
         event: yinz_types::agent::theme::AgentThemeEvent,
     ) -> Result<()> {
+        let remote = self
+            .terminal_id_to_transport
+            .lock()
+            .to_anyhow()?
+            .get(&terminal_id)
+            .and_then(|transport| transport.remote())
+            .cloned();
+        if let Some(conn) = remote {
+            return conn.retain_agent_theme(event);
+        }
         if let Some(host) = self
             .terminal_id_to_host
             .lock()

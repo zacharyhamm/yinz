@@ -35,6 +35,8 @@ pub(crate) struct FakePtyState {
     /// `None` is "nothing but the pane's own process", which is what a shell
     /// sitting at its prompt looks like.
     pub foreground_command: Option<Vec<String>>,
+    pub detected_theme: Option<yinz_types::agent::theme::DetectedAgentTheme>,
+    pub retained_theme: Option<yinz_types::agent::theme::AgentThemeEvent>,
 }
 
 impl FakePtyState {
@@ -226,6 +228,8 @@ impl SharedPtys {
                     stdin_tap: None,
                     process_command,
                     foreground_command: None,
+                    detected_theme: None,
+                    retained_theme: None,
                 },
             );
             if spawned {
@@ -462,6 +466,7 @@ impl SharedPtys {
                     .collect(),
             );
             fake_pty_state.foreground_command = None;
+            fake_pty_state.detected_theme = None;
             fake_pty_state.terminal_action = Some(TerminalAction::RunCommand(run_command));
             fake_pty_state.output_tx = Some(output_tx);
             fake_pty_state.quit_cb = Some(quit_cb);
@@ -557,6 +562,29 @@ impl SharedPtys {
                     Some((*terminal_id, fake_pty_state.foreground_command.clone()?))
                 })
                 .collect()
+        })
+    }
+
+    pub(crate) fn retain_agent_theme(
+        &self,
+        terminal_id: TerminalId,
+        event: yinz_types::agent::theme::AgentThemeEvent,
+    ) {
+        self.mutate(|registry| {
+            if let Some(pty) = registry.fake_pty_states.get_mut(&terminal_id) {
+                pty.retained_theme = Some(event);
+            }
+        });
+    }
+    pub(crate) fn detected_theme(
+        &self,
+        terminal_id: TerminalId,
+    ) -> Option<yinz_types::agent::theme::DetectedAgentTheme> {
+        self.read(|registry| {
+            registry
+                .fake_pty_states
+                .get(&terminal_id)
+                .and_then(|pty| pty.detected_theme.clone())
         })
     }
 
@@ -774,6 +802,36 @@ impl FakePtyHandle {
     /// (`pane_activity_flags` in `Pty::update_and_report_cwds`), so a silent
     /// change is a change nothing ever notices. The bytes are an SGR reset, which
     /// the grid parses and draws nothing for.
+    /// Set the execution-host palette observation independently of PTY activity.
+    pub fn set_detected_theme(&self, state: Option<yinz_types::agent::theme::DetectedAgentTheme>) {
+        let expected = state.clone();
+        self.shared_ptys.mutate(|registry| {
+            if let Some(pty) = registry.fake_pty_states.get_mut(&self.terminal_id) {
+                pty.detected_theme = state;
+                pty.retained_theme = None;
+            }
+        });
+        self.shared_ptys.wait_for(
+            "detected palette reaches the grid and retention",
+            |registry| {
+                let retained = registry
+                    .fake_pty_states
+                    .get(&self.terminal_id)?
+                    .retained_theme
+                    .as_ref()?;
+                match &expected {
+                    Some(expected) => (retained.launch_id == expected.launch_id
+                        && match &expected.snapshot {
+                            Some(snapshot) => retained.snapshot.as_ref() == Some(snapshot),
+                            None => retained.snapshot.is_some(),
+                        })
+                    .then_some(()),
+                    None => retained.snapshot.is_none().then_some(()),
+                }
+            },
+        );
+    }
+
     pub fn run_foreground(&self, command: &[&str]) {
         self.shared_ptys.set_foreground_command(
             self.terminal_id,

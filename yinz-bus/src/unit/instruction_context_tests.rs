@@ -218,6 +218,7 @@ pin_context_to_instruction! {
     special: [
         "Resize",
         "PaletteThemeSaved",
+        "UpdateDetectedAgentTheme",
         "PtyBytes",
         "SubscribePaneOutput",
         "UnsubscribePaneOutput",
@@ -241,6 +242,7 @@ pin_context_to_instruction! {
         "ResizeDecreaseRight",
     ];
     targets: [
+        ("UpdateDetectedAgentTheme", ScreenInstruction::UpdateDetectedAgentTheme(TerminalId::new(1), None), "HandlePtyBytes"),
         ("PaletteThemeSaved", ScreenInstruction::PaletteThemeSaved { client: ClientId::new(1), request: uuid::Uuid::nil(), result: Ok(()) }, "ToggleCommandPalette"),
         ("RenderWriterReady", ScreenInstruction::RenderWriterReady, "RenderToClients"),
         ("AgentWorktreeResolved", ScreenInstruction::AgentWorktreeResolved { cwd: "/tmp".into(), generation: 1, root: None }, "RenderToClients"),

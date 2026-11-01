@@ -1445,6 +1445,24 @@ pub fn screen_thread_main(
                 ScreenInstruction::UpdatePaneHost(terminal_id, host) => {
                     screen.set_pane_host(terminal_id, host)?;
                 },
+                ScreenInstruction::UpdateDetectedAgentTheme(terminal_id, state) => {
+                    if super::agent_reports::apply_detected_agent_theme(
+                        &mut screen,
+                        terminal_id,
+                        state.clone(),
+                    )? {
+                        screen.render()?;
+                    } else {
+                        pending
+                            .waiting_for_pane
+                            .entry(PaneId::Terminal(terminal_id))
+                            .or_default()
+                            .push(ScreenInstruction::UpdateDetectedAgentTheme(
+                                terminal_id,
+                                state,
+                            ));
+                    }
+                },
                 ScreenInstruction::UpdatePaneForegroundCommand(terminal_id, command, program) => {
                     let pane_id = PaneId::Terminal(terminal_id);
                     if apply_pane_foreground_command(

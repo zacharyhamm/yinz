@@ -1240,3 +1240,148 @@ fn wide_character_erasure_updates_only_replaced_palette_columns() {
         }
     }
 }
+
+fn detected(id: &str, snapshot: Option<AgentThemeSnapshot>) -> DetectedAgentTheme {
+    DetectedAgentTheme {
+        launch_id: format!("{DETECTED_LAUNCH_PREFIX}{id}"),
+        provider: "codex".into(),
+        snapshot,
+    }
+}
+
+#[test]
+fn detected_resolution_recolors_only_its_interval_and_keeps_completed_output() {
+    let mut grid = create_grid_with_content("");
+    grid.update_theme(style().colors);
+    feed_bytes(&mut grid, b"\x1b[32mSHELL ");
+    grid.update_detected_agent_theme(Some(detected("one", None)));
+    feed_bytes(&mut grid, b"AGENT ");
+    let before = grid.render(0, 0, &style()).unwrap().unwrap().0;
+    let capture = grid.serialize(None).unwrap();
+    grid.update_detected_agent_theme(Some(detected("one", Some(source("codex", Role::Success)))));
+    assert_eq!(grid.serialize(None).unwrap(), capture);
+    let pending_chunk = before.iter().find(|chunk| {
+        chunk
+            .application_styles(*chunk.terminal_characters[0].styles)
+            .foreground
+            == Some(AnsiCode::RgbCode((11, 22, 33)))
+    });
+    assert!(
+        pending_chunk.is_some(),
+        "completed chunks share the pending palette"
+    );
+    grid.update_detected_agent_theme(None);
+    feed_bytes(&mut grid, b"AFTER");
+    let chunks = grid.render(0, 0, &style()).unwrap().unwrap().0;
+    let cells: Vec<_> = chunks
+        .iter()
+        .flat_map(|chunk| {
+            chunk.terminal_characters.iter().map(|cell| {
+                (
+                    cell.character,
+                    chunk.application_styles(*cell.styles).foreground,
+                )
+            })
+        })
+        .collect();
+    let text: String = cells.iter().map(|(c, _)| *c).collect();
+    for (word, color) in [
+        ("SHELL", Some(AnsiCode::NamedColor(NamedColor::Green))),
+        ("AGENT", Some(AnsiCode::RgbCode((11, 22, 33)))),
+        ("AFTER", Some(AnsiCode::NamedColor(NamedColor::Green))),
+    ] {
+        assert_eq!(cells[text.find(word).unwrap()].1, color, "{word}");
+    }
+    grid.set_agent_theme_mapping(AgentThemeMapping::Off);
+    let chunks = grid.render(0, 0, &style()).unwrap().unwrap().0;
+    assert!(chunks.iter().all(|c| c
+        .application_styles(*c.terminal_characters[0].styles)
+        .foreground
+        != Some(AnsiCode::RgbCode((11, 22, 33)))));
+}
+
+#[test]
+fn managed_launch_wins_over_detection_and_delayed_resolution() {
+    let mut grid = create_grid_with_content("");
+    grid.update_detected_agent_theme(Some(detected("one", None)));
+    event(&mut grid, "managed", Some(source("codex", Role::Error)));
+    grid.update_detected_agent_theme(Some(detected("one", Some(source("codex", Role::Success)))));
+    assert_eq!(grid.agent_launch.as_ref().unwrap().launch_id, "managed");
+    event(&mut grid, "managed", None);
+    grid.update_detected_agent_theme(Some(detected("one", Some(source("codex", Role::Success)))));
+    assert!(grid.agent_launch.is_none());
+    grid.update_detected_agent_theme(Some(detected("two", Some(source("codex", Role::Success)))));
+    assert_eq!(
+        grid.agent_launch.as_ref().unwrap().launch_id,
+        "detected:two"
+    );
+    event(
+        &mut grid,
+        "managed-again",
+        Some(source("codex", Role::Error)),
+    );
+    grid.update_detected_agent_theme(None);
+    assert_eq!(
+        grid.agent_launch.as_ref().unwrap().launch_id,
+        "managed-again"
+    );
+}
+
+#[test]
+fn pending_detection_keeps_terminal_color_observations() {
+    let mut grid = create_grid_with_content("");
+    grid.update_detected_agent_theme(Some(detected("one", None)));
+    grid.observe_agent_terminal_color(10, (210, 211, 212));
+    grid.observe_agent_terminal_color(11, (10, 11, 12));
+    grid.update_detected_agent_theme(Some(detected("one", Some(source("codex", Role::Success)))));
+    let snapshot = &grid.agent_launch.as_ref().unwrap().snapshot;
+    assert!(snapshot
+        .definitions
+        .iter()
+        .any(|d| d.token == "codex.terminal.foreground"));
+    assert!(snapshot
+        .definitions
+        .iter()
+        .any(|d| d.token == "codex.terminal.background"));
+    let original = snapshot.clone();
+    grid.update_detected_agent_theme(Some(detected("one", Some(source("codex", Role::Error)))));
+    assert_eq!(grid.agent_launch.as_ref().unwrap().snapshot, original);
+}
+
+#[test]
+fn pending_detection_resolves_after_handoff_with_original_color_observations() {
+    let mut grid = create_grid_with_content("");
+    grid.update_theme(style().colors);
+    grid.update_detected_agent_theme(Some(detected("one", None)));
+    grid.observe_agent_terminal_color(10, (210, 211, 212));
+    feed_bytes(&mut grid, b"\x1b[32mPENDING");
+    assert!(painted(&mut grid).iter().take(7).all(|c| c.1 == GREEN));
+    let (contents, metadata) = grid.serialize_handoff(Some(0), 100_000).unwrap();
+    let mut restored = create_grid_with_content("");
+    restored.update_theme(style().colors);
+    feed_bytes(
+        &mut restored,
+        &crate::agent_theme::handoff_replay(contents, metadata),
+    );
+    restored
+        .update_detected_agent_theme(Some(detected("one", Some(source("codex", Role::Success)))));
+    let restored_cells = painted(&mut restored);
+    let text: Vec<_> = restored_cells
+        .iter()
+        .filter(|cell| !cell.0.is_whitespace())
+        .collect();
+    assert_eq!(
+        text.iter().map(|cell| cell.0).collect::<String>(),
+        "PENDING"
+    );
+    assert!(text.iter().all(|cell| cell.1 == SUCCESS));
+    assert!(restored
+        .agent_launch
+        .as_ref()
+        .unwrap()
+        .snapshot
+        .definitions
+        .iter()
+        .any(|d| d.token == "codex.terminal.foreground"
+            && d.color == SourceColor::Rgb(210, 211, 212)));
+}

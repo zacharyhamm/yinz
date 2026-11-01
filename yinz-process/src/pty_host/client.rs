@@ -190,7 +190,12 @@ impl PtyHostHandle {
         &mut self,
         event: yinz_types::agent::theme::AgentThemeEvent,
     ) -> Result<()> {
-        if !event.valid() || event.snapshot.is_none() {
+        if !event.valid()
+            || (event.snapshot.is_none()
+                && !event
+                    .launch_id
+                    .starts_with(yinz_types::agent::theme::DETECTED_LAUNCH_PREFIX))
+        {
             bail!("invalid agent palette update");
         }
         if serde_json::to_vec(&event)
