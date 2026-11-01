@@ -114,6 +114,7 @@ pub fn screen_thread_main(
     }
 
     let mut pending = PendingEvents::default();
+    let mut terminal_placements = HashMap::new();
     let mut attach_traces_waiting_for_first_render: HashMap<ClientId, Instant> = HashMap::new();
     let mut keybind_intercepts = HashMap::new();
     let mut escape_focus = HashMap::new();
@@ -322,6 +323,9 @@ pub fn screen_thread_main(
                         }
                         screen.render()?;
                     }
+                },
+                ScreenInstruction::ConfirmTerminalPlacement(terminal_id, generation) => {
+                    terminal_placements.insert(terminal_id, generation);
                 },
                 ScreenInstruction::NewPane(
                     pid,
@@ -4273,6 +4277,7 @@ pub fn screen_thread_main(
             .settle_tabs()
             .context("failed to settle tabs after instruction")
             .non_fatal();
+        screen.confirm_terminal_placements(&mut terminal_placements)?;
         screen.reconcile_project_contexts();
         // Teardown can finish before its queued close notification reaches this thread.
         pending

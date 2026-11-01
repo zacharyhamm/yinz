@@ -46,6 +46,7 @@ pub type RenderReady = std::sync::Arc<dyn Fn() + Send + Sync>;
 #[derive(Clone, Debug)]
 pub struct ResolvedSpawn {
     pub terminal_id: TerminalId,
+    pub initial_size: Option<yinz_types::pane_size::TerminalSize>,
     pub command: RunCommand,
     pub rerun_command: RunCommand,
     /// `None` for a command that runs on this machine once resolved.

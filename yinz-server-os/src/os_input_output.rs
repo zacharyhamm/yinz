@@ -805,6 +805,7 @@ impl ServerOsInputOutput {
             .map_err(|error| resolve_failed(terminal_id, &target, error))?;
         Ok(ResolvedSpawn {
             terminal_id,
+            initial_size: None,
             command,
             rerun_command,
             endpoint,
@@ -840,6 +841,7 @@ impl ServerOsInputOutput {
     ) -> Result<(Box<dyn AsyncReader>, ProcessId)> {
         let ResolvedSpawn {
             terminal_id,
+            initial_size,
             command,
             rerun_command,
             ..
@@ -851,7 +853,7 @@ impl ServerOsInputOutput {
             quit_cb
         };
         self.pty_backend
-            .spawn_terminal(command, quit_cb, terminal_id)
+            .spawn_terminal(command, quit_cb, terminal_id, initial_size)
             .context("failed to spawn terminal")
     }
 
@@ -864,6 +866,7 @@ impl ServerOsInputOutput {
     ) -> Result<Box<dyn AsyncReader>> {
         let ResolvedSpawn {
             terminal_id,
+            initial_size,
             command,
             rerun_command,
             endpoint,
@@ -872,7 +875,16 @@ impl ServerOsInputOutput {
             endpoint.context("a local command has no endpoint to open")?;
         let (conn, reader_socket) = self
             .remote_hosts
-            .open_pane_with_ssh_options(&host, &command, None, terminal_id, ssh_options)
+            .open_pane_with_ssh_options(
+                &host,
+                &command,
+                self.pty_backend
+                    .terminal_size(terminal_id)?
+                    .or(initial_size)
+                    .map(Into::into),
+                terminal_id,
+                ssh_options,
+            )
             .map_err(|error| pane_start_failed(terminal_id, &host, error))?;
         self.pty_backend
             .register_remote_terminal(terminal_id, conn, reader_socket, quit_cb, rerun_command)
@@ -891,6 +903,7 @@ impl ServerOsInputOutput {
             .map_err(|error| resolve_failed(terminal_id, &target, error))?;
         Ok(ResolvedSpawn {
             terminal_id,
+            initial_size: None,
             command,
             rerun_command,
             endpoint,
@@ -906,7 +919,10 @@ impl ServerOsInputOutput {
         // the session it was held from. Registering over it would drop this
         // side's only handle on it and leave it to the orphan timeout; and the
         // id has to be reserved again once cleared, or the next spawn takes it.
-        self.clear_terminal_id(resolved.terminal_id).non_fatal();
+        self.pty_backend
+            .reset_terminal_id(resolved.terminal_id)
+            .context("prepare terminal rerun")
+            .non_fatal();
         if resolved.endpoint.is_none() {
             let (reader, child_pid) = self.spawn_resolved_here(resolved, quit_cb)?;
             return Ok((reader, Some(child_pid)));
@@ -1172,6 +1188,7 @@ impl TerminalProcesses for ServerOsInputOutput {
             let async_reader = self.open_remote(
                 ResolvedSpawn {
                     terminal_id,
+                    initial_size: None,
                     command: cmd,
                     rerun_command: rerun_cmd,
                     endpoint,
@@ -1185,6 +1202,7 @@ impl TerminalProcesses for ServerOsInputOutput {
             .spawn_resolved_here(
                 ResolvedSpawn {
                     terminal_id,
+                    initial_size: None,
                     command: cmd,
                     rerun_command: rerun_cmd,
                     endpoint,
@@ -1254,6 +1272,7 @@ impl TerminalProcesses for ServerOsInputOutput {
             return self.rerun_resolved(
                 ResolvedSpawn {
                     terminal_id,
+                    initial_size: None,
                     command: run_command,
                     rerun_command,
                     endpoint,
@@ -1262,10 +1281,14 @@ impl TerminalProcesses for ServerOsInputOutput {
             );
         }
 
-        self.clear_terminal_id(terminal_id).non_fatal();
+        self.pty_backend
+            .reset_terminal_id(terminal_id)
+            .context("prepare terminal rerun")
+            .non_fatal();
         let (async_reader, child_pid) = self.spawn_resolved_here(
             ResolvedSpawn {
                 terminal_id,
+                initial_size: None,
                 command: run_command,
                 rerun_command,
                 endpoint,

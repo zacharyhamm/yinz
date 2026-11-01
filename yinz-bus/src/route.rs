@@ -32,7 +32,7 @@ pub struct ActionCompletionResult {
 // that it can be included in various other larger structs - DO NOT RELY ON CLONING IT!
 pub struct NotificationEnd {
     channel: Option<oneshot::Sender<ActionCompletionResult>>,
-    /// Direct agent control waits for remote startup before placing its pane.
+    /// Direct agent control waits for both placement and process startup.
     pub wait_for_agent_start: bool,
     placement_pending: bool,
     pub agent_tab: Option<AgentTabPlacement>,
@@ -154,6 +154,53 @@ impl NotificationEnd {
             }
         });
         completions
+    }
+
+    /// Keep Screen's placement result (including automatic tab selection) and
+    /// acknowledge only after the process has started as well. Each owner gets
+    /// its own handle, so neither can complete the caller on its own.
+    pub fn split_for_startup(mut self) -> (Self, Self) {
+        let (placed_tx, placed_rx) = oneshot::channel();
+        let mut placement = self.clone();
+        placement.channel = Some(placed_tx);
+        let (started_tx, started_rx) = oneshot::channel();
+        let startup = Self::new(started_tx);
+        let mut channel = self.channel.take();
+        crate::global_async_runtime::get_tokio_runtime().spawn(async move {
+            let (placed, started) = tokio::select! {
+                _ = async {
+                    if let Some(channel) = channel.as_mut() {
+                        channel.closed().await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => return,
+                results = async { (placed_rx.await, started_rx.await) } => results,
+            };
+            self.channel = channel;
+            match placed {
+                Ok(placed) => {
+                    self.agent_tab = placed.agent_tab;
+                    self.created_tab_id = placed.created_tab_id;
+                    self.affected_pane_id = placed.affected_pane_id;
+                    self.affected_tab_id = placed.affected_tab_id;
+                    self.exit_status = placed.exit_status;
+                    self.stdout_message = placed.stdout_message;
+                    self.error_message = placed.error_message;
+                    self.placement_pending = false;
+                },
+                Err(error) => self.set_error_message(format!("pane placement reply lost: {error}")),
+            }
+            let startup_error = match started {
+                Ok(started) => started.error_message,
+                Err(error) => Some(format!("command startup reply lost: {error}")),
+            };
+            if self.error_message.is_none() {
+                self.error_message = startup_error;
+            }
+            drop(self);
+        });
+        (placement, startup)
     }
 
     pub fn new_with_condition(

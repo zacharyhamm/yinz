@@ -259,6 +259,17 @@ pub struct WireWinsize {
     pub height_in_pixels: u16,
 }
 
+impl From<yinz_types::pane_size::TerminalSize> for WireWinsize {
+    fn from(size: yinz_types::pane_size::TerminalSize) -> Self {
+        Self {
+            cols: size.cols,
+            rows: size.rows,
+            width_in_pixels: size.width_in_pixels.unwrap_or(0),
+            height_in_pixels: size.height_in_pixels.unwrap_or(0),
+        }
+    }
+}
+
 // --- framing ---
 
 pub fn write_msg<T: Serialize, W: Write>(writer: &mut W, msg: &T) -> Result<()> {

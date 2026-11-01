@@ -271,8 +271,9 @@ pub struct PendingRerun {
 }
 
 #[derive(Clone, Debug)]
-pub struct PendingRemoteSpawn {
+pub struct PendingTerminalSpawn {
     pub terminal_id: TerminalId,
+    pub generation: u64,
     pub terminal_action: TerminalAction,
 }
 
@@ -281,7 +282,7 @@ pub struct PendingRemoteSpawn {
 #[doc(hidden)]
 #[derive(Debug, Clone)]
 pub enum PendingSpawn {
-    Terminal(PendingRemoteSpawn, OneShot<Result<SpawnedTerminal>>),
+    Terminal(PendingTerminalSpawn, OneShot<Result<SpawnedTerminal>>),
     Rerun(Box<PendingRerun>, OneShot<Result<SpawnedRerun>>),
 }
 
@@ -298,10 +299,16 @@ pub enum PtyInstruction {
         bool,                    // set_blocking
     ), // bool (if Some) is
     // should_float, String is an optional pane name
-    /// A spawn worker is done: the remote terminals a spawn, layout or rerun
+    /// A spawn worker is done: the terminals a spawn, layout or rerun
     /// asked for are resolved and started (or failed), and the pty thread can
     /// finish the job the way it would have had the spawn been local.
     SpawnResolved(PendingSpawn),
+    /// Screen has placed this launch and the writer has flushed its resize batch.
+    TerminalPlaced {
+        terminal_id: TerminalId,
+        generation: u64,
+        placement: Option<(yinz_types::pane_size::TerminalSize, TabId)>,
+    },
     OpenInPlaceEditor(
         PathBuf,
         Option<usize>,

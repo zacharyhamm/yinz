@@ -1580,3 +1580,6 @@ fn attached_client_capture_retains_early_exit_output() {
     client.1.take().unwrap().join().unwrap();
     assert_eq!(*client.2.lock().unwrap(), b"attachment failed");
 }
+
+#[path = "terminal_startup_size.rs"]
+mod terminal_startup_size;

@@ -46,6 +46,7 @@ pub enum ContextType {
     strum_macros::VariantNames,
 )]
 pub enum ScreenContext {
+    ConfirmTerminalPlacement,
     RetirePicker,
     PaneTabsAction,
     PaneTabs,
@@ -399,6 +400,7 @@ pub enum ScreenContext {
     strum_macros::VariantNames,
 )]
 pub enum PtyContext {
+    TerminalPlaced,
     SpawnTerminal,
     SpawnResolved,
     OpenInPlaceEditor,
@@ -602,6 +604,7 @@ pub enum ServerContext {
     strum_macros::VariantNames,
 )]
 pub enum PtyWriteContext {
+    TerminalPlaced,
     Write,
     RetainAgentTheme,
     ResizePty,

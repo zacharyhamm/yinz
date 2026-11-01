@@ -57,6 +57,7 @@ type CachedResizes = Arc<Mutex<Option<BTreeMap<TerminalId, (u16, u16)>>>>;
 #[derive(Clone, Default)]
 pub struct FakeServerOsApi {
     pub shared_ptys: SharedPtys,
+    resolved_actions: Arc<Mutex<HashMap<TerminalId, TerminalAction>>>,
     non_blocking_client_senders: Arc<Mutex<HashMap<ClientId, NonBlockingClientSender>>>,
     fake_filesystem: Arc<Mutex<HashMap<String, String>>>,
     // mirrors the resize caching of the real ServerOsInputOutput, so that tests see the same
@@ -176,11 +177,20 @@ impl TerminalProcesses for FakeServerOsApi {
         _default_editor: Option<PathBuf>,
         _report_progress: &mut dyn FnMut(&str),
     ) -> Result<ResolvedSpawn> {
-        let TerminalAction::RunCommand(command) = terminal_action else {
-            return Err(anyhow!("only a command can run on another machine"));
+        self.resolved_actions
+            .lock()
+            .unwrap()
+            .insert(terminal_id, terminal_action.clone());
+        let command = match terminal_action {
+            TerminalAction::RunCommand(command) => command,
+            TerminalAction::OpenFile(payload) => RunCommand {
+                cwd: payload.cwd,
+                ..Default::default()
+            },
         };
         Ok(ResolvedSpawn {
             terminal_id,
+            initial_size: None,
             rerun_command: command.clone(),
             endpoint: Some(RemoteEndpoint {
                 host: command.target.display().unwrap_or_default(),
@@ -196,7 +206,11 @@ impl TerminalProcesses for FakeServerOsApi {
     ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         self.spawn_with_id(
             resolved.terminal_id,
-            TerminalAction::RunCommand(resolved.command),
+            self.resolved_actions
+                .lock()
+                .unwrap()
+                .remove(&resolved.terminal_id)
+                .unwrap_or(TerminalAction::RunCommand(resolved.command)),
             quit_cb,
         )
     }
@@ -208,6 +222,7 @@ impl TerminalProcesses for FakeServerOsApi {
     ) -> Result<ResolvedSpawn> {
         Ok(ResolvedSpawn {
             terminal_id,
+            initial_size: None,
             rerun_command: command.clone(),
             endpoint: Some(RemoteEndpoint {
                 host: command.target.display().unwrap_or_default(),

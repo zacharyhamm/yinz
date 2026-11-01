@@ -85,6 +85,21 @@ pub struct Offset {
     pub left: usize,
 }
 
+/// Content dimensions assigned to a terminal before its command starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TerminalSize {
+    pub cols: u16,
+    pub rows: u16,
+    pub width_in_pixels: Option<u16>,
+    pub height_in_pixels: Option<u16>,
+}
+
+impl TerminalSize {
+    pub fn is_positive(self) -> bool {
+        self.cols > 0 && self.rows > 0
+    }
+}
+
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Size {
     pub rows: usize,

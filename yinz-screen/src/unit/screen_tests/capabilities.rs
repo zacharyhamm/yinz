@@ -1093,3 +1093,52 @@ fn watcher_geometry_is_cleared_before_its_id_is_reused_by_an_interactive_client(
         Event::CellPixelSizeChanged(None)
     )));
 }
+
+#[test]
+fn terminal_placement_reports_content_geometry_with_known_or_unknown_pixels() {
+    use yinz_bus::pty_writer::PtyWriteInstruction;
+    let mut screen = create_new_screen(
+        Size {
+            cols: 121,
+            rows: 40,
+        },
+        true,
+        true,
+    );
+    new_tab(&mut screen, 1, TabId::new(0));
+    let (tx, rx) = channels::unbounded();
+    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(tx));
+    let pane = screen.tabs[&TabId::new(0)]
+        .get_active_pane(CLIENT_1)
+        .unwrap();
+    let PaneId::Terminal(id) = pane.pid() else {
+        panic!("terminal");
+    };
+    let cols = pane.get_content_columns() as u16;
+    let rows = pane.get_content_rows() as u16;
+    for cell in [
+        None,
+        Some(SizeInPixels {
+            width: 10,
+            height: 20,
+        }),
+    ] {
+        *screen.character_cell_size.borrow_mut() = cell;
+        let mut pending = HashMap::from([(id, 42)]);
+        screen.confirm_terminal_placements(&mut pending).unwrap();
+        assert!(pending.is_empty());
+        let (ack, _) = rx.recv().unwrap();
+        let PtyWriteInstruction::TerminalPlaced {
+            terminal_id,
+            generation,
+            placement: Some((size, tab_id)),
+        } = ack
+        else {
+            panic!("expected dimensions");
+        };
+        assert_eq!((terminal_id, generation, tab_id), (id, 42, TabId::new(0)));
+        assert_eq!((size.cols, size.rows), (cols, rows));
+        assert_eq!(size.width_in_pixels, cell.map(|_| cols * 10));
+        assert_eq!(size.height_in_pixels, cell.map(|_| rows * 20));
+    }
+}

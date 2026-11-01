@@ -1,7 +1,5 @@
 use crate::global_async_runtime::get_tokio_runtime as async_runtime;
-use crate::os_input_output::{
-    AsyncReader, ChildRunState, ChildSignal, NullAsyncReader, TerminalProcesses,
-};
+use crate::os_input_output::{ChildRunState, ChildSignal, TerminalProcesses};
 use crate::plugins::{PluginId, PluginInstruction};
 use crate::route::NotificationEnd;
 use crate::screen::ScreenInstruction;
@@ -21,6 +19,7 @@ use yinz_types::input::command::{OpenFilePayload, RunCommand, TerminalAction};
 use yinz_types::input::layout::Run;
 use yinz_types::internal_ids::{ProcessId, TabId, TerminalId};
 use yinz_types::pane_id::PaneId;
+use yinz_types::pane_size::TerminalSize;
 
 mod layouts;
 mod metadata;
@@ -206,18 +205,24 @@ impl PendingPaneSpawn {
 
 /// What a spawn worker was asked to do.
 enum SpawnJob {
-    Terminal(PendingRemoteSpawn),
+    Terminal(PendingTerminalSpawn),
     Rerun(Box<PendingRerun>),
 }
 
-/// The re-runs a pane has in flight and waiting: the generation of the one
-/// off-thread now, and the ones asked for since, run in order after it. Any
-/// rerun of a pane with an entry here is queued, local or not, so two commands
-/// can never stream into one pane.
+/// A pane's active launch generation and the reruns queued behind it. Initial
+/// starts and reruns share this queue, so two launches cannot stream into one pane.
 #[derive(Debug, Default)]
 struct RerunState {
     generation: u64,
     queued: VecDeque<(RunCommand, Option<NotificationEnd>)>,
+}
+
+/// Placement and cancellation belong to one launch generation. Keep cancellation
+/// alive after acknowledging placement, while target resolution may still run.
+struct PendingPlacement {
+    generation: u64,
+    sender: Option<std::sync::mpsc::Sender<TerminalSize>>,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// A coding agent's hook event from a remote pane, arrived on the pane's
@@ -267,7 +272,7 @@ fn handle_remote_agent_report(
 /// A spawn worker could not hand its result back to the pty thread, so the pane it
 /// started has to be closed by the worker itself: nobody else knows the id.
 const LOST_SPAWN_HANDBACK: &str =
-    "a remote pane was started but could not be handed back to the pty thread; \
+    "a pane was started but could not be handed back to the pty thread; \
      the pane has been dropped";
 
 fn terminal_safe(text: &str) -> String {
@@ -314,6 +319,9 @@ fn send_remote_status(
     command: &RunCommand,
     status: &str,
 ) -> Result<()> {
+    if command.target == PaneTarget::Local {
+        return Ok(());
+    }
     senders.send_to_screen(ScreenInstruction::PtyBytes(
         terminal_id,
         remote_loading_screen(command, status),
@@ -321,35 +329,43 @@ fn send_remote_status(
 }
 
 /// Resolve where one command runs and start it there, off the pty thread.
-fn spawn_remote_terminal(
+fn spawn_placed_terminal(
     os_input: &dyn TerminalProcesses,
     senders: &ThreadSenders,
-    pending: &PendingRemoteSpawn,
+    pending: &PendingTerminalSpawn,
     default_editor: Option<PathBuf>,
+    placement: &std::sync::mpsc::Receiver<TerminalSize>,
+    cancelled: &std::sync::atomic::AtomicBool,
 ) -> Result<SpawnedTerminal> {
     let terminal_action = pending.terminal_action.clone();
-    let command = match &terminal_action {
-        TerminalAction::RunCommand(command) => command.clone(),
-        TerminalAction::OpenFile(_) => return Err(anyhow!("a remote spawn must run a command")),
-    };
     let quit_cb = terminal_quit_callback(senders.clone(), &terminal_action);
-    let mut report_progress =
-        |phase: &str| send_remote_status(senders, pending.terminal_id, &command, phase).non_fatal();
+    let mut report_progress = |phase: &str| {
+        if let TerminalAction::RunCommand(command) = &terminal_action {
+            send_remote_status(senders, pending.terminal_id, command, phase).non_fatal();
+        }
+    };
     os_input
         .resolve_spawn(
             pending.terminal_id,
-            terminal_action,
+            terminal_action.clone(),
             default_editor,
             &mut report_progress,
         )
-        .and_then(|resolved| {
-            send_remote_status(
-                senders,
-                pending.terminal_id,
-                &command,
-                starting_status(&command.target),
-            )
-            .non_fatal();
+        .and_then(|mut resolved| {
+            resolved.initial_size = Some(placement.recv().context("pane closed before placement")?);
+            anyhow::ensure!(
+                !cancelled.load(std::sync::atomic::Ordering::Acquire),
+                "pane closed before command startup"
+            );
+            if let TerminalAction::RunCommand(command) = &terminal_action {
+                send_remote_status(
+                    senders,
+                    pending.terminal_id,
+                    command,
+                    starting_status(&command.target),
+                )
+                .non_fatal();
+            }
             os_input.spawn_resolved(resolved, quit_cb)
         })
         .map(|(terminal_id, reader, child_pid)| SpawnedTerminal {
@@ -366,10 +382,19 @@ fn run_spawn_job(
     senders: &ThreadSenders,
     job: SpawnJob,
     default_editor: Option<PathBuf>,
+    placement: std::sync::mpsc::Receiver<TerminalSize>,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
 ) -> (PendingSpawn, Vec<TerminalId>) {
     match job {
         SpawnJob::Terminal(pending) => {
-            let spawned = spawn_remote_terminal(os_input, senders, &pending, default_editor);
+            let spawned = spawn_placed_terminal(
+                os_input,
+                senders,
+                &pending,
+                default_editor,
+                &placement,
+                &cancelled,
+            );
             let started = vec![pending.terminal_id];
             (
                 PendingSpawn::Terminal(pending, OneShot::new(spawned)),
@@ -393,7 +418,16 @@ fn run_spawn_job(
                             pending.run_command.clone(),
                             &mut report_progress,
                         )
-                        .and_then(|resolved| {
+                        .and_then(|mut resolved| {
+                            resolved.initial_size = Some(
+                                placement
+                                    .recv()
+                                    .context("pane closed before rerun placement")?,
+                            );
+                            anyhow::ensure!(
+                                !cancelled.load(std::sync::atomic::Ordering::Acquire),
+                                "pane closed before command restart"
+                            );
                             send_remote_status(
                                 senders,
                                 terminal_id,
@@ -487,15 +521,17 @@ pub struct Pty {
     /// by the time the tab comes round: the claim is enqueued first, and the
     /// plugin thread cannot forward a `NewTab` it has not yet been sent.
     adopted_tabs: HashMap<TabId, AdoptedTabTerminals>,
-    /// Threads resolving and starting remote panes, so `Drop` need not wait
-    /// for a boot; reaped as new ones start.
+    /// Workers resolve targets without blocking other panes, then wait for placement.
+    /// Reaped as new launches start; closing a pane cancels its placement wait.
     spawn_workers: Vec<std::thread::JoinHandle<()>>,
-    /// Remote panes already placed on screen whose worker has not handed a
+    /// Reserved panes whose worker has not handed a
     /// transport back yet. Closing the pane removes its id, so a late result
     /// can only be torn down, never bring the pane back.
-    pending_remote_spawns: HashSet<TerminalId>,
-    /// Agent control must report process failure, not success from a placeholder's ID.
-    pending_agent_spawns: HashMap<TerminalId, PendingPaneSpawn>,
+    pending_terminal_spawns: HashMap<TerminalId, u64>,
+    /// Placement replies and cancellation for each unresolved launch.
+    awaiting_placement: HashMap<TerminalId, PendingPlacement>,
+    /// Actions that wait for process startup as well as placement.
+    pending_start_completions: HashMap<TerminalId, NotificationEnd>,
     /// Per pane, the rerun off-thread now and the ones waiting behind it.
     reruns: HashMap<TerminalId, RerunState>,
     next_rerun_generation: u64,
@@ -525,8 +561,9 @@ impl Pty {
             terminal_reported_commands: HashMap::new(),
             adopted_tabs: HashMap::new(),
             spawn_workers: vec![],
-            pending_remote_spawns: HashSet::new(),
-            pending_agent_spawns: HashMap::new(),
+            pending_terminal_spawns: HashMap::new(),
+            awaiting_placement: HashMap::new(),
+            pending_start_completions: HashMap::new(),
             reruns: HashMap::new(),
             next_rerun_generation: 0,
         }
@@ -570,15 +607,6 @@ impl Pty {
             },
         }
     }
-    pub(crate) fn spawn_terminal(
-        &mut self,
-        terminal_action: Option<TerminalAction>,
-        client_or_tab_index: ClientTabIndexOrPaneId,
-    ) -> Result<(TerminalId, bool)> {
-        let terminal_action = self.prepare_terminal_action(terminal_action, client_or_tab_index);
-        self.spawn_prepared_terminal(terminal_action, client_or_tab_index)
-    }
-
     fn prepare_terminal_action(
         &mut self,
         terminal_action: Option<TerminalAction>,
@@ -610,7 +638,7 @@ impl Pty {
     /// Hand a spawn to a worker thread. Reaching an SSH host and starting it there can take minutes, and
     /// the pty thread has every other pane's input to serve meanwhile; the
     /// worker sends `SpawnResolved` back when it is done.
-    fn defer_spawn(&mut self, job: SpawnJob) -> Result<()> {
+    fn defer_spawn(&mut self, mut job: SpawnJob) -> Result<()> {
         let os_input = self
             .bus
             .os_input
@@ -619,9 +647,52 @@ impl Pty {
             .box_clone();
         let default_editor = self.default_editor.clone();
         let senders = self.bus.senders.clone();
+        let (placement_tx, placement_rx) = std::sync::mpsc::channel();
+        let (terminal_id, generation) = match &mut job {
+            SpawnJob::Terminal(pending) => {
+                pending.generation = self.next_rerun_generation;
+                self.next_rerun_generation = self.next_rerun_generation.wrapping_add(1);
+                (pending.terminal_id, pending.generation)
+            },
+            SpawnJob::Rerun(pending) => {
+                let PaneId::Terminal(id) = pending.pane_id else {
+                    anyhow::bail!("cannot rerun a plugin");
+                };
+                (id, pending.generation)
+            },
+        };
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.awaiting_placement.insert(
+            terminal_id,
+            PendingPlacement {
+                generation,
+                sender: Some(placement_tx),
+                cancelled: cancelled.clone(),
+            },
+        );
+        if let Err(error) =
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::ConfirmTerminalPlacement(
+                    terminal_id,
+                    generation,
+                ))
+        {
+            self.close_pane(PaneId::Terminal(terminal_id))
+                .context("release unplaced terminal")?;
+            return Err(error).context("request terminal placement dimensions");
+        }
         match &job {
             SpawnJob::Terminal(pending) => {
-                self.pending_remote_spawns.insert(pending.terminal_id);
+                self.pending_terminal_spawns
+                    .insert(pending.terminal_id, pending.generation);
+                self.reruns.insert(
+                    pending.terminal_id,
+                    RerunState {
+                        generation: pending.generation,
+                        queued: VecDeque::new(),
+                    },
+                );
                 if let TerminalAction::RunCommand(command) = &pending.terminal_action {
                     send_remote_status(
                         &senders,
@@ -644,7 +715,14 @@ impl Pty {
         }
         self.reap_spawn_workers();
         self.spawn_workers.push(std::thread::spawn(move || {
-            let (resolved, started) = run_spawn_job(&*os_input, &senders, job, default_editor);
+            let (resolved, started) = run_spawn_job(
+                &*os_input,
+                &senders,
+                job,
+                default_editor,
+                placement_rx,
+                cancelled,
+            );
             if senders
                 .send_to_pty(PtyInstruction::SpawnResolved(resolved))
                 .is_err()
@@ -658,10 +736,8 @@ impl Pty {
         Ok(())
     }
 
-    /// Route a rerun. A pane with a rerun in flight queues this one behind it,
-    /// whatever its target, so two commands never stream into one pane; a
-    /// remote command goes to a worker; a local one is handed back to the
-    /// caller to run on this thread. `Some` is that handback.
+    /// Queue behind an active launch, or resolve this rerun on a worker and
+    /// wait for Screen's current content dimensions before executing it.
     fn request_rerun(
         &mut self,
         pane_id: PaneId,
@@ -688,10 +764,6 @@ impl Pty {
                     self.originating_plugins.get(&terminal_id).cloned();
             },
         }
-        // Return local commands with their origin too, so a failed rerun keeps its reply target.
-        if !run_command.defers_spawn() {
-            return Ok(Some((run_command, completion_tx)));
-        }
         self.track_launch(terminal_id, &run_command);
         let _ = self.task_handles.remove(&terminal_id);
         let _ = self.id_to_child_pid.remove(&terminal_id);
@@ -716,14 +788,14 @@ impl Pty {
         Ok(None)
     }
 
-    fn handle_remote_spawned(
+    fn handle_terminal_spawned(
         &mut self,
-        pending: PendingRemoteSpawn,
+        pending: PendingTerminalSpawn,
         spawned: OneShot<Result<SpawnedTerminal>>,
     ) -> Result<()> {
         let terminal_id = pending.terminal_id;
         let spawned = spawned.take()?;
-        if !self.pending_remote_spawns.remove(&terminal_id) {
+        if self.pending_terminal_spawns.get(&terminal_id) != Some(&pending.generation) {
             if spawned.is_ok() {
                 self.bus
                     .os_input
@@ -737,67 +809,96 @@ impl Pty {
             }
             return Ok(());
         }
-        if let Some(agent) = self.pending_agent_spawns.remove(&terminal_id) {
-            let result = match spawned {
-                Ok(spawned) => {
-                    // Clear buffered loading messages before the reader can send command output.
+        self.pending_terminal_spawns.remove(&terminal_id);
+        self.awaiting_placement.remove(&terminal_id);
+        let queued = self
+            .reruns
+            .remove(&terminal_id)
+            .map(|state| state.queued)
+            .unwrap_or_default();
+        let mut keep_pane = true;
+        let mut completion = self.pending_start_completions.remove(&terminal_id);
+        let command = match &pending.terminal_action {
+            TerminalAction::RunCommand(command) => Some(command.clone()),
+            TerminalAction::OpenFile(_) => None,
+        };
+        if let Err(error) = &spawned
+            && let Some(completion) = completion.as_mut()
+        {
+            completion.set_error_message(format!("command failed to start: {error:#}"));
+        }
+        match spawned {
+            Ok(spawned) => {
+                if command.as_ref().is_some_and(RunCommand::defers_spawn) {
+                    self.bus
+                        .senders
+                        .send_to_screen(ScreenInstruction::RemotePaneReady(terminal_id))?;
+                }
+                self.start_spawned_terminal(&pending.terminal_action, spawned);
+                match &pending.terminal_action {
+                    TerminalAction::RunCommand(command) if !command.defers_spawn() => {
+                        self.announce_pane_opened(terminal_id, Some(command), None)?;
+                    },
+                    TerminalAction::OpenFile(payload) => {
+                        self.announce_pane_opened(terminal_id, None, Some(payload))?;
+                    },
+                    _ => {},
+                }
+            },
+            Err(error) => {
+                let show_failure = command
+                    .as_ref()
+                    .is_some_and(|command| command.shows_start_failure() || command.defers_spawn());
+                if show_failure {
                     self.bus
                         .senders
                         .send_to_screen(ScreenInstruction::PtyBytes(
                             terminal_id,
                             b"\x1b[3J\x1b[2J\x1b[H".to_vec(),
-                        ))
-                        .context("clear agent startup progress")?;
-                    self.start_spawned_terminal(&pending.terminal_action, spawned);
-                    Ok((terminal_id, false))
-                },
-                Err(error) => {
-                    if pane_start_failure(&error).is_none() {
-                        self.close_pane(PaneId::Terminal(terminal_id))
-                            .context("release failed agent startup reservation")
-                            .non_fatal();
+                        ))?;
+                    let command = command.context("a command pane must have a command")?;
+                    if let Some(plugin) = command.originating_plugin.as_ref() {
+                        self.bus
+                            .senders
+                            .send_to_plugin(PluginInstruction::for_plugin_event(
+                                plugin.plugin_id,
+                                plugin.client_id,
+                                plugin.generation,
+                                Event::CommandPaneExited(
+                                    terminal_id,
+                                    Some(2),
+                                    plugin.context.clone(),
+                                ),
+                            ))?;
                     }
-                    Err(error)
-                },
-            };
-            return finish_pane_spawn(self, agent, result);
-        }
-        let TerminalAction::RunCommand(command) = pending.terminal_action.clone() else {
-            return Err(anyhow!("a remote spawn must run a command"));
-        };
-        match spawned {
-            Ok(spawned) => {
-                self.bus
-                    .senders
-                    .send_to_screen(ScreenInstruction::RemotePaneReady(terminal_id))?;
-                self.start_spawned_terminal(&pending.terminal_action, spawned);
-            },
-            Err(error) => {
-                self.bus
-                    .senders
-                    .send_to_screen(ScreenInstruction::PtyBytes(
+                    let message = pane_start_failure(&error)
+                        .map(|(_, message)| message)
+                        .unwrap_or_else(|| format!("{error:#}"));
+                    send_pane_error_to_screen(
+                        self.bus.senders.clone(),
                         terminal_id,
-                        b"\x1b[3J\x1b[2J\x1b[H".to_vec(),
-                    ))?;
-                if let Some(originating_plugin) = command.originating_plugin.as_ref() {
+                        message,
+                        command,
+                    )?;
+                } else {
+                    Err::<(), _>(error)
+                        .context("failed to start placed terminal")
+                        .non_fatal();
                     self.bus
                         .senders
-                        .send_to_plugin(PluginInstruction::for_plugin_event(
-                            originating_plugin.plugin_id,
-                            originating_plugin.client_id,
-                            originating_plugin.generation,
-                            Event::CommandPaneExited(
-                                terminal_id,
-                                Some(2),
-                                originating_plugin.context.clone(),
-                            ),
+                        .send_to_screen(ScreenInstruction::ClosePane(
+                            PaneId::Terminal(terminal_id),
+                            None,
+                            None,
+                            None,
                         ))?;
+                    self.close_pane(PaneId::Terminal(terminal_id))?;
+                    keep_pane = false;
                 }
-                let message = pane_start_failure(&error)
-                    .map(|(_, message)| message)
-                    .unwrap_or_else(|| format!("{error:#}"));
-                send_pane_error_to_screen(self.bus.senders.clone(), terminal_id, message, command)?;
             },
+        }
+        if keep_pane {
+            self.run_queued_reruns(PaneId::Terminal(terminal_id), queued)?;
         }
         Ok(())
     }
@@ -847,23 +948,26 @@ impl Pty {
             }
             return Ok(());
         }
+        self.awaiting_placement.remove(&terminal_id);
         let queued = self
             .reruns
             .remove(&terminal_id)
             .map(|state| state.queued)
             .unwrap_or_default();
         let spawned = spawned.take()?;
-        if spawned.is_ok() {
-            self.bus
-                .senders
-                .send_to_screen(ScreenInstruction::RemotePaneReady(terminal_id))?;
-        } else {
-            self.bus
-                .senders
-                .send_to_screen(ScreenInstruction::PtyBytes(
-                    terminal_id,
-                    b"\x1b[3J\x1b[2J\x1b[H".to_vec(),
-                ))?;
+        if pending.run_command.defers_spawn() {
+            if spawned.is_ok() {
+                self.bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::RemotePaneReady(terminal_id))?;
+            } else {
+                self.bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::PtyBytes(
+                        terminal_id,
+                        b"\x1b[3J\x1b[2J\x1b[H".to_vec(),
+                    ))?;
+            }
         }
         let result = self.finish_rerun(
             pending.pane_id,
@@ -925,55 +1029,44 @@ impl Pty {
             .reserve_terminal_id()
     }
 
-    fn spawn_prepared_terminal(
+    fn terminal_placed(
         &mut self,
-        terminal_action: TerminalAction,
-        client_or_tab_index: ClientTabIndexOrPaneId,
-    ) -> Result<(TerminalId, bool)> {
-        // bool is starts_held
-        let err_context = || format!("failed to spawn terminal for {:?}", client_or_tab_index);
-        let hold_on_start = matches!(
-            &terminal_action,
-            TerminalAction::RunCommand(command) if command.hold_on_start
-        );
-
-        if hold_on_start {
-            // we don't actually open a terminal in this case, just wait for the user to run it
-            let starts_held = hold_on_start;
-            let terminal_id = self
-                .bus
-                .os_input
-                .as_mut()
-                .context("couldn't get mutable reference to OS interface")
-                .and_then(|os_input| os_input.reserve_terminal_id())
-                .with_context(err_context)?;
-            return Ok((terminal_id, starts_held));
+        terminal_id: TerminalId,
+        generation: u64,
+        placement: Option<(TerminalSize, TabId)>,
+    ) -> Result<()> {
+        if self
+            .awaiting_placement
+            .get(&terminal_id)
+            .map(|placement| placement.generation)
+            != Some(generation)
+        {
+            return Ok(());
         }
-
-        let quit_cb = terminal_quit_callback(self.bus.senders.clone(), &terminal_action);
-        let spawned = self
-            .bus
-            .os_input
-            .as_mut()
-            .context("no OS I/O interface found")
-            .and_then(|os_input| {
-                os_input.spawn_terminal(
-                    terminal_action.clone(),
-                    quit_cb,
-                    self.default_editor.clone(),
-                )
-            })
-            .map(|(terminal_id, reader, child_pid)| SpawnedTerminal {
-                terminal_id,
-                reader,
-                child_pid,
-            })
-            .with_context(err_context)?;
-        let terminal_id = spawned.terminal_id;
-        self.start_spawned_terminal(&terminal_action, spawned);
-
-        let starts_held = false;
-        Ok((terminal_id, starts_held))
+        let Some((size, tab_id)) = placement.filter(|(size, _)| size.is_positive()) else {
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::ClosePane(
+                    PaneId::Terminal(terminal_id),
+                    None,
+                    None,
+                    None,
+                ))
+                .context("close rejected terminal placement")?;
+            return self.close_pane(PaneId::Terminal(terminal_id));
+        };
+        if let Some(completion) = self.pending_start_completions.get_mut(&terminal_id) {
+            completion.complete_pane_placement(tab_id);
+        }
+        if let Some(sender) = self
+            .awaiting_placement
+            .get_mut(&terminal_id)
+            .and_then(|placement| placement.sender.take())
+        {
+            // A failed resolution may already have dropped its receiver.
+            let _ = sender.send(size);
+        }
+        Ok(())
     }
 
     fn start_spawned_terminal(
@@ -1067,253 +1160,85 @@ impl Pty {
         Ok(())
     }
 
-    /// Spawn one pane's terminal - now, or through a worker when the command
-    /// runs elsewhere - and finish the spawn once its id is known.
+    /// Reserve and place a pane, then let its worker start with the assigned size.
     fn spawn_pane(
         &mut self,
         terminal_action: Option<TerminalAction>,
         mut pending: PendingPaneSpawn,
     ) -> Result<()> {
-        let client_or_tab_index = pending.client_or_tab_index;
-        if pending
-            .run_command
-            .as_ref()
-            .is_some_and(RunCommand::defers_spawn)
-        {
-            let terminal_action =
-                self.prepare_terminal_action(terminal_action, client_or_tab_index);
-            let terminal_id = self.reserve_terminal_id()?;
-            let wait_for_start = pending
+        let terminal_action =
+            self.prepare_terminal_action(terminal_action, pending.client_or_tab_index);
+        let terminal_id = self.reserve_terminal_id()?;
+        let starts_held = matches!(&terminal_action, TerminalAction::RunCommand(command) if command.hold_on_start);
+        let completes_after_start = !starts_held
+            && match &terminal_action {
+                TerminalAction::RunCommand(command) => !command.defers_spawn(),
+                TerminalAction::OpenFile(_) => true,
+            };
+        let wait_for_start = !starts_held
+            && pending
                 .completion_tx
                 .as_ref()
-                .is_some_and(|c| c.wait_for_agent_start);
-            if wait_for_start {
-                if let Some(completion) = pending.completion_tx.as_mut() {
-                    completion.set_affected_pane_id(PaneId::Terminal(terminal_id));
-                }
-                self.pending_agent_spawns.insert(terminal_id, pending);
-            } else {
-                finish_pane_spawn(self, pending, Ok((terminal_id, false)))?;
-            }
-            let deferred = self.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
+                .is_some_and(|completion| completes_after_start || completion.wait_for_agent_start);
+        if completes_after_start {
+            // The pane must exist for placement, but local opened callbacks still mean
+            // its process is running. The action retains both plugin reply targets.
+            pending.run_command = None;
+            pending.open_file_payload = None;
+        }
+        if wait_for_start && let Some(completion) = pending.completion_tx.take() {
+            let (placement, startup) = completion.split_for_startup();
+            pending.completion_tx = Some(placement);
+            self.pending_start_completions.insert(terminal_id, startup);
+        }
+        finish_pane_spawn(self, pending, Ok((terminal_id, starts_held)))?;
+        if !starts_held {
+            self.defer_spawn(SpawnJob::Terminal(PendingTerminalSpawn {
                 terminal_id,
                 terminal_action,
-            }));
-            if let Err(error) = deferred {
-                if let Some(mut agent) = self.pending_agent_spawns.remove(&terminal_id) {
-                    if let Some(completion) = agent.completion_tx.as_mut() {
-                        completion
-                            .set_error_message(format!("cannot dispatch agent startup: {error:#}"));
-                    }
-                    self.close_pane(PaneId::Terminal(terminal_id))
-                        .context("release undispatched agent reservation")
-                        .non_fatal();
-                }
-                return Err(error);
-            }
-            return Ok(());
+                generation: 0,
+            }))?;
         }
-        let result = self.spawn_terminal(terminal_action, client_or_tab_index);
-        finish_pane_spawn(self, pending, result)
+        Ok(())
     }
 
     fn apply_run_instruction(
         &mut self,
         run_instruction: Option<Run>,
         default_shell: TerminalAction,
-        deferred_spawns: &mut Vec<PendingRemoteSpawn>,
+        deferred_spawns: &mut Vec<PendingTerminalSpawn>,
     ) -> Result<Option<SpawnedPane>> {
-        let err_context = || "failed to apply run instruction".to_string();
-        let quit_cb = Box::new({
-            let senders = self.bus.senders.clone();
-            move |pane_id, exit_status, _command| {
-                let _ = senders.send_to_screen(ScreenInstruction::ClosePane(
-                    pane_id,
-                    None,
-                    None,
-                    exit_status,
-                ));
-            }
-        });
-
-        match run_instruction {
+        let (action, command) = match run_instruction {
+            Some(Run::Plugin(_)) => return Ok(None),
             Some(Run::Command(mut command)) => {
-                let starts_held = command.hold_on_start;
-                // The default shell's cwd is a path on *this* machine; a command
-                // that runs elsewhere must not inherit it.
                 if command.cwd.is_none()
                     && !command.target.is_remote()
-                    && let TerminalAction::RunCommand(cmd) = default_shell
+                    && let TerminalAction::RunCommand(default) = &default_shell
                 {
-                    command.cwd = cmd.cwd;
+                    command.cwd = default.cwd.clone();
                 }
-                let cmd = TerminalAction::RunCommand(command.clone());
-                if starts_held {
-                    // we don't actually open a terminal in this case, just wait for the user to run it
-                    match self
-                        .bus
-                        .os_input
-                        .as_mut()
-                        .context("no OS I/O interface found")
-                        .with_context(err_context)?
-                        .reserve_terminal_id()
-                    {
-                        Ok(terminal_id) => {
-                            Ok(Some((
-                                terminal_id,
-                                starts_held,
-                                Some(command.clone()),
-                                Some(Ok(Box::new(NullAsyncReader) as Box<dyn AsyncReader>)), // placeholder, never used for held panes
-                            )))
-                        },
-                        Err(e) => Err(e),
-                    }
-                } else if command.defers_spawn() {
-                    let terminal_id = self.reserve_terminal_id()?;
-                    deferred_spawns.push(PendingRemoteSpawn {
-                        terminal_id,
-                        terminal_action: cmd,
-                    });
-                    Ok(Some((terminal_id, false, Some(command), None)))
-                } else {
-                    let quit_cb = terminal_quit_callback(self.bus.senders.clone(), &cmd);
-                    let spawn_result = self
-                        .bus
-                        .os_input
-                        .as_mut()
-                        .context("no OS I/O interface found")
-                        .and_then(|os_input| {
-                            os_input.spawn_terminal(
-                                cmd.clone(),
-                                quit_cb,
-                                self.default_editor.clone(),
-                            )
-                        })
-                        .with_context(err_context);
-                    match spawn_result {
-                        Ok((terminal_id, reader, child_pid)) => {
-                            if let Some(child_pid) = child_pid {
-                                self.id_to_child_pid.insert(terminal_id, child_pid);
-                                self.capture_initial_cwd(
-                                    terminal_id,
-                                    child_pid,
-                                    command.cwd.clone(),
-                                );
-                            }
-                            Ok(Some((
-                                terminal_id,
-                                starts_held,
-                                Some(command.clone()),
-                                Some(Ok(reader)),
-                            )))
-                        },
-                        Err(err) => match pane_start_failure(&err) {
-                            Some((terminal_id, _)) => Ok(Some((
-                                terminal_id,
-                                starts_held,
-                                Some(command.clone()),
-                                Some(Err(err)),
-                            ))),
-                            None => Err(err),
-                        },
-                    }
-                }
+                (TerminalAction::RunCommand(command.clone()), Some(command))
             },
-            Some(Run::Cwd(cwd)) => {
-                let starts_held = false; // we do not hold Cwd panes
-                let shell = self.get_default_terminal(Some(cwd), Some(default_shell.clone()));
-                let requested_cwd = Self::action_cwd(&shell);
-                match self
-                    .bus
-                    .os_input
-                    .as_mut()
-                    .context("no OS I/O interface found")
-                    .with_context(err_context)?
-                    .spawn_terminal(shell, quit_cb, self.default_editor.clone())
-                    .with_context(err_context)
-                {
-                    Ok((terminal_id, reader, child_pid)) => {
-                        if let Some(child_pid) = child_pid {
-                            self.id_to_child_pid.insert(terminal_id, child_pid);
-                            self.capture_initial_cwd(terminal_id, child_pid, requested_cwd);
-                        }
-                        Ok(Some((terminal_id, starts_held, None, Some(Ok(reader)))))
-                    },
-                    Err(err) => match pane_start_failure(&err) {
-                        Some((terminal_id, _)) => {
-                            Ok(Some((terminal_id, starts_held, None, Some(Err(err)))))
-                        },
-                        None => Err(err),
-                    },
-                }
-            },
-            Some(Run::EditFile(path_to_file, line_number, cwd)) => {
-                let starts_held = false; // we do not hold edit panes (for now?)
-                match self
-                    .bus
-                    .os_input
-                    .as_mut()
-                    .context("no OS I/O interface found")
-                    .with_context(err_context)?
-                    .spawn_terminal(
-                        TerminalAction::OpenFile(OpenFilePayload::new(
-                            path_to_file,
-                            line_number,
-                            cwd.clone(),
-                        )),
-                        quit_cb,
-                        self.default_editor.clone(),
-                    )
-                    .with_context(err_context)
-                {
-                    Ok((terminal_id, reader, child_pid)) => {
-                        if let Some(child_pid) = child_pid {
-                            self.id_to_child_pid.insert(terminal_id, child_pid);
-                            self.capture_initial_cwd(terminal_id, child_pid, cwd);
-                        }
-                        Ok(Some((terminal_id, starts_held, None, Some(Ok(reader)))))
-                    },
-                    Err(err) => match pane_start_failure(&err) {
-                        Some((terminal_id, _)) => {
-                            Ok(Some((terminal_id, starts_held, None, Some(Err(err)))))
-                        },
-                        None => Err(err),
-                    },
-                }
-            },
-            None => {
-                let starts_held = false;
-                match self
-                    .bus
-                    .os_input
-                    .as_mut()
-                    .context("no OS I/O interface found")
-                    .with_context(err_context)?
-                    .spawn_terminal(default_shell.clone(), quit_cb, self.default_editor.clone())
-                    .with_context(err_context)
-                {
-                    Ok((terminal_id, reader, child_pid)) => {
-                        if let Some(child_pid) = child_pid {
-                            self.id_to_child_pid.insert(terminal_id, child_pid);
-                            self.capture_initial_cwd(
-                                terminal_id,
-                                child_pid,
-                                Self::action_cwd(&default_shell),
-                            );
-                        }
-                        Ok(Some((terminal_id, starts_held, None, Some(Ok(reader)))))
-                    },
-                    Err(err) => match pane_start_failure(&err) {
-                        Some((terminal_id, _)) => {
-                            Ok(Some((terminal_id, starts_held, None, Some(Err(err)))))
-                        },
-                        None => Err(err),
-                    },
-                }
-            },
-            // Investigate moving plugin loading to here.
-            Some(Run::Plugin(_)) => Ok(None),
+            Some(Run::Cwd(cwd)) => (
+                self.get_default_terminal(Some(cwd), Some(default_shell)),
+                None,
+            ),
+            Some(Run::EditFile(path, line, cwd)) => (
+                TerminalAction::OpenFile(OpenFilePayload::new(path, line, cwd)),
+                None,
+            ),
+            None => (default_shell, None),
+        };
+        let terminal_id = self.reserve_terminal_id()?;
+        let held = matches!(&action, TerminalAction::RunCommand(command) if command.hold_on_start);
+        if !held {
+            deferred_spawns.push(PendingTerminalSpawn {
+                terminal_id,
+                terminal_action: action,
+                generation: 0,
+            });
         }
+        Ok(Some((terminal_id, held, command, None)))
     }
     /// Record what a pane's command says about the pane itself, each time one starts in it.
     fn track_launch(&mut self, terminal_id: TerminalId, command: &RunCommand) {
@@ -1360,11 +1285,14 @@ impl Pty {
         let err_context = || format!("failed to close for pane {id:?}");
         match id {
             PaneId::Terminal(id) => {
-                self.pending_remote_spawns.remove(&id);
-                if let Some(mut agent) = self.pending_agent_spawns.remove(&id)
-                    && let Some(completion) = agent.completion_tx.as_mut()
-                {
-                    completion.set_error_message("pane closed during agent startup".into());
+                self.pending_terminal_spawns.remove(&id);
+                if let Some(placement) = self.awaiting_placement.remove(&id) {
+                    placement
+                        .cancelled
+                        .store(true, std::sync::atomic::Ordering::Release);
+                }
+                if let Some(mut completion) = self.pending_start_completions.remove(&id) {
+                    completion.set_error_message("pane closed during command startup".into());
                 }
                 // Dropping a queued rerun's completion notifies its waiter; the
                 // pane it asked about is gone.
@@ -1601,7 +1529,13 @@ impl Pty {
 impl Drop for Pty {
     // SSH brokers keep their processes available for later adoption.
     fn drop(&mut self) {
-        let child_ids: HashSet<TerminalId> = self.id_to_child_pid.keys().copied().collect();
+        let child_ids: HashSet<TerminalId> = self
+            .id_to_child_pid
+            .keys()
+            .chain(self.pending_terminal_spawns.keys())
+            .chain(self.awaiting_placement.keys())
+            .copied()
+            .collect();
         for id in child_ids {
             self.close_pane(PaneId::Terminal(id))
                 .with_context(|| format!("failed to close pane {id}"))

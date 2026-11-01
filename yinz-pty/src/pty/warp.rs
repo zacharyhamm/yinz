@@ -19,7 +19,7 @@ use yinz_types::pane_id::PaneId;
 
 impl Pty {
     fn check_held_can_be_warped(&self, id: TerminalId) -> Result<()> {
-        if self.reruns.contains_key(&id) || self.pending_remote_spawns.contains(&id) {
+        if self.reruns.contains_key(&id) || self.pending_terminal_spawns.contains_key(&id) {
             return Err(anyhow!(
                 "terminal_{id} is restarting; retry after it has started"
             ));

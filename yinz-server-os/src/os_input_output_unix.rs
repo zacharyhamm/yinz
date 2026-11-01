@@ -3,6 +3,7 @@ use crate::PaneId;
 use yinz_bus::os_input_output::{AdoptedTerminal, AsyncReader};
 use yinz_types::internal_ids::ProcessId;
 use yinz_types::internal_ids::TerminalId;
+use yinz_types::pane_size::TerminalSize;
 
 use nix::{
     fcntl::{fcntl, FcntlArg, OFlag},
@@ -46,7 +47,7 @@ use crate::pty_host::{
         ReleasedPane, ReleasedRemotePane, SpawnParams,
     },
     host::STOPPED_POLL_INTERVAL,
-    protocol::{WireTermios, WireWinsize},
+    protocol::WireTermios,
 };
 
 pub use async_trait::async_trait;
@@ -249,12 +250,20 @@ fn handle_terminal(
     child_state_cb: Option<ChildStateCb>,
     terminal_id: TerminalId,
     session_name: &yinz_types::internal_ids::SessionName,
+    initial_size: Option<TerminalSize>,
 ) -> Result<(OwnedFd, ProcessId)> {
-    let open_pty_res = crate::pty_host::terminal::open(None, orig_termios.as_ref())
-        .with_context(|| format!("failed to open PTY for command '{}'", cmd.command.display()))
-        .context("failed to start pty")
-        .context("failed to spawn child terminal")
-        .to_log()?;
+    let initial_size = initial_size.map(|size| Winsize {
+        ws_col: size.cols,
+        ws_row: size.rows,
+        ws_xpixel: size.width_in_pixels.unwrap_or(0),
+        ws_ypixel: size.height_in_pixels.unwrap_or(0),
+    });
+    let open_pty_res =
+        crate::pty_host::terminal::open(initial_size.as_ref(), orig_termios.as_ref())
+            .with_context(|| format!("failed to open PTY for command '{}'", cmd.command.display()))
+            .context("failed to start pty")
+            .context("failed to spawn child terminal")
+            .to_log()?;
     handle_openpty(
         open_pty_res,
         cmd,
@@ -277,6 +286,8 @@ pub(crate) enum PaneTransport {
     /// The id is allocated but nothing is spawned yet (`reserve_terminal_id`).
     /// A pane sits here between being reserved and being started, and `hold_on_start`
     /// panes sit here indefinitely.
+    /// Writes accept no bytes until a local or remote transport is registered,
+    /// so the PTY writer retains input and retries after startup.
     Reserved,
     /// A pty master this server holds directly, whether it came from an
     /// in-process `openpty` or over `SCM_RIGHTS` from a local supervisor.
@@ -317,6 +328,9 @@ pub(crate) struct UnixPtyBackend {
     session_state: SessionState,
     orig_termios: Arc<Mutex<Option<termios::Termios>>>,
     terminal_id_to_transport: Arc<Mutex<BTreeMap<TerminalId, PaneTransport>>>,
+    /// Latest content geometry, including while a transport is opening.
+    /// Always lock the transport table before this map when changing either.
+    terminal_sizes: Arc<Mutex<BTreeMap<TerminalId, TerminalSize>>>,
     next_terminal_id_counter: Arc<AtomicU32>,
     /// Whether panes are spawned under a detachable pty-host supervisor. Set once
     /// per session from config; see `ServerOsApi::set_pty_host_enabled`.
@@ -386,6 +400,7 @@ impl UnixPtyBackend {
             ),
             orig_termios: Arc::new(Mutex::new(current_termios)),
             terminal_id_to_transport: Arc::new(Mutex::new(BTreeMap::new())),
+            terminal_sizes: Arc::new(Mutex::new(BTreeMap::new())),
             next_terminal_id_counter: Arc::new(AtomicU32::new(0)),
             pty_host_enabled: Arc::new(AtomicBool::new(false)),
             host_bin,
@@ -535,6 +550,7 @@ impl UnixPtyBackend {
         host_bin: &std::path::Path,
         cmd: &RunCommand,
         terminal_id: TerminalId,
+        initial_size: Option<TerminalSize>,
     ) -> Result<pty_host_client::PendingHost> {
         // Kept here rather than left to the supervisor so that a mistyped command
         // still produces a synchronous `YinzError::CommandNotFound` — which is
@@ -556,10 +572,7 @@ impl UnixPtyBackend {
             session_name: Some(session_name),
             cmd: cmd.clone(),
             termios: self.wire_termios.clone(),
-            // Left unset on purpose: today's `openpty(None, ..)` means a pane
-            // starts at 0x0 until the first TIOCSWINSZ, and matching that keeps
-            // this change pure plumbing.
-            initial_size: None,
+            initial_size: initial_size.map(Into::into),
             // A local pane execs its command under its own name, as it always
             // has. Only the remote broker asks for a login shell's argv[0].
             arg0: None,
@@ -599,16 +612,24 @@ impl UnixPtyBackend {
         cmd: RunCommand,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         terminal_id: TerminalId,
+        initial_size: Option<TerminalSize>,
     ) -> Result<(Box<dyn AsyncReader>, ProcessId)> {
         let _ownership = self.ownership.lock().to_anyhow()?;
         // A re-run reuses the terminal_id, so an earlier supervisor for it would
         // otherwise be orphaned with nobody left holding its control channel.
         self.terminate_host(terminal_id);
+        let initial_size = self.terminal_size(terminal_id)?.or(initial_size);
+        if let Some(size) = initial_size {
+            anyhow::ensure!(
+                size.is_positive(),
+                "terminal startup requires positive rows and columns"
+            );
+        }
 
         if self.pty_host_enabled.load(Ordering::Relaxed)
             && let Some(host_bin) = self.host_bin.as_ref()
         {
-            match self.spawn_via_pty_host(host_bin, &cmd, terminal_id) {
+            match self.spawn_via_pty_host(host_bin, &cmd, terminal_id, initial_size) {
                 Ok(pending) => {
                     let spawned =
                         pending.finish(terminal_exit_callback(quit_cb), self.child_state_cb());
@@ -617,10 +638,7 @@ impl UnixPtyBackend {
                         RawFdAsyncReader::new(master_fd.clone())
                             .map_err(|e| anyhow!("failed to create async reader: {}", e))?,
                     ) as Box<dyn AsyncReader>;
-                    self.terminal_id_to_transport
-                        .lock()
-                        .to_anyhow()?
-                        .insert(terminal_id, PaneTransport::Local(master_fd));
+                    self.register_transport(terminal_id, PaneTransport::Local(master_fd))?;
                     self.terminal_id_to_host
                         .lock()
                         .to_anyhow()?
@@ -656,16 +674,14 @@ impl UnixPtyBackend {
             self.child_state_cb(),
             terminal_id,
             &self.session_name(),
+            initial_size,
         )?;
         let pid_primary = Arc::new(pid_primary);
         let async_reader = Box::new(
             RawFdAsyncReader::new(pid_primary.clone())
                 .map_err(|e| anyhow::anyhow!("failed to create async reader: {}", e))?,
         ) as Box<dyn AsyncReader>;
-        self.terminal_id_to_transport
-            .lock()
-            .to_anyhow()?
-            .insert(terminal_id, PaneTransport::Local(pid_primary));
+        self.register_transport(terminal_id, PaneTransport::Local(pid_primary))?;
         Ok((async_reader, child_pid))
     }
 
@@ -691,41 +707,66 @@ impl UnixPtyBackend {
             .lock()
             .to_anyhow()
             .with_context(err_context)?;
-        match transports.get(&terminal_id) {
-            Some(PaneTransport::Local(fd)) => {
-                if cols > 0 && rows > 0 {
-                    crate::pty_host::terminal::resize(
-                        fd.as_raw_fd(),
-                        &Winsize {
-                            ws_col: cols,
-                            ws_row: rows,
-                            ws_xpixel: width_in_pixels.unwrap_or(0),
-                            ws_ypixel: height_in_pixels.unwrap_or(0),
-                        },
-                    )
+        let transport = transports.get(&terminal_id).with_context(err_context)?;
+        let size = TerminalSize {
+            cols,
+            rows,
+            width_in_pixels,
+            height_in_pixels,
+        };
+        if size.is_positive() {
+            self.terminal_sizes
+                .lock()
+                .to_anyhow()?
+                .insert(terminal_id, size);
+            if let PaneTransport::Remote(conn) = transport {
+                let conn = conn.clone();
+                // Sending over a slow link must not hold every other pane's I/O.
+                drop(transports);
+                Self::resize_transport(&PaneTransport::Remote(conn), size)
                     .with_context(err_context)?;
-                }
-            },
-            Some(PaneTransport::Remote(conn)) => {
-                if cols > 0 && rows > 0 {
-                    let conn = conn.clone();
-                    // The map lock is dropped before the send: a slow link must
-                    // not hold every other pane's resize behind it.
-                    drop(transports);
-                    conn.resize(WireWinsize {
-                        cols,
-                        rows,
-                        width_in_pixels: width_in_pixels.unwrap_or(0),
-                        height_in_pixels: height_in_pixels.unwrap_or(0),
-                    })
-                    .with_context(err_context)?;
-                }
-            },
-            Some(PaneTransport::Reserved) | None => {
-                return Err(anyhow!("failed to find terminal fd for id {terminal_id}"))
-                    .with_context(err_context);
+            } else {
+                Self::resize_transport(transport, size).with_context(err_context)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn terminal_size(&self, terminal_id: TerminalId) -> Result<Option<TerminalSize>> {
+        Ok(self
+            .terminal_sizes
+            .lock()
+            .to_anyhow()?
+            .get(&terminal_id)
+            .copied())
+    }
+
+    fn resize_transport(transport: &PaneTransport, size: TerminalSize) -> Result<()> {
+        match transport {
+            PaneTransport::Reserved => Ok(()),
+            PaneTransport::Local(fd) => crate::pty_host::terminal::resize(
+                fd.as_raw_fd(),
+                &Winsize {
+                    ws_col: size.cols,
+                    ws_row: size.rows,
+                    ws_xpixel: size.width_in_pixels.unwrap_or(0),
+                    ws_ypixel: size.height_in_pixels.unwrap_or(0),
+                },
+            )
+            .context("resize local terminal"),
+            PaneTransport::Remote(conn) => {
+                conn.resize(size.into()).context("resize remote terminal")
             },
         }
+    }
+
+    fn register_transport(&self, terminal_id: TerminalId, transport: PaneTransport) -> Result<()> {
+        let mut transports = self.terminal_id_to_transport.lock().to_anyhow()?;
+        if let Some(size) = self.terminal_size(terminal_id)? {
+            Self::resize_transport(&transport, size)
+                .context("apply size received during terminal launch")?;
+        }
+        transports.insert(terminal_id, transport);
         Ok(())
     }
 
@@ -767,9 +808,9 @@ impl UnixPtyBackend {
         {
             Some(PaneTransport::Local(fd)) => Target::Local(fd.clone()),
             Some(PaneTransport::Remote(conn)) => Target::Remote(conn.clone()),
-            // The pane is already visible while its remote transport starts;
-            // input typed into the loading screen is intentionally discarded.
-            Some(PaneTransport::Reserved) => return Ok(buf.len()),
+            // Local and remote panes can receive input before startup finishes.
+            // Apply backpressure so the PTY writer retains it until registration.
+            Some(PaneTransport::Reserved) => return Ok(0),
             None => {
                 return Err(anyhow!("could not find raw file descriptor")).with_context(err_context)
             },
@@ -861,10 +902,7 @@ impl UnixPtyBackend {
             reader = reader.on_agent_report(cb);
         }
         let reader = Box::new(reader) as Box<dyn AsyncReader>;
-        self.terminal_id_to_transport
-            .lock()
-            .to_anyhow()?
-            .insert(terminal_id, PaneTransport::Remote(conn));
+        self.register_transport(terminal_id, PaneTransport::Remote(conn))?;
         Ok(reader)
     }
 
@@ -973,20 +1011,41 @@ impl UnixPtyBackend {
             .lock()
             .unwrap()
             .remove(&terminal_id);
+        self.terminal_sizes
+            .lock()
+            .to_anyhow()
+            .map(|mut sizes| {
+                sizes.remove(&terminal_id);
+            })
+            .context("forget terminal dimensions")
+            .non_fatal();
     }
 
     pub fn clear_terminal_id(&self, terminal_id: TerminalId) -> Result<()> {
+        self.remove_terminal(terminal_id, false)
+    }
+
+    /// Replace a held transport while preserving resizes for the next launch.
+    pub fn reset_terminal_id(&self, terminal_id: TerminalId) -> Result<()> {
+        self.remove_terminal(terminal_id, true)
+    }
+
+    fn remove_terminal(&self, terminal_id: TerminalId, rerun: bool) -> Result<()> {
         let _ownership = self.ownership.lock().to_anyhow()?;
         // The single funnel for pane teardown: `Pty::close_pane` calls this, and
         // every path that closes a pane — ClosePane, CloseTab, spawn failures,
         // `Drop for Pty` at session shutdown — goes through it. Terminating here
         // means no changes are needed in pty.rs or screen.rs.
         self.terminate_host(terminal_id);
-        let removed = self
-            .terminal_id_to_transport
-            .lock()
-            .unwrap()
-            .remove(&terminal_id);
+        let removed = {
+            let mut transports = self.terminal_id_to_transport.lock().to_anyhow()?;
+            if rerun {
+                transports.insert(terminal_id, PaneTransport::Reserved)
+            } else {
+                self.terminal_sizes.lock().to_anyhow()?.remove(&terminal_id);
+                transports.remove(&terminal_id)
+            }
+        };
         // A remote pane's supervisor is on the far machine, so `terminate_host`
         // above cannot reach it. Without this the pane would leave a live
         // process and a live broker behind on every ordinary close.
@@ -1048,10 +1107,7 @@ impl UnixPtyBackend {
                 )
             })?;
         let released = handle.release();
-        self.terminal_id_to_transport
-            .lock()
-            .to_anyhow()?
-            .remove(&terminal_id);
+        self.forget_reserved_terminal_id(terminal_id);
         Ok(ReleasedPane::Local(released))
     }
 
@@ -1142,10 +1198,7 @@ impl UnixPtyBackend {
         let released = conn
             .release_for_warp(budget.min(REMOTE_RELEASE_TIMEOUT))
             .with_context(|| format!("failed to hand remote pane {terminal_id} over"));
-        self.terminal_id_to_transport
-            .lock()
-            .to_anyhow()?
-            .remove(&terminal_id);
+        self.forget_reserved_terminal_id(terminal_id);
         released?;
         Ok(ReleasedPane::Remote(ReleasedRemotePane {
             host: conn.host().to_owned(),
@@ -1173,10 +1226,7 @@ impl UnixPtyBackend {
                 // Undo the reservation, but *not* through `clear_terminal_id` —
                 // that terminates the supervisor, and a failed adoption must leave
                 // it running for the next caller.
-                self.terminal_id_to_transport
-                    .lock()
-                    .to_anyhow()?
-                    .remove(&terminal_id);
+                self.forget_reserved_terminal_id(terminal_id);
                 Err(e)
             },
         }

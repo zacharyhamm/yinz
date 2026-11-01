@@ -205,6 +205,10 @@ impl SharedPtys {
         };
         let spawned = terminal_action.is_some();
         self.mutate(|fake_pty_registry| {
+            let previous = fake_pty_registry.fake_pty_states.remove(&terminal_id);
+            let size = previous.as_ref().and_then(|state| state.size);
+            let pixel_size = previous.as_ref().and_then(|state| state.pixel_size);
+            let size_history = previous.map(|state| state.size_history).unwrap_or_default();
             fake_pty_registry.fake_pty_states.insert(
                 terminal_id,
                 FakePtyState {
@@ -213,9 +217,9 @@ impl SharedPtys {
                     terminal_action,
                     output_tx: Some(output_tx),
                     stdin: Vec::new(),
-                    size: None,
-                    pixel_size: None,
-                    size_history: Vec::new(),
+                    size,
+                    pixel_size,
+                    size_history,
                     quit_cb,
                     exited: false,
                     echo: true,

@@ -3094,6 +3094,61 @@ impl Screen {
             .with_context(err_context)
     }
 
+    /// Placement is independent of command output. Pending tabs may buffer a new pane,
+    /// so keep its request until layout application either places it or rejects it.
+    fn confirm_terminal_placements(&self, pending: &mut HashMap<TerminalId, u64>) -> Result<()> {
+        let mut completed = Vec::new();
+        for (&terminal_id, &generation) in pending.iter() {
+            let pane_id = PaneId::Terminal(terminal_id);
+            let placed = self.tabs.iter().find_map(|(&tab_id, tab)| {
+                if tab.is_pending() {
+                    return None;
+                }
+                tab.get_pane_with_id(pane_id).map(|pane| {
+                    let cols = pane.get_content_columns().min(u16::MAX as usize) as u16;
+                    let rows = pane.get_content_rows().min(u16::MAX as usize) as u16;
+                    let cell = *self.character_cell_size.borrow();
+                    (
+                        yinz_types::pane_size::TerminalSize {
+                            cols,
+                            rows,
+                            width_in_pixels: cell.map(|cell| {
+                                cell.width
+                                    .saturating_mul(cols as usize)
+                                    .min(u16::MAX as usize) as u16
+                            }),
+                            height_in_pixels: cell.map(|cell| {
+                                cell.height
+                                    .saturating_mul(rows as usize)
+                                    .min(u16::MAX as usize) as u16
+                            }),
+                        },
+                        tab_id,
+                    )
+                })
+            });
+            if placed.is_none()
+                && self.has_pending_tabs()
+                && !self.destroyed_panes.contains(&pane_id)
+            {
+                continue;
+            }
+            self.bus
+                .senders
+                .send_to_pty_writer(yinz_bus::pty_writer::PtyWriteInstruction::TerminalPlaced {
+                    terminal_id,
+                    generation,
+                    placement: placed,
+                })
+                .context("confirm terminal content dimensions")?;
+            completed.push(terminal_id);
+        }
+        for id in completed {
+            pending.remove(&id);
+        }
+        Ok(())
+    }
+
     pub fn rerun_command_pane_with_id(
         &mut self,
         terminal_pane_id: TerminalId,

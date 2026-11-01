@@ -107,3 +107,34 @@ fn test_notification_end_clone_does_not_copy_channel() {
     // But channel should be None (as per the Clone implementation comment)
     assert!(cloned.channel.is_none());
 }
+
+#[test]
+fn startup_completion_waits_for_both_owners_and_keeps_screen_placement_metadata() {
+    use yinz_types::internal_ids::{TabId, TerminalId};
+    for placement_first in [false, true] {
+        let (tx, mut rx) = oneshot::channel();
+        let mut original = NotificationEnd::new(tx);
+        original.wait_for_agent_start = true;
+        let (mut placement, startup) = original.split_for_startup();
+        placement.created_tab_id = Some(TabId::new(8));
+        placement.set_affected_pane_id(PaneId::Terminal(TerminalId::new(42)));
+        placement.complete_pane_placement(TabId::new(8));
+        if placement_first {
+            drop(placement);
+            assert!(rx.try_recv().is_err());
+            drop(startup);
+        } else {
+            drop(startup);
+            assert!(rx.try_recv().is_err());
+            drop(placement);
+        }
+        let result = rx.blocking_recv().unwrap();
+        assert_eq!(result.affected_tab_id, Some(TabId::new(8)));
+        assert_eq!(result.created_tab_id, Some(TabId::new(8)));
+        assert_eq!(
+            result.affected_pane_id,
+            Some(PaneId::Terminal(TerminalId::new(42)))
+        );
+        assert!(result.error_message.is_none());
+    }
+}

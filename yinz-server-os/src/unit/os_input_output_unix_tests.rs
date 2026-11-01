@@ -74,7 +74,7 @@ fn failed_in_process_spawns_report_errors_and_close_the_pty() {
 }
 
 #[test]
-fn a_resize_for_a_terminal_with_no_pty_is_an_error() {
+fn reserved_terminal_resizes_are_retained_and_unknown_terminal_resizes_fail() {
     // A pane that has no pty to receive a resize must not read as resized.
     let backend = UnixPtyBackend::with_termios(None).expect("a backend");
     backend
@@ -83,9 +83,17 @@ fn a_resize_for_a_terminal_with_no_pty_is_an_error() {
         .unwrap()
         .insert(TerminalId::new(7), PaneTransport::Reserved);
 
-    assert!(backend
+    backend
         .set_terminal_size(TerminalId::new(7), 80, 24, None, None)
-        .is_err());
+        .unwrap();
+    assert_eq!(
+        backend
+            .terminal_size(TerminalId::new(7))
+            .unwrap()
+            .unwrap()
+            .cols,
+        80
+    );
     assert!(backend
         .set_terminal_size(TerminalId::new(8), 80, 24, None, None)
         .is_err());
@@ -110,6 +118,7 @@ fn in_process_pane_exit_reports_status_after_reaping_the_child() {
             None,
             terminal_id,
             &"test".into(),
+            None,
         )
         .unwrap();
         assert_ne!(
@@ -175,6 +184,7 @@ fn a_spawn_overlapping_rename_is_registered_before_the_new_name_is_published() {
             },
             Box::new(|_, _, _| {}),
             TerminalId::new(0),
+            None,
         )
     });
     let (mut gate, _) = gate.accept().unwrap();
@@ -281,6 +291,7 @@ fn both_local_pane_paths_use_current_session_without_mutating_parent_environment
                     cmd,
                     Box::new(move |_, status, _| exited.send(status).unwrap()),
                     id,
+                    None,
                 )
                 .unwrap();
             assert_eq!(
@@ -354,6 +365,7 @@ async fn original_termios_reaches_both_local_pane_paths() {
                 },
                 Box::new(|_, _, _| {}),
                 id,
+                None,
             )
             .unwrap();
         assert_eq!(
@@ -591,4 +603,125 @@ fn releasing_a_remote_pane_does_not_deadlock_on_the_transport_table() {
             .contains_key(&TerminalId::new(7)),
         "a released pane leaves the transport table whether or not the broker confirmed"
     );
+}
+
+/// Re-executed as the pane command. Its first action is one TIOCGWINSZ;
+/// there is deliberately no retry, input wait, or startup delay.
+#[test]
+fn initial_size_child_entry() {
+    if std::env::var_os("YINZ_TEST_INITIAL_SIZE_CHILD").is_none() {
+        return;
+    }
+    let mut size: Winsize = unsafe { std::mem::zeroed() };
+    assert_eq!(unsafe { libc::ioctl(0, libc::TIOCGWINSZ, &mut size) }, 0);
+    println!(
+        "INITIAL_SIZE={},{},{},{}",
+        size.ws_col, size.ws_row, size.ws_xpixel, size.ws_ypixel
+    );
+}
+
+#[tokio::test]
+async fn commands_first_winsize_includes_cells_and_pixels_on_both_local_backends() {
+    let dir = tempfile::tempdir().unwrap();
+    let supervisor = dir.path().join("supervisor");
+    let exe = std::env::current_exe().unwrap();
+    yinz_test_support::write_warm_script(&supervisor, &format!(
+        "YINZ_TEST_TERMIOS_SUPERVISOR=1 exec '{}' --exact os_input_output_unix::tests::termios_supervisor_entry --nocapture\n",
+        exe.display().to_string().replace('\'', "'\"'\"'")
+    ));
+    for detachable in [false, true] {
+        for pixels in [false, true] {
+            let mut backend = UnixPtyBackend::with_termios(None).unwrap();
+            backend.host_bin = Some(supervisor.clone());
+            backend.pty_host_enabled.store(detachable, Ordering::SeqCst);
+            let id = TerminalId::new(0);
+            let requested = TerminalSize {
+                cols: 79,
+                rows: 23,
+                width_in_pixels: pixels.then_some(790),
+                height_in_pixels: pixels.then_some(460),
+            };
+            backend.reserve_terminal_id(id);
+            let (mut reader, _) = backend
+                .spawn_terminal(
+                    RunCommand {
+                        command: "/usr/bin/env".into(),
+                        args: vec![
+                            "YINZ_TEST_INITIAL_SIZE_CHILD=1".into(),
+                            exe.to_string_lossy().into_owned(),
+                            "--exact".into(),
+                            "os_input_output_unix::tests::initial_size_child_entry".into(),
+                            "--nocapture".into(),
+                        ],
+                        ..Default::default()
+                    },
+                    Box::new(|_, _, _| {}),
+                    id,
+                    Some(requested),
+                )
+                .unwrap();
+            assert_eq!(
+                backend
+                    .terminal_id_to_host
+                    .lock()
+                    .unwrap()
+                    .contains_key(&id),
+                detachable
+            );
+            let expected = format!(
+                "INITIAL_SIZE=79,23,{},{}",
+                if pixels { 790 } else { 0 },
+                if pixels { 460 } else { 0 }
+            );
+            let mut output = Vec::new();
+            tokio::time::timeout(Duration::from_secs(30), async {
+                let mut bytes = [0; 4096];
+                while !String::from_utf8_lossy(&output).contains(&expected) {
+                    let count = reader.read(&mut bytes).await.unwrap();
+                    assert!(
+                        count > 0,
+                        "detachable={detachable}: {}",
+                        String::from_utf8_lossy(&output)
+                    );
+                    output.extend_from_slice(&bytes[..count]);
+                }
+            })
+            .await
+            .unwrap();
+            backend.clear_terminal_id(id).unwrap();
+        }
+    }
+}
+
+#[test]
+fn transport_registration_applies_the_latest_resize_and_close_forgets_it() {
+    let backend = UnixPtyBackend::with_termios(None).unwrap();
+    let id = TerminalId::new(7);
+    backend.reserve_terminal_id(id);
+    backend.set_terminal_size(id, 40, 10, None, None).unwrap();
+    backend
+        .set_terminal_size(id, 85, 29, Some(850), Some(580))
+        .unwrap();
+    let pty = openpty(None, None).unwrap();
+    backend
+        .register_transport(id, PaneTransport::Local(Arc::new(pty.master)))
+        .unwrap();
+    let mut actual: Winsize = unsafe { std::mem::zeroed() };
+    assert_eq!(
+        unsafe { libc::ioctl(pty.slave.as_raw_fd(), libc::TIOCGWINSZ, &mut actual) },
+        0
+    );
+    assert_eq!(
+        (
+            actual.ws_col,
+            actual.ws_row,
+            actual.ws_xpixel,
+            actual.ws_ypixel
+        ),
+        (85, 29, 850, 580)
+    );
+    backend.reset_terminal_id(id).unwrap();
+    assert_eq!(backend.terminal_size(id).unwrap().unwrap().cols, 85);
+    backend.clear_terminal_id(id).unwrap();
+    assert!(backend.terminal_size(id).unwrap().is_none());
 }

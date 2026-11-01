@@ -381,6 +381,12 @@ fn a_missing_remote_command_arrives_as_command_not_found() {
 #[test]
 fn a_confirmed_spawn_completes_the_handshake() {
     let (ours, theirs) = UnixStream::pair().expect("socketpair failed");
+    let requested = WireWinsize::from(yinz_types::pane_size::TerminalSize {
+        cols: 79,
+        rows: 23,
+        width_in_pixels: Some(790),
+        height_in_pixels: Some(460),
+    });
     let peer = std::thread::spawn(move || {
         let mut theirs = theirs;
         let _ = protocol::read_frame(&mut theirs);
@@ -392,7 +398,15 @@ fn a_confirmed_spawn_completes_the_handshake() {
             },
         )
         .expect("write failed");
-        let _ = protocol::read_frame(&mut theirs);
+        let Frame::Control(payload) = protocol::read_frame(&mut theirs).unwrap().unwrap() else {
+            panic!("expected control frame");
+        };
+        let ServerToBrokerMsg::Spawn { initial_size, .. } =
+            serde_json::from_slice(&payload).unwrap()
+        else {
+            panic!("expected spawn");
+        };
+        assert_eq!(initial_size, Some(requested));
         protocol::write_control(
             &mut theirs,
             &BrokerToServerMsg::Spawned {
@@ -407,8 +421,15 @@ fn a_confirmed_spawn_completes_the_handshake() {
         command: std::path::PathBuf::from("/bin/sh"),
         ..Default::default()
     };
-    handshake_and_spawn(&ours, "build-box", &cmd, None, TerminalId::new(0), &[])
-        .expect("handshake should succeed");
+    handshake_and_spawn(
+        &ours,
+        "build-box",
+        &cmd,
+        Some(requested),
+        TerminalId::new(0),
+        &[],
+    )
+    .expect("handshake should succeed");
     let _ = peer.join();
 }
 

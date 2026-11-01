@@ -126,7 +126,8 @@ impl ThreadSenders {
             match instruction {
                 // Layout handoffs need failure cleanup; save requests must not acknowledge
                 // success when the screen never received them.
-                ScreenInstruction::ApplyLayout(..)
+                ScreenInstruction::ConfirmTerminalPlacement(..)
+                | ScreenInstruction::ApplyLayout(..)
                 | ScreenInstruction::OverrideLayoutComplete(..)
                 | ScreenInstruction::SaveSession(..) => sender.send_required(instruction),
                 _ => sender.send(instruction),

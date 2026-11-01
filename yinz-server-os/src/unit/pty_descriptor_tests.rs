@@ -3,6 +3,34 @@ use std::io::Read;
 use std::os::unix::net::UnixStream;
 
 #[test]
+fn reserved_transport_backpressures_input_until_registration_and_fails_after_close() {
+    let backend = UnixPtyBackend::with_termios(None).unwrap();
+    let terminal = TerminalId::new(0);
+    let input = b"startup input";
+    backend.reserve_terminal_id(terminal);
+    assert_eq!(backend.write_to_tty_stdin(terminal, input).unwrap(), 0);
+
+    let (socket, mut peer) = UnixStream::pair().unwrap();
+    peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    backend
+        .register_transport(
+            terminal,
+            PaneTransport::Local(Arc::new(OwnedFd::from(socket))),
+        )
+        .unwrap();
+    assert_eq!(
+        backend.write_to_tty_stdin(terminal, input).unwrap(),
+        input.len()
+    );
+    let mut received = vec![0; input.len()];
+    peer.read_exact(&mut received).unwrap();
+    assert_eq!(received, input);
+
+    backend.clear_terminal_id(terminal).unwrap();
+    assert!(backend.write_to_tty_stdin(terminal, input).is_err());
+}
+
+#[test]
 fn local_transport_and_inflight_writes_survive_reader_teardown() {
     let (socket, mut peer) = UnixStream::pair().unwrap();
     peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();

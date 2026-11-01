@@ -20,6 +20,14 @@ pub enum PtyWriteInstruction {
     Write(Vec<u8>, TerminalId, Option<NotificationEnd>),
     RetainAgentTheme(TerminalId, yinz_types::agent::theme::AgentThemeEvent),
     ResizePty(TerminalId, u16, u16, Option<u16>, Option<u16>),
+    TerminalPlaced {
+        terminal_id: TerminalId,
+        generation: u64,
+        placement: Option<(
+            yinz_types::pane_size::TerminalSize,
+            yinz_types::internal_ids::TabId,
+        )>,
+    },
     StartCachingResizes,
     ApplyCachedResizes,
     Exit,
@@ -72,6 +80,7 @@ impl Drop for PendingWrite {
 pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
     let err_context = || "failed to write to pty".to_string();
     let mut pending: HashMap<TerminalId, VecDeque<PendingWrite>> = HashMap::new();
+    let mut placements = Vec::new();
 
     loop {
         // If we have pending writes, use a short timeout so we can keep
@@ -153,6 +162,17 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                         .context("retain learned agent palette")
                         .non_fatal();
                 },
+                PtyWriteInstruction::TerminalPlaced {
+                    terminal_id,
+                    generation,
+                    placement,
+                } => {
+                    placements.push(crate::pty::PtyInstruction::TerminalPlaced {
+                        terminal_id,
+                        generation,
+                        placement,
+                    });
+                },
                 PtyWriteInstruction::StartCachingResizes => {
                     // we do this because there are some logic traps inside the screen/tab/layout code
                     // the cause multiple resizes to be sent to the pty - while the last one is always
@@ -166,6 +186,11 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                 },
                 PtyWriteInstruction::ApplyCachedResizes => {
                     os_input.apply_cached_resizes();
+                    for placement in placements.drain(..) {
+                        bus.senders
+                            .send_to_pty(placement)
+                            .context("acknowledge terminal placement after resizing")?;
+                    }
                 },
                 PtyWriteInstruction::Exit => {
                     return Ok(());

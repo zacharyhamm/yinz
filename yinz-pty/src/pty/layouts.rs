@@ -11,7 +11,7 @@ use crate::{ClientId, ServerInstruction};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use yinz_bus::pty::{
-    terminal_exit_instruction, AdoptedTabTerminal, AdoptedTabTerminals, PendingRemoteSpawn,
+    terminal_exit_instruction, AdoptedTabTerminal, AdoptedTabTerminals, PendingTerminalSpawn,
 };
 use yinz_runtime::errors::prelude::*;
 use yinz_types::data::{CommandOrPlugin, OriginatingPlugin};
@@ -71,7 +71,7 @@ struct SpawnedLayoutPanes {
     tiled: Vec<SpawnedPane>,
     floating: Vec<SpawnedPane>,
     /// Remote panes whose spawn goes to a worker once Screen knows their ids.
-    deferred: Vec<PendingRemoteSpawn>,
+    deferred: Vec<PendingTerminalSpawn>,
     /// Command panes a plugin asked for, told once their readers are running.
     originating_plugins: Vec<(TerminalId, OriginatingPlugin)>,
 }
@@ -106,7 +106,7 @@ fn held_ids(panes: &[SpawnedPane]) -> PlacedPanes {
 }
 
 impl Pty {
-    fn discard_deferred_spawns(&mut self, pending: &[PendingRemoteSpawn]) {
+    fn discard_deferred_spawns(&mut self, pending: &[PendingTerminalSpawn]) {
         for spawn in pending {
             self.close_pane(PaneId::Terminal(spawn.terminal_id))
                 .with_context(|| {
@@ -157,7 +157,7 @@ impl Pty {
     fn close_unplaced_layout_panes(
         &mut self,
         spawned: impl IntoIterator<Item = TerminalId>,
-        deferred: &[PendingRemoteSpawn],
+        deferred: &[PendingTerminalSpawn],
     ) {
         let deferred_ids: HashSet<TerminalId> =
             deferred.iter().map(|spawn| spawn.terminal_id).collect();
@@ -516,7 +516,10 @@ impl Pty {
     /// reader yet, and one that could not start is shown its failure or closed.
     /// Then the plugins that asked for command panes are told. Returns the
     /// deferred spawns for the caller to hand to workers at its own moment.
-    fn start_layout_panes(&mut self, panes: SpawnedLayoutPanes) -> Result<Vec<PendingRemoteSpawn>> {
+    fn start_layout_panes(
+        &mut self,
+        panes: SpawnedLayoutPanes,
+    ) -> Result<Vec<PendingTerminalSpawn>> {
         let err_context = || "failed to spawn terminals for layout for".to_string();
         let SpawnedLayoutPanes {
             tiled,
@@ -581,7 +584,16 @@ impl Pty {
             }
         }
         for (terminal_id, originating_plugin) in originating_plugins {
-            let _ = self.inform_originating_plugin_of_open(terminal_id, originating_plugin);
+            let announces_after_start = deferred.iter().any(|pending| {
+                pending.terminal_id == terminal_id
+                    && match &pending.terminal_action {
+                        TerminalAction::RunCommand(command) => !command.defers_spawn(),
+                        TerminalAction::OpenFile(_) => true,
+                    }
+            });
+            if !announces_after_start {
+                self.inform_originating_plugin_of_open(terminal_id, originating_plugin)?;
+            }
         }
         Ok(deferred)
     }
@@ -668,7 +680,7 @@ impl Pty {
         client_id: ClientId,
         swap_tiled_layouts: Option<Vec<SwapTiledLayout>>,
         swap_floating_layouts: Option<Vec<SwapFloatingLayout>>,
-    ) -> Result<(TabOverrideResult, Vec<PendingRemoteSpawn>)> {
+    ) -> Result<(TabOverrideResult, Vec<PendingTerminalSpawn>)> {
         let mut default_shell =
             default_shell.unwrap_or_else(|| self.get_default_terminal(cwd, None));
         self.fill_cwd(&mut default_shell, client_id);

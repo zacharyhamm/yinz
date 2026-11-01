@@ -27,6 +27,13 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
         let (event, mut err_ctx) = pty.bus.recv().expect("failed to receive event on channel");
         yinz_runtime::errors::add_call(&mut err_ctx, ContextType::Pty((&event).into()));
         match event {
+            PtyInstruction::TerminalPlaced {
+                terminal_id,
+                generation,
+                placement,
+            } => {
+                pty.terminal_placed(terminal_id, generation, placement)?;
+            },
             PtyInstruction::SpawnTerminal(
                 terminal_action,
                 name,
@@ -75,7 +82,7 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
             },
             PtyInstruction::SpawnResolved(resolved) => match resolved {
                 PendingSpawn::Terminal(pending, spawned) => {
-                    pty.handle_remote_spawned(pending, spawned)?;
+                    pty.handle_terminal_spawned(pending, spawned)?;
                 },
                 PendingSpawn::Rerun(pending, spawned) => {
                     pty.handle_rerun_spawned(*pending, spawned)?;
@@ -129,27 +136,33 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
             ) => {
                 let err_context = || "failed to open in-place editor for client".to_string();
 
-                match pty.spawn_terminal(
+                let terminal_action = pty.prepare_terminal_action(
                     Some(TerminalAction::OpenFile(OpenFilePayload::new(
                         temp_file,
                         line_number,
                         None,
                     ))),
                     client_tab_index_or_pane_id,
-                ) {
-                    Ok((pid, _starts_held)) => {
-                        pty.bus
-                            .senders
-                            .send_to_screen(ScreenInstruction::OpenInPlaceEditor(
-                                PaneId::Terminal(pid),
-                                client_tab_index_or_pane_id,
-                            ))
-                            .with_context(err_context)?;
-                    },
-                    Err(e) => {
-                        Err::<(), _>(e).with_context(err_context).non_fatal();
-                    },
+                );
+                let terminal_id = pty.reserve_terminal_id()?;
+                if let Some(completion) = _completion_tx {
+                    pty.pending_start_completions
+                        .insert(terminal_id, completion);
                 }
+                pty.bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::OpenInPlaceEditor(
+                        PaneId::Terminal(terminal_id),
+                        client_tab_index_or_pane_id,
+                    ))
+                    .with_context(err_context)?;
+                pty.defer_spawn(super::SpawnJob::Terminal(
+                    yinz_bus::pty::PendingTerminalSpawn {
+                        terminal_id,
+                        terminal_action,
+                        generation: 0,
+                    },
+                ))?;
             },
             PtyInstruction::UpdateActivePane(pane_id, client_id) => {
                 pty.set_active_pane(pane_id, client_id);
@@ -440,7 +453,9 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 };
                 // Behind any rerun the pane already has in flight, like every
                 // other rerun; a shell is local, so otherwise it runs here.
-                let Some((run_command, _)) = pty.request_rerun(pane_id, run_command, None)? else {
+                let Some((run_command, _)) =
+                    pty.request_rerun(pane_id, run_command, _completion_tx)?
+                else {
                     continue;
                 };
                 match pty

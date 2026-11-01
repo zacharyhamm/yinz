@@ -201,7 +201,8 @@ impl TerminalProcesses for MockServerOsApi {
     ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
         unimplemented!()
     }
-    fn clear_terminal_id(&self, _terminal_id: TerminalId) -> Result<()> {
+    fn clear_terminal_id(&self, terminal_id: TerminalId) -> Result<()> {
+        self.set_behavior(terminal_id, WriteBehavior::Error);
         Ok(())
     }
 }
@@ -371,6 +372,82 @@ fn writes_to_same_terminal_preserve_order() {
         written, b"AAAABBBBCCCC",
         "writes must be delivered in order"
     );
+}
+
+#[tokio::test]
+async fn startup_backpressure_retains_ordered_input_and_completions_until_delivery_or_close() {
+    for close_before_startup in [false, true] {
+        let terminal = TerminalId::new(1);
+        let ready_terminal = TerminalId::new(2);
+        let mock = MockServerOsApi::new();
+        mock.set_behavior(terminal, WriteBehavior::AcceptNone);
+        let (bus, sender) = make_test_bus(mock.clone());
+        let (first_tx, mut first_rx) = tokio::sync::oneshot::channel();
+        let (last_tx, mut last_rx) = tokio::sync::oneshot::channel();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        for instruction in [
+            PtyWriteInstruction::Write(
+                b"first".to_vec(),
+                terminal,
+                Some(NotificationEnd::new(first_tx)),
+            ),
+            PtyWriteInstruction::Write(b"middle".to_vec(), terminal, None),
+            PtyWriteInstruction::Write(
+                b"last".to_vec(),
+                terminal,
+                Some(NotificationEnd::new(last_tx)),
+            ),
+            PtyWriteInstruction::Write(
+                b"ready".to_vec(),
+                ready_terminal,
+                Some(NotificationEnd::new(ready_tx)),
+            ),
+        ] {
+            sender.send(instruction).unwrap();
+        }
+        let worker = std::thread::spawn(move || pty_writer_main(bus).unwrap());
+        // This completion proves all preceding writes were queued while startup
+        // was blocked, and that another terminal can still accept input.
+        let ready = tokio::time::timeout(yinz_test_support::default_timeout(), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(ready.error_message.is_none());
+        assert_eq!(mock.get_written_bytes(ready_terminal), b"ready");
+        assert!(mock.get_written_bytes(terminal).is_empty());
+        for receiver in [&mut first_rx, &mut last_rx] {
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ));
+        }
+
+        if close_before_startup {
+            mock.clear_terminal_id(terminal).unwrap();
+        } else {
+            mock.set_behavior(terminal, WriteBehavior::AcceptAtMost(2));
+        }
+        // No new instruction wakes the writer: its retry must deliver the
+        // retained input or report the closed terminal to both callers.
+        for receiver in [first_rx, last_rx] {
+            let result = tokio::time::timeout(yinz_test_support::default_timeout(), receiver)
+                .await
+                .unwrap()
+                .unwrap();
+            if close_before_startup {
+                assert!(result.error_message.unwrap().contains("PTY write failed"));
+            } else {
+                assert!(result.error_message.is_none());
+            }
+        }
+        if close_before_startup {
+            assert!(mock.get_written_bytes(terminal).is_empty());
+        } else {
+            assert_eq!(mock.get_written_bytes(terminal), b"firstmiddlelast");
+        }
+        sender.send(PtyWriteInstruction::Exit).unwrap();
+        worker.join().unwrap();
+    }
 }
 
 #[test]
@@ -554,4 +631,75 @@ fn pty_writer_applies_direct_and_cached_resizes() {
         *applied.lock().unwrap(),
         vec![(terminal, 80, 24), (terminal, 100, 30)]
     );
+}
+
+#[test]
+fn placement_is_acknowledged_only_after_the_resize_batch_is_applied() {
+    let mock = MockServerOsApi::new();
+    let applied = mock.applied_resizes.clone();
+    let terminal_id = TerminalId::new(1);
+    mock.set_behavior(terminal_id, WriteBehavior::AcceptAll);
+    let (mut bus, sender) = make_test_bus(mock);
+    let (pty_tx, pty_rx) = channels::unbounded();
+    bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    sender
+        .send(PtyWriteInstruction::StartCachingResizes)
+        .unwrap();
+    sender
+        .send(PtyWriteInstruction::ResizePty(
+            terminal_id,
+            10,
+            10,
+            None,
+            None,
+        ))
+        .unwrap();
+    sender
+        .send(PtyWriteInstruction::TerminalPlaced {
+            terminal_id,
+            generation: 42,
+            placement: Some((
+                yinz_types::pane_size::TerminalSize {
+                    cols: 80,
+                    rows: 24,
+                    width_in_pixels: Some(800),
+                    height_in_pixels: Some(480),
+                },
+                yinz_types::internal_ids::TabId::new(0),
+            )),
+        })
+        .unwrap();
+    // This resize is in the same Screen transaction, so it must precede the reply too.
+    sender
+        .send(PtyWriteInstruction::ResizePty(
+            terminal_id,
+            80,
+            24,
+            Some(800),
+            Some(480),
+        ))
+        .unwrap();
+    let (barrier_tx, barrier_rx) = tokio::sync::oneshot::channel();
+    sender
+        .send(PtyWriteInstruction::Write(
+            b"barrier".to_vec(),
+            terminal_id,
+            Some(NotificationEnd::new(barrier_tx)),
+        ))
+        .unwrap();
+    let worker = std::thread::spawn(move || pty_writer_main(bus).unwrap());
+    assert!(barrier_rx.blocking_recv().unwrap().error_message.is_none());
+    assert!(pty_rx.try_recv().is_err());
+    assert!(applied.lock().unwrap().is_empty());
+    sender
+        .send(PtyWriteInstruction::ApplyCachedResizes)
+        .unwrap();
+    let (ack, _) = pty_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert!(matches!(
+        ack,
+        crate::pty::PtyInstruction::TerminalPlaced { generation: 42, .. }
+    ));
+    assert_eq!(*applied.lock().unwrap(), [(terminal_id, 80, 24)]);
+    sender.send(PtyWriteInstruction::Exit).unwrap();
+    worker.join().unwrap();
 }

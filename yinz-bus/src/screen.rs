@@ -284,6 +284,8 @@ pub enum ScreenInstruction {
         ClientId,
         Option<NotificationEnd>, // completion signal
     ),
+    /// Ask Screen for the content geometry of a reserved launch.
+    ConfirmTerminalPlacement(TerminalId, u64),
     /// Apply layout to tab with given stable ID.
     ///
     /// The tab ID parameter (TabId) is a stable identifier (not position) from the
