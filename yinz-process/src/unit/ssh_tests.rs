@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn response_stdout_is_complete_while_stderr_keeps_only_its_tail() {
+    let dir = tempfile::tempdir().unwrap();
+    let response = dir.path().join("response");
+    let stdout: Vec<u8> = (0..2 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&response, &stdout).unwrap();
+    let mut command = Command::new("/bin/sh");
+    command
+        .args([
+            "-c",
+            "cat \"$1\"; head -c 1048576 /dev/zero >&2; printf 'diagnostic\\n' >&2; exit 7",
+            "response-output",
+        ])
+        .arg(response);
+
+    let output = response_output(&mut command, yinz_test_support::default_timeout(), None).unwrap();
+
+    assert_eq!(output.status.code(), Some(7));
+    assert_eq!(output.stdout, stdout);
+    let mut stderr = vec![0; SSH_OUTPUT_CAPACITY - b"diagnostic\n".len()];
+    stderr.extend_from_slice(b"diagnostic\n");
+    assert_eq!(output.stderr, stderr);
+}
+
+#[test]
 fn forwarding_uses_configured_child_environment_without_mutating_parent() {
     let dir = tempfile::Builder::new()
         .prefix("yssh-")
@@ -42,13 +66,15 @@ fn forwarding_uses_configured_child_environment_without_mutating_parent() {
 #[test]
 fn pending_cancellation_prevents_ssh_spawning() {
     let cancelled = AtomicBool::new(true);
-    let error = bootstrap_output(
-        &mut Command::new("/no/bootstrap/executable"),
-        Duration::from_secs(30),
-        Some(&cancelled),
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("Interrupted"));
+    for read in [bootstrap_output, response_output] {
+        let error = read(
+            &mut Command::new("/no/bootstrap/executable"),
+            Duration::from_secs(30),
+            Some(&cancelled),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Interrupted"));
+    }
     let error = HostForward::start(
         "example",
         &SshOptions::default(),

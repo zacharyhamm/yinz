@@ -30,8 +30,20 @@ pub struct SshOutputCapture {
     reader: Option<std::thread::JoinHandle<Vec<u8>>>,
 }
 
+enum CapturePolicy {
+    Tail,
+    Complete,
+}
+
 impl SshOutputCapture {
-    pub fn new(mut pipe: impl Read + AsFd + Send + 'static) -> Result<Self> {
+    pub fn new(pipe: impl Read + AsFd + Send + 'static) -> Result<Self> {
+        Self::with_policy(pipe, CapturePolicy::Tail)
+    }
+
+    fn with_policy(
+        mut pipe: impl Read + AsFd + Send + 'static,
+        policy: CapturePolicy,
+    ) -> Result<Self> {
         use nix::fcntl::{fcntl, FcntlArg, OFlag};
         let flags =
             fcntl(pipe.as_fd(), FcntlArg::F_GETFL).context("failed to read SSH output flags")?;
@@ -54,7 +66,9 @@ impl SshOutputCapture {
                         Ok(0) => break,
                         Ok(read) => {
                             output.extend(&chunk[..read]);
-                            output.drain(..output.len().saturating_sub(SSH_OUTPUT_CAPACITY));
+                            if matches!(policy, CapturePolicy::Tail) {
+                                output.drain(..output.len().saturating_sub(SSH_OUTPUT_CAPACITY));
+                            }
                             // Drain up to 1 MiB queued after exit; descendants still
                             // writing output cannot keep teardown alive forever.
                             if stopping {
@@ -166,6 +180,24 @@ pub fn bootstrap_output(
     timeout: Duration,
     cancelled: Option<&AtomicBool>,
 ) -> Result<Output> {
+    command_output(command, timeout, cancelled, CapturePolicy::Tail)
+}
+
+/// Read a structured response in full, retaining only the final 64 KiB of stderr.
+pub fn response_output(
+    command: &mut Command,
+    timeout: Duration,
+    cancelled: Option<&AtomicBool>,
+) -> Result<Output> {
+    command_output(command, timeout, cancelled, CapturePolicy::Complete)
+}
+
+fn command_output(
+    command: &mut Command,
+    timeout: Duration,
+    cancelled: Option<&AtomicBool>,
+    stdout_policy: CapturePolicy,
+) -> Result<Output> {
     check_cancelled(cancelled)?;
     let mut child = command
         .stdin(Stdio::null())
@@ -174,11 +206,12 @@ pub fn bootstrap_output(
         .spawn()
         .context("failed to spawn the bootstrap ssh")?;
     let result = (|| {
-        let mut stdout = SshOutputCapture::new(
+        let mut stdout = SshOutputCapture::with_policy(
             child
                 .stdout
                 .take()
                 .context("bootstrap stdout was unavailable")?,
+            stdout_policy,
         )?;
         let mut stderr = SshOutputCapture::new(
             child

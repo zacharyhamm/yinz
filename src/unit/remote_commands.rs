@@ -192,6 +192,57 @@ fn only_config_consuming_actions_read_the_remote_configuration() {
 }
 
 #[test]
+fn large_remote_configuration_preserves_custom_plugin_aliases() {
+    let config = Config::from_kdl(
+        &format!(
+            "plugins {{ custom-remote location=\"yinz:tab-bar\" {{ greeting \"{}\"; }}; }}",
+            "x".repeat(128 * 1024)
+        ),
+        None,
+    )
+    .unwrap();
+    let response = serde_json::to_vec(&config.to_string(false).unwrap()).unwrap();
+    assert!(response.len() > 64 * 1024);
+    let dir = tempfile::tempdir().unwrap();
+    let response_path = dir.path().join("response.json");
+    std::fs::write(&response_path, response).unwrap();
+    yinz_test_support::write_warm_script(
+        &dir.path().join("ssh"),
+        "exec /bin/cat \"$YINZ_TEST_CONFIG_RESPONSE\"",
+    );
+    let env = yinz_types::envs::EnvironmentVariables::from_data(
+        [
+            ("PATH".into(), dir.path().to_str().unwrap().into()),
+            (
+                "YINZ_TEST_CONFIG_RESPONSE".into(),
+                response_path.to_str().unwrap().into(),
+            ),
+        ]
+        .into(),
+    );
+    let request = Request {
+        version: VERSION.into(),
+        contract: CLIENT_SERVER_CONTRACT_VERSION,
+        bootstrap: REMOTE_BOOTSTRAP_VERSION,
+        command: None,
+        session: None,
+    };
+
+    let parsed = read_remote_config(
+        "host",
+        &request,
+        &env,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+
+    assert_eq!(
+        parsed.plugins.aliases.get("custom-remote").unwrap(),
+        config.plugins.aliases.get("custom-remote").unwrap()
+    );
+}
+
+#[test]
 fn only_a_rejected_helper_command_reports_a_version_mismatch() {
     let rejected = b"error: unrecognized subcommand 'remote-command'\n";
     assert!(version_rejection("host", 2, rejected)

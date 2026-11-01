@@ -369,7 +369,7 @@ fn read_remote_config(
     env: &yinz_types::envs::EnvironmentVariables,
     cancelled: &std::sync::atomic::AtomicBool,
 ) -> Result<Config> {
-    let output = ssh::bootstrap_output(
+    let output = ssh::response_output(
         &mut ssh_command(host, request, env).context("build remote configuration request")?,
         Duration::from_secs(25),
         Some(cancelled),
