@@ -1324,7 +1324,7 @@ pub fn screen_thread_main(
                 } => {
                     if let Some(pane) = pane {
                         screen.close_pane_from_instruction(
-                            PaneId::Terminal(pane),
+                            pane,
                             Some(client),
                             None,
                             None,

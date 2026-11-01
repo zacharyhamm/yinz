@@ -7158,7 +7158,6 @@ fn picker_ownership_busy_clients_and_startup_cancellation() {
             roots: Some(vec!["/tmp".into()]),
             extensions: Some(vec!["pdf".into()]),
             hidden: None,
-            recursive: None,
             timeout_ms: None,
         },
     };
@@ -7175,7 +7174,9 @@ fn picker_ownership_busy_clients_and_startup_cancellation() {
             start("one"),
         )
         .unwrap();
-    assert!(test.bridge.panes.lock().unwrap().background(finder));
+    assert!(!test.bridge.panes.lock().unwrap().background(finder));
+    // Also retain coverage of the legacy terminal attachment protocol.
+    test.bridge.picks.get_mut(&finder).unwrap().pane = None;
     assert!(test
         .bridge
         .pick_command(
@@ -7222,7 +7223,7 @@ fn picker_ownership_busy_clients_and_startup_cancellation() {
             first,
             PathBuf::new(),
             Pick::Attach {
-                pane_id: TerminalId::new(12),
+                pane_id: PaneId::Terminal(TerminalId::new(12)),
             },
         )
         .unwrap();
@@ -7294,6 +7295,7 @@ fn picker_ownership_busy_clients_and_startup_cancellation() {
         )
         .unwrap();
     assert_eq!(test.bridge.picks.len(), 2);
+    test.bridge.picks.get_mut(&other).unwrap().pane = None;
     test.bridge.picks[&other]
         .opening
         .store(true, Ordering::SeqCst);
@@ -7337,7 +7339,7 @@ fn picker_ownership_busy_clients_and_startup_cancellation() {
             second,
             PathBuf::new(),
             Pick::Attach {
-                pane_id: TerminalId::new(16),
+                pane_id: PaneId::Terminal(TerminalId::new(16)),
             },
         )
         .unwrap();
@@ -7364,6 +7366,10 @@ fn picker_lifecycle_retires_owned_panes_before_replying_to_surviving_callers() {
     use yinz_types::internal_ids::TerminalId;
     use yinz_types::pick::{PickCommand as Pick, PickKind, PickOptions};
     for (cause, stage) in [
+        ("caller unload", "plugin"),
+        ("caller reload", "plugin"),
+        ("finder reload", "plugin"),
+        ("shared disconnect", "plugin"),
         ("caller unload", "attached"),
         ("caller reload", "attached"),
         ("finder reload", "attached"),
@@ -7409,13 +7415,16 @@ fn picker_lifecycle_retires_owned_panes_before_replying_to_surviving_callers() {
                         roots: None,
                         extensions: None,
                         hidden: None,
-                        recursive: None,
                         timeout_ms: None,
                     },
                 },
             )
             .unwrap();
         let finder_instance = PluginInstanceId::default();
+        if stage != "plugin" {
+            // Exercise cancellation races for legacy drivers that open a separate terminal.
+            test.bridge.picks.get_mut(&finder).unwrap().pane = None;
+        }
         if stage == "attached" {
             test.bridge
                 .pick_command(
@@ -7425,11 +7434,11 @@ fn picker_lifecycle_retires_owned_panes_before_replying_to_surviving_callers() {
                     client,
                     PathBuf::new(),
                     Pick::Attach {
-                        pane_id: TerminalId::new(12),
+                        pane_id: PaneId::Terminal(TerminalId::new(12)),
                     },
                 )
                 .unwrap();
-        } else if stage != "loading" {
+        } else if stage != "loading" && stage != "plugin" {
             test.bridge.picks[&finder]
                 .opening
                 .store(true, Ordering::SeqCst);
@@ -7470,7 +7479,7 @@ fn picker_lifecycle_retires_owned_panes_before_replying_to_surviving_callers() {
                     PathBuf::new(),
                     if stage == "opening" {
                         Pick::Attach {
-                            pane_id: TerminalId::new(12),
+                            pane_id: PaneId::Terminal(TerminalId::new(12)),
                         }
                     } else {
                         Pick::Complete {
@@ -7499,7 +7508,9 @@ fn picker_lifecycle_retires_owned_panes_before_replying_to_surviving_callers() {
         assert_eq!(
             retirements,
             vec![if stage == "attached" || stage == "opening" {
-                Some(TerminalId::new(12))
+                Some(PaneId::Terminal(TerminalId::new(12)))
+            } else if stage == "plugin" {
+                Some(PaneId::Plugin(finder))
             } else {
                 None
             }],
@@ -7547,7 +7558,11 @@ fn picker_lifecycle_retires_owned_panes_before_replying_to_surviving_callers() {
         assert!(test.bridge.picks.is_empty());
         let driver_closures = test.receiver::<ScreenInstruction>().try_iter().filter(|(instruction, _)|
             matches!(instruction, ScreenInstruction::ClosePane(PaneId::Plugin(id), ..) if *id == finder)).count();
-        assert_eq!(driver_closures, 1, "{cause} {stage}");
+        assert_eq!(
+            driver_closures,
+            usize::from(stage != "plugin"),
+            "{cause} {stage}"
+        );
         let loading_cancel = test.bridge.cancel_token(finder);
         test.bridge.unload_plugin(finder).unwrap();
         assert!(loading_cancel.load(Ordering::Acquire));
@@ -8133,10 +8148,9 @@ fn a_client_attaching_before_the_declaration_is_read_gets_the_declared_surface()
     }
 }
 
-/// The picker's driver is the builtin file-finder, which declares no pane: started for a pick, it
-/// runs headless with no pane record at all, parked or otherwise.
+/// Shared picks show Strider's declared plugin pane directly as an overlay.
 #[test]
-fn the_picker_driver_starts_headless_with_no_pane_record() {
+fn the_picker_driver_shows_strider_as_a_plugin_overlay() {
     use yinz_types::pick::{PickCommand as Pick, PickKind, PickOptions};
     let mut test = TestBridge::new();
     let client = ClientId::new(1);
@@ -8164,7 +8178,6 @@ fn the_picker_driver_starts_headless_with_no_pane_record() {
                     roots: Some(vec!["/tmp".into()]),
                     extensions: None,
                     hidden: None,
-                    recursive: None,
                     timeout_ms: None,
                 },
             },
@@ -8176,18 +8189,17 @@ fn the_picker_driver_starts_headless_with_no_pane_record() {
         .map(|(instruction, _)| instruction)
         .collect();
     assert!(
-        !sent.iter().any(|i| matches!(i, ScreenInstruction::AddPlugin(.., id, _, _, _, _, _, _, _, _) if *id == finder)),
+        sent.iter().any(|i| matches!(i, ScreenInstruction::AddPlugin(.., id, _, _, _, _, _, _, _, _) if *id == finder)),
         "{sent:?}"
     );
-    assert!(
-        sent.iter().any(|i| matches!(i, ScreenInstruction::PluginPaneless { plugin_id, .. } if *plugin_id == finder)),
-        "{sent:?}"
+    let panes = test.bridge.panes.lock().unwrap();
+    assert_eq!(panes.surface(finder), Some(Surface::Pane));
+    assert!(!panes.background(finder));
+    drop(panes);
+    assert_eq!(
+        test.bridge.picks[&finder].pane,
+        Some(PaneId::Plugin(finder))
     );
-    {
-        let panes = test.bridge.panes.lock().unwrap();
-        assert_eq!(panes.surface(finder), Some(Surface::Headless));
-        assert!(panes.background(finder));
-    }
     test.bridge
         .pick_command(
             caller,

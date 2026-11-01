@@ -22,10 +22,11 @@ use super::dropdown::HasDropdown;
 use super::label::Label;
 use super::select::{Select, SelectAction};
 use super::text_input::{InputAction, TextInput};
-use super::viewport::{column_to_cursor, viewport};
+use super::viewport::{column_to_cursor, take_columns, viewport};
 use super::RenderBuffer;
 use crate::prelude::*;
 use crate::ui_components::Text;
+use unicode_width::UnicodeWidthStr;
 
 /// Identifies a field or button within its form.
 pub type FieldId = String;
@@ -265,8 +266,18 @@ impl Field {
     }
 
     /// The prompt drawn to the left of the value, e.g. `"Name: "`.
-    fn prompt(&self) -> String {
-        format!("{}: ", self.label.content())
+    fn prompt(&self, width: usize, compact: bool) -> String {
+        let prompt = format!("{}: ", self.label.content());
+        if compact && prompt.width() > width / 2 {
+            let label = take_columns(self.label.content(), (width / 2).saturating_sub(2));
+            if width < 6 {
+                String::new()
+            } else {
+                format!("{label}: ")
+            }
+        } else {
+            prompt
+        }
     }
 }
 
@@ -288,6 +299,7 @@ pub struct Form {
     editing: bool,
     pressed: Option<PressTarget>,
     first_button: usize,
+    compact_labels: bool,
 }
 
 /// What a left button went down on, remembered until it comes back up.
@@ -327,7 +339,13 @@ impl Form {
             editing: false,
             pressed: None,
             first_button: 0,
+            compact_labels: false,
         }
+    }
+
+    /// Leave at least half the row for editable values, even with long labels.
+    pub fn set_compact_labels(&mut self, compact: bool) {
+        self.compact_labels = compact;
     }
 
     /// Add a text field. The first widget added takes focus.
@@ -931,7 +949,7 @@ impl Form {
                 continue;
             }
             let field = &mut self.fields[i];
-            let prompt = field.prompt();
+            let prompt = field.prompt(rect.columns, self.compact_labels);
             match &mut field.widget {
                 // Put the cursor where the press landed, not just at the end —
                 // clicking into the middle of a word and typing at the end of
@@ -1266,7 +1284,7 @@ impl Form {
         let cursor = match self.focus {
             Some(Focus::Field(i)) if i >= start && i < end => {
                 self.fields.get(i).and_then(|field| {
-                    let prompt = field.prompt();
+                    let prompt = field.prompt(width, self.compact_labels);
                     let column = match &field.widget {
                         // A field that is not in input mode is not being typed
                         // into, and a cursor sitting in one says it is.
@@ -1313,7 +1331,7 @@ impl Form {
             .take(end.saturating_sub(start))
         {
             let row_y = y + i - start;
-            let prompt = field.prompt();
+            let prompt = field.prompt(width, self.compact_labels);
             let focused = self.focus == Some(Focus::Field(i));
             match &mut field.widget {
                 Widget::Text(input) => {

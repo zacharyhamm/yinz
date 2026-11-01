@@ -17,7 +17,7 @@
       (list (yinz-ui-input "path" "Folder or local Git repository" initial-cwd)
         (yinz-ui-input "name" "Project name (optional)" "")
         (yinz-ui-button "open" "Open project"))
-      (hash "message" "Choose an existing local folder. You can add more projects later."
+      (hash "wrap" #t "message" "Choose an existing local folder. You can add more projects later."
         "help" "Ctrl-f browse folder · Tab next · Enter select · Esc skip")))
   (set! path-field (yinz-ui-path-field dialog "path" "directory" initial-cwd))
   ;; Mount the real root so /host paths do not collide with plugin mounts such as /tmp.
@@ -101,4 +101,5 @@
             ((equal? (hash-ref action "kind") "cancel") (configuration-project-cancel) (yinz-command "CloseSelf") #t)
             (else (hash-ref action "shouldRender"))))))))
 (define (configuration-project-render rows cols)
+  (yinz-ui-op dialog "SetHelp" (cond ((< cols 30) "Tab Enter Esc") ((or (< rows 12) (< cols 50)) "^F browse · Tab · Enter · Esc") (else "Ctrl-f browse folder · Tab next · Enter select · Esc skip")))
   (yinz-ui-render dialog (hash "x" 0 "y" 0 "width" cols "height" rows)))

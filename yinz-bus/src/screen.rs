@@ -222,7 +222,7 @@ pub enum ScreenInstruction {
     CloseSelf(PluginId, ClientId),
     RetirePicker {
         finder: PluginId,
-        pane: Option<yinz_types::internal_ids::TerminalId>,
+        pane: Option<PaneId>,
         client: ClientId,
     },
     ClosePane(

@@ -94,6 +94,19 @@ fn comparable(commands: Vec<Value>) -> Vec<Value> {
                 .iter()
                 .any(|name| command.get(name).is_some())
         })
+        .map(|mut command| {
+            // The finder now retains candidates when an unreadable descendant makes find fail.
+            // Listing behavior is exercised by file_finder_listing; the rest of the script stays exact.
+            if let Some(script) = command.pointer_mut("/OpenCommandPaneOverlay/0/args/1")
+                && let Some(text) = script.as_str()
+            {
+                *script = Value::String(
+                    text.replace("&& { find", "&& find")
+                        .replace(" || [ -s \"$candidates\" ]; }", ""),
+                );
+            }
+            command
+        })
         .collect()
 }
 
@@ -177,7 +190,7 @@ fn file_finder_actual_runtimes_match_picker_success_cancel_errors_and_mount_fail
         let responder: Responder = Arc::new(move |command| {
             match command {
             PluginCommand::Pick(yinz_types::pick::PickCommand::Request) => Some(ProtobufPickResponse {
-                json: json!({"Ok":{"options":{"kind":"file","roots":null,"extensions":null,"hidden":false,"recursive":true,"timeoutMs":null},"cwd":"/work"}}).to_string(),
+                json: json!({"Ok":{"options":{"kind":"file","roots":null,"extensions":null,"hidden":false,"timeoutMs":null},"cwd":"/work"}}).to_string(),
             }.encode_to_vec()),
             _ => base(command),
         }

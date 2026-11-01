@@ -412,9 +412,16 @@ The request allows 200 messages, 64 tools, and 64000 encoded bytes. The result
 contains `"content"`, `"toolCalls"`, `"finishReason"`, `"usage"`, and `"model"`.
 Tool arguments remain strings for the caller to validate before execution.
 
-`(yinz-pick options)` opens a file or directory picker and returns a deferred path,
+`(yinz-pick options)` opens the builtin Strider file or directory browser and returns a deferred path,
 or `json-null` if dismissed. Options are `"kind"` (`"file"` or `"directory"`),
-`"roots"`, `"extensions"`, `"hidden"`, `"recursive"`, and `"timeoutMs"`.
+`"roots"`, `"extensions"`, `"hidden"`, and `"timeoutMs"`.
+`roots`, when supplied, must contain exactly one starting directory; relative paths
+resolve against the caller cwd. Browsing can leave that starting directory.
+Multiple roots and the former `recursive` option are rejected. Search filters the
+current directory. File extensions are case-insensitive suffixes without leading dots;
+directories remain visible for navigation. Enter browses a highlighted directory or
+selects a file; Ctrl+Enter selects the current directory in directory mode. Escape
+dismisses the browser. Ctrl+E toggles hidden entries.
 `(yinz-cancel! request)` asks the host to close the picker. The result stays pending
 until the host replies, preserving a selection that wins the cancellation race.
 There is no default deadline.
@@ -644,6 +651,13 @@ Build forms with `yinz-ui-form` or `yinz-ui-dialog`. Fields come from
 `yinz-ui-value` or `yinz-ui-values`. `yinz-ui-render` returns text and issues a
 `ShowCursor` command, using the frame timing described above. `yinz-ui-render-buffer`
 returns text and cursor metadata without a host call.
+
+Pass `(hash "wrap" #t "message" "…" "help" "…")` as the dialog options to
+wrap title, message, status, and help in terminal display columns. Wrapped dialogs
+prioritize the focused control in short viewports and shorten field labels to
+leave space for editable values. The default remains single-line chrome.
+`(yinz-ui-height dialog width)` measures the unscrolled wrapped height;
+`(yinz-ui-height dialog)` retains the single-line height estimate.
 
 Add folder/file browsing to any ordinary text field with
 `(yinz-ui-path-field form field-id "directory")` (or `"file"`). Route events to

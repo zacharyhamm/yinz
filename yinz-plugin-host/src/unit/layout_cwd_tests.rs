@@ -218,7 +218,6 @@ fn pick_command(roots: Option<Vec<String>>) -> PickCommand {
             roots,
             extensions: None,
             hidden: None,
-            recursive: None,
             timeout_ms: None,
         },
     }

@@ -314,6 +314,8 @@ fn picker_rejects_invalid_options_without_dispatch() {
         json!({}),
         json!({"kind":"files"}),
         json!({"kind":"file","roots":[]}),
+        json!({"kind":"file","roots":["/a","/b"]}),
+        json!({"kind":"file","recursive":false}),
         json!({"kind":"file","roots":["\0"]}),
         json!({"kind":"directory","extensions":[]}),
         json!({"kind":"file","extensions":[".txt"]}),
@@ -330,7 +332,7 @@ fn picker_rejects_invalid_options_without_dispatch() {
     runtime.invoke("yinz-async-poll", vec![]).unwrap();
     assert_eq!(
         runtime.value("errors").unwrap().as_array().unwrap().len(),
-        13
+        15
     );
     assert!(sent.lock().unwrap().is_empty());
 }

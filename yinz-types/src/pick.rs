@@ -15,19 +15,18 @@ pub struct PickOptions {
     pub roots: Option<Vec<String>>,
     pub extensions: Option<Vec<String>>,
     pub hidden: Option<bool>,
-    pub recursive: Option<bool>,
     pub timeout_ms: Option<u64>,
 }
 
 impl PickOptions {
     pub fn validate(&self) -> Result<(), String> {
         if self.roots.as_ref().is_some_and(|roots| {
-            roots.is_empty()
+            roots.len() != 1
                 || roots
                     .iter()
                     .any(|root| root.is_empty() || root.contains('\0'))
         }) {
-            return Err("roots must contain at least one nonempty path without NUL".into());
+            return Err("roots must contain exactly one nonempty starting path without NUL".into());
         }
         if let Some(extensions) = &self.extensions {
             if self.kind == PickKind::Directory {
@@ -60,7 +59,7 @@ pub enum PickCommand {
     },
     Request,
     Attach {
-        pane_id: crate::internal_ids::TerminalId,
+        pane_id: crate::data::PaneId,
     },
     Complete {
         result: Result<Option<String>, String>,

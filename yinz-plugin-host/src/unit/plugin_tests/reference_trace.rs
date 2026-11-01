@@ -242,9 +242,23 @@ impl Trace {
                 "<fixture-root>",
             );
             legacy_project_fields(&mut actual);
+            let mut expected_reply = call.reply.clone();
+            // Shared browsing dropped recursive listings. Retain the old transcript while
+            // adapting its driver request to today's PickRequest decoder.
+            if self.transcript.plugin == "file-finder"
+                && matches!(
+                    command,
+                    PluginCommand::Pick(yinz_types::pick::PickCommand::Request)
+                )
+                && let Some(options) = expected_reply
+                    .pointer_mut("/json/options")
+                    .and_then(Value::as_object_mut)
+            {
+                options.remove("recursive");
+            }
             assert_eq!(
                 actual,
-                call.reply,
+                expected_reply,
                 "reference host reply at {} step {} for {command:?}",
                 self.path.display(),
                 self.cursor

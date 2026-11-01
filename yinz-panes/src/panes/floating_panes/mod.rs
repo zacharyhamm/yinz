@@ -222,7 +222,7 @@ impl FloatingPanes {
             .filter_map(|(pane_id, pane)| {
                 let geom = pane.position_and_size();
                 let displayed = pane.render_geom();
-                geom_is_outside_viewport(&displayed, &viewport)
+                (!pane.is_setup_wizard() && geom_is_outside_viewport(&displayed, &viewport))
                     .then_some((*pane_id, (geom, displayed)))
             })
             .collect()
@@ -298,7 +298,13 @@ impl FloatingPanes {
     pub fn rendered_pane_ids(&self) -> Vec<PaneId> {
         self.stack_layer_ids()
     }
-    pub fn add_pane(&mut self, pane_id: PaneId, pane: Box<dyn Pane>) {
+    pub fn add_pane(&mut self, pane_id: PaneId, mut pane: Box<dyn Pane>) {
+        if pane.is_setup_wizard() {
+            pane.set_geom(setup_wizard_geom(
+                *self.viewport.borrow(),
+                pane.position_and_size(),
+            ));
+        }
         self.desired_pane_positions
             .insert(pane_id, pane.position_and_size());
         self.panes.insert(pane_id, pane);
@@ -868,6 +874,13 @@ impl FloatingPanes {
     }
 
     pub fn resize(&mut self, new_screen_size: Size) {
+        // Manual movement normally retains its horizontal display anchor.
+        // Setup follows the host's centered geometry again on every resize.
+        self.width_anchored_panes.retain(|id| {
+            self.panes
+                .get(id)
+                .is_some_and(|pane| !pane.is_setup_wizard())
+        });
         let display_area = *self.display_area.borrow();
         let viewport = *self.viewport.borrow();
         let mut floating_pane_grid = FloatingPaneGrid::new(
@@ -2046,4 +2059,21 @@ impl FloatingPanes {
             .map(|p| p.position_and_size().is_pinned)
             .unwrap_or(false)
     }
+}
+
+/// Center in the usable viewport, rounding the spare cell toward the bottom/right.
+fn setup_wizard_geom(viewport: Viewport, mut geom: PaneGeom) -> PaneGeom {
+    let cols = viewport
+        .cols
+        .saturating_sub(if viewport.cols > 2 { 2 } else { 0 })
+        .min(96);
+    let rows = viewport
+        .rows
+        .saturating_sub(if viewport.rows > 2 { 2 } else { 0 })
+        .min(32);
+    geom.x = viewport.x + (viewport.cols - cols) / 2;
+    geom.y = viewport.y + (viewport.rows - rows) / 2;
+    geom.cols = Dimension::fixed(cols);
+    geom.rows = Dimension::fixed(rows);
+    geom
 }

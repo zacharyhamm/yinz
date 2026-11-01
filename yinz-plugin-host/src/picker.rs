@@ -2,8 +2,7 @@
 use super::*;
 use prost::Message;
 use std::path::Path;
-use yinz_types::internal_ids::TerminalId;
-use yinz_types::pick::{PickCommand, PickKind, PickOptions, PickRequest, PickResult};
+use yinz_types::pick::{PickCommand, PickKind, PickRequest, PickResult};
 
 pub(super) struct PendingPick {
     caller: PluginId,
@@ -15,7 +14,7 @@ pub(super) struct PendingPick {
     pub(super) cancelled: Arc<AtomicBool>,
     pub(super) opening: Arc<AtomicBool>,
     finder_instance: Option<PluginInstanceId>,
-    pane: Option<TerminalId>,
+    pub(super) pane: Option<PaneId>,
     result: Option<Result<Option<String>, String>>,
 }
 
@@ -126,9 +125,9 @@ pub(crate) fn attach_opened_pane(env: &PluginEnv, pane: Option<PaneId>) -> Resul
         return Ok(());
     }
     let command = match pane {
-        Some(PaneId::Terminal(pane_id)) => PickCommand::Attach { pane_id },
+        Some(pane_id) => PickCommand::Attach { pane_id },
         _ => PickCommand::Complete {
-            result: Err("failed to open picker terminal".into()),
+            result: Err("failed to open picker pane".into()),
         },
     };
     let result = send_command(env, command, env.plugin_cwd.clone(), None);
@@ -205,10 +204,10 @@ impl PluginBridge {
                     return Err("picker request ID is empty".into());
                 }
                 let aliases = self.plugin_aliases.lock().unwrap();
-                let location = if aliases.aliases.contains_key("file-finder") {
-                    "file-finder"
+                let location = if aliases.aliases.contains_key("strider") {
+                    "strider"
                 } else {
-                    "yinz:file-finder"
+                    "yinz:strider"
                 };
                 let mut run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
                     location,
@@ -217,15 +216,14 @@ impl PluginBridge {
                     Some(cwd.clone()),
                 )?
                 .get_run_plugin()
-                .ok_or("file-finder alias is unresolved")?;
+                .ok_or("strider alias is unresolved")?;
                 drop(aliases);
                 if run.location
-                    != RunPluginLocation::Yinz(yinz_types::data::PluginTag::new("file-finder"))
+                    != RunPluginLocation::Yinz(yinz_types::data::PluginTag::new("strider"))
                 {
-                    return Err("z.pick requires the builtin yinz:file-finder alias".into());
+                    return Err("yinz-pick requires the builtin yinz:strider alias".into());
                 }
-                let options =
-                    merge_options(options, run.configuration.inner().get("listing_json"))?;
+                options.validate()?;
                 let finder = PluginId::new(self.next_plugin_id);
                 self.picks.insert(
                     finder,
@@ -242,20 +240,32 @@ impl PluginBridge {
                         cancelled: Arc::default(),
                         opening: Arc::default(),
                         finder_instance: None,
-                        pane: None,
+                        pane: Some(PaneId::Plugin(finder)),
                         result: None,
                     },
                 );
                 let mut configuration = run.configuration.inner().clone();
                 configuration.insert("shared".into(), "true".into());
+                configuration.insert("structured_picker".into(), "true".into());
                 run.configuration = PluginUserConfiguration::new(configuration);
                 run.initial_cwd = Some(cwd.clone());
-                // The driver starts in the background: a parked record if it declares a pane.
-                let driver = PaneRequest::Parked {
+                // The ledger emits AddPlugin before the runtime can complete or be cancelled.
+                let driver = PaneRequest::Show(Box::new(crate::plugin_panes::ShowPane {
+                    should_float: Some(false),
+                    in_place: false,
+                    replaced: yinz_bus::pty::ReplacedPane::Suppress,
                     run: RunPluginOrAlias::RunPlugin(run.clone()),
-                    cwd: run.initial_cwd.clone(),
-                    client_id: client,
-                };
+                    title: Some("Select path".into()),
+                    tab: None,
+                    pane_id_to_replace: None,
+                    cwd: Some(cwd.clone()),
+                    coordinates: None,
+                    should_focus: Some(true),
+                    client_id: Some(client),
+                    completion: None,
+                    overlay: Some(yinz_types::data::OverlayPlacement::dismissible(None)),
+                    reserved_slot: None,
+                }));
                 if let Err(error) = self.load_plugin(
                     &Some(run.clone()),
                     None,
@@ -396,15 +406,19 @@ impl PluginBridge {
         let Some(pick) = self.picks.remove(&finder) else {
             return;
         };
-        self.senders
-            .send_to_screen(ScreenInstruction::ClosePane(
-                PaneId::Plugin(finder),
-                Some(pick.client),
-                None,
-                None,
-            ))
-            .context("close picker driver")
-            .non_fatal();
+        // A plugin picker was already closed by RetirePicker before this acknowledgement.
+        // Only a legacy driver with a separate terminal still needs its own cleanup.
+        if pick.pane != Some(PaneId::Plugin(finder)) {
+            self.senders
+                .send_to_screen(ScreenInstruction::ClosePane(
+                    PaneId::Plugin(finder),
+                    Some(pick.client),
+                    None,
+                    None,
+                ))
+                .context("close picker driver")
+                .non_fatal();
+        }
         if (self.shared_plugin_ids.contains(&pick.caller)
             || self
                 .connected_clients
@@ -461,23 +475,6 @@ impl PluginBridge {
             self.retire_pick(finder, Err("picker client disconnected".into()));
         }
     }
-}
-
-fn merge_options(options: PickOptions, alias: Option<&String>) -> Result<PickOptions, String> {
-    let mut merged: serde_json::Map<String, serde_json::Value> =
-        match alias.filter(|json| !json.trim().is_empty()) {
-            Some(json) => serde_json::from_str(json)
-                .map_err(|error| format!("file-finder listing_json: {error}"))?,
-            None => Default::default(),
-        };
-    let request = serde_json::to_value(options).map_err(|error| error.to_string())?;
-    if let serde_json::Value::Object(request) = request {
-        merged.extend(request.into_iter().filter(|(_, value)| !value.is_null()));
-    }
-    let options: PickOptions = serde_json::from_value(serde_json::Value::Object(merged))
-        .map_err(|error| error.to_string())?;
-    options.validate()?;
-    Ok(options)
 }
 
 #[cfg(test)]

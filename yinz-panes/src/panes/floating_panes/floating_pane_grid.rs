@@ -107,6 +107,14 @@ impl<'a> FloatingPaneGrid<'a> {
         new_viewport.rows = space.rows.saturating_sub(display_size_row_difference);
 
         for (pane_id, pane) in panes.iter_mut() {
+            if pane.is_setup_wizard() {
+                pane.set_render_width(None);
+                pane.set_geom(super::setup_wizard_geom(
+                    new_viewport,
+                    pane.position_and_size(),
+                ));
+                continue;
+            }
             let mut new_pane_geom = pane.current_geom();
             let desired_pane_geom = desired_pane_positions
                 .get(pane_id)

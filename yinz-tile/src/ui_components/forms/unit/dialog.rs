@@ -185,3 +185,127 @@ fn a_centered_line_never_reaches_past_the_area() {
         );
     }
 }
+
+fn assert_wrapped_bounds(output: &str, area: Rect) {
+    let mut occupied = std::collections::HashSet::new();
+    for component in output.split("\x1bPy").skip(1) {
+        let mut parts = component.split("\x1b\\").next().unwrap().split(';');
+        parts.next();
+        let coordinates: Vec<_> = parts.next().unwrap().split('/').collect();
+        let x: usize = coordinates[0].parse().unwrap();
+        let y: usize = coordinates[1].parse().unwrap();
+        let width: usize = coordinates[2].parse().unwrap_or(0);
+        assert!(
+            x >= area.x && x + width <= area.x + area.columns,
+            "{coordinates:?}"
+        );
+        assert!(y >= area.y && y < area.y + area.rows, "{coordinates:?}");
+        assert!(occupied.insert(y), "overlapping sections at {y}");
+        let bytes: Vec<u8> = parts
+            .next()
+            .unwrap()
+            .rsplit('$')
+            .next()
+            .unwrap()
+            .trim_start_matches(['x', 'z', 'd', '|'])
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.parse().unwrap())
+            .collect();
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(x + text.width() <= area.x + area.columns, "{text:?}");
+    }
+}
+
+#[test]
+fn wrapped_dialog_keeps_controls_cursor_and_drafts_through_resize() {
+    let path = "/a/very/long/目录/with e\u{301}/a project folder";
+    let mut dialog = Dialog::new(
+        Text::new("Choose your first project 界"),
+        Form::new()
+            .field(
+                "path",
+                "Folder or local Git repository",
+                TextInput::new(path.into()),
+            )
+            .field(
+                "name",
+                "Project name (optional)",
+                TextInput::new("draft".into()),
+            )
+            .button("open", Button::new("Open project")),
+    )
+    .wrap_text(true)
+    .message(Text::new(
+        "Choose an existing local folder. You can add more projects later.",
+    ))
+    .help(Text::new("Tab next · Enter select · Esc skip"));
+    dialog.set_status(Some(Text::new(
+        "Could not open that folder. Check that it exists and is readable.",
+    )));
+    assert!(dialog.height_for_width(20) > dialog.height_for_width(80));
+    for (cols, rows) in [
+        (120, 40),
+        (80, 24),
+        (60, 20),
+        (40, 12),
+        (20, 8),
+        (4, 2),
+        (1, 1),
+        (0, 8),
+        (20, 0),
+        (120, 40),
+    ] {
+        for id in ["path", "name", "open"] {
+            dialog.form_mut().focus_on(id);
+            if id != "open" {
+                dialog.handle_key(KeyWithModifier::new(BareKey::Enter));
+            }
+            let area = Rect::new(3, 4, cols, rows);
+            let cursor_before = dialog
+                .form()
+                .field_by_id(id)
+                .and_then(|field| field.input())
+                .map(TextInput::get_cursor_position);
+            let buffer = dialog.render_buffer(area);
+            assert_eq!(
+                cursor_before,
+                dialog
+                    .form()
+                    .field_by_id(id)
+                    .and_then(|field| field.input())
+                    .map(TextInput::get_cursor_position)
+            );
+            if cols == 0 || rows == 0 {
+                assert!(buffer.output.is_empty());
+                assert_eq!(buffer.cursor, Some(None));
+            } else {
+                assert_wrapped_bounds(&buffer.output, area);
+                if id != "open" {
+                    let (x, y) = buffer
+                        .cursor
+                        .flatten()
+                        .expect("active input has a visible cursor");
+                    assert!(area.contains(x, y));
+                    // The geometry used for clicking follows the newly wrapped layout.
+                    dialog.handle_mouse(Mouse::LeftClick(y as isize, x));
+                    assert_eq!(dialog.form().focused_id(), Some(id));
+                }
+            }
+            assert_eq!(dialog.form().text("path"), path);
+            assert_eq!(dialog.form().text("name"), "draft");
+        }
+    }
+}
+
+#[test]
+fn wrapped_styling_tracks_unicode_character_offsets() {
+    let lines = Text::new("界界 abc").color_range(2, 3..).wrapped(4);
+    assert!(lines.iter().all(|line| line.content().width() <= 4));
+    let abc = lines
+        .iter()
+        .find(|line| line.content().contains("abc"))
+        .unwrap();
+    assert_eq!(abc.content(), " abc");
+    assert_eq!(abc.indices()[2], vec![1, 2, 3]);
+}

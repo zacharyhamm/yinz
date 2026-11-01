@@ -384,6 +384,27 @@ impl Text {
         }
         self
     }
+    /// Wrap styled text in display columns, retaining character style offsets.
+    pub fn wrapped(&self, width: usize) -> Vec<Self> {
+        crate::text::wrap_input(&self.text, width)
+            .into_iter()
+            .map(|line| {
+                let mut text = self.clone();
+                // A glyph wider than the entire viewport cannot be displayed.
+                text.text = crate::ui_components::forms::take_columns(&line.text, width);
+                let end = line.start + text.text.chars().count();
+                for level in &mut text.indices {
+                    *level = level
+                        .iter()
+                        .filter(|i| **i >= line.start && **i < end)
+                        .map(|i| i - line.start)
+                        .collect();
+                }
+                text
+            })
+            .collect()
+    }
+
     fn pad_indices(&mut self, index_level: usize) {
         if self.indices.get(index_level).is_none() {
             for _ in self.indices.len()..=index_level {

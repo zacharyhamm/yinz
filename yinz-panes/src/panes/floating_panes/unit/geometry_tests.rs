@@ -64,3 +64,34 @@ fn floating_layout_is_constrained_by_the_viewport_origin_and_extent() {
     // Explicit positions can cover the UI above or to the left of the viewport.
     assert_eq!((geom.x, geom.y), (0, 0));
 }
+
+#[test]
+fn setup_wizard_is_bounded_and_centered_even_in_tiny_offset_viewports() {
+    for (cols, rows) in [
+        (120, 40),
+        (80, 24),
+        (60, 20),
+        (40, 12),
+        (20, 8),
+        (1, 1),
+        (0, 0),
+    ] {
+        let viewport = Viewport {
+            x: 3,
+            y: 2,
+            cols,
+            rows,
+        };
+        let geom = crate::panes::floating_panes::setup_wizard_geom(viewport, PaneGeom::default());
+        let width = geom.cols.as_usize();
+        let height = geom.rows.as_usize();
+        assert!(width <= cols.min(96) && height <= rows.min(32));
+        let left = geom.x - viewport.x;
+        let top = geom.y - viewport.y;
+        assert!(left.abs_diff(cols - left - width) <= 1);
+        assert!(top.abs_diff(rows - top - height) <= 1);
+        if cols > 2 && rows > 2 {
+            assert!(left >= 1 && top >= 1);
+        }
+    }
+}

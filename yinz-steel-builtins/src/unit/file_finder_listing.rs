@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, path::Path};
 
 fn build_structured(
     config: &BTreeMap<String, String>,
-    options: &yinz_types::pick::PickOptions,
+    options: &ListingOptions,
     cwd: &Path,
     output: &str,
 ) -> Result<String, String> {
@@ -25,10 +25,22 @@ fn parse_structured_selection(source: &str) -> Result<Option<String>, String> {
         .map_err(|error| format!("{error:#}"))
 }
 use std::{fs, process::Command};
-use yinz_types::pick::{PickKind, PickOptions};
+use yinz_types::pick::PickKind;
 
-fn options(kind: PickKind) -> PickOptions {
-    PickOptions {
+// Standalone file-finder retains its listing options independently of shared browsing.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ListingOptions {
+    kind: PickKind,
+    roots: Option<Vec<String>>,
+    extensions: Option<Vec<String>>,
+    hidden: Option<bool>,
+    recursive: Option<bool>,
+    timeout_ms: Option<u64>,
+}
+
+fn options(kind: PickKind) -> ListingOptions {
+    ListingOptions {
         kind,
         roots: None,
         extensions: None,
@@ -63,7 +75,7 @@ fn structured_scripts_preserve_paths_and_obey_traversal_options() {
         "#!/bin/sh\nfor arg do\n  [ \"$arg\" != '--expect=' ] || exit 2\ndone\ncat\n",
     );
     let out = temp.path().join("result");
-    let run = |options: &PickOptions| {
+    let run = |options: &ListingOptions| {
         let config = BTreeMap::from([("file_command".into(), "exit 77".into())]);
         let script = build_structured(&config, options, &root, out.to_str().unwrap()).unwrap();
         let status = Command::new("/bin/sh")
@@ -96,6 +108,40 @@ fn structured_scripts_preserve_paths_and_obey_traversal_options() {
     multiple.roots = Some(vec!["Papers.pdf".into(), ".hidden".into()]);
     multiple.recursive = Some(false);
     assert_eq!(run(&multiple).len(), 3);
+}
+
+#[test]
+fn structured_picker_keeps_accessible_folders_after_traversal_errors() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    let blocked = root.join("blocked");
+    fs::create_dir_all(&blocked).unwrap();
+    fs::create_dir(root.join("accessible")).unwrap();
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    yinz_test_support::write_warm_script(&bin.join("fzf"), "cat");
+    let out = temp.path().join("selection");
+    let script = build_structured(
+        &BTreeMap::new(),
+        &options(PickKind::Directory),
+        &root,
+        out.to_str().unwrap(),
+    )
+    .unwrap();
+    let result = Command::new("/bin/sh")
+        .args(["-c", &script])
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .output()
+        .unwrap();
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(result.status.success(), "{result:?}");
+    let candidates = fs::read_to_string(&out).unwrap();
+    assert!(candidates
+        .split_terminator('\0')
+        .any(|path| path.ends_with("/accessible")));
 }
 
 #[test]
@@ -167,7 +213,7 @@ fn listing_and_fzf_failures_are_not_cancellation() {
         .to_string_lossy()
         .into_owned()]);
     yinz_test_support::write_warm_script(&bin.join("fzf"), "#!/bin/sh\nexit 130\n");
-    let run = |request: &PickOptions, path: String| {
+    let run = |request: &ListingOptions, path: String| {
         let script = build_structured(
             &BTreeMap::new(),
             request,

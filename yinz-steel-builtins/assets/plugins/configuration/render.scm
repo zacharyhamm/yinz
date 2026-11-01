@@ -137,7 +137,54 @@
     (help-line (if setup?
         '(("Help: <↓↑> - navigate, <ENTER> - save & next, <ESC> - close" (6 10) (23 30) (46 51)) ("Help: <↓↑> / <ENTER> / <ESC>" (6 10) (13 20) (23 28)))
         '(("Help: <↓↑> - navigate, <ENTER> - apply, <Ctrl a> - apply & save, <ESC> - close" (6 10) (23 30) (40 48) (65 70)) ("Help: <↓↑> / <ENTER> / <Ctrl a> / <ESC>" (6 10) (13 20) (23 31) (34 39)))) effective-rows cols)))
+(define (setup-presets state rows cols)
+  (define width (min cols 70))
+  (define x (quotient (- cols width) 2))
+  (define primary (modifier-text (hash-ref state "primary")))
+  (define selected (hash-ref state "preset"))
+  (define gap (if (>= rows 20) (list (whole "" #f #f)) '()))
+  (define (wrapped text level selected?)
+    (map (lambda (line) (whole line level selected?)) (yinz-ui-wrap text width)))
+  (define intro (append
+      (wrapped "Hi there! How would you like to interact with Yinz?" 2 #f) gap
+      (wrapped "Not sure? Press <ENTER> to choose Default." #f #f) gap
+      (wrapped "Everything can always be changed later. Tips appear on screen - you don't need to remember anything." #f #f) gap))
+  (define (option which)
+    (define selected? (equal? selected which))
+    (define prefix (string-append primary (if (= which 0) " " " g + ")))
+    (append
+      (wrapped (if (= which 0) "1. Default" "2. Unlock First (non-colliding)") 1 selected?)
+      (wrapped (if (= which 0) "All modes available directly from the base mode, eg.:"
+          (string-append "Single key modes available after unlocking with " primary " g, eg.:")) #f selected?)
+      (wrapped (string-append prefix "p - to enter PANE mode") 3 selected?)
+      (wrapped (string-append prefix "t - to enter TAB mode") 3 selected?)))
+  (define first (option 0))
+  (define second (option 1))
+  (define tail (append gap
+      (wrapped (string-append "Leader keys: " primary " - modes, " (modifier-text (hash-ref state "secondary")) " - quicknav and shortcuts") 2 #f)))
+  (define content (append intro first gap second tail))
+  (define help (cond ((>= cols 55) "↑↓ navigate · Enter save & next · Esc close")
+      ((>= cols 20) "↑↓ · Enter next · Esc") (else "↑↓ Enter Esc")))
+  (define help-rows (if (> rows 1) 1 0))
+  (define budget (- rows help-rows))
+  (define start (+ (length intro) (if (equal? selected 1) (+ (length first) (length gap)) 0)))
+  (define end (+ start (length (if (equal? selected 1) second first))))
+  ;; Scroll just enough to show the selected block. If the block itself is
+  ;; taller than the viewport, keep its title and first explanation visible.
+  (define scroll (if (<= (length content) budget) 0 (min start (max 0 (- end budget)))))
+  (define visible (min budget (- (length content) scroll)))
+  (define top (quotient (max 0 (- budget visible)) 2))
+  (define message (hash-ref state "notification"))
+  (string-append
+    (apply string-append (map (lambda (i)
+          (yinz-ui-text (list-ref content (+ scroll i)) (yinz-ui-coordinates x (+ top i) width 1))) (range 0 visible)))
+    (if (> help-rows 0)
+      (yinz-ui-text (whole (car (yinz-ui-wrap (if message (yinz-text-sanitize message) help) cols)) 2 #f)
+        (yinz-ui-coordinates 0 (- rows 1) cols 1)) "")))
+
 (define (configuration-render state rows cols)
   (if (or (= rows 0) (= cols 0)) ""
     (string-append (menu state rows cols)
-      (if (equal? (hash-ref state "screen") "rebind") (rebind state rows cols) (presets state rows cols)))))
+      (cond ((hash-ref state "setup") (setup-presets state rows cols))
+        ((equal? (hash-ref state "screen") "rebind") (rebind state rows cols))
+        (else (presets state rows cols))))))

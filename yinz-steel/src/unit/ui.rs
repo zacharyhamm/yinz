@@ -718,3 +718,28 @@ fn standalone_text_input_reuses_unicode_editing_paste_and_cursor_dispatch() {
         ["\"\""]
     );
 }
+
+#[test]
+fn wrapped_dialog_height_is_width_aware_and_opt_in() {
+    let mut runtime = runtime();
+    runtime.eval(r#"
+        (define fields (list (yinz-ui-input "path" "Folder" "/a/long/path")))
+        (define wrapped (yinz-ui-dialog "Choose your first project" fields
+            (hash "wrap" #t "message" "Choose an existing local folder. More projects can be added later." "help" "Tab next Enter select Esc skip")))
+        (define ordinary (yinz-ui-dialog "Choose your first project" fields))
+        (define narrow (yinz-ui-height wrapped 20))
+        (define wide (yinz-ui-height wrapped 80))
+        (define ordinary-narrow (yinz-ui-height ordinary 20))
+        (define ordinary-wide (yinz-ui-height ordinary 80))
+        (define frame (yinz-ui-render-buffer wrapped (yinz-ui-coordinates 0 0 20 8)))
+    "#).unwrap();
+    assert!(runtime.value("narrow").unwrap().as_u64() > runtime.value("wide").unwrap().as_u64());
+    assert_eq!(
+        runtime.value("ordinary-narrow").unwrap(),
+        runtime.value("ordinary-wide").unwrap()
+    );
+    assert!(!runtime.value("frame").unwrap()["text"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+}

@@ -20,6 +20,7 @@ pub struct Dialog {
     help: Option<Text>,
     status: Option<Text>,
     reserve_status: bool,
+    wrap_text: bool,
     form: Form,
 }
 
@@ -41,8 +42,25 @@ impl Dialog {
             help: None,
             status: None,
             reserve_status: false,
+            wrap_text: false,
             form,
         }
+    }
+
+    /// Opt into wrapped chrome and compact labels for narrow viewports.
+    pub fn wrap_text(mut self, wrap: bool) -> Self {
+        self.wrap_text = wrap;
+        self.form.set_compact_labels(wrap);
+        self
+    }
+
+    /// Unscrolled height at a particular display width.
+    pub fn height_for_width(&self, columns: usize) -> usize {
+        if !self.wrap_text {
+            return self.height();
+        }
+        let lines = self.wrapped_sections(columns);
+        lines.iter().map(Vec::len).sum::<usize>() + self.form.height() + 3
     }
 
     pub fn message(mut self, message: Text) -> Self {
@@ -57,7 +75,8 @@ impl Dialog {
     /// Reserve a row at the bottom of the dialog for [`set_status`](Self::set_status).
     ///
     /// The row is held whether or not a status is set, so a message appearing
-    /// or clearing never moves the form.
+    /// or clearing never moves the form. Wrapped dialogs instead measure the
+    /// status at the current width and may reflow when its text changes.
     pub fn status_row(mut self) -> Self {
         self.reserve_status = true;
         self
@@ -106,7 +125,7 @@ impl Dialog {
         self.form.handle_mouse(mouse)
     }
 
-    /// Rows needed to draw every part of the dialog without scrolling.
+    /// Single-line height estimate. Use [`Self::height_for_width`] for wrapped chrome.
     pub fn height(&self) -> usize {
         2 + self.form.height()
             + self.message.as_ref().map(|_| 2).unwrap_or(0)
@@ -122,6 +141,9 @@ impl Dialog {
 
     /// Render output and cursor metadata without host calls.
     pub fn render_buffer(&mut self, area: Rect) -> RenderBuffer {
+        if self.wrap_text {
+            return self.render_wrapped(area);
+        }
         let layout = self.layout(area);
         let inset = if area.columns > 4 { 2 } else { 0 };
         let form_x = area.x + inset;
@@ -170,6 +192,78 @@ impl Dialog {
         }
         if let (Some(help), Some(y)) = (&self.help, help_y) {
             self.render_centered(&mut buffer, help, area, y);
+        }
+        buffer
+    }
+
+    fn wrapped_sections(&self, columns: usize) -> [Vec<Text>; 4] {
+        [
+            self.title.wrapped(columns),
+            self.message
+                .as_ref()
+                .map(|t| t.wrapped(columns))
+                .unwrap_or_default(),
+            self.status
+                .as_ref()
+                .map(|t| t.wrapped(columns))
+                .unwrap_or_else(|| {
+                    if self.reserve_status {
+                        vec![Text::new("")]
+                    } else {
+                        vec![]
+                    }
+                }),
+            self.help
+                .as_ref()
+                .map(|t| t.wrapped(columns))
+                .unwrap_or_default(),
+        ]
+    }
+
+    fn render_wrapped(&mut self, area: Rect) -> RenderBuffer {
+        if area.rows == 0 || area.columns == 0 {
+            return self.form.render_buffer_in_viewport(area.x, area.y, 0, 0);
+        }
+        let sections = self.wrapped_sections(area.columns);
+        let mut remaining = area.rows;
+        let mut allocate = |wanted: usize| {
+            let rows = remaining.min(wanted);
+            remaining -= rows;
+            rows
+        };
+        // Reserve the active control before any chrome. Keep a line of help
+        // and validation next; additional space reveals the other fields.
+        let mut form_rows = allocate(self.form.height().min(1));
+        let mut counts = [0; 4];
+        for i in [3, 2, 0] {
+            counts[i] = allocate(sections[i].len().min(1));
+        }
+        form_rows += allocate(self.form.height().saturating_sub(form_rows));
+        for i in [2, 3, 0, 1] {
+            counts[i] += allocate(sections[i].len().saturating_sub(counts[i]));
+        }
+        let gap = usize::from(remaining >= 3);
+        let used = form_rows + counts.iter().sum::<usize>() + gap * 3;
+        let top = area.y + area.rows.saturating_sub(used) / 2;
+        let message_y = top + counts[0] + gap;
+        let form_y = message_y + counts[1] + gap;
+        let status_y = form_y + form_rows + gap;
+        let help_y = status_y + counts[2];
+        let inset = if area.columns >= 40 { 2 } else { 0 };
+        let mut buffer = self.form.render_buffer_with_overlay(
+            area.x + inset,
+            form_y,
+            area.columns - inset * 2,
+            form_rows,
+            area.y + area.rows,
+        );
+        let overlay = self.form.overlay_rect();
+        for (i, y) in [top, message_y, status_y, help_y].into_iter().enumerate() {
+            for (offset, line) in sections[i].iter().take(counts[i]).enumerate() {
+                if !covered(overlay, y + offset) {
+                    self.render_centered(&mut buffer, line, area, y + offset);
+                }
+            }
         }
         buffer
     }

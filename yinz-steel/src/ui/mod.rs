@@ -98,7 +98,7 @@ fn create(value: SteelVal) -> Result<NativeUi> {
             );
             let form = build(fields, 0).map_err(|error| anyhow!(error))?;
             State::Widget(if let Some(options) = dialog {
-                let mut dialog = Dialog::new(options.title.build()?, form);
+                let mut dialog = Dialog::new(options.title.build()?, form).wrap_text(options.wrap);
                 if let Some(message) = options.message {
                     dialog = dialog.message(message.build()?);
                 }
@@ -160,6 +160,8 @@ enum Create {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DialogOptions {
+    #[serde(default)]
+    wrap: bool,
     title: TextOption,
     message: Option<TextOption>,
     help: Option<TextOption>,
@@ -202,6 +204,7 @@ enum Operation {
     TextValue(String),
     FieldInfo(String),
     Height,
+    HeightForWidth(usize),
     OverlayRect,
     Input((String, InputOperation)),
 }
@@ -310,6 +313,16 @@ fn call(native: &NativeUi, op: Operation) -> Result<Value> {
         };
         dialog.set_help(help.map(TextOption::build).transpose()?);
         return Ok(Value::Null);
+    }
+    if let Operation::HeightForWidth(width) = op {
+        anyhow::ensure!(
+            width <= MAX_VIEWPORT_CELLS,
+            "width exceeds transport budget"
+        );
+        return Ok(json!(match widget {
+            Widget::Form(form) => form.height(),
+            Widget::Dialog(dialog) => dialog.height_for_width(width),
+        }));
     }
     if let Operation::Height = op {
         return Ok(json!(match widget {
@@ -467,7 +480,8 @@ fn call(native: &NativeUi, op: Operation) -> Result<Value> {
         | Operation::Lines(_)
         | Operation::SetStatus(_)
         | Operation::SetHelp(_)
-        | Operation::Height => unreachable!(),
+        | Operation::Height
+        | Operation::HeightForWidth(_) => unreachable!(),
     })
 }
 

@@ -175,6 +175,7 @@ fn host_folder_and_keybind_pipe_reject_non_utf8_paths() {
 #[test]
 fn picker_and_instance_info_commands_round_trip() {
     use yinz_types::{
+        data::PaneId,
         internal_ids::TerminalId,
         pick::{PickCommand, PickKind, PickOptions, PickResult},
     };
@@ -192,7 +193,6 @@ fn picker_and_instance_info_commands_round_trip() {
                 roots: Some(vec!["/a\nb".into()]),
                 extensions: Some(vec!["PDF".into()]),
                 hidden: Some(true),
-                recursive: Some(false),
                 timeout_ms: Some(50),
             },
         }),
@@ -201,7 +201,7 @@ fn picker_and_instance_info_commands_round_trip() {
             timeout: true,
         }),
         PluginCommand::Pick(PickCommand::Attach {
-            pane_id: TerminalId::new(7),
+            pane_id: PaneId::Terminal(TerminalId::new(7)),
         }),
         PluginCommand::Pick(PickCommand::Complete {
             result: Ok(Some("/a\nb.pdf".into())),

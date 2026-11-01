@@ -85,6 +85,11 @@ impl RunPluginOrAlias {
                 .is_some_and(|value| value == "true")
         })
     }
+    /// Setup instances opt into host-managed floating geometry.
+    pub fn is_setup_wizard(&self) -> bool {
+        self.configuration_value_is_true("is_setup_wizard")
+    }
+
     /// The overlay placement this plugin's own configuration asks for, if any.
     ///
     /// **Compatibility shim.** Overlay-ness is a *placement*

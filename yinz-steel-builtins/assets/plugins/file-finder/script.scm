@@ -53,8 +53,11 @@
   (define expression (if recursive select (string-append "\\( -path \"$root_pattern\" -o -prune \\) -a \\( " select " \\)")))
   (define listings
     (map (lambda (root)
+        ;; Traversal can fail on an unreadable descendant or a disappearing file.
+        ;; Keep accessible candidates, while cd failures and empty failed listings
+        ;; still report an error to the caller.
         (string-append "(cd -P " (ff-quote (ff-join cwd root))
-          " && root=$PWD && root_pattern=$(printf '%s/' \"$root\" | sed 's/[][\\\\*?]/\\\\&/g') && root_pattern=${root_pattern%/} && find \"$root\" " hidden expression ")"))
+          " && root=$PWD && root_pattern=$(printf '%s/' \"$root\" | sed 's/[][\\\\*?]/\\\\&/g') && root_pattern=${root_pattern%/} && { find \"$root\" " hidden expression " || [ -s \"$candidates\" ]; })"))
       (if (ff-present? roots) roots (list cwd))))
   (string-append
     "set -u\nout=" (ff-quote out) "\ncandidates=" (ff-quote (string-append out ".candidates")) "\n"

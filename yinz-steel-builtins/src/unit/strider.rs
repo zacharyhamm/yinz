@@ -317,3 +317,120 @@ fn filenames_render_as_one_safe_line_but_open_the_original_path() {
         Some(&json!({"OpenFile":[{"path":format!("/work/{name}"),"cwd":"/work"},{}]}))
     );
 }
+
+fn structured(options: Value) -> (Runtime, Arc<Mutex<Host>>) {
+    plugin_with_replies(
+        "strider",
+        json!({"structured_picker":"true"}),
+        BTreeMap::from([
+            ("GetPluginIds".into(), json!({"initial_cwd":"/work"})),
+            ("Pick".into(), json!({"options":options,"cwd":"/work"})),
+        ]),
+    )
+}
+
+fn folder_ready(runtime: &mut Runtime, path: &str) {
+    event(runtime, json!({"HostFolderChanged":path}));
+    files(runtime);
+}
+
+#[test]
+fn shared_directory_picker_browses_then_selects_current_folder() {
+    let (mut runtime, host) = structured(json!({"kind":"directory","roots":["docs"]}));
+    assert_eq!(
+        commands(&host).last(),
+        Some(&json!({"ChangeHostFolder":"/work/docs"}))
+    );
+    folder_ready(&mut runtime, "/work/docs");
+    let output = rendered_text(&runtime.render(20, 100).unwrap());
+    assert!(output.contains("docs/"));
+    assert!(!output.contains("alpha.rs"));
+    assert!(output.contains("Ctrl+Enter"));
+    key(&mut runtime, json!("Down"), &[]);
+    key(&mut runtime, json!("Enter"), &[]);
+    assert_eq!(
+        commands(&host).last(),
+        Some(&json!({"ChangeHostFolder":"/work/docs/docs"}))
+    );
+    folder_ready(&mut runtime, "/work/docs/docs");
+    character(&mut runtime, "docs");
+    key(&mut runtime, json!("Enter"), &["Ctrl"]);
+    assert_eq!(
+        commands(&host).last(),
+        Some(&json!({"Pick":{"Complete":{"result":{"Ok":"/work/docs/docs"}}}}))
+    );
+    assert!(!commands(&host)
+        .iter()
+        .any(|c| c.get("OpenTerminal").is_some() || c.get("MessageToPlugin").is_some()));
+}
+
+#[test]
+fn shared_file_picker_filters_suffixes_and_refreshes_search_results() {
+    let (mut runtime, host) = structured(json!({"kind":"file","extensions":["RS"]}));
+    folder_ready(&mut runtime, "/work");
+    let output = rendered_text(&runtime.render(20, 100).unwrap());
+    assert!(output.contains("docs/"));
+    assert!(output.contains("alpha.rs"));
+    assert!(!output.contains("zebra.txt"));
+    character(&mut runtime, "alpha");
+    event(
+        &mut runtime,
+        json!({"FileSystemUpdate":[entry("/host/alphabet.rs",false,1)]}),
+    );
+    key(&mut runtime, json!("Enter"), &[]);
+    assert_eq!(
+        commands(&host).last(),
+        Some(&json!({"Pick":{"Complete":{"result":{"Ok":"/work/alphabet.rs"}}}}))
+    );
+}
+
+#[test]
+fn shared_picker_escape_dismisses_search_or_loading_without_selection() {
+    for ready in [false, true] {
+        let (mut runtime, host) = structured(json!({"kind":"directory"}));
+        if ready {
+            folder_ready(&mut runtime, "/work");
+            character(&mut runtime, "docs");
+        }
+        key(&mut runtime, json!("Esc"), &[]);
+        assert_eq!(
+            commands(&host).last(),
+            Some(&json!({"Pick":{"Complete":{"result":{"Ok":null}}}}))
+        );
+    }
+}
+
+#[test]
+fn shared_picker_hidden_toggle_and_failed_navigation_keep_current_folder() {
+    let (mut runtime, host) = structured(json!({"kind":"file","hidden":true}));
+    folder_ready(&mut runtime, "/work");
+    assert!(rendered_text(&runtime.render(20, 100).unwrap()).contains(".env"));
+    key(&mut runtime, json!({"Char":"e"}), &["Ctrl"]);
+    folder_ready(&mut runtime, "/work");
+    assert!(!rendered_text(&runtime.render(20, 100).unwrap()).contains(".env"));
+    key(&mut runtime, json!("Down"), &[]);
+    key(&mut runtime, json!("Enter"), &[]);
+    event(
+        &mut runtime,
+        json!({"FailedToChangeHostFolder":"Permission denied"}),
+    );
+    assert_eq!(runtime.value("current-path").unwrap(), "/work");
+    assert!(rendered_text(&runtime.render(20, 100).unwrap()).contains("Permission denied"));
+    assert!(!commands(&host)
+        .iter()
+        .any(|c| c.pointer("/Pick/Complete").is_some()));
+    key(&mut runtime, json!("Esc"), &[]);
+}
+
+#[test]
+fn shared_picker_reports_invalid_starting_folder() {
+    let (mut runtime, host) = structured(json!({"kind":"directory","roots":["/missing"]}));
+    event(
+        &mut runtime,
+        json!({"FailedToChangeHostFolder":"Folder does not exist"}),
+    );
+    assert_eq!(
+        commands(&host).last(),
+        Some(&json!({"Pick":{"Complete":{"result":{"Err":"Folder does not exist"}}}}))
+    );
+}

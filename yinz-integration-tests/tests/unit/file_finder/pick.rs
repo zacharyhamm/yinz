@@ -33,7 +33,7 @@ fn absolute_roots_work_from_an_exited_pane_but_relative_roots_require_a_cwd() {
       (yinz-then #t (lambda (ignored)
         (unless (equal? (hash-ref (yinz-command "GetFocusedPaneInfo") "pane_id") held)
           (error "exited pane is not focused"))
-        (yinz-then (reject-relatives (list (hash) (hash "roots" '(".")) (hash "roots" (list root "."))))
+        (yinz-then (reject-relatives (list (hash) (hash "roots" '("."))))
           (lambda (file)
             (unless (equal? file (string-append root "/book.pdf")) (error "wrong selection"))
             (unless (equal? (hash-ref (yinz-command "GetFocusedPaneInfo") "pane_id") held)
@@ -49,10 +49,13 @@ fn absolute_roots_work_from_an_exited_pane_but_relative_roots_require_a_cwd() {
 (test "absolute roots from an exited process"
   (hash "grants" '("RunCommands" "ReadApplicationState" "MessageAndLaunchOtherPlugins" "ChangeApplicationState"))
   (lambda ()
-    (define home (test-session "fixture" (hash "files" (hash "project/book.pdf" "") "commands" (hash "fzf" "cat"))))
+    (define home (test-session "fixture" (hash "files" (hash "project/book.pdf" "") "commands" (hash "fzf" "exit 99"))))
     (test-session "start")
     (test-wait-for-text "yinz-test>")
     (test-session "load" (hash "path" "./held-picker.scm" "headless" #t "configuration" (hash "root" (string-append home "/project"))))
+    (test-wait-for-text "book.pdf")
+    (test-session "key" "b")
+    (test-session "key" "Enter")
     (test-wait-for "held pane pick completes" (lambda ()
       (define logs (test-session "logs"))
       (assert (not (string-contains? logs "HELD PICK ERROR")) logs)
@@ -73,6 +76,9 @@ fn absolute_roots_work_from_an_exited_pane_but_relative_roots_require_a_cwd() {
 #[test]
 fn awaited_folder_then_pdf_restores_focus_before_second_picker() {
     let root = tempfile::tempdir().unwrap();
+    let papers = root.path().join("Papers.pdf");
+    std::fs::create_dir(&papers).unwrap();
+    std::fs::write(papers.join("quote\n雪.PDF"), "").unwrap();
     let source = root.path().join("picker.scm");
     std::fs::write(&source, r#"
 (define (load config)
@@ -84,12 +90,12 @@ fn awaited_folder_then_pdf_restores_focus_before_second_picker() {
         (when (hash-contains? focused "Terminal")
           (yinz-command (hash "RenameTerminalPane" (list (hash-ref focused "Terminal") text)))))
       (yinz-catch
-        (yinz-then (yinz-pick (hash "kind" "directory" "roots" '("/tmp")))
+        (yinz-then (yinz-pick (hash "kind" "directory" "roots" (list (hash-ref config "root"))))
           (lambda (folder)
             (when (json-null? folder) (error "first pick cancelled"))
             (yinz-then (yinz-pick (hash "kind" "file" "roots" (list folder) "extensions" '("pdf")))
               (lambda (file)
-                (unless (equal? file "/tmp/Papers.pdf/quote\n雪.PDF") (error "path changed"))
+                (unless (equal? file (string-append (hash-ref config "root") "/Papers.pdf/quote\n雪.PDF")) (error "path changed"))
                 (rename "PICK COMPLETE")))))
         (lambda (failure)
           (yinz-log (string-append "PICK ERROR " failure))
@@ -102,7 +108,7 @@ fn awaited_folder_then_pdf_restores_focus_before_second_picker() {
             r##"
 pane_frame_style "full"
 plugins {{
-  picker location="{url}"
+  picker location="{url}" {{ root "{}"; }}
   file-finder location="yinz:file-finder" {{
     width "60%"
     fzf_args "--border"
@@ -111,7 +117,8 @@ plugins {{
   }}
 }}
 load_plugins clear-defaults=true {{ "picker"; }}
-"##
+"##,
+            root.path().display()
         ))
         .with_layout(yinz_types::data::LayoutInfo::Stringified(
             "layout { pane cwd=\"/tmp\"; }".into(),
@@ -125,46 +132,20 @@ load_plugins clear-defaults=true {{ "picker"; }}
     yinz.send_stdin(b"\t\r");
     yinz.wait_until("first picker opens", |grid| {
         assert!(!grid.contains("PICK ERROR"), "{grid}");
-        grid.contains("Find file")
+        grid.contains("Papers.pdf/") && grid.contains("Ctrl+Enter")
     });
-    let first = yinz.expect_pty_spawn();
-    // The finder's driver is unloaded once a pick is answered, so it is checked while it drives
-    // the first pick: neither it nor the picking plugin has a pane, not even a parked one.
-    assert_no_plugin_panes(&yinz, "while the first pick is open");
-    let driver = running_plugin(&yinz, "file-finder");
-    assert_eq!(driver.pane, Some(false), "{driver:#?}");
+    assert_eq!(running_plugin(&yinz, "strider").pane, Some(true));
     assert_eq!(running_plugin(&yinz, "picker.scm").pane, Some(false));
-    let script = spawned_command(&first).1.remove(1);
-    assert!(script.contains("--border"));
-    assert!(!script.contains("exit 77"));
-    assert!(!script.contains("must-not-run"));
-    let out = |script: &str| {
-        PathBuf::from(
-            script
-                .split_once("out='")
-                .unwrap()
-                .1
-                .split_once('\'')
-                .unwrap()
-                .0,
-        )
-    };
-    std::fs::write(out(&script), "/tmp/Papers.pdf\0").unwrap();
-    first.exit(Some(0));
-    let second = yinz.expect_pty_spawn();
-    let script = spawned_command(&second).1.remove(1);
-    assert!(script.contains("/tmp/Papers.pdf"));
-    assert!(script.contains("-iname '*.pdf'"));
-    second.output(b"SECOND PICKER READY");
+    yinz.send_stdin(b"Papers\r");
+    yinz.wait_until("folder opens", |grid| {
+        grid.contains("Papers.pdf") && !grid.contains("Papers.pdf/") && grid.contains("Ctrl+Enter")
+    });
+    yinz.send_stdin(b"\x1b[13;5u");
     yinz.wait_until("second picker retains focus", |grid| {
-        grid.contains("SECOND PICKER READY")
+        assert!(!grid.contains("PICK ERROR"), "{grid}");
+        grid.contains("quote") && grid.contains("browse/select file")
     });
-    yinz.send_stdin(b"x");
-    second.wait_for_stdin("input reaches the second picker", |bytes| {
-        bytes.contains(&b'x')
-    });
-    std::fs::write(out(&script), "/tmp/Papers.pdf/quote\n雪.PDF\0").unwrap();
-    second.exit(Some(0));
+    yinz.send_stdin(b"quote\r");
     yinz.wait_until("two awaited picks complete", |grid| {
         assert!(!grid.contains("PICK ERROR"), "{grid}");
         grid.contains("PICK COMPLETE")
@@ -197,7 +178,7 @@ fn focused_plugin_can_pick_then_query_plugin_ids_in_the_same_callback() {
     (yinz-catch
       (yinz-then #t (lambda (ignored)
         (define pending (yinz-pick (hash "kind" "file")))
-        (unless (= (length (yinz-command (hash "GetPluginIdsForUrl" "yinz:file-finder"))) 1)
+        (unless (= (length (yinz-command (hash "GetPluginIdsForUrl" "yinz:strider"))) 1)
           (error "picker driver missing"))
         (yinz-then pending (lambda (file)
           (unless (json-null? file) (error "expected cancellation"))
@@ -222,17 +203,8 @@ fn focused_plugin_can_pick_then_query_plugin_ids_in_the_same_callback() {
         grid.contains("READY TO PICK")
     });
     yinz.send_stdin(b"p");
-    let picker = yinz.expect_pty_spawn();
-    let script = spawned_command(&picker).1.remove(1);
-    let out = script
-        .split_once("out='")
-        .unwrap()
-        .1
-        .split_once('\'')
-        .unwrap()
-        .0;
-    std::fs::write(out, "").unwrap();
-    picker.exit(Some(0));
+    yinz.wait_until("Strider opens", |grid| grid.contains("browse/select file"));
+    yinz.send_stdin(b"\x1b");
     yinz.wait_until("pick and synchronous query finish", |grid| {
         assert!(!grid.contains("PICK ERROR"), "{grid}");
         grid.contains("PICK AND QUERY COMPLETE")
@@ -284,4 +256,132 @@ fn running_plugin(yinz: &TestSession, location: &str) -> yinz_types::cli::Plugin
         "{status:#?}"
     );
     status
+}
+
+fn assert_centered_wizard(yinz: &TestSession, size: yinz_types::pane_size::Size) {
+    let (code, json) = yinz.run_cli_action_reporting(yinz_cli::args::CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: true,
+        geometry: true,
+        all: true,
+        json: true,
+    });
+    assert_eq!(code, 0, "{json}");
+    let panes: Vec<yinz_types::data::PaneListEntry> = serde_json::from_str(&json).unwrap();
+    let pane = &panes
+        .iter()
+        .find(|pane| pane.pane_info.title.starts_with("First Run Setup Wizard"))
+        .unwrap()
+        .pane_info;
+    let (x, y) = (pane.pane_x.get(), pane.pane_y.get());
+    let (cols, rows) = (pane.pane_columns.get(), pane.pane_rows.get());
+    assert_eq!(cols, 96.min(size.cols - 2), "{pane:#?}");
+    assert_eq!(rows, 32.min(size.rows - 2), "{pane:#?}");
+    assert!(x.abs_diff(size.cols - x - cols) <= 1, "{pane:#?}");
+    assert!(y.abs_diff(size.rows - y - rows) <= 1, "{pane:#?}");
+}
+
+fn resize_wizard(yinz: &TestSession) {
+    for (cols, rows) in [
+        (80, 24),
+        (120, 40),
+        (60, 20),
+        (40, 12),
+        (20, 8),
+        (60, 20),
+        (120, 40),
+    ] {
+        let size = yinz_types::pane_size::Size { cols, rows };
+        yinz.resize(size);
+        yinz.wait_until("resized wizard control and help", |grid| {
+            grid.row_count() == rows
+                && grid.styles.first().is_some_and(|row| row.len() == cols)
+                && grid.contains("Enter")
+        });
+        assert_centered_wizard(yinz, size);
+    }
+}
+
+#[test]
+fn first_run_wizard_browses_selects_cancels_and_reopens_strider() {
+    let config = tempfile::tempdir().unwrap();
+    // The wizard starts from the session cwd, independently of its pane's cwd.
+    let root = yinz_integration_tests::test_env::init().join("cwd");
+    let project = root.join("chosen-project");
+    std::fs::create_dir(&project).unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(NO_BACKGROUND_PLUGINS)
+        .with_config_dir(config.path().to_owned())
+        .with_layout(yinz_types::data::LayoutInfo::Stringified(format!(
+            r#"layout {{
+                pane
+                floating_panes {{
+                    pane cwd="{}" {{
+                        plugin location="yinz:configuration" {{ is_setup_wizard "true"; }}
+                    }}
+                }}
+            }}"#,
+            root.display()
+        )))
+        .start();
+    let shell = yinz.expect_pty_spawn();
+    shell.output(PROMPT);
+    yinz.wait_until("first-run preset wizard", |grid| grid.contains("Step 1/2"));
+    assert_centered_wizard(&yinz, TERMINAL_SIZE);
+    yinz.send_stdin(b"\x1b[B");
+    resize_wizard(&yinz);
+    // A deliberate move is reset by the next terminal resize.
+    yinz.run_cli_action(yinz_cli::args::CliAction::MovePane {
+        direction: Some(yinz_types::geometry::Direction::Right),
+        pane_id: None,
+    });
+    resize_wizard(&yinz);
+    yinz.send_stdin(b"\r");
+    yinz.wait_until("first project form", |grid| {
+        grid.contains("Choose your first project")
+    });
+    resize_wizard(&yinz);
+    yinz.send_stdin(b"\tresize draft\t\t");
+    yinz.send_stdin(b"\x06");
+    yinz.wait_until("Strider folder browser", |grid| {
+        grid.contains("chosen-project/") && grid.contains("Ctrl+Enter")
+    });
+    for (cols, rows) in [(60, 20), (40, 12), (120, 40)] {
+        let size = yinz_types::pane_size::Size { cols, rows };
+        yinz.resize(size);
+        yinz.wait_until("browser remains active across resize", |grid| {
+            grid.row_count() == rows && grid.contains("chosen-project/")
+        });
+        assert_centered_wizard(&yinz, size);
+    }
+    yinz.send_stdin(b"chosen\r");
+    yinz.wait_until("chosen folder opens", |grid| {
+        grid.contains("chosen-project") && !grid.contains("chosen-project/")
+    });
+    yinz.send_stdin(b"\x1b[13;5u");
+    yinz.wait_until("selection returns to wizard", |grid| {
+        grid.contains("Choose your first project") && grid.contains("chosen-project")
+    });
+    yinz.send_stdin(b"\x06");
+    yinz.wait_until("browser reopens at selected folder", |grid| {
+        grid.contains("chosen-project") && grid.contains("Ctrl+Enter")
+    });
+    yinz.send_stdin(b"\x1b");
+    yinz.wait_until("dismissal preserves selected path", |grid| {
+        grid.contains("Choose your first project") && grid.contains("chosen-project")
+    });
+    resize_wizard(&yinz);
+    yinz.wait_until("resizing preserves the project name draft", |grid| {
+        grid.contains("resize draft")
+    });
+    yinz.send_stdin(b"\x06");
+    yinz.wait_until("browser opens again after dismissal", |grid| {
+        grid.contains("Ctrl+Enter")
+    });
+    yinz.send_stdin(b"\x1b");
+    yinz.wait_until("wizard survives repeated browsing", |grid| {
+        grid.contains("Choose your first project")
+    });
+    yinz.quit();
 }

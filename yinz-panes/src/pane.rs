@@ -718,6 +718,9 @@ pub trait Pane {
         None
     }
     fn invoked_with(&self) -> &Option<Run>;
+    fn is_setup_wizard(&self) -> bool {
+        matches!(self.invoked_with(), Some(Run::Plugin(plugin)) if plugin.is_setup_wizard())
+    }
     fn is_builtin_tab_bar(&self) -> bool {
         matches!(self.invoked_with(), Some(Run::Plugin(plugin))
             if plugin.presentation().tab_bar)

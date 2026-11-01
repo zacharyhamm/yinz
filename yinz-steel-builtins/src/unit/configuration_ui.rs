@@ -91,7 +91,7 @@ fn configuration_load_and_wizard_preserve_pane_setup_contract() {
             .iter()
             .filter(|c| c.get("Resize").is_some())
             .count(),
-        3
+        0
     );
     let text = setup.render(30, 100);
     assert!(text.contains("How would you like to interact with Yinz?"));
@@ -795,6 +795,117 @@ fn warnings_and_all_screen_sizes_render_without_invalid_styles_or_offscreen_coor
                     }
                 }
             }
+        }
+    }
+}
+
+fn assert_wizard_bounds(output: &str, cols: usize, rows: usize) {
+    if cols == 0 || rows == 0 {
+        assert!(output.is_empty());
+        return;
+    }
+    let mut occupied = std::collections::HashSet::new();
+    for component in output.split("\x1bPy").skip(1) {
+        let coordinates: Vec<_> = component.split(';').nth(1).unwrap().split('/').collect();
+        let x: usize = coordinates[0].parse().unwrap();
+        let y: usize = coordinates[1].parse().unwrap();
+        let width: usize = coordinates[2].parse().unwrap_or(0);
+        assert!(
+            x < cols && x + width <= cols && y < rows,
+            "{coordinates:?} in {cols}x{rows}"
+        );
+        assert!(occupied.insert(y), "overlap on row {y}");
+    }
+}
+
+#[test]
+fn setup_presets_wrap_scroll_and_preserve_selection_across_resizes() {
+    let mut plugin = Configuration::new(true);
+    for (cols, rows) in [
+        (120, 40),
+        (80, 24),
+        (60, 20),
+        (40, 12),
+        (20, 8),
+        (1, 1),
+        (0, 8),
+        (20, 0),
+        (120, 40),
+    ] {
+        for (selected, title) in [(0, "1. Default"), (1, "2. Unlock First")] {
+            if selected == 1 {
+                plugin.press("Down");
+            }
+            let output = plugin.runtime.render(rows, cols).unwrap();
+            assert_wizard_bounds(&output, cols, rows);
+            if cols >= 20 && rows > 0 {
+                assert!(rendered_text(&output).contains(title));
+            }
+            assert_eq!(plugin.runtime.value("preset-selected").unwrap(), selected);
+            if selected == 1 {
+                plugin.press("Up");
+            }
+        }
+    }
+    plugin.press("Down");
+    plugin.press("Enter");
+    assert!(plugin
+        .commands()
+        .contains(&json!({"SwitchToMode":"Locked"})));
+}
+
+#[test]
+fn setup_project_resizes_preserve_drafts_validation_and_pending_picker() {
+    let path = "/long/目录/with a project folder";
+    let mut plugin = project_setup_at(path);
+    plugin.press("Tab");
+    plugin.event(json!({"PastedText":"draft project"}));
+    plugin.press("Tab");
+    plugin.press("Tab");
+    plugin.ctrl("f");
+    let pick = plugin.last("Pick")["Start"].clone();
+    let picks_before = plugin
+        .commands()
+        .iter()
+        .filter(|c| c.get("Pick").is_some())
+        .count();
+    for (cols, rows) in [
+        (120, 40),
+        (80, 24),
+        (60, 20),
+        (40, 12),
+        (20, 8),
+        (1, 1),
+        (0, 8),
+        (20, 0),
+        (120, 40),
+    ] {
+        let output = plugin.runtime.render(rows, cols).unwrap();
+        assert_wizard_bounds(&output, cols, rows);
+    }
+    assert_eq!(
+        picks_before,
+        plugin
+            .commands()
+            .iter()
+            .filter(|c| c.get("Pick").is_some())
+            .count()
+    );
+    plugin.event(json!({"PickResult":{"request_id":pick["request_id"],"result":{"Ok":null}}}));
+    let text = plugin.render(40, 120);
+    assert!(
+        text.contains(path) && text.contains("draft project"),
+        "{text}"
+    );
+    let context = submit_project(&mut plugin);
+    plugin.event(json!({"RunCommandResult":[1,[],[],context]}));
+    for (cols, rows) in [(20, 8), (40, 12), (120, 40)] {
+        let output = plugin.runtime.render(rows, cols).unwrap();
+        assert_wizard_bounds(&output, cols, rows);
+        if cols == 120 {
+            let text = rendered_text(&output);
+            assert!(text.contains("Could not open that folder"));
+            assert!(text.contains(path) && text.contains("draft project"));
         }
     }
 }

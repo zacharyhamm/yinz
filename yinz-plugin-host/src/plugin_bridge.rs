@@ -909,6 +909,7 @@ impl PluginBridge {
         client_id: ClientId,
         generation: Option<u64>,
     ) -> Result<()> {
+        let structured_pick = self.picks.contains_key(&plugin_id);
         self.plugin_executor.execute_for_plugin_tagged(
             plugin_id,
             "change_host_dir",
@@ -938,6 +939,20 @@ impl PluginBridge {
                     let _ = senders.send_to_plugin(PluginInstruction::for_plugin_event(
                         plugin_id, client_id, generation, event,
                     ));
+                };
+                let new_host_dir = if structured_pick {
+                    match new_host_dir
+                        .canonicalize()
+                        .and_then(|path| std::fs::read_dir(&path).map(|_| path))
+                    {
+                        Ok(path) => path,
+                        Err(error) => {
+                            reply(Event::FailedToChangeHostFolder(Some(error.to_string())));
+                            return;
+                        },
+                    }
+                } else {
+                    new_host_dir
                 };
                 match new_host_dir.try_exists() {
                     Ok(false) => {
