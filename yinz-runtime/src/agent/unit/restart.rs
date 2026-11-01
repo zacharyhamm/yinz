@@ -931,3 +931,107 @@ fn resurrection_of_bare_provider_executable_restores_launch_defaults() {
     crate::agent::restart::restore_command(&mut command).unwrap();
     assert_eq!(command.args, strings(&["--auto", "--session", "sid"]));
 }
+
+#[test]
+fn resurrection_of_builtins_prepares_reporting_before_resume() {
+    use crate::agent::pi;
+    use yinz_types::{command::PaneTarget, input::command::RunCommand};
+
+    // Run with isolated home/data directories before lazy platform paths initialize.
+    // A child process avoids changing environment variables in parallel unit tests.
+    const PROBE: &str = "YINZ_RESURRECTION_REPORTING_PROBE";
+    if std::env::var_os(PROBE).is_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "agent::restart::tests::resurrection_of_builtins_prepares_reporting_before_resume",
+            ])
+            .env(PROBE, temp.path())
+            .env("HOME", temp.path())
+            .env("XDG_DATA_HOME", temp.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+
+    for (kind, executable) in [
+        ("codex", "codex"),
+        ("claude", "claude"),
+        ("pi", "pi"),
+        ("pi", "/bin/sh"),
+    ] {
+        for remote in [false, true] {
+            let target = if remote {
+                PaneTarget::Ssh {
+                    host: "remote".into(),
+                }
+            } else {
+                PaneTarget::default()
+            };
+            let mut command = RunCommand {
+                command: executable.into(),
+                target: target.clone(),
+                resume_agent: Some(
+                    serde_json::from_value(serde_json::json!({
+                        "kind": kind, "state": "Exited", "session_id": "saved-session"
+                    }))
+                    .unwrap(),
+                ),
+                ..Default::default()
+            };
+            restore_command(&mut command).unwrap();
+            assert_eq!(command.target, target);
+            assert!(command.args.contains(&"saved-session".to_owned()));
+            if !remote {
+                match kind {
+                    "codex" => {
+                        assert_eq!(command.command, Path::new("yinz"));
+                        assert!(command.args.starts_with(&strings(&[
+                            "agent",
+                            "codex",
+                            "--command",
+                            "codex",
+                            "--",
+                            "resume",
+                        ])));
+                    },
+                    "claude" => assert!(command.args.windows(2).any(|pair| {
+                        pair[0] == "--settings" && pair[1].contains("agent-report")
+                    })),
+                    "pi" => {
+                        let extension = command
+                            .args
+                            .windows(2)
+                            .find(|pair| pair[0] == "--extension")
+                            .unwrap();
+                        let path = Path::new(&extension[1]);
+                        assert_eq!(path, pi::pi_extension_path());
+                        let isolated = std::env::var_os(PROBE).unwrap();
+                        assert!(path
+                            .canonicalize()
+                            .unwrap()
+                            .starts_with(Path::new(&isolated).canonicalize().unwrap()));
+                        assert!(std::fs::read_to_string(path)
+                            .unwrap()
+                            .contains(pi::PI_EXTENSION_MARKER));
+                    },
+                    _ => unreachable!(),
+                }
+            } else if kind == "pi" {
+                assert!(!command.args.iter().any(|arg| arg == "--extension"));
+            }
+            assert!(!command.args.iter().any(|arg| arg == pi::EXTENSION_ARGUMENT));
+            let restored = command.clone();
+            restore_command(&mut command).unwrap();
+            assert_eq!(command, restored, "retries must preserve launch wiring");
+        }
+    }
+}

@@ -724,9 +724,8 @@ pub fn restore_command(command: &mut yinz_types::input::command::RunCommand) -> 
         // A bare provider executable never received its launch defaults, which the resume
         // below assumes the held command already has.
         let bare_provider = command.args.is_empty()
-            && crate::agent::provider::provider(&agent.kind).is_some_and(|provider| {
-                command.command.as_os_str() == provider.executable.as_str()
-            });
+            && command.command.as_os_str()
+                == crate::agent::launch::binary_for(&agent.kind).as_str();
         if command_kind.is_none() || bare_provider {
             let shell = command.command.file_name().and_then(|name| name.to_str());
             if !bare_provider
@@ -750,11 +749,12 @@ pub fn restore_command(command: &mut yinz_types::input::command::RunCommand) -> 
             {
                 return Err("unsupported saved agent command or wrapper".into());
             }
-            let fresh = crate::agent::launch::command_in_context(
+            let mut fresh = crate::agent::launch::command_in_context(
                 &agent.kind,
                 command.cwd.clone(),
                 command.target.clone(),
             )?;
+            crate::agent::pi::prepare_command(&mut fresh)?;
             command.command = fresh.path;
             command.args = fresh.args;
         }
