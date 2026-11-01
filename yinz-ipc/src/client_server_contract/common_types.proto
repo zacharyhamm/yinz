@@ -1238,6 +1238,7 @@ message FloatingCoordinate {
 }
 
 message RunCommandAction {
+  optional string resume_agent_json = 15;
   string command = 1;
   repeated string args = 2;
   optional string cwd = 3;

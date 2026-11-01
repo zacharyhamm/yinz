@@ -20,6 +20,7 @@ use std::io::Cursor;
 
 fn sample_run_command() -> RunCommand {
     RunCommand {
+        resume_agent: None,
         agent_theme: None,
         command: std::path::PathBuf::from("/bin/sh"),
         args: vec!["-c".to_owned(), "echo hi".to_owned()],

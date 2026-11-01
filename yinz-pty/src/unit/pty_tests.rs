@@ -5118,3 +5118,31 @@ fn failed_rerun_waits_for_write_cancellation_before_retry_and_ignores_stale_acks
         }
     }
 }
+
+#[test]
+fn failed_agent_resume_keeps_pane_and_reports_error() {
+    let command = RunCommand {
+        command: "claude".into(),
+        hold_on_close: true,
+        resume_agent: Some(
+            serde_json::from_value(serde_json::json!({
+                "kind": "claude", "state": "Exited", "session_id": "saved"
+            }))
+            .unwrap(),
+        ),
+        ..Default::default()
+    };
+    let os_api = MockOsApi::new();
+    let (pty, _, screen_rx) = make_pty_with_screen_receiver(os_api);
+    let callback = terminal_quit_callback(
+        pty.bus.senders.clone(),
+        &TerminalAction::RunCommand(command.clone()),
+    );
+    callback(PaneId::Terminal(TerminalId::new(41)), Some(1), command);
+    let screen = drain_screen(&screen_rx);
+    assert!(matches!(&screen[..], [
+        ScreenInstruction::PtyBytes(id, message),
+        ScreenInstruction::HoldPane(PaneId::Terminal(held), Some(1), _)
+    ] if *id == TerminalId::new(41) && *held == *id
+        && String::from_utf8_lossy(message).contains("Agent resume process failed")));
+}

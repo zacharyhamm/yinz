@@ -3930,7 +3930,8 @@ impl Screen {
                             default_fg,
                             default_bg,
                         )
-                        .with_pane_tabs(p.pane_tabs()),
+                        .with_pane_tabs(p.pane_tabs())
+                        .with_agent(p.agent_info()),
                     )
                 })
                 .collect();
@@ -3977,7 +3978,8 @@ impl Screen {
                         default_fg,
                         default_bg,
                     )
-                    .with_pane_tabs(p.pane_tabs()),
+                    .with_pane_tabs(p.pane_tabs())
+                    .with_agent(p.agent_info()),
                 )
             })
             .collect();

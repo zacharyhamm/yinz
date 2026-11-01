@@ -10,6 +10,7 @@ use std::os::fd::AsFd;
 
 fn sample_run_command() -> RunCommand {
     RunCommand {
+        resume_agent: None,
         agent_theme: None,
         command: std::path::PathBuf::from("/bin/sh"),
         args: vec!["-c".to_owned(), "echo hi".to_owned()],
@@ -242,6 +243,7 @@ use std::collections::HashSet;
 fn run_commands(tc: &hegel::TestCase) -> RunCommand {
     let arg_count = tc.draw(generators::integers::<usize>().max_value(4));
     RunCommand {
+        resume_agent: None,
         agent_theme: None,
         command: PathBuf::from(tc.draw(generators::text())),
         args: (0..arg_count)
@@ -729,6 +731,7 @@ fn a_full_ring_fits_in_one_frame() {
         host_pid: ProcessId::new(u32::MAX),
         child_pid: ProcessId::new(u32::MAX),
         cmd: RunCommand {
+            resume_agent: None,
             agent_theme: None,
             command: PathBuf::from("/usr/bin/some-fairly-long-command-name"),
             args: vec!["--with".to_owned(), "--several".to_owned()],

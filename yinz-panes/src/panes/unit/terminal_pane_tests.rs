@@ -3219,3 +3219,32 @@ fn focus_emoji_follows_focus_without_renaming_the_pane() {
             .is_none());
     }
 }
+
+#[test]
+fn resurrected_agent_retry_preserves_session_but_explicit_fresh_clears_it() {
+    use yinz_types::agent::control::AgentRestartSession;
+    let command = RunCommand {
+        command: "claude".into(),
+        hold_on_close: true,
+        resume_agent: Some(AgentInfo {
+            kind: "claude".into(),
+            state: AgentState::Exited,
+            source: AgentSource::Reported,
+            detail: None,
+            waiting_on: None,
+            wait_needs_a_person: false,
+            cwd: None,
+            session_id: Some("saved".into()),
+            run_id: None,
+        }),
+        ..Default::default()
+    };
+    let mut pane = agent_pane_with_run(Some(super::Run::Command(command.clone())));
+    pane.hold(Some(1), false, command.clone());
+    let fresh = pane
+        .agent_restart_command(AgentRestartSession::Fresh, Some("new task"))
+        .unwrap();
+    assert!(fresh.resume_agent.is_none());
+    assert!(fresh.args.contains(&"new task".to_owned()));
+    assert_eq!(pane.respawn(None, true), Some(command));
+}

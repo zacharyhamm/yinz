@@ -118,7 +118,9 @@ impl<'a> KdlLayoutParser<'a> {
             || property_name == "contents_file"
             || property_name == "default_fg"
             || property_name == "default_bg"
+            || property_name == "agent"
             || property_name == "bubblewrap"
+            || property_name == "ssh"
     }
     fn is_a_valid_floating_pane_property(&self, property_name: &str) -> bool {
         if property_name == "pane" {
@@ -145,7 +147,9 @@ impl<'a> KdlLayoutParser<'a> {
             || property_name == "contents_file"
             || property_name == "default_fg"
             || property_name == "default_bg"
+            || property_name == "agent"
             || property_name == "bubblewrap"
+            || property_name == "ssh"
     }
     fn is_a_valid_tab_property(&self, property_name: &str) -> bool {
         property_name == "focus"
@@ -458,6 +462,18 @@ impl<'a> KdlLayoutParser<'a> {
     /// Validate the Bubblewrap checkout before the pane is spawned.
     fn parse_target(&self, pane_node: &KdlNode) -> Result<Option<PaneTarget>, ConfigError> {
         let bubblewrap = self.parse_path(pane_node, "bubblewrap")?;
+        let ssh = kdl_get_string_property_or_child_value_with_error!(pane_node, "ssh");
+        if let Some(host) = ssh {
+            if bubblewrap.is_some() {
+                return Err(kdl_parsing_error!(
+                    "ssh and bubblewrap are mutually exclusive".to_owned(),
+                    pane_node
+                ));
+            }
+            return Ok(Some(PaneTarget::Ssh {
+                host: host.to_owned(),
+            }));
+        }
         if let Some(root) = bubblewrap {
             return PaneTarget::bubblewrap(&root)
                 .map(Some)
@@ -572,7 +588,19 @@ impl<'a> KdlLayoutParser<'a> {
         pane_node: &KdlNode,
         is_template: bool,
     ) -> Result<Option<Run>, ConfigError> {
+        let resume_agent = kdl_get_string_property_or_child_value_with_error!(pane_node, "agent")
+            .map(|value| {
+                serde_json::from_str::<yinz_types::agent::AgentInfo>(value).map_err(|error| {
+                    kdl_parsing_error!(format!("invalid agent record: {error}"), pane_node)
+                })
+            })
+            .transpose()?;
         let command = self.parse_path(pane_node, "command")?;
+        let command = command.or_else(|| {
+            resume_agent
+                .as_ref()
+                .map(|agent| PathBuf::from(&agent.kind))
+        });
         let edit = self.parse_path(pane_node, "edit")?;
         let line_number = self.parse_line_number(pane_node)?;
         // A template instance can inherit its edit instruction during Run::merge.
@@ -598,8 +626,8 @@ impl<'a> KdlLayoutParser<'a> {
                 pane_node,
             )?;
         }
-        let hold_on_close = close_on_exit.map(|c| !c).unwrap_or(true);
-        let hold_on_start = start_suspended.unwrap_or(false);
+        let hold_on_close = resume_agent.is_some() || close_on_exit.map(|c| !c).unwrap_or(true);
+        let hold_on_start = resume_agent.is_none() && start_suspended.unwrap_or(false);
         match (command, edit, cwd, target) {
             (None, Some(_), _, Some(_)) => Err(kdl_parsing_error!(
                 "an edit pane cannot use a pane target".to_owned(),
@@ -612,13 +640,14 @@ impl<'a> KdlLayoutParser<'a> {
                 args: args.unwrap_or_default(),
                 hold_on_start,
                 hold_on_close: close_on_exit.map(|c| !c).unwrap_or(false),
-                remote_default_shell: false,
+                remote_default_shell: target.is_remote(),
                 target,
                 ..Default::default()
             }))),
             (None, None, Some(cwd), None) => Ok(Some(Run::Cwd(cwd))),
             (Some(command), None, cwd, target) => Ok(Some(Run::Command(RunCommand {
                 command,
+                resume_agent,
                 args: args.unwrap_or_default(),
                 cwd,
                 hold_on_close,

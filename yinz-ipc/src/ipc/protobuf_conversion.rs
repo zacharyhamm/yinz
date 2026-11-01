@@ -1609,6 +1609,10 @@ fn run_command_to_protobuf(
     cmd: &yinz_types::input::command::RunCommand,
 ) -> crate::client_server_contract::client_server_contract::RunCommandAction {
     crate::client_server_contract::client_server_contract::RunCommandAction {
+        resume_agent_json: cmd
+            .resume_agent
+            .as_ref()
+            .and_then(|agent| serde_json::to_string(agent).ok()),
         command: cmd.command.to_string_lossy().to_string(),
         args: cmd.args.clone(),
         cwd: cmd.cwd.as_ref().map(|p| p.to_string_lossy().to_string()),
@@ -1628,6 +1632,12 @@ fn run_command_from_protobuf(
     cmd: crate::client_server_contract::client_server_contract::RunCommandAction,
 ) -> Option<yinz_types::input::command::RunCommand> {
     Some(yinz_types::input::command::RunCommand {
+        resume_agent: cmd
+            .resume_agent_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .ok()?,
         agent_theme: None,
         command: std::path::PathBuf::from(cmd.command),
         args: cmd.args,
@@ -5189,6 +5199,7 @@ impl From<yinz_types::input::command::RunCommandAction>
 {
     fn from(action: yinz_types::input::command::RunCommandAction) -> Self {
         Self {
+            resume_agent_json: None,
             command: action.command.to_string_lossy().to_string(),
             args: action.args,
             cwd: action.cwd.map(|p| p.to_string_lossy().to_string()),
@@ -5294,6 +5305,10 @@ impl From<yinz_types::input::layout::Run>
             yinz_types::input::layout::Run::Command(cmd) => Self {
                 run_type: Some(RunType::Command(
                     crate::client_server_contract::client_server_contract::RunCommandAction {
+                        resume_agent_json: cmd
+                            .resume_agent
+                            .as_ref()
+                            .and_then(|agent| serde_json::to_string(agent).ok()),
                         command: cmd.command.to_string_lossy().to_string(),
                         args: cmd.args,
                         cwd: cmd.cwd.map(|p| p.to_string_lossy().to_string()),
@@ -5700,6 +5715,12 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Run>
         match run_type {
             RunType::Command(cmd) => Ok(yinz_types::input::layout::Run::Command(
                 yinz_types::input::command::RunCommand {
+                    resume_agent: cmd
+                        .resume_agent_json
+                        .as_deref()
+                        .map(serde_json::from_str)
+                        .transpose()
+                        .context("decode saved agent")?,
                     agent_theme: None,
                     command: std::path::PathBuf::from(cmd.command),
                     args: cmd.args,

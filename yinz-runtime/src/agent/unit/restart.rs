@@ -828,3 +828,82 @@ fn restart_refuses_unknown_or_ambiguous_commands() {
         );
     }
 }
+
+#[test]
+fn resurrection_resumes_exact_session_and_rejects_missing_context() {
+    use yinz_types::{
+        agent::{AgentInfo, AgentState},
+        input::command::RunCommand,
+    };
+    let agent: AgentInfo = serde_json::from_value(serde_json::json!({
+        "kind": "claude", "state": "Exited", "session_id": "saved-session",
+        "cwd": "/tmp"
+    }))
+    .unwrap();
+    let mut command = RunCommand {
+        command: "claude".into(),
+        args: strings(&["--resume", "old-session", "original task"]),
+        resume_agent: Some(agent.clone()),
+        ..Default::default()
+    };
+    crate::agent::restart::restore_command(&mut command).unwrap();
+    assert!(command.args.contains(&"saved-session".to_owned()));
+    assert!(!command.args.contains(&"old-session".to_owned()));
+    assert!(!command.args.contains(&"original task".to_owned()));
+    assert!(command.hold_on_close);
+    assert_eq!(
+        command.resume_agent.as_ref().unwrap().state,
+        AgentState::Exited
+    );
+
+    command.resume_agent.as_mut().unwrap().session_id = None;
+    assert!(crate::agent::restart::restore_command(&mut command)
+        .unwrap_err()
+        .contains("no session ID"));
+    command.resume_agent = Some(agent);
+    command.resume_agent.as_mut().unwrap().cwd = Some("/nonexistent-yinz-resurrection-test".into());
+    assert!(crate::agent::restart::restore_command(&mut command)
+        .unwrap_err()
+        .contains("working directory does not exist"));
+}
+
+#[test]
+fn resurrection_of_shell_agent_uses_provider_and_preserves_target() {
+    use yinz_types::{command::PaneTarget, input::command::RunCommand};
+    let mut command = RunCommand {
+        command: "/bin/sh".into(),
+        target: PaneTarget::Ssh {
+            host: "remote".into(),
+        },
+        resume_agent: Some(
+            serde_json::from_value(serde_json::json!({
+                "kind": "claude", "state": "Exited", "session_id": "saved",
+                "cwd": "/remote-only/directory"
+            }))
+            .unwrap(),
+        ),
+        ..Default::default()
+    };
+    crate::agent::restart::restore_command(&mut command).unwrap();
+    assert!(command.args.contains(&"saved".to_owned()));
+    assert_eq!(
+        command.cwd.as_deref(),
+        Some(Path::new("/remote-only/directory"))
+    );
+    assert_eq!(
+        command.target,
+        PaneTarget::Ssh {
+            host: "remote".into()
+        }
+    );
+    let args = command.args.clone();
+    crate::agent::restart::restore_command(&mut command).unwrap();
+    assert_eq!(
+        command.args, args,
+        "retry must not accumulate resume arguments"
+    );
+    command.command = "unknown-wrapper".into();
+    assert!(crate::agent::restart::restore_command(&mut command)
+        .unwrap_err()
+        .contains("unsupported"));
+}

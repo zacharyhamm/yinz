@@ -1992,6 +1992,8 @@ pub mod floating_coordinate {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RunCommandAction {
+    #[prost(string, optional, tag="15")]
+    pub resume_agent_json: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, tag="1")]
     pub command: ::prost::alloc::string::String,
     #[prost(string, repeated, tag="2")]

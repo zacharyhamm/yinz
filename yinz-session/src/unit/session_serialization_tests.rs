@@ -1592,3 +1592,96 @@ fn get_dim(dim_hm: &Value) -> Dimension {
         panic!("Constraint is nor a percent nor fixed");
     }
 }
+
+#[test]
+fn saved_agent_roundtrips_and_starts_automatically() {
+    use yinz_types::input::command::RunCommand;
+    let agent: yinz_types::agent::AgentInfo = serde_json::from_value(serde_json::json!({
+        "kind": "claude", "state": "Exited", "session_id": "conversation",
+        "cwd": "/deleted/worktree", "run_id": "durable-run"
+    }))
+    .unwrap();
+    let command = RunCommand {
+        command: "claude".into(),
+        resume_agent: Some(agent.clone()),
+        ..Default::default()
+    };
+    for floating in [false, true] {
+        let mut node = KdlNode::new("pane");
+        node.entries_mut()
+            .push(KdlEntry::new_prop("command", "claude"));
+        serialize_agent(&Some(Run::Command(command.clone())), &mut node);
+        let pane = node.to_string();
+        let source = if floating {
+            format!(
+                "layout {{
+ tab {{
+ floating_panes {{
+ {pane}
+ }}
+ }}
+ }}"
+            )
+        } else {
+            format!(
+                "layout {{
+ tab {{
+ {pane}
+ }}
+ }}"
+            )
+        };
+        let parsed = yinz_config::kdl::layout::from_kdl(&source, None, None, None).unwrap();
+        let (_, tiled, floats) = &parsed.tabs[0];
+        let run = if floating {
+            &floats[0].run
+        } else {
+            &tiled.children[0].run
+        };
+        let Some(Run::Command(restored)) = run else {
+            panic!("missing command")
+        };
+        assert_eq!(restored.resume_agent, Some(agent.clone()));
+        assert!(!restored.hold_on_start);
+        assert!(restored.hold_on_close);
+    }
+}
+
+#[test]
+fn ssh_default_shell_roundtrips() {
+    use yinz_types::command::PaneTarget;
+    use yinz_types::input::command::RunCommand;
+    let run = Some(Run::Command(RunCommand {
+        target: PaneTarget::Ssh {
+            host: "host".into(),
+        },
+        remote_default_shell: true,
+        cwd: Some("/remote/work".into()),
+        ..Default::default()
+    }));
+    let layout = TiledPaneLayout {
+        run,
+        ..Default::default()
+    };
+    let pane = serialize_tiled_pane(&layout, true, &mut BTreeMap::new());
+    let source = format!(
+        "layout {{
+ tab {{
+ {pane}
+ }}
+ }}"
+    );
+    let parsed = yinz_config::kdl::layout::from_kdl(&source, None, None, None).unwrap();
+    let Some(Run::Command(command)) = &parsed.tabs[0].1.children[0].run else {
+        panic!("expected remote shell")
+    };
+    assert!(command.remote_default_shell);
+    assert!(command.command.as_os_str().is_empty());
+    assert_eq!(
+        command.target,
+        PaneTarget::Ssh {
+            host: "host".into()
+        }
+    );
+    assert_eq!(command.cwd, Some("/remote/work".into()));
+}

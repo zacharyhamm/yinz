@@ -435,3 +435,26 @@ mod props {
         }
     }
 }
+
+#[test]
+fn shell_launched_cursor_metadata_restores_conversation() {
+    let cwd = tempfile::tempdir().unwrap();
+    let agent = serde_json::from_value(serde_json::json!({
+        "kind": "cursor", "state": "Exited", "session_id": "conversation"
+    }))
+    .unwrap();
+    for run in [None, Some(Run::Cwd(cwd.path().to_path_buf()))] {
+        let expected_cwd = run.as_ref().and_then(Run::get_cwd);
+        let mut pane = make_command_pane(TerminalId::new(1), "", vec![]);
+        pane.run = run;
+        let pane = pane.with_agent(Some(&agent));
+        let Some(Run::Command(mut command)) = pane.run else {
+            panic!("expected saved command")
+        };
+        assert_eq!(command.command, PathBuf::from("cursor-agent"));
+        assert_eq!(command.cwd, expected_cwd);
+        assert_eq!(command.resume_agent, Some(agent.clone()));
+        yinz_runtime::agent::restart::restore_command(&mut command).unwrap();
+        assert_eq!(command.args, ["--resume", "conversation"]);
+    }
+}

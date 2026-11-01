@@ -2816,6 +2816,7 @@ fn test_client_messages() {
             layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Command(RunCommand {
+                    resume_agent: None,
                     agent_theme: None,
                     command: PathBuf::from("/path/to/command"),
                     args: vec![],
@@ -2847,6 +2848,7 @@ fn test_client_messages() {
             layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Command(RunCommand {
+                    resume_agent: None,
                     agent_theme: None,
                     command: PathBuf::from("/path/to/command"),
                     args: vec!["arg1".to_owned(), "arg2".to_owned(), "arg3".to_owned()],
@@ -5945,4 +5947,21 @@ fn attach_without_session_request_capability_decodes_as_unsupported() {
     .unwrap();
     assert!(!json.supports_session_requests);
     assert!(json.timezone.is_none());
+}
+
+#[test]
+fn saved_agent_layout_command_roundtrips() {
+    let run = yinz_types::input::layout::Run::Command(yinz_types::input::command::RunCommand {
+        command: "claude".into(),
+        resume_agent: Some(
+            serde_json::from_value(serde_json::json!({
+                "kind": "claude", "state": "Exited", "session_id": "saved"
+            }))
+            .unwrap(),
+        ),
+        ..Default::default()
+    });
+    let wire: crate::client_server_contract::client_server_contract::Run = run.clone().into();
+    let restored = yinz_types::input::layout::Run::try_from(wire).unwrap();
+    assert_eq!(run, restored);
 }

@@ -44,6 +44,7 @@ impl SessionLayoutMetadata {
             for tiled_pane in tab.tiled_panes.iter_mut() {
                 if let Some(Run::Command(run_command)) = tiled_pane.run.as_mut()
                     && !run_command.target.is_bubblewrap()
+                    && run_command.resume_agent.is_none()
                     && Self::is_default_shell(
                         self.default_shell.as_ref(),
                         &run_command.command.display().to_string(),
@@ -56,6 +57,7 @@ impl SessionLayoutMetadata {
             for floating_pane in tab.floating_panes.iter_mut() {
                 if let Some(Run::Command(run_command)) = floating_pane.run.as_mut()
                     && !run_command.target.is_bubblewrap()
+                    && run_command.resume_agent.is_none()
                     && Self::is_default_shell(
                         self.default_shell.as_ref(),
                         &run_command.command.display().to_string(),
@@ -126,11 +128,13 @@ impl SessionLayoutMetadata {
             for tiled_pane in &tab.tiled_panes {
                 match tiled_pane.run.as_ref() {
                     Some(Run::Command(run_command)) => {
-                        if !Self::is_default_shell(
-                            self.default_shell.as_ref(),
-                            &run_command.command.display().to_string(),
-                            &run_command.args,
-                        ) {
+                        if run_command.resume_agent.is_some()
+                            || !Self::is_default_shell(
+                                self.default_shell.as_ref(),
+                                &run_command.command.display().to_string(),
+                                &run_command.args,
+                            )
+                        {
                             return true;
                         }
                     },
@@ -141,11 +145,13 @@ impl SessionLayoutMetadata {
             for floating_pane in &tab.floating_panes {
                 match floating_pane.run.as_ref() {
                     Some(Run::Command(run_command)) => {
-                        if !Self::is_default_shell(
-                            self.default_shell.as_ref(),
-                            &run_command.command.display().to_string(),
-                            &run_command.args,
-                        ) {
+                        if run_command.resume_agent.is_some()
+                            || !Self::is_default_shell(
+                                self.default_shell.as_ref(),
+                                &run_command.command.display().to_string(),
+                                &run_command.args,
+                            )
+                        {
                             return true;
                         }
                     },
@@ -291,7 +297,7 @@ impl SessionLayoutMetadata {
     ) {
         let mut update_cmd_in_pane_metadata = |pane_layout_metadata: &mut PaneLayoutMetadata| {
             // Process discovery sees the host launcher, not the command to resurrect.
-            if matches!(&pane_layout_metadata.run, Some(Run::Command(command)) if command.target.is_bubblewrap())
+            if matches!(&pane_layout_metadata.run, Some(Run::Command(command)) if command.target.is_bubblewrap() || command.resume_agent.is_some())
             {
                 return;
             }
@@ -595,6 +601,24 @@ pub struct PaneLayoutMetadata {
 }
 
 impl PaneLayoutMetadata {
+    pub fn with_agent(mut self, agent: Option<&yinz_types::agent::AgentInfo>) -> Self {
+        if let Some(agent) = agent {
+            let mut command = match self.run.take() {
+                Some(Run::Command(command)) => command,
+                run => yinz_types::input::command::RunCommand {
+                    cwd: run.and_then(|run| run.get_cwd()),
+                    ..Default::default()
+                },
+            };
+            if command.command.as_os_str().is_empty() {
+                command.command = yinz_runtime::agent::launch::binary_for(&agent.kind).into();
+            }
+            command.resume_agent = Some(agent.clone());
+            self.run = Some(Run::Command(command));
+        }
+        self
+    }
+
     pub fn with_pane_tabs(mut self, tabs: Option<&yinz_types::pane_tabs::PaneTabsInfo>) -> Self {
         // Terminal-backed groups are runtime-only; layout descriptors can only restore plugins.
         let tabs = tabs.filter(|tabs| tabs.tabs.iter().all(|slot| slot.terminal_id.is_none()));

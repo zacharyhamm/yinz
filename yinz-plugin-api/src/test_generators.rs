@@ -485,6 +485,7 @@ pub(crate) fn optional_run_command_actions(tc: &hegel::TestCase) -> Option<RunCo
 
 pub(crate) fn run_commands(tc: &hegel::TestCase) -> RunCommand {
     RunCommand {
+        resume_agent: None,
         agent_theme: None,
         command: paths(tc),
         args: up_to(tc, 3, strings),

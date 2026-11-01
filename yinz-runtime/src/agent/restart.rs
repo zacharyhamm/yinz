@@ -24,7 +24,7 @@ pub fn restart_with_prompt(
             inner_program = next_program;
             inner_args = next_args;
         }
-        let kind = crate::agent::agent_kind_of(inner_program, inner_args)
+        let kind = crate::agent::kind_from_program_and_args(inner_program, inner_args)
             .ok_or("unsupported agent command for restart")?;
         let spec = Spec {
             kind: Some(kind.clone()),
@@ -689,3 +689,68 @@ fn provider_restart_args(
 #[cfg(test)]
 #[path = "unit/restart.rs"]
 mod tests;
+
+/// Reconstruct an exact conversation resume without replaying the original prompt.
+pub fn restore_command(command: &mut yinz_types::input::command::RunCommand) -> Result<(), String> {
+    let Some(agent) = command.resume_agent.clone() else {
+        return Ok(());
+    };
+    let mut prepare = || -> Result<(), String> {
+        let session = agent
+            .session_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .ok_or("saved agent has no session ID")?;
+        if let Some(cwd) = &agent.cwd {
+            command.cwd = Some(cwd.into());
+        }
+        if !command.target.is_remote()
+            && let Some(cwd) = &command.cwd
+            && !cwd.is_dir()
+        {
+            return Err(format!(
+                "working directory does not exist: {}",
+                cwd.display()
+            ));
+        }
+        let command_kind =
+            yinz_types::agent::kind_from_program_and_args(&command.command, &command.args);
+        if command_kind
+            .as_deref()
+            .is_some_and(|kind| kind != crate::agent::launch::normalize_kind(&agent.kind))
+        {
+            return Err("saved command and agent provider disagree".into());
+        }
+        if command_kind.is_none() {
+            let shell = command.command.file_name().and_then(|name| name.to_str());
+            if !command.command.as_os_str().is_empty()
+                && !matches!(
+                    shell,
+                    Some("sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" | "nu")
+                )
+            {
+                return Err("unsupported saved agent command or wrapper".into());
+            }
+            let fresh = crate::agent::launch::command_in_context(
+                &agent.kind,
+                command.cwd.clone(),
+                command.target.clone(),
+            )?;
+            command.command = fresh.path;
+            command.args = fresh.args;
+        }
+        command.args = restart_with_prompt(&command.command, &command.args, Some(session), None)?;
+        command.remote_default_shell = false;
+        command.hold_on_start = false;
+        command.hold_on_close = true;
+        Ok(())
+    };
+    prepare().map_err(|error| {
+        format!(
+            "Cannot resume {} session {} in {}: {error}",
+            agent.kind,
+            agent.session_id.as_deref().unwrap_or("(unknown)"),
+            agent.cwd.as_deref().unwrap_or("(saved pane directory)")
+        )
+    })
+}

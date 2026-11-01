@@ -500,7 +500,19 @@ fn terminal_quit_callback(
         ),
         TerminalAction::OpenFile(payload) => (false, None, payload.originating_plugin.clone()),
     };
+    let restoring_agent = matches!(terminal_action, TerminalAction::RunCommand(command) if command.resume_agent.is_some());
     Box::new(move |pane_id, exit_status, command| {
+        if restoring_agent
+            && exit_status != Some(0)
+            && let PaneId::Terminal(id) = pane_id
+        {
+            let _ = senders.send_to_screen(ScreenInstruction::PtyBytes(
+                id,
+                format!("\r\nAgent resume process failed (exit status {exit_status:?}).\r\n")
+                    .into_bytes(),
+            ));
+        }
+
         if let PaneId::Terminal(terminal_id) = pane_id
             && let Some(plugin) = edit_plugin.as_ref()
         {

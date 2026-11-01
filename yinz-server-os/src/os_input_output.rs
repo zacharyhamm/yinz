@@ -755,6 +755,9 @@ impl ServerOsInputOutput {
         mut cmd: RunCommand,
         report_progress: Option<&mut dyn FnMut(&str)>,
     ) -> Result<(RunCommand, RunCommand, Option<RemoteEndpoint>)> {
+        yinz_runtime::agent::restart::restore_command(&mut cmd)
+            .map_err(|error| anyhow!("{error}"))
+            .context("restore saved agent")?;
         let rerun_cmd = cmd.clone();
         match &cmd.target {
             PaneTarget::Local => {

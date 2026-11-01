@@ -44,6 +44,15 @@ pub fn resolve_agent_launcher(
 /// that was asked for, and only the exec goes through this binary's internal launcher,
 /// which builds the sandbox and replaces itself with it.
 pub fn exec_program_and_args(cmd: &RunCommand) -> Result<(PathBuf, Vec<String>)> {
+    if cmd.resume_agent.is_some()
+        && let Some(cwd) = &cmd.cwd
+        && !cwd.is_dir()
+    {
+        return Err(anyhow!(
+            "Cannot resume agent: working directory does not exist: {}",
+            cwd.display()
+        ));
+    }
     let Some(root) = cmd.target.bubblewrap_root() else {
         return Ok((cmd.command.clone(), cmd.args.clone()));
     };

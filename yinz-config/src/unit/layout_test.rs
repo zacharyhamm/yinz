@@ -3854,3 +3854,56 @@ fn bubblewrap_template_arguments_and_explicit_flags_survive_merging() {
         assert!(!command.hold_on_close);
     }
 }
+
+#[test]
+fn ssh_layout_default_shell_and_command_templates() {
+    for (definition, command) in [
+        (r#"pane ssh="host""#, ""),
+        (r#"pane_template name="remote" ssh="host"; remote"#, ""),
+        (r#"pane ssh="host" command="top""#, "top"),
+        (
+            r#"pane_template name="remote" ssh="host"; remote command="top""#,
+            "top",
+        ),
+        (
+            r#"pane_template name="remote" command="top"; remote ssh="host""#,
+            "top",
+        ),
+    ] {
+        for cwd in ["", r#"cwd="/remote/work""#] {
+            for floating in [false, true] {
+                // Templates belong at layout level; only their consumer is floated.
+                let (template, pane) = definition.rsplit_once(';').unwrap_or(("", definition));
+                let pane = format!("{pane} {cwd};");
+                let panes = if floating {
+                    format!("floating_panes {{ {pane} }}")
+                } else {
+                    pane
+                };
+                let template = if template.is_empty() {
+                    String::new()
+                } else {
+                    format!("{template};")
+                };
+                let source = format!("layout {{\n {template}\n tab {{\n {panes}\n }}\n }}");
+                let layout = crate::kdl::layout::from_kdl(&source, None, None, None).unwrap();
+                let (_, tiled, floats) = &layout.tabs[0];
+                let run = if floating {
+                    &floats[0].run
+                } else {
+                    &tiled.children[0].run
+                };
+                let Some(Run::Command(run)) = run else {
+                    panic!("expected command")
+                };
+                assert_eq!(run.command, PathBuf::from(command), "{source}");
+                assert!(run.target.is_remote());
+                assert_eq!(run.remote_default_shell, command.is_empty(), "{source}");
+                assert_eq!(
+                    run.cwd,
+                    (!cwd.is_empty()).then(|| PathBuf::from("/remote/work"))
+                );
+            }
+        }
+    }
+}

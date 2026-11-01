@@ -60,6 +60,9 @@ impl OpenFilePayload {
 
 #[derive(Clone, Deserialize, Default, Serialize, PartialEq, Eq)]
 pub struct RunCommand {
+    /// Conversation to restore when launching a saved agent pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_agent: Option<crate::agent::AgentInfo>,
     /// Launch-time palette retained by the supervisor across adoption.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_theme: Option<crate::agent::theme::AgentThemeLaunch>,
@@ -181,6 +184,7 @@ pub struct RunCommandAction {
 impl From<RunCommandAction> for RunCommand {
     fn from(action: RunCommandAction) -> Self {
         RunCommand {
+            resume_agent: None,
             agent_theme: None,
             command: action.command,
             args: action.args,

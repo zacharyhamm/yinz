@@ -2286,3 +2286,26 @@ fn invalid_editor_paths_are_recoverable_pane_start_failures() {
         Some(YinzError::PaneStartFailed { terminal_id: failed, .. }) if *failed == terminal_id));
     server.clear_terminal_id(terminal_id).unwrap();
 }
+
+#[test]
+fn missing_agent_directory_is_a_recoverable_pane_start_failure() {
+    let command = RunCommand {
+        command: "claude".into(),
+        resume_agent: Some(
+            serde_json::from_value(serde_json::json!({
+                "kind": "claude", "state": "Exited", "session_id": "saved",
+                "cwd": "/nonexistent-yinz-resurrection-test"
+            }))
+            .unwrap(),
+        ),
+        ..Default::default()
+    };
+    let target = command.target.clone();
+    let error = make_server().resolve_target(command, None).unwrap_err();
+    let error = resolve_failed(TerminalId::new(7), &target, error);
+    assert!(matches!(error.downcast_ref::<YinzError>(),
+        Some(YinzError::PaneStartFailed { terminal_id, message })
+        if *terminal_id == TerminalId::new(7)
+            && message.contains("Cannot resume claude session saved")
+            && message.contains("working directory does not exist")));
+}

@@ -1749,6 +1749,7 @@ impl Pane for TerminalPane {
             prompt,
         )?;
         Ok(RunCommand {
+            resume_agent: None,
             args,
             ..command.clone()
         })
@@ -2010,6 +2011,15 @@ fn agent_from_run(invoked_with: Option<&Run>) -> Option<AgentInfo> {
     let Some(Run::Command(run_command)) = invoked_with else {
         return None;
     };
+    if let Some(saved) = &run_command.resume_agent {
+        let mut agent = saved.clone();
+        agent.state = AgentState::Busy;
+        agent.source = AgentSource::Spawned;
+        agent.detail = None;
+        agent.waiting_on = None;
+        agent.wait_needs_a_person = false;
+        return Some(agent);
+    }
     let kind = match &run_command.originating_plugin {
         Some(plugin) => match plugin.context.get(AGENT_PANE_CONTEXT)?.trim() {
             "" | "true" => {
@@ -2093,7 +2103,7 @@ impl TerminalPane {
 
     fn restart_command_args(&self) -> Result<Option<Vec<String>>, String> {
         match self.is_held.as_ref() {
-            Some((_, false, command)) if self.was_an_agent => {
+            Some((_, false, command)) if self.was_an_agent && command.resume_agent.is_none() => {
                 yinz_runtime::agent::restart_args(&command.command, &command.args)
                     .map(Some)
                     .map_err(|error| format!("Cannot restart agent: {error}"))

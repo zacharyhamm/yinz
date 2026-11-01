@@ -8,7 +8,7 @@ pub mod pi;
 #[cfg(unix)]
 pub mod registry;
 pub mod report;
-mod restart;
+pub mod restart;
 pub use restart::{restart_args, restart_with_prompt};
 
 #[cfg(test)]

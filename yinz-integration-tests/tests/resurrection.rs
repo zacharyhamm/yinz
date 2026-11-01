@@ -102,3 +102,38 @@ fn quit_and_resurrect_session_with_viewport_serialization() {
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
 }
+
+#[test]
+fn saved_agent_identity_survives_repeated_resurrection() {
+    let layout = r#"
+layout {
+    tab name="agents" {
+        pane command="claude" {
+            agent "{\"kind\":\"claude\",\"state\":\"Exited\",\"session_id\":\"saved-conversation\",\"cwd\":\"/tmp\"}"
+        }
+    }
+}
+"#;
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("session_serialization true")
+        .with_layout(LayoutInfo::Stringified(layout.to_owned()))
+        .start();
+    for generation in 0..3 {
+        let pane = yinz.expect_pty_spawn();
+        let command = pane.run_command();
+        assert_eq!(
+            command.resume_agent.as_ref().unwrap().session_id.as_deref(),
+            Some("saved-conversation")
+        );
+        assert!(!command.hold_on_start);
+        let marker = format!("RESTORED_AGENT_{generation}");
+        pane.output(marker.as_bytes());
+        yinz.wait_until("restored agent rendered", |screen| screen.contains(&marker));
+        yinz.save_session();
+        yinz.wait_for_serialized_session();
+        yinz.quit();
+        if generation < 2 {
+            yinz.resurrect(TERMINAL_SIZE);
+        }
+    }
+}

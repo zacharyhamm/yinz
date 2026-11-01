@@ -225,6 +225,7 @@ fn serialize_tiled_pane(
     if let Some(tabs) = &layout.pane_tabs {
         serialize_pane_tabs(tabs, &mut tiled_pane_node);
     }
+    serialize_agent(&layout.run, &mut tiled_pane_node);
     tiled_pane_node
 }
 
@@ -233,6 +234,11 @@ fn serialize_target_attributes(layout_run: &Option<Run>, kdl_node: &mut KdlNode)
     let Some(Run::Command(run_command)) = layout_run else {
         return;
     };
+    if let PaneTarget::Ssh { host } = &run_command.target {
+        kdl_node
+            .entries_mut()
+            .push(KdlEntry::new_prop("ssh", host.clone()));
+    }
     if let PaneTarget::Bubblewrap { root } = &run_command.target {
         kdl_node
             .entries_mut()
@@ -718,6 +724,7 @@ fn serialize_floating_pane(
     if let Some(tabs) = &layout.pane_tabs {
         serialize_pane_tabs(tabs, &mut floating_pane_node);
     }
+    serialize_agent(&layout.run, &mut floating_pane_node);
     floating_pane_node
 }
 
@@ -1529,3 +1536,21 @@ mod stack_tests;
 #[cfg(test)]
 #[path = "unit/session_serialization_tests.rs"]
 mod tests;
+
+// AgentInfo contains only JSON-compatible scalar fields.
+fn serialize_agent(run: &Option<Run>, node: &mut KdlNode) {
+    if let Some(Run::Command(command)) = run
+        && let Some(agent) = &command.resume_agent
+    {
+        let mut child = KdlNode::new("agent");
+        if let Ok(json) = serde_json::to_string(agent) {
+            child.entries_mut().push(KdlEntry::new(json));
+            if node.children().is_none() {
+                node.set_children(KdlDocument::new());
+            }
+            if let Some(children) = node.children_mut() {
+                children.nodes_mut().push(child);
+            }
+        }
+    }
+}
