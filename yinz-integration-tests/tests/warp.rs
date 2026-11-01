@@ -1318,8 +1318,6 @@ fn held_warp_preserves_state_until_explicit_restart() {
             }}"#
             );
             let sender = start(Some(&layout));
-            let live = sender.expect_pty_spawn();
-            live.output(PROMPT);
             sender.wait_until("custom layout to load", |grid| {
                 grid.contains("saved held task")
             });
@@ -1335,31 +1333,51 @@ fn held_warp_preserves_state_until_explicit_restart() {
                 assert_eq!(code, 0, "{output}");
                 serde_json::from_str::<Vec<serde_json::Value>>(&output).unwrap()
             };
+            // Startup workers register out of order. Resolve the layout panes
+            // before claiming handles so only the saved command is exited.
+            let panes = list(&sender);
+            let command = panes
+                .iter()
+                .find(|pane| pane["title"] == "saved held task")
+                .unwrap();
+            let terminal_id = |pane: &serde_json::Value| {
+                yinz_types::internal_ids::TerminalId::new(pane["id"].as_u64().unwrap() as u32)
+            };
+            let id = terminal_id(command);
+            let live = panes
+                .iter()
+                .find(|pane| {
+                    pane["is_plugin"] == false
+                        && pane["tab_id"] == command["tab_id"]
+                        && pane["id"] != command["id"]
+                })
+                .unwrap();
+            let spare = panes
+                .iter()
+                .find(|pane| pane["is_plugin"] == false && pane["tab_id"] != command["tab_id"])
+                .unwrap();
+            let live = sender.expect_pty_spawn_for(terminal_id(live));
+            live.output(PROMPT);
+            let spare = sender.expect_pty_spawn_for(terminal_id(spare));
+            spare.output(PROMPT);
             if !first_run {
-                let terminal = sender.expect_pty_spawn();
+                let terminal = sender.expect_pty_spawn_for(id);
+                terminal.wait_for_command("codex");
                 terminal.output(b"KEPT SCROLLBACK\r\n");
                 sender.wait_until("command output before exit", |grid| {
                     grid.contains("KEPT SCROLLBACK")
                 });
                 terminal.exit(Some(17));
             }
-            let spare = sender.expect_pty_spawn();
-            spare.output(PROMPT);
             sender.wait_until("held command ready to transfer", |_| {
-                list(&sender)
-                    .iter()
-                    .any(|pane| pane["title"] == "saved held task" && pane["is_held"] == true)
+                list(&sender).iter().any(|pane| {
+                    pane["is_plugin"] == false && terminal_id(pane) == id && pane["is_held"] == true
+                })
             });
-            let before = list(&sender)
-                .into_iter()
-                .find(|pane| pane["title"] == "saved held task")
-                .unwrap();
-            let id =
-                yinz_types::internal_ids::TerminalId::new(before["id"].as_u64().unwrap() as u32);
             report_waiting_agent(&sender, id);
             let before = list(&sender)
                 .into_iter()
-                .find(|pane| pane["title"] == "saved held task")
+                .find(|pane| pane["is_plugin"] == false && terminal_id(pane) == id)
                 .unwrap();
             if mode == "rollback" {
                 live.fail_warp(WarpFailure::UnadoptableOnce);

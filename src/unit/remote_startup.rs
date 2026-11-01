@@ -360,6 +360,7 @@ struct Client {
 
 #[test]
 fn local_resurrection_preserves_terminal_settings_geometry_pane_limit_and_debug() {
+    use nix::fcntl::{fcntl, FcntlArg, FdFlag};
     use nix::sys::termios::{tcgetattr, LocalFlags};
     use yinz_types::session_destination::{
         ClientReply, ClientRequest, Destination, Request, SwitchRequest, SwitchTarget,
@@ -393,6 +394,11 @@ fn local_resurrection_preserves_terminal_settings_geometry_pane_limit_and_debug(
         None,
     )
     .unwrap();
+    // openpty does not set close-on-exec. The resurrected server must not keep
+    // these test-owned descriptors open after the source client exits.
+    for fd in [&pty.master, &pty.slave] {
+        fcntl(fd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).unwrap();
+    }
     let slave = fs::File::from(pty.slave);
     assert!(Command::new("stty")
         .args(["intr", "^X"])
@@ -401,6 +407,19 @@ fn local_resurrection_preserves_terminal_settings_geometry_pane_limit_and_debug(
         .unwrap()
         .success());
     let original = tcgetattr(&slave).unwrap();
+    // The splash and redraws need a terminal consumer even while we drive IPC.
+    let mut master = fs::File::from(pty.master);
+    let screen = Watched::new(Vec::new());
+    let captured = screen.clone();
+    let capture = std::thread::spawn(move || {
+        let mut buffer = [0; 4096];
+        while let Ok(count) = master.read(&mut buffer) {
+            if count == 0 {
+                break;
+            }
+            captured.lock().extend_from_slice(&buffer[..count]);
+        }
+    });
     let mut command = session.command();
     command
         .args(["--max-panes", "2", "--debug", "attach", "source"])
@@ -415,6 +434,8 @@ fn local_resurrection_preserves_terminal_settings_geometry_pane_limit_and_debug(
         });
     }
     let child = command.spawn().unwrap();
+    // Release the parent's stdin/stdout copies so closing the slave ends capture.
+    drop(command);
     let client = Client {
         pid: Pid::from_raw(child.id() as i32),
         output: Watched::new(None),
@@ -455,13 +476,19 @@ fn local_resurrection_preserves_terminal_settings_geometry_pane_limit_and_debug(
             }))
             .unwrap();
         loop {
-            match receiver.recv_client_msg() {
+            let reason = match receiver.recv_client_msg() {
                 IpcRecv::Msg(ClientToServerMsg::SessionReply(reply), _) => {
                     return reply.result.unwrap()
                 },
-                IpcRecv::Msg(_, _) => {},
-                _ => panic!("client disconnected during resurrection"),
-            }
+                IpcRecv::Msg(_, _) => continue,
+                IpcRecv::Idle => "timed out waiting for a client reply",
+                IpcRecv::Eof => "client disconnected",
+                IpcRecv::Malformed => "received a malformed client message",
+            };
+            panic!(
+                "{reason} during resurrection; terminal output: {:?}",
+                String::from_utf8_lossy(&screen.lock())
+            );
         }
     };
     assert_eq!(
@@ -508,6 +535,8 @@ fn local_resurrection_preserves_terminal_settings_geometry_pane_limit_and_debug(
         restored.local_flags - LocalFlags::PENDIN,
         original.local_flags - LocalFlags::PENDIN
     );
+    drop(slave);
+    capture.join().unwrap();
 
     session.wait_for_panes(false);
     let fifo = session.0.path().join("termios");
