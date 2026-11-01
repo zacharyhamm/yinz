@@ -2832,6 +2832,15 @@ impl Screen {
         None
     }
 
+    fn set_pane_selectable(&mut self, pane_id: PaneId, selectable: bool) -> bool {
+        let Some(tab) = self.tab_containing_pane_mut(pane_id) else {
+            return false;
+        };
+        tab.set_pane_selectable(pane_id, selectable);
+        self.retain_only_existing_panes_in_pane_groups();
+        true
+    }
+
     /// Whether a modal in the client's active tab holds the keyboard. A directional focus move
     /// is then a no-op - never an escalation to another tab or the host session.
     pub(super) fn active_tab_modal_holds_focus(&self, client_id: ClientId) -> bool {
@@ -4158,7 +4167,16 @@ impl Screen {
             .borrow_mut()
             .remove(client_id);
     }
+    fn pane_is_selectable(&self, pane_id: PaneId) -> bool {
+        self.tab_containing_pane(pane_id)
+            .and_then(|tab| tab.get_pane_with_id(pane_id))
+            .is_some_and(|pane| pane.selectable())
+    }
     fn toggle_pane_id_in_group(&mut self, pane_id: PaneId, client_id: &ClientId) {
+        if !self.pane_is_selectable(pane_id) {
+            self.retain_only_existing_panes_in_pane_groups();
+            return;
+        }
         let surface_size = self.size_of_tab_of_client(*client_id);
         {
             let mut pane_groups = self.current_pane_group.borrow_mut();
@@ -4167,6 +4185,10 @@ impl Screen {
         self.retain_only_existing_panes_in_pane_groups();
     }
     fn add_pane_id_to_group(&mut self, pane_id: PaneId, client_id: &ClientId) {
+        if !self.pane_is_selectable(pane_id) {
+            self.retain_only_existing_panes_in_pane_groups();
+            return;
+        }
         let surface_size = self.size_of_tab_of_client(*client_id);
         {
             let mut pane_groups = self.current_pane_group.borrow_mut();
@@ -4494,6 +4516,10 @@ impl Screen {
         for_all_clients: bool,
         client_id: ClientId,
     ) {
+        let pane_ids_to_group = pane_ids_to_group
+            .into_iter()
+            .filter(|pane_id| self.pane_is_selectable(*pane_id))
+            .collect();
         let surface_size = self.size_of_tab_of_client(client_id);
         if for_all_clients {
             {
@@ -4523,7 +4549,7 @@ impl Screen {
             let mut clients_with_empty_group = vec![];
             let mut current_pane_group = { self.current_pane_group.borrow().clone_inner() };
             for (client_id, panes_in_group) in current_pane_group.iter_mut() {
-                panes_in_group.retain(|p_id| self.tab_containing_pane(*p_id).is_some());
+                panes_in_group.retain(|p_id| self.pane_is_selectable(*p_id));
                 if panes_in_group.is_empty() {
                     clients_with_empty_group.push(*client_id)
                 }

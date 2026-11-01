@@ -119,6 +119,9 @@ fn launching_the_plugin_sends_fill_plugin_cwd_to_pty() {
         );
     };
 
+    pane_groups.group_and_ungroup_panes(vec![], vec![], screen_size, &client_1);
+    nothing_launched("an empty grouping request");
+
     // A client's first pane.
     pane_groups.add_pane_id_to_group(PaneId::Terminal(TerminalId::new(1)), screen_size, &client_1);
     assert_eq!(launched_for("a client's first pane"), client_1);
@@ -158,12 +161,12 @@ fn launching_the_plugin_sends_fill_plugin_cwd_to_pty() {
 }
 
 #[test]
-fn should_launch_plugin_returns_true_when_first_pane_added() {
+fn should_launch_plugin_returns_false_when_the_client_has_no_group() {
     let pane_groups = create_test_pane_groups();
     let client_id: ClientId = ClientId::new(1);
     let previous_groups = HashMap::new();
 
-    assert!(pane_groups.should_launch_plugin(&previous_groups, &client_id));
+    assert!(!pane_groups.should_launch_plugin(&previous_groups, &client_id));
 }
 
 #[test]

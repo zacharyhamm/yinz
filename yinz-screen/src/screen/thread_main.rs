@@ -1277,12 +1277,11 @@ pub fn screen_thread_main(
                     screen.log_and_report_session_state()?;
                 },
                 ScreenInstruction::SetSelectable(pid, selectable) => {
-                    match screen.tab_containing_pane_mut(pid) {
-                        Some(tab) => tab.set_pane_selectable(pid, selectable),
+                    if !screen.set_pane_selectable(pid, selectable) {
                         // the pane's tab may simply not exist yet - retry once one does
-                        None => pending
+                        pending
                             .waiting_for_tab
-                            .push(ScreenInstruction::SetSelectable(pid, selectable)),
+                            .push(ScreenInstruction::SetSelectable(pid, selectable));
                     }
                     screen.render()?;
                     screen.log_and_report_session_state()?;
