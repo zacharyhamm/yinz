@@ -3627,16 +3627,23 @@ fn clipboard_without_terminal_bytes_still_reports_completion() {
         tab.write_selection_to_clipboard("").unwrap();
         assert!(server_rx.try_recv().is_err());
         let deadline = std::time::Instant::now() + yinz_test_support::default_timeout();
+        let mut records = vec![];
         loop {
             let (instruction, _) = plugin_rx
                 .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
                 .expect("clipboard completion");
+            if let PluginInstruction::RecordClipboard(entry) = &instruction {
+                records.push(entry.clone());
+            }
             if matches!(instruction, PluginInstruction::Update(events) if events.iter().any(|(_, _, event)|
                 matches!(event, Event::CopyToClipboard(actual) if *actual == destination)))
             {
                 break;
             }
         }
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].content, "");
+        assert_eq!(records[0].destination, destination);
     }
 }
 
@@ -3727,6 +3734,10 @@ fn clipboard_command_failures_report_failure_without_success() {
             let (instruction, _) = plugin_rx
                 .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
                 .expect("clipboard failure notification");
+            assert!(!matches!(
+                instruction,
+                PluginInstruction::RecordClipboard(_)
+            ));
             if let PluginInstruction::Update(events) = instruction {
                 assert!(!events
                     .iter()

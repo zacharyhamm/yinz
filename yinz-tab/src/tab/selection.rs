@@ -286,10 +286,33 @@ impl Tab {
             { self.connected_clients.borrow().iter().copied().collect() };
         output.add_clients(&connected_clients, self.link_handler.clone(), None);
         let client_ids = connected_clients.iter().copied();
+        let record = yinz_bus::plugins::ClipboardHistoryEntry {
+            content: selection.to_owned(),
+            copied_at_ms: i64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+            )
+            .unwrap_or(i64::MAX),
+            host_id: yinz_runtime::host_identity::host_id(),
+            yinz_session_name: self.senders.session.current(),
+            destination: self.clipboard_provider.as_copy_destination(),
+        };
+        let command_record = matches!(self.clipboard_provider, ClipboardProvider::Command(_))
+            .then(|| record.clone());
         let senders = self.senders.clone();
         let on_command_complete = move |result: Result<()>| {
             let event = match result {
-                Ok(()) => Event::CopyToClipboard(yinz_types::data::CopyDestination::Command),
+                Ok(()) => {
+                    if let Some(record) = command_record {
+                        senders
+                            .send_to_plugin(PluginInstruction::RecordClipboard(record))
+                            .context("failed to enqueue clipboard history")
+                            .non_fatal();
+                    }
+                    Event::CopyToClipboard(yinz_types::data::CopyDestination::Command)
+                },
                 Err(error) => {
                     Err::<(), _>(error)
                         .context("failed to write selection to clipboard")
@@ -327,6 +350,12 @@ impl Tab {
                 Event::SystemClipboardFailure
             },
         };
+        if matches!(clipboard_event, Event::CopyToClipboard(_)) {
+            self.senders
+                .send_to_plugin(PluginInstruction::RecordClipboard(record))
+                .context("failed to enqueue clipboard history")
+                .non_fatal();
+        }
         self.senders
             .send_to_plugin(PluginInstruction::Update(vec![(
                 None,

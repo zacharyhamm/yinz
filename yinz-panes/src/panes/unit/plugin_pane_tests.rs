@@ -48,6 +48,25 @@ fn rendered_text(chunks: &[CharacterChunk]) -> String {
 }
 
 #[test]
+fn plugin_frames_discard_osc52_clipboard_payloads_for_each_client() {
+    let mut pane = test_plugin_pane(5, 40, Offset::frame(1));
+    let clients = [ClientId::new(1), ClientId::new(2)];
+    for client in clients {
+        pane.add_client(client);
+    }
+    for _ in 0..10 {
+        for client in clients {
+            pane.handle_plugin_bytes(client, b"\x1b]52;c;aGVsbG8=\x07".to_vec());
+            assert!(pane.grids[&client].pending_clipboard_updates.is_empty());
+            pane.handle_plugin_bytes(client, b"\x1b]52;c;d29y".to_vec());
+            pane.handle_plugin_bytes(client, b"bGQ=\x1b\\visible".to_vec());
+            assert!(pane.grids[&client].pending_clipboard_updates.is_empty());
+            assert!(pane.dump_screen(false, Some(client)).contains("visible"));
+        }
+    }
+}
+
+#[test]
 fn initial_contents_seed_each_plugin_client_until_its_first_frame() {
     let mut pane = test_plugin_pane(5, 40, Offset::frame(1));
     let first = ClientId::new(1);

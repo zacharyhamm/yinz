@@ -644,7 +644,7 @@ pub struct Grid {
     /// `pending_messages_to_pty` for this pane.
     pub color_palette_notification_enabled: bool,
     pub search_results: SearchResult,
-    pub pending_clipboard_update: Option<String>,
+    pub pending_clipboard_updates: Vec<String>,
     pub pending_osc7_cwd: Option<std::path::PathBuf>,
     pub pending_desktop_notifications: Vec<PendingNotification>,
     notification_tracker: NotificationTracker,
@@ -1024,7 +1024,7 @@ impl Grid {
             kitty_parser: KittyCommandParser::new(),
             kitty_host_support: KittyHostSupport::Supported,
             sixel_host_support: true,
-            pending_clipboard_update: None,
+            pending_clipboard_updates: vec![],
             pending_osc7_cwd: None,
             pending_desktop_notifications: Vec::new(),
             notification_tracker: NotificationTracker::default(),

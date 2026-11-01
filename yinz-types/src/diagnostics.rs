@@ -465,6 +465,7 @@ pub enum PluginContext {
     RunHook,
     RequestContextMenu,
     Update,
+    RecordClipboard,
     Unload,
     Reload,
     ReloadPluginWithId,

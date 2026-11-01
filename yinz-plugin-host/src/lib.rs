@@ -60,6 +60,7 @@ use {
 use plugin_bridge::PluginBridge;
 use plugin_panes::{PaneRequest, ShowPane};
 mod cli_data;
+mod clipboard_history;
 
 use yinz_runtime::errors::prelude::*;
 use yinz_types::diagnostics::ContextType;
@@ -141,6 +142,11 @@ pub fn plugin_thread_main(
     // client before its `AddClient`, and must share its attachment token.
     plugin_bridge.reserve_client(initiating_client_id);
     let _data_watch_poller = plugin_bridge.start_data_watch_polling()?;
+    let clipboard_writer = clipboard_history::start_worker(
+        palette_data.plugin_data().clone(),
+        bus.senders.clone(),
+        shutdown_send.clone(),
+    );
 
     let host_required: Vec<_> = background_plugins
         .iter()
@@ -352,6 +358,12 @@ pub fn plugin_thread_main(
             },
             PluginInstruction::Update(updates) => {
                 plugin_bridge.update_plugins(updates, shutdown_send.clone())?;
+            },
+            PluginInstruction::RecordClipboard(entry) => {
+                clipboard_writer
+                    .send(entry)
+                    .context("enqueue clipboard history entry")
+                    .non_fatal();
             },
             PluginInstruction::InputBarrier(plugin_id, completion) => {
                 plugin_bridge.input_barrier(plugin_id, completion);
@@ -1767,6 +1779,7 @@ pub fn plugin_thread_main(
     // same again to reach its next check of the token. Either way at least `EXIT_GRACE` of the
     // budget is left for `cleanup`.
     let deadline = Instant::now() + EXIT_TIMEOUT;
+    drop(clipboard_writer);
     drop(shutdown_send);
     let runtime = yinz_bus::global_async_runtime::get_tokio_runtime();
     runtime.block_on(async {

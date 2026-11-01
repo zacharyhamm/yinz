@@ -227,8 +227,8 @@ impl TerminalPaneIo for TerminalPane {
     fn push_color_palette_dsr(&mut self, mode: yinz_types::style::HostTerminalThemeMode) {
         self.grid.push_color_palette_dsr(mode);
     }
-    fn drain_clipboard_update(&mut self) -> Option<String> {
-        self.grid.pending_clipboard_update.take()
+    fn drain_clipboard_updates(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.grid.pending_clipboard_updates)
     }
     fn drain_desktop_notifications(&mut self) -> Vec<PendingNotification> {
         std::mem::take(&mut self.grid.pending_desktop_notifications)

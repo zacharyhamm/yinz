@@ -60,6 +60,16 @@ pub fn owned_rows_request(entity: &str, owner: &Owner) -> FetchRequest {
 /// Shared project and agent data. A mutation batch is a transaction over one namespace.
 pub const SHARED: &str = "shared:yinz";
 
+/// Append-only clipboard submissions. Content is UTF-8 bytes so NULs are lossless.
+pub fn clipboard_history_def() -> EntityDef {
+    EntityDef::new("clipboard_history", 1)
+        .attr(AttrDef::blob("content").required())
+        .attr(AttrDef::int("copied_at_ms").indexed().required())
+        .attr(AttrDef::text("host_id").indexed().required())
+        .attr(AttrDef::text("yinz_session_name").indexed().required())
+        .attr(AttrDef::text("destination").required())
+}
+
 /// The page size for list reads; lists may span any number of pages.
 pub const LIST_FETCH_LIMIT: u32 = MAX_FETCH_ROWS;
 

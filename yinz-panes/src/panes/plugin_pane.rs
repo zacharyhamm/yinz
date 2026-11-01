@@ -376,6 +376,10 @@ impl Pane for PluginPane {
             vte_parser.advance(grid, &forwarded);
         }
 
+        // Plugin frames have no clipboard-write consumer. Unlike terminal output, these
+        // grids persist across renders without draining writes, so discard their payloads.
+        grid.pending_clipboard_updates.clear();
+
         self.should_render.insert(client_id, true);
     }
     fn set_initial_contents(&mut self, contents: &str) {

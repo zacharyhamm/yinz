@@ -1848,6 +1848,7 @@ impl SuppressedPaneModel {
 
 mod borderless_pinned;
 mod centered_agents;
+mod clipboard;
 mod cursor;
 mod floating;
 mod focus_follows_mouse;

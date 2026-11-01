@@ -29,6 +29,23 @@ Basic live operations do not require `agent-service` or `project-store`. Registr
 Native file, Git, web, and external-service tools remain appropriate for work outside
 these Yinz interfaces.
 
+## Clipboard history
+
+Yinz appends clipboard submissions to the `clipboard_history` entity in
+`shared:yinz`, stored in the data directory's `plugin-data.db`. Selection copies,
+explicit copy actions, plugin copies, and terminal OSC 52 writes are included.
+Repeated and empty values are retained without automatic pruning.
+
+Records contain `copied_at_ms`, `host_id`, `yinz_session_name`, `destination`
+(`system`, `primary`, or `command`), and `content` as a blob of UTF-8 bytes,
+including embedded NULs. The existing `data catalog/fetch/count` commands can
+inspect the records; no clipboard browser is provided.
+
+Command copies are recorded after their stdin transfer completes, allowing
+clipboard owners such as xclip to remain alive. Known spawn and transfer failures
+are omitted. OSC 52 copies are recorded after output submission; terminals do not
+acknowledge delivery. Persistence errors are logged without failing the copy.
+
 ## Tab groups
 
 Create a group with a fresh tab and capture its stable ID:

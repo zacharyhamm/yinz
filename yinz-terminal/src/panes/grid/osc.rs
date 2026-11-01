@@ -238,7 +238,7 @@ impl Grid {
                         if let Ok(bytes) = BASE64_DECODER.decode(base64)
                             && let Ok(string) = String::from_utf8(bytes)
                         {
-                            self.pending_clipboard_update = Some(string);
+                            self.pending_clipboard_updates.push(string);
                         };
                     },
                 }

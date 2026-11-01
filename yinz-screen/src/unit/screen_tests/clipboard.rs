@@ -118,6 +118,10 @@ fn stalled_clipboard_helper_does_not_block_screen_rendering() {
             |frame| frame.contains("screen still responsive"),
         );
         assert!(clipboard_events(&plugin_log.lock()).is_empty());
+        assert!(!plugin_log
+            .lock()
+            .iter()
+            .any(|instruction| matches!(instruction, PluginInstruction::RecordClipboard(_))));
     }));
     writeln!(release_pipe).unwrap();
     let completion = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -142,6 +146,17 @@ fn stalled_clipboard_helper_does_not_block_screen_rendering() {
         clipboard_events(&plugin_log.lock()),
         vec![Event::CopyToClipboard(CopyDestination::Command)]
     );
+    let records = plugin_log
+        .lock()
+        .iter()
+        .filter_map(|instruction| match instruction {
+            PluginInstruction::RecordClipboard(entry) => Some(entry.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].content, text);
+    assert_eq!(records[0].destination, CopyDestination::Command);
     let contents = std::fs::read_to_string(&received).unwrap();
     assert_eq!(contents, text);
 }

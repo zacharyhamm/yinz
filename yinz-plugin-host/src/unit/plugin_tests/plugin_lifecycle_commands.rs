@@ -1035,3 +1035,154 @@ pub fn run_action_without_permission() {
     // Should be None because permission was denied
     assert_snapshot!(format!("{:#?}", move_focus_instruction));
 }
+
+#[test]
+#[serial(plugin_tests)]
+fn clipboard_history_instruction_persists_without_loaded_plugins() {
+    use yinz_bus::plugins::ClipboardHistoryEntry;
+    use yinz_storage::data_access::DataAccess;
+    use yinz_types::plugin_data::{DataValue, FetchRequest};
+
+    let dir = tempdir().unwrap();
+    let data = DataAccess::sqlite(dir.path());
+    let (sender, _server, _screen, teardown) = create_plugin_thread_with_services(
+        None,
+        None,
+        None,
+        Default::default(),
+        None,
+        Some(data.clone()),
+        Some(dir.path().to_owned()),
+    );
+    for _ in 0..2 {
+        sender
+            .send(PluginInstruction::RecordClipboard(ClipboardHistoryEntry {
+                content: "clipboard\0text".into(),
+                copied_at_ms: 42,
+                host_id: "test-host".into(),
+                yinz_session_name: "copy-time-session".into(),
+                destination: yinz_types::data::CopyDestination::Primary,
+            }))
+            .unwrap();
+    }
+    // Exit follows both submissions on the same channel and joins the plugin thread.
+    teardown();
+    let rows = data
+        .plugin_data()
+        .fetch(
+            project_data::store::SHARED,
+            &FetchRequest::entity("clipboard_history"),
+        )
+        .unwrap();
+    assert_eq!(rows.rows.len(), 2);
+    for row in &rows.rows {
+        assert_eq!(
+            rows.get(row, "content"),
+            Some(&DataValue::Blob(b"clipboard\0text".to_vec()))
+        );
+        assert_eq!(
+            rows.get(row, "destination"),
+            Some(&DataValue::Text("primary".into()))
+        );
+        assert_eq!(
+            rows.get(row, "yinz_session_name"),
+            Some(&DataValue::Text("copy-time-session".into()))
+        );
+    }
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn clipboard_history_contention_does_not_block_input_barriers_and_refreshes_after_commit() {
+    use yinz_bus::plugins::ClipboardHistoryEntry;
+    use yinz_bus::route::NotificationEnd;
+    use yinz_types::plugin_data::{DataValue, FetchRequest, WatchMode};
+
+    let dir = tempdir().unwrap();
+    let data = DataAccess::sqlite(dir.path());
+    data.plugin_data()
+        .define_entity(
+            project_data::store::SHARED,
+            "yinz:clipboard-history",
+            &project_data::store::clipboard_history_def(),
+            false,
+        )
+        .unwrap();
+    let watch = data
+        .plugin_data()
+        .register_watch(
+            project_data::store::SHARED,
+            crate::PluginId::new(1),
+            ClientId::new(1),
+            FetchRequest::entity("clipboard_history"),
+            WatchMode::Rows,
+        )
+        .unwrap();
+    let (events, event_receiver) = channels::unbounded();
+    let (sender, _server, _screen, teardown) = create_plugin_thread_with_services(
+        None,
+        None,
+        None,
+        Default::default(),
+        Some(SenderWithContext::new(events)),
+        Some(data.clone()),
+        Some(dir.path().to_owned()),
+    );
+    let barrier = || {
+        let (completion, answer) = tokio::sync::oneshot::channel();
+        sender
+            .send(PluginInstruction::InputBarrier(
+                crate::PluginId::new(1),
+                NotificationEnd::new(completion),
+            ))
+            .unwrap();
+        answer
+    };
+    let runtime = yinz_bus::global_async_runtime::get_tokio_runtime();
+    runtime.block_on(async {
+        tokio::time::timeout(default_timeout(), barrier())
+            .await
+            .unwrap()
+            .unwrap();
+    });
+
+    let mut connection = rusqlite::Connection::open(dir.path().join("plugin-data.db")).unwrap();
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    sender
+        .send(PluginInstruction::RecordClipboard(ClipboardHistoryEntry {
+            content: "contended copy".into(),
+            copied_at_ms: 42,
+            host_id: "host".into(),
+            yinz_session_name: "session".into(),
+            destination: yinz_types::data::CopyDestination::System,
+        }))
+        .unwrap();
+    // The dispatch loop must acknowledge this while the external writer still holds its lock.
+    // Two seconds is deliberately below SQLite's five-second busy timeout.
+    let completion = runtime.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(2), barrier()).await
+    });
+    transaction.commit().unwrap();
+    completion
+        .expect("database contention must not stall plugin dispatch")
+        .unwrap();
+
+    let (refresh, _) = event_receiver.recv_timeout(default_timeout()).unwrap();
+    assert!(
+        matches!(&refresh, PluginInstruction::RefreshDataWatches { namespace, entities }
+        if namespace == project_data::store::SHARED && entities.contains("clipboard_history"))
+    );
+    sender.send(refresh).unwrap();
+    let (event, _) = event_receiver.recv_timeout(default_timeout()).unwrap();
+    let PluginInstruction::Update(updates) = event else {
+        panic!("expected watch delivery: {event:?}");
+    };
+    assert!(
+        matches!(&updates[0].2, Event::PluginDataChanged { watch_id, rows, .. }
+        if *watch_id == watch.watch_id && rows.rows.len() == 1
+        && rows.get(&rows.rows[0], "content") == Some(&DataValue::Blob(b"contended copy".to_vec())))
+    );
+    teardown();
+}

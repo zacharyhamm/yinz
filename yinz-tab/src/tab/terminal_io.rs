@@ -189,7 +189,7 @@ impl Tab {
                 terminal_output.arm_forward_pause();
             }
             let nested_session_messages = terminal_output.drain_nested_session_messages();
-            let clipboard_update = terminal_output.drain_clipboard_update();
+            let clipboard_updates = terminal_output.drain_clipboard_updates();
             let desktop_notifications = terminal_output.drain_desktop_notifications();
             let osc7_cwd = terminal_output.drain_osc7_cwd();
             for event in agent_theme_updates {
@@ -218,7 +218,7 @@ impl Tab {
                             message,
                         });
             }
-            if let Some(string) = clipboard_update {
+            for string in clipboard_updates {
                 self.write_selection_to_clipboard(&string)
                     .with_context(err_context)?;
             }

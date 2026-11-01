@@ -80,7 +80,19 @@ fn osc_52_write_is_not_forwarded() {
         grid.pending_forwarded_queries.is_empty(),
         "copying to the clipboard must not go through the forward path"
     );
-    assert_eq!(grid.pending_clipboard_update.as_deref(), Some("hello"));
+    assert_eq!(grid.pending_clipboard_updates, vec!["hello"]);
+}
+
+#[test]
+fn osc_52_writes_queue_every_value_including_empty_and_repeated_content() {
+    let mut grid = new_grid_for_forwarding_test();
+    let mut parser = vte::Parser::new();
+    parser.advance(
+        &mut grid,
+        b"\x1b]52;c;YQ==\x07\x1b]52;c;YQ==\x1b\\\x1b]52;c;\x07\x1b]52;c;?\x07\x1b]52;c;!invalid!\x07",
+    );
+    assert_eq!(grid.pending_clipboard_updates, vec!["a", "a", ""]);
+    assert_eq!(grid.pending_forwarded_queries.len(), 1);
 }
 
 #[test]

@@ -80,8 +80,19 @@ mod layout_query_trace_tests;
 /// report reaches the CLI subscribers alone. See `PluginBridge::forward_events_to_cli_subscribers`.
 pub const CLI_EVENTS_ONLY_TARGET: PluginId = PluginId::new(u32::MAX);
 
+/// A clipboard submission, captured before asynchronous transfer or persistence.
+#[derive(Clone, Debug)]
+pub struct ClipboardHistoryEntry {
+    pub content: String,
+    pub copied_at_ms: i64,
+    pub host_id: yinz_types::internal_ids::HostId,
+    pub yinz_session_name: yinz_types::internal_ids::SessionName,
+    pub destination: yinz_types::data::CopyDestination,
+}
+
 #[derive(Clone, Debug, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PluginInstruction {
+    RecordClipboard(ClipboardHistoryEntry),
     PluginRequest {
         request: yinz_types::cli::PluginRequest,
         client_id: ClientId,

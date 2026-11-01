@@ -111,7 +111,7 @@ pub trait TerminalPaneIo {
     fn is_forward_paused(&self) -> bool;
     /// Queue a CSI ?997 theme notification only when the application opted in with CSI ?2031 h.
     fn push_color_palette_dsr(&mut self, mode: yinz_types::style::HostTerminalThemeMode);
-    fn drain_clipboard_update(&mut self) -> Option<String>;
+    fn drain_clipboard_updates(&mut self) -> Vec<String>;
     fn drain_desktop_notifications(&mut self) -> Vec<PendingNotification>;
     fn drain_osc7_cwd(&mut self) -> Option<std::path::PathBuf>;
 }
