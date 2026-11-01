@@ -658,6 +658,10 @@ value's parent) supplies its search root; an empty value uses the picker's
 default root. An optional fourth argument supplies a base directory for relative
 roots and empty values, for example `(yinz-ui-path-field form "path" "directory" initial-cwd)`.
 Absolute roots are preserved, and browsing leaves the draft unchanged until a path is selected.
+Values beginning with `~/` and the value `~` expand using the session's `HOME`
+before resolving the picker root. This requires `ReadSessionEnvironmentVariables`;
+a missing or empty `HOME` or a denied lookup returns a field error without opening
+the picker. Named-user forms such as `~someone` remain literal.
 Cancellation preserves the draft and restores field focus. Picker
 errors also preserve the draft. Keep routing `PickResult` events; the helper
 subscribes when browsing starts. Subscribe to `Key`, `Mouse`, and `PastedText`

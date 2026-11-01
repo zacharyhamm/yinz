@@ -36,6 +36,12 @@
             (vector-set! field 3 #f)
             (hash-insert (reply "error") "message" (trim (error-object-message failure))))
           (define current (yinz-ui-op widget "TextValue" id))
+          ;; Match project submission's home expansion without changing the draft.
+          (when (or (equal? current "~") (starts-with? current "~/"))
+            (define home (%ui-get (yinz-command "GetSessionEnvironmentVariables") "HOME" #f))
+            (unless (and (string? home) (not (equal? home "")))
+              (error "Cannot browse a home-relative path: HOME is unavailable."))
+            (set! current (string-append home (substring current 1 (string-length current)))))
           (define parent (if (equal? kind "directory") current
               (let loop ((chars (reverse (string->list current))))
                 (cond ((null? chars) "") ((equal? (car chars) #\/) (list->string (reverse chars)))

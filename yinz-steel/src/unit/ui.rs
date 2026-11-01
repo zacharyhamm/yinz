@@ -99,6 +99,9 @@ fn path_fields_resolve_picker_roots_without_changing_the_draft() {
     let recorded = commands.clone();
     let mut runtime = Runtime::new(move |command| {
         let _: yinz_types::data::PluginCommand = serde_json::from_value(command.clone()).unwrap();
+        if command == json!("GetSessionEnvironmentVariables") {
+            return Ok(json!({"HOME":"/home/test user"}));
+        }
         recorded.lock().unwrap().push(command);
         Ok(serde_json::Value::Null)
     })
@@ -117,6 +120,40 @@ fn path_fields_resolve_picker_roots_without_changing_the_draft() {
         )
         .unwrap();
     for (kind, draft, base, root) in [
+        ("directory", "~", Some("/work"), Some("/home/test user")),
+        (
+            "directory",
+            "~/repo",
+            Some("/work"),
+            Some("/home/test user/repo"),
+        ),
+        (
+            "file",
+            "~/repo/file.txt",
+            Some("/work"),
+            Some("/home/test user/repo/"),
+        ),
+        (
+            "file",
+            "~/file.txt",
+            Some("/work"),
+            Some("/home/test user/"),
+        ),
+        ("directory", "~", None, Some("/home/test user")),
+        ("directory", "~/repo", None, Some("/home/test user/repo")),
+        (
+            "file",
+            "~/repo/file.txt",
+            None,
+            Some("/home/test user/repo/"),
+        ),
+        ("file", "~/file.txt", None, Some("/home/test user/")),
+        (
+            "directory",
+            "~other/repo",
+            Some("/work"),
+            Some("/work/~other/repo"),
+        ),
         ("directory", "repo", Some("/work"), Some("/work/repo")),
         (
             "directory",
@@ -163,6 +200,56 @@ fn path_fields_resolve_picker_roots_without_changing_the_draft() {
             options, expected,
             "kind={kind}, draft={draft:?}, base={base:?}"
         );
+    }
+}
+
+#[test]
+fn path_fields_home_lookup_errors_preserve_draft_and_allow_retry() {
+    use std::sync::{Arc, Mutex};
+    for environment in [None, Some(json!({})), Some(json!({"HOME":""}))] {
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let recorded = commands.clone();
+        let mut runtime = Runtime::new(move |command| {
+            recorded.lock().unwrap().push(command.clone());
+            if command == json!("GetSessionEnvironmentVariables") {
+                return environment
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("permission denied"));
+            }
+            Ok(serde_json::Value::Null)
+        })
+        .unwrap();
+        runtime
+            .eval(
+                r#"
+          (define form (yinz-ui-form (list (yinz-ui-input "path" "Path" "~/repo"))))
+          (define field (yinz-ui-path-field form "path" "directory" "/work"))
+          (define browse (hash "Key" (hash "bare_key" (hash "Char" "f") "key_modifiers" '("Ctrl"))))
+          (define failure (yinz-ui-path-handle-event field browse))
+          (define draft (yinz-ui-value form "path"))
+        "#,
+            )
+            .unwrap();
+        assert_eq!(runtime.value("failure").unwrap()["kind"], "error");
+        assert_eq!(runtime.value("draft").unwrap(), "~/repo");
+        assert!(commands
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|c| c.get("Pick").is_none()));
+        runtime
+            .eval(
+                r#"
+          (yinz-ui-set-value! form "path" "/repo")
+          (yinz-ui-path-handle-event field browse)
+        "#,
+            )
+            .unwrap();
+        assert!(commands
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.pointer("/Pick/Start/options/roots") == Some(&json!(["/repo"]))));
     }
 }
 
