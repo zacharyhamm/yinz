@@ -1,4 +1,4 @@
-(require "./configuration/presets.scm" "./configuration/rebind.scm" "./configuration/render.scm" "./bar/keys.scm")
+(require "./configuration/presets.scm" "./configuration/rebind.scm" "./configuration/render.scm" "./configuration/project.scm" "./bar/keys.scm")
 (yinz-declare-pane)
 
 (define setup? #f)
@@ -79,7 +79,7 @@
   ;; The server processes both commands in order, so the mode sees the new bindings.
   (yinz-command (hash "Reconfigure" (list source save?)))
   (yinz-command (hash "SwitchToMode" (if locked "Locked" "Normal")))
-  (if setup? (yinz-command "CloseSelf")
+  (if setup? (begin (set! screen "project") (configuration-project-start))
     (set! screen-notification (if save? "Configuration applied and saved to disk." "Configuration applied to current session."))))
 (define (preset-key key)
   (define bare (get key "bare_key" #f))
@@ -89,7 +89,7 @@
     ((and (plain? key) (equal? bare "Up"))
       (set! preset-selected (cond ((not preset-selected) 1) ((= preset-selected 1) 0) (else #f))) #t)
     ((and (plain? key) (equal? bare "Enter"))
-      (if preset-selected (begin (apply-preset setup?) (not setup?)) (begin (set! preset-selected 0) #t)))
+      (if preset-selected (begin (apply-preset setup?) #t) (begin (set! preset-selected 0) #t)))
     ((and (not setup?) (ctrl? key "a") preset-selected) (apply-preset #t) #t)
     ((or (and (plain? key) (equal? bare "Esc")) (ctrl? key "c")) (yinz-command "CloseSelf") #t)
     (else #f)))
@@ -100,11 +100,13 @@
     (if setup?
       (begin
         (set! screen "presets") (set! preset-selected 0)
-        (yinz-command (hash "RenamePluginPane" (list id "First Run Setup Wizard (Step 1/1)")))
+        (yinz-command (hash "RenamePluginPane" (list id "First Run Setup Wizard (Step 1/2)")))
         (for-each (lambda (ignored) (yinz-command (hash "Resize" "Increase"))) '(1 2 3)))
       (yinz-command (hash "RenamePluginPane" (list id "Configuration"))))))
 (define (update event)
   (cond
+    ((equal? event "BeforeClose") (configuration-project-cancel) #f)
+    ((equal? screen "project") (configuration-project-update event))
     ((get event "ModeUpdate" #f)
       (define next (hash-ref event "ModeUpdate"))
       (define changed-base (not (equal? (get mode-info "base_mode" #f) (get next "base_mode" #f))))
@@ -127,7 +129,8 @@
         (else (preset-key key))))
     (else #f)))
 (define (render rows cols)
-  (configuration-render
-    (hash "mode" mode-info "setup" setup? "screen" screen "locked" (locked?) "primary" primary "secondary" secondary
-      "main" main-leader "focus" focus "index" modifier-index "preset" preset-selected
-      "notification" (or notification screen-notification)) rows cols))
+  (if (equal? screen "project") (configuration-project-render rows cols) (configuration-render
+      (hash "mode" mode-info "setup" setup? "screen" screen "locked" (locked?) "primary" primary "secondary" secondary
+        "main" main-leader "focus" focus "index" modifier-index "preset" preset-selected
+        "notification" (or notification screen-notification)) rows cols)))
+(define (unload) (configuration-project-cancel))

@@ -84,7 +84,7 @@ fn configuration_load_and_wizard_preserve_pane_setup_contract() {
     let mut setup = Configuration::new(true);
     assert!(setup
         .commands()
-        .contains(&json!({"RenamePluginPane":[42,"First Run Setup Wizard (Step 1/1)"]})));
+        .contains(&json!({"RenamePluginPane":[42,"First Run Setup Wizard (Step 1/2)"]})));
     assert_eq!(
         setup
             .commands()
@@ -102,9 +102,225 @@ fn configuration_load_and_wizard_preserve_pane_setup_contract() {
     setup.press("Down");
     setup.press("Enter");
     assert!(setup.last("Reconfigure")[1].as_bool().unwrap());
-    assert!(setup
+    assert_eq!(setup.runtime.value("screen").unwrap(), "project");
+    assert!(setup.render(30, 100).contains("Choose your first project"));
+    assert!(setup.commands().contains(&json!({"SwitchToMode":"Locked"})));
+    assert!(!setup.commands().contains(&json!("CloseSelf")));
+    for rows in [0, 1, 5, 15, 30] {
+        for cols in [0, 1, 20, 35, 100] {
+            setup.render(rows, cols);
+        }
+    }
+}
+
+fn project_setup() -> Configuration {
+    project_setup_at("/work/repo")
+}
+
+fn project_setup_at(cwd: &str) -> Configuration {
+    let mut plugin = Configuration::new(true);
+    plugin.host.lock().unwrap().replies.extend([
+        (
+            "GetPluginIds".into(),
+            json!({"plugin_id":42,"client_id":1,"initial_cwd":cwd}),
+        ),
+        (
+            "DataFetch".into(),
+            json!({"columns":[],"rows":[],"truncated":false,"next_cursor":null}),
+        ),
+        ("OpenTerminalNearPlugin".into(), json!({"Terminal":7})),
+    ]);
+    plugin.press("Enter");
+    plugin.event(json!({"HostFolderChanged":"/"}));
+    plugin
+}
+
+fn submit_project(plugin: &mut Configuration) -> Value {
+    plugin.press("Tab");
+    plugin.press("Tab");
+    plugin.press("Enter");
+    plugin.last("RunCommand")[3].clone()
+}
+
+#[test]
+fn configuration_project_picker_preserves_input_on_cancel_and_opens_selected_directory() {
+    let mut plugin = project_setup();
+    assert!(plugin.render(30, 100).contains("Ctrl-f"));
+    plugin.ctrl("f");
+    let pick = plugin.last("Pick")["Start"].clone();
+    assert_eq!(
+        pick["options"],
+        json!({"kind":"directory","roots":["/work/repo"]})
+    );
+    plugin.event(json!({"PickResult":{"request_id":pick["request_id"],"result":{"Ok":null}}}));
+    assert!(plugin.render(30, 100).contains("/work/repo"));
+    plugin.ctrl("f");
+    let pick = plugin.last("Pick")["Start"].clone();
+    // A stale reply cannot overwrite the current request.
+    assert!(!plugin.event(json!({"PickResult":{"request_id":"stale","result":{"Ok":"/wrong"}}})));
+    plugin.event(
+        json!({"PickResult":{"request_id":pick["request_id"],"result":{"Ok":"/chosen folder"}}}),
+    );
+    let context = submit_project(&mut plugin);
+    let command = plugin.last("RunCommand");
+    assert_eq!(
+        command[0].as_array().unwrap().last().unwrap(),
+        "/chosen folder"
+    );
+    assert!(!plugin.commands().contains(&json!("CloseSelf")));
+    plugin.event(json!({"RunCommandResult":[0,b"/chosen folder\n".to_vec(),[],context]}));
+    assert!(!plugin.last("DataApply")["mutations"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        plugin.last("OpenTerminalNearPlugin")["path"],
+        "/host/chosen folder"
+    );
+    assert!(plugin.commands().ends_with(&[
+        json!("CloseSelf"),
+        json!({"FocusTerminalPane":[7,false,false]})
+    ]));
+}
+
+#[test]
+fn configuration_project_browse_and_submission_use_the_initial_working_directory() {
+    let mut plugin = project_setup_at("/work");
+    // Edit through real form events: replace the initial absolute path with a relative draft.
+    plugin.press("Enter");
+    plugin.ctrl("u");
+    plugin.event(json!({"PastedText":"repo"}));
+    plugin.ctrl("f");
+    let pick = plugin.last("Pick")["Start"].clone();
+    assert_eq!(
+        pick["options"],
+        json!({"kind":"directory","roots":["/work/repo"]})
+    );
+    plugin.event(json!({"PickResult":{"request_id":pick["request_id"],"result":{"Ok":null}}}));
+    submit_project(&mut plugin);
+    let command = plugin.last("RunCommand");
+    let args = command[0].as_array().unwrap();
+    assert_eq!(&args[args.len() - 2..], &[json!("/work"), json!("repo")]);
+}
+
+#[test]
+fn configuration_project_validation_and_write_failures_leave_wizard_open() {
+    let mut plugin = project_setup();
+    let context = submit_project(&mut plugin);
+    plugin.event(json!({"RunCommandResult":[1,[],b"not a directory".to_vec(),context]}));
+    assert!(plugin
+        .render(30, 100)
+        .contains("Could not open that folder"));
+    assert!(!plugin
         .commands()
-        .ends_with(&[json!({"SwitchToMode":"Locked"}), json!("CloseSelf")]));
+        .iter()
+        .any(|c| c.get("DataApply").is_some()));
+    plugin
+        .host
+        .lock()
+        .unwrap()
+        .failures
+        .insert("DataApply".into(), "data conflict: project changed".into());
+    plugin.press("Enter");
+    let context = plugin.last("RunCommand")[3].clone();
+    plugin.event(json!({"RunCommandResult":[0,b"/work/repo\n".to_vec(),[],context]}));
+    assert!(plugin.render(30, 100).contains("data conflict"));
+    assert!(!plugin.commands().contains(&json!("CloseSelf")));
+    assert!(!plugin
+        .commands()
+        .iter()
+        .any(|c| c.get("OpenTerminalNearPlugin").is_some()));
+}
+
+#[test]
+fn configuration_project_skip_cancels_picker_without_registering_a_project() {
+    let mut plugin = project_setup();
+    plugin.ctrl("f");
+    let request = plugin.last("Pick")["Start"]["request_id"].clone();
+    plugin.event(json!("BeforeClose"));
+    assert_eq!(
+        plugin.last("Pick"),
+        json!({"Cancel":{"request_id":request,"timeout":false}})
+    );
+    assert!(!plugin
+        .commands()
+        .iter()
+        .any(|c| c.get("DataApply").is_some()));
+}
+
+#[test]
+fn configuration_project_probe_validates_directories_without_interpreting_path_text() {
+    let mut plugin = project_setup();
+    submit_project(&mut plugin);
+    let args = plugin.last("RunCommand")[0].as_array().unwrap().clone();
+    let probe = |path: &std::path::Path| {
+        std::process::Command::new(args[0].as_str().unwrap())
+            .args(args[1..args.len() - 2].iter().map(|s| s.as_str().unwrap()))
+            .arg("/")
+            .arg(path)
+            .output()
+            .unwrap()
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let folder = temp.path().join("repo 'quoted' $(false) ");
+    std::fs::create_dir(&folder).unwrap();
+    let alias = temp.path().join("alias");
+    std::os::unix::fs::symlink(&folder, &alias).unwrap();
+    let output = probe(&alias);
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("{}\n", folder.canonicalize().unwrap().display())
+    );
+    let file = temp.path().join("file");
+    std::fs::write(&file, "").unwrap();
+    assert!(!probe(&file).status.success());
+    assert!(!probe(&temp.path().join("missing")).status.success());
+}
+
+#[test]
+fn configuration_project_name_collision_does_not_replace_an_existing_folder() {
+    let mut plugin = project_setup();
+    plugin.host.lock().unwrap().replies.insert(
+        "DataFetch".into(),
+        json!({
+            "columns":["id","rev","name","root"],
+            "rows":[[{"Int":1},{"Int":4},{"Text":"repo"},{"Text":"/other/repo"}]],
+            "truncated":false,"next_cursor":null
+        }),
+    );
+    let context = submit_project(&mut plugin);
+    plugin.event(json!({"RunCommandResult":[0,b"/work/repo\n".to_vec(),[],context]}));
+    assert!(plugin
+        .render(30, 100)
+        .contains("already uses this project name"));
+    assert!(!plugin
+        .commands()
+        .iter()
+        .any(|c| c.get("DataApply").is_some()));
+}
+
+#[test]
+fn configuration_project_submission_waits_for_host_folder_preparation() {
+    let mut plugin = Configuration::new(true);
+    plugin.press("Enter");
+    plugin.press("Tab");
+    plugin.press("Tab");
+    plugin.press("Enter");
+    assert!(!plugin
+        .commands()
+        .iter()
+        .any(|c| c.get("RunCommand").is_some()));
+    assert!(plugin.render(30, 100).contains("Preparing local folders"));
+    plugin.event(json!({"HostFolderChanged":"/"}));
+    assert_eq!(plugin.last("RunCommand")[2], "/host");
+    plugin.press("Esc");
+    let context = plugin.last("RunCommand")[3].clone();
+    plugin.event(json!({"RunCommandResult":[0,b"/work/repo\n".to_vec(),[],context]}));
+    assert!(!plugin
+        .commands()
+        .iter()
+        .any(|c| c.get("DataApply").is_some()));
 }
 
 #[test]

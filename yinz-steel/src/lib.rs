@@ -358,6 +358,9 @@ impl Runtime {
             .run(include_str!("ui.scm"))
             .map_err(|error| anyhow!("initializing Steel UI SDK: {error}"))?;
         engine
+            .run(include_str!("path_input.scm"))
+            .map_err(|error| anyhow!("initializing Steel path input SDK: {error}"))?;
+        engine
             .run(include_str!("palette.scm"))
             .map_err(|error| anyhow!("initializing Steel palette SDK: {error}"))?;
         engine

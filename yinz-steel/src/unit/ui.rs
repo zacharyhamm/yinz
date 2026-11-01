@@ -8,6 +8,165 @@ fn runtime() -> Runtime {
 }
 
 #[test]
+fn path_fields_browse_only_when_focused_and_preserve_drafts_on_cancel_or_error() {
+    use std::sync::{Arc, Mutex};
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let recorded = commands.clone();
+    let mut runtime = Runtime::new(move |command| {
+        let _: yinz_types::data::PluginCommand = serde_json::from_value(command.clone()).unwrap();
+        recorded.lock().unwrap().push(command);
+        Ok(serde_json::Value::Null)
+    })
+    .unwrap();
+    runtime
+        .eval(
+            r#"
+      (define form (yinz-ui-form (list (yinz-ui-input "file" "File" "/work/draft.txt")
+        (yinz-ui-input "other" "Other" "keep"))))
+      (define field (yinz-ui-path-field form "file" "file"))
+      (define browse (hash "Key" (hash "bare_key" (hash "Char" "f") "key_modifiers" '("Ctrl"))))
+      (yinz-ui-focus! form "other")
+      (define unrelated (yinz-ui-path-handle-event field browse))
+      (yinz-ui-focus! form "file")
+      (yinz-ui-path-handle-event field browse)
+      (yinz-ui-path-handle-event field browse)
+    "#,
+        )
+        .unwrap();
+    assert_eq!(runtime.value("unrelated").unwrap(), false);
+    let pick = commands
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c.pointer("/Pick/Start").cloned())
+        .collect::<Vec<_>>();
+    assert_eq!(pick.len(), 1);
+    assert_eq!(
+        pick[0]["options"],
+        json!({"kind":"file","roots":["/work/"]})
+    );
+    let result =
+        |id: serde_json::Value, answer| json!({"PickResult":{"request_id":id,"result":answer}});
+    let event = result(pick[0]["request_id"].clone(), json!({"Ok":null}));
+    runtime
+        .engine
+        .register_value("event", to_scheme(&event).unwrap());
+    runtime
+        .eval("(define cancelled (yinz-ui-path-handle-event field event))")
+        .unwrap();
+    runtime
+        .eval(
+            "(define draft (yinz-ui-value form \"file\")) (yinz-ui-path-handle-event field browse)",
+        )
+        .unwrap();
+    assert_eq!(runtime.value("draft").unwrap(), "/work/draft.txt");
+    let id = commands
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find_map(|c| c.pointer("/Pick/Start/request_id").cloned())
+        .unwrap();
+    let event = result(id, json!({"Err":"picker unavailable"}));
+    runtime
+        .engine
+        .register_value("event", to_scheme(&event).unwrap());
+    runtime
+        .eval("(define failure (yinz-ui-path-handle-event field event))")
+        .unwrap();
+    assert_eq!(
+        runtime.value("failure").unwrap()["message"],
+        "picker unavailable"
+    );
+    runtime.eval("(define draft-after-error (yinz-ui-value form \"file\")) (yinz-ui-path-handle-event field browse) (yinz-ui-path-cancel! field)").unwrap();
+    assert_eq!(
+        runtime.value("draft-after-error").unwrap(),
+        "/work/draft.txt"
+    );
+    assert!(commands
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .pointer("/Pick/Cancel")
+        .is_some());
+}
+
+#[test]
+fn path_fields_resolve_picker_roots_without_changing_the_draft() {
+    use std::sync::{Arc, Mutex};
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let recorded = commands.clone();
+    let mut runtime = Runtime::new(move |command| {
+        let _: yinz_types::data::PluginCommand = serde_json::from_value(command.clone()).unwrap();
+        recorded.lock().unwrap().push(command);
+        Ok(serde_json::Value::Null)
+    })
+    .unwrap();
+    runtime
+        .eval(
+            r#"
+      (define (browse-path kind draft base)
+        (define form (yinz-ui-form (list (yinz-ui-input "path" "Path" draft))))
+        (define field (if base (yinz-ui-path-field form "path" kind base)
+            (yinz-ui-path-field form "path" kind)))
+        (yinz-ui-path-handle-event field
+          (hash "Key" (hash "bare_key" (hash "Char" "f") "key_modifiers" '("Ctrl"))))
+        (yinz-ui-value form "path"))
+    "#,
+        )
+        .unwrap();
+    for (kind, draft, base, root) in [
+        ("directory", "repo", Some("/work"), Some("/work/repo")),
+        (
+            "directory",
+            "../repo",
+            Some("/work/"),
+            Some("/work/../repo"),
+        ),
+        ("directory", "/repo", Some("/work"), Some("/repo")),
+        ("directory", "", Some("/work"), Some("/work")),
+        ("directory", "repo", Some("/"), Some("/repo")),
+        ("file", "repo/draft.txt", Some("/work"), Some("/work/repo/")),
+        ("file", "draft.txt", Some("/work"), Some("/work")),
+        ("file", "/repo/draft.txt", Some("/work"), Some("/repo/")),
+        ("file", "", Some("/work"), Some("/work")),
+        ("directory", "repo", None, Some("repo")),
+        ("directory", "", None, None),
+        ("file", "draft.txt", None, None),
+    ] {
+        assert_eq!(
+            runtime
+                .invoke(
+                    "browse-path",
+                    vec![
+                        json!(kind),
+                        json!(draft),
+                        base.map_or(json!(false), |s| json!(s))
+                    ],
+                )
+                .unwrap(),
+            draft
+        );
+        let options = commands
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find_map(|c| c.pointer("/Pick/Start/options").cloned())
+            .unwrap();
+        let expected = match root {
+            Some(root) => json!({"kind":kind,"roots":[root]}),
+            None => json!({"kind":kind}),
+        };
+        assert_eq!(
+            options, expected,
+            "kind={kind}, draft={draft:?}, base={base:?}"
+        );
+    }
+}
+
+#[test]
 fn styled_widgets_use_the_shared_render_protocol_and_validate_indices() {
     let mut runtime = runtime();
     runtime.eval("(define output (yinz-ui-text (yinz-ui-styled \"日ab\" (hash \"selected\" #t \"opaque\" #t \"disabled\" #t \"levels\" '((0) (1)))) (yinz-ui-coordinates 2 3 12 1)))").unwrap();

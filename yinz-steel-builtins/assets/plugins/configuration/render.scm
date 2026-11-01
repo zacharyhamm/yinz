@@ -135,7 +135,7 @@
       x (+ base-y (if (> effective-rows 14) 13 10)) rows cols)
     (info state x (+ base-y (if (> effective-rows 14) 14 10)) rows cols)
     (help-line (if setup?
-        '(("Help: <↓↑> - navigate, <ENTER> - apply & save, <ESC> - close" (6 10) (23 30) (47 51)) ("Help: <↓↑> / <ENTER> / <ESC>" (6 10) (13 20) (23 28)))
+        '(("Help: <↓↑> - navigate, <ENTER> - save & next, <ESC> - close" (6 10) (23 30) (46 51)) ("Help: <↓↑> / <ENTER> / <ESC>" (6 10) (13 20) (23 28)))
         '(("Help: <↓↑> - navigate, <ENTER> - apply, <Ctrl a> - apply & save, <ESC> - close" (6 10) (23 30) (40 48) (65 70)) ("Help: <↓↑> / <ENTER> / <Ctrl a> / <ESC>" (6 10) (13 20) (23 31) (34 39)))) effective-rows cols)))
 (define (configuration-render state rows cols)
   (if (or (= rows 0) (= cols 0)) ""

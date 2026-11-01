@@ -645,6 +645,26 @@ Build forms with `yinz-ui-form` or `yinz-ui-dialog`. Fields come from
 `ShowCursor` command, using the frame timing described above. `yinz-ui-render-buffer`
 returns text and cursor metadata without a host call.
 
+Add folder/file browsing to any ordinary text field with
+`(yinz-ui-path-field form field-id "directory")` (or `"file"`). Route events to
+`(yinz-ui-path-handle-event path-field event)` before your normal form handler.
+It returns `#f` for unrelated events, otherwise a form-style action with
+`"kind"`, `"id"`, and `"shouldRender"`. `"fieldChanged"` means a selected path
+was applied; `"error"` includes `"message"` for your status line.
+
+While that field is focused, **Ctrl-f** opens the configured `file-finder` picker
+with the matching file/directory filter. The current directory value (or a file
+value's parent) supplies its search root; an empty value uses the picker's
+default root. An optional fourth argument supplies a base directory for relative
+roots and empty values, for example `(yinz-ui-path-field form "path" "directory" initial-cwd)`.
+Absolute roots are preserved, and browsing leaves the draft unchanged until a path is selected.
+Cancellation preserves the draft and restores field focus. Picker
+errors also preserve the draft. Keep routing `PickResult` events; the helper
+subscribes when browsing starts. Subscribe to `Key`, `Mouse`, and `PastedText`
+for ordinary editing. Call `(yinz-ui-path-cancel! path-field)` when leaving the
+form and from `unload` to retire a pending picker. Include the shortcut in your
+form's help text. As with `yinz-pick`, browsing uses the normal host permissions.
+
 `(yinz-ui-text-input label [text])` creates a standalone input.
 It uses the same key, mouse, paste, render, and cursor operations as forms.
 `(yinz-ui-text-input-op input operation [arguments])` supports `"Text"`, `"SetText"`,

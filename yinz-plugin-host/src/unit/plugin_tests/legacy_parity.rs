@@ -135,14 +135,9 @@ fn actual_wasm_and_steel_configuration_presets_and_setup_wizard() {
     pair.key("Down");
     pair.key("Down");
     pair.key("Ctrl a");
-    let mut wizard = Pair::new(
-        "configuration",
-        BTreeMap::from([("is_setup_wizard".into(), "true".into())]),
-    );
-    wizard.mode(false);
-    wizard.viewports();
-    wizard.key("Down");
-    wizard.key("Enter");
+    // The two-step onboarding now intentionally differs from the recorded one-step
+    // wizard. Its transitions, picker, and project persistence are covered by the
+    // builtin configuration UI tests; normal preset editing retains parity here.
 }
 
 #[test]
