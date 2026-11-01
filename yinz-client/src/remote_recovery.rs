@@ -4,6 +4,7 @@ use crate::{
     os_input_output::ClientOsApi,
     remote_failure::{ConnectionFailure, FailureKind},
     session_switch::{self, PreparedConnection},
+    terminal_escapes::color_code,
 };
 use std::{
     sync::{
@@ -14,9 +15,14 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 use unicode_width::UnicodeWidthChar;
+use yinz_config::config::Config;
 use yinz_ipc::ipc::ClientToServerMsg;
 use yinz_runtime::errors::prelude::*;
-use yinz_types::{input::cli_assets::CliAssets, pane_size::Size};
+use yinz_types::{
+    input::{cli_assets::CliAssets, options::Options},
+    pane_size::Size,
+    style::{default_palette, HostTerminalThemeMode, StyleDeclaration},
+};
 
 pub(crate) const READ_POLL: Duration = Duration::from_millis(100);
 pub(crate) const WRITE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -245,6 +251,8 @@ pub(crate) struct Recovery {
     pub control: RecoveryControl,
     host: String,
     env: yinz_types::envs::EnvironmentVariables,
+    style: StyleDeclaration,
+    host_styles: Option<(StyleDeclaration, StyleDeclaration)>,
     attempt: Option<Attempt>,
     next_retry: Option<Instant>,
     backoff: Backoff,
@@ -252,7 +260,7 @@ pub(crate) struct Recovery {
     healthy_since: Option<Instant>,
     pub rendered: bool,
     diagnostic: String,
-    status: Option<(Size, String)>,
+    status: Option<(Size, StyleDeclaration, String)>,
     status_started: Option<Instant>,
     pub routers: Vec<JoinHandle<()>>,
 }
@@ -260,12 +268,28 @@ impl Recovery {
     pub fn new(
         host: String,
         command: CommandIsExecuting,
-        env: yinz_types::envs::EnvironmentVariables,
+        config: &Config,
+        options: &Options,
     ) -> Self {
         Self {
             control: RecoveryControl::new(command),
             host,
-            env,
+            env: config.env.clone(),
+            style: config
+                .theme_config(options.theme.as_ref())
+                .unwrap_or_else(|| default_palette().into())
+                .text_unselected,
+            host_styles: options
+                .theme_dark
+                .as_ref()
+                .and_then(|name| config.theme_config(Some(name)))
+                .zip(
+                    options
+                        .theme_light
+                        .as_ref()
+                        .and_then(|name| config.theme_config(Some(name))),
+                )
+                .map(|(dark, light)| (dark.text_unselected, light.text_unselected)),
             attempt: None,
             next_retry: None,
             backoff: Backoff::default(),
@@ -451,6 +475,24 @@ impl Recovery {
         if self.control.phase() != Phase::Reconnecting {
             return Ok(());
         }
+        let style = self
+            .host_styles
+            .and_then(|(dark, light)| {
+                self.control
+                    .state
+                    .lock()
+                    .unwrap()
+                    .capabilities
+                    .iter()
+                    .find_map(|message| match message {
+                        ClientToServerMsg::HostTerminalThemeChanged { mode } => Some(match mode {
+                            HostTerminalThemeMode::Dark => dark,
+                            HostTerminalThemeMode::Light => light,
+                        }),
+                        _ => None,
+                    })
+            })
+            .unwrap_or(self.style);
         let size = os.get_terminal_size();
         let retry = self
             .next_retry
@@ -523,26 +565,32 @@ impl Recovery {
         if self
             .status
             .as_ref()
-            .is_some_and(|(old_size, old)| *old_size == size && *old == message)
+            .is_some_and(|(old_size, old_style, old)| {
+                *old_size == size && *old_style == style && *old == message
+            })
         {
             return Ok(());
         }
-        // A resized terminal cannot retain the old dialog at its previous position.
+        // Clear stale dialog cells on resize and repaint the background on a theme change.
         let clear = if self
             .status
             .as_ref()
-            .is_none_or(|(old_size, _)| *old_size != size)
+            .is_none_or(|(old_size, old_style, _)| *old_size != size || *old_style != style)
         {
             crate::terminal_escapes::CLEAR_SCREEN
         } else {
             ""
         };
-        let output = format!("\x1b7\x1b[0m{clear}\x1b[1;7m{message}\x1b[0m\x1b8");
+        let foreground = color_code(style.base);
+        let background = color_code(style.background);
+        let output = format!(
+            "\x1b7\x1b[0m\x1b[38;{foreground}m\x1b[48;{background}m{clear}\x1b[1m{message}\x1b[0m\x1b8"
+        );
         let mut out = os.get_stdout_writer();
         out.write_all(output.as_bytes())
             .context("write reconnection status")?;
         out.flush().context("flush reconnection status")?;
-        self.status = Some((size, message));
+        self.status = Some((size, style, message));
         Ok(())
     }
     pub fn interrupted(&self) -> bool {

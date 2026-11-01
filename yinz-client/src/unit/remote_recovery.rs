@@ -70,7 +70,12 @@ fn failed_transport_unblocks_input_and_generations_reject_stale_failures() {
 #[test]
 fn recovery_waits_for_the_current_routers_drain_marker_before_disconnect() {
     let os = crate::test_support::FakeClientOsApi::new();
-    let mut recovery = Recovery::new("host".into(), CommandIsExecuting::new(), Default::default());
+    let mut recovery = Recovery::new(
+        "host".into(),
+        CommandIsExecuting::new(),
+        &Default::default(),
+        &Default::default(),
+    );
     recovery.rendered = true;
     recovery.control.replacing();
     recovery.control.repainted();
@@ -125,7 +130,12 @@ fn recovery_reannounces_after_repaint_even_when_the_host_recently_pinged() {
     let nested = NestedReannounce::spawn(Box::new(os.clone()), "original".into());
     nested.stop();
     nested.note_host_contact();
-    let mut recovery = Recovery::new("host".into(), CommandIsExecuting::new(), Default::default());
+    let mut recovery = Recovery::new(
+        "host".into(),
+        CommandIsExecuting::new(),
+        &Default::default(),
+        &Default::default(),
+    );
     recovery.first_render(&os, "original", Instant::now());
     assert!(os.stdout_bytes().is_empty());
 
@@ -332,7 +342,12 @@ fn queued_stale_frames_and_session_switches_do_not_affect_the_replacement() {
     use yinz_runtime::channels::{self, SenderWithContext};
     let os = crate::test_support::FakeClientOsApi::new().capturing_stdout();
     let mut command = CommandIsExecuting::new();
-    let mut recovery = Recovery::new("host".into(), command.clone(), Default::default());
+    let mut recovery = Recovery::new(
+        "host".into(),
+        command.clone(),
+        &Default::default(),
+        &Default::default(),
+    );
     recovery.rendered = true;
     recovery.control.replacing();
     recovery.control.repainted();
@@ -425,10 +440,149 @@ fn eof_starts_remote_recovery_but_explicit_detach_does_not() {
 }
 
 #[test]
+fn recovery_status_uses_client_theme_for_text_and_screen_background() {
+    use yinz_config::theme::Theme;
+    use yinz_types::colors::PaletteColor;
+
+    let mut config = Config {
+        themes: yinz_config::assets::get_default_themes(),
+        ..Default::default()
+    };
+    config.themes.insert(
+        "indexed".into(),
+        Theme {
+            palette: yinz_types::style::Styling {
+                text_unselected: StyleDeclaration {
+                    base: PaletteColor::EightBit(42),
+                    background: PaletteColor::EightBit(17),
+                    ..Default::default()
+                },
+                ..default_palette().into()
+            },
+            terminal: None,
+            sourced_from_external_file: false,
+        },
+    );
+    for (theme, foreground, background) in [
+        (Some("dracula"), "2;255;255;255", "2;0;0;0"),
+        (Some("ayu-light"), "2;92;97;102", "2;231;234;237"),
+        (Some("indexed"), "5;42", "5;17"),
+        (None, "5;255", "5;16"),
+        (Some("missing-theme"), "5;255", "5;16"),
+    ] {
+        let options = Options {
+            theme: theme.map(str::to_owned),
+            ..Default::default()
+        };
+        let os = crate::test_support::FakeClientOsApi::new().capturing_stdout();
+        let mut recovery =
+            Recovery::new("host".into(), CommandIsExecuting::new(), &config, &options);
+        recovery.control.lost(0, "outage".into());
+        let now = Instant::now();
+        // The first paint and a resize must clear with the theme's background;
+        // animation updates must keep the same foreground and background.
+        for (tick, size, clear) in [
+            (0, Size { rows: 24, cols: 80 }, true),
+            (1, Size { rows: 24, cols: 80 }, false),
+            (
+                2,
+                Size {
+                    rows: 40,
+                    cols: 120,
+                },
+                true,
+            ),
+        ] {
+            let before = os.stdout_bytes().len();
+            let resized = os.clone().with_terminal_size(size);
+            recovery
+                .paint_status(&resized, "work", now + Duration::from_millis(500 * tick))
+                .unwrap();
+            let output = String::from_utf8(os.stdout_bytes()[before..].to_vec()).unwrap();
+            let colors = format!("\x1b[38;{foreground}m\x1b[48;{background}m");
+            assert!(
+                output.starts_with(&format!("\x1b7\x1b[0m{colors}")),
+                "{theme:?}"
+            );
+            assert_eq!(
+                output.contains(crate::terminal_escapes::CLEAR_SCREEN),
+                clear
+            );
+            if clear {
+                assert!(output.contains(&format!(
+                    "{colors}{}",
+                    crate::terminal_escapes::CLEAR_SCREEN
+                )));
+            }
+            assert!(!output.contains("\x1b[1;7m"));
+            assert!(output.contains("Reconnecting"));
+            assert!(output.ends_with("\x1b[0m\x1b8"));
+        }
+    }
+}
+
+#[test]
+fn recovery_status_follows_host_theme_changes_only_with_a_valid_theme_pair() {
+    let config = Config {
+        themes: yinz_config::assets::get_default_themes(),
+        ..Default::default()
+    };
+    for (dark, light, follows_host) in [
+        (Some("dracula"), Some("ayu-light"), true),
+        (Some("dracula"), None, false),
+        (None, Some("ayu-light"), false),
+        (Some("missing-theme"), Some("ayu-light"), false),
+        (Some("dracula"), Some("missing-theme"), false),
+    ] {
+        let options = Options {
+            theme: Some("dracula".into()),
+            theme_dark: dark.map(str::to_owned),
+            theme_light: light.map(str::to_owned),
+            ..Default::default()
+        };
+        let os = crate::test_support::FakeClientOsApi::new().capturing_stdout();
+        let mut recovery =
+            Recovery::new("host".into(), CommandIsExecuting::new(), &config, &options);
+        recovery.control.lost(0, "outage".into());
+        let now = Instant::now();
+        recovery.paint_status(&os, "work", now).unwrap();
+        for mode in [HostTerminalThemeMode::Light, HostTerminalThemeMode::Dark] {
+            let before = os.stdout_bytes().len();
+            recovery
+                .control
+                .cache(&ClientToServerMsg::HostTerminalThemeChanged { mode });
+            // Keep time and geometry fixed: changing the theme alone must repaint.
+            recovery.paint_status(&os, "work", now).unwrap();
+            let output = String::from_utf8(os.stdout_bytes()[before..].to_vec()).unwrap();
+            if follows_host {
+                let colors = match mode {
+                    HostTerminalThemeMode::Light => "\x1b[38;2;92;97;102m\x1b[48;2;231;234;237m",
+                    HostTerminalThemeMode::Dark => "\x1b[38;2;255;255;255m\x1b[48;2;0;0;0m",
+                };
+                assert!(output.contains(&format!(
+                    "{colors}{}",
+                    crate::terminal_escapes::CLEAR_SCREEN
+                )));
+            } else {
+                assert!(output.is_empty());
+            }
+            let before = os.stdout_bytes().len();
+            recovery.paint_status(&os, "work", now).unwrap();
+            assert_eq!(os.stdout_bytes().len(), before);
+        }
+    }
+}
+
+#[test]
 fn recovery_status_uses_current_terminal_geometry_and_permanent_failures_do_not_spawn_attempts() {
     let os = crate::test_support::FakeClientOsApi::new().capturing_stdout();
     let now = Instant::now();
-    let mut recovery = Recovery::new("host".into(), CommandIsExecuting::new(), Default::default());
+    let mut recovery = Recovery::new(
+        "host".into(),
+        CommandIsExecuting::new(),
+        &Default::default(),
+        &Default::default(),
+    );
     recovery.rendered = true;
     recovery.control.lost(0, "EOF".into());
     recovery.next_retry = Some(now + Duration::from_secs(10));
@@ -461,7 +615,12 @@ fn recovery_status_uses_current_terminal_geometry_and_permanent_failures_do_not_
 #[test]
 fn recovery_status_clears_old_dialog_on_resize_and_blinks_without_other_changes() {
     let os = crate::test_support::FakeClientOsApi::new().capturing_stdout();
-    let mut recovery = Recovery::new("host".into(), CommandIsExecuting::new(), Default::default());
+    let mut recovery = Recovery::new(
+        "host".into(),
+        CommandIsExecuting::new(),
+        &Default::default(),
+        &Default::default(),
+    );
     recovery.control.lost(0, "outage".into());
     let now = Instant::now();
     for rows in [24, 40, 50, 12, 30] {
@@ -517,11 +676,12 @@ fn recovery_status_fits_small_terminals_and_wide_host_names() {
         let mut recovery = Recovery::new(
             "遠隔".repeat(80),
             CommandIsExecuting::new(),
-            Default::default(),
+            &Default::default(),
+            &Default::default(),
         );
         recovery.control.lost(0, "outage".into());
         recovery.paint_status(&os, "work", Instant::now()).unwrap();
-        let (_, message) = recovery.status.as_ref().unwrap();
+        let (_, _, message) = recovery.status.as_ref().unwrap();
         let rows: Vec<_> = positions.captures_iter(message).collect();
         for (index, position) in rows.iter().enumerate() {
             let row: usize = position[1].parse().unwrap();

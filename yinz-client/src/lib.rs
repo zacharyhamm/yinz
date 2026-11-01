@@ -709,7 +709,7 @@ fn run_client(
 
     let mut command_is_executing = CommandIsExecuting::new();
     let recovery = remote_host.clone().map(|host| {
-        remote_recovery::Recovery::new(host, command_is_executing.clone(), config.env.clone())
+        remote_recovery::Recovery::new(host, command_is_executing.clone(), &config, &config_options)
     });
     if let Err(error) =
         os_input.set_remote_recovery(recovery.as_ref().map(|recovery| recovery.control.clone()))

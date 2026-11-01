@@ -12,7 +12,8 @@ fn continuously_ready_frames_cannot_prevent_recovery_draining_from_finishing() {
     let mut recovery = crate::remote_recovery::Recovery::new(
         "host".into(),
         CommandIsExecuting::new(),
-        Default::default(),
+        &Default::default(),
+        &Default::default(),
     );
     os.set_remote_recovery(Some(recovery.control.clone()))
         .unwrap();

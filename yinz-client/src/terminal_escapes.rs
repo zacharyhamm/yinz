@@ -15,6 +15,7 @@ use std::sync::mpsc::TrySendError;
 use std::time::{Duration, Instant};
 use yinz_ipc::nested_session;
 use yinz_runtime::errors::prelude::*;
+use yinz_types::colors::PaletteColor;
 use yinz_types::internal_ids::SessionName;
 
 pub const ENTER_ALTERNATE_SCREEN: &str = "\u{1b}[?1049h";
@@ -71,6 +72,14 @@ static OPEN_SYNC_OUTPUT: AtomicU8 = AtomicU8::new(0);
 /// Set by the first thread to tear the terminal down during startup, so a second one does not
 /// write a competing ribbon and message over it.
 static STARTUP_EXIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Color parameters for an SGR foreground (38) or background (48) sequence.
+pub(crate) fn color_code(color: PaletteColor) -> String {
+    match color {
+        PaletteColor::Rgb((r, g, b)) => format!("2;{r};{g};{b}"),
+        PaletteColor::EightBit(index) => format!("5;{index}"),
+    }
+}
 
 /// Write a run of escape sequences to the controlling terminal and flush.
 pub fn write_seqs<O: StdioAccess + ?Sized>(os_input: &O, seqs: &[&str]) {

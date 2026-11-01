@@ -1,5 +1,6 @@
 use super::*;
 use crate::test_support::FakeClientOsApi;
+use yinz_types::colors::PaletteColor;
 
 #[test]
 fn disabling_the_splash_skips_output_and_the_deadline() {
@@ -91,7 +92,7 @@ fn startup_theme_lookup_and_palette_fallback_are_used() {
             .text_unselected;
         assert_eq!(os.stdout_bytes(), render(size, style).unwrap().as_bytes());
     }
-    assert_eq!(color(PaletteColor::EightBit(255)), "5;255");
+    assert_eq!(color_code(PaletteColor::EightBit(255)), "5;255");
 }
 
 #[test]

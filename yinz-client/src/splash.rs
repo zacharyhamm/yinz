@@ -1,10 +1,9 @@
 use crate::os_input_output::ClientOsApi;
-use crate::terminal_escapes::{CLEAR_SCREEN, RESET_STYLE};
+use crate::terminal_escapes::{color_code, CLEAR_SCREEN, RESET_STYLE};
 use std::io::Write;
 use std::time::{Duration, Instant};
 use yinz_config::config::Config;
 use yinz_runtime::errors::prelude::*;
-use yinz_types::colors::PaletteColor;
 use yinz_types::input::options::Options;
 use yinz_types::pane_size::Size;
 use yinz_types::style::{default_palette, StyleDeclaration};
@@ -67,25 +66,21 @@ fn render(size: Size, style: StyleDeclaration) -> Option<String> {
     ];
     let mut output = format!(
         "{RESET_STYLE}\x1b[48;{}m{CLEAR_SCREEN}",
-        color(style.background)
+        color_code(style.background)
     );
     let mut band = 0;
     for (row, text) in ART.iter().enumerate() {
         if !text.trim().is_empty() {
-            output.push_str(&format!("\x1b[38;{}m", color(colors[band % colors.len()])));
+            output.push_str(&format!(
+                "\x1b[38;{}m",
+                color_code(colors[band % colors.len()])
+            ));
             band += 1;
         }
         output.push_str(&format!("\x1b[{};{left}H{text}", top + row));
     }
     output.push_str(RESET_STYLE);
     Some(output)
-}
-
-fn color(color: PaletteColor) -> String {
-    match color {
-        PaletteColor::Rgb((r, g, b)) => format!("2;{r};{g};{b}"),
-        PaletteColor::EightBit(index) => format!("5;{index}"),
-    }
 }
 
 #[cfg(test)]
