@@ -51,6 +51,7 @@ use yinz_bus::{
     ServerInstruction,
 };
 use yinz_storage::data_access::DataAccess;
+use yinz_storage::plugin_data_store::PluginDataStore;
 use yinz_types::input::context_menu::ContextMenu;
 use {
     yinz_types::input::hooks::HookPoint, yinz_types::input::hooks::HookShape,
@@ -143,7 +144,7 @@ pub fn plugin_thread_main(
     plugin_bridge.reserve_client(initiating_client_id);
     let _data_watch_poller = plugin_bridge.start_data_watch_polling()?;
     let clipboard_writer = clipboard_history::start_worker(
-        palette_data.plugin_data().clone(),
+        Arc::new(PluginDataStore::new(&data_dir)),
         bus.senders.clone(),
         shutdown_send.clone(),
     );

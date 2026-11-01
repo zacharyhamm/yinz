@@ -9,7 +9,8 @@ use yinz_storage::plugin_data_store::{ApplyOutcome, PluginDataStore};
 use yinz_types::data::CopyDestination;
 use yinz_types::plugin_data::Mutation;
 
-/// Keep SQLite's busy timeout off the dispatch thread, preserving submission order.
+/// Persist in submission order on a store with its own operation lock and backend connection.
+/// Sharing dispatch's store or backend would let SQLite's busy timeout block dispatch's reads.
 /// Dropping the sender drains the queue and releases the host's shutdown token.
 pub(super) fn start_worker(
     data: Arc<PluginDataStore>,

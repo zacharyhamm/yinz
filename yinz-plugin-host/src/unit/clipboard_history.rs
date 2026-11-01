@@ -92,14 +92,18 @@ fn clipboard_history_reports_storage_errors() {
 #[test]
 fn clipboard_worker_drains_in_order_and_continues_after_a_storage_error() {
     let dir = tempfile::tempdir().unwrap();
-    let data = Arc::new(PluginDataStore::new(dir.path()));
+    let data = PluginDataStore::new(dir.path());
     let (to_plugin, receiver) = channels::unbounded();
     let senders = ThreadSenders {
         to_plugin: Some(SenderWithContext::new(to_plugin)),
         ..Default::default()
     };
     let (shutdown, mut finished) = tokio::sync::mpsc::channel(1);
-    let writer = start_worker(data.clone(), senders, shutdown);
+    let writer = start_worker(
+        Arc::new(PluginDataStore::new(dir.path())),
+        senders,
+        shutdown,
+    );
     // Text attributes reject NUL, exercising a failed write before successful writes.
     writer
         .send(entry("rejected", "bad\0host", "session"))

@@ -1093,9 +1093,10 @@ fn clipboard_history_instruction_persists_without_loaded_plugins() {
 
 #[test]
 #[serial(plugin_tests)]
-fn clipboard_history_contention_does_not_block_input_barriers_and_refreshes_after_commit() {
+fn clipboard_history_contention_does_not_block_data_requests_or_input_barriers() {
     use yinz_bus::plugins::ClipboardHistoryEntry;
     use yinz_bus::route::NotificationEnd;
+    use yinz_types::cli::DataRequest;
     use yinz_types::plugin_data::{DataValue, FetchRequest, WatchMode};
 
     let dir = tempdir().unwrap();
@@ -1159,30 +1160,83 @@ fn clipboard_history_contention_does_not_block_input_barriers_and_refreshes_afte
             destination: yinz_types::data::CopyDestination::System,
         }))
         .unwrap();
-    // The dispatch loop must acknowledge this while the external writer still holds its lock.
-    // Two seconds is deliberately below SQLite's five-second busy timeout.
+    // Exercise synchronous store reads before each barrier while the external write lock is held.
+    // Keep submitting for a polling interval so the clipboard worker has time to start even if
+    // dispatch wins the initial race. Two seconds is below SQLite's five-second busy timeout.
     let completion = runtime.block_on(async {
-        tokio::time::timeout(std::time::Duration::from_secs(2), barrier()).await
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let until = std::time::Instant::now()
+                + yinz_storage::plugin_data_store::DATA_WATCH_POLL_INTERVAL;
+            loop {
+                let replies: Vec<_> = [
+                    DataRequest::Catalog {
+                        namespace: Some(project_data::store::SHARED.into()),
+                    },
+                    DataRequest::Fetch(
+                        FetchRequest::entity("clipboard_history")
+                            .in_namespace(project_data::store::SHARED),
+                    ),
+                ]
+                .into_iter()
+                .map(|request| {
+                    let (reply, answer) = std::sync::mpsc::channel();
+                    sender
+                        .send(PluginInstruction::DataRequest { request, reply })
+                        .unwrap();
+                    answer
+                })
+                .collect();
+                barrier().await.unwrap();
+                for reply in replies {
+                    // The barrier follows both requests on the same dispatch queue.
+                    reply.try_recv().unwrap().unwrap();
+                }
+                if std::time::Instant::now() >= until {
+                    break;
+                }
+            }
+        })
+        .await
     });
+    assert!(
+        event_receiver.is_empty(),
+        "clipboard persistence must remain pending until the external write lock is released"
+    );
     transaction.commit().unwrap();
-    completion
-        .expect("database contention must not stall plugin dispatch")
-        .unwrap();
+    completion.expect("database contention must not stall data requests or input barriers");
 
-    let (refresh, _) = event_receiver.recv_timeout(default_timeout()).unwrap();
-    assert!(
-        matches!(&refresh, PluginInstruction::RefreshDataWatches { namespace, entities }
-        if namespace == project_data::store::SHARED && entities.contains("clipboard_history"))
-    );
-    sender.send(refresh).unwrap();
-    let (event, _) = event_receiver.recv_timeout(default_timeout()).unwrap();
-    let PluginInstruction::Update(updates) = event else {
-        panic!("expected watch delivery: {event:?}");
-    };
-    assert!(
-        matches!(&updates[0].2, Event::PluginDataChanged { watch_id, rows, .. }
-        if *watch_id == watch.watch_id && rows.rows.len() == 1
-        && rows.get(&rows.rows[0], "content") == Some(&DataValue::Blob(b"contended copy".to_vec())))
-    );
+    // The independent writer's commit can be observed by the watch poller before the explicit
+    // refresh reaches dispatch. Both routes share watch digests and may deliver the change first.
+    let deadline = std::time::Instant::now() + default_timeout();
+    let (mut refreshed, mut delivered) = (false, false);
+    while !refreshed || !delivered {
+        let (event, _) = event_receiver
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .unwrap();
+        match event {
+            PluginInstruction::RefreshDataWatches {
+                ref namespace,
+                ref entities,
+            } => {
+                assert_eq!(namespace, project_data::store::SHARED);
+                assert!(entities.contains("clipboard_history"));
+                refreshed = true;
+                sender.send(event).unwrap();
+            },
+            PluginInstruction::Update(updates) => {
+                assert!(
+                    !delivered,
+                    "a commit must not deliver duplicate watch changes"
+                );
+                assert!(
+                    matches!(&updates[0].2, Event::PluginDataChanged { watch_id, rows, .. }
+                    if *watch_id == watch.watch_id && rows.rows.len() == 1
+                    && rows.get(&rows.rows[0], "content") == Some(&DataValue::Blob(b"contended copy".to_vec())))
+                );
+                delivered = true;
+            },
+            event => panic!("expected clipboard watch refresh or delivery: {event:?}"),
+        }
+    }
     teardown();
 }
