@@ -1,5 +1,6 @@
 ---
 source: yinz-client/src/splash/../unit/splash_renderer_tests.rs
+assertion_line: 378
 expression: frames
 ---
 rest
@@ -20,7 +21,7 @@ rest
  ordered, or by seeing what to do in advance, like
 the statues of Daedalus in the story, or the tripods
 of Hephaestus which the poet says 'enter self-moved
-  the company divine,' — if thus shuttles wove and
+   the company divine.' If thus shuttles wove and
 quills played harps of themselves, master-craftsmen
 would have no need of assistants and masters no need
                      of slaves.
@@ -43,7 +44,7 @@ all turning
  ordered, or by seeing what to do in advance, like
 the statues of Daedalus in the story, or the tripods
 of Hephaestus which the poet says 'enter self-moved
-  the company divine,' — if thus shuttles wove and
+   the company divine.' If thus shuttles wove and
 quills played harps of themselves, master-craftsmen
 would have no need of assistants and masters no need
                      of slaves.
@@ -66,7 +67,7 @@ all edge-on
  ordered, or by seeing what to do in advance, like
 the statues of Daedalus in the story, or the tripods
 of Hephaestus which the poet says 'enter self-moved
-  the company divine,' — if thus shuttles wove and
+   the company divine.' If thus shuttles wove and
 quills played harps of themselves, master-craftsmen
 would have no need of assistants and masters no need
                      of slaves.
@@ -89,7 +90,7 @@ all half-turned
  ordered, or by seeing what to do in advance, like
 the statues of Daedalus in the story, or the tripods
 of Hephaestus which the poet says 'enter self-moved
-  the company divine,' — if thus shuttles wove and
+   the company divine.' If thus shuttles wove and
 quills played harps of themselves, master-craftsmen
 would have no need of assistants and masters no need
                      of slaves.
@@ -112,12 +113,12 @@ all returning
  ordered, or by seeing what to do in advance, like
 the statues of Daedalus in the story, or the tripods
 of Hephaestus which the poet says 'enter self-moved
-  the company divine,' — if thus shuttles wove and
+   the company divine.' If thus shuttles wove and
 quills played harps of themselves, master-craftsmen
 would have no need of assistants and masters no need
                      of slaves.
             - Aristotle, Politics 1253b
-shimmer
+finished
                      ⢀⣤⣤⡀
                      ⣿⣿⣿⣿
                      ⠙⠛⠛⠁      ⢀⣀⣀⡀
@@ -135,7 +136,7 @@ shimmer
  ordered, or by seeing what to do in advance, like
 the statues of Daedalus in the story, or the tripods
 of Hephaestus which the poet says 'enter self-moved
-  the company divine,' — if thus shuttles wove and
+   the company divine.' If thus shuttles wove and
 quills played harps of themselves, master-craftsmen
 would have no need of assistants and masters no need
                      of slaves.

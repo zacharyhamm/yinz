@@ -10,7 +10,7 @@ const BITS: [u8; 8] = [1, 8, 2, 16, 4, 32, 64, 128];
 const MIN_CONTRAST: f64 = 4.5;
 const QUOTE: &str = "for if every tool could perform its own work when ordered, or by seeing what \
     to do in advance, like the statues of Daedalus in the story, or the tripods of Hephaestus \
-    which the poet says 'enter self-moved the company divine,' — if thus shuttles wove and quills \
+    which the poet says 'enter self-moved the company divine.' If thus shuttles wove and quills \
     played harps of themselves, master-craftsmen would have no need of assistants and masters \
     no need of slaves.";
 const ATTRIBUTION: &str = "- Aristotle, Politics 1253b";
@@ -252,7 +252,7 @@ impl Renderer {
 }
 
 pub(super) fn angle(elapsed: Duration) -> f32 {
-    let t = (elapsed.as_secs_f32() / 0.7).clamp(0.0, 1.0);
+    let t = elapsed.as_secs_f32().clamp(0.0, 1.0);
     // Return exactly to the resting pose after a full turn.
     if t == 1.0 {
         0.0
@@ -266,7 +266,7 @@ fn smooth(t: f32) -> f32 {
 }
 
 pub(super) fn shimmer(elapsed: Duration, x: f32, width: f32) -> f32 {
-    let t = (elapsed.as_secs_f32() - 0.7) / 0.7;
+    let t = elapsed.as_secs_f32();
     if !(0.0..1.0).contains(&t) {
         return 0.0;
     }

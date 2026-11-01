@@ -64,7 +64,7 @@ fn startup_theme_lookup_and_palette_fallback_are_used() {
         let mut splash = show(&os, size, &config, &options).unwrap().unwrap();
         assert_eq!(
             splash.deadline() - splash.started,
-            Duration::from_millis(1400)
+            Duration::from_millis(1000)
         );
         assert!(splash.deadline() >= before + DURATION);
         assert!(splash.deadline() <= Instant::now() + DURATION);
@@ -85,7 +85,7 @@ fn startup_theme_lookup_and_palette_fallback_are_used() {
             theme.frame_selected.base,
         );
         assert_eq!(os.stdout_bytes(), renderer.frame(Duration::ZERO).as_bytes());
-        let elapsed = Duration::from_millis(1050);
+        let elapsed = Duration::from_millis(500);
         let before = os.stdout_bytes().len();
         splash.tick(&os, None, splash.started + elapsed).unwrap();
         assert_eq!(
@@ -154,7 +154,7 @@ fn selected_frame_accent_is_used_with_terminal_overrides_and_ui_fallbacks() {
             let mut renderer =
                 renderer::Renderer::new(renderer::Stage::new(size).unwrap(), expected, accent);
             assert_eq!(os.stdout_bytes(), renderer.frame(Duration::ZERO).as_bytes());
-            let elapsed = Duration::from_millis(1050);
+            let elapsed = Duration::from_millis(500);
             let expected_shimmer = renderer.frame(elapsed);
             let before = os.stdout_bytes().len();
             splash.tick(&os, None, splash.started + elapsed).unwrap();

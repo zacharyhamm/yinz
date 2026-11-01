@@ -39,8 +39,8 @@ fn main() -> Result<()> {
     let mut renderer = renderer::Renderer::new(stage, style, theme.palette.frame_selected.base);
     let started = Instant::now();
     let mut stdout = std::io::stdout().lock();
-    let duration = Duration::from_millis(1400);
-    for frame in 0..=28 {
+    let duration = Duration::from_millis(1000);
+    for frame in 0..=20 {
         let mut elapsed = Duration::from_millis(frame * 50);
         if !frames {
             std::thread::sleep((started + elapsed).saturating_duration_since(Instant::now()));

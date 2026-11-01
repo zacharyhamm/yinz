@@ -14,7 +14,7 @@ mod outlines;
 mod renderer;
 
 pub(crate) const CLEAR: &str = "\x1b[m\x1b[2J\x1b[H";
-const DURATION: Duration = Duration::from_millis(1400);
+const DURATION: Duration = Duration::from_millis(1000);
 const FRAME_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Owned by the client loop, which also owns all terminal writes after startup.

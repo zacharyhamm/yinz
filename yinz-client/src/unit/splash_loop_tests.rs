@@ -52,7 +52,7 @@ fn check_frames(deadline: Option<Instant>) {
         }
     });
     let splash =
-        deadline.map(|deadline| crate::splash::test_splash(deadline - Duration::from_millis(1400)));
+        deadline.map(|deadline| crate::splash::test_splash(deadline - Duration::from_millis(1000)));
     let outcome = run(&os, &budget, splash, &rx, input_tx);
     producer.join().unwrap();
     assert_eq!(outcome.exit_status, 0);
@@ -117,7 +117,7 @@ fn expiry_clears_without_a_server_render_and_does_not_clear_again_for_a_late_fra
                         .then_some(())
                 },
             );
-            assert!(Instant::now() >= started + Duration::from_millis(1400));
+            assert!(Instant::now() >= started + Duration::from_millis(1000));
             // A control round trip confirms the clear finished and the loop is
             // still responsive while the session's first render is pending.
             tx.send(ClientInstruction::SetMouseMode(true)).unwrap();

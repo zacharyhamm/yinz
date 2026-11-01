@@ -48,20 +48,22 @@ fn contours_preserve_holes_and_the_i_dot_is_part_of_one_glyph() {
 }
 
 #[test]
-fn one_eased_turn_finishes_before_the_shimmer() {
+fn one_eased_turn_and_shimmer_share_the_same_second() {
     assert_eq!(angle(Duration::ZERO), 0.0);
-    assert!(angle(Duration::from_millis(175)) < std::f32::consts::FRAC_PI_2);
-    assert!((angle(Duration::from_millis(350)) - std::f32::consts::PI).abs() < 0.001);
-    assert!(angle(Duration::from_millis(525)) > 3.0 * std::f32::consts::FRAC_PI_2);
-    for millis in [700, 875, 1050, 1225, 1400, 2000] {
+    assert!(angle(Duration::from_millis(250)) < std::f32::consts::FRAC_PI_2);
+    assert!((angle(Duration::from_millis(500)) - std::f32::consts::PI).abs() < 0.001);
+    assert!(angle(Duration::from_millis(750)) > 3.0 * std::f32::consts::FRAC_PI_2);
+    for millis in [1000, 1400, 2000] {
         assert_eq!(angle(Duration::from_millis(millis)), 0.0);
     }
-    for millis in [0, 175, 350, 525, 699, 1400, 2000] {
+    for millis in [0, 1000, 2000] {
         assert_eq!(shimmer(Duration::from_millis(millis), 0.0, 4.0), 0.0);
     }
-    assert!(shimmer(Duration::from_millis(875), -1.3, 4.0) > 0.99);
-    assert!(shimmer(Duration::from_millis(1050), 0.0, 4.0) > 0.99);
-    assert!(shimmer(Duration::from_millis(1225), 1.3, 4.0) > 0.99);
+    for (millis, x) in [(250, -1.3), (500, 0.0), (750, 1.3)] {
+        let elapsed = Duration::from_millis(millis);
+        assert!(shimmer(elapsed, x, 4.0) > 0.99);
+        assert!(angle(elapsed) > 0.0);
+    }
 }
 
 #[test]
@@ -95,31 +97,22 @@ fn accent(light: bool) -> PaletteColor {
 }
 
 #[test]
-fn shimmer_blends_toward_the_accent_while_rotation_keeps_neutral_lighting() {
+fn shimmer_uses_the_accent_during_rotation_without_changing_geometry() {
     let stage = Stage::new(Size { rows: 24, cols: 80 }).unwrap();
     for light in [false, true] {
         let mut reference = Renderer::new(stage, style(light), accent(light));
-        for accent in [accent(light), PaletteColor::EightBit(201)] {
-            let mut renderer = Renderer::new(stage, style(light), accent);
-            for millis in [0, 175, 252, 350, 525, 700, 1400] {
-                let elapsed = Duration::from_millis(millis);
-                assert_eq!(renderer.frame(elapsed), reference.frame(elapsed));
-            }
-            renderer.frame(Duration::ZERO);
-            let resting = renderer.dots.clone();
-            renderer.frame(Duration::from_millis(1050));
+        let mut renderer = Renderer::new(stage, style(light), PaletteColor::EightBit(201));
+        for millis in [0, 1000, 1400] {
+            let elapsed = Duration::from_millis(millis);
+            assert_eq!(renderer.frame(elapsed), reference.frame(elapsed));
+        }
+        for millis in [250, 500, 750] {
+            let elapsed = Duration::from_millis(millis);
+            assert_ne!(renderer.frame(elapsed), reference.frame(elapsed));
             let mut highlighted = 0;
-            let accent = rgb(accent);
-            for (before, after) in resting.iter().zip(&renderer.dots) {
+            for (before, after) in reference.dots.iter().zip(&renderer.dots) {
                 assert_eq!(before.depth, after.depth);
                 if before.depth.is_finite() && before.color != after.color {
-                    for ((before, after), accent) in
-                        before.color.into_iter().zip(after.color).zip(accent)
-                    {
-                        assert!((after - accent).abs() <= (before - accent).abs());
-                        assert!(after >= before.min(accent));
-                        assert!(after <= before.max(accent));
-                    }
                     highlighted += 1;
                 }
             }
@@ -134,8 +127,8 @@ fn indexed_and_rgb_accents_emit_the_same_shimmer() {
     let mut indexed = Renderer::new(stage, style(false), PaletteColor::EightBit(201));
     let mut truecolor = Renderer::new(stage, style(false), PaletteColor::Rgb(eightbit_to_rgb(201)));
     assert_eq!(
-        indexed.frame(Duration::from_millis(1050)),
-        truecolor.frame(Duration::from_millis(1050))
+        indexed.frame(Duration::from_millis(500)),
+        truecolor.frame(Duration::from_millis(500))
     );
 }
 
@@ -299,10 +292,7 @@ fn visible_cells_keep_their_contrast_floor_and_exact_background_throughout_the_a
                 let mut renderer = Renderer::new(Stage::new(size).unwrap(), style, accent);
                 // Every scheduled frame, plus rotation and edge-on poses between
                 // frame boundaries. Both Braille resolutions must stay readable.
-                for millis in (0..=1400)
-                    .step_by(50)
-                    .chain([168, 252, 448, 650, 699, 700, 701, 875, 1050, 1225, 1399])
-                {
+                for millis in (0..=1000).step_by(50).chain([240, 360, 640, 929, 999]) {
                     let frame = renderer.frame(Duration::from_millis(millis));
                     let parse_color = |capture: regex::Captures<'_>| {
                         std::array::from_fn(|i| capture[i + 1].parse::<u8>().unwrap())
@@ -347,11 +337,11 @@ fn representative_frames_have_stable_silhouettes_and_theme_contrast() {
     let mut frames = String::new();
     for (name, millis) in [
         ("rest", 0),
-        ("all turning", 175),
-        ("all edge-on", 252),
-        ("all half-turned", 350),
-        ("all returning", 525),
-        ("shimmer", 1050),
+        ("all turning", 250),
+        ("all edge-on", 360),
+        ("all half-turned", 500),
+        ("all returning", 750),
+        ("finished", 1000),
     ] {
         let elapsed = Duration::from_millis(millis);
         let dark_frame = dark.frame(elapsed);
@@ -388,7 +378,7 @@ fn representative_frames_have_stable_silhouettes_and_theme_contrast() {
     insta::assert_snapshot!(frames);
     assert_eq!(
         dark.frame(Duration::ZERO),
-        dark.frame(Duration::from_millis(700))
+        dark.frame(Duration::from_millis(1000))
     );
     assert_eq!(
         dark.frame(Duration::ZERO),
