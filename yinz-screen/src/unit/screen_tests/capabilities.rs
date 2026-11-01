@@ -1125,7 +1125,9 @@ fn terminal_placement_reports_content_geometry_with_known_or_unknown_pixels() {
     ] {
         *screen.character_cell_size.borrow_mut() = cell;
         let mut pending = HashMap::from([(id, 42)]);
-        screen.confirm_terminal_placements(&mut pending).unwrap();
+        screen
+            .confirm_terminal_placements(&mut pending, &Default::default())
+            .unwrap();
         assert!(pending.is_empty());
         let (ack, _) = rx.recv().unwrap();
         let PtyWriteInstruction::TerminalPlaced {
@@ -1141,4 +1143,100 @@ fn terminal_placement_reports_content_geometry_with_known_or_unknown_pixels() {
         assert_eq!(size.width_in_pixels, cell.map(|_| cols * 10));
         assert_eq!(size.height_in_pixels, cell.map(|_| rows * 20));
     }
+}
+
+#[test]
+fn collapsed_stack_placement_has_usable_startup_geometry_without_changing_content() {
+    use yinz_bus::pty_writer::PtyWriteInstruction;
+    let mut screen = create_new_screen(
+        Size {
+            cols: 121,
+            rows: 40,
+        },
+        true,
+        true,
+    );
+    *screen.stacked_pane_list.borrow_mut() = false;
+    screen.pane_frame_style = PaneFrameStyle::Full;
+    let tab_id = TabId::new(0);
+    screen
+        .new_tab(tab_id, (vec![], vec![]), None, Some(CLIENT_1))
+        .unwrap();
+    screen
+        .apply_layout(
+            yinz_config::project_layout::parse("layout { pane stacked=true { pane; pane; }; }")
+                .unwrap(),
+            vec![],
+            vec![(TerminalId::new(1), None), (TerminalId::new(2), None)],
+            vec![],
+            HashMap::new(),
+            tab_id,
+            true,
+            CLIENT_1,
+            None,
+        )
+        .unwrap();
+    let pane_id = [TerminalId::new(1), TerminalId::new(2)]
+        .into_iter()
+        .find(|id| {
+            screen.tabs[&tab_id]
+                .get_pane_with_id(PaneId::Terminal(*id))
+                .unwrap()
+                .get_content_rows()
+                == 0
+        })
+        .expect("a collapsed member with no content rows");
+    let cols = screen.tabs[&tab_id]
+        .get_pane_with_id(PaneId::Terminal(pane_id))
+        .unwrap()
+        .get_content_columns() as u16;
+    let (tx, rx) = channels::unbounded();
+    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(tx));
+    for cell in [
+        None,
+        Some(SizeInPixels {
+            width: 10,
+            height: 20,
+        }),
+    ] {
+        *screen.character_cell_size.borrow_mut() = cell;
+        let mut pending = HashMap::from([(pane_id, 42)]);
+        screen
+            .confirm_terminal_placements(&mut pending, &Default::default())
+            .unwrap();
+        assert!(pending.is_empty());
+        let (ack, _) = rx.try_recv().unwrap();
+        let PtyWriteInstruction::TerminalPlaced {
+            terminal_id,
+            generation: 42,
+            placement: Some((size, placed_tab)),
+        } = ack
+        else {
+            panic!("expected startup dimensions");
+        };
+        assert_eq!((terminal_id, placed_tab), (pane_id, tab_id));
+        assert_eq!((size.cols, size.rows), (cols, 1));
+        assert_eq!(size.width_in_pixels, cell.map(|_| cols * 10));
+        assert_eq!(size.height_in_pixels, cell.map(|_| 20));
+        assert_eq!(
+            screen.tabs[&tab_id]
+                .get_pane_with_id(PaneId::Terminal(pane_id))
+                .unwrap()
+                .get_content_rows(),
+            0
+        );
+    }
+    screen
+        .tabs
+        .get_mut(&tab_id)
+        .unwrap()
+        .focus_pane_with_id(PaneId::Terminal(pane_id), false, false, CLIENT_1)
+        .unwrap();
+    assert!(
+        screen.tabs[&tab_id]
+            .get_pane_with_id(PaneId::Terminal(pane_id))
+            .unwrap()
+            .get_content_rows()
+            > 0
+    );
 }

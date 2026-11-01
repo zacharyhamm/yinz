@@ -4277,7 +4277,7 @@ pub fn screen_thread_main(
             .settle_tabs()
             .context("failed to settle tabs after instruction")
             .non_fatal();
-        screen.confirm_terminal_placements(&mut terminal_placements)?;
+        screen.confirm_terminal_placements(&mut terminal_placements, &pending)?;
         screen.reconcile_project_contexts();
         // Teardown can finish before its queued close notification reaches this thread.
         pending

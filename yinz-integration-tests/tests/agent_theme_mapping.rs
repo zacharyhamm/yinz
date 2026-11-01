@@ -4,6 +4,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use yinz_integration_tests::{
     AnsiCode, FakePtyHandle, GridSnapshot, LayoutInfo, TestRunner, TERMINAL_SIZE,
 };
+use yinz_types::internal_ids::TerminalId;
 use yinz_types::{agent::theme::*, input::actions::Action};
 
 fn emit(pane: &FakePtyHandle, provider: &str, role: Role, rgb: (u8, u8, u8), label: &str) {
@@ -57,9 +58,9 @@ fn simultaneous_source_palettes_follow_theme_changes_and_live_opt_out() {
             "layout { pane; pane; pane; }".into(),
         ))
         .start();
-    let claude = yinz.expect_pty_spawn();
-    let codex = yinz.expect_pty_spawn();
-    let ordinary = yinz.expect_pty_spawn();
+    let claude = yinz.expect_pty_spawn_for(TerminalId::new(0));
+    let codex = yinz.expect_pty_spawn_for(TerminalId::new(1));
+    let ordinary = yinz.expect_pty_spawn_for(TerminalId::new(2));
     emit(
         &claude,
         "claude",

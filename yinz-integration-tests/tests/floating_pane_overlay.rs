@@ -14,6 +14,7 @@
 use yinz_cli::args::CliAction;
 use yinz_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, PROMPT, TERMINAL_SIZE};
 use yinz_types::internal_ids::TabNumber;
+use yinz_types::internal_ids::TerminalId;
 
 /// Keep the session to just the shell pane: the default background plugins would
 /// otherwise be spawning work of their own while the test watches for pty spawns.
@@ -182,9 +183,9 @@ fn an_overlay_floating_pane_is_gone_from_another_tab() {
         .with_config(NO_BACKGROUND_PLUGINS)
         .with_layout(LayoutInfo::Stringified(TWO_TILED_PANES.to_owned()))
         .start();
-    let left = yinz.expect_pty_spawn();
+    let left = yinz.expect_pty_spawn_for(TerminalId::new(0));
     left.output(b"LEFT-PANE");
-    let shell = yinz.expect_pty_spawn();
+    let shell = yinz.expect_pty_spawn_for(TerminalId::new(1));
     shell.output(b"first tab shell");
     shell.output(PROMPT);
     yinz.wait_until("both panes load", |snapshot| {
@@ -194,9 +195,9 @@ fn an_overlay_floating_pane_is_gone_from_another_tab() {
     // Tab mode, then `n` for a new tab - which applies the same two-pane layout.
     yinz.send_stdin(&keys::ctrl('t'));
     yinz.send_stdin(b"n");
-    let second_left = yinz.expect_pty_spawn();
+    let second_left = yinz.expect_pty_spawn_for(TerminalId::new(2));
     second_left.output(b"second tab left");
-    let second_shell = yinz.expect_pty_spawn();
+    let second_shell = yinz.expect_pty_spawn_for(TerminalId::new(3));
     second_shell.output(b"second tab shell");
     second_shell.output(PROMPT);
     yinz.wait_until("the second tab is up", |snapshot| {
@@ -426,8 +427,8 @@ fn a_modal_command_pane_is_placed_on_the_surface_and_keeps_focus() {
         .with_config(NO_BACKGROUND_PLUGINS)
         .with_layout(LayoutInfo::Stringified(TWO_TILED_PANES.to_string()))
         .start();
-    let left = yinz.expect_pty_spawn();
-    let shell = yinz.expect_pty_spawn();
+    let left = yinz.expect_pty_spawn_for(TerminalId::new(0));
+    let shell = yinz.expect_pty_spawn_for(TerminalId::new(1));
     left.output(b"LEFT-PANE");
     left.output(PROMPT);
     shell.output(b"tiled shell");

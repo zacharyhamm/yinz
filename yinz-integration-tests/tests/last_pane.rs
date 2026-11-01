@@ -10,6 +10,7 @@ use yinz_integration_tests::{
     claim_first_terminal_and_wait_for_prompt, keys, split_right_and_wait_for_prompt, start_yinz,
     LayoutInfo, TestRunner, TestSession, PROMPT, TERMINAL_SIZE,
 };
+use yinz_types::internal_ids::TerminalId;
 use yinz_types::pane_size::Size;
 
 fn wait_for_goodbye(yinz: &TestSession, what: &str) {
@@ -65,8 +66,8 @@ fn a_floating_pane_as_the_last_pane_ends_the_session_when_it_exits() {
     }
 }"#,
     );
-    let tiled = yinz.expect_pty_spawn();
-    let floating = yinz.expect_pty_spawn();
+    let tiled = yinz.expect_pty_spawn_for(TerminalId::new(0));
+    let floating = yinz.expect_pty_spawn_for(TerminalId::new(1));
     tiled.output(PROMPT);
     floating.output(b"floating prompt$ ");
     yinz.wait_until("both panes rendered", |grid_snapshot| {
@@ -410,4 +411,31 @@ fn replacement_shell_natural_exit_is_held() {
 #[test]
 fn replacement_shell_immediate_exit_is_held() {
     replacement_exit_is_held(true);
+}
+
+#[test]
+fn collapsed_stack_commands_start_and_survive_expansion_with_full_frames() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\nstacked_pane_list false\npane_frame_style \"full\"")
+        .with_layout(LayoutInfo::Stringified(
+            "layout { pane stacked=true { pane; pane; }; }".into(),
+        ))
+        .start();
+    let first = yinz.expect_pty_spawn_for(TerminalId::new(0));
+    let second = yinz.expect_pty_spawn_for(TerminalId::new(1));
+    for (pane, marker) in [(&first, "FIRST STARTED"), (&second, "SECOND STARTED")] {
+        assert_eq!(
+            yinz.run_cli_action(CliAction::FocusPaneId {
+                pane_id: format!("terminal_{}", pane.terminal_id()),
+            }),
+            0
+        );
+        pane.output(marker.as_bytes());
+        yinz.wait_until("expanded member displays its command output", |grid| {
+            grid.contains(marker)
+        });
+        assert!(!pane.is_exited());
+    }
+    assert!(!first.is_exited());
+    yinz.quit();
 }

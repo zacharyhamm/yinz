@@ -1,5 +1,6 @@
 #![cfg(unix)]
 
+use yinz_types::internal_ids::TerminalId;
 use yinz_types::plugin_data::REV_ABSENT;
 
 use yinz_cli::args::CliAction;
@@ -357,8 +358,8 @@ fn command_palette_closed_paste_reaches_normal_locked_and_synchronized_terminals
             ))
             .with_layout(LayoutInfo::Stringified("layout { pane; pane; }".into()))
             .start();
-        let first = yinz.expect_pty_spawn();
-        let second = yinz.expect_pty_spawn();
+        let first = yinz.expect_pty_spawn_for(TerminalId::new(0));
+        let second = yinz.expect_pty_spawn_for(TerminalId::new(1));
         first.output(b"\x1b[?2004hFIRST");
         second.output(b"\x1b[?2004hSECOND");
         yinz.wait_until("both terminals enabled bracketed paste", |snapshot| {
@@ -1938,8 +1939,10 @@ fn session_palette_cross_session_destination(command: &str) {
         .with_config("load_plugins clear-defaults=true {}\ndisable_session_metadata false")
         .with_layout(LayoutInfo::Stringified("layout { tab name=\"first\" { pane; }; tab name=\"target-tab\" { pane name=\"cross-pane\"; }; }".into()))
         .start();
-    destination.expect_pty_spawn().output(PROMPT);
-    let target = destination.expect_pty_spawn();
+    destination
+        .expect_pty_spawn_for(TerminalId::new(0))
+        .output(PROMPT);
+    let target = destination.expect_pty_spawn_for(TerminalId::new(1));
     target.output(b"CROSS SESSION TARGET");
     destination.wait_until("destination ready", |s| s.contains("$"));
     palette_query(&source, command);

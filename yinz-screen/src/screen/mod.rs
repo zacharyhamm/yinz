@@ -3094,9 +3094,13 @@ impl Screen {
             .with_context(err_context)
     }
 
-    /// Placement is independent of command output. Pending tabs may buffer a new pane,
-    /// so keep its request until layout application either places it or rejects it.
-    fn confirm_terminal_placements(&self, pending: &mut HashMap<TerminalId, u64>) -> Result<()> {
+    /// Placement is independent of command output. A new pane may wait for the first tab
+    /// or a pending layout, so keep its request until it is either placed or rejected.
+    fn confirm_terminal_placements(
+        &self,
+        pending: &mut HashMap<TerminalId, u64>,
+        events: &pending_events::PendingEvents,
+    ) -> Result<()> {
         let mut completed = Vec::new();
         for (&terminal_id, &generation) in pending.iter() {
             let pane_id = PaneId::Terminal(terminal_id);
@@ -3105,8 +3109,10 @@ impl Screen {
                     return None;
                 }
                 tab.get_pane_with_id(pane_id).map(|pane| {
-                    let cols = pane.get_content_columns().min(u16::MAX as usize) as u16;
-                    let rows = pane.get_content_rows().min(u16::MAX as usize) as u16;
+                    // A collapsed stack member can have no content rows. It still
+                    // needs a usable PTY at startup; leave its layout geometry alone.
+                    let cols = pane.get_content_columns().clamp(1, u16::MAX as usize) as u16;
+                    let rows = pane.get_content_rows().clamp(1, u16::MAX as usize) as u16;
                     let cell = *self.character_cell_size.borrow();
                     (
                         yinz_types::pane_size::TerminalSize {
@@ -3128,7 +3134,10 @@ impl Screen {
                 })
             });
             if placed.is_none()
-                && self.has_pending_tabs()
+                && (self.has_pending_tabs()
+                    || events.waiting_for_tab.iter().any(|event| {
+                        matches!(event, ScreenInstruction::NewPane(id, ..) if *id == pane_id)
+                    }))
                 && !self.destroyed_panes.contains(&pane_id)
             {
                 continue;

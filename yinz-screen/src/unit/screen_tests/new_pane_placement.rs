@@ -136,11 +136,15 @@ fn a_pane_opened_near_a_plugin_with_no_pane_is_placed_rather_than_closed() {
 
 fn startup_placement(stage: u8) {
     use crate::screen::thread_main::{replay_pending_pane_event, PendingEvents};
+    use yinz_bus::pty_writer::PtyWriteInstruction;
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     let client = ClientId::new(1);
     let tab = TabId::new(0);
     let pane = PaneId::Terminal(TerminalId::new(9));
     let mut pending = PendingEvents::default();
+    let mut confirmations = HashMap::from([(TerminalId::new(9), 42)]);
+    let (tx, placements) = yinz_runtime::channels::unbounded();
+    screen.bus.senders.to_pty_writer = Some(yinz_runtime::channels::SenderWithContext::new(tx));
     if stage > 0 {
         screen
             .new_tab(tab, (vec![], vec![]), None, Some(client))
@@ -177,6 +181,11 @@ fn startup_placement(stage: u8) {
         )
         .unwrap();
     if stage < 2 {
+        screen
+            .confirm_terminal_placements(&mut confirmations, &pending)
+            .unwrap();
+        assert_eq!(confirmations.len(), 1, "startup still needs a destination");
+        assert!(placements.try_recv().is_err());
         assert!(
             matches!(
                 rx.try_recv(),
@@ -206,6 +215,21 @@ fn startup_placement(stage: u8) {
             replay_pending_pane_event(&mut screen, event, &mut pending).unwrap();
         }
     }
+    screen
+        .confirm_terminal_placements(&mut confirmations, &pending)
+        .unwrap();
+    assert!(confirmations.is_empty());
+    let placement = placements.try_iter().find_map(|(event, _)| match event {
+        PtyWriteInstruction::TerminalPlaced {
+            terminal_id,
+            generation: 42,
+            placement: Some((size, placed_tab)),
+        } => Some((terminal_id, size, placed_tab)),
+        _ => None,
+    });
+    let (terminal_id, size, placed_tab) = placement.expect("successful startup placement");
+    assert_eq!((terminal_id, placed_tab), (TerminalId::new(9), tab));
+    assert!(size.is_positive());
     let reply = rx.try_recv().expect("completed placement");
     assert!(reply.error_message.is_none(), "{reply:?}");
     assert_eq!(reply.affected_pane_id, Some(pane));
@@ -298,4 +322,49 @@ fn cancelling_startup_before_any_layout_cannot_report_successful_placement() {
         rx.try_recv().unwrap().error_message.is_some(),
         "no live tab ever accepted the pane"
     );
+}
+
+#[test]
+fn terminal_placement_rejects_destroyed_startup_panes_and_unqueued_missing_panes() {
+    use crate::screen::thread_main::PendingEvents;
+    use yinz_bus::pty_writer::PtyWriteInstruction;
+
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    let mut pending = PendingEvents::default();
+    let queued = TerminalId::new(9);
+    screen
+        .place_new_pane(
+            PaneId::Terminal(queued),
+            None,
+            None,
+            None,
+            NewPanePlacement::default(),
+            false,
+            ClientTabIndexOrPaneId::ClientId(ClientId::new(1)),
+            None,
+            false,
+            &mut pending,
+        )
+        .unwrap();
+    screen.destroyed_panes.insert(PaneId::Terminal(queued));
+    let missing = TerminalId::new(10);
+    let (tx, placements) = yinz_runtime::channels::unbounded();
+    screen.bus.senders.to_pty_writer = Some(yinz_runtime::channels::SenderWithContext::new(tx));
+    let mut confirmations = HashMap::from([(queued, 42), (missing, 43)]);
+    screen
+        .confirm_terminal_placements(&mut confirmations, &pending)
+        .unwrap();
+    assert!(confirmations.is_empty());
+    let rejected: std::collections::HashSet<_> = placements
+        .try_iter()
+        .map(|(event, _)| match event {
+            PtyWriteInstruction::TerminalPlaced {
+                terminal_id,
+                placement: None,
+                ..
+            } => terminal_id,
+            event => panic!("expected rejection, got {event:?}"),
+        })
+        .collect();
+    assert_eq!(rejected, [queued, missing].into_iter().collect());
 }

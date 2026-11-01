@@ -114,3 +114,29 @@ fn a_longer_number_ending_in_a_clock_shape_is_left_alone() {
     let line = " downloaded 112:34 \n";
     assert_eq!(strip_status_bar_clock(line), line);
 }
+
+#[test]
+fn selecting_a_pty_spawn_by_identity_preserves_other_registrations() {
+    use yinz_types::internal_ids::TerminalId;
+    let mut session = TestRunner::new(crate::TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(LayoutInfo::Stringified("layout { pane; pane; }".into()))
+        .start();
+    let shared = &session.fake_server_os_api.shared_ptys;
+    shared.wait_for("both commands registered", |registry| {
+        (registry.spawn_queue.len() == 2).then_some(())
+    });
+    shared.mutate(|registry| {
+        // Model the second worker winning the race, regardless of this run's scheduling.
+        registry
+            .spawn_queue
+            .make_contiguous()
+            .sort_by(|a, b| b.cmp(a));
+    });
+    let first = session.expect_pty_spawn_for(TerminalId::new(0));
+    let second = session.expect_pty_spawn();
+    assert_eq!(first.terminal_id(), TerminalId::new(0));
+    assert_eq!(second.terminal_id(), TerminalId::new(1));
+    assert!(shared.read(|registry| registry.spawn_queue.is_empty()));
+    session.quit();
+}

@@ -8,6 +8,7 @@ use yinz_integration_tests::{
     GridSnapshot, LayoutInfo, Size, TestRunner, TestSession,
 };
 use yinz_types::geometry::{Direction, Resize};
+use yinz_types::internal_ids::TerminalId;
 
 fn ctrl_mouse(yinz: &TestSession, x: usize, y: usize, button: u8, release: bool) {
     let suffix = if release { 'm' } else { 'M' };
@@ -28,9 +29,9 @@ fn packed_agent_mouse_resize_tracks_columns_in_a_shared_span() {
         .with_config("pane_frame_style \"full\"\nmouse_mode true\nadvanced_mouse_actions true\nmax_agent_width 80\nauto_layout false\nload_plugins clear-defaults=true {}")
         .with_layout(LayoutInfo::Stringified("layout {\n pane\n pane split_direction=\"vertical\" { pane; pane; }\n}".into()))
         .start();
-    let top = yinz.expect_pty_spawn();
-    let left = yinz.expect_pty_spawn();
-    let right = yinz.expect_pty_spawn();
+    let top = yinz.expect_pty_spawn_for(TerminalId::new(0));
+    let left = yinz.expect_pty_spawn_for(TerminalId::new(1));
+    let right = yinz.expect_pty_spawn_for(TerminalId::new(2));
     for (pane, text) in [(&top, "TOP"), (&left, "LEFT"), (&right, "RIGHT")] {
         pane.output(text.as_bytes());
         pane.run_foreground(&["codex"]);
@@ -88,8 +89,8 @@ fn capped_agent_mouse_and_directional_resizing_updates_borders_and_pty() {
                 .with_config(&format!("pane_frame_style \"full\"\nmouse_mode true\nadvanced_mouse_actions true\nmax_agent_width {limit}\nauto_layout false\nload_plugins clear-defaults=true {{}}"))
                 .with_layout(LayoutInfo::Stringified("layout {\n pane split_direction=\"vertical\" { pane; pane; }\n}".into()))
                 .start();
-            let left = yinz.expect_pty_spawn();
-            let right = yinz.expect_pty_spawn();
+            let left = yinz.expect_pty_spawn_for(TerminalId::new(0));
+            let right = yinz.expect_pty_spawn_for(TerminalId::new(1));
             left.output(b"LEFT");
             right.output(b"RIGHT");
             left.run_foreground(&["codex"]);
@@ -157,8 +158,8 @@ fn capped_agent_diagonal_mouse_drag_resizes_height_past_blocked_width() {
                 .with_config("pane_frame_style \"full\"\nmouse_mode true\nadvanced_mouse_actions true\nmax_agent_width 80\nauto_layout false\nload_plugins clear-defaults=true {}")
                 .with_layout(LayoutInfo::Stringified("layout { pane; pane; }".into()))
                 .start();
-            let top = yinz.expect_pty_spawn();
-            let bottom = yinz.expect_pty_spawn();
+            let top = yinz.expect_pty_spawn_for(TerminalId::new(0));
+            let bottom = yinz.expect_pty_spawn_for(TerminalId::new(1));
             top.output(b"TOP");
             bottom.output(b"BOTTOM");
             let agent = if below { &bottom } else { &top };

@@ -16,6 +16,7 @@ use yinz_types::agent::{
     control::{AgentOutcome, AgentPlacement, AgentRequest},
     AgentSpawnSpec,
 };
+use yinz_types::internal_ids::TerminalId;
 
 #[test]
 fn cli_agent_spawn_preserves_keyboard_focus_in_current_existing_and_new_tabs() {
@@ -37,11 +38,11 @@ fn cli_agent_spawn_preserves_keyboard_focus_in_current_existing_and_new_tabs() {
                 layout.into(),
             ))
             .start();
-        let original = yinz.expect_pty_spawn();
+        let original = yinz.expect_pty_spawn_for(TerminalId::new(0));
         original.output(b"originalprompt$ ");
         let mut other_original = None;
-        for _ in 1..pane_count {
-            let pane = yinz.expect_pty_spawn();
+        for id in 1..pane_count {
+            let pane = yinz.expect_pty_spawn_for(TerminalId::new(id));
             pane.output(b"otherprompt$ ");
             other_original = Some(pane);
         }

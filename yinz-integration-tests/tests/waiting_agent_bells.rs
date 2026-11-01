@@ -3,6 +3,7 @@
 use yinz_integration_tests::{LayoutInfo, TestRunner, TERMINAL_SIZE};
 use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
 use yinz_types::input::actions::Action;
+use yinz_types::internal_ids::TerminalId;
 use yinz_types::pane_id::PaneId;
 
 #[test]
@@ -24,7 +25,7 @@ fn waiting_agent_bells_render_in_both_tab_bars_pane_titles_and_stack_labels() {
                 .with_config("pane_frame_style \"titles\"\nload_plugins clear-defaults=true {}")
                 .with_layout(LayoutInfo::Stringified(layout))
                 .start();
-            let first = yinz.expect_pty_spawn();
+            let first = yinz.expect_pty_spawn_for(TerminalId::new(0));
             first.output(b"first-ready\r\n");
             if !single {
                 yinz.expect_pty_spawn().output(b"second-ready\r\n");

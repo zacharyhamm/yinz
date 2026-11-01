@@ -10,6 +10,7 @@
 use yinz_cli::args::CliAction;
 use yinz_integration_tests::test_env::{write_git_repository, write_git_worktree};
 use yinz_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, TERMINAL_SIZE};
+use yinz_types::internal_ids::TerminalId;
 
 /// agent, the daemon that finds the agents, and the store that turns the
 /// checkouts they are in into projects. All three are needed: without the store
@@ -70,8 +71,8 @@ fn ordinary_checkout_panes_follow_program_osc_and_manual_titles() {
         .with_config(AGENT_PROJECT_CONFIG)
         .with_layout(LayoutInfo::Stringified(layout))
         .start();
-    let shell = yinz.expect_pty_spawn();
-    let second = yinz.expect_pty_spawn();
+    let shell = yinz.expect_pty_spawn_for(TerminalId::new(0));
+    let second = yinz.expect_pty_spawn_for(TerminalId::new(1));
     shell.output(b"$ ");
     yinz.wait_until("shell checkout and program reach its frame", |screen| {
         screen
@@ -176,9 +177,9 @@ fn agent_names_follow_moves_to_existing_and_new_tabs() {
         .with_config(AGENT_PROJECT_CONFIG)
         .with_layout(LayoutInfo::Stringified(layout))
         .start();
-    let source = yinz.expect_pty_spawn();
-    let agent = yinz.expect_pty_spawn();
-    let destination = yinz.expect_pty_spawn();
+    let source = yinz.expect_pty_spawn_for(TerminalId::new(0));
+    let agent = yinz.expect_pty_spawn_for(TerminalId::new(1));
+    let destination = yinz.expect_pty_spawn_for(TerminalId::new(2));
     source.output(b"SOURCE");
     agent.run_foreground(&["codex"]);
     agent.output(b"MOVING_AGENT");
@@ -409,8 +410,8 @@ fn tab_projects_follow_cwd_changes_and_pane_closure_without_agent() {
         .with_config(AGENT_PROJECT_CONFIG)
         .with_layout(LayoutInfo::Stringified(layout))
         .start();
-    let first = yinz.expect_pty_spawn();
-    let second = yinz.expect_pty_spawn();
+    let first = yinz.expect_pty_spawn_for(TerminalId::new(0));
+    let second = yinz.expect_pty_spawn_for(TerminalId::new(1));
     wait_for_tab(&yinz, "project-alpha", &["project-beta"]);
 
     let worktree = a.join("topic-tree");
@@ -538,8 +539,8 @@ fn arrangement_cli_and_tab_binding_keep_both_running_terminals() {
         .with_config(AGENT_PROJECT_CONFIG)
         .with_layout(LayoutInfo::Stringified(layout))
         .start();
-    let first = yinz.expect_pty_spawn();
-    let second = yinz.expect_pty_spawn();
+    let first = yinz.expect_pty_spawn_for(TerminalId::new(0));
+    let second = yinz.expect_pty_spawn_for(TerminalId::new(1));
     first.output(b"ARRANGE_FIRST");
     second.output(b"ARRANGE_SECOND");
     yinz.wait_until("the store identifies the project", |screen| {
@@ -633,11 +634,11 @@ fn arrangement_loads_chrome_for_a_new_project_tab() {
         .with_config(AGENT_PROJECT_CONFIG)
         .with_layout(LayoutInfo::Stringified(layout))
         .start();
-    let first = yinz.expect_pty_spawn();
-    let second = yinz.expect_pty_spawn();
+    let first = yinz.expect_pty_spawn_for(TerminalId::new(0));
+    let second = yinz.expect_pty_spawn_for(TerminalId::new(1));
     // Normal startup inherits these defaults. Close them before arranging so any
     // floating pane in a destination must have been created by arrangement.
-    let floating = yinz.expect_pty_spawn();
+    let floating = yinz.expect_pty_spawn_for(TerminalId::new(2));
     floating.output(b"DEFAULT_FLOATING_COMMAND");
     yinz.wait_until("the initial floating panes are loaded", |screen| {
         screen.contains("DEFAULT_FLOATING_COMMAND")
@@ -885,8 +886,8 @@ fn non_git_provider_labels_discovers_groups_and_filters_agents() {
         .with_config(&config)
         .with_layout(LayoutInfo::Stringified(layout))
         .start();
-    let first = yinz.expect_pty_spawn();
-    let second = yinz.expect_pty_spawn();
+    let first = yinz.expect_pty_spawn_for(TerminalId::new(0));
+    let second = yinz.expect_pty_spawn_for(TerminalId::new(1));
     first.output(b"MARKER_FIRST");
     second.output(b"MARKER_SECOND");
     yinz.wait_until("project provider permission prompt", |screen| {

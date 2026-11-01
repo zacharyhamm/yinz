@@ -500,6 +500,8 @@ impl TestSession {
         &self.session_name
     }
 
+    /// Claim the next command in worker registration order, which can differ from layout order.
+    /// Use `expect_pty_spawn_for` when the test depends on a particular layout pane.
     pub fn expect_pty_spawn(&self) -> FakePtyHandle {
         let terminal_id = self
             .fake_server_os_api
@@ -507,6 +509,28 @@ impl TestSession {
             .wait_for("a pty spawn", |fake_pty_registry| {
                 fake_pty_registry.spawn_queue.pop_front()
             });
+        FakePtyHandle {
+            terminal_id,
+            shared_ptys: self.fake_server_os_api.shared_ptys.clone(),
+        }
+    }
+
+    /// Wait for a particular pane's command, independent of worker registration order.
+    /// Other registrations remain available to subsequent expectations.
+    pub fn expect_pty_spawn_for(
+        &self,
+        terminal_id: yinz_types::internal_ids::TerminalId,
+    ) -> FakePtyHandle {
+        self.fake_server_os_api.shared_ptys.wait_for(
+            &format!("a pty spawn for terminal {terminal_id}"),
+            |registry| {
+                let position = registry
+                    .spawn_queue
+                    .iter()
+                    .position(|id| *id == terminal_id)?;
+                registry.spawn_queue.remove(position)
+            },
+        );
         FakePtyHandle {
             terminal_id,
             shared_ptys: self.fake_server_os_api.shared_ptys.clone(),
