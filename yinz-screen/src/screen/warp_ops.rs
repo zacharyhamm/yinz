@@ -4,7 +4,7 @@ use yinz_types::internal_ids::SupervisorId;
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TerminalId;
 
-use super::{PreparedTabWarp, Screen, ScreenInstruction, WarpAddress};
+use super::{LayoutPurpose, PreparedTabWarp, Screen, ScreenInstruction, WarpAddress};
 use crate::os_input_output::ReleasedPane;
 use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
@@ -943,7 +943,7 @@ impl Screen {
         // release. They are read again in `take_released_tab_for_warp`, by which
         // time the screen has stopped changing.
         let (tiled, floating, hide_floating_panes) =
-            self.tab_panes_for_layout(tab_index, tab, false, true);
+            self.tab_panes_for_layout(tab_index, tab, false, LayoutPurpose::Warp);
         let manifests =
             |panes: &[(PaneId, PaneLayoutMetadata)]| -> Vec<(PaneId, PaneLayoutManifest)> {
                 panes

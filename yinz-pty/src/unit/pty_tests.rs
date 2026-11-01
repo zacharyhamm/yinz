@@ -5144,5 +5144,5 @@ fn failed_agent_resume_keeps_pane_and_reports_error() {
         ScreenInstruction::PtyBytes(id, message),
         ScreenInstruction::HoldPane(PaneId::Terminal(held), Some(1), _)
     ] if *id == TerminalId::new(41) && *held == *id
-        && String::from_utf8_lossy(message).contains("Agent resume process failed")));
+        && String::from_utf8_lossy(message).contains("Resumed agent exited with status 1")));
 }

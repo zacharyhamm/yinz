@@ -1355,6 +1355,16 @@ impl Pane for TerminalPane {
         // final provider output. Let the ordered end event reset the grid palette;
         // respawn also resets it before accepting a new process's output.
         run_command.agent_theme = None;
+        // A resumed agent can move to another conversation while it runs; a rerun follows it.
+        if let (Some(saved), Some(agent)) = (run_command.resume_agent.as_mut(), self.agent.as_ref())
+            && agent
+                .session_id
+                .as_deref()
+                .is_some_and(|id| !id.trim().is_empty())
+        {
+            saved.session_id = agent.session_id.clone();
+            saved.cwd = agent.cwd.clone().or_else(|| saved.cwd.take());
+        }
         self.invoked_with = Some(Run::Command(run_command.clone()));
         // A held pane has no running process to be stopped, and a stale flag
         // would leave the resume hint up over a dead pane forever.

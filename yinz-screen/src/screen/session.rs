@@ -185,7 +185,7 @@ impl Screen {
         };
 
         let session_layout_metadata = if self.session_serialization {
-            self.get_layout_metadata(Some(self.default_shell.clone()), None)
+            self.session_save_layout_metadata(Some(self.default_shell.clone()))
         } else {
             // Create empty metadata if serialization is disabled
             SessionLayoutMetadata::new(self.default_layout.clone())

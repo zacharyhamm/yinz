@@ -507,7 +507,7 @@ impl Screen {
     pub(super) fn dump_layout_to_hd(&mut self) -> Result<()> {
         let err_context = || "Failed to log and report session state".to_string();
         let session_layout_metadata =
-            self.get_layout_metadata(Some(self.default_shell.clone()), None);
+            self.session_save_layout_metadata(Some(self.default_shell.clone()));
         self.bus
             .senders
             .send_to_plugin(PluginInstruction::LogLayoutToHd(session_layout_metadata))

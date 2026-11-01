@@ -3651,7 +3651,8 @@ fn floating_stack_layout_serialization_keeps_every_subject_on_the_floating_layer
         .unwrap()
         .1
         .position_and_size();
-    let (tiled, floating, _) = screen.tab_panes_for_layout(tab_id, tab, true, false);
+    let (tiled, floating, _) =
+        screen.tab_panes_for_layout(tab_id, tab, true, crate::screen::LayoutPurpose::Dump);
     assert_eq!(
         tiled.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
         vec![PaneId::Terminal(TerminalId::new(9))]

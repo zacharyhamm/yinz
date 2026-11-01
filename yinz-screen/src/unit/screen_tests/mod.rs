@@ -2051,6 +2051,7 @@ fn notification_history_keeps_dismissed_toasts() {
 
 mod agent_control;
 mod agent_placement;
+mod agent_resume;
 mod animation_clock;
 mod background_permissions;
 mod break_and_move_panes;

@@ -440,14 +440,14 @@ mod props {
 fn shell_launched_cursor_metadata_restores_conversation() {
     let cwd = tempfile::tempdir().unwrap();
     let agent = serde_json::from_value(serde_json::json!({
-        "kind": "cursor", "state": "Exited", "session_id": "conversation"
+        "kind": "cursor", "state": "Busy", "session_id": "conversation"
     }))
     .unwrap();
     for run in [None, Some(Run::Cwd(cwd.path().to_path_buf()))] {
         let expected_cwd = run.as_ref().and_then(Run::get_cwd);
         let mut pane = make_command_pane(TerminalId::new(1), "", vec![]);
         pane.run = run;
-        let pane = pane.with_agent(Some(&agent));
+        let pane = pane.with_resumable_agent(Some(&agent));
         let Some(Run::Command(mut command)) = pane.run else {
             panic!("expected saved command")
         };
@@ -457,4 +457,119 @@ fn shell_launched_cursor_metadata_restores_conversation() {
         yinz_runtime::agent::restart::restore_command(&mut command).unwrap();
         assert_eq!(command.args, ["--resume", "conversation"]);
     }
+}
+
+#[test]
+fn agent_without_a_session_keeps_the_saved_command() {
+    for session in [serde_json::Value::Null, serde_json::json!("  ")] {
+        let agent = serde_json::from_value(serde_json::json!({
+            "kind": "claude", "state": "Busy", "session_id": session
+        }))
+        .unwrap();
+        let pane = make_command_pane(TerminalId::new(1), "claude", vec!["task"]);
+        let expected = pane.run.clone();
+        assert_eq!(pane.with_resumable_agent(Some(&agent)).run, expected);
+    }
+}
+
+#[test]
+fn remote_shell_agent_metadata_serializes_its_command() {
+    let agent = serde_json::from_value(serde_json::json!({
+        "kind": "cursor", "state": "Busy", "session_id": "conversation"
+    }))
+    .unwrap();
+    let mut pane = make_command_pane(TerminalId::new(1), "", vec![]);
+    pane.run = Some(Run::Command(RunCommand {
+        target: yinz_types::command::PaneTarget::Ssh {
+            host: "remote".into(),
+        },
+        remote_default_shell: true,
+        ..Default::default()
+    }));
+    let Some(Run::Command(command)) = pane.with_resumable_agent(Some(&agent)).run else {
+        panic!("expected saved command")
+    };
+    assert_eq!(command.command, PathBuf::from("cursor-agent"));
+    assert!(!command.is_remote_default_shell());
+}
+
+fn agent_in_state(state: &str) -> yinz_types::agent::AgentInfo {
+    serde_json::from_value(serde_json::json!({
+        "kind": "claude", "state": state, "session_id": "conversation"
+    }))
+    .unwrap()
+}
+
+fn restored_agent_pane() -> PaneLayoutMetadata {
+    let mut pane = make_command_pane(TerminalId::new(1), "claude", vec!["--resume", "old"]);
+    if let Some(Run::Command(command)) = pane.run.as_mut() {
+        command.resume_agent = Some(agent_in_state("Busy"));
+    }
+    pane
+}
+
+fn resume_agent_of(pane: PaneLayoutMetadata) -> Option<yinz_types::agent::AgentInfo> {
+    match pane.run {
+        Some(Run::Command(command)) => command.resume_agent,
+        run => panic!("expected a command, got {run:?}"),
+    }
+}
+
+#[test]
+fn only_a_running_agent_is_saved_for_resume() {
+    for state in ["Busy", "Waiting", "Idle"] {
+        let agent = agent_in_state(state);
+        let pane = make_command_pane(TerminalId::new(1), "claude", vec![]);
+        assert_eq!(
+            resume_agent_of(pane.with_resumable_agent(Some(&agent))),
+            Some(agent),
+            "{state}"
+        );
+    }
+    let agent = agent_in_state("Exited");
+    let pane = make_command_pane(TerminalId::new(1), "claude", vec![]);
+    assert_eq!(
+        resume_agent_of(pane.with_resumable_agent(Some(&agent))),
+        None
+    );
+}
+
+#[test]
+fn restored_pane_whose_agent_stopped_forgets_the_record_it_started_from() {
+    let exited = agent_in_state("Exited");
+    assert_eq!(
+        resume_agent_of(restored_agent_pane().with_resumable_agent(Some(&exited))),
+        None
+    );
+    assert_eq!(
+        resume_agent_of(restored_agent_pane().with_resumable_agent(None)),
+        None
+    );
+}
+
+#[test]
+fn restored_pane_follows_the_conversation_its_agent_moved_to() {
+    let mut moved = agent_in_state("Idle");
+    moved.session_id = Some("new".to_owned());
+    assert_eq!(
+        resume_agent_of(restored_agent_pane().with_resumable_agent(Some(&moved))),
+        Some(moved)
+    );
+}
+
+#[test]
+fn dumped_pane_has_no_record_and_reports_its_discovered_command() {
+    let pane = restored_agent_pane().without_resume_agent();
+    let mut metadata = SessionLayoutMetadata::default();
+    metadata.add_tab("tab".to_owned(), true, false, false, vec![pane], vec![]);
+    metadata.update_terminal_commands(HashMap::from([(
+        TerminalId::new(1),
+        vec!["claude".to_owned(), "--discovered".to_owned()],
+    )]));
+    let run = metadata.tabs[0].tiled_panes[0].run.clone();
+    let Some(Run::Command(command)) = run else {
+        panic!("expected a command")
+    };
+    assert_eq!(command.resume_agent, None);
+    assert_eq!(command.args, ["--discovered"]);
 }

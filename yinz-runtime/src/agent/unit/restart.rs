@@ -907,3 +907,27 @@ fn resurrection_of_shell_agent_uses_provider_and_preserves_target() {
         .unwrap_err()
         .contains("unsupported"));
 }
+
+#[test]
+fn resurrection_of_bare_provider_executable_restores_launch_defaults() {
+    use crate::agent::provider::{provider, register};
+    use yinz_types::input::command::RunCommand;
+    crate::agent::provider_fixture::register_opencode();
+    let mut custom = (*provider("opencode").unwrap()).clone();
+    custom.kind = "resurrect-fixture".into();
+    custom.executable = "resurrect-fixture".into();
+    custom.launch.args = strings(&["--auto"]);
+    register(43, custom).unwrap();
+    let mut command = RunCommand {
+        command: "resurrect-fixture".into(),
+        resume_agent: Some(
+            serde_json::from_value(serde_json::json!({
+                "kind": "resurrect-fixture", "state": "Exited", "session_id": "sid"
+            }))
+            .unwrap(),
+        ),
+        ..Default::default()
+    };
+    crate::agent::restart::restore_command(&mut command).unwrap();
+    assert_eq!(command.args, strings(&["--auto", "--session", "sid"]));
+}

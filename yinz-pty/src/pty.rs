@@ -502,14 +502,14 @@ fn terminal_quit_callback(
     };
     let restoring_agent = matches!(terminal_action, TerminalAction::RunCommand(command) if command.resume_agent.is_some());
     Box::new(move |pane_id, exit_status, command| {
+        // Says only what is known: this exit may follow hours of work in the resumed session.
         if restoring_agent
-            && exit_status != Some(0)
+            && let Some(status) = exit_status.filter(|status| *status != 0)
             && let PaneId::Terminal(id) = pane_id
         {
             let _ = senders.send_to_screen(ScreenInstruction::PtyBytes(
                 id,
-                format!("\r\nAgent resume process failed (exit status {exit_status:?}).\r\n")
-                    .into_bytes(),
+                format!("\r\nResumed agent exited with status {status}.\r\n").into_bytes(),
             ));
         }
 
@@ -554,6 +554,9 @@ pub struct Pty {
     default_editor: Option<PathBuf>,
     post_command_discovery_hook: Option<String>,
     plugin_cwds: HashMap<PluginId, PathBuf>, // plugin_id -> cwd
+    /// Once a layout has been reported, a session gone clean again still has to replace it:
+    /// otherwise periodic checkpoints keep rewriting the panes and agents it used to have.
+    layout_reported: bool,
     terminal_cwds: HashMap<TerminalId, PathBuf>, // terminal_id -> cwd
     pane_activity_flags: HashMap<TerminalId, std::sync::Arc<std::sync::atomic::AtomicBool>>,
     terminal_cmds: HashMap<TerminalId, Vec<String>>,
@@ -607,6 +610,7 @@ impl Pty {
             terminal_launch_commands: HashMap::new(),
             post_command_discovery_hook,
             plugin_cwds: HashMap::new(),
+            layout_reported: false,
             terminal_cwds: HashMap::new(),
             pane_activity_flags: HashMap::new(),
             terminal_cmds: HashMap::new(),

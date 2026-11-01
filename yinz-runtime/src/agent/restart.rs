@@ -721,12 +721,31 @@ pub fn restore_command(command: &mut yinz_types::input::command::RunCommand) -> 
         {
             return Err("saved command and agent provider disagree".into());
         }
-        if command_kind.is_none() {
+        // A bare provider executable never received its launch defaults, which the resume
+        // below assumes the held command already has.
+        let bare_provider = command.args.is_empty()
+            && crate::agent::provider::provider(&agent.kind).is_some_and(|provider| {
+                command.command.as_os_str() == provider.executable.as_str()
+            });
+        if command_kind.is_none() || bare_provider {
             let shell = command.command.file_name().and_then(|name| name.to_str());
-            if !command.command.as_os_str().is_empty()
+            if !bare_provider
+                && !command.command.as_os_str().is_empty()
                 && !matches!(
                     shell,
-                    Some("sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" | "nu")
+                    Some(
+                        "sh" | "bash"
+                            | "zsh"
+                            | "fish"
+                            | "dash"
+                            | "ksh"
+                            | "nu"
+                            | "csh"
+                            | "tcsh"
+                            | "elvish"
+                            | "xonsh"
+                            | "pwsh"
+                    )
                 )
             {
                 return Err("unsupported saved agent command or wrapper".into());

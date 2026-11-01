@@ -599,7 +599,7 @@ impl<'a> KdlLayoutParser<'a> {
         let command = command.or_else(|| {
             resume_agent
                 .as_ref()
-                .map(|agent| PathBuf::from(&agent.kind))
+                .map(|agent| yinz_runtime::agent::launch::binary_for(&agent.kind).into())
         });
         let edit = self.parse_path(pane_node, "edit")?;
         let line_number = self.parse_line_number(pane_node)?;

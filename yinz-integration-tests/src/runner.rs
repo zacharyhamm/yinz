@@ -816,6 +816,35 @@ impl TestSession {
         }
     }
 
+    /// The layout the session has checkpointed once it satisfies `predicate`: periodic saves can
+    /// lag whatever changed the session.
+    pub fn wait_for_serialized_layout(
+        &self,
+        what: &str,
+        predicate: impl Fn(&str) -> bool,
+    ) -> String {
+        let session_dir = yinz_runtime::consts::session_info_folder_for_session(
+            &yinz_types::internal_ids::SessionName::new(&self.session_name),
+        );
+        let deadline = std::time::Instant::now() + crate::default_timeout();
+        let mut last_seen = None;
+        loop {
+            if let Ok(checkpoint) =
+                yinz_runtime::session_checkpoint::SessionCheckpoint::read(&session_dir)
+                && let Ok(layout) = std::fs::read_to_string(checkpoint.layout_path())
+            {
+                if predicate(&layout) {
+                    return layout;
+                }
+                last_seen = Some(layout);
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("timed out waiting for serialized layout: {what}\n{last_seen:?}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     pub fn resurrect(&mut self, size: Size) {
         let layout_path = yinz_runtime::consts::session_layout_cache_file_name(
             &yinz_types::internal_ids::SessionName::new(&self.session_name),

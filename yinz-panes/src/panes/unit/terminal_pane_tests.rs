@@ -3246,5 +3246,16 @@ fn resurrected_agent_retry_preserves_session_but_explicit_fresh_clears_it() {
         .unwrap();
     assert!(fresh.resume_agent.is_none());
     assert!(fresh.args.contains(&"new task".to_owned()));
-    assert_eq!(pane.respawn(None, true), Some(command));
+    assert_eq!(pane.respawn(None, true), Some(command.clone()));
+
+    // A conversation change reported while running is what the next retry resumes.
+    let mut agent = pane.agent_info().unwrap().clone();
+    agent.session_id = Some("rotated".into());
+    pane.set_agent_info(Some(agent));
+    pane.hold(Some(1), false, command);
+    let retried = pane.respawn(None, true).unwrap();
+    assert_eq!(
+        retried.resume_agent.unwrap().session_id.as_deref(),
+        Some("rotated")
+    );
 }

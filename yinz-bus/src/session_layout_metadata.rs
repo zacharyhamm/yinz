@@ -601,7 +601,21 @@ pub struct PaneLayoutMetadata {
 }
 
 impl PaneLayoutMetadata {
-    pub fn with_agent(mut self, agent: Option<&yinz_types::agent::AgentInfo>) -> Self {
+    /// For a saved session: resume this pane's agent on restore only if it is running now.
+    ///
+    /// A restored pane's `run` still carries the record it was started from, which says nothing
+    /// about whether that agent is still alive, so it goes first. A pane left without a record
+    /// keeps the ordinary suspended-command restore, as does an agent with no session, which has
+    /// no conversation to resume.
+    pub fn with_resumable_agent(mut self, agent: Option<&yinz_types::agent::AgentInfo>) -> Self {
+        self = self.without_resume_agent();
+        let agent = agent.filter(|agent| {
+            agent.state != yinz_types::agent::AgentState::Exited
+                && agent
+                    .session_id
+                    .as_deref()
+                    .is_some_and(|id| !id.trim().is_empty())
+        });
         if let Some(agent) = agent {
             let mut command = match self.run.take() {
                 Some(Run::Command(command)) => command,
@@ -612,9 +626,20 @@ impl PaneLayoutMetadata {
             };
             if command.command.as_os_str().is_empty() {
                 command.command = yinz_runtime::agent::launch::binary_for(&agent.kind).into();
+                // Otherwise the serializer would still omit the command just chosen.
+                command.remote_default_shell = false;
             }
             command.resume_agent = Some(agent.clone());
             self.run = Some(Run::Command(command));
+        }
+        self
+    }
+
+    /// For anything but a saved session: a layout loaded while this pane is live would otherwise
+    /// start a second copy of a conversation that is still running.
+    pub fn without_resume_agent(mut self) -> Self {
+        if let Some(Run::Command(command)) = self.run.as_mut() {
+            command.resume_agent = None;
         }
         self
     }

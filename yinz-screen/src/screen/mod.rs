@@ -576,6 +576,31 @@ type PaneOutputSubscriber = (PluginId, ClientId, Option<u64>);
 /// The panes of a tab as a layout lists them, each with the metadata it is serialized from.
 type LayoutPanes = Vec<(PaneId, PaneLayoutMetadata)>;
 
+/// What a tab's panes are being turned into a layout for, which decides what happens to agents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LayoutPurpose {
+    /// The layout a resurrection starts from: agents running now resume there.
+    SessionSave,
+    /// Something to read or load alongside the live session: no agent is resumed from it.
+    Dump,
+    /// The panes themselves move and nothing is spawned, so each stays as it was invoked.
+    Warp,
+}
+
+impl LayoutPurpose {
+    fn apply_agent(
+        self,
+        pane: PaneLayoutMetadata,
+        agent: Option<&yinz_types::agent::AgentInfo>,
+    ) -> PaneLayoutMetadata {
+        match self {
+            LayoutPurpose::SessionSave => pane.with_resumable_agent(agent),
+            LayoutPurpose::Dump => pane.without_resume_agent(),
+            LayoutPurpose::Warp => pane,
+        }
+    }
+}
+
 pub(crate) struct Screen {
     instance_id: uuid::Uuid,
     agent_events: agent_events::AgentEvents,
@@ -3765,6 +3790,21 @@ impl Screen {
         default_shell: Option<PathBuf>,
         tab_index: Option<TabId>,
     ) -> SessionLayoutMetadata {
+        self.layout_metadata_for(default_shell, tab_index, LayoutPurpose::Dump)
+    }
+    /// The only layout metadata that carries agents to resume: see [`LayoutPurpose`].
+    fn session_save_layout_metadata(
+        &self,
+        default_shell: Option<PathBuf>,
+    ) -> SessionLayoutMetadata {
+        self.layout_metadata_for(default_shell, None, LayoutPurpose::SessionSave)
+    }
+    fn layout_metadata_for(
+        &self,
+        default_shell: Option<PathBuf>,
+        tab_index: Option<TabId>,
+        purpose: LayoutPurpose,
+    ) -> SessionLayoutMetadata {
         let mut session_layout_metadata = SessionLayoutMetadata::new(self.default_layout.clone());
         if let Some(default_shell) = default_shell {
             session_layout_metadata.update_default_shell(default_shell);
@@ -3787,7 +3827,7 @@ impl Screen {
         for (tab_index, tab) in tabs_to_process {
             let tab_is_focused = active_tab_index == Some(tab_index);
             let (tiled_panes, floating_panes, hide_floating_panes) =
-                self.tab_panes_for_layout(*tab_index, tab, self.serialize_pane_viewport, false);
+                self.tab_panes_for_layout(*tab_index, tab, self.serialize_pane_viewport, purpose);
             session_layout_metadata.add_tab(
                 tab.name.clone(),
                 tab_is_focused,
@@ -3839,9 +3879,10 @@ impl Screen {
         tab_index: TabId,
         tab: &Tab,
         with_contents: bool,
-        for_warp: bool,
+        purpose: LayoutPurpose,
     ) -> (LayoutPanes, LayoutPanes, bool) {
         {
+            let for_warp = purpose == LayoutPurpose::Warp;
             let hide_floating_panes = !tab.are_floating_panes_visible();
             // keyed by the stand-in, which is what the loops below are walking:
             // a slot occupied by a scrollback editor serializes as the pane the
@@ -3912,27 +3953,24 @@ impl Screen {
                         })
                         .collect();
                     let (default_fg, default_bg) = p.get_pane_default_colors();
-                    (
+                    let pane = PaneLayoutMetadata::new(
                         pane_id,
-                        PaneLayoutMetadata::new(
-                            pane_id,
-                            geom,
-                            p.borderless(),
-                            p.invoked_with().clone(),
-                            p.custom_title(),
-                            !focused_clients.is_empty(),
-                            if with_contents {
-                                p.serialize(self.scrollback_lines_to_serialize)
-                            } else {
-                                None
-                            },
-                            focused_clients,
-                            default_fg,
-                            default_bg,
-                        )
-                        .with_pane_tabs(p.pane_tabs())
-                        .with_agent(p.agent_info()),
+                        geom,
+                        p.borderless(),
+                        p.invoked_with().clone(),
+                        p.custom_title(),
+                        !focused_clients.is_empty(),
+                        if with_contents {
+                            p.serialize(self.scrollback_lines_to_serialize)
+                        } else {
+                            None
+                        },
+                        focused_clients,
+                        default_fg,
+                        default_bg,
                     )
+                    .with_pane_tabs(p.pane_tabs());
+                    (pane_id, purpose.apply_agent(pane, p.agent_info()))
                 })
                 .collect();
             let floating_panes: Vec<(PaneId, PaneLayoutMetadata)> = if for_warp {
@@ -3960,27 +3998,24 @@ impl Screen {
                     })
                     .collect();
                 let (default_fg, default_bg) = p.get_pane_default_colors();
-                (
+                let pane = PaneLayoutMetadata::new(
                     pane_id,
-                    PaneLayoutMetadata::new(
-                        pane_id,
-                        geom,
-                        false, // floating panes are never borderless
-                        p.invoked_with().clone(),
-                        p.custom_title(),
-                        !focused_clients.is_empty(),
-                        if with_contents {
-                            p.serialize(self.scrollback_lines_to_serialize)
-                        } else {
-                            None
-                        },
-                        focused_clients,
-                        default_fg,
-                        default_bg,
-                    )
-                    .with_pane_tabs(p.pane_tabs())
-                    .with_agent(p.agent_info()),
+                    geom,
+                    false, // floating panes are never borderless
+                    p.invoked_with().clone(),
+                    p.custom_title(),
+                    !focused_clients.is_empty(),
+                    if with_contents {
+                        p.serialize(self.scrollback_lines_to_serialize)
+                    } else {
+                        None
+                    },
+                    focused_clients,
+                    default_fg,
+                    default_bg,
                 )
+                .with_pane_tabs(p.pane_tabs());
+                (pane_id, purpose.apply_agent(pane, p.agent_info()))
             })
             .collect();
             (tiled_panes, floating_panes, hide_floating_panes)

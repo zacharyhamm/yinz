@@ -3907,3 +3907,26 @@ fn ssh_layout_default_shell_and_command_templates() {
         }
     }
 }
+
+#[test]
+fn saved_agent_defaults_to_its_binary_and_is_inherited_from_templates() {
+    let record = r#""{\"kind\":\"cursor\",\"state\":\"Exited\",\"session_id\":\"saved\"}""#;
+    for source in [
+        format!("layout {{\n tab {{\n pane {{ agent {record}; }}\n }}\n }}"),
+        format!(
+            "layout {{\n pane_template name=\"saved\" {{ agent {record}; }}\n tab {{\n saved ssh=\"host\"\n }}\n }}"
+        ),
+    ] {
+        let layout = crate::kdl::layout::from_kdl(&source, None, None, None).unwrap();
+        let Some(Run::Command(run)) = &layout.tabs[0].1.children[0].run else {
+            panic!("expected command in {source}")
+        };
+        assert_eq!(run.command, PathBuf::from("cursor-agent"), "{source}");
+        assert_eq!(
+            run.resume_agent.as_ref().unwrap().session_id.as_deref(),
+            Some("saved"),
+            "{source}"
+        );
+        assert!(run.hold_on_close && !run.hold_on_start, "{source}");
+    }
+}

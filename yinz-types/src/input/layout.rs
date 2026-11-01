@@ -230,6 +230,11 @@ impl Run {
                     merged.args = base_run_command.args.clone();
                 }
                 merged.target.merge_from(&base_run_command.target);
+                if merged.resume_agent.is_none() && base_run_command.resume_agent.is_some() {
+                    merged.resume_agent = base_run_command.resume_agent.clone();
+                    merged.hold_on_start = false;
+                    merged.hold_on_close = true;
+                }
                 // A target-only consumer runs the template's command in that target.
                 if merged.command.as_os_str().is_empty()
                     && (merged.remote_default_shell || merged.target.is_bubblewrap())

@@ -578,11 +578,12 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
             PtyInstruction::LogLayoutToHd(mut session_layout_metadata) => {
                 let err_context = || "Failed to dump layout".to_string();
                 pty.populate_session_layout_metadata(&mut session_layout_metadata);
-                if session_layout_metadata.is_dirty() {
+                if session_layout_metadata.is_dirty() || pty.layout_reported {
                     match session_serialization::serialize_session_layout(
                         session_layout_metadata.into(),
                     ) {
                         Ok(kdl_layout_and_pane_contents) => {
+                            pty.layout_reported = true;
                             pty.bus
                                 .senders
                                 .send_to_background_jobs(BackgroundJob::ReportLayoutInfo(
@@ -607,6 +608,7 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     session_layout_metadata.into(),
                 ) {
                     Ok(kdl_and_files) => {
+                        pty.layout_reported = true;
                         match pty.bus.senders.session_checkpoint.write(
                             session_name,
                             session_info,
