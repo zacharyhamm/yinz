@@ -499,6 +499,12 @@ load_plugins {
 //
 // disable_splash_screen true
 
+// Show the splash animation when this client is idle. Default: true
+// screensaver true
+
+// Seconds without input before the screensaver starts. Must be positive. Default: 60
+// screensaver_idle_timeout 60
+
 // Choose the path to the default shell that yinz will use for opening new panes
 // Default: $SHELL
 //

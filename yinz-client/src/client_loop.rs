@@ -60,6 +60,7 @@ pub(crate) struct ClientLoop<'a, 'config> {
     pub render_budget: &'a Arc<RenderBudget>,
     pub startup_started: Instant,
     pub splash: Option<crate::splash::Splash>,
+    pub screensaver: Option<crate::screensaver::Screensaver>,
 }
 
 impl ClientLoop<'_, '_> {
@@ -116,20 +117,51 @@ impl ClientLoop<'_, '_> {
                     },
                 }
             }
+            let eligible = !waiting_for_first_render
+                && self.splash.is_none()
+                && self.recovery.as_ref().is_none_or(|recovery| {
+                    recovery.control.phase() == crate::remote_recovery::Phase::Connected
+                });
+            let idle_deadline = (|| -> Result<Option<Instant>> {
+                if let Some(saver) = &mut self.screensaver {
+                    if saver.tick(self.os_input, self.synchronised_output, now, eligible)? {
+                        self.os_input
+                            .send_to_server(ClientToServerMsg::RequestRepaint);
+                    }
+                    if eligible {
+                        return saver.wake_at(now);
+                    }
+                }
+                Ok(None)
+            })();
+            let idle_deadline = match idle_deadline {
+                Ok(deadline) => deadline,
+                Err(error) => {
+                    self.os_input
+                        .send_to_server(ClientToServerMsg::ClientExited);
+                    outcome.exit_msg =
+                        format!("Could not write to the terminal: {}", error.root_cause());
+                    outcome.exit_status = 1;
+                    break;
+                },
+            };
             let waiting_for_splash = self.splash.as_ref().map(|splash| splash.wake_at());
-            let next = if let Some(deadline) = waiting_for_splash {
+            let deadline = waiting_for_splash
+                .into_iter()
+                .chain(idle_deadline)
+                .chain(
+                    self.recovery
+                        .as_ref()
+                        .map(|_| now + crate::remote_recovery::READ_POLL),
+                )
+                .min();
+            let next = if waiting_for_splash.is_none() && !deferred.is_empty() {
+                deferred.pop_front().expect("deferred queue is nonempty")
+            } else if let Some(deadline) = deadline {
                 match receive_client_instructions.recv_deadline(deadline) {
                     Ok(instruction) => instruction,
                     Err(yinz_runtime::channels::RecvTimeoutError::Timeout) => continue,
                     Err(e) => panic!("failed to receive app instruction on channel: {e}"),
-                }
-            } else if let Some(instruction) = deferred.pop_front() {
-                instruction
-            } else if self.recovery.is_some() {
-                match receive_client_instructions.recv_timeout(crate::remote_recovery::READ_POLL) {
-                    Ok(instruction) => instruction,
-                    Err(yinz_runtime::channels::RecvTimeoutError::Timeout) => continue,
-                    Err(error) => panic!("failed to receive app instruction: {error}"),
                 }
             } else {
                 receive_client_instructions
@@ -152,6 +184,15 @@ impl ClientLoop<'_, '_> {
                 },
                 next => next,
             };
+            if self
+                .screensaver
+                .as_ref()
+                .is_some_and(|saver| saver.active())
+                && let ClientInstruction::Render(output) = &next.0
+            {
+                self.render_budget.release(output.len()).non_fatal();
+                continue;
+            }
             if waiting_for_splash.is_some() && matches!(next.0, ClientInstruction::Render(_)) {
                 // Frames may be incremental; keep every frame and its budget reservation.
                 deferred.push_back(next);
@@ -202,6 +243,16 @@ impl ClientLoop<'_, '_> {
                         host,
                     )
                     .non_fatal();
+                }
+                if let Some(saver) = &mut self.screensaver {
+                    saver
+                        .tick(
+                            self.os_input,
+                            self.synchronised_output,
+                            Instant::now(),
+                            false,
+                        )
+                        .non_fatal();
                 }
                 waiting_for_first_render = false;
             }
@@ -293,6 +344,12 @@ impl ClientLoop<'_, '_> {
         slow_warnings: &mut SlowWarnings,
     ) -> bool {
         match instruction {
+            ClientInstruction::UserActivity => {},
+            ClientInstruction::RepaintComplete => {
+                if let Some(saver) = &mut self.screensaver {
+                    saver.repaint_complete();
+                }
+            },
             ClientInstruction::ServerReaderDrained(generation) => {
                 if let Some(recovery) = self.recovery {
                     recovery.control.reader_drained(generation);
@@ -344,6 +401,14 @@ impl ClientLoop<'_, '_> {
                 return true;
             },
             ClientInstruction::Error(backtrace) => self.fail(backtrace),
+            ClientInstruction::DesktopNotification(content) => {
+                let mut stdout = self.os_input.get_stdout_writer();
+                stdout
+                    .write_all(content.as_bytes())
+                    .and_then(|()| stdout.flush())
+                    .context("write desktop notification to host terminal")
+                    .non_fatal();
+            },
             ClientInstruction::Render(output) => {
                 let render_bytes = output.len();
                 let started = Instant::now();

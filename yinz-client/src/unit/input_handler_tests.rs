@@ -355,3 +355,51 @@ fn ctrl_c_during_recovery_cancels_locally_and_is_not_sent_to_the_server() {
     assert!(recovery.interrupted());
     assert!(os.sent_messages().is_empty());
 }
+
+#[test]
+fn screensaver_consumes_wake_paste_and_forwards_the_following_input() {
+    let os = FakeClientOsApi::new();
+    let mut saver =
+        crate::screensaver::Screensaver::new(&Default::default(), &Default::default()).unwrap();
+    saver
+        .tick(
+            &os,
+            None,
+            std::time::Instant::now() + std::time::Duration::from_secs(61),
+            true,
+        )
+        .unwrap();
+    assert!(saver.active());
+    let (client_tx, client_rx) = channels::unbounded();
+    let (input_tx, input_rx) = channels::unbounded();
+    let input_tx = SenderWithContext::new(input_tx);
+    for text in ["wake only", "forward this"] {
+        input_tx
+            .send(InputInstruction::KeyEvent(
+                InputEvent::Paste(text.into()),
+                vec![],
+            ))
+            .unwrap();
+    }
+    input_tx.send(InputInstruction::Exit).unwrap();
+    let reannounce =
+        NestedReannounce::spawn(Box::new(os.clone()), SessionName::from("screensaver-input"));
+    reannounce.stop();
+    let mut handler = InputHandler::new(
+        Box::new(os.clone()),
+        CommandIsExecuting::new(),
+        Default::default(),
+        SenderWithContext::new(client_tx),
+        input_rx,
+        reannounce,
+    );
+    handler.activity = Some(saver.activity.clone());
+    handler.handle_input();
+    assert_eq!(
+        os.sent_messages(),
+        vec![ClientToServerMsg::Paste("forward this".into())]
+    );
+    assert!(client_rx
+        .try_iter()
+        .any(|(instruction, _)| matches!(instruction, ClientInstruction::UserActivity)));
+}

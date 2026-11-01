@@ -228,6 +228,12 @@ pub struct Options {
     /// Skip the startup splash and its minimum display time (default: false).
     #[serde(default)]
     pub disable_splash_screen: Option<bool>,
+    /// Show the splash animation when this client is idle (default: true).
+    #[serde(default)]
+    pub screensaver: Option<bool>,
+    /// Seconds without input before the screensaver starts (default: 60).
+    #[serde(default)]
+    pub screensaver_idle_timeout: Option<u32>,
     /// Set the default theme
     pub theme: Option<String>,
     /// Theme name to apply when the host terminal reports a dark color palette
@@ -532,6 +538,10 @@ impl Options {
         let mirror_session = other.mirror_session.or(self.mirror_session);
         let tab_groups = other.tab_groups.or(self.tab_groups);
         let simplified_ui = other.simplified_ui.or(self.simplified_ui);
+        let screensaver = other.screensaver.or(self.screensaver);
+        let screensaver_idle_timeout = other
+            .screensaver_idle_timeout
+            .or(self.screensaver_idle_timeout);
         let disable_splash_screen = other.disable_splash_screen.or(self.disable_splash_screen);
         let default_mode = other.default_mode.or(self.default_mode);
         let default_shell = other.default_shell.or_else(|| self.default_shell.clone());
@@ -620,6 +630,8 @@ impl Options {
             tab_groups,
             simplified_ui,
             disable_splash_screen,
+            screensaver,
+            screensaver_idle_timeout,
             theme,
             theme_dark,
             theme_light,

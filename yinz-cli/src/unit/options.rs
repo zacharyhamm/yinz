@@ -11,6 +11,7 @@ fn boolean_options(value: Option<bool>) -> Options {
     Options {
         simplified_ui: value,
         disable_splash_screen: value,
+        screensaver: value,
         agent_double_escape: value,
         mouse_mode: value,
         detachable_panes: value,

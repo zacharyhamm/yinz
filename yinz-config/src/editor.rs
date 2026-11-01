@@ -90,6 +90,7 @@ pub fn catalog() -> Vec<Setting> {
                     None,
                     "Set the interval in seconds between saved session updates.",
                 ),
+                "screensaver_idle_timeout" => ("number", vec![], Some(1), Some(u64::from(u32::MAX)), "Set seconds without input before the client screensaver starts."),
                 "notification_timeout" => (
                     "number",
                     vec![],
@@ -287,6 +288,7 @@ pub fn catalog() -> Vec<Setting> {
                     match name.as_str() {
                         "tab_groups" => "Group tabs and show a group bar. Disable to show all tabs in one row.",
                         "simplified_ui" => "Use simpler plugin visuals that work with more fonts.",
+                        "screensaver" => "Show the splash animation while this client is idle.",
                         "disable_splash_screen" => "Skip the startup splash and its minimum display time.",
                         "mouse_mode" => "Let Yinz handle mouse input for pane selection and resizing. Hold Shift to bypass it.",
                         "agent_double_escape" => "Require two plain Escape presses within one second in agent panes.",
@@ -322,7 +324,7 @@ pub fn catalog() -> Vec<Setting> {
                 ),
             };
             let timing = match name.as_str() {
-                "disable_splash_screen" => "On next client start",
+                "disable_splash_screen" | "screensaver" | "screensaver_idle_timeout" => "On next client start",
                 "session_name"
                 | "host_id"
                 | "attach_to_session"

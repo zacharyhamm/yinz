@@ -235,3 +235,25 @@ fn osc7_is_repeated_after_a_terminal_reset() {
         [(CLIENT, "file://host/focused".to_owned())]
     );
 }
+
+#[test]
+fn osc7_repaint_resends_directory_discarded_during_screensaver() {
+    let (mut screen, receiver) = screen_with_two_panes();
+    emit_osc7(&mut screen, 1, "file://host/old");
+    render_osc7(&mut screen, &receiver);
+    emit_osc7(&mut screen, 1, "file://host/new");
+    // The client discards this render while idle, but the server caches it.
+    render_osc7(&mut screen, &receiver);
+    screen
+        .last_forwarded_osc7
+        .insert(OTHER_CLIENT, Some("file://other".into()));
+    screen.request_client_repaint(CLIENT).unwrap();
+    assert_eq!(
+        screen.last_forwarded_osc7.get(&OTHER_CLIENT),
+        Some(&Some("file://other".into()))
+    );
+    assert_eq!(
+        render_osc7(&mut screen, &receiver),
+        [(CLIENT, "file://host/new".to_owned())]
+    );
+}

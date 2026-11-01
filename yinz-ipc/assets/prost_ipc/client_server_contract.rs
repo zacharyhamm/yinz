@@ -2573,6 +2573,10 @@ pub struct Options {
     pub tab_groups: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="83")]
     pub disable_splash_screen: ::core::option::Option<bool>,
+    #[prost(bool, optional, tag="84")]
+    pub screensaver: ::core::option::Option<bool>,
+    #[prost(uint32, optional, tag="85")]
+    pub screensaver_idle_timeout: ::core::option::Option<u32>,
 }
 /// Pane-targeting action messages
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -3755,7 +3759,7 @@ impl ThemeHue {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientToServerMsg {
-    #[prost(oneof="client_to_server_msg::Message", tags="37, 33, 34, 36, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 35, 11, 12, 32, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29, 30, 31")]
+    #[prost(oneof="client_to_server_msg::Message", tags="38, 37, 33, 34, 36, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 35, 11, 12, 32, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29, 30, 31")]
     pub message: ::core::option::Option<client_to_server_msg::Message>,
 }
 /// Nested message and enum types in `ClientToServerMsg`.
@@ -3763,6 +3767,8 @@ pub mod client_to_server_msg {
     #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Message {
+        #[prost(bool, tag="38")]
+        RequestRepaint(bool),
         #[prost(string, tag="37")]
         SessionReplyJson(::prost::alloc::string::String),
         #[prost(string, tag="33")]
@@ -4080,7 +4086,7 @@ impl HostTerminalThemeIndication {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerToClientMsg {
-    #[prost(oneof="server_to_client_msg::Message", tags="28, 23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 26, 14, 15, 16, 18, 20, 21, 22, 27")]
+    #[prost(oneof="server_to_client_msg::Message", tags="30, 29, 28, 23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 26, 14, 15, 16, 18, 20, 21, 22, 27")]
     pub message: ::core::option::Option<server_to_client_msg::Message>,
 }
 /// Nested message and enum types in `ServerToClientMsg`.
@@ -4088,6 +4094,10 @@ pub mod server_to_client_msg {
     #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Message {
+        #[prost(string, tag="30")]
+        DesktopNotification(::prost::alloc::string::String),
+        #[prost(bool, tag="29")]
+        RepaintComplete(bool),
         #[prost(string, tag="28")]
         SessionRequestJson(::prost::alloc::string::String),
         #[prost(string, tag="23")]

@@ -218,6 +218,7 @@ pin_context_to_instruction! {
     special: [
         "Resize",
         "PaletteThemeSaved",
+        "RequestRepaint",
         "UpdateDetectedAgentTheme",
         "PtyBytes",
         "SubscribePaneOutput",
@@ -242,6 +243,7 @@ pin_context_to_instruction! {
         "ResizeDecreaseRight",
     ];
     targets: [
+        ("RequestRepaint", ScreenInstruction::RequestRepaint(ClientId::new(1)), "Render"),
         ("UpdateDetectedAgentTheme", ScreenInstruction::UpdateDetectedAgentTheme(TerminalId::new(1), None), "HandlePtyBytes"),
         ("PaletteThemeSaved", ScreenInstruction::PaletteThemeSaved { client: ClientId::new(1), request: uuid::Uuid::nil(), result: Ok(()) }, "ToggleCommandPalette"),
         ("RenderWriterReady", ScreenInstruction::RenderWriterReady, "RenderToClients"),
@@ -476,9 +478,11 @@ pin_context_to_instruction! {
     mod server;
     instruction: ServerInstruction;
     context: ServerContext;
-    special: ["ConfigurationEditor", "SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError"];
+    special: ["DesktopNotification", "RepaintComplete", "ConfigurationEditor", "SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError"];
     only_special: ["NewClient", "AttachClient"];
     targets: [
+        ("DesktopNotification", ServerInstruction::DesktopNotification(Default::default()), "Render"),
+        ("RepaintComplete", ServerInstruction::RepaintComplete(ClientId::new(1)), "Render"),
         (
             "ConfigurationEditor",
             ServerInstruction::ConfigurationEditor { edit: None, theme: None, reply: crossbeam::channel::bounded(1).0 },

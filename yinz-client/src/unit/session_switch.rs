@@ -321,6 +321,7 @@ fn client_loop_rename_updates_current_identity_without_cancelling_preparation() 
             render_budget: &Arc::new(RenderBudget::new(100)),
             startup_started: Instant::now(),
             splash: None,
+            screensaver: None,
         }
         .run(&rx);
         assert_eq!(outcome.exit_status, 0);
@@ -711,6 +712,7 @@ fn fatal_client_exit_reaps_preparation_children() {
             render_budget: &Arc::new(RenderBudget::new(100)),
             startup_started: Instant::now(),
             splash: None,
+            screensaver: None,
         }
         .run(&rx);
         panic!("fatal instruction returned");

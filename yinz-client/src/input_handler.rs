@@ -45,6 +45,7 @@ struct InputHandler {
     options: Options,
     command_is_executing: CommandIsExecuting,
     send_client_instructions: SenderWithContext<ClientInstruction>,
+    activity: Option<crate::screensaver::SharedActivity>,
     should_exit: bool,
     receive_input_instructions: Receiver<(InputInstruction, ErrorContext)>,
     mouse_old_event: MouseEvent,
@@ -155,6 +156,7 @@ impl InputHandler {
             options,
             command_is_executing,
             send_client_instructions,
+            activity: None,
             should_exit: false,
             receive_input_instructions,
             mouse_old_event: MouseEvent::new(),
@@ -226,6 +228,28 @@ impl InputHandler {
                 },
                 Err(error) => Err(error),
             };
+            if let Ok((instruction, _)) = &received
+                && let Some(activity) = &self.activity
+            {
+                match crate::screensaver::record_input(
+                    activity,
+                    instruction,
+                    std::time::Instant::now(),
+                ) {
+                    Ok(true) => {
+                        self.send_client_instructions
+                            .send(ClientInstruction::UserActivity)
+                            .context("wake screensaver")
+                            .non_fatal();
+                        self.mouse_old_event = MouseEvent::new();
+                        continue;
+                    },
+                    Ok(false) => {},
+                    Err(error) => {
+                        Err::<(), _>(error).non_fatal();
+                    },
+                }
+            }
             match received {
                 Ok((InputInstruction::KeyEvent(input_event, raw_bytes), _error_context)) => {
                     match input_event {
@@ -552,16 +576,18 @@ pub(crate) fn input_loop(
     send_client_instructions: SenderWithContext<ClientInstruction>,
     receive_input_instructions: Receiver<(InputInstruction, ErrorContext)>,
     nested_reannounce: NestedReannounce,
+    activity: Option<crate::screensaver::SharedActivity>,
 ) {
-    InputHandler::new(
+    let mut handler = InputHandler::new(
         os_input,
         command_is_executing,
         options,
         send_client_instructions,
         receive_input_instructions,
         nested_reannounce,
-    )
-    .handle_input();
+    );
+    handler.activity = activity;
+    handler.handle_input();
 }
 
 #[cfg(test)]

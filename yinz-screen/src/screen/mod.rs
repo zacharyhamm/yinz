@@ -93,10 +93,8 @@ use {
 
 use crate::background_jobs::BackgroundJob;
 use crate::notifications::NotificationProtocol;
-use crate::output::Output;
 use crate::pane_groups::PaneGroups;
 use crate::panes::grid::{namespace_notification_id, PendingNotification};
-use crate::panes::link_handler::LinkHandler;
 use crate::session_layout_metadata::{PaneLayoutMetadata, SessionLayoutMetadata};
 
 use crate::{
@@ -872,6 +870,7 @@ pub(crate) struct Screen {
     /// General render requests invalidate all snapshots; output invalidates individual panes.
     pane_subscriber_snapshots_dirty: bool,
     pane_subscriber_dirty_panes: HashSet<PaneId>,
+    pending_client_repaints: HashSet<ClientId>,
     deferred_render_tabs: HashSet<TabId>,
     render_writer_ready: OnceCell<yinz_bus::os_input_output::RenderReady>,
     deferred_subscriber_renders: bool,
@@ -1576,6 +1575,7 @@ impl Screen {
             pane_render_subscribers: HashMap::new(),
             pane_subscriber_snapshots_dirty: true,
             pane_subscriber_dirty_panes: HashSet::new(),
+            pending_client_repaints: HashSet::new(),
             deferred_render_tabs: HashSet::new(),
             render_writer_ready: OnceCell::new(),
             deferred_subscriber_renders: false,
@@ -4316,10 +4316,7 @@ impl Screen {
         if all_clients.is_empty() || notifications.is_empty() {
             return;
         }
-        let mut output = Output::default();
-        let client_set: HashSet<ClientId> = all_clients.iter().copied().collect();
-        output.add_clients(&client_set, Rc::new(RefCell::new(LinkHandler::new())), None);
-        let mut emitted_anything = false;
+        let mut output: HashMap<ClientId, String> = HashMap::new();
         for client_id in &all_clients {
             let protocol = self.notification_protocol_for_client(client_id);
             for notification in &notifications {
@@ -4356,31 +4353,16 @@ impl Screen {
                     },
                 };
                 if let Some(raw) = raw {
-                    emitted_anything = true;
-                    output.add_post_vte_instruction_to_multiple_clients(
-                        std::iter::once(*client_id),
-                        &raw,
-                    );
+                    output.entry(*client_id).or_default().push_str(&raw);
                 }
             }
         }
-        if !emitted_anything {
-            return;
-        }
-        match output.serialize() {
-            Ok(serialized_output) if !serialized_output.is_empty() => {
-                self.bus
-                    .senders
-                    .send_to_server(ServerInstruction::Render(Some(serialized_output)))
-                    .context("failed to forward desktop notifications to host terminals")
-                    .non_fatal();
-            },
-            Ok(_) => {},
-            Err(e) => {
-                Err::<(), _>(e)
-                    .context("failed to serialize desktop notifications for host terminals")
-                    .non_fatal();
-            },
+        if !output.is_empty() {
+            self.bus
+                .senders
+                .send_to_server(ServerInstruction::DesktopNotification(output))
+                .context("forward desktop notifications to host terminals")
+                .non_fatal();
         }
     }
 

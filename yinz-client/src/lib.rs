@@ -19,6 +19,7 @@ mod keyboard_parser;
 mod nested_reannounce;
 mod render_budget;
 mod router;
+mod screensaver;
 mod splash;
 mod startup;
 mod startup_signals;
@@ -76,6 +77,7 @@ pub(crate) enum ClientInstruction {
     FromServer(u64, Box<ClientInstruction>),
     ServerReaderDrained(u64),
     Render(String),
+    DesktopNotification(String),
     UnblockInputThread,
     Exit(ExitReason),
     Connected,
@@ -89,6 +91,8 @@ pub(crate) enum ClientInstruction {
     QueryTerminalSize,
     RenamedSession(SessionName), // String -> new session name
     ConfigFileUpdated,
+    UserActivity,
+    RepaintComplete,
     SetMouseMode(bool),
     /// Server asked us to forward `query_bytes` to the host terminal and
     /// collect the reply bytes into the window identified by `token`.
@@ -122,6 +126,10 @@ impl From<ServerToClientMsg> for ClientInstruction {
             ServerToClientMsg::QueryTerminalSize => ClientInstruction::QueryTerminalSize,
             ServerToClientMsg::RenamedSession { name } => ClientInstruction::RenamedSession(name),
             ServerToClientMsg::SetMouseMode { enabled } => ClientInstruction::SetMouseMode(enabled),
+            ServerToClientMsg::DesktopNotification { content } => {
+                ClientInstruction::DesktopNotification(content)
+            },
+            ServerToClientMsg::RepaintComplete => ClientInstruction::RepaintComplete,
             ServerToClientMsg::ConfigFileUpdated => ClientInstruction::ConfigFileUpdated,
             ServerToClientMsg::ForwardQueryToHost {
                 token,
@@ -156,6 +164,7 @@ impl From<&ClientInstruction> for ClientContext {
             ClientInstruction::Error(_) => ClientContext::Error,
             ClientInstruction::FromServer(_, ref instruction) => (&**instruction).into(),
             ClientInstruction::ServerReaderDrained(_) => ClientContext::UnblockInputThread,
+            ClientInstruction::DesktopNotification(_) => ClientContext::Render,
             ClientInstruction::Render(_) => ClientContext::Render,
             ClientInstruction::UnblockInputThread => ClientContext::UnblockInputThread,
             ClientInstruction::Connected => ClientContext::Connected,
@@ -170,6 +179,9 @@ impl From<&ClientInstruction> for ClientContext {
             ClientInstruction::QueryTerminalSize => ClientContext::QueryTerminalSize,
             ClientInstruction::RenamedSession(..) => ClientContext::RenamedSession,
             ClientInstruction::SetMouseMode(_) => ClientContext::ConfigFileUpdated,
+            ClientInstruction::UserActivity | ClientInstruction::RepaintComplete => {
+                ClientContext::Render
+            },
             ClientInstruction::ConfigFileUpdated => ClientContext::ConfigFileUpdated,
             ClientInstruction::ForwardQueryToHost { .. } => ClientContext::ForwardQueryToHost,
             ClientInstruction::EmitNestedSessionFrame(..) => ClientContext::EmitNestedSessionFrame,
@@ -904,6 +916,8 @@ fn run_client(
     // cancellation implicit. Spawn site: the
     // `ClientInstruction::ForwardQueryToHost` handler below.
 
+    let screensaver = crate::screensaver::Screensaver::new(&config, &config_options);
+    let activity = screensaver.as_ref().map(|s| s.activity.clone());
     let _input_thread = thread::Builder::new()
         .name("input_handler".to_string())
         .spawn({
@@ -919,6 +933,7 @@ fn run_client(
                     send_client_instructions,
                     receive_input_instructions,
                     nested_reannounce,
+                    activity,
                 )
             }
         });
@@ -985,6 +1000,7 @@ fn run_client(
         render_budget: &render_budget,
         startup_started,
         splash,
+        screensaver,
     }
     .run(&receive_client_instructions);
     // The router may be waiting for frames to drain that nobody will now write,

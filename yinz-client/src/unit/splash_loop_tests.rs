@@ -228,6 +228,17 @@ fn run(
     rx: &channels::Receiver<(ClientInstruction, yinz_types::diagnostics::ErrorContext)>,
     input_tx: channels::Sender<(InputInstruction, yinz_types::diagnostics::ErrorContext)>,
 ) -> crate::ClientOutcome {
+    run_with_saver(os, budget, splash, rx, input_tx, None)
+}
+
+fn run_with_saver(
+    os: &FakeClientOsApi,
+    budget: &Arc<RenderBudget>,
+    splash: Option<crate::splash::Splash>,
+    rx: &channels::Receiver<(ClientInstruction, yinz_types::diagnostics::ErrorContext)>,
+    input_tx: channels::Sender<(InputInstruction, yinz_types::diagnostics::ErrorContext)>,
+    screensaver: Option<crate::screensaver::Screensaver>,
+) -> crate::ClientOutcome {
     let nested = NestedReannounce::spawn(Box::new(FakeClientOsApi::new()), "splash-test".into());
     nested.stop();
     ClientLoop {
@@ -250,6 +261,103 @@ fn run(
         render_budget: budget,
         startup_started: Instant::now(),
         splash,
+        screensaver,
     }
     .run(rx)
+}
+
+#[test]
+fn screensaver_drains_background_frames_and_restores_on_wake() {
+    let os = FakeClientOsApi::new().capturing_stdout();
+    let budget = Arc::new(RenderBudget::new(100));
+    let saver = crate::screensaver::Screensaver::new(
+        &Default::default(),
+        &yinz_types::input::options::Options {
+            screensaver_idle_timeout: Some(1),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let activity = saver.activity.clone();
+    let (tx, rx) = channels::unbounded();
+    let tx = SenderWithContext::new(tx);
+    let (input_tx, _input_rx) = channels::unbounded();
+    budget.reserve(7).unwrap();
+    tx.send(ClientInstruction::Render("initial".into()))
+        .unwrap();
+    let producer = std::thread::spawn({
+        let os = os.clone();
+        let budget = budget.clone();
+        move || {
+            os.stdout_attempts.wait_until(
+                "idle animation appears",
+                yinz_test_support::default_timeout(),
+                |writes| {
+                    writes
+                        .iter()
+                        .any(|write| write.windows(6).any(|bytes| bytes == b"\x1b[?25l"))
+                        .then_some(())
+                },
+            );
+            let notification = "\x1b]9;background complete\x07";
+            tx.send(ClientInstruction::from(
+                yinz_ipc::ipc::ServerToClientMsg::DesktopNotification {
+                    content: notification.into(),
+                },
+            ))
+            .unwrap();
+            os.stdout_attempts.wait_until(
+                "desktop notification during screensaver",
+                yinz_test_support::default_timeout(),
+                |writes| {
+                    writes
+                        .iter()
+                        .any(|write| write == notification.as_bytes())
+                        .then_some(())
+                },
+            );
+            // Each hidden frame fills the entire budget. The next reserve can finish only if
+            // the loop drains and releases the preceding frame while the screensaver is up.
+            for _ in 0..5 {
+                budget.reserve(100).unwrap();
+                tx.send(ClientInstruction::Render("H".repeat(100))).unwrap();
+            }
+            budget.reserve(100).unwrap();
+            budget.release(100).unwrap();
+            assert!(crate::screensaver::record_input(
+                &activity,
+                &InputInstruction::KeyEvent(
+                    yinz_key_codec::vendored::termwiz::input::InputEvent::Paste("wake".into()),
+                    vec![]
+                ),
+                Instant::now()
+            )
+            .unwrap());
+            tx.send(ClientInstruction::UserActivity).unwrap();
+            os.sent_to_server.wait_until(
+                "wake requests repaint",
+                yinz_test_support::default_timeout(),
+                |messages| {
+                    messages
+                        .contains(&yinz_ipc::ipc::ClientToServerMsg::RequestRepaint)
+                        .then_some(())
+                },
+            );
+            budget.reserve(8).unwrap();
+            tx.send(ClientInstruction::Render("restored".into()))
+                .unwrap();
+            tx.send(ClientInstruction::RepaintComplete).unwrap();
+            tx.send(ClientInstruction::Exit(ExitReason::Normal))
+                .unwrap();
+        }
+    });
+    let outcome = run_with_saver(&os, &budget, None, &rx, input_tx, Some(saver));
+    producer.join().unwrap();
+    assert_eq!(outcome.exit_status, 0);
+    let output = String::from_utf8(os.stdout_bytes()).unwrap();
+    assert!(output.find("initial").unwrap() < output.find("\x1b[?25l").unwrap());
+    assert!(output.contains("restored"));
+    assert!(!output.contains(&"H".repeat(100)));
+    budget.reserve(100).unwrap();
+    budget.release(100).unwrap();
 }

@@ -1,5 +1,7 @@
 tab_groups true
 simplified_ui true
+screensaver true
+screensaver_idle_timeout 120
 disable_splash_screen true
 osc8_hyperlinks true
 theme "theme with \"quotes\""

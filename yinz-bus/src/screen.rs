@@ -343,6 +343,7 @@ pub enum ScreenInstruction {
         client_id: ClientId,
         completion_tx: Option<NotificationEnd>,
     },
+    RequestRepaint(ClientId),
     RecomputeTabSize(ClientId, Size),
     TerminalPixelDimensions(ClientId, PixelDimensions),
     TerminalBackgroundColor(String),
@@ -1074,6 +1075,7 @@ impl From<&ScreenInstruction> for ScreenContext {
         // here, which is a stronger guarantee than the exhaustive match this replaced: it also
         // catches the two names silently drifting apart.
         match screen_instruction {
+            ScreenInstruction::RequestRepaint(..) => ScreenContext::Render,
             ScreenInstruction::PaletteThemeSaved { .. } => ScreenContext::ToggleCommandPalette,
             ScreenInstruction::CommandPalette(..) => ScreenContext::ToggleCommandPalette,
             // The one instruction whose context is chosen by payload rather than by name.

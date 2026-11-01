@@ -1621,3 +1621,122 @@ fn bells_do_not_reach_watchers_through_the_regular_pass() {
         "{frames:?}"
     );
 }
+
+#[test]
+fn screensaver_repaint_completes_after_full_frame_and_survives_backpressure() {
+    for watcher in [false, true] {
+        let mut paced = screen_with_backlog();
+        let recipient = if watcher {
+            paced.screen.add_watcher_client(OTHER_CLIENT).unwrap();
+            OTHER_CLIENT
+        } else {
+            CLIENT
+        };
+        paced
+            .screen
+            .get_active_tab_mut(CLIENT)
+            .unwrap()
+            .handle_pty_bytes(TerminalId::new(1), b"restore-this-view".to_vec())
+            .unwrap();
+        paced_render(&mut paced.screen);
+        let _ = paced.to_server.try_iter().collect::<Vec<_>>();
+        *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (recipient, behind())];
+        paced.screen.request_client_repaint(recipient).unwrap();
+        paced_render(&mut paced.screen);
+        assert!(paced.screen.pending_client_repaints.contains(&recipient));
+        assert!(!paced
+            .to_server
+            .try_iter()
+            .any(|(instruction, _)| matches!(instruction, ServerInstruction::RepaintComplete(_))));
+        paced.backlog.lock().unwrap().clear();
+        paced_render(&mut paced.screen);
+        let mut saw_frame = false;
+        let mut completed = false;
+        for (instruction, _) in paced.to_server.try_iter() {
+            match instruction {
+                ServerInstruction::Render(Some(output)) => {
+                    if let Some(content) = output.get(&recipient) {
+                        assert!(content.contains("\x1b[2J"));
+                        assert!(content.contains("restore-this-view"));
+                        saw_frame = true;
+                    }
+                },
+                ServerInstruction::RepaintComplete(client) if client == recipient => {
+                    assert!(saw_frame, "completion must follow the complete render");
+                    completed = true;
+                },
+                _ => {},
+            }
+        }
+        assert!(completed);
+        assert!(!paced.screen.pending_client_repaints.contains(&recipient));
+    }
+}
+
+#[test]
+fn screensaver_wake_restores_graphics_overlays_and_cursor() {
+    for watcher in [false, true] {
+        let mut paced = screen_with_backlog();
+        let recipient = if watcher {
+            paced.screen.add_watcher_client(OTHER_CLIENT).unwrap();
+            OTHER_CLIENT
+        } else {
+            CLIENT
+        };
+        paced.screen.update_kitty_graphics_support(CLIENT, true);
+        paced.screen.update_kitty_graphics_support(recipient, true);
+        *paced.screen.character_cell_size.borrow_mut() = Some(SizeInPixels {
+            width: 23,
+            height: 43,
+        });
+        paced
+            .screen
+            .get_active_tab_mut(CLIENT)
+            .unwrap()
+            .get_active_pane_mut(CLIENT)
+            .unwrap()
+            .handle_pty_bytes(b"\x1b_Ga=T,q=2,f=24,s=2,v=2,m=0;////////////////\x1b\\".to_vec());
+        open_menu(&mut paced.screen, CLIENT);
+        paced_render(&mut paced.screen);
+        let initial: String = paced
+            .to_server
+            .try_iter()
+            .filter_map(|(instruction, _)| {
+                if let ServerInstruction::Render(Some(mut output)) = instruction {
+                    output.remove(&recipient)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        // Existing watcher serialization supports text and Sixel, while Kitty is regular-client only.
+        assert_eq!(initial.contains("\x1b_Ga=t,"), !watcher);
+        paced.screen.request_client_repaint(recipient).unwrap();
+        paced_render(&mut paced.screen);
+        let mut frame = String::new();
+        for (instruction, _) in paced.to_server.try_iter() {
+            if let ServerInstruction::Render(Some(mut output)) = instruction {
+                frame.push_str(&output.remove(&recipient).unwrap_or_default());
+            }
+        }
+        assert!(frame.contains("\x1b[2J"));
+        if !watcher {
+            assert!(
+                frame.contains("\x1b_Ga=t,"),
+                "image data is transmitted again for watcher={watcher}: {frame:?}"
+            );
+            assert!(
+                frame.contains("\x1b_Ga=p,"),
+                "placements are restored: {frame:?}"
+            );
+        }
+        assert!(
+            frame.contains("Copy"),
+            "the open menu is restored: {frame:?}"
+        );
+        assert!(
+            frame.contains("\x1b[?25"),
+            "cursor visibility is restated: {frame:?}"
+        );
+    }
+}

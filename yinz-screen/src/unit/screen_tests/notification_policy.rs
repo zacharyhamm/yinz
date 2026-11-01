@@ -45,7 +45,7 @@ fn events(receiver: &PluginReceiver) -> Vec<(Option<PluginId>, Event)> {
 fn desktop_output(receiver: &ServerReceiver) -> String {
     let mut output = String::new();
     while let Ok((instruction, _)) = receiver.try_recv() {
-        if let ServerInstruction::Render(Some(clients)) = instruction {
+        if let ServerInstruction::DesktopNotification(clients) = instruction {
             for content in clients.into_values() {
                 output.push_str(&content);
             }
@@ -295,7 +295,10 @@ fn arrivals_are_observable_and_resolutions_commit_in_order_without_blocking_rend
         .handle_pty_bytes(b"screen remains responsive".to_vec());
     screen.render_to_clients().unwrap();
     assert!(
-        desktop_output(&server).contains("screen remains responsive"),
+        server.try_iter().any(|(instruction, _)| {
+            matches!(instruction, ServerInstruction::Render(Some(clients))
+                if clients.values().any(|content| content.contains("screen remains responsive")))
+        }),
         "screen continues rendering while the first decision is pending"
     );
     decide(

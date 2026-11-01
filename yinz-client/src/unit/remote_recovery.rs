@@ -390,6 +390,7 @@ fn queued_stale_frames_and_session_switches_do_not_affect_the_replacement() {
         render_budget: &budget,
         startup_started: Instant::now(),
         splash: None,
+        screensaver: None,
     }
     .run(&rx);
     assert_eq!(outcome.exit_status, 0);

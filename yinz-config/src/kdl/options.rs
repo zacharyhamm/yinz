@@ -65,6 +65,9 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
     let disable_splash_screen =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "disable_splash_screen")
             .map(|(v, _)| v);
+    let screensaver =
+        kdl_property_first_arg_as_bool_or_error!(kdl_options, "screensaver").map(|(v, _)| v);
+    let screensaver_idle_timeout = unsigned_option(kdl_options, "screensaver_idle_timeout", 1)?;
     let default_shell = kdl_property_first_arg_as_string_or_error!(kdl_options, "default_shell")
         .map(|(string, _entry)| PathBuf::from(string));
     let default_cwd = kdl_property_first_arg_as_string_or_error!(kdl_options, "default_cwd")
@@ -281,6 +284,8 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         tab_groups,
         simplified_ui,
         disable_splash_screen,
+        screensaver,
+        screensaver_idle_timeout,
         theme,
         theme_dark,
         theme_light,
@@ -392,6 +397,14 @@ pub fn to_kdl(value: &Options, add_comments: bool) -> Vec<KdlNode> {
             "// \n",
         ),
     );
+    add_option(
+        "screensaver",
+        value.screensaver.map(KdlValue::Bool),
+        Some(true.into()),
+        "\n// Show the splash animation after this client is idle. Default: true\n//\n",
+    );
+    add_option("screensaver_idle_timeout", value.screensaver_idle_timeout.map(|v| KdlValue::Base10(i64::from(v))), Some(60.into()),
+        "\n// Seconds without keyboard, paste, or mouse input before the screensaver.\n// Must be positive. Default: 60\n//\n");
     add_option(
         "disable_splash_screen",
         value.disable_splash_screen.map(KdlValue::Bool),

@@ -23,6 +23,14 @@ pub struct CliOptions {
     #[clap(long, value_parser)]
     #[serde(default)]
     pub disable_splash_screen: Option<bool>,
+    /// Show the idle screensaver (default: true).
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub screensaver: Option<bool>,
+    /// Seconds without input before the screensaver starts (default: 60).
+    #[clap(long, value_parser = clap::value_parser!(u32).range(1..))]
+    #[serde(default)]
+    pub screensaver_idle_timeout: Option<u32>,
     /// Set the default theme
     #[clap(long, value_parser)]
     pub theme: Option<String>,
@@ -357,6 +365,8 @@ impl From<CliOptions> for Options {
             tab_groups: value.tab_groups,
             simplified_ui: value.simplified_ui,
             disable_splash_screen: value.disable_splash_screen,
+            screensaver: value.screensaver,
+            screensaver_idle_timeout: value.screensaver_idle_timeout,
             theme: value.theme,
             theme_dark: value.theme_dark,
             theme_light: value.theme_light,
@@ -434,6 +444,8 @@ impl From<Options> for CliOptions {
             tab_groups: value.tab_groups,
             simplified_ui: value.simplified_ui,
             disable_splash_screen: value.disable_splash_screen,
+            screensaver: value.screensaver,
+            screensaver_idle_timeout: value.screensaver_idle_timeout,
             theme: value.theme,
             theme_dark: value.theme_dark,
             theme_light: value.theme_light,

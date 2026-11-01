@@ -770,6 +770,8 @@ fn test_client_messages() {
                 agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 simplified_ui: Some(true),
                 disable_splash_screen: Some(true),
+                screensaver: Some(false),
+                screensaver_idle_timeout: Some(120),
                 theme: Some("theme".to_owned()),
                 theme_dark: Some("theme_dark".to_owned()),
                 theme_light: Some("theme_light".to_owned()),
@@ -5964,4 +5966,17 @@ fn saved_agent_layout_command_roundtrips() {
     let wire: crate::client_server_contract::client_server_contract::Run = run.clone().into();
     let restored = yinz_types::input::layout::Run::try_from(wire).unwrap();
     assert_eq!(run, restored);
+}
+
+#[test]
+fn screensaver_repaint_signals_roundtrip() {
+    test_client_roundtrip!(ClientToServerMsg::RequestRepaint);
+    test_server_roundtrip!(ServerToClientMsg::RepaintComplete);
+}
+
+#[test]
+fn desktop_notification_roundtrip() {
+    test_server_roundtrip!(ServerToClientMsg::DesktopNotification {
+        content: "\x1b]99;i=notification:p=body;done\x07".into(),
+    });
 }

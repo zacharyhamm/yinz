@@ -791,3 +791,37 @@ fn tab_groups_default_merge_and_round_trip() {
     }
     assert!(crate::kdl::options::from_string(r#"tab_groups "false""#).is_err());
 }
+
+#[test]
+fn screensaver_options_validate_merge_and_round_trip() {
+    for enabled in [None, Some(false), Some(true)] {
+        let options = Options {
+            screensaver: enabled,
+            screensaver_idle_timeout: Some(120),
+            ..Default::default()
+        };
+        for comments in [false, true] {
+            let mut document = KdlDocument::new();
+            document
+                .nodes_mut()
+                .extend(crate::kdl::options::to_kdl(&options, comments));
+            assert_eq!(
+                crate::kdl::options::from_string(&document.to_string()).unwrap(),
+                options
+            );
+        }
+        let merged = options.merge(Options {
+            screensaver_idle_timeout: Some(30),
+            ..Default::default()
+        });
+        assert_eq!(merged.screensaver, enabled);
+        assert_eq!(merged.screensaver_idle_timeout, Some(30));
+    }
+    for invalid in ["0", "-1", "1.5", "4294967296", "\"60\"", ""] {
+        assert!(
+            crate::kdl::options::from_string(&format!("screensaver_idle_timeout {invalid}"))
+                .is_err()
+        );
+    }
+    assert!(crate::kdl::options::from_string("screensaver 1").is_err());
+}

@@ -3,7 +3,6 @@ use super::{Notification, NotificationClick, NotificationRecord, Screen};
 use crate::{
     background_jobs::BackgroundJob,
     notifications::NotificationProtocol,
-    output::Output,
     panes::PaneId,
     plugins::{PluginInstanceId, PluginInstruction},
     route::NotificationEnd,
@@ -549,14 +548,7 @@ impl Screen {
         if clients.is_empty() {
             return;
         }
-        let mut output = Output::default();
-        output.add_clients(
-            &clients,
-            std::rc::Rc::new(std::cell::RefCell::new(
-                crate::panes::link_handler::LinkHandler::new(),
-            )),
-            None,
-        );
+        let mut output = std::collections::HashMap::new();
         let title = yinz_types::text::clean_string_from_control_and_linebreak(&outcome.title);
         let body = yinz_types::text::clean_string_from_control_and_linebreak(&outcome.body);
         for client in clients {
@@ -567,20 +559,15 @@ impl Screen {
                 protocol.render(&title, &body)
             };
             if let Some(raw) = raw {
-                output.add_post_vte_instruction_to_multiple_clients(std::iter::once(client), &raw);
+                output.insert(client, raw);
             }
         }
-        match output.serialize() {
-            Ok(output) if !output.is_empty() => self
-                .bus
+        if !output.is_empty() {
+            self.bus
                 .senders
-                .send_to_server(ServerInstruction::Render(Some(output)))
+                .send_to_server(ServerInstruction::DesktopNotification(output))
                 .context("deliver policy desktop notification")
-                .non_fatal(),
-            Ok(_) => {},
-            Err(error) => Err::<(), _>(error)
-                .context("serialize policy desktop notification")
-                .non_fatal(),
+                .non_fatal();
         }
     }
 

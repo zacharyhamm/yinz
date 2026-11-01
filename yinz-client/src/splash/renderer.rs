@@ -51,7 +51,7 @@ impl Default for Dot {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Stage {
+pub(crate) struct Stage {
     pub cols: usize,
     pub rows: usize,
     left: usize,
@@ -99,7 +99,7 @@ impl Stage {
     }
 }
 
-pub(super) struct Renderer {
+pub(crate) struct Renderer {
     pub stage: Stage,
     background: Rgb,
     background_luminance: f64,

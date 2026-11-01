@@ -11,7 +11,7 @@ use yinz_types::style::default_palette;
 
 mod geometry;
 mod outlines;
-mod renderer;
+pub(crate) mod renderer;
 
 pub(crate) const CLEAR: &str = "\x1b[m\x1b[2J\x1b[H";
 const DURATION: Duration = Duration::from_millis(1000);
@@ -88,18 +88,9 @@ pub(crate) fn show(
     if options.disable_splash_screen.unwrap_or(false) {
         return Ok(None);
     }
-    let Some(stage) = renderer::Stage::new(size) else {
+    let Some(mut renderer) = renderer(size, config, options) else {
         return Ok(None);
     };
-    let theme = config
-        .theme_config(options.theme.as_ref())
-        .unwrap_or_else(|| default_palette().into());
-    let mut style = theme.text_unselected;
-    if let Some(terminal) = config.terminal_theme_config(options.theme.as_ref()) {
-        style.base = PaletteColor::Rgb(terminal.foreground);
-        style.background = PaletteColor::Rgb(terminal.background);
-    }
-    let mut renderer = renderer::Renderer::new(stage, style, theme.frame_selected.base);
     let started = Instant::now();
     let output = renderer.frame(Duration::ZERO);
     write_synchronised(&mut *os_input.get_stdout_writer(), None, output.as_bytes())
@@ -109,6 +100,27 @@ pub(crate) fn show(
         next_frame: Some(started + FRAME_INTERVAL),
         renderer,
     }))
+}
+
+pub(crate) fn renderer(
+    size: Size,
+    config: &Config,
+    options: &Options,
+) -> Option<renderer::Renderer> {
+    let stage = renderer::Stage::new(size)?;
+    let theme = config
+        .theme_config(options.theme.as_ref())
+        .unwrap_or_else(|| default_palette().into());
+    let mut style = theme.text_unselected;
+    if let Some(terminal) = config.terminal_theme_config(options.theme.as_ref()) {
+        style.base = PaletteColor::Rgb(terminal.foreground);
+        style.background = PaletteColor::Rgb(terminal.background);
+    }
+    Some(renderer::Renderer::new(
+        stage,
+        style,
+        theme.frame_selected.base,
+    ))
 }
 
 #[cfg(test)]

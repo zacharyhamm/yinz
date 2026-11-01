@@ -1810,6 +1810,9 @@ pub fn screen_thread_main(
                             .push(ScreenInstruction::MoveTabRight(client_id, completion_tx));
                     }
                 },
+                ScreenInstruction::RequestRepaint(client_id) => {
+                    screen.request_client_repaint(client_id)?;
+                },
                 ScreenInstruction::RecomputeTabSize(client_id, new_size) => {
                     let previous_tab_size = screen.size_of_tab_of_client(client_id);
                     screen
@@ -2045,6 +2048,7 @@ pub fn screen_thread_main(
                     // connections per hook event, those broadcasts were most of the
                     // plugin threads' load while an agent worked.
                     let was_attached = screen.is_client_attached(client_id);
+                    screen.pending_client_repaints.remove(&client_id);
                     screen.remove_client(client_id).non_fatal();
                     keybind_intercepts.remove(&client_id);
                     if !screen.accepts_plugin_output(client_id) {

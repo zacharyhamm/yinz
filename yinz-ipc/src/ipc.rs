@@ -173,6 +173,7 @@ pub enum ClientToServerMsg {
     ColorRegisters {
         color_registers: Vec<ColorRegister>,
     },
+    RequestRepaint,
     TerminalResize {
         new_size: Size,
     },
@@ -319,6 +320,10 @@ pub enum ServerToClientMsg {
         name: SessionName,
     },
     ConfigFileUpdated,
+    DesktopNotification {
+        content: String,
+    },
+    RepaintComplete,
     SetMouseMode {
         enabled: bool,
     },

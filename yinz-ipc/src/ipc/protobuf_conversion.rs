@@ -150,6 +150,9 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
                     color_registers: color_registers.into_iter().map(|cr| cr.into()).collect(),
                 })
             },
+            ClientToServerMsg::RequestRepaint => {
+                client_to_server_msg::Message::RequestRepaint(true)
+            },
             ClientToServerMsg::TerminalResize { new_size } => {
                 client_to_server_msg::Message::TerminalResize(TerminalResizeMsg {
                     new_size: Some(new_size.into()),
@@ -377,6 +380,9 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                         .map(|cr| cr.try_into())
                         .collect::<Result<Vec<_>>>()?,
                 })
+            },
+            Some(client_to_server_msg::Message::RequestRepaint(_)) => {
+                Ok(ClientToServerMsg::RequestRepaint)
             },
             Some(client_to_server_msg::Message::TerminalResize(resize)) => {
                 Ok(ClientToServerMsg::TerminalResize {
@@ -634,6 +640,12 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
             ServerToClientMsg::SetMouseMode { enabled } => {
                 server_to_client_msg::Message::SetMouseMode(enabled)
             },
+            ServerToClientMsg::DesktopNotification { content } => {
+                server_to_client_msg::Message::DesktopNotification(content)
+            },
+            ServerToClientMsg::RepaintComplete => {
+                server_to_client_msg::Message::RepaintComplete(true)
+            },
             ServerToClientMsg::ConfigFileUpdated => {
                 server_to_client_msg::Message::ConfigFileUpdated(ConfigFileUpdatedMsg {})
             },
@@ -800,6 +812,12 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
             },
             Some(server_to_client_msg::Message::SetMouseMode(enabled)) => {
                 Ok(ServerToClientMsg::SetMouseMode { enabled })
+            },
+            Some(server_to_client_msg::Message::DesktopNotification(content)) => {
+                Ok(ServerToClientMsg::DesktopNotification { content })
+            },
+            Some(server_to_client_msg::Message::RepaintComplete(_)) => {
+                Ok(ServerToClientMsg::RepaintComplete)
             },
             Some(server_to_client_msg::Message::ConfigFileUpdated(_)) => {
                 Ok(ServerToClientMsg::ConfigFileUpdated)
@@ -1032,6 +1050,8 @@ impl From<yinz_types::input::options::Options>
             tab_groups: options.tab_groups,
             simplified_ui: options.simplified_ui,
             disable_splash_screen: options.disable_splash_screen,
+            screensaver: options.screensaver,
+            screensaver_idle_timeout: options.screensaver_idle_timeout,
             theme: options.theme,
             theme_dark: options.theme_dark,
             theme_light: options.theme_light,
@@ -1151,6 +1171,8 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             tab_groups: options.tab_groups,
             simplified_ui: options.simplified_ui,
             disable_splash_screen: options.disable_splash_screen,
+            screensaver: options.screensaver,
+            screensaver_idle_timeout: options.screensaver_idle_timeout,
             theme: options.theme,
             theme_dark: options.theme_dark,
             theme_light: options.theme_light,

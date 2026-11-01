@@ -17,6 +17,31 @@ use yinz_types::pane_size::Viewport;
 const MAX_QUEUED_RENDERS: usize = 1;
 
 impl Screen {
+    pub(super) fn request_client_repaint(&mut self, client: ClientId) -> Result<()> {
+        self.pending_client_repaints.insert(client);
+        self.last_forwarded_osc7.remove(&client);
+        // The screensaver removed placements and hid the cursor outside the server render stream.
+        if let Some(watcher) = self.watcher_clients.get_mut(&client) {
+            watcher.set_force_render();
+        } else if let Ok(tab) = self.get_active_tab_mut(client) {
+            tab.forget_host_cursor_state(client);
+            tab.request_client_repaint(client, true);
+        }
+        self.render()
+    }
+
+    fn complete_client_repaints(&mut self, clients: Vec<ClientId>) -> Result<()> {
+        for client in clients {
+            if self.pending_client_repaints.remove(&client) {
+                self.bus
+                    .senders
+                    .send_to_server(ServerInstruction::RepaintComplete(client))
+                    .context("complete client repaint")?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn watched_tab_id(&self) -> Option<TabId> {
         self.followed_client_id
             .filter(|_| !self.watcher_clients.is_empty())
@@ -550,11 +575,23 @@ impl Screen {
                     if trace_attach {
                         log::info!("attach trace: render enqueue to server main loop begin");
                     }
+                    let repainted: Vec<_> = serialized_output
+                        .keys()
+                        .copied()
+                        .filter(|client| {
+                            self.pending_client_repaints.contains(client)
+                                && self
+                                    .active_tab_ids
+                                    .get(client)
+                                    .is_some_and(|tab| tabs_that_rendered.contains(tab))
+                        })
+                        .collect();
                     let _ = self
                         .bus
                         .senders
                         .send_to_server(ServerInstruction::Render(Some(serialized_output)))
                         .context(err_context);
+                    self.complete_client_repaints(repainted)?;
                     if trace_attach {
                         log::info!(
                             "attach trace: render enqueue to server main loop complete after {:?}",
@@ -762,11 +799,13 @@ impl Screen {
 
         // Send to server for delivery to watcher clients
         if !watcher_render_output.is_empty() {
+            let repainted = watcher_render_output.keys().copied().collect();
             let _ = self
                 .bus
                 .senders
                 .send_to_server(ServerInstruction::Render(Some(watcher_render_output)))
                 .context(err_context);
+            self.complete_client_repaints(repainted)?;
         }
 
         // Clear force render flag for all watchers after successful render

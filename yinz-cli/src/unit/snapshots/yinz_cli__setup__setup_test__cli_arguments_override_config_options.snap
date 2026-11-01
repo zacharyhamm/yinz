@@ -9,6 +9,8 @@ Options {
         true,
     ),
     disable_splash_screen: None,
+    screensaver: None,
+    screensaver_idle_timeout: None,
     theme: None,
     theme_dark: None,
     theme_light: None,

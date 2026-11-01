@@ -398,6 +398,15 @@ pub(crate) fn route_thread_main(
                             return Ok(true);
                         }
                         match &instruction {
+                            ClientToServerMsg::RequestRepaint => {
+                                send_to_screen_or_retry_queue!(
+                                    senders,
+                                    ScreenInstruction::RequestRepaint(client_id),
+                                    instruction.clone(),
+                                    retry_queue
+                                )
+                                .with_context(err_context)?;
+                            },
                             ClientToServerMsg::TerminalResize { new_size } => {
                                 // For watchers: send size to Screen for rendering adjustments, but
                                 // this does not affect the screen size
@@ -737,6 +746,9 @@ pub(crate) fn route_thread_main(
                                     }
                                 }
                             }
+                        },
+                        ClientToServerMsg::RequestRepaint => {
+                            send_to_screen_or_retry_queue!(senders.clone(), ScreenInstruction::RequestRepaint(client_id), instruction, retry_queue).with_context(err_context)?;
                         },
                         ClientToServerMsg::TerminalResize { new_size } => {
                             // Check if this is a watcher or regular client

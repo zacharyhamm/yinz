@@ -242,6 +242,7 @@ fn the_client_loop_releases_render_pressure_on_delivery_and_terminal_failure() {
                 render_budget: &budget,
                 startup_started: std::time::Instant::now(),
                 splash: None,
+                screensaver: None,
             }
             .run(&receiver);
             // Mirror start_client's shutdown: neither a reservation nor a send may
@@ -317,6 +318,7 @@ fn late_terminal_replies_do_not_panic_after_the_client_loop_exits() {
             SenderWithContext::new(client_sender),
             input_receiver,
             nested_reannounce,
+            None,
         );
     }
 }

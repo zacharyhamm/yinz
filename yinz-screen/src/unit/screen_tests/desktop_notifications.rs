@@ -13,7 +13,7 @@ use yinz_types::internal_ids::TabId;
 fn collect_forwarded_notifications(server_receiver: &ServerReceiver) -> String {
     let mut output = String::new();
     while let Ok((instruction, _)) = server_receiver.try_recv() {
-        if let ServerInstruction::Render(Some(client_map)) = instruction {
+        if let ServerInstruction::DesktopNotification(client_map) = instruction {
             for (_client_id, content) in client_map {
                 output.push_str(&content);
             }
@@ -585,7 +585,7 @@ fn notifications_omit_recipients_with_no_terminal_output() {
     let frames: Vec<_> = receiver
         .try_iter()
         .filter_map(|(instruction, _)| {
-            if let ServerInstruction::Render(Some(frames)) = instruction {
+            if let ServerInstruction::DesktopNotification(frames) = instruction {
                 Some(frames)
             } else {
                 None

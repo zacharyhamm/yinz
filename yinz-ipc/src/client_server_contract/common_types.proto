@@ -1582,6 +1582,8 @@ message Options {
   optional uint64 max_agent_width = 80;
   optional bool tab_groups = 82;
   optional bool disable_splash_screen = 83;
+  optional bool screensaver = 84;
+  optional uint32 screensaver_idle_timeout = 85;
 }
 
 enum OnForceClose {

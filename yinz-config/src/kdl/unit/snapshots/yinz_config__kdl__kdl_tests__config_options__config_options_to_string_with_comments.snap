@@ -13,6 +13,15 @@ expression: fake_document.to_string()
 // 
 simplified_ui true
 
+// Show the splash animation after this client is idle. Default: true
+//
+// screensaver true
+
+// Seconds without keyboard, paste, or mouse input before the screensaver.
+// Must be positive. Default: 60
+//
+// screensaver_idle_timeout 60
+
 // Skip the startup splash and its minimum display time.
 // Default: false
 //
