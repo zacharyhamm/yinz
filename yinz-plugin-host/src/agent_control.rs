@@ -270,8 +270,7 @@ fn spawn_new_project(
     senders: &ThreadSenders,
     data: &DataAccess,
 ) -> AgentResponse {
-    let mut retained = None;
-    let mut registered = false;
+    let mut progress = NewProjectProgress::default();
     let result = spawn_agent_prepared(placement, spec, client, senders, |spec| {
         if spec.branch.is_some()
             || spec.base.is_some()
@@ -285,23 +284,10 @@ fn spawn_new_project(
             );
         }
         validate_automation_spec(spec)?;
-        if !destination.is_absolute() {
-            return Err("new project destination must be absolute".into());
-        }
-        let parent = destination
-            .parent()
-            .ok_or("destination must have a parent")?
-            .canonicalize()
-            .map_err(|error| format!("resolve destination parent: {error}"))?;
-        let root = parent.join(
-            destination
-                .file_name()
-                .ok_or("destination must name a new directory")?,
-        );
-        let root_text = root.to_str().ok_or("project destination must be UTF-8")?;
-        let project = project_data::projects::validate(&name, root_text)?;
+        let plan = plan_new_project(&name, &destination, data)?;
         if spec.bubblewrap {
-            let environment = yinz_config::project_config::bubblewrap::Environment::at_root(&root);
+            let environment =
+                yinz_config::project_config::bubblewrap::Environment::at_root(&plan.root);
             environment
                 .preflight()
                 .map_err(|error| format!("{error:#}"))?;
@@ -309,63 +295,8 @@ fn spawn_new_project(
                 .validate_spawn_env(&spec.env)
                 .map_err(|error| format!("{error:#}"))?;
         }
-        // Unlike listing, creation requires an available, complete registry before touching disk.
-        let rows = data
-            .plugin_data()
-            .fetch(
-                project_data::store::SHARED,
-                &FetchRequest::entity("project").limit(project_data::store::LIST_FETCH_LIMIT),
-            )
-            .map_err(|error| format!("project registry unavailable: {error}"))?;
-        if rows
-            .rows
-            .iter()
-            .any(|row| rows.get(row, "name") == Some(&DataValue::Text(project.name.clone())))
-        {
-            return Err(format!("project {} already exists", project.name).into());
-        }
-        if rows
-            .rows
-            .iter()
-            .any(|row| rows.get(row, "root") == Some(&DataValue::Text(project.root.clone())))
-        {
-            return Err("project root is already registered".into());
-        }
-        let (_, mutations) =
-            project_data::projects::plan_remember(&rows, &project.name, Some(&project.root), None)?;
-        match std::fs::symlink_metadata(&root) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
-            Ok(_) => return Err("project destination already exists".into()),
-            Err(error) => return Err(format!("inspect project destination: {error}").into()),
-        }
-        std::fs::create_dir(&root).map_err(|error| format!("create project directory: {error}"))?;
-        retained = Some(root.clone());
-        let output = process::Command::new("git")
-            .args(["init", "--initial-branch=main", "--template=", "--"])
-            .arg(&root)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_COMMON_DIR")
-            .output()
-            .map_err(|error| format!("initialize project repository: {error}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "initialize project repository: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )
-            .into());
-        }
-        let outcome = data
-            .plugin_data()
-            .apply(project_data::store::SHARED, &mutations)
-            .map_err(|error| format!("register new project: {error}"))?;
-        registered = true;
-        senders
-            .send_to_plugin(PluginInstruction::RefreshDataWatches {
-                namespace: project_data::store::SHARED.into(),
-                entities: outcome.touched_entities,
-            })
-            .non_fatal();
+        let root = plan.root.clone();
+        materialize_new_project(plan, senders, data, &mut progress)?;
         // Creating a new project explicitly selects its main checkout.
         spec.allow_outside_worktree = Some(true);
         prepare_automation_agent(
@@ -379,7 +310,7 @@ fn spawn_new_project(
     });
     let mut response = finish_spawn(result, senders);
     if response.outcome != AgentOutcome::Ok
-        && let Some(root) = retained
+        && let Some(root) = progress.retained
     {
         response.outcome = AgentOutcome::Failed;
         if response.spawned.is_none() {
@@ -388,12 +319,12 @@ fn spawn_new_project(
                 .get_or_insert_with(Default::default)
                 .cwd = Some(root.clone());
         }
-        let registration = if registered {
+        let registration = if progress.registered {
             "succeeded"
         } else {
             "did not succeed"
         };
-        let retry = if registered {
+        let retry = if progress.registered {
             format!(
                 "; retry with --project '{}' --allow-outside-worktree",
                 name.trim().replace('\'', "'\\''")
@@ -408,6 +339,134 @@ fn spawn_new_project(
         ));
     }
     response
+}
+
+/// A new project that has passed every check that can run before touching disk.
+struct NewProjectPlan {
+    name: String,
+    root: PathBuf,
+    mutations: Vec<yinz_types::plugin_data::Mutation>,
+}
+
+/// How far creation got, so a later failure can report what it left behind.
+#[derive(Default)]
+struct NewProjectProgress {
+    retained: Option<PathBuf>,
+    registered: bool,
+}
+
+fn plan_new_project(
+    name: &str,
+    destination: &std::path::Path,
+    data: &DataAccess,
+) -> Result<NewProjectPlan, String> {
+    if !destination.is_absolute() {
+        return Err("new project destination must be absolute".into());
+    }
+    let parent = destination
+        .parent()
+        .ok_or("destination must have a parent")?
+        .canonicalize()
+        .map_err(|error| format!("resolve destination parent: {error}"))?;
+    let root = parent.join(
+        destination
+            .file_name()
+            .ok_or("destination must name a new directory")?,
+    );
+    let root_text = root.to_str().ok_or("project destination must be UTF-8")?;
+    let project = project_data::projects::validate(name, root_text)?;
+    // Unlike listing, creation requires an available, complete registry before touching disk.
+    let rows = data
+        .plugin_data()
+        .fetch(
+            project_data::store::SHARED,
+            &FetchRequest::entity("project").limit(project_data::store::LIST_FETCH_LIMIT),
+        )
+        .map_err(|error| format!("project registry unavailable: {error}"))?;
+    if rows
+        .rows
+        .iter()
+        .any(|row| rows.get(row, "name") == Some(&DataValue::Text(project.name.clone())))
+    {
+        return Err(format!("project {} already exists", project.name));
+    }
+    if rows
+        .rows
+        .iter()
+        .any(|row| rows.get(row, "root") == Some(&DataValue::Text(project.root.clone())))
+    {
+        return Err("project root is already registered".into());
+    }
+    let (_, mutations) =
+        project_data::projects::plan_remember(&rows, &project.name, Some(&project.root), None)?;
+    match std::fs::symlink_metadata(&root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Ok(_) => return Err("project destination already exists".into()),
+        Err(error) => return Err(format!("inspect project destination: {error}")),
+    }
+    Ok(NewProjectPlan {
+        name: project.name,
+        root,
+        mutations,
+    })
+}
+
+fn materialize_new_project(
+    plan: NewProjectPlan,
+    senders: &ThreadSenders,
+    data: &DataAccess,
+    progress: &mut NewProjectProgress,
+) -> Result<(), String> {
+    std::fs::create_dir(&plan.root)
+        .map_err(|error| format!("create project directory: {error}"))?;
+    progress.retained = Some(plan.root.clone());
+    let output = process::Command::new("git")
+        .args(["init", "--initial-branch=main", "--template=", "--"])
+        .arg(&plan.root)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .output()
+        .map_err(|error| format!("initialize project repository: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "initialize project repository: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let outcome = data
+        .plugin_data()
+        .apply(project_data::store::SHARED, &plan.mutations)
+        .map_err(|error| format!("register new project: {error}"))?;
+    progress.registered = true;
+    senders
+        .send_to_plugin(PluginInstruction::RefreshDataWatches {
+            namespace: project_data::store::SHARED.into(),
+            entities: outcome.touched_entities,
+        })
+        .non_fatal();
+    Ok(())
+}
+
+/// Creates a registered project without launching anything in it.
+///
+/// Returns the registered name and the resolved root.
+pub(crate) fn create_project(
+    name: &str,
+    destination: &std::path::Path,
+    senders: &ThreadSenders,
+    data: &DataAccess,
+) -> Result<(String, PathBuf), String> {
+    let plan = plan_new_project(name, destination, data)?;
+    let created = (plan.name.clone(), plan.root.clone());
+    let mut progress = NewProjectProgress::default();
+    materialize_new_project(plan, senders, data, &mut progress).map_err(|error| match progress
+        .retained
+    {
+        Some(root) => format!("{error}; retained project directory {}", root.display()),
+        None => error,
+    })?;
+    Ok(created)
 }
 
 // Returns whether any required local or remote probe is still pending.

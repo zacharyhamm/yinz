@@ -635,6 +635,12 @@ impl Screen {
             Builtin::Picker(EntryKind::Project),
         );
         command(
+            "create-project",
+            "Create new project…",
+            &["new init git repository folder"],
+            Builtin::Agent(yinz_bus::command_palette::AgentAction::CreateProject),
+        );
+        command(
             "agents",
             "Agents…",
             &["find live agents"],
@@ -1612,6 +1618,53 @@ impl Screen {
         ))
     }
 
+    fn shell_command_in(&self, cwd: std::path::PathBuf) -> RunCommandAction {
+        let mut command = match self.default_shell_action.clone() {
+            Some(TerminalAction::RunCommand(command)) => RunCommandAction::from(command),
+            _ => RunCommandAction {
+                command: yinz_bus::pty::get_default_shell(),
+                ..Default::default()
+            },
+        };
+        command.cwd = Some(cwd);
+        command
+    }
+
+    /// Opens a local shell in a new project, whatever the palette was opened from.
+    pub(super) fn open_palette_terminal(&mut self, client: ClientId, cwd: std::path::PathBuf) {
+        let Some(state) = self.command_palettes.get(&client) else {
+            return;
+        };
+        let (pane, tab) = (state.context.pane_id, state.context.tab_id);
+        let floating = self
+            .tabs
+            .get(&tab)
+            .is_some_and(|tab| tab.are_floating_panes_visible());
+        let mut command = self.shell_command_in(cwd);
+        command.target = yinz_types::command::PaneTarget::Local;
+        let action = new_pane(None, None, Some(command), floating);
+        if !self.palette_target_exists(pane, tab, &action) {
+            if let Some(state) = self.command_palettes.get_mut(&client) {
+                state
+                    .widget
+                    .set_error("Destination no longer exists".into());
+            }
+            notify(&self.bus.senders, "Destination no longer exists".into());
+            return;
+        }
+        self.close_command_palette(client);
+        self.bus
+            .senders
+            .send_to_screen(ScreenInstruction::ActivateCommandPaletteAction {
+                label: "Open terminal".into(),
+                pane_id: pane,
+                tab_id: tab,
+                action,
+                client_id: client,
+            })
+            .non_fatal();
+    }
+
     fn palette_form_action(
         &self,
         kind: FormKind,
@@ -1645,19 +1698,7 @@ impl Screen {
                 Action::CloseTabGroup { id }
             },
             FormKind::NewPane => {
-                let command = cwd.map(|cwd| {
-                    let mut command = match self.default_shell_action.clone() {
-                        Some(TerminalAction::RunCommand(command)) => {
-                            RunCommandAction::from(command)
-                        },
-                        _ => RunCommandAction {
-                            command: yinz_bus::pty::get_default_shell(),
-                            ..Default::default()
-                        },
-                    };
-                    command.cwd = Some(cwd);
-                    command
-                });
+                let command = cwd.map(|cwd| self.shell_command_in(cwd));
                 let placement = values.get(2).map(String::as_str).unwrap_or_default();
                 let direction = match placement {
                     "Right" => Some(Direction::Right),

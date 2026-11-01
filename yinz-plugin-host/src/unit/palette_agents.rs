@@ -271,6 +271,94 @@ fn palette_projects_offer_creation_first_and_preserve_provider_through_selection
 }
 
 #[test]
+fn palette_create_project_validates_before_touching_disk() {
+    let (repo, data) = repository();
+    let mut create = request(repo.path(), AgentAction::CreateProject);
+    let (reply, commands) = run(&create, &data);
+    assert!(commands.is_empty());
+    let AgentReply::Form { labels, submit, .. } = reply.unwrap() else {
+        panic!("expected create project form");
+    };
+    assert_eq!(labels.len(), 2);
+    assert_eq!(labels[0], "Project path");
+    assert_eq!(submit, "Create");
+
+    create.values = vec![" ".into(), "named".into()];
+    assert!(run(&create, &data).0.unwrap_err().contains("required"));
+    create.values = vec!["relative/app".into(), String::new()];
+    assert!(run(&create, &data).0.unwrap_err().contains("absolute"));
+    // Expansion reaches the backend, whose failure names the parent rather than the path's form.
+    create.values = vec!["~/yinz-no-such-parent/app".into(), String::new()];
+    assert!(run(&create, &data)
+        .0
+        .unwrap_err()
+        .contains("resolve destination parent"));
+}
+
+#[test]
+fn palette_create_project_offers_agents_and_a_terminal_in_a_new_repository() {
+    let (repo, data) = repository();
+    let parent = tempfile::tempdir().unwrap();
+    let parent = parent.path().canonicalize().unwrap();
+    let destination = parent.join("new-app");
+    let mut create = request(repo.path(), AgentAction::CreateProject);
+    create.values = vec![destination.display().to_string(), String::new()];
+    let (reply, commands) = run(&create, &data);
+    assert!(commands.is_empty(), "creating launches nothing");
+    let AgentReply::ProjectCreated { name, choices } = reply.unwrap() else {
+        panic!("expected created project");
+    };
+    assert_eq!(name, "new-app");
+    let head = process::Command::new("git")
+        .arg("-C")
+        .arg(&destination)
+        .args(["symbolic-ref", "HEAD"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&head.stdout).trim(),
+        "refs/heads/main"
+    );
+    let registry = project_data::projects::from_rows(&agent_control::projects(&data).unwrap());
+    assert_eq!(registry["new-app"].root, destination.to_str().unwrap());
+
+    assert_eq!(
+        choices.len(),
+        yinz_runtime::agent::launch::offered().len() + 1
+    );
+    assert!(
+        matches!(&choices.last().unwrap().action, AgentAction::OpenTerminal { cwd } if *cwd == destination)
+    );
+    // A new repository has no commits, and its agent must still start in the main checkout.
+    let (reply, commands) = run(&request(repo.path(), choices[0].action.clone()), &data);
+    assert!(
+        matches!(&reply, Ok(AgentReply::Launched(r)) if r.outcome == AgentOutcome::Ok),
+        "{reply:?}"
+    );
+    assert_eq!(commands[0].cwd.as_ref(), Some(&destination));
+
+    // The destination and the name are each taken, and a failure leaves no new folder.
+    let (reply, _) = run(&create, &data);
+    assert!(reply.unwrap_err().contains("already exists"));
+    let sibling = parent.join("nested");
+    fs::create_dir(&sibling).unwrap();
+    let same_name = sibling.join("new-app");
+    create.values = vec![same_name.display().to_string(), String::new()];
+    let (reply, _) = run(&create, &data);
+    assert!(reply
+        .unwrap_err()
+        .contains("project new-app already exists"));
+    assert!(!same_name.exists());
+
+    create.values = vec![same_name.display().to_string(), " second-app ".into()];
+    let (reply, _) = run(&create, &data);
+    assert!(
+        matches!(reply.unwrap(), AgentReply::ProjectCreated { name, .. } if name == "second-app")
+    );
+    assert!(same_name.join(".git").is_dir());
+}
+
+#[test]
 fn palette_new_project_form_validation_and_launch_use_the_shared_backend() {
     let (repo, data) = repository();
     let parent = tempfile::tempdir().unwrap();

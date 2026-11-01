@@ -1096,6 +1096,105 @@ fn command_palette_creates_a_project_and_focuses_its_agent() {
     yinz.quit();
 }
 
+fn create_project_from_palette(
+    destination: &std::path::Path,
+) -> (
+    yinz_integration_tests::TestSession,
+    yinz_integration_tests::FakePtyHandle,
+) {
+    use agent_proto::store;
+    use yinz_storage::data_access::DataAccess;
+    let test_root = yinz_integration_tests::test_env::init();
+    let data = DataAccess::sqlite(&test_root.join("data"));
+    for definition in store::shared_defs() {
+        data.plugin_data()
+            .define_entity(store::SHARED, "test", &definition, false)
+            .unwrap();
+    }
+    let yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\npane_animations false")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let shell = yinz.expect_pty_spawn();
+    shell.output(PROMPT);
+    yinz.wait_until("shell ready", |s| s.contains("$"));
+    palette_query(&yinz, "Create new project…");
+    yinz.wait_until("create project form", |s| {
+        s.contains("Project path") && s.contains("Project name")
+    });
+    yinz.send_stdin(destination.to_str().unwrap().as_bytes());
+    yinz.send_stdin(&keys::ENTER);
+    yinz.send_stdin(&keys::ENTER);
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("project choices", |s| {
+        s.contains("Open in") && s.contains("Open terminal")
+    });
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(destination)
+        .args(["symbolic-ref", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let rows = data
+        .plugin_data()
+        .fetch(
+            store::SHARED,
+            &yinz_types::plugin_data::FetchRequest::entity("project"),
+        )
+        .unwrap();
+    let projects = agent_proto::projects::from_rows(&rows);
+    assert_eq!(projects["new-app"].root, destination.to_str().unwrap());
+    (yinz, shell)
+}
+
+#[test]
+fn command_palette_creates_a_project_and_opens_a_terminal_in_it() {
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().canonicalize().unwrap().join("new-app");
+    let (mut yinz, shell) = create_project_from_palette(&destination);
+    yinz.send_stdin(b"Open terminal");
+    yinz.send_stdin(&keys::ENTER);
+    let terminal = yinz.expect_pty_spawn();
+    assert_eq!(terminal.run_command().cwd.as_ref(), Some(&destination));
+    terminal.output(b"PROJECT TERMINAL READY\r\n");
+    yinz.wait_until("palette closes after terminal opens", |s| {
+        s.contains("PROJECT TERMINAL READY") && !s.contains("Open in")
+    });
+    yinz.send_stdin(b"terminal-input");
+    terminal.wait_for_stdin("project terminal is focused", |bytes| {
+        bytes.ends_with(b"terminal-input")
+    });
+    assert!(shell.stdin_bytes().is_empty());
+    yinz.quit();
+}
+
+#[test]
+fn command_palette_creates_a_project_and_launches_a_chosen_agent_in_it() {
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().canonicalize().unwrap().join("new-app");
+    let (mut yinz, shell) = create_project_from_palette(&destination);
+    yinz.send_stdin(b"Spawn claude agent");
+    yinz.send_stdin(&keys::ENTER);
+    let agent = yinz.expect_pty_spawn();
+    let command = agent.run_command();
+    assert_eq!(command.cwd.as_ref(), Some(&destination));
+    assert_eq!(
+        yinz_types::agent::agent_kind_of(&command.command, &command.args).as_deref(),
+        Some("claude")
+    );
+    agent.output(b"PROJECT AGENT READY\r\n");
+    yinz.wait_until("palette closes after agent launch", |s| {
+        s.contains("PROJECT AGENT READY") && !s.contains("Open in")
+    });
+    yinz.send_stdin(b"agent-input");
+    agent.wait_for_stdin("project agent is focused", |bytes| {
+        bytes.ends_with(b"agent-input")
+    });
+    assert!(shell.stdin_bytes().is_empty());
+    yinz.quit();
+}
+
 #[test]
 fn command_palette_agent_history_event_back_focus_and_archive_resume() {
     use agent_proto::{

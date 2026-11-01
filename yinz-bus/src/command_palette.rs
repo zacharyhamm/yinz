@@ -142,6 +142,12 @@ pub enum AgentAction {
     NewProject {
         kind: String,
     },
+    /// Create a project, then offer what to open in it.
+    CreateProject,
+    /// Screen-handled: open a shell in a folder, without a worker round trip.
+    OpenTerminal {
+        cwd: std::path::PathBuf,
+    },
     Start {
         kind: String,
         project: Option<String>,
@@ -201,6 +207,11 @@ pub enum AgentReply {
         action: AgentAction,
     },
     Launched(yinz_types::agent::control::AgentResponse),
+    /// Unlike `Choices`, also drops the creation form from the back stack.
+    ProjectCreated {
+        name: String,
+        choices: Vec<AgentChoice>,
+    },
 }
 
 #[path = "palette_query.rs"]

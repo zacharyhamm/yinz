@@ -19,6 +19,49 @@ use yinz_types::{agent::control::AgentOutcome, data::PaneInfo, internal_ids::Cli
 static OPENING: AtomicU64 = AtomicU64::new(1);
 const FIRST_VIEW: u64 = 1 << 63;
 
+fn show_choices(
+    state: &mut super::CommandPaletteState,
+    step: u64,
+    title: String,
+    choices: Vec<yinz_bus::command_palette::AgentChoice>,
+) {
+    state.widget.push_view(FIRST_VIEW + step, title.clone());
+    let mut creation = None;
+    let mut navigation = Vec::new();
+    let entries = choices
+        .into_iter()
+        .enumerate()
+        .map(|(i, choice)| {
+            let id = format!("native-agent:{step}:{i}");
+            match &choice.action {
+                AgentAction::Checkout { path: None, .. } => creation = Some(id.clone()),
+                AgentAction::Projects { .. } => navigation.push(id.clone()),
+                _ => {},
+            }
+            state.agents.actions.insert(id.clone(), choice.action);
+            Entry {
+                id,
+                label: escape_literal(&choice.label),
+                description: escape_literal(&choice.description),
+                aliases: vec![choice.description],
+                shortcut: String::new(),
+                // Section rows use the widget’s grouped entry kind.
+                kind: EntryKind::Plugin,
+            }
+        })
+        .collect::<Vec<_>>();
+    let status = entries.is_empty().then(|| "No projects available".into());
+    state.widget.set_sections(vec![PluginSection {
+        title: escape_literal(&title),
+        entries,
+        semantic: false,
+        status,
+    }]);
+    if let Some(id) = creation {
+        state.widget.set_worktree_creation(id, navigation);
+    }
+}
+
 /// The past-prompt picker's list, freed with its view. Scoring runs off the screen thread.
 struct PromptPicker {
     view: u64,
@@ -391,7 +434,7 @@ impl Screen {
                 | AgentAction::Launch { .. }
                 | AgentAction::History(yinz_bus::command_palette::HistoryAction::Resume { .. })
         ) || matches!(&action, AgentAction::Checkout { path, .. } if path.is_some() || !values.is_empty())
-            || matches!(&action, AgentAction::NewProject { .. } if !values.is_empty());
+            || matches!(&action, AgentAction::NewProject { .. } | AgentAction::CreateProject if !values.is_empty());
         state.agents.step += 1;
         let active = Arc::new(AtomicBool::new(true));
         state.agents.pending = Some((state.widget.view, active.clone(), action.clone()));
@@ -489,6 +532,10 @@ impl Screen {
         let Some(action) = state.agents.actions.get(id).cloned() else {
             return false;
         };
+        if let AgentAction::OpenTerminal { cwd } = action {
+            self.open_palette_terminal(client, cwd);
+            return true;
+        }
         self.request_palette_agent(client, action, values);
         true
     }
@@ -529,6 +576,7 @@ impl Screen {
             Some(AgentAction::Duplicate { .. }) => "Duplicate agent",
             Some(AgentAction::Fork) => "Fork agent",
             Some(AgentAction::Prompt { .. }) => "Send prompt",
+            Some(AgentAction::CreateProject) => "Create project",
             _ => "Launch agent",
         };
         let prompt = state.agents.prompt_pending();
@@ -577,41 +625,19 @@ impl Screen {
             },
             Ok(AgentReply::Choices { title, choices }) => {
                 state.agents.submitted = false;
-                state.widget.push_view(FIRST_VIEW + step, title.clone());
-                let mut creation = None;
-                let mut navigation = Vec::new();
-                let entries = choices
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, choice)| {
-                        let id = format!("native-agent:{step}:{i}");
-                        match &choice.action {
-                            AgentAction::Checkout { path: None, .. } => creation = Some(id.clone()),
-                            AgentAction::Projects { .. } => navigation.push(id.clone()),
-                            _ => {},
-                        }
-                        state.agents.actions.insert(id.clone(), choice.action);
-                        Entry {
-                            id,
-                            label: escape_literal(&choice.label),
-                            description: escape_literal(&choice.description),
-                            aliases: vec![choice.description],
-                            shortcut: String::new(),
-                            // Section rows use the widget’s grouped entry kind.
-                            kind: EntryKind::Plugin,
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                let status = entries.is_empty().then(|| "No projects available".into());
-                state.widget.set_sections(vec![PluginSection {
-                    title: escape_literal(&title),
-                    entries,
-                    semantic: false,
-                    status,
-                }]);
-                if let Some(id) = creation {
-                    state.widget.set_worktree_creation(id, navigation);
-                }
+                show_choices(state, step, title, choices);
+            },
+            Ok(AgentReply::ProjectCreated { name, choices }) => {
+                state.agents.submitted = false;
+                state
+                    .agents
+                    .values
+                    .remove(&format!("{:?}", AgentAction::CreateProject));
+                super::notify(&self.bus.senders, format!("Created project {name}"));
+                // Resubmitting the form could only fail: its destination now exists.
+                state.widget.reset_to_root();
+                state.widget.clear_searches();
+                show_choices(state, step, format!("Created {name} · Open in"), choices);
             },
             Ok(AgentReply::Form {
                 title,

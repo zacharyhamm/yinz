@@ -6,7 +6,8 @@ later, we have yinz.
 
 Hit "Ctrl+o+l" to launch the command palette. Or Ctrl+alt+p. Projects register
 automatically when you launch an agent in a git repository. A project is defined
-by the git remote, or if that is not set, just the path.
+by the git remote, or if that is not set, just the path. "Create new project…"
+in the palette makes a folder and git repository, then opens an agent or terminal in it.
 
 Yinz automatically rethemes agents launched via "Spawn". Type "theme" in the
 command palette to choose a theme.

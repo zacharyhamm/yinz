@@ -8045,3 +8045,99 @@ fn plugin_table_refresh_validates_shape_and_preserves_original_handle() {
     };
     assert_eq!(handle, "handle-original");
 }
+
+#[test]
+fn created_project_choices_replace_the_form_and_open_a_local_terminal() {
+    use std::path::PathBuf;
+    use yinz_bus::command_palette::{AgentAction, AgentChoice, AgentReply, Instruction};
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    use yinz_types::command::PaneTarget;
+    use yinz_types::input::command::{RunCommand, TerminalAction};
+    let root = PathBuf::from("/projects/new-app");
+    let mut screen = screen();
+    screen.default_shell_action = Some(TerminalAction::RunCommand(RunCommand {
+        command: "shell".into(),
+        target: PaneTarget::Ssh {
+            host: "remote".into(),
+        },
+        ..Default::default()
+    }));
+    let actions = palette_actions_receiver(&mut screen);
+    let (tx, rx) = unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let next = || {
+        rx.try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PluginInstruction::PaletteAgent(request) => Some(*request),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let create = |screen: &mut Screen,
+                  next: &dyn Fn() -> yinz_bus::command_palette::AgentRequest| {
+        palette_search(screen, "Create new project");
+        palette_key(screen, BareKey::Enter);
+        let request = next();
+        assert!(matches!(request.action, AgentAction::CreateProject));
+        assert!(request.values.is_empty());
+        screen.plugin_palette_instruction(Instruction::AgentReply {
+            client: CLIENT,
+            opening: request.opening,
+            step: request.step,
+            reply: Ok(AgentReply::Form {
+                title: "Create new project".into(),
+                labels: vec!["Project path".into(), "Project name".into()],
+                submit: "Create".into(),
+                action: AgentAction::CreateProject,
+            }),
+        });
+        screen.command_palette_handles_input(&None, b"/projects/new-app", false, CLIENT);
+        for _ in 0..3 {
+            palette_key(screen, BareKey::Enter);
+        }
+        let request = next();
+        assert_eq!(request.values, ["/projects/new-app", ""]);
+        screen.plugin_palette_instruction(Instruction::AgentReply {
+            client: CLIENT,
+            opening: request.opening,
+            step: request.step,
+            reply: Ok(AgentReply::ProjectCreated {
+                name: "new-app".into(),
+                choices: vec![AgentChoice {
+                    label: "Open terminal".into(),
+                    description: String::new(),
+                    action: AgentAction::OpenTerminal {
+                        cwd: PathBuf::from("/projects/new-app"),
+                    },
+                }],
+            }),
+        });
+    };
+
+    create(&mut screen, &next);
+    palette_key(&mut screen, BareKey::Esc);
+    let palette = screen.command_palettes[&CLIENT].widget();
+    assert!(palette.is_root(), "Esc must skip the submitted form");
+    assert!(palette.form_values().is_none());
+    screen.close_command_palette(CLIENT);
+
+    create(&mut screen, &next);
+    palette_key(&mut screen, BareKey::Enter);
+    assert!(screen.command_palettes.is_empty());
+    let activation = actions
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            ScreenInstruction::ActivateCommandPaletteAction { action, .. } => Some(action),
+            _ => None,
+        })
+        .expect("expected palette activation");
+    let Action::NewTiledPane {
+        command: Some(command),
+        ..
+    } = activation
+    else {
+        panic!("expected a tiled pane running a shell");
+    };
+    assert_eq!(command.cwd, Some(root));
+    assert_eq!(command.target, PaneTarget::Local);
+}

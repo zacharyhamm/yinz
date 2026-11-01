@@ -244,6 +244,62 @@ fn execute(
         History(_) | Prompt { .. } | Usage { .. } | PromptLibrary => {
             unreachable!("handled above")
         },
+        OpenTerminal { .. } => Err("Terminals open from the screen thread".into()),
+        CreateProject => {
+            if request.values.is_empty() {
+                return Ok(AgentReply::Form {
+                    title: "Create new project".into(),
+                    labels: vec![
+                        "Project path".into(),
+                        "Project name (default: folder name)".into(),
+                    ],
+                    submit: "Create".into(),
+                    action: request.action.clone(),
+                });
+            }
+            let path = request.values.first().map_or("", |path| path.trim());
+            if path.is_empty() {
+                return Err("Project path is required".into());
+            }
+            let destination = yinz_runtime::shared::expand_path(path)?;
+            if !destination.is_absolute() {
+                return Err("Project path must be absolute".into());
+            }
+            let name = match request.values.get(1).map(|name| name.trim()) {
+                Some(name) if !name.is_empty() => name.to_owned(),
+                _ => destination
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or("Project path must end in a folder name")?
+                    .to_owned(),
+            };
+            still_wanted(request)?;
+            let (name, root) = agent_control::create_project(&name, &destination, senders, data)?;
+            let mut entries: Vec<_> = yinz_runtime::agent::launch::offered()
+                .into_iter()
+                .map(|kind| {
+                    choice(
+                        format!("Spawn {kind} agent"),
+                        String::new(),
+                        Launch {
+                            kind,
+                            project: AgentProject::Registered(name.clone()),
+                            path: Some(root.clone()),
+                            branch: None,
+                        },
+                    )
+                })
+                .collect();
+            entries.push(choice(
+                "Open terminal".into(),
+                String::new(),
+                OpenTerminal { cwd: root },
+            ));
+            Ok(AgentReply::ProjectCreated {
+                name,
+                choices: entries,
+            })
+        },
         NewProject { kind } => {
             if request.values.is_empty() {
                 return Ok(AgentReply::Form {
