@@ -433,6 +433,155 @@ fn group_panes_with_mouse() {
     );
 }
 
+fn screen_with_tab_bar_for_grouping() -> (Screen, Receiver<(PluginInstruction, ErrorContext)>) {
+    let client_id = ClientId::new(1);
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
+    let (plugin_tx, plugin_rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    let plugin = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "yinz:tab-bar",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
+    screen
+        .new_tab(TabId::new(0), (vec![], vec![]), None, Some(client_id))
+        .unwrap();
+    screen
+        .apply_layout(
+            TiledPaneLayout {
+                children: vec![
+                    TiledPaneLayout {
+                        run: Some(Run::Plugin(plugin.clone())),
+                        split_size: Some(yinz_types::geometry::SplitSize::Fixed(2)),
+                        borderless: Some(true),
+                        ..Default::default()
+                    },
+                    TiledPaneLayout::default(),
+                ],
+                ..Default::default()
+            },
+            vec![],
+            vec![(TerminalId::new(1), None)],
+            vec![],
+            HashMap::from([(plugin, vec![crate::PluginId::new(1)])]),
+            TabId::new(0),
+            true,
+            client_id,
+            None,
+        )
+        .unwrap();
+    (screen, plugin_rx)
+}
+
+#[test]
+fn pane_grouping_ignores_nonselectable_panes_under_alt_click_and_drag() {
+    let client_id = ClientId::new(1);
+    let terminal = PaneId::Terminal(TerminalId::new(1));
+    let bar = PaneId::Plugin(crate::PluginId::new(1));
+    let (mut screen, _plugin_rx) = screen_with_tab_bar_for_grouping();
+    screen.set_pane_selectable(bar, false);
+
+    for event in [
+        MouseEvent::new_left_press_with_alt_event(Position::new(0, 10)),
+        MouseEvent::new_left_motion_with_alt_event(Position::new(0, 10)),
+    ] {
+        screen.handle_mouse_event(event, client_id);
+        assert!(screen.current_pane_group.borrow().clone_inner().is_empty());
+    }
+
+    screen.handle_mouse_event(
+        MouseEvent::new_left_press_with_alt_event(Position::new(5, 10)),
+        client_id,
+    );
+    for event in [
+        MouseEvent::new_left_motion_with_alt_event(Position::new(0, 10)),
+        MouseEvent::new_left_press_with_alt_event(Position::new(0, 10)),
+    ] {
+        screen.handle_mouse_event(event, client_id);
+        assert_eq!(
+            screen.current_pane_group.borrow().clone_inner()[&client_id],
+            vec![terminal]
+        );
+    }
+}
+
+#[test]
+fn pane_grouping_filters_plugin_requests_and_preserves_selectable_plugins() {
+    let client_id = ClientId::new(1);
+    let other_client = ClientId::new(2);
+    let terminal = PaneId::Terminal(TerminalId::new(1));
+    let plugin = PaneId::Plugin(crate::PluginId::new(1));
+    let missing = PaneId::Terminal(TerminalId::new(99));
+
+    for for_all_clients in [false, true] {
+        for selectable in [false, true] {
+            let (mut screen, _plugin_rx) = screen_with_tab_bar_for_grouping();
+            screen.set_pane_selectable(plugin, selectable);
+            screen
+                .current_pane_group
+                .borrow_mut()
+                .override_groups_with(HashMap::from([
+                    (client_id, vec![terminal]),
+                    (other_client, vec![terminal]),
+                ]));
+            screen.group_and_ungroup_panes(
+                vec![plugin, missing],
+                vec![],
+                for_all_clients,
+                client_id,
+            );
+            for client in [client_id, other_client] {
+                let expected = if selectable && (client == client_id || for_all_clients) {
+                    vec![terminal, plugin]
+                } else {
+                    vec![terminal]
+                };
+                assert_eq!(
+                    screen.current_pane_group.borrow().clone_inner()[&client],
+                    expected
+                );
+            }
+            screen.group_and_ungroup_panes(vec![], vec![plugin], for_all_clients, client_id);
+            for panes in screen.current_pane_group.borrow().clone_inner().values() {
+                assert_eq!(panes, &vec![terminal]);
+            }
+        }
+    }
+}
+
+#[test]
+fn pane_grouping_removes_panes_that_become_nonselectable_and_stale_members() {
+    let client_id = ClientId::new(1);
+    let terminal = PaneId::Terminal(TerminalId::new(1));
+    let bar = PaneId::Plugin(crate::PluginId::new(1));
+    let missing = PaneId::Terminal(TerminalId::new(99));
+    let (mut screen, _plugin_rx) = screen_with_tab_bar_for_grouping();
+    screen.group_and_ungroup_panes(vec![bar, terminal], vec![], false, client_id);
+    assert_eq!(
+        screen.current_pane_group.borrow().clone_inner()[&client_id],
+        vec![bar, terminal]
+    );
+
+    assert!(screen.set_pane_selectable(bar, false));
+    assert_eq!(
+        screen.current_pane_group.borrow().clone_inner()[&client_id],
+        vec![terminal]
+    );
+
+    // An already-invalid selection is pruned too, including a closed pane.
+    screen
+        .current_pane_group
+        .borrow_mut()
+        .override_groups_with(HashMap::from([(client_id, vec![bar, terminal, missing])]));
+    screen.add_pane_id_to_group(bar, &client_id);
+    assert_eq!(
+        screen.current_pane_group.borrow().clone_inner()[&client_id],
+        vec![terminal]
+    );
+}
+
 #[test]
 fn mouse_focus_clears_bell_on_focused_pane() {
     let size = Size {

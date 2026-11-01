@@ -146,7 +146,12 @@ impl PaneGroups {
                 should_launch = true;
             }
         }
-        should_launch || previous_groups.get(client_id).is_none()
+        should_launch
+            || (previous_groups.get(client_id).is_none()
+                && self
+                    .panes_in_group
+                    .get(client_id)
+                    .is_some_and(|panes| !panes.is_empty()))
     }
     fn launch_plugin(&self, screen_size: Size, client_id: &ClientId) {
         if let Ok(run_plugin) = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
