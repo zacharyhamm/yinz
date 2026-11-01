@@ -909,31 +909,11 @@ impl Pty {
                     .as_ref()
                     .is_some_and(|command| command.shows_start_failure() || command.defers_spawn());
                 if show_failure {
-                    // Tear down the failed reservation, but keep the pane for its
-                    // error display. A retry must wait for the writer's ack.
-                    self.bus
-                        .os_input
-                        .as_ref()
-                        .context("no OS I/O interface found")?
-                        .clear_terminal_id(terminal_id)
-                        .context("release failed terminal startup")
-                        .non_fatal();
-                    self.pending_write_cancellations
-                        .insert(terminal_id, pending.generation);
-                    self.reruns.insert(
+                    self.cancel_failed_startup_writes(
                         terminal_id,
-                        RerunState {
-                            generation: pending.generation,
-                            queued: std::mem::take(&mut queued),
-                        },
-                    );
-                    self.bus
-                        .senders
-                        .send_to_pty_writer(PtyWriteInstruction::CancelWrites {
-                            terminal_id,
-                            generation: pending.generation,
-                        })
-                        .context("cancel writes for failed terminal startup")?;
+                        pending.generation,
+                        std::mem::take(&mut queued),
+                    )?;
                     self.bus
                         .senders
                         .send_to_screen(ScreenInstruction::PtyBytes(
@@ -985,6 +965,34 @@ impl Pty {
             self.run_queued_reruns(PaneId::Terminal(terminal_id), queued)?;
         }
         Ok(())
+    }
+
+    /// Release the failed reservation and retain retries until the writer has
+    /// discarded its buffered input and completed the pending write requests.
+    fn cancel_failed_startup_writes(
+        &mut self,
+        terminal_id: TerminalId,
+        generation: u64,
+        queued: VecDeque<(RunCommand, Option<NotificationEnd>)>,
+    ) -> Result<()> {
+        self.bus
+            .os_input
+            .as_ref()
+            .context("no OS I/O interface found")?
+            .clear_terminal_id(terminal_id)
+            .context("release failed terminal startup")
+            .non_fatal();
+        self.pending_write_cancellations
+            .insert(terminal_id, generation);
+        self.reruns
+            .insert(terminal_id, RerunState { generation, queued });
+        self.bus
+            .senders
+            .send_to_pty_writer(PtyWriteInstruction::CancelWrites {
+                terminal_id,
+                generation,
+            })
+            .context("cancel writes for failed terminal startup")
     }
 
     fn startup_writes_cancelled(&mut self, terminal_id: TerminalId, generation: u64) -> Result<()> {
@@ -1046,12 +1054,19 @@ impl Pty {
             return Ok(());
         }
         self.awaiting_placement.remove(&terminal_id);
-        let queued = self
+        let mut queued = self
             .reruns
             .remove(&terminal_id)
             .map(|state| state.queued)
             .unwrap_or_default();
         let spawned = spawned.take()?;
+        if spawned.is_err() {
+            self.cancel_failed_startup_writes(
+                terminal_id,
+                pending.generation,
+                std::mem::take(&mut queued),
+            )?;
+        }
         if pending.run_command.defers_spawn() {
             if spawned.is_ok() {
                 self.bus
@@ -1073,7 +1088,10 @@ impl Pty {
             spawned,
         );
         finish_command_rerun(self, pending.pane_id, pending.run_command, result)?;
-        self.run_queued_reruns(pending.pane_id, queued)
+        if !self.pending_write_cancellations.contains_key(&terminal_id) {
+            self.run_queued_reruns(pending.pane_id, queued)?;
+        }
+        Ok(())
     }
 
     /// Run the reruns that queued up behind one that just finished, in order,

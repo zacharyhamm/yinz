@@ -5055,3 +5055,66 @@ fn failed_startup_waits_for_write_cancellation_before_retry_and_ignores_stale_ac
         }
     }
 }
+
+#[test]
+fn failed_rerun_waits_for_write_cancellation_before_retry_and_ignores_stale_acks() {
+    for close in [false, true] {
+        for command in [RunCommand::default(), ssh_command()] {
+            let id = TerminalId::new(41);
+            let pane = PaneId::Terminal(id);
+            let os = MockOsApi::new();
+            os.fail_rerun_of(id);
+            let (mut pty, _plugins, _screen) = make_pty_with_screen_receiver(os.clone());
+            let (tx, rx) = channels::unbounded();
+            pty.bus.senders.to_pty = Some(SenderWithContext::new(tx));
+            let (writer_tx, writer_rx) = channels::unbounded();
+            pty.bus.senders.to_pty_writer = Some(SenderWithContext::new(writer_tx));
+            pty.request_rerun(pane, command, None).unwrap();
+            place_launches(&mut pty);
+            let (event, _) = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            let PtyInstruction::SpawnResolved(PendingSpawn::Rerun(pending, spawned)) = event else {
+                panic!("expected rerun handback");
+            };
+            let generation = pending.generation;
+            pty.request_rerun(pane, RunCommand::default(), None)
+                .unwrap();
+            pty.handle_rerun_spawned(*pending, spawned).unwrap();
+            assert_eq!(*os.cleared_terminal_ids.lock().unwrap(), [id]);
+            assert!(
+                matches!(writer_rx.try_recv().unwrap().0, PtyWriteInstruction::CancelWrites { terminal_id, generation: g } if terminal_id == id && g == generation)
+            );
+            assert_eq!(pty.reruns[&id].queued.len(), 1);
+            assert!(pty.awaiting_placement.is_empty());
+            pty.startup_writes_cancelled(id, generation.wrapping_add(1))
+                .unwrap();
+            assert!(pty.awaiting_placement.is_empty());
+            // Requests arriving after failure must also wait for cancellation.
+            pty.request_rerun(pane, RunCommand::default(), None)
+                .unwrap();
+            assert_eq!(pty.reruns[&id].queued.len(), 2);
+            os.rerun_failures.lock().unwrap().remove(&id);
+            if close {
+                pty.close_pane(pane).unwrap();
+            }
+            pty.startup_writes_cancelled(id, generation).unwrap();
+            assert!(pty.pending_write_cancellations.is_empty());
+            assert_eq!(pty.awaiting_placement.contains_key(&id), !close);
+            if !close {
+                assert_eq!(pty.reruns[&id].queued.len(), 1);
+                // A duplicate ack cannot release the next retry's queue.
+                pty.startup_writes_cancelled(id, generation).unwrap();
+                assert_eq!(pty.reruns[&id].queued.len(), 1);
+                place_launches(&mut pty);
+                let (pending, spawned) = resolved_rerun(&rx);
+                pty.handle_rerun_spawned(pending, spawned).unwrap();
+                place_launches(&mut pty);
+                let (pending, spawned) = resolved_rerun(&rx);
+                pty.handle_rerun_spawned(pending, spawned).unwrap();
+                assert!(!pty.reruns.contains_key(&id));
+                pty.close_pane(pane).unwrap();
+            } else {
+                assert!(!pty.reruns.contains_key(&id));
+            }
+        }
+    }
+}
