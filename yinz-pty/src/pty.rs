@@ -560,7 +560,9 @@ pub struct Pty {
     terminal_cwds: HashMap<TerminalId, PathBuf>, // terminal_id -> cwd
     pane_activity_flags: HashMap<TerminalId, std::sync::Arc<std::sync::atomic::AtomicBool>>,
     terminal_cmds: HashMap<TerminalId, Vec<String>>,
-    terminal_detected_themes: HashMap<TerminalId, yinz_types::agent::theme::DetectedAgentTheme>,
+    /// Missing entries have not reported yet; stored `None` has reported no agent.
+    terminal_detected_themes:
+        HashMap<TerminalId, Option<yinz_types::agent::theme::DetectedAgentTheme>>,
     terminal_reported_commands: HashMap<TerminalId, (Vec<String>, Vec<String>)>,
     /// Terminals adopted for a tab that is about to be built, waiting for the
     /// `NewTab` that will place them, keyed by the tab they belong to.

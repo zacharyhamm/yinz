@@ -4978,6 +4978,30 @@ fn an_exit_inside_spawn_waits_for_handback_before_closing_or_holding_the_pane() 
 }
 
 #[test]
+fn local_empty_detected_theme_is_reported_once_without_output_and_after_reuse() {
+    let id = TerminalId::new(7);
+    let (mut pty, _, screen_rx) = make_pty_with_screen_receiver(MockOsApi::new());
+    pty.id_to_child_pid.insert(id, ProcessId::new(4242));
+    // No activity flag: adoption must clear an expired palette even in a silent shell.
+    for _ in 0..2 {
+        pty.update_and_report_cwds();
+        let updates: Vec<_> = screen_rx
+            .try_iter()
+            .filter_map(|(msg, _)| match msg {
+                ScreenInstruction::UpdateDetectedAgentTheme(id, state) => Some((id, state)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(updates, vec![(id, None)]);
+        pty.update_and_report_cwds();
+        assert!(screen_rx
+            .try_iter()
+            .all(|(msg, _)| !matches!(msg, ScreenInstruction::UpdateDetectedAgentTheme(..))));
+        pty.forget_terminal_foreground(id);
+    }
+}
+
+#[test]
 fn a_lost_spawn_handback_discards_early_and_late_exit_callbacks() {
     let (pty, plugins, screen) = make_pty_with_screen_receiver(MockOsApi::new());
     let command = RunCommand::default();
@@ -5165,7 +5189,21 @@ fn remote_detected_theme_changes_are_reported_without_output_and_only_once() {
         provider: "codex".into(),
         snapshot: None,
     };
-    let (mut pty, mock, _, screen_rx) = remote_pane(
+    let (mut pty, mock, _, screen_rx) = remote_pane(id, RemoteStatus::default());
+    pty.update_and_report_cwds();
+    let updates: Vec<_> = screen_rx
+        .try_iter()
+        .filter_map(|(msg, _)| match msg {
+            ScreenInstruction::UpdateDetectedAgentTheme(id, state) => Some((id, state)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(updates, vec![(id, None)]);
+    pty.update_and_report_cwds();
+    assert!(screen_rx
+        .try_iter()
+        .all(|(msg, _)| !matches!(msg, ScreenInstruction::UpdateDetectedAgentTheme(..))));
+    mock.set_remote_status(
         id,
         RemoteStatus {
             detected_theme: Some(state.clone()),

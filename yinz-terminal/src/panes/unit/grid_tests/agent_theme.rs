@@ -1385,3 +1385,31 @@ fn pending_detection_resolves_after_handoff_with_original_color_observations() {
         .any(|d| d.token == "codex.terminal.foreground"
             && d.color == SourceColor::Rgb(210, 211, 212)));
 }
+
+#[test]
+fn empty_detection_after_handoff_clears_palette_for_subsequent_shell_output() {
+    let mut grid = create_grid_with_content("");
+    grid.update_theme(style().colors);
+    grid.update_detected_agent_theme(Some(detected("one", Some(source("codex", Role::Success)))));
+    feed_bytes(&mut grid, b"\x1b[32mAGENT");
+    let (contents, metadata) = grid.serialize_handoff(Some(0), 100_000).unwrap();
+    let mut restored = create_grid_with_content("");
+    restored.update_theme(style().colors);
+    feed_bytes(
+        &mut restored,
+        &crate::agent_theme::handoff_replay(contents, metadata),
+    );
+    restored.update_detected_agent_theme(None);
+    feed_bytes(&mut restored, b"\r\n\x1b[32mSHELL");
+    let cells = painted(&mut restored);
+    let text: Vec<_> = cells
+        .iter()
+        .filter(|cell| !cell.0.is_whitespace())
+        .collect();
+    assert_eq!(
+        text.iter().map(|cell| cell.0).collect::<String>(),
+        "AGENTSHELL"
+    );
+    assert!(text[..5].iter().all(|cell| cell.1 == SUCCESS));
+    assert!(text[5..].iter().all(|cell| cell.1 == GREEN));
+}

@@ -439,17 +439,12 @@ impl Pty {
         id: TerminalId,
         state: Option<yinz_types::agent::theme::DetectedAgentTheme>,
     ) {
-        if self.terminal_detected_themes.get(&id) == state.as_ref() {
+        if self.terminal_detected_themes.get(&id) == Some(&state) {
             return;
         }
-        match &state {
-            Some(state) => {
-                self.terminal_detected_themes.insert(id, state.clone());
-            },
-            None => {
-                self.terminal_detected_themes.remove(&id);
-            },
-        }
+        // Adoption can restore a palette whose agent exited while detached.
+        // Deliver even an initial empty state to clear that retained palette.
+        self.terminal_detected_themes.insert(id, state.clone());
         let _ = self
             .bus
             .senders
