@@ -647,7 +647,7 @@ fn run_client(
     });
 
     let full_screen_ws = startup_stage("client.terminal_size", || os_input.get_terminal_size());
-    let splash_deadline = if is_a_reconnect {
+    let splash = if is_a_reconnect {
         None
     } else {
         crate::splash::show(&*os_input, full_screen_ws, &config, &config_options).unwrap_or_else(
@@ -984,7 +984,7 @@ fn run_client(
         synchronised_output,
         render_budget: &render_budget,
         startup_started,
-        splash_deadline,
+        splash,
     }
     .run(&receive_client_instructions);
     // The router may be waiting for frames to drain that nobody will now write,

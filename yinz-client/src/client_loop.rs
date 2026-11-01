@@ -59,7 +59,7 @@ pub(crate) struct ClientLoop<'a, 'config> {
     /// Released as each frame reaches the terminal, so the router reads the next.
     pub render_budget: &'a Arc<RenderBudget>,
     pub startup_started: Instant,
-    pub splash_deadline: Option<Instant>,
+    pub splash: Option<crate::splash::Splash>,
 }
 
 impl ClientLoop<'_, '_> {
@@ -91,7 +91,36 @@ impl ClientLoop<'_, '_> {
             {
                 break;
             }
-            let waiting_for_splash = self.splash_deadline.filter(|end| *end > Instant::now());
+            let now = Instant::now();
+            if let Some(splash) = &mut self.splash {
+                match splash.tick(self.os_input, self.synchronised_output, now) {
+                    Ok(true) => {},
+                    Ok(false) => self.splash = None,
+                    Err(error)
+                        if stalled_output_abandoned()
+                            && error
+                                .downcast_ref::<std::io::Error>()
+                                .is_some_and(|e| e.kind() == std::io::ErrorKind::TimedOut) =>
+                    {
+                        // Quitting can abandon a stalled splash write just as it
+                        // abandons a session frame. Drain the server's exit reason.
+                        self.splash = None;
+                    },
+                    Err(error) => {
+                        self.os_input
+                            .send_to_server(ClientToServerMsg::ClientExited);
+                        outcome.exit_msg =
+                            format!("Could not write to the terminal: {}", error.root_cause());
+                        outcome.exit_status = 1;
+                        break;
+                    },
+                }
+            }
+            let waiting_for_splash = self
+                .splash
+                .as_ref()
+                .filter(|splash| splash.waiting(now))
+                .map(|splash| splash.wake_at());
             let next = if let Some(deadline) = waiting_for_splash {
                 match receive_client_instructions.recv_deadline(deadline) {
                     Ok(instruction) => instruction,
@@ -321,7 +350,7 @@ impl ClientLoop<'_, '_> {
             ClientInstruction::Error(backtrace) => self.fail(backtrace),
             ClientInstruction::Render(mut output) => {
                 let render_bytes = output.len();
-                if self.splash_deadline.take().is_some() {
+                if self.splash.take().is_some() {
                     output.insert_str(0, crate::splash::CLEAR);
                 }
                 let started = Instant::now();

@@ -137,7 +137,8 @@ fn check_outcome(error: Option<ErrorKind>, reconnect: Option<SessionConnection>)
     worker.join().unwrap();
     assert!(!String::from_utf8(observed.stdout_bytes())
         .unwrap()
-        .contains("░██░"));
+        .chars()
+        .any(|c| ('⠁'..='⣿').contains(&c)));
     assert_eq!(outcome.exit_status, i32::from(error.is_some()));
     assert_eq!(outcome.reconnect_to_session, reconnect);
     assert_eq!(observed.raw_mode(), reconnect.is_some());
@@ -191,7 +192,8 @@ fn interactive_startup_respects_splash_option_and_detached_startup_stays_quiet()
             assert_eq!(
                 String::from_utf8(os.stdout_bytes())
                     .unwrap()
-                    .contains("░██░"),
+                    .chars()
+                    .any(|c| ('⠁'..='⣿').contains(&c)),
                 disabled != Some(true)
             );
             assert!(!os.raw_mode());

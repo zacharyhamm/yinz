@@ -1,6 +1,7 @@
 use super::*;
 use crate::test_support::FakeClientOsApi;
-use yinz_types::colors::PaletteColor;
+use yinz_config::theme::Theme;
+use yinz_types::style::{StyleDeclaration, TerminalTheme};
 
 #[test]
 fn disabling_the_splash_skips_output_and_the_deadline() {
@@ -10,61 +11,32 @@ fn disabling_the_splash_skips_output_and_the_deadline() {
             ..Default::default()
         };
         let os = FakeClientOsApi::new().capturing_stdout();
-        let deadline = show(
+        let splash = show(
             &os,
             Size { rows: 24, cols: 80 },
             &Config::default(),
             &options,
         )
         .unwrap();
-        assert_eq!(deadline.is_none(), disabled == Some(true));
+        assert_eq!(splash.is_none(), disabled == Some(true));
         assert_eq!(os.stdout_bytes().is_empty(), disabled == Some(true));
     }
 }
 
 #[test]
-fn artwork_and_bands_keep_the_blank_row_and_use_cell_coordinates() {
-    let style = StyleDeclaration {
-        background: PaletteColor::Rgb((1, 2, 3)),
-        emphasis_0: PaletteColor::EightBit(10),
-        emphasis_1: PaletteColor::Rgb((20, 21, 22)),
-        emphasis_2: PaletteColor::EightBit(30),
-        emphasis_3: PaletteColor::Rgb((40, 41, 42)),
-        ..Default::default()
-    };
-    let output = render(Size { rows: 25, cols: 81 }, style).unwrap();
-    assert_eq!(ART.len(), 11);
-    assert_eq!(ART[0], "           ░██░                      ");
-    assert_eq!(ART[1], "                                     ");
-    assert_eq!(ART.iter().map(|row| row.chars().count()).max(), Some(37));
-    assert!(output.starts_with("\x1b[m\x1b[48;2;1;2;3m\x1b[2J"));
-    let colors = ["5;10", "2;20;21;22", "5;30", "2;40;41;42"];
-    let mut expected = String::new();
-    let mut band = 0;
-    for (row, text) in ART.iter().enumerate() {
-        if row != 1 {
-            expected.push_str(&format!("\x1b[38;{}m", colors[band % 4]));
-            band += 1;
-        }
-        expected.push_str(&format!("\x1b[{};23H{text}", 8 + row));
-    }
-    assert!(output.ends_with(&format!("{expected}{RESET_STYLE}")));
-}
-
-#[test]
-fn a_one_cell_margin_is_required_and_small_terminals_have_no_deadline() {
-    for size in [Size { rows: 12, cols: 80 }, Size { rows: 24, cols: 38 }] {
+fn a_one_cell_margin_is_required_and_small_terminals_have_no_splash() {
+    for size in [Size { rows: 9, cols: 80 }, Size { rows: 24, cols: 27 }] {
         let os = FakeClientOsApi::new().capturing_stdout();
         assert!(show(&os, size, &Config::default(), &Options::default())
             .unwrap()
             .is_none());
         assert!(os.stdout_bytes().is_empty());
     }
-    assert!(
-        render(Size { rows: 13, cols: 39 }, StyleDeclaration::default())
-            .unwrap()
-            .contains("\x1b[2;2H")
-    );
+    let stage = renderer::Stage::new(Size { rows: 10, cols: 28 }).unwrap();
+    assert_eq!((stage.cols, stage.rows), (26, 8));
+    assert!(renderer::Renderer::new(stage, StyleDeclaration::default())
+        .frame(Duration::ZERO)
+        .contains("\x1b[2;2H"));
 }
 
 #[test]
@@ -75,6 +47,7 @@ fn startup_theme_lookup_and_palette_fallback_are_used() {
         None,
         Some("dracula"),
         Some("ayu-light"),
+        Some("ansi"),
         Some("missing-theme"),
     ] {
         let options = Options {
@@ -83,16 +56,115 @@ fn startup_theme_lookup_and_palette_fallback_are_used() {
         };
         let os = FakeClientOsApi::new().capturing_stdout();
         let before = Instant::now();
-        let deadline = show(&os, size, &config, &options).unwrap().unwrap();
-        assert!(deadline >= before + Duration::from_secs(1));
-        assert!(deadline <= Instant::now() + Duration::from_secs(1));
-        let style = config
+        let splash = show(&os, size, &config, &options).unwrap().unwrap();
+        assert!(splash.deadline() >= before + DURATION);
+        assert!(splash.deadline() <= Instant::now() + DURATION);
+        let mut style = config
             .theme_config(options.theme.as_ref())
             .unwrap_or_else(|| default_palette().into())
             .text_unselected;
-        assert_eq!(os.stdout_bytes(), render(size, style).unwrap().as_bytes());
+        if let Some(terminal) = config.terminal_theme_config(options.theme.as_ref()) {
+            style.base = PaletteColor::Rgb(terminal.foreground);
+            style.background = PaletteColor::Rgb(terminal.background);
+        }
+        let mut renderer = renderer::Renderer::new(renderer::Stage::new(size).unwrap(), style);
+        assert_eq!(os.stdout_bytes(), renderer.frame(Duration::ZERO).as_bytes());
     }
-    assert_eq!(color_code(PaletteColor::EightBit(255)), "5;255");
+}
+
+#[test]
+fn shared_color_code_supports_indexed_colors() {
+    assert_eq!(crate::terminal_escapes::color_code(PaletteColor::EightBit(255)), "5;255");
+}
+
+#[test]
+fn terminal_colors_take_precedence_and_ui_colors_remain_the_fallback() {
+    let size = Size { rows: 24, cols: 80 };
+    let ui = StyleDeclaration {
+        base: PaletteColor::Rgb((225, 240, 200)),
+        background: PaletteColor::Rgb((18, 25, 32)),
+        ..Default::default()
+    };
+    let indexed_ui = StyleDeclaration {
+        base: PaletteColor::EightBit(229),
+        background: PaletteColor::EightBit(236),
+        ..Default::default()
+    };
+    let terminal = TerminalTheme {
+        foreground: (55, 80, 30),
+        background: (245, 235, 230),
+        ansi: [(0, 0, 0); 16],
+    };
+    for (terminal, ui) in [(Some(terminal), ui), (None, ui), (None, indexed_ui)] {
+        for theme_name in [None, Some("custom")] {
+            let mut config = Config::default();
+            let mut palette = yinz_types::style::Styling::from(default_palette());
+            palette.text_unselected = ui;
+            config.themes.insert(
+                theme_name.unwrap_or("default").into(),
+                Theme {
+                    terminal,
+                    palette,
+                    sourced_from_external_file: false,
+                },
+            );
+            let expected = terminal.map_or(ui, |terminal| StyleDeclaration {
+                base: PaletteColor::Rgb(terminal.foreground),
+                background: PaletteColor::Rgb(terminal.background),
+                ..ui
+            });
+            let options = Options {
+                theme: theme_name.map(str::to_owned),
+                ..Default::default()
+            };
+            let os = FakeClientOsApi::new().capturing_stdout();
+            show(&os, size, &config, &options).unwrap().unwrap();
+            let mut renderer =
+                renderer::Renderer::new(renderer::Stage::new(size).unwrap(), expected);
+            assert_eq!(os.stdout_bytes(), renderer.frame(Duration::ZERO).as_bytes());
+        }
+    }
+}
+
+#[test]
+fn ticks_skip_missed_frames_and_leave_the_final_pose_without_more_writes() {
+    let os = FakeClientOsApi::new().capturing_stdout();
+    let mut splash = test_splash(Instant::now());
+    let late = splash.started + Duration::from_millis(775);
+    splash.tick(&os, Some(SyncOutput::Csi), late).unwrap();
+    let bytes = os.stdout_bytes();
+    assert!(bytes.starts_with(SyncOutput::Csi.start_seq()));
+    assert!(bytes.ends_with(SyncOutput::Csi.end_seq()));
+    assert_eq!(splash.next_frame, Some(late + FRAME_INTERVAL));
+    splash
+        .tick(&os, None, late + Duration::from_millis(1))
+        .unwrap();
+    assert_eq!(bytes, os.stdout_bytes());
+    splash
+        .tick(&os, None, splash.deadline() + Duration::from_secs(1))
+        .unwrap();
+    let bytes = os.stdout_bytes();
+    assert!(splash.next_frame.is_none());
+    splash
+        .tick(&os, None, splash.deadline() + Duration::from_secs(2))
+        .unwrap();
+    assert_eq!(bytes, os.stdout_bytes());
+}
+
+#[test]
+fn resizing_repaints_and_a_too_small_terminal_ends_the_splash() {
+    let os = FakeClientOsApi::new().capturing_stdout();
+    let mut splash = test_splash(Instant::now());
+    let smaller = os.clone().with_terminal_size(Size { rows: 14, cols: 41 });
+    assert!(splash.tick(&smaller, None, splash.started).unwrap());
+    assert_eq!(
+        (splash.renderer.stage.cols, splash.renderer.stage.rows),
+        (39, 12)
+    );
+    assert!(!os.stdout_bytes().is_empty());
+    let tiny = os.clone().with_terminal_size(Size { rows: 5, cols: 10 });
+    assert!(!splash.tick(&tiny, None, splash.started).unwrap());
+    assert!(os.stdout_bytes().ends_with(CLEAR.as_bytes()));
 }
 
 #[test]
@@ -104,7 +176,27 @@ fn splash_write_errors_are_reported() {
         &Config::default(),
         &Options::default()
     )
-    .unwrap_err()
+    .err()
+    .unwrap()
     .to_string()
     .contains("draw the startup splash"));
+    let mut splash = test_splash(Instant::now() - Duration::from_secs(1));
+    assert!(splash
+        .tick(&os, None, Instant::now())
+        .unwrap_err()
+        .to_string()
+        .contains("draw the startup splash"));
+}
+
+#[test]
+fn eight_bit_theme_colors_are_resolved_for_shading() {
+    let stage = renderer::Stage::new(Size { rows: 24, cols: 80 }).unwrap();
+    let style = StyleDeclaration {
+        background: PaletteColor::EightBit(16),
+        base: PaletteColor::EightBit(255),
+        ..Default::default()
+    };
+    assert!(renderer::Renderer::new(stage, style)
+        .frame(Duration::ZERO)
+        .starts_with("\x1b[m\x1b[48;2;0;0;0m\x1b[2J"));
 }

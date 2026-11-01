@@ -51,7 +51,9 @@ fn check_frames(deadline: Option<Instant>) {
                 .unwrap();
         }
     });
-    let outcome = run(&os, &budget, deadline, &rx, input_tx);
+    let splash =
+        deadline.map(|deadline| crate::splash::test_splash(deadline - Duration::from_secs(3)));
+    let outcome = run(&os, &budget, splash, &rx, input_tx);
     producer.join().unwrap();
     assert_eq!(outcome.exit_status, 0);
     let clear = if deadline.is_some() {
@@ -64,8 +66,44 @@ fn check_frames(deadline: Option<Instant>) {
         .into_iter()
         .flat_map(|frame| [sync.start_seq(), frame.as_bytes(), sync.end_seq()].concat())
         .collect::<Vec<_>>();
-    assert_eq!(os.stdout_bytes(), expected);
+    let bytes = os.stdout_bytes();
+    assert!(bytes.ends_with(&expected));
+    let text = String::from_utf8(bytes).unwrap();
+    assert_eq!(text.matches("first").count(), 1);
+    assert_eq!(text.matches("second").count(), 1);
+    assert_eq!(text.matches("third").count(), 1);
+    if deadline.is_none() {
+        assert_eq!(text.as_bytes(), expected);
+    } else {
+        // At least one animation frame was painted before handing off. The number
+        // depends on scheduling, so only assert visible Braille content.
+        let before_session = text.split("first").next().unwrap();
+        assert!(before_session
+            .chars()
+            .any(|c| ('\u{2801}'..='\u{28ff}').contains(&c)));
+    }
     // Both slots must be free after all three frames reached the terminal.
+    budget.reserve(100).unwrap();
+    budget.release(100).unwrap();
+}
+
+#[test]
+fn animation_write_failure_returns_a_client_error() {
+    let os = FakeClientOsApi::new().with_stdout_error(std::io::ErrorKind::BrokenPipe);
+    let budget = Arc::new(RenderBudget::new(100));
+    let (tx, rx) = channels::unbounded();
+    let (input_tx, _) = channels::unbounded();
+    // Keep the receiver connected while it waits for the timed redraw.
+    let outcome = run(
+        &os,
+        &budget,
+        Some(crate::splash::test_splash(Instant::now())),
+        &rx,
+        input_tx,
+    );
+    drop(tx);
+    assert_eq!(outcome.exit_status, 1);
+    assert!(outcome.exit_msg.contains("Could not write to the terminal"));
     budget.reserve(100).unwrap();
     budget.release(100).unwrap();
 }
@@ -85,7 +123,9 @@ fn controls_and_exit_do_not_wait_for_the_splash_or_write_deferred_frames() {
     let outcome = run(
         &os,
         &budget,
-        Some(Instant::now() + Duration::from_secs(3600)),
+        Some(crate::splash::test_splash(
+            Instant::now() + Duration::from_secs(3600),
+        )),
         &rx,
         input_tx,
     );
@@ -102,7 +142,7 @@ fn controls_and_exit_do_not_wait_for_the_splash_or_write_deferred_frames() {
 fn run(
     os: &FakeClientOsApi,
     budget: &Arc<RenderBudget>,
-    splash_deadline: Option<Instant>,
+    splash: Option<crate::splash::Splash>,
     rx: &channels::Receiver<(ClientInstruction, yinz_types::diagnostics::ErrorContext)>,
     input_tx: channels::Sender<(InputInstruction, yinz_types::diagnostics::ErrorContext)>,
 ) -> crate::ClientOutcome {
@@ -127,7 +167,7 @@ fn run(
         synchronised_output: Some(SyncOutput::Csi),
         render_budget: budget,
         startup_started: Instant::now(),
-        splash_deadline,
+        splash,
     }
     .run(rx)
 }
