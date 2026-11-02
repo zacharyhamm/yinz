@@ -11,6 +11,9 @@ use {yinz_types::data::Event, yinz_types::data::EventType};
 impl Screen {
     /// Copy this client's selection.
     pub(super) fn copy_selection(&mut self, client_id: ClientId) -> Result<()> {
+        if self.copy_palette_selection(client_id) {
+            return Ok(());
+        }
         self.get_active_tab(client_id)?.copy_selection(client_id)
     }
     /// Tell the plugins this client did something. The status bar uses this to drop its "copied to
@@ -30,6 +33,12 @@ impl Screen {
     }
     pub fn handle_mouse_event(&mut self, event: MouseEvent, client_id: ClientId) {
         if self.permission_modal_mouse(&event, client_id) {
+            return;
+        }
+        // A gesture belongs to its press target, even when it crosses a toast or
+        // leaves the palette. In particular its release must not reach a pane.
+        if self.palette_captures_mouse(client_id) {
+            self.command_palette_handles_mouse(&event, client_id);
             return;
         }
         if self.notification_mouse_captures.contains(&client_id) {

@@ -157,6 +157,26 @@ struct Widget {
     hit: Hit,
     focused: bool,
 }
+
+impl AgentLayout {
+    pub(super) fn mouse_control(&self, column: usize, row: usize) -> bool {
+        if self
+            .widgets
+            .iter()
+            .any(|widget| widget.rect.contains(column, row))
+        {
+            return true;
+        }
+        // Body rows retain their fold-on-click behavior, but only the visible toggle
+        // captures drags. The reader text around it remains selectable.
+        column == 0
+            && matches!(self.hits.get(row), Some(Some(Hit::Fold(_))))
+            && self
+                .lines
+                .get(row)
+                .is_some_and(|line| line.text.starts_with(['▸', '▾']))
+    }
+}
 #[derive(Clone, Copy)]
 enum Hit {
     Search,

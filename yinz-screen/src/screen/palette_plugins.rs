@@ -699,7 +699,7 @@ impl Screen {
                             return false;
                         }
                         // Keep the server's saved mode until the palette actually closes.
-                        state.suspended = suspended;
+                        state.set_suspended(suspended);
                         for tab in self.tabs.values_mut() {
                             tab.set_should_clear_display_before_rendering();
                             tab.set_force_render();
@@ -821,7 +821,7 @@ impl Screen {
                 .any(|view| view.provider == *key)
             {
                 state.cancel_requests(&self.bus.senders, *client);
-                state.suspended = false;
+                state.set_suspended(false);
                 self.bus
                     .senders
                     .send_to_server(yinz_bus::ServerInstruction::SetCommandPaletteOpen(

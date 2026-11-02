@@ -7,6 +7,194 @@ use yinz_types::keys::{BareKey, KeyWithModifier};
 const CLIENT: ClientId = ClientId::new(1);
 const SIZE: Size = Size { cols: 80, rows: 24 };
 
+fn selection_screen() -> (Screen, Receiver<(PluginInstruction, ErrorContext)>) {
+    let mut screen = create_non_mirrored_screen(SIZE);
+    // The synthetic default theme gives selected and ordinary text the same colors.
+    screen.style.colors.text_selected.background =
+        yinz_types::colors::PaletteColor::Rgb((30, 80, 130));
+    let (sender, receiver) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.toggle_command_palette(CLIENT);
+    screen
+        .command_palettes
+        .get_mut(&CLIENT)
+        .unwrap()
+        .widget_mut()
+        .open_text("alpha beta".into());
+    (screen, receiver)
+}
+
+fn palette_text_position(screen: &Screen, client: ClientId, text: &str) -> Position {
+    let widget = screen.command_palettes[&client].widget();
+    let layout = widget.layout(screen.command_palette_surface(client).unwrap());
+    widget
+        .chunks(&layout, &screen.style)
+        .iter()
+        .find_map(|chunk| {
+            let line: String = chunk
+                .terminal_characters
+                .iter()
+                .map(|c| c.character)
+                .collect();
+            use unicode_width::UnicodeWidthStr;
+            line.find(text)
+                .map(|byte| Position::new(chunk.y as i32, (chunk.x + line[..byte].width()) as u16))
+        })
+        .unwrap_or_else(|| panic!("missing palette text {text:?}"))
+}
+
+fn copied_text(receiver: &Receiver<(PluginInstruction, ErrorContext)>) -> Vec<String> {
+    receiver
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::RecordClipboard(entry) => Some(entry.content),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn palette_drag_uses_clipboard_setting_and_explicit_copy_including_busy_views() {
+    for automatic in [false, true] {
+        for busy in [false, true] {
+            let (mut screen, plugins) = selection_screen();
+            screen.copy_options.copy_on_select = automatic;
+            screen
+                .command_palettes
+                .get_mut(&CLIENT)
+                .unwrap()
+                .widget_mut()
+                .busy = busy;
+            let renders = screen_wired_to_server(&mut screen);
+            let mut grid = grid_for_render_snapshot(SIZE);
+            render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+            let start = palette_text_position(&screen, CLIENT, "alpha");
+            let end = Position::new(start.line() as i32, (start.column() + 5) as u16);
+            let before_background = grid.as_character_lines()[start.line() as usize]
+                [start.column()]
+            .styles
+            .background;
+            screen.handle_mouse_event(MouseEvent::new_left_press_event(start), CLIENT);
+            screen.handle_mouse_event(MouseEvent::new_left_motion_event(end), CLIENT);
+            render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+            let cells = grid.as_character_lines();
+            assert_ne!(
+                cells[start.line() as usize][start.column()]
+                    .styles
+                    .background,
+                before_background
+            );
+            assert!(copied_text(&plugins).is_empty(), "motion must not copy");
+            screen.handle_mouse_event(MouseEvent::new_left_release_event(end), CLIENT);
+            if automatic {
+                assert_eq!(copied_text(&plugins), vec!["alpha"]);
+            } else {
+                assert!(copied_text(&plugins).is_empty());
+                let key = KeyWithModifier::new(BareKey::Char('c')).with_ctrl_modifier();
+                let mode = screen.mode_info.entry(CLIENT).or_default();
+                mode.keybinds = vec![(mode.mode, vec![(key.clone(), vec![Action::Copy])])];
+                assert!(screen.command_palette_handles_input(&Some(key), &[], false, CLIENT));
+                assert_eq!(copied_text(&plugins), vec!["alpha"]);
+            }
+            assert!(!screen.palette_captures_mouse(CLIENT));
+            // Ordinary clicks clear the previous highlight and do not copy again.
+            screen.handle_mouse_event(MouseEvent::new_left_press_event(start), CLIENT);
+            screen.handle_mouse_event(MouseEvent::new_left_release_event(start), CLIENT);
+            assert!(copied_text(&plugins).is_empty());
+        }
+    }
+}
+
+#[test]
+fn palette_drag_captures_outside_release_and_cancelled_gestures() {
+    for cancel in ["outside", "text", "scroll", "key", "close", "suspend"] {
+        let (mut screen, plugins) = selection_screen();
+        let start = palette_text_position(&screen, CLIENT, "alpha");
+        let end = Position::new(start.line() as i32, (start.column() + 5) as u16);
+        screen.handle_mouse_event(MouseEvent::new_left_press_event(start), CLIENT);
+        screen.handle_mouse_event(MouseEvent::new_left_motion_event(end), CLIENT);
+        match cancel {
+            "text" => screen
+                .command_palettes
+                .get_mut(&CLIENT)
+                .unwrap()
+                .widget_mut()
+                .open_text("changed".into()),
+            "scroll" => screen.handle_mouse_event(MouseEvent::new_scroll_down_event(start), CLIENT),
+            "key" => {
+                palette_key(&mut screen, BareKey::Down);
+            },
+            "close" => {
+                screen.close_command_palette(CLIENT);
+            },
+            "suspend" => {
+                screen
+                    .command_palettes
+                    .get_mut(&CLIENT)
+                    .unwrap()
+                    .set_suspended(true);
+            },
+            _ => {},
+        }
+        let outside = Position::new(0, 0);
+        screen.handle_mouse_event(MouseEvent::new_left_motion_event(outside), CLIENT);
+        screen.handle_mouse_event(MouseEvent::new_left_release_event(outside), CLIENT);
+        assert!(!screen.palette_captures_mouse(CLIENT), "{cancel}");
+        if cancel != "outside" {
+            assert!(copied_text(&plugins).is_empty(), "{cancel}");
+        }
+        let pane = screen
+            .get_active_tab(CLIENT)
+            .unwrap()
+            .get_active_pane(CLIENT)
+            .unwrap();
+        assert!(
+            pane.get_selected_text(CLIENT).is_none(),
+            "{cancel}: no pane selection"
+        );
+        assert!(!screen.active_pane_is_scrolled(CLIENT));
+    }
+}
+
+#[test]
+fn palette_drag_on_a_picker_row_does_not_click_it() {
+    let mut screen = theme_screen();
+    open_themes(&mut screen);
+    let start = palette_text_position(&screen, CLIENT, "alpha");
+    let end = Position::new(start.line() as i32, (start.column() + 5) as u16);
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(start), CLIENT);
+    screen.handle_mouse_event(MouseEvent::new_left_motion_event(end), CLIENT);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(end), CLIENT);
+    assert_eq!(screen.style.colors, screen.themes["beta"]);
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(start), CLIENT);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(start), CLIENT);
+    assert_eq!(screen.style.colors, screen.themes["alpha"]);
+}
+
+#[test]
+fn palette_selections_belong_to_the_client_that_dragged() {
+    let (mut screen, plugins) = selection_screen();
+    screen.copy_options.copy_on_select = false;
+    let other = ClientId::new(2);
+    screen.add_client(other).unwrap();
+    screen.toggle_command_palette(other);
+    screen
+        .command_palettes
+        .get_mut(&other)
+        .unwrap()
+        .widget_mut()
+        .open_text("second client".into());
+    let start = palette_text_position(&screen, CLIENT, "alpha");
+    let end = Position::new(start.line() as i32, (start.column() + 5) as u16);
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(start), CLIENT);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(end), CLIENT);
+    screen.copy_selection(other).unwrap();
+    assert!(copied_text(&plugins).is_empty());
+    screen.copy_selection(CLIENT).unwrap();
+    assert_eq!(copied_text(&plugins), vec!["alpha"]);
+}
+
 #[test]
 fn palette_wheel_moves_selection_without_scrolling_terminal() {
     let mut screen = screen();
@@ -5033,6 +5221,10 @@ fn theme_preview_mouse_selection_toggle_and_outside_click_restore() {
         let col = snapshot.lines().nth(row).unwrap().find("alpha").unwrap();
         screen.command_palette_handles_mouse(
             &MouseEvent::new_left_press_event(Position::new(row as i32, col as u16)),
+            CLIENT,
+        );
+        screen.command_palette_handles_mouse(
+            &MouseEvent::new_left_release_event(Position::new(row as i32, col as u16)),
             CLIENT,
         );
         assert_eq!(screen.style.colors, screen.themes["alpha"]);

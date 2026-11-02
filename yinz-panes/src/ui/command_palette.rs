@@ -10,9 +10,12 @@ mod agent;
 mod live_agent;
 #[path = "command_palette_quota.rs"]
 mod quota;
+#[path = "command_palette_selection.rs"]
+mod selection;
 pub use agent::PROMPT_LIBRARY_ACTION;
 pub use live_agent::AgentPresentation;
 pub use quota::QuotaImage;
+pub use selection::PaletteSelection;
 
 use nucleo_matcher::{
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
@@ -281,6 +284,60 @@ impl ResultRow {
 }
 
 impl CommandPalette {
+    /// Controls own their press/drag/release. Text rows defer clicks so a drag can select text.
+    pub fn mouse_control(&self, layout: &CommandPaletteLayout, position: Position) -> bool {
+        let Ok(y) = usize::try_from(position.line()) else {
+            return false;
+        };
+        let x = position.column();
+        if !layout.rect.contains(x, y) {
+            return false;
+        }
+        if let Some(agent) = &layout.agent {
+            let origin_x = layout.rect.x + layout.border + agent.padding;
+            let origin_y = layout.rect.y + layout.border;
+            return x
+                .checked_sub(origin_x)
+                .zip(y.checked_sub(origin_y))
+                .is_some_and(|(x, y)| agent.mouse_control(x, y));
+        }
+        if let Some(form) = &self.form {
+            if !(layout.options_y..layout.options_y + layout.options_rows).contains(&y) {
+                return false;
+            }
+            use unicode_width::UnicodeWidthStr;
+            let left = layout.rect.x + layout.border;
+            let right = layout.rect.x + layout.rect.cols.saturating_sub(layout.border);
+            let index = layout.first_option + y - layout.options_y;
+            if let Some(field) = form.fields.get(index) {
+                let prefix = inline(&field.label).text.width() + 2;
+                let end = match &field.value {
+                    FieldValue::Text(_) => right,
+                    FieldValue::Choice { .. } => {
+                        (left + prefix + field.text_value().width() + 4).min(right)
+                    },
+                };
+                return (left + prefix..end).contains(&x);
+            }
+            let label = if form.confirmation && index == form.fields.len() {
+                "Cancel"
+            } else if index == form.fields.len() + usize::from(form.confirmation) {
+                &form.submit
+            } else {
+                form.actions
+                    .get(index - form.fields.len() - 1 - usize::from(form.confirmation))
+                    .map(|action| action.1.as_str())
+                    .unwrap_or_default()
+            };
+            return (left..(left + inline(label).text.width()).min(right)).contains(&x);
+        }
+        self.text.is_none()
+            && y == layout.input_y
+            && (layout.rect.x + layout.border + 2
+                ..layout.rect.x + layout.rect.cols.saturating_sub(layout.border))
+                .contains(&x)
+    }
+
     /// Transient UI state, separate from the history reply and pane manifest.
     pub fn set_agent_header_flash(&mut self, live_id: Option<String>, flash: bool) {
         if let Some(agent) = &mut self.agent {

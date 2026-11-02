@@ -25,12 +25,15 @@ use yinz_types::pane_size::Viewport;
 
 use super::Screen;
 use crate::output::{Output, TranslucentOverlayBacking};
-use crate::ui::command_palette::{CommandPalette, Entry, EntryKind, Field, Form, Outcome};
+use crate::ui::command_palette::{
+    CommandPalette, Entry, EntryKind, Field, Form, Outcome, PaletteSelection,
+};
 use crate::ui::damage::CellRect;
 use crate::ClientId;
 
 pub(super) struct CommandPaletteState {
     widget: CommandPalette,
+    selection: PaletteSelection,
     suspended: bool,
     plugins: plugins::State,
     agents: agents::State,
@@ -51,10 +54,21 @@ pub(super) struct CommandPaletteState {
     pub(super) shortcut_keymap_filters: usize,
 }
 
+impl CommandPaletteState {
+    pub(super) fn set_suspended(&mut self, suspended: bool) {
+        self.suspended = suspended;
+        self.selection.clear();
+    }
+}
+
 #[cfg(test)]
 impl CommandPaletteState {
     pub(super) fn widget(&self) -> &CommandPalette {
         &self.widget
+    }
+
+    pub(super) fn widget_mut(&mut self) -> &mut CommandPalette {
+        &mut self.widget
     }
 }
 
@@ -152,6 +166,7 @@ impl Screen {
             client_id,
             CommandPaletteState {
                 widget: CommandPalette::default(),
+                selection: PaletteSelection::default(),
                 suspended: false,
                 plugins: plugins::State::default(),
                 agents: agents::State::new(source),
@@ -197,8 +212,9 @@ impl Screen {
             self.toggle_command_palette(client_id);
         }
         if let Some(state) = self.command_palettes.get_mut(&client_id) {
+            state.selection.clear();
             state.agents.cancel();
-            state.suspended = false;
+            state.set_suspended(false);
             state.widget = CommandPalette::default();
             state.widget.open_picker(EntryKind::Agent);
         }
@@ -232,6 +248,10 @@ impl Screen {
 
     fn take_command_palette(&mut self, client_id: ClientId) -> Option<CommandPaletteState> {
         let mut state = self.command_palettes.remove(&client_id)?;
+        if state.selection.captures_mouse() {
+            self.command_palette_mouse_captures.insert(client_id);
+        }
+        state.selection.clear();
         self.cancel_theme_preview(client_id);
         state.backing = TranslucentOverlayBacking::default();
         state.watcher_backing = TranslucentOverlayBacking::default();
@@ -298,12 +318,33 @@ impl Screen {
         if self.permission_modal_input(key, client_id) {
             return true;
         }
+        let copy_key = !toggle
+            && key.as_ref().is_some_and(|key| {
+                self.mode_info.get(&client_id).is_some_and(|mode| {
+                    mode.keybinds
+                        .iter()
+                        .filter(|(input_mode, _)| *input_mode == mode.mode)
+                        .flat_map(|(_, bindings)| bindings)
+                        .any(|(binding, actions)| binding == key && actions.contains(&Action::Copy))
+                })
+            });
+        if copy_key
+            && self.palette_owns_input(client_id)
+            && self
+                .command_palettes
+                .get(&client_id)
+                .is_some_and(|state| state.selection.selected_text().is_some())
+        {
+            self.copy_selection(client_id).non_fatal();
+            return true;
+        }
         let Some(state) = self.command_palettes.get_mut(&client_id) else {
             return false;
         };
         if state.suspended {
             return false;
         }
+        state.selection.clear();
         state.agents.save_form(&state.widget);
         let before = (
             state.widget.view,
@@ -356,15 +397,31 @@ impl Screen {
             return true;
         }
         let Some(surface) = self.command_palette_surface(client_id) else {
+            if event.event_type == MouseEventType::Release
+                && let Some(state) = self.command_palettes.get_mut(&client_id)
+            {
+                state.selection.release(event.position);
+            }
             return self.palette_owns_input(client_id);
         };
         let Some(state) = self.command_palettes.get_mut(&client_id) else {
             return false;
         };
-        let layout = state
+        if event.event_type == MouseEventType::Motion && !state.selection.captures_mouse() {
+            return true;
+        }
+        let mut layout = state
             .widget
             .layout_with_arrow_fonts(surface, self.arrow_fonts);
+        if state.quota_image.is_some() && state.quota_view == state.widget.view {
+            layout.use_quota_image();
+        }
+        let chunks = state.widget.chunks(&layout, &self.style);
+        state
+            .selection
+            .reconcile(&layout, state.widget.view, &chunks);
         if event.wheel_up || event.wheel_down {
+            state.selection.clear();
             state.widget.scroll(event.wheel_down);
             self.refresh_theme_preview(client_id);
             self.render().non_fatal();
@@ -378,15 +435,77 @@ impl Screen {
             if !inside {
                 self.close_command_palette(client_id);
                 self.command_palette_mouse_captures.insert(client_id);
-            } else if event.left && !state.widget.busy {
-                let outcome = state.widget.click(&layout, event.position);
-                self.handle_palette_outcome(client_id, outcome);
+            } else if event.left {
+                if state.widget.mouse_control(&layout, event.position) {
+                    state.selection.capture_control();
+                    if !state.widget.busy {
+                        let outcome = state.widget.click(&layout, event.position);
+                        self.handle_palette_outcome(client_id, outcome);
+                    }
+                } else {
+                    state
+                        .selection
+                        .start(&layout, state.widget.view, &chunks, event.position);
+                }
                 if !self.command_palettes.contains_key(&client_id) {
                     self.command_palette_mouse_captures.insert(client_id);
                 }
             }
             self.refresh_theme_preview(client_id);
             self.render().non_fatal();
+        } else if event.event_type == MouseEventType::Motion
+            && event.left
+            && state.selection.captures_mouse()
+        {
+            state.selection.extend(event.position);
+            self.render().non_fatal();
+        } else if event.event_type == MouseEventType::Release && state.selection.captures_mouse() {
+            let click = state.selection.release(event.position);
+            if let Some(position) = click {
+                if !state.widget.busy {
+                    let outcome = state.widget.click(&layout, position);
+                    self.handle_palette_outcome(client_id, outcome);
+                }
+            } else if self.copy_options.copy_on_select {
+                self.copy_selection(client_id).non_fatal();
+            }
+            self.refresh_theme_preview(client_id);
+            self.render().non_fatal();
+        }
+        true
+    }
+
+    pub(super) fn palette_captures_mouse(&self, client_id: ClientId) -> bool {
+        self.command_palette_mouse_captures.contains(&client_id)
+            || self
+                .command_palettes
+                .get(&client_id)
+                .is_some_and(|state| state.selection.captures_mouse())
+    }
+
+    pub(super) fn copy_palette_selection(&mut self, client_id: ClientId) -> bool {
+        let Some(surface) = self.command_palette_surface(client_id) else {
+            return false;
+        };
+        let Some(state) = self.command_palettes.get_mut(&client_id) else {
+            return false;
+        };
+        let mut layout = state
+            .widget
+            .layout_with_arrow_fonts(surface, self.arrow_fonts);
+        if state.quota_image.is_some() && state.quota_view == state.widget.view {
+            layout.use_quota_image();
+        }
+        let chunks = state.widget.chunks(&layout, &self.style);
+        state
+            .selection
+            .reconcile(&layout, state.widget.view, &chunks);
+        let text = state.selection.selected_text();
+        let tab_id = state.context.tab_id;
+        if let Some(text) = text
+            && let Some(tab) = self.tabs.get(&tab_id)
+        {
+            tab.copy_text_to_clipboard(&text).non_fatal();
         }
         true
     }
@@ -514,6 +633,13 @@ impl Screen {
             if layout.rect.is_empty() {
                 continue;
             }
+            let mut chunks = state.widget.chunks(&layout, &self.style);
+            if !watcher {
+                state
+                    .selection
+                    .reconcile(&layout, state.widget.view, &chunks);
+            }
+            state.selection.highlight(&mut chunks, &self.style);
             let cursor = state
                 .widget
                 .cursor(&layout)
@@ -523,7 +649,7 @@ impl Screen {
                     client,
                     layout.rect,
                     self.background_opacity,
-                    state.widget.chunks(&layout, &self.style),
+                    chunks,
                     cursor,
                     *self.terminal_emulator_colors.borrow(),
                     self.style.colors.text_unselected.background,

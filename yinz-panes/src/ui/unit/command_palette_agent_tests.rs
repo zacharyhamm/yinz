@@ -1198,6 +1198,86 @@ fn focus(palette: &CommandPalette) -> Focus {
     palette.agent.as_ref().unwrap().borrow().focus
 }
 
+#[test]
+fn palette_agent_text_selection_respects_control_rectangles_and_reader_toggles() {
+    for width in [26, 80] {
+        let mut palette = controls_palette(true);
+        for reader in [false, true] {
+            if reader {
+                palette.open_agent_reader(
+                    "Details".into(),
+                    "Reader **details** text".into(),
+                    String::new(),
+                );
+            }
+            let shown = palette.layout(Viewport {
+                x: 4,
+                y: 2,
+                cols: width,
+                rows: 36,
+            });
+            let agent = shown.agent.as_ref().unwrap();
+            let position = |x: usize, y: usize| {
+                Position::new(
+                    (shown.rect.y + shown.border + y) as i32,
+                    (shown.rect.x + shown.border + agent.padding + x) as u16,
+                )
+            };
+            for widget in &agent.widgets {
+                assert!(palette.mouse_control(&shown, position(widget.rect.x, widget.rect.y)));
+            }
+            let needle = if reader { "details" } else { "Event " };
+            let (row, line) = agent
+                .lines
+                .iter()
+                .enumerate()
+                .find(|(_, line)| line.text.contains(needle))
+                .unwrap();
+            let byte = line.text.find(needle).unwrap();
+            let start = position(line.text[..byte].width(), row);
+            let end = Position::new(
+                start.line() as i32,
+                (start.column() + needle.width()) as u16,
+            );
+            assert!(!palette.mouse_control(&shown, start));
+            let chunks = palette.chunks(&shown, &Style::default());
+            let mut selection = super::super::PaletteSelection::default();
+            selection.start(&shown, palette.view, &chunks, start);
+            selection.release(end);
+            assert_eq!(
+                selection.selected_text().as_deref(),
+                Some(needle.trim_end())
+            );
+            let mut highlighted = chunks;
+            selection.highlight(&mut highlighted, &Style::default());
+            let chunk = highlighted
+                .iter()
+                .find(|chunk| chunk.y == start.line() as usize)
+                .unwrap();
+            let highlight = chunk.selection_and_colors().first().unwrap();
+            assert_eq!(
+                highlight.bg,
+                Some(Style::default().colors.text_selected.base.into()),
+                "the default theme and focused rows need an inverted text highlight"
+            );
+        }
+    }
+
+    let mut reader = view(0);
+    reader.reader("prompt".into(), format!("<task-notification>\n<summary>finished</summary>\n<result>{}</result>\n</task-notification>", "content\n".repeat(20)), String::new());
+    let shown = layout(&mut reader, 80, 20);
+    let toggle = shown
+        .lines
+        .iter()
+        .position(|line| line.text.starts_with(['▸', '▾']))
+        .unwrap();
+    assert!(shown.mouse_control(0, toggle));
+    assert!(
+        !shown.mouse_control(4, toggle),
+        "text beside the toggle supports dragging"
+    );
+}
+
 fn press(palette: &mut CommandPalette, key: BareKey) -> Outcome {
     palette.handle_key(KeyWithModifier::new(key))
 }
