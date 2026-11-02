@@ -662,7 +662,7 @@ fn a_wider_shorter_watchers_incremental_output_preserves_unchanged_rows() {
     watcher_frame(&mut screen, &receiver, watcher, &mut grid);
     assert_eq!(
         grid.dump_screen(false).lines().nth(9),
-        Some("unchanged-tenth-row")
+        Some(" unchanged-tenth-row")
     );
 
     screen
@@ -680,10 +680,10 @@ fn a_wider_shorter_watchers_incremental_output_preserves_unchanged_rows() {
         "only dirty rows are replayed: {bytes:?}"
     );
     assert!(!bytes.contains("\x1b[2J"), "{bytes:?}");
-    assert_eq!(grid.dump_screen(false).lines().next(), Some("updated-row"));
+    assert_eq!(grid.dump_screen(false).lines().next(), Some(" updated-row"));
     assert_eq!(
         grid.dump_screen(false).lines().nth(9),
-        Some("unchanged-tenth-row")
+        Some(" unchanged-tenth-row")
     );
 }
 
@@ -712,7 +712,7 @@ fn a_larger_watchers_shape_only_update_preserves_content_and_cursor() {
         .handle_pty_bytes(TerminalId::new(1), b"unchanged-content\x1b[4;7H".to_vec())
         .unwrap();
     watcher_frame(&mut screen, &receiver, watcher, &mut grid);
-    assert_eq!(grid.cursor_coordinates(), Some((6, 3, true)));
+    assert_eq!(grid.cursor_coordinates(), Some((7, 4, true)));
     let original_shape = grid.cursor_shape();
 
     screen
@@ -724,15 +724,15 @@ fn a_larger_watchers_shape_only_update_preserves_content_and_cursor() {
     let bytes = watcher_frame(&mut screen, &receiver, watcher, &mut grid);
     assert_eq!(bytes, "\x1b[6 q");
     assert_eq!(
-        grid.dump_screen(false).lines().next(),
-        Some("unchanged-content")
+        grid.dump_screen(false).lines().nth(1),
+        Some(" unchanged-content")
     );
     assert!(!bytes.contains("unchanged-content"), "{bytes:?}");
     assert!(
-        !bytes.contains("\x1b[4;7H"),
+        !bytes.contains("\x1b[5;8H"),
         "cursor position is memoized: {bytes:?}"
     );
-    assert_eq!(grid.cursor_coordinates(), Some((6, 3, true)));
+    assert_eq!(grid.cursor_coordinates(), Some((7, 4, true)));
     assert_ne!(
         grid.cursor_shape().get_csi_str(),
         original_shape.get_csi_str()

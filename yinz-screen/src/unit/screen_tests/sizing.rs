@@ -2295,3 +2295,65 @@ fn a_clear_without_a_forced_repaint_keeps_the_arrival_repaint() {
     );
     assert_eq!(streams[&client].matches("\x1b[2J").count(), 1);
 }
+
+#[test]
+fn smaller_client_centers_entire_view_and_detach_restores_origin() {
+    let large = Size {
+        cols: 101,
+        rows: 31,
+    };
+    let mut screen = create_new_screen(large, true, true);
+    let client = ClientId::new(1);
+    let other = ClientId::new(2);
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.add_client(other).expect("TEST");
+    screen
+        .set_client_size(other, Size { cols: 80, rows: 24 })
+        .expect("TEST");
+    screen.resize_to_clients().expect("TEST");
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(large);
+    let (cursor, _) = render_frame_and_cursor_into(&mut screen, &receiver, client, &mut grid);
+    let logical_cursor = pane_cursor(&mut screen, client);
+    assert_eq!(cursor, Some((logical_cursor.0 + 10, logical_cursor.1 + 3)));
+    assert_eq!(screen.client_presentations[&client].1.offset(), (10, 3));
+    assert_eq!(screen.client_presentations[&other].1.offset(), (0, 0));
+    assert_eq!(
+        screen.client_presentations[&client].1.background,
+        screen.style.pane_surround()
+    );
+
+    let cells = grid.as_character_lines();
+    for (x, y) in [(0, 0), (100, 30), (0, 15), (100, 15)] {
+        assert_eq!(
+            cells[y][x].styles.background,
+            Some(screen.style.pane_surround().into())
+        );
+    }
+    let (to_plugin, plugin_receiver) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    screen.handle_mouse_event(
+        MouseEvent::new_right_press_event(Position::new(0, 0)),
+        client,
+    );
+    assert!(!plugin_receiver.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        PluginInstruction::RequestContextMenu { .. }
+    )));
+    screen.handle_mouse_event(
+        MouseEvent::new_right_press_event(Position::new(6, 16)),
+        client,
+    );
+    let click = plugin_receiver
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            PluginInstruction::RequestContextMenu { context, .. } => Some(context.click),
+            _ => None,
+        });
+    assert_eq!(click, Some((6, 3)));
+
+    screen.remove_client(other).expect("TEST");
+    let (cursor, _) = render_frame_and_cursor_into(&mut screen, &receiver, client, &mut grid);
+    assert_eq!(screen.client_presentations[&client].1.offset(), (0, 0));
+    assert_eq!(cursor, Some(pane_cursor(&mut screen, client)));
+}

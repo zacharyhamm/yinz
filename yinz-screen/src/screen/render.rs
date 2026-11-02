@@ -210,6 +210,34 @@ impl Screen {
         // incomplete reflow retries on the next frame, so it must not abort this one: the screen
         // thread treats a failed frame as fatal, and a rejected client is still on its way out.
         self.reflow_all_tabs().context(err_context).non_fatal();
+        let presentations: Vec<_> = self
+            .active_tab_ids
+            .iter()
+            .filter_map(|(client, tab_id)| {
+                let tab = self.tabs.get(tab_id)?;
+                let terminal = *self.client_sizes.get(client)?;
+                Some((
+                    *client,
+                    *tab_id,
+                    crate::output::Presentation {
+                        terminal,
+                        content: tab.size,
+                        background: self.style.pane_surround(),
+                    },
+                ))
+            })
+            .collect();
+        for (client, tab_id, presentation) in presentations {
+            if self
+                .client_presentations
+                .insert(client, (tab_id, presentation))
+                != Some((tab_id, presentation))
+                && let Some(tab) = self.tabs.get_mut(&tab_id)
+            {
+                tab.forget_host_cursor_state(client);
+                tab.request_client_repaint(client, true);
+            }
+        }
         let surface = self.surface_size();
         self.dismiss_stale_command_palettes();
         if trace_attach {
@@ -562,7 +590,12 @@ impl Screen {
                 if trace_attach {
                     log::info!("attach trace: render output serialization begin");
                 }
-                let serialized_output = output.serialize().context(err_context)?;
+                let mut serialized_output = output.serialize().context(err_context)?;
+                for (client, bytes) in &mut serialized_output {
+                    if let Some((_, presentation)) = self.client_presentations.get(client) {
+                        *bytes = presentation.present(std::mem::take(bytes));
+                    }
+                }
                 if trace_attach {
                     log::info!(
                         "attach trace: render output serialization complete clients={} bytes={} after {:?}",
@@ -793,7 +826,16 @@ impl Screen {
                     watcher_specific_output
                         .cursor_is_cropped_for(followed_client_id, watcher_state.size()),
                 ));
-                watcher_render_output.insert(*watcher_id, followed_output);
+                let presentation = crate::output::Presentation {
+                    terminal: watcher_state.size(),
+                    content: self
+                        .watched_tab_id()
+                        .and_then(|tab_id| self.tabs.get(&tab_id))
+                        .map(|tab| tab.size)
+                        .unwrap_or(watcher_state.size()),
+                    background: self.style.pane_surround(),
+                };
+                watcher_render_output.insert(*watcher_id, presentation.present(followed_output));
             }
         }
 

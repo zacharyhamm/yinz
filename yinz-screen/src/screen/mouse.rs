@@ -31,7 +31,18 @@ impl Screen {
                 .send_to_plugin(PluginInstruction::Update(plugin_updates));
         }
     }
-    pub fn handle_mouse_event(&mut self, event: MouseEvent, client_id: ClientId) {
+    pub fn handle_mouse_event(&mut self, mut event: MouseEvent, client_id: ClientId) {
+        if let Some((_, presentation)) = self.client_presentations.get(&client_id) {
+            let (x, y) = presentation.offset();
+            let outside = event.position.column() < x
+                || event.position.column() >= x + presentation.content.cols
+                || event.position.line() < y as isize
+                || event.position.line() >= (y + presentation.content.rows) as isize;
+            if outside && event.event_type == MouseEventType::Press {
+                return;
+            }
+            event.position = event.position.relative_to(y, x);
+        }
         if self.permission_modal_mouse(&event, client_id) {
             return;
         }
