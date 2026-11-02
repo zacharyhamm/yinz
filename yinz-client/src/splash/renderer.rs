@@ -8,6 +8,7 @@ use yinz_types::style::StyleDeclaration;
 
 const BITS: [u8; 8] = [1, 8, 2, 16, 4, 32, 64, 128];
 const MIN_CONTRAST: f64 = 4.5;
+const LETTER_TURN: Duration = Duration::from_secs(4);
 const QUOTE: &str = "for if every tool could perform its own work when ordered, or by seeing what \
     to do in advance, like the statues of Daedalus in the story, or the tripods of Hephaestus \
     which the poet says 'enter self-moved the company divine.' If thus shuttles wove and quills \
@@ -160,9 +161,39 @@ impl Renderer {
         let (sin, cos) = angle(elapsed).sin_cos();
         for glyph in GLYPHS.iter() {
             for sample in &glyph.samples {
-                self.project(sample, glyph.center, sin, cos, scale, elapsed, width);
+                self.project(
+                    sample,
+                    glyph.center,
+                    sin,
+                    cos,
+                    scale,
+                    elapsed,
+                    width,
+                    [0.0; 2],
+                );
             }
         }
+        self.output()
+    }
+
+    pub fn bouncing_frame(&mut self, size: Size, elapsed: Duration) -> String {
+        let (stage, offset) = bouncing_stage(size, elapsed);
+        if self.stage != stage {
+            self.resize(stage);
+        }
+        self.dots.fill(Dot::default());
+        let (letter, turn) = bouncing_letter(elapsed);
+        let (sin, cos) = angle(turn).sin_cos();
+        // Fit the whole rotating surface, including perspective and sub-cell motion.
+        let scale =
+            ((stage.cols as f32 * 2.0 - 2.0) / 2.6).min((stage.rows as f32 * 4.0 - 4.0) / 2.6);
+        for sample in &GLYPHS[letter].samples {
+            self.project(sample, 0.0, sin, cos, scale, turn, 2.0, offset);
+        }
+        self.output()
+    }
+
+    fn output(&self) -> String {
         let [r, g, b] = self.background.map(|c| c.round() as u8);
         let mut output = format!("\x1b[m\x1b[48;2;{r};{g};{b}m\x1b[2J\x1b[H");
         for row in 0..self.stage.rows {
@@ -238,13 +269,16 @@ impl Renderer {
         scale: f32,
         elapsed: Duration,
         width: f32,
+        offset: [f32; 2],
     ) {
         let [x, y, z] = sample.position;
         let z = -sin * x + cos * z;
         let world_x = center + cos * x + sin * sample.position[2];
         let perspective = 8.0 / (8.0 - z);
-        let dx = (self.stage.cols as f32 + world_x * perspective * scale).round() as isize;
-        let dy = (self.stage.rows as f32 * 2.0 + y * perspective * scale).round() as isize;
+        let dx =
+            (self.stage.cols as f32 + world_x * perspective * scale + offset[0]).round() as isize;
+        let dy =
+            (self.stage.rows as f32 * 2.0 + y * perspective * scale + offset[1]).round() as isize;
         if dx < 0
             || dy < 0
             || dx >= (self.stage.cols * 2) as isize
@@ -267,6 +301,47 @@ impl Renderer {
         let color = mix(lit, self.accent, shimmer(elapsed, world_x, width) * 0.8);
         self.dots[index] = Dot { depth: z, color };
     }
+}
+
+fn bouncing_letter(elapsed: Duration) -> (usize, Duration) {
+    let turn = elapsed.as_nanos() / LETTER_TURN.as_nanos();
+    let fraction =
+        (elapsed.as_nanos() % LETTER_TURN.as_nanos()) as f64 / LETTER_TURN.as_nanos() as f64;
+    // Swap only at the front-facing pose after a complete turn: y -> i -> n -> z.
+    (
+        (turn % GLYPHS.len() as u128) as usize,
+        Duration::from_secs_f64(fraction),
+    )
+}
+
+fn bouncing_stage(size: Size, elapsed: Duration) -> (Stage, [f32; 2]) {
+    let cols = size.cols.min(20);
+    // Reserve the bottom row for the wake hint.
+    let rows = size.rows.saturating_sub(1).min(12);
+    let seconds = elapsed.as_secs_f64();
+    let x = reflected_position(seconds * 3.0, size.cols - cols);
+    let y = reflected_position(seconds * 1.3, size.rows.saturating_sub(rows + 1));
+    (
+        Stage {
+            cols,
+            rows,
+            left: x.floor() as usize + 1,
+            top: y.floor() as usize + 1,
+            quote_rows: 0,
+        },
+        [(x.fract() * 2.0) as f32, (y.fract() * 4.0) as f32],
+    )
+}
+
+fn reflected_position(distance: f64, extent: usize) -> f64 {
+    let extent = extent as f64;
+    if extent == 0.0 {
+        return 0.0;
+    }
+    // Start in the middle and reflect excess travel at either wall. This also
+    // skips missed frames without accumulating drift or escaping after a resize.
+    let phase = (extent / 2.0 + distance).rem_euclid(2.0 * extent);
+    extent - (phase - extent).abs()
 }
 
 pub(super) fn angle(elapsed: Duration) -> f32 {

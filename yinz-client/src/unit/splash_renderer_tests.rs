@@ -78,8 +78,8 @@ fn nearer_samples_win_independent_of_draw_order() {
         position: [0.0, 0.0, -0.1],
         normal: [0.0, 0.0, -1.0],
     };
-    renderer.project(&front, 0.0, 0.0, 1.0, 20.0, Duration::ZERO, 4.0);
-    renderer.project(&back, 0.0, 0.0, 1.0, 20.0, Duration::ZERO, 4.0);
+    renderer.project(&front, 0.0, 0.0, 1.0, 20.0, Duration::ZERO, 4.0, [0.0; 2]);
+    renderer.project(&back, 0.0, 0.0, 1.0, 20.0, Duration::ZERO, 4.0, [0.0; 2]);
     let center = stage.rows * 2 * stage.cols * 2 + stage.cols;
     assert_eq!(renderer.dots[center].depth, 0.1);
 }
@@ -475,6 +475,91 @@ fn screensaver_hint_is_centered_and_readable_without_changing_splash_frames() {
                     renderer.background_luminance
                 ) >= MIN_CONTRAST
             );
+        }
+    }
+}
+
+#[test]
+fn bouncing_letters_change_only_after_a_complete_turn_and_repeat_yinz() {
+    for turn in 0..16 {
+        let start = Duration::from_secs(turn * 4);
+        let letter = (turn % 4) as usize;
+        assert_eq!(bouncing_letter(start), (letter, Duration::ZERO));
+        let (current, half_turn) = bouncing_letter(start + Duration::from_secs(2));
+        assert_eq!(current, letter);
+        assert!((angle(half_turn) - std::f32::consts::PI).abs() < 0.001);
+        let (current, end_turn) = bouncing_letter(start + Duration::from_millis(3999));
+        assert_eq!(current, letter);
+        assert!((angle(end_turn) - std::f32::consts::TAU).abs() < 0.001);
+    }
+}
+
+#[test]
+fn bouncing_reflects_at_both_walls_and_stays_above_the_hint_after_resize() {
+    assert_eq!(reflected_position(0.0, 10), 5.0);
+    for (distance, position) in [
+        (4.0, 9.0),
+        (5.0, 10.0),
+        (6.0, 9.0),
+        (14.0, 1.0),
+        (15.0, 0.0),
+        (16.0, 1.0),
+    ] {
+        assert_eq!(reflected_position(distance, 10), position);
+        assert_eq!(reflected_position(distance + 2000.0, 10), position);
+    }
+    assert_eq!(reflected_position(100.0, 0), 0.0);
+    for size in [
+        Size { rows: 24, cols: 80 },
+        Size { rows: 10, cols: 28 },
+        Size {
+            rows: 60,
+            cols: 200,
+        },
+    ] {
+        for frame in 0..1200 {
+            let (stage, offset) = bouncing_stage(size, Duration::from_millis(frame * 50));
+            assert!(stage.left >= 1 && stage.top >= 1);
+            assert!(stage.left + stage.cols - 1 <= size.cols);
+            assert!(stage.top + stage.rows - 1 < size.rows);
+            assert!((0.0..2.0).contains(&offset[0]));
+            assert!((0.0..4.0).contains(&offset[1]));
+        }
+    }
+}
+
+#[test]
+fn bouncing_glyphs_render_in_both_themes_without_the_quote_or_clipped_surfaces() {
+    let ansi = regex::Regex::new("\x1b\\[[0-9;]*[A-Za-z]").unwrap();
+    for size in [Size { rows: 24, cols: 80 }, Size { rows: 10, cols: 28 }] {
+        let stage = Stage::new(size).unwrap();
+        let mut dark = Renderer::new(stage, style(false), accent(false));
+        let mut light = Renderer::new(stage, style(true), accent(true));
+        for millis in (0..16000).step_by(250) {
+            let time = Duration::from_millis(millis);
+            let frame = dark.bouncing_frame(size, time);
+            let light_frame = light.bouncing_frame(size, time);
+            assert_eq!(
+                ansi.replace_all(&frame, ""),
+                ansi.replace_all(&light_frame, "")
+            );
+            assert!(!frame.contains("Aristotle"));
+            assert!(frame
+                .chars()
+                .any(|c| ('\u{2801}'..='\u{28ff}').contains(&c)));
+            // Occupied dots must have padding on every side throughout each rotation.
+            // Touching the tile boundary would risk truncating a surface as it moves.
+            let width = dark.stage.cols * 2;
+            let height = dark.stage.rows * 4;
+            for (index, dot) in dark.dots.iter().enumerate() {
+                if dot.depth.is_finite() {
+                    let (x, y) = (index % width, index / width);
+                    assert!(
+                        x > 0 && x < width - 1 && y > 0 && y < height - 1,
+                        "clipped at {millis}ms: {x},{y}"
+                    );
+                }
+            }
         }
     }
 }

@@ -101,20 +101,23 @@ fn protocol_focus_and_resize_do_not_reset_idle_but_recovery_does() {
 fn loops_at_splash_speed_and_repaints_on_resize_without_waiting_for_frame() {
     for millis in [0, 50, 250, 500, 950] {
         assert_eq!(
-            animation_time(Duration::from_millis(millis)),
-            Duration::from_millis(millis)
+            animation_phase(Duration::from_millis(millis)),
+            Phase::Original(Duration::from_millis(millis))
         );
     }
     for millis in [1000, 2000, 3999] {
         assert_eq!(
-            animation_time(Duration::from_millis(millis)),
-            splash::DURATION
+            animation_phase(Duration::from_millis(millis)),
+            Phase::Original(Duration::from_millis(millis))
         );
     }
-    assert_eq!(animation_time(Duration::from_secs(4)), Duration::ZERO);
     assert_eq!(
-        animation_time(Duration::from_millis(4250)),
-        Duration::from_millis(250)
+        animation_phase(Duration::from_secs(4)),
+        Phase::Original(Duration::ZERO)
+    );
+    assert_eq!(
+        animation_phase(Duration::from_millis(4250)),
+        Phase::Original(Duration::from_millis(250))
     );
     let mut saver = saver();
     let os = FakeClientOsApi::new().capturing_stdout();
@@ -235,4 +238,94 @@ fn pause_skips_redundant_frames_but_resizes_and_restarts_on_time() {
         saver.wake_at(start).unwrap(),
         Some(start + Duration::from_secs(4) + splash::FRAME_INTERVAL)
     );
+}
+
+#[test]
+fn three_original_loops_alternate_with_one_minute_of_bouncing() {
+    for cycle in [0, 1, 100] {
+        let start = Duration::from_secs(cycle * 72);
+        for seconds in [0, 4, 8] {
+            assert_eq!(
+                animation_phase(start + Duration::from_secs(seconds)),
+                Phase::Original(Duration::ZERO)
+            );
+        }
+        assert_eq!(
+            animation_phase(start + Duration::from_millis(11999)),
+            Phase::Original(Duration::from_millis(3999))
+        );
+        assert_eq!(
+            animation_phase(start + Duration::from_secs(12)),
+            Phase::Bouncing(Duration::ZERO)
+        );
+        assert_eq!(
+            animation_phase(start + Duration::from_millis(71999)),
+            Phase::Bouncing(Duration::from_millis(59999))
+        );
+    }
+}
+
+#[test]
+fn bouncing_repaints_on_resize_returns_to_the_quote_and_restarts_after_waking() {
+    let mut saver = saver();
+    let os = FakeClientOsApi::new().capturing_stdout();
+    let start = saver.activity.lock().unwrap().last_input + Duration::from_secs(60);
+    saver.tick(&os, None, start, true).unwrap();
+    let original = os.stdout_bytes();
+    saver
+        .tick(&os, None, start + Duration::from_secs(9), true)
+        .unwrap();
+    assert_eq!(
+        saver.wake_at(start).unwrap(),
+        Some(start + Duration::from_secs(12))
+    );
+    let before = os.stdout_bytes().len();
+    saver
+        .tick(&os, None, start + Duration::from_secs(12), true)
+        .unwrap();
+    let bouncing = String::from_utf8(os.stdout_bytes()[before..].to_vec()).unwrap();
+    assert!(!bouncing.contains("Aristotle"));
+    assert!(bouncing.contains("press any key"));
+    assert_eq!(
+        saver.wake_at(start).unwrap(),
+        Some(start + Duration::from_millis(12050))
+    );
+    let before = os.stdout_bytes().len();
+    let resized = os.clone().with_terminal_size(Size { rows: 10, cols: 28 });
+    saver
+        .tick(&resized, None, start + Duration::from_millis(12001), true)
+        .unwrap();
+    assert!(os.stdout_bytes().len() > before);
+    assert!(saver.active());
+    saver
+        .tick(&os, None, start + Duration::from_millis(71999), true)
+        .unwrap();
+    assert_eq!(
+        saver.wake_at(start).unwrap(),
+        Some(start + Duration::from_secs(72))
+    );
+    let before = os.stdout_bytes().len();
+    saver
+        .tick(&os, None, start + Duration::from_secs(72), true)
+        .unwrap();
+    let restored = &os.stdout_bytes()[before..];
+    // Activation additionally hides existing Kitty placements; the restored frame is identical.
+    assert!(original.ends_with(restored));
+    assert!(String::from_utf8(restored.to_vec())
+        .unwrap()
+        .contains("Aristotle"));
+    saver
+        .tick(&os, None, start + Duration::from_secs(84), true)
+        .unwrap();
+    let input = InputInstruction::KeyEvent(InputEvent::Paste("wake".into()), vec![]);
+    assert!(record_input(&saver.activity, &input, start + Duration::from_secs(85)).unwrap());
+    assert!(saver
+        .tick(&os, None, start + Duration::from_secs(85), true)
+        .unwrap());
+    saver.repaint_complete();
+    let before = os.stdout_bytes().len();
+    saver
+        .tick(&os, None, start + Duration::from_secs(145), true)
+        .unwrap();
+    assert_eq!(&os.stdout_bytes()[before..], original);
 }

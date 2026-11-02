@@ -16,6 +16,8 @@ use yinz_types::input::options::Options;
 use yinz_types::pane_size::Size;
 
 const LOOP_PAUSE: Duration = Duration::from_secs(3);
+const ORIGINAL_LOOPS: u32 = 3;
+const BOUNCE_DURATION: Duration = Duration::from_secs(60);
 
 pub(crate) struct Activity {
     last_input: Instant,
@@ -146,12 +148,18 @@ impl Screensaver {
         }
         if let (Some(renderer), Some(stage)) = (&mut self.renderer, stage) {
             let resized = self.last_size != Some(size);
-            if resized {
-                renderer.resize(stage);
-            }
             if resized || now >= self.next_frame {
                 let elapsed = now.saturating_duration_since(self.started);
-                let mut output = renderer.frame(animation_time(elapsed));
+                let phase = animation_phase(elapsed);
+                let mut output = match phase {
+                    Phase::Original(time) => {
+                        if renderer.stage != stage {
+                            renderer.resize(stage);
+                        }
+                        renderer.frame(time.min(splash::DURATION))
+                    },
+                    Phase::Bouncing(time) => renderer.bouncing_frame(size, time),
+                };
                 renderer.append_bottom_hint(&mut output, size, "press any key");
                 write_synchronised(
                     &mut *os.get_stdout_writer(),
@@ -160,11 +168,12 @@ impl Screensaver {
                 )
                 .context("draw idle screensaver")?;
                 self.last_size = Some(size);
-                let phase = cycle_time(elapsed);
-                let delay = if phase < splash::DURATION {
-                    splash::FRAME_INTERVAL.min(splash::DURATION - phase)
-                } else {
-                    splash::DURATION + LOOP_PAUSE - phase
+                let delay = match phase {
+                    Phase::Original(time) if time < splash::DURATION => {
+                        splash::FRAME_INTERVAL.min(splash::DURATION - time)
+                    },
+                    Phase::Original(time) => splash::DURATION + LOOP_PAUSE - time,
+                    Phase::Bouncing(time) => splash::FRAME_INTERVAL.min(BOUNCE_DURATION - time),
                 };
                 self.next_frame = now + delay;
             }
@@ -193,13 +202,24 @@ impl Screensaver {
     }
 }
 
-fn animation_time(elapsed: Duration) -> Duration {
-    cycle_time(elapsed).min(splash::DURATION)
+#[derive(Debug, PartialEq, Eq)]
+enum Phase {
+    Original(Duration),
+    Bouncing(Duration),
 }
 
-fn cycle_time(elapsed: Duration) -> Duration {
-    let cycle = splash::DURATION + LOOP_PAUSE;
-    Duration::from_nanos((elapsed.as_nanos() % cycle.as_nanos()) as u64)
+fn animation_phase(elapsed: Duration) -> Phase {
+    let original_loop = splash::DURATION + LOOP_PAUSE;
+    let original_duration = original_loop * ORIGINAL_LOOPS;
+    let cycle = original_duration + BOUNCE_DURATION;
+    let time = Duration::from_nanos((elapsed.as_nanos() % cycle.as_nanos()) as u64);
+    if time < original_duration {
+        Phase::Original(Duration::from_nanos(
+            (time.as_nanos() % original_loop.as_nanos()) as u64,
+        ))
+    } else {
+        Phase::Bouncing(time - original_duration)
+    }
 }
 
 #[cfg(test)]
