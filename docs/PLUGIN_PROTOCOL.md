@@ -892,6 +892,11 @@ responses. This request has no pane target: the server's provider environment
 selects the local account. Clients must not attribute these quotas to an SSH
 agent or a pane with different credentials. The Agents panel caches per
 provider and preserves the original observation time when a refresh fails.
+The server also retains successful observations across callers: an `error`
+response may carry the previous windows, plan, and original observation time.
+These values are stale. Claude observations are cached for five minutes, and
+rate-limited checks back off from 15 minutes to one hour while honoring longer
+`Retry-After` delays.
 
 ### Directory project resolution
 

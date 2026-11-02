@@ -24,6 +24,7 @@ struct FetchMetadata {
 #[derive(Default)]
 struct CacheEntry {
     result: Option<(ProviderUsage, Instant)>,
+    last_success: Option<ProviderUsage>,
     pending: bool,
     throttle_streak: u32,
 }
@@ -60,7 +61,7 @@ impl ProviderCache {
         drop(entry);
 
         // A collector panic must not leave every later caller waiting forever.
-        let (result, metadata) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(fetch))
+        let (mut result, metadata) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(fetch))
             .unwrap_or_else(|_| {
                 (
                     failure(
@@ -72,21 +73,33 @@ impl ProviderCache {
                 )
             });
         let mut entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
+        match result.status {
+            ProviderUsageStatus::Ok => entry.last_success = Some(result.clone()),
+            ProviderUsageStatus::Error => {
+                if let Some(previous) = &entry.last_success {
+                    result.windows = previous.windows.clone();
+                    result.observed_at_ms = previous.observed_at_ms;
+                    result.plan = previous.plan.clone();
+                }
+            },
+            // Drop retained quotas when authentication expires or reporting becomes unavailable.
+            _ => entry.last_success = None,
+        }
         let ttl = if metadata.throttled {
             entry.throttle_streak = entry.throttle_streak.saturating_add(1);
             let backoff = Duration::from_secs(
-                (300 * (1u64 << entry.throttle_streak.saturating_sub(1).min(3))).min(1800),
+                (900 * (1u64 << entry.throttle_streak.saturating_sub(1).min(2))).min(3600),
             );
             backoff.max(metadata.retry_after.unwrap_or_default())
         } else {
             entry.throttle_streak = 0;
-            Duration::from_secs(60)
+            Duration::from_secs(if provider == "claude" { 300 } else { 60 })
         };
         let completed = now();
         // Reject unrepresentable server deadlines rather than overflowing Instant.
         let deadline = completed
             .checked_add(ttl)
-            .unwrap_or_else(|| completed + Duration::from_secs(1800));
+            .unwrap_or_else(|| completed + Duration::from_secs(3600));
         entry.result = Some((result.clone(), deadline));
         entry.pending = false;
         self.completed.notify_all();

@@ -262,10 +262,16 @@ pub struct Display {
 impl Display {
     pub fn new(usage: &yinz_types::agent::control::ProviderUsage, now: u64) -> Self {
         use yinz_types::agent::control::ProviderUsageStatus;
+        // Allow the server's five-minute Claude cache plus the panel's next refresh tick.
+        let stale_after_ms = if usage.provider == "claude" {
+            360_000
+        } else {
+            120_000
+        };
         let stale = usage.status != ProviderUsageStatus::Ok
             || usage
                 .observed_at_ms
-                .is_some_and(|at| now.saturating_sub(at) >= 120_000);
+                .is_some_and(|at| now.saturating_sub(at) >= stale_after_ms);
         let weekly = usage
             .windows
             .iter()

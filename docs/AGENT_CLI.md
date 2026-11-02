@@ -62,10 +62,17 @@ account. They are not per-agent token counts or spending totals.
 Compact layouts show the highest window percentage; enlarge the panel to see
 the individual windows and reset times.
 
-The panel checks the selected provider once a minute while visible. A failed
-check keeps the last successful values and marks them stale with their original
-age. Missing limits appear as unavailable;
-they do not appear as zero usage. Hiding the panel stops further checks.
+The panel requests the selected provider once a minute while visible. The server
+shares these requests with the status bar and caches Claude results for five
+minutes. When Claude rate-limits a usage check, retries back off from 15 minutes
+to one hour, or longer if requested by Claude. A failed check keeps the last
+successful values and marks them stale with their original age, including after
+reopening the panel. Missing limits appear as unavailable; they do not appear as
+zero usage. Hiding the panel stops its requests.
+
+The status bar shows the focused local agent's weekly percentage remaining.
+Failed refreshes keep that value with a `stale` marker. Until a weekly quota is
+available, the bar shows `◔ ?`.
 
 Codex requires an installed CLI with the app-server protocol and a ChatGPT
 subscription login. Claude uses its local OAuth credentials. The server's

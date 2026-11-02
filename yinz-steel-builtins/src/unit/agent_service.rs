@@ -1509,6 +1509,18 @@ fn weekly_usage_selects_only_overall_weekly_quota() {
             json!(null)
         );
     }
+    assert_eq!(
+        runtime
+            .invoke(
+                "as-weekly-remaining",
+                vec![json!({"usage": {
+                    "status":"error", "observed_at_ms":100,
+                    "windows":[{"label":"Weekly limit","used_percent":27.2}]
+                }})]
+            )
+            .unwrap(),
+        72
+    );
 }
 
 #[test]
@@ -1536,6 +1548,9 @@ fn weekly_usage_publishes_both_providers_and_throttles_requests() {
             "windows" (list (hash "label" "Weekly limit" "used_percent" used))))) (yinz-async-poll) #t)
         (define (fail provider)
           (yinz-reject! (hash-ref (vector-ref pending 0) provider) "unavailable") (yinz-async-poll) #t)
+        (define (throttle provider)
+          (yinz-resolve! (hash-ref (vector-ref pending 0) provider) (hash "usage" (hash "status" "error" "windows" '())))
+          (yinz-async-poll) #t)
         "#,
         json!({}),
         BTreeMap::new(),
@@ -1568,6 +1583,7 @@ fn weekly_usage_publishes_both_providers_and_throttles_requests() {
         4
     );
     runtime.invoke("fail", vec![json!("codex")]).unwrap();
+    runtime.invoke("throttle", vec![json!("claude")]).unwrap();
     runtime.invoke("publish", vec![]).unwrap();
     assert_eq!(
         runtime.invoke("as-get", vec![json!("requests")]).unwrap(),
@@ -1577,8 +1593,20 @@ fn weekly_usage_publishes_both_providers_and_throttles_requests() {
         runtime
             .invoke("as-get", vec![json!("published-usage")])
             .unwrap(),
-        json!({"1":null,"2":41,"3":null})
+        json!({"1":72,"2":41,"3":72})
     );
+    assert_eq!(
+        runtime
+            .invoke("as-get", vec![json!("published-usage-stale")])
+            .unwrap(),
+        json!({"1":true,"2":true,"3":true})
+    );
+    runtime.eval("(vector-set! test-clock 0 120000)").unwrap();
+    runtime.invoke("publish", vec![]).unwrap();
+    // Recovery with unchanged percentages must still publish the cleared stale flags.
+    runtime
+        .invoke("finish", vec![json!("codex"), json!(27.2)])
+        .unwrap();
     runtime.eval(r#"(as-map-set! "hosts" 2 "remote")"#).unwrap();
     runtime.invoke("publish", vec![]).unwrap();
     // A late result for a remote/removed pane must not reintroduce its local quota.
@@ -1589,7 +1617,7 @@ fn weekly_usage_publishes_both_providers_and_throttles_requests() {
         runtime
             .invoke("as-get", vec![json!("published-usage")])
             .unwrap(),
-        json!({"1":null,"3":null})
+        json!({"1":72,"3":72})
     );
     let host = host.lock().unwrap();
     let message = host
@@ -1600,8 +1628,9 @@ fn weekly_usage_publishes_both_providers_and_throttles_requests() {
         .unwrap();
     let payload: serde_json::Value =
         serde_json::from_str(message["message_payload"].as_str().unwrap()).unwrap();
+    assert_eq!(payload["weekly_remaining_by_pane"], json!({"1":72,"3":72}));
     assert_eq!(
-        payload["weekly_remaining_by_pane"],
-        json!({"1":null,"3":null})
+        payload["weekly_stale_by_pane"],
+        json!({"1":false,"3":false})
     );
 }

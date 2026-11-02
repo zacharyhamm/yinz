@@ -155,6 +155,20 @@ fn usage(windows: &[(&str, f64, Option<u64>)]) -> yinz_types::agent::control::Pr
 }
 
 #[test]
+fn claude_quota_stays_fresh_during_normal_cache_interval_but_errors_are_stale_immediately() {
+    let mut usage = usage(&[("Weekly limit", 42.0, None)]);
+    usage.provider = "claude".into();
+    assert!(!Display::new(&usage, 301_000).stale);
+    assert!(!Display::new(&usage, 360_999).stale);
+    assert!(Display::new(&usage, 361_000).stale);
+    usage.status = yinz_types::agent::control::ProviderUsageStatus::Error;
+    let display = Display::new(&usage, 1_000);
+    assert!(display.stale);
+    assert_eq!(display.value, Some(58));
+    assert_eq!(display.compact, "Weekly · 58% · stale");
+}
+
+#[test]
 fn quota_daily_and_custom_windows_keep_remaining_text_without_weekly_graphics() {
     for label in ["Daily limit", "Custom quota"] {
         let usage = usage(&[(label, 30.0, Some(3_601_000))]);

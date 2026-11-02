@@ -181,10 +181,10 @@ fn shared_cache_expires_and_backs_off_then_recovers() {
     // Inspect deadlines as well as results: collector panics are deliberately sanitized.
     assert_eq!(
         cache.entry.lock().unwrap().result.as_ref().unwrap().1,
-        now() + Duration::from_secs(60)
+        now() + Duration::from_secs(300)
     );
-    clock.set(now() + Duration::from_secs(60));
-    for seconds in [300, 600, 1200, 1800, 1800] {
+    clock.set(now() + Duration::from_secs(300));
+    for seconds in [900, 1800, 3600, 3600] {
         cache.collect("claude", now, || cached_result(true, None));
         let deadline = cache.entry.lock().unwrap().result.as_ref().unwrap().1;
         assert_eq!(deadline, now() + Duration::from_secs(seconds));
@@ -199,19 +199,83 @@ fn shared_cache_expires_and_backs_off_then_recovers() {
         clock.set(deadline);
     }
     assert_eq!(unexpected_fetches.get(), 0);
-    cache.collect("claude", now, || cached_result(true, Some(3600)));
+    cache.collect("claude", now, || cached_result(true, Some(7200)));
     assert_eq!(
         cache.entry.lock().unwrap().result.as_ref().unwrap().1,
-        now() + Duration::from_secs(3600)
+        now() + Duration::from_secs(7200)
     );
-    clock.set(now() + Duration::from_secs(3600));
+    clock.set(now() + Duration::from_secs(7200));
     cache.collect("claude", now, || cached_result(false, None));
     assert_eq!(cache.entry.lock().unwrap().throttle_streak, 0);
-    clock.set(now() + Duration::from_secs(60));
+    clock.set(now() + Duration::from_secs(300));
     cache.collect("claude", now, || cached_result(true, None));
     assert_eq!(
         cache.entry.lock().unwrap().result.as_ref().unwrap().1,
-        now() + Duration::from_secs(300)
+        now() + Duration::from_secs(900)
+    );
+}
+
+#[test]
+fn failed_refresh_retains_observation_through_backoff_and_reopening_then_recovers() {
+    use std::cell::Cell;
+    let cache = ProviderCache::default();
+    let clock = Cell::new(Instant::now());
+    let now = || clock.get();
+    let success = claude_with(credential(None), Some(100), |_| {
+        Ok((200, br#"{"seven_day":{"utilization":42}}"#.to_vec()))
+    });
+    assert_eq!(
+        cache.collect("claude", now, || (
+            success.clone(),
+            FetchMetadata::default()
+        )),
+        success
+    );
+    clock.set(now() + Duration::from_secs(300));
+    let throttled = cache.collect("claude", now, || cached_result(true, None));
+    assert_eq!(throttled.status, ProviderUsageStatus::Error);
+    assert_eq!(throttled.windows, success.windows);
+    assert_eq!(throttled.observed_at_ms, success.observed_at_ms);
+    assert_eq!(throttled.plan, success.plan);
+    assert_eq!(throttled.message.as_deref(), Some("test result"));
+    // A new consumer during cooldown gets the same retained observation without fetching.
+    assert_eq!(
+        cache.collect("claude", now, || panic!("retried during cooldown")),
+        throttled
+    );
+    clock.set(now() + Duration::from_secs(900));
+    let mut refreshed = success.clone();
+    refreshed.windows[0].used_percent = 50.0;
+    assert_eq!(
+        cache.collect("claude", now, || (
+            refreshed.clone(),
+            FetchMetadata::default()
+        )),
+        refreshed
+    );
+    clock.set(now() + Duration::from_secs(300));
+    let expired = cache.collect("claude", now, || {
+        (
+            failure("claude", ProviderUsageStatus::Expired, "expired"),
+            FetchMetadata::default(),
+        )
+    });
+    assert!(expired.windows.is_empty());
+    clock.set(now() + Duration::from_secs(300));
+    assert!(cache
+        .collect("claude", now, || cached_result(true, None))
+        .windows
+        .is_empty());
+}
+
+#[test]
+fn codex_cache_keeps_its_one_minute_refresh_interval() {
+    let cache = ProviderCache::default();
+    let now = Instant::now();
+    cache.collect("codex", || now, || cached_result(false, None));
+    assert_eq!(
+        cache.entry.lock().unwrap().result.as_ref().unwrap().1,
+        now + Duration::from_secs(60)
     );
 }
 

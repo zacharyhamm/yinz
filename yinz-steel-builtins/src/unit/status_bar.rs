@@ -599,3 +599,35 @@ fn weekly_usage_renders_between_counts_and_clock_and_clears() {
     ));
     assert!(!status.render(1, 200).contains("◔"));
 }
+
+#[test]
+fn weekly_usage_shows_unknown_and_stale_then_recovers_without_changing_percentage() {
+    let mut status = Status::new(false);
+    status.tab();
+    status.event(json!({"PaneUpdate":{"panes":{"0":[
+        yinz_types::data::PaneInfo {
+            id: yinz_types::pane_id::PaneId::from_legacy(1, false),
+            is_focused:true, ..Default::default()
+        }
+    ]}}}));
+    let mut payload = json!({"total":1,"busy":1,"waiting":0,"idle":0,"held":0,"exited":0,"unknown":0,
+        "weekly_remaining_by_pane":{"1":null},"weekly_stale_by_pane":{"1":true}});
+    assert!(status.count_message(42, 1, payload.clone()));
+    let frame = status.render(1, 200);
+    assert!(frame.contains("◔ ?"), "{frame}");
+    assert!(!frame.contains("0%"));
+    payload["weekly_remaining_by_pane"]["1"] = json!(72);
+    assert!(status.count_message(42, 2, payload.clone()));
+    assert!(status.render(1, 200).contains("◔ 72% stale"));
+    for cols in 0..100 {
+        status.render(1, cols);
+    }
+    payload["weekly_stale_by_pane"]["1"] = json!(false);
+    assert!(status.count_message(42, 3, payload));
+    let frame = status.render(1, 200);
+    assert!(frame.contains("◔ 72%"));
+    assert!(!frame.contains("stale"));
+    // A service replacement must remove both the old value and its freshness marker.
+    status.runtime.invoke("clear-counts!", vec![]).unwrap();
+    assert!(!status.render(1, 200).contains("◔"));
+}
