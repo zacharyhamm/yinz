@@ -12,7 +12,9 @@ pub struct AgentPresentation {
     pub host: Option<String>,
     pub pane_id: String,
     pub activity: String,
+    pub last_reply: Option<yinz_bus::command_palette::AgentReplyPreview>,
     pub hook_flash: bool,
+    pub focused: bool,
 }
 
 impl AgentPresentation {
@@ -39,7 +41,9 @@ impl AgentPresentation {
             host: pane.target.display().map(|host| one_line(&host)),
             pane_id: pane.id.legacy_parts().0.to_string(),
             activity,
+            last_reply: None,
             hook_flash: false,
+            focused: false,
         })
     }
 
@@ -89,40 +93,74 @@ impl AgentPresentation {
                 ),
             );
         }
-        let tag = format!("[{}]", self.pane_id);
         let tag_style = MdStyle {
             color: Some(3),
             ..Default::default()
         };
+        let mut tag = if self.focused {
+            styled(
+                "⌖ ",
+                MdStyle {
+                    bold: true,
+                    color: Some(0),
+                    ..Default::default()
+                },
+            )
+        } else {
+            MdLine::plain("")
+        };
+        append(&mut tag, &styled(&format!("[{}]", self.pane_id), tag_style));
         let max_lines = max_lines.clamp(1, 5);
-        if max_lines == 1 {
-            // Reserve the ID before truncating the identity; wrapping could drop it.
-            let identity_width = width.saturating_sub(tag.width() + 2);
+        let reply = self.last_reply.as_ref().and_then(|reply| {
+            let text = one_line(&reply.text);
+            (max_lines > 1 && !text.is_empty()).then(|| {
+                let style = MdStyle {
+                    dim: true,
+                    ..Default::default()
+                };
+                let mut line = styled(&format!("↳ {text}"), style);
+                if reply.truncated || line.text.width() > width {
+                    ellipsize(&mut line, width);
+                    line.styles.fill(style);
+                }
+                line
+            })
+        });
+        // Keep the reply below the existing details, reserving its row before
+        // activity wraps. At two rows, identity takes priority over metadata.
+        let detail_lines = max_lines - usize::from(reply.is_some());
+        if detail_lines == 1 || self.focused {
+            // Reserve the ID and focus marker before truncating the identity.
+            let identity_width = width.saturating_sub(tag.text.width() + 2);
             if identity_width == 0 {
                 main = MdLine::plain("");
             } else if main.text.width() > identity_width {
                 ellipsize(&mut main, identity_width);
             }
-            let tag = take_columns(&tag, width);
-            let gap = width.saturating_sub(main.text.width() + tag.width());
+            tag.text = take_columns(&tag.text, width);
+            tag.styles.truncate(tag.text.chars().count());
+            let gap = width.saturating_sub(main.text.width() + tag.text.width());
             append(&mut main, &MdLine::plain(" ".repeat(gap)));
-            append(&mut main, &styled(&tag, tag_style));
-            return vec![main];
+            append(&mut main, &tag);
+            if max_lines == 1 {
+                return vec![main];
+            }
+        } else {
+            let gap = width.saturating_sub(main.text.width() + tag.text.width());
+            // Keep at least two columns between the status/host and the right-aligned ID.
+            append(
+                &mut main,
+                &MdLine::plain(" ".repeat(if gap >= 2 { gap } else { 2 })),
+            );
+            append(&mut main, &tag);
         }
-        let gap = width.saturating_sub(main.text.width() + tag.width());
-        // Keep at least two columns between the status/host and the right-aligned ID.
-        append(
-            &mut main,
-            &MdLine::plain(" ".repeat(if gap >= 2 { gap } else { 2 })),
-        );
-        append(&mut main, &styled(&tag, tag_style));
 
         let mut lines = Vec::new();
         let project = self.project.trim().replace(char::is_control, " ");
         let branch = self.branch.trim().replace(char::is_control, " ");
         let branch = if branch == "no branch" { "" } else { &branch };
         // A single row must retain the identity, including the right-aligned pane ID.
-        if max_lines > 1 && (!project.is_empty() || !branch.is_empty()) {
+        if detail_lines > 1 && (!project.is_empty() || !branch.is_empty()) {
             let mut metadata = styled(
                 &project,
                 MdStyle {
@@ -148,9 +186,17 @@ impl AgentPresentation {
             );
             lines.push(metadata);
         }
-        // One extra row tells us whether the final visible row needs an ellipsis.
-        lines.extend(wrap(&main, width, 0, max_lines + 1 - lines.len()));
-        if max_lines > 1 && lines.len() <= max_lines && !self.activity.is_empty() {
+        if self.focused || detail_lines == 1 {
+            // Already fitted above; preserve the marker and ID as one aligned group.
+            lines.push(main);
+        } else {
+            // One extra row tells us whether the final visible row needs an ellipsis.
+            lines.extend(wrap(&main, width, 0, detail_lines + 1 - lines.len()));
+        }
+        if detail_lines > 1
+            && (lines.len() < detail_lines || (!self.focused && lines.len() == detail_lines))
+            && !self.activity.is_empty()
+        {
             let waiting = self.state == AgentState::Waiting;
             let activity = styled(
                 &self.activity,
@@ -160,10 +206,10 @@ impl AgentPresentation {
                     ..Default::default()
                 },
             );
-            lines.extend(wrap(&activity, width, 2, max_lines + 1 - lines.len()));
+            lines.extend(wrap(&activity, width, 2, detail_lines + 1 - lines.len()));
         }
-        let truncated = lines.len() > max_lines;
-        lines.truncate(max_lines);
+        let truncated = lines.len() > detail_lines;
+        lines.truncate(detail_lines);
         if truncated && let Some(last) = lines.last_mut() {
             ellipsize(last, width);
         }
@@ -172,6 +218,7 @@ impl AgentPresentation {
                 ellipsize(line, width);
             }
         }
+        lines.extend(reply);
         lines
     }
 }
@@ -217,6 +264,10 @@ fn wrap(line: &MdLine, width: usize, first_indent: usize, max_lines: usize) -> V
 }
 
 fn ellipsize(line: &mut MdLine, width: usize) {
+    if width == 0 {
+        *line = MdLine::plain("");
+        return;
+    }
     line.text = take_columns(&line.text, width.saturating_sub(1));
     line.styles.truncate(line.text.chars().count());
     let style = line.styles.last().copied().unwrap_or_default();

@@ -1666,6 +1666,28 @@ impl CommandPalette {
             .flatten()
     }
 
+    fn has_visible_focus_marker(&self, layout: &CommandPaletteLayout) -> bool {
+        if self.form.is_some() || self.text.is_some() || self.metadata.is_some() {
+            return false;
+        }
+        layout.result_rows.iter().enumerate().any(|(row, result)| {
+            let ResultRow::Entry(index, line) = result else {
+                return false;
+            };
+            self.agent_presentation(*index)
+                .is_some_and(|agent| agent.focused)
+                && self
+                    .entry_lines(
+                        *index,
+                        layout.rect.cols.saturating_sub(2 * layout.border),
+                        self.entry_line_limit(*index, layout.options_rows)
+                            .min(line + layout.result_rows.len() - row),
+                    )
+                    .get(*line)
+                    .is_some_and(|line| line.text.contains('⌖'))
+        })
+    }
+
     fn entry_line_limit(&self, index: usize, capacity: usize) -> usize {
         let heading = usize::from(self.entry_heading(index).is_some());
         let entry = &self.entries[self.matches[index]];
@@ -2239,8 +2261,16 @@ impl CommandPalette {
                                 } else {
                                     help.into()
                                 };
-                                if !self.busy && let Some((above, below)) = layout.result_overflow {
+                                let help = if !self.busy && let Some((above, below)) = layout.result_overflow {
                                     format!("↑ {above} above · ↓ {below} below · {help}")
+                                } else {
+                                    help
+                                };
+                                let legend = " · ⌖ focused pane";
+                                if !self.busy && self.has_visible_focus_marker(layout)
+                                    && terminal_width(&help) + terminal_width(legend) <= width
+                                {
+                                    format!("{help}{legend}")
                                 } else {
                                     help
                                 }

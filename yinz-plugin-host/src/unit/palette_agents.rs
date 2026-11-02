@@ -56,6 +56,7 @@ fn live_agent_labels_use_panel_project_and_checkout_metadata() {
             id: id.into(),
             host: location.as_ref().and_then(|location| location.host.clone()),
             cwd: location.map(|location| location.path),
+            run: None,
         })
         .collect()
     };
@@ -64,7 +65,8 @@ fn live_agent_labels_use_panel_project_and_checkout_metadata() {
         labels["local"],
         AgentLabels {
             project: "project".into(),
-            branch: "topic/雪".into()
+            branch: "topic/雪".into(),
+            ..Default::default()
         }
     );
     assert_eq!(labels["peer-session"], labels["local"]);
@@ -72,7 +74,8 @@ fn live_agent_labels_use_panel_project_and_checkout_metadata() {
         labels["remote"],
         AgentLabels {
             project: "project".into(),
-            branch: "remote-topic".into()
+            branch: "remote-topic".into(),
+            ..Default::default()
         }
     );
     assert_eq!(labels["unknown"], AgentLabels::default());
@@ -85,7 +88,8 @@ fn live_agent_labels_use_panel_project_and_checkout_metadata() {
         labels["local"],
         AgentLabels {
             project: "renamed".into(),
-            branch: "new-branch".into()
+            branch: "new-branch".into(),
+            ..Default::default()
         }
     );
     registry.clear();
@@ -695,6 +699,211 @@ fn recorded_run(root: &Path) -> agent_proto::agents::AgentRun {
             created_at_ms: Some(150),
         }],
     }
+}
+
+#[test]
+fn live_agent_last_reply_selects_assistant_prose_and_bounds_literal_previews() {
+    use agent_proto::agents::{rows, RunEntry, RunEntryKind};
+    use yinz_bus::command_palette::{AgentLabelSource, AgentLabelsRequest, AgentRunSource};
+
+    let (temp, data) = repository();
+    let mut recorded = recorded_run(temp.path());
+    recorded.entries.clear();
+    let source = AgentRunSource {
+        id: recorded.id.clone(),
+        host_id: recorded.host_id.clone(),
+        session: recorded.yinz_session_name.clone(),
+    };
+    assert_eq!(history::last_reply(&data, &source).unwrap(), None);
+    data.plugin_data()
+        .apply(
+            project_data::store::SHARED,
+            &rows::run_mutations(&recorded, REV_ABSENT),
+        )
+        .unwrap();
+    let append = |revision, kind, text: &str| {
+        data.plugin_data()
+            .apply(
+                project_data::store::SHARED,
+                &[rows::entry_mutation(
+                    &recorded.id,
+                    &recorded.host_id,
+                    &RunEntry {
+                        revision,
+                        kind,
+                        text: text.into(),
+                        tool: None,
+                        event_id: None,
+                        created_at_ms: Some(revision as i64),
+                    },
+                )],
+            )
+            .unwrap();
+    };
+    append(1, RunEntryKind::Prompt, "user prompt");
+    assert_eq!(history::last_reply(&data, &source).unwrap(), None);
+    append(2, RunEntryKind::Result, "final answer");
+    append(3, RunEntryKind::Summary, "generated summary");
+    append(4, RunEntryKind::ToolResult, "tool output");
+    append(5, RunEntryKind::Plan, "tool plan");
+    append(6, RunEntryKind::Question, "tool question");
+    // More than one read's worth of empty assistant messages must not hide a reply.
+    for revision in 7..30 {
+        append(revision, RunEntryKind::Message, " \n\t ");
+    }
+    let reply = history::last_reply(&data, &source).unwrap().unwrap();
+    assert_eq!(reply.text, "final answer");
+    assert!(!reply.truncated);
+    append(
+        30,
+        RunEntryKind::Message,
+        "Progress:\n\t**literal** `code` [link] 雪",
+    );
+    let reply = history::last_reply(&data, &source).unwrap().unwrap();
+    assert_eq!(reply.text, "Progress: **literal** `code` [link] 雪");
+    assert!(!reply.truncated);
+    append(31, RunEntryKind::Result, "new final answer");
+    assert_eq!(
+        history::last_reply(&data, &source).unwrap().unwrap().text,
+        "new final answer"
+    );
+    for count in [512, 513] {
+        append(count as u64, RunEntryKind::Message, &"雪".repeat(count));
+        let reply = history::last_reply(&data, &source).unwrap().unwrap();
+        assert_eq!(reply.text, "雪".repeat(512));
+        assert_eq!(reply.truncated, count > 512);
+    }
+    // The asynchronous enrichment includes replies even without a known checkout.
+    let (tx, rx) = unbounded();
+    let senders = ThreadSenders {
+        to_screen: Some(SenderWithContext::new(tx)),
+        ..Default::default()
+    };
+    labels(
+        AgentLabelsRequest {
+            client: ClientId::new(1),
+            opening: 2,
+            revision: 3,
+            sources: vec![AgentLabelSource {
+                id: "live".into(),
+                host: None,
+                cwd: None,
+                run: Some(source),
+            }],
+        },
+        &senders,
+        &data,
+    );
+    let (ScreenInstruction::CommandPalette(Instruction::AgentLabels { labels, .. }), _) =
+        rx.recv().unwrap()
+    else {
+        panic!("expected enriched labels")
+    };
+    assert!(
+        labels.unwrap()["live"]
+            .last_reply
+            .as_ref()
+            .unwrap()
+            .truncated
+    );
+}
+
+#[test]
+fn live_agent_last_reply_isolates_hosts_sessions_and_runs_and_accepts_legacy_history() {
+    use agent_proto::agents::{rows, RunEntryKind};
+    use yinz_bus::command_palette::AgentRunSource;
+
+    let temp = tempfile::tempdir().unwrap();
+    let undefined = DataAccess::sqlite(temp.path());
+    let (temp, data) = repository();
+    let mut recorded = recorded_run(temp.path());
+    recorded.entries[0].text = "owned reply".into();
+    let source = AgentRunSource {
+        id: recorded.id.clone(),
+        host_id: recorded.host_id.clone(),
+        session: recorded.yinz_session_name.clone(),
+    };
+    assert_eq!(history::last_reply(&undefined, &source).unwrap(), None);
+    data.plugin_data()
+        .apply(
+            project_data::store::SHARED,
+            &rows::run_mutations(&recorded, REV_ABSENT),
+        )
+        .unwrap();
+    for foreign in [
+        AgentRunSource {
+            host_id: HostId::new("other-host"),
+            ..source.clone()
+        },
+        AgentRunSource {
+            session: "other-session".into(),
+            ..source.clone()
+        },
+        AgentRunSource {
+            id: "missing-run".into(),
+            ..source.clone()
+        },
+    ] {
+        assert_eq!(history::last_reply(&data, &foreign).unwrap(), None);
+    }
+    let mut entry = recorded.entries[0].clone();
+    entry.revision = 2;
+    entry.text = "foreign attribution".into();
+    data.plugin_data()
+        .apply(
+            project_data::store::SHARED,
+            &[rows::entry_mutation(
+                &recorded.id,
+                &HostId::new("other-host"),
+                &entry,
+            )],
+        )
+        .unwrap();
+    assert_eq!(
+        history::last_reply(&data, &source).unwrap().unwrap().text,
+        "owned reply"
+    );
+    recorded.id = "next-run".into();
+    recorded.entries[0].kind = RunEntryKind::Prompt;
+    data.plugin_data()
+        .apply(
+            project_data::store::SHARED,
+            &rows::run_mutations(&recorded, REV_ABSENT),
+        )
+        .unwrap();
+    assert_eq!(
+        history::last_reply(
+            &data,
+            &AgentRunSource {
+                id: recorded.id.clone(),
+                ..source.clone()
+            }
+        )
+        .unwrap(),
+        None
+    );
+    recorded.id = "legacy-run".into();
+    recorded.host_id = HostId::default();
+    recorded.entries[0].kind = RunEntryKind::Message;
+    data.plugin_data()
+        .apply(
+            project_data::store::SHARED,
+            &rows::run_mutations(&recorded, REV_ABSENT),
+        )
+        .unwrap();
+    assert_eq!(
+        history::last_reply(
+            &data,
+            &AgentRunSource {
+                id: recorded.id.clone(),
+                ..source
+            }
+        )
+        .unwrap()
+        .unwrap()
+        .text,
+        "owned reply"
+    );
 }
 
 #[test]

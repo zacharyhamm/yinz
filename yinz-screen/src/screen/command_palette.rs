@@ -192,6 +192,7 @@ impl Screen {
             },
         );
         self.refresh_command_palettes();
+        self.schedule_palette_agent_labels_tick(client_id);
         self.open_plugin_palette(client_id);
         if self.command_palettes.len() == 1 {
             self.bus
@@ -1022,22 +1023,33 @@ impl Screen {
                         .filter(|cwd| !cwd.is_empty())
                         .or(agent.pane.cwd.as_ref())
                         .cloned(),
+                    run: agent
+                        .run()
+                        .map(|id| yinz_bus::command_palette::AgentRunSource {
+                            id,
+                            host_id: yinz_runtime::host_identity::host_id(),
+                            session: agent.session.clone(),
+                        }),
                 })
                 .collect(),
             client,
             &self.bus.senders,
         );
         state.widget.agent_metadata = live.iter().map(|a| (a.id(), a.metadata.clone())).collect();
+        let focused_pane = self.get_active_pane_id(&client);
         state.widget.agent_presentations = live
             .iter()
             .filter_map(|agent| {
                 crate::ui::command_palette::AgentPresentation::from_pane(&agent.pane).map(
                     |mut presentation| {
+                        presentation.focused = agent.session == self.session_name
+                            && Some(agent.pane.id) == focused_pane;
                         presentation.hook_flash = agent.session == self.session_name
                             && self.agent_hook_is_flashing(&agent.pane, self.frame_now());
                         if let Some(labels) = state.agents.labels.get(&agent.id()) {
                             presentation.project.clone_from(&labels.project);
                             presentation.branch.clone_from(&labels.branch);
+                            presentation.last_reply.clone_from(&labels.last_reply);
                         }
                         (agent.id(), presentation)
                     },

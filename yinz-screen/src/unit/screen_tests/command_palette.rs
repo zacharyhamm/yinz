@@ -4224,6 +4224,291 @@ fn native_agent_launch_replies_are_client_and_opening_scoped_and_errors_do_not_r
 }
 
 #[test]
+fn live_agent_focus_marker_tracks_each_client_and_excludes_peer_sessions() {
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+
+    for picker in [false, true] {
+        let mut screen = screen();
+        let first = PaneId::Terminal(TerminalId::new(1));
+        let second = PaneId::Terminal(TerminalId::new(2));
+        screen
+            .get_active_tab_mut(CLIENT)
+            .unwrap()
+            .horizontal_split(second, None, None, CLIENT, None, None)
+            .unwrap();
+        for pane in [first, second] {
+            screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
+                pane,
+                Some(AgentInfo {
+                    kind: "codex".into(),
+                    state: AgentState::Idle,
+                    source: AgentSource::Reported,
+                    detail: None,
+                    waiting_on: None,
+                    wait_needs_a_person: false,
+                    cwd: None,
+                    session_id: None,
+                    run_id: None,
+                }),
+            );
+        }
+        // This peer has the same pane IDs as the current session.
+        warp_peer(&mut screen, "peer-agents");
+        let other_client = ClientId::new(2);
+        screen.add_client(other_client).unwrap();
+        screen
+            .focus_pane_with_id(first, false, false, CLIENT)
+            .unwrap();
+        screen
+            .focus_pane_with_id(second, false, false, other_client)
+            .unwrap();
+        for client in [CLIENT, other_client] {
+            if picker {
+                screen.open_agents(client);
+            } else {
+                screen.toggle_command_palette(client);
+                screen.command_palette_handles_input(&None, b"provider:codex", false, client);
+            }
+        }
+        let renders = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        let check = |screen: &Screen, client, expected: &str| {
+            let widget = screen.command_palettes[&client].widget();
+            assert_eq!(widget.agent_presentations.len(), 4);
+            let marked = widget
+                .agent_presentations
+                .iter()
+                .filter(|(_, p)| p.focused)
+                .collect::<Vec<_>>();
+            assert_eq!(marked.len(), 1);
+            assert_eq!(marked[0].1.pane_id, expected);
+            assert_eq!(
+                widget.agent_metadata[marked[0].0]["session"],
+                screen.session_name.as_str()
+            );
+        };
+        for (client, expected) in [(CLIENT, "1"), (other_client, "2")] {
+            let frame = render_frame_into(&mut screen, &renders, client, &mut grid);
+            check(&screen, client, expected);
+            assert!(frame.contains(&format!("⌖ [{expected}]")), "{frame}");
+        }
+        // Refresh uses current focus, rather than the pane captured on opening.
+        screen
+            .focus_pane_with_id(second, false, false, CLIENT)
+            .unwrap();
+        render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+        check(&screen, CLIENT, "2");
+        check(&screen, other_client, "2");
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .set_pane_agent(second, None);
+        let frame = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+        assert!(!frame.contains('⌖'), "{frame}");
+        assert!(screen.command_palettes[&CLIENT]
+            .widget()
+            .agent_presentations
+            .values()
+            .all(|p| !p.focused));
+    }
+}
+
+#[test]
+fn live_agent_last_replies_refresh_coalesce_and_reject_old_openings_and_runs() {
+    use yinz_bus::command_palette::{
+        AgentLabels, AgentLabelsRequest, AgentReplyPreview, Instruction,
+    };
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+
+    for picker in [false, true] {
+        let mut screen = screen();
+        let pane = PaneId::Terminal(TerminalId::new(1));
+        let mut agent = AgentInfo {
+            kind: "codex".into(),
+            state: AgentState::Busy,
+            source: AgentSource::Reported,
+            detail: Some("Current activity".into()),
+            waiting_on: None,
+            wait_needs_a_person: false,
+            cwd: None,
+            session_id: Some("provider-session".into()),
+            run_id: Some(" old-run ".into()),
+        };
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .set_pane_agent(pane, Some(agent.clone()));
+        warp_peer(&mut screen, "peer-agents");
+        let (plugin_tx, plugin_rx) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+        let (screen_tx, screen_rx) = channels::unbounded();
+        screen.bus.senders.to_screen = Some(SenderWithContext::new(screen_tx));
+        let renders = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        let open = |screen: &mut Screen| {
+            if picker {
+                screen.open_agents(CLIENT);
+            } else {
+                palette_search(screen, "provider:codex");
+            }
+        };
+        let next_labels = || loop {
+            let (instruction, _) = plugin_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if let PluginInstruction::PaletteAgentLabels(request) = instruction {
+                break request;
+            }
+        };
+        let reply = |request: &AgentLabelsRequest, text: &str| Instruction::AgentLabels {
+            client: request.client,
+            opening: request.opening,
+            revision: request.revision,
+            labels: Ok(request
+                .sources
+                .iter()
+                .map(|source| {
+                    (
+                        source.id.clone(),
+                        AgentLabels {
+                            project: "project".into(),
+                            branch: "branch".into(),
+                            last_reply: Some(AgentReplyPreview {
+                                text: text.into(),
+                                truncated: false,
+                            }),
+                        },
+                    )
+                })
+                .collect()),
+        };
+        open(&mut screen);
+        let first = next_labels();
+        assert_eq!(first.sources.len(), 2);
+        assert!(first
+            .sources
+            .iter()
+            .all(|source| source.run.as_ref().unwrap().id == "old-run"));
+        assert!(first
+            .sources
+            .iter()
+            .any(|source| source.run.as_ref().unwrap().session.as_str() == "peer-agents"));
+        assert!(first
+            .sources
+            .iter()
+            .all(|source| source.run.as_ref().unwrap().host_id
+                == yinz_runtime::host_identity::host_id()));
+        let local_id = first
+            .sources
+            .iter()
+            .find(|source| source.run.as_ref().unwrap().session == screen.session_name)
+            .unwrap()
+            .id
+            .clone();
+        screen
+            .command_palettes
+            .get_mut(&CLIENT)
+            .unwrap()
+            .widget_mut()
+            .select_id(&local_id);
+        let before = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+        assert!(!before.contains("↳ "));
+        // Exercise the real one-second timer, then hold its archive read open.
+        let tick = loop {
+            let (instruction, _) = screen_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if let ScreenInstruction::CommandPalette(Instruction::AgentLabelsTick {
+                client,
+                opening,
+            }) = instruction
+            {
+                break Instruction::AgentLabelsTick { client, opening };
+            }
+        };
+        assert!(screen.plugin_palette_instruction(tick));
+        render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+        assert!(!plugin_rx.try_iter().any(|(instruction, _)| matches!(
+            instruction,
+            PluginInstruction::PaletteAgentLabels(_)
+        )));
+        screen.plugin_palette_instruction(reply(&first, "**first reply** 雪"));
+        let frame = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+        assert!(frame.contains("↳ **first reply** 雪"), "{frame}");
+        assert!(frame.contains("Current activity"), "{frame}");
+        assert!(frame.contains("⌖ [1]"), "{frame}");
+        assert_eq!(
+            screen.command_palettes[&CLIENT]
+                .widget()
+                .selected_entry()
+                .unwrap()
+                .id,
+            local_id
+        );
+        let refresh = next_labels();
+        assert!(refresh.revision > first.revision);
+        screen.plugin_palette_instruction(reply(&refresh, "new progress update"));
+        let frame = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+        assert!(frame.contains("↳ new progress update"), "{frame}");
+
+        // A pending response must not restore the previous run's reply.
+        screen.plugin_palette_instruction(Instruction::AgentLabelsTick {
+            client: CLIENT,
+            opening: first.opening,
+        });
+        render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+        let previous_run = next_labels();
+        agent.run_id = None; // The existing provider/session fallback still resolves.
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .set_pane_agent(pane, Some(agent.clone()));
+        render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+        screen.plugin_palette_instruction(reply(&previous_run, "stale old run"));
+        let frame = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+        assert!(!frame.contains("stale old run"), "{frame}");
+        let changed = next_labels();
+        assert_eq!(
+            changed
+                .sources
+                .iter()
+                .find(|s| s.id == local_id)
+                .unwrap()
+                .run
+                .as_ref()
+                .unwrap()
+                .id,
+            "codex:provider-session"
+        );
+        screen.plugin_palette_instruction(reply(&changed, "current run reply"));
+        let frame = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+        assert!(frame.contains("↳ current run reply"), "{frame}");
+
+        screen.close_command_palette(CLIENT);
+        assert!(
+            !screen.plugin_palette_instruction(Instruction::AgentLabelsTick {
+                client: CLIENT,
+                opening: changed.opening
+            })
+        );
+        open(&mut screen);
+        let reopened = next_labels();
+        assert_ne!(reopened.opening, changed.opening);
+        screen.plugin_palette_instruction(reply(&changed, "stale opening"));
+        let frame = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+        assert!(!frame.contains("stale opening"), "{frame}");
+        screen.plugin_palette_instruction(Instruction::AgentLabels {
+            client: CLIENT,
+            opening: reopened.opening,
+            revision: reopened.revision,
+            labels: Err("history unavailable".into()),
+        });
+        let frame = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+        assert!(!frame.contains("↳ "), "{frame}");
+        assert!(frame.contains("⌖ [1]"), "{frame}");
+    }
+}
+
+#[test]
 fn live_agent_results_refresh_panel_presentation_in_root_and_picker() {
     use yinz_bus::command_palette::{AgentLabels, AgentLabelsRequest, Instruction};
     use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
@@ -4273,6 +4558,7 @@ fn live_agent_results_refresh_panel_presentation_in_root_and_picker() {
                             AgentLabels {
                                 project: project.into(),
                                 branch: branch.into(),
+                                ..Default::default()
                             },
                         )
                     })

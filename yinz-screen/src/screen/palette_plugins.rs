@@ -567,6 +567,9 @@ impl Screen {
 
     pub(crate) fn plugin_palette_instruction(&mut self, instruction: Instruction) -> bool {
         match instruction {
+            Instruction::AgentLabelsTick { client, opening } => {
+                self.palette_agent_labels_tick(client, opening)
+            },
             Instruction::AgentLabels {
                 client,
                 opening,

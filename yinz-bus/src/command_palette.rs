@@ -28,6 +28,10 @@ pub enum Instruction {
         revision: u64,
         labels: Result<std::collections::BTreeMap<String, AgentLabels>, String>,
     },
+    AgentLabelsTick {
+        client: ClientId,
+        opening: u64,
+    },
     UsageReply {
         client: ClientId,
         opening: u64,
@@ -89,6 +93,15 @@ pub enum Instruction {
 pub struct AgentLabels {
     pub project: String,
     pub branch: String,
+    pub last_reply: Option<AgentReplyPreview>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentReplyPreview {
+    /// Literal single-line assistant text, at most 512 Unicode scalar values.
+    pub text: String,
+    /// The archived text exceeded the preview bound before terminal-width fitting.
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -104,6 +117,15 @@ pub struct AgentLabelSource {
     pub id: String,
     pub host: Option<String>,
     pub cwd: Option<String>,
+    pub run: Option<AgentRunSource>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentRunSource {
+    pub id: String,
+    /// The recording server's host, independent of an agent's SSH target.
+    pub host_id: yinz_types::internal_ids::HostId,
+    pub session: yinz_types::internal_ids::SessionName,
 }
 
 /// One distinct prompt offered for reuse, newest use first in its list.

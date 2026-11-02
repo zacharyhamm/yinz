@@ -74,7 +74,7 @@ impl LiveAgent {
                             .is_none_or(|id| b.run_id.as_ref() == Some(id))
                 })
     }
-    fn run(&self) -> Option<String> {
+    pub(super) fn run(&self) -> Option<String> {
         let a = self.pane.agent.as_ref()?;
         a.run_id
             .as_deref()

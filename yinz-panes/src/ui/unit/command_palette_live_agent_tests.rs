@@ -402,6 +402,131 @@ fn live_agent_activity_follows_state_and_falls_back_to_literal_title() {
 }
 
 #[test]
+fn live_agent_last_reply_is_literal_single_line_and_reserves_its_height() {
+    use yinz_bus::command_palette::AgentReplyPreview;
+
+    let mut presentation = AgentPresentation::from_pane(&pane(AgentState::Waiting)).unwrap();
+    presentation.project = "project".into();
+    presentation.branch = "branch".into();
+    presentation.activity =
+        "activity with enough words to wrap over all remaining rows ".repeat(20);
+    presentation.last_reply = Some(AgentReplyPreview {
+        text: "  **literal**\n\t`code` [link] 雪e\u{301}山  ".into(),
+        truncated: false,
+    });
+    for focused in [false, true] {
+        presentation.focused = focused;
+        for max_lines in 1..=6 {
+            for width in 0..100 {
+                let lines = presentation.lines(width, max_lines);
+                assert!(lines.len() <= max_lines.min(5));
+                for line in &lines {
+                    assert!(line.text.width() <= width, "{width}: {lines:?}");
+                    assert_eq!(line.text.chars().count(), line.styles.len());
+                    assert!(!line.text.contains(['\n', '\t']));
+                }
+                if max_lines == 1 {
+                    assert!(!lines[0].text.contains('↳'));
+                    let tag = if focused { "⌖ [42]" } else { "[42]" };
+                    assert!(lines[0].text.ends_with(&take_columns(tag, width)));
+                } else {
+                    let reply = lines.last().unwrap();
+                    let expected = "↳ **literal** `code` [link] 雪e\u{301}山";
+                    if width >= expected.width() {
+                        assert_eq!(reply.text, expected);
+                    } else if width > 0 {
+                        assert!(reply.text.ends_with('…'));
+                    }
+                    assert!(reply.styles.iter().all(|style| *style
+                        == MdStyle {
+                            dim: true,
+                            ..Default::default()
+                        }));
+                    if width >= 40 {
+                        let identity = usize::from(max_lines > 2);
+                        assert!(lines[identity].text.starts_with('!'));
+                        if focused {
+                            assert!(lines[identity].text.ends_with("⌖ [42]"));
+                        }
+                        if max_lines > 2 {
+                            assert_eq!(lines[0].text, "project · branch");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    presentation.last_reply = Some(AgentReplyPreview {
+        text: "short".into(),
+        truncated: true,
+    });
+    assert_eq!(presentation.lines(80, 5).last().unwrap().text, "↳ short…");
+    presentation.last_reply = Some(AgentReplyPreview {
+        text: " \n\t".into(),
+        truncated: false,
+    });
+    let empty = presentation.lines(80, 5);
+    presentation.last_reply = None;
+    assert_eq!(presentation.lines(80, 5), empty);
+}
+
+#[test]
+fn live_agent_last_reply_coexists_with_activity_focus_and_selection_in_both_lists() {
+    use yinz_bus::command_palette::AgentReplyPreview;
+
+    for picker in [false, true] {
+        let mut palette = palette(2);
+        if !picker {
+            palette.back();
+        }
+        palette.set_query("alias".into());
+        palette.select_id("agent:1");
+        let selected = palette.selected_entry().unwrap().id.clone();
+        let matches = palette.matches.clone();
+        for (id, presentation) in &mut palette.agent_presentations {
+            presentation.focused = id == "agent:1";
+            presentation.last_reply = Some(AgentReplyPreview {
+                text: "**reply** 雪".into(),
+                truncated: false,
+            });
+        }
+        for rows in 4..30 {
+            let layout = palette.layout(Viewport {
+                cols: 80,
+                rows,
+                ..Default::default()
+            });
+            let width = layout.rect.cols.saturating_sub(2 * layout.border);
+            for (row, result) in layout.result_rows.iter().enumerate() {
+                let ResultRow::Entry(index, line) = result else {
+                    continue;
+                };
+                let limit = palette
+                    .entry_line_limit(*index, layout.options_rows)
+                    .min(line + layout.result_rows.len() - row);
+                let lines = palette.entry_lines(*index, width, limit);
+                assert!(lines.len() <= 5);
+                if limit > 1 {
+                    assert!(lines.last().unwrap().text.starts_with("↳ **reply** 雪"));
+                }
+                if limit == 1 {
+                    assert!(!lines[0].text.contains("reply"));
+                }
+            }
+            assert_eq!(palette.matches, matches);
+            assert_eq!(palette.selected_entry().unwrap().id, selected);
+        }
+        let presentation = &palette.agent_presentations["agent:1"];
+        let lines = presentation.lines(80, 5);
+        assert!(lines.iter().any(|line| line.text.contains("⌖ [42]")));
+        assert!(lines
+            .iter()
+            .any(|line| line.text.contains("`tool` [arg] **literal**")));
+        assert_eq!(lines.last().unwrap().text, "↳ **reply** 雪");
+    }
+}
+
+#[test]
 fn live_agent_metadata_omits_missing_labels_and_truncates_one_unicode_row() {
     let mut presentation = AgentPresentation::from_pane(&pane(AgentState::Busy)).unwrap();
     for (project, branch, expected) in [
@@ -498,6 +623,100 @@ fn live_agent_single_line_reserves_styled_id_at_every_width() {
 }
 
 #[test]
+fn focused_agent_reserves_marker_and_id_in_compact_and_multiline_results() {
+    let mut presentation = AgentPresentation::from_pane(&pane(AgentState::Waiting)).unwrap();
+    assert!(!presentation.focused);
+    presentation.focused = true;
+    presentation.project = "project".into();
+    presentation.provider = "雪e\u{301} Claude with a long provider name".into();
+    for max_lines in 1..=5 {
+        for width in usize::from(max_lines > 1)..80 {
+            let lines = presentation.lines(width, max_lines);
+            assert!(lines.len() <= max_lines);
+            for line in &lines {
+                assert!(line.text.width() <= width, "{width}: {lines:?}");
+                assert_eq!(line.text.chars().count(), line.styles.len());
+            }
+            let identity = &lines[usize::from(max_lines > 1)];
+            assert!(
+                identity.text.ends_with(&take_columns("⌖ [42]", width)),
+                "width={width}, max_lines={max_lines}: {lines:?}"
+            );
+            if width > 0 {
+                let marker = identity.text.chars().position(|ch| ch == '⌖').unwrap();
+                assert_eq!(identity.styles[marker].color, Some(0));
+                assert!(identity.styles[marker].bold);
+            }
+        }
+    }
+}
+
+#[test]
+fn focused_agent_marker_and_legend_follow_visibility_independently_of_selection() {
+    for picker in [false, true] {
+        let mut palette = grouped_palette(picker, &[AgentState::Busy; 2]);
+        palette
+            .agent_presentations
+            .get_mut("agent:0")
+            .unwrap()
+            .focused = true;
+        let surface = Viewport {
+            cols: 100,
+            rows: 24,
+            ..Default::default()
+        };
+        let render = |palette: &CommandPalette, surface| {
+            let layout = palette.layout(surface);
+            let lines = palette
+                .chunks(&layout, &Style::default())
+                .iter()
+                .map(|chunk| {
+                    chunk
+                        .terminal_characters
+                        .iter()
+                        .map(|ch| ch.character)
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>();
+            let footer = lines[layout.footer_y.unwrap() - layout.rect.y].clone();
+            (lines.join("\n"), footer)
+        };
+        for selected in ["agent:0", "agent:1"] {
+            palette.select_id(selected);
+            let (text, footer) = render(&palette, surface);
+            assert!(text.contains("⌖ [42]"));
+            assert!(footer.contains("⌖ focused pane"), "{footer}");
+            assert_eq!(palette.selected_entry().unwrap().id, selected);
+        }
+        let (_, footer) = render(
+            &palette,
+            Viewport {
+                cols: 50,
+                ..surface
+            },
+        );
+        assert!(!footer.contains("⌖ focused pane"));
+        palette = grouped_palette(picker, &[AgentState::Busy; 20]);
+        palette
+            .agent_presentations
+            .get_mut("agent:0")
+            .unwrap()
+            .focused = true;
+        palette.select_id("agent:19");
+        let (text, footer) = render(&palette, surface);
+        assert!(!text.contains("⌖ [42]"));
+        assert!(!footer.contains("⌖ focused pane"));
+        palette.set_query("no matching agents".into());
+        assert!(!render(&palette, surface).0.contains('⌖'));
+        palette.set_query("alias".into());
+        palette.select_id("agent:0");
+        palette.error = Some("An error".into());
+        assert!(render(&palette, surface).1.contains("An error"));
+        assert!(!render(&palette, surface).1.contains("⌖ focused pane"));
+    }
+}
+
+#[test]
 fn live_agent_rendering_matches_panel_emphasis_and_selected_theme() {
     let mut palette = palette(2);
     let mut style = Style::default();
@@ -516,6 +735,7 @@ fn live_agent_rendering_matches_panel_emphasis_and_selected_theme() {
             AgentPresentation {
                 project: "**project**".into(),
                 branch: "topic/雪".into(),
+                focused: true,
                 ..AgentPresentation::from_pane(&pane(state)).unwrap()
             },
         );
@@ -580,6 +800,9 @@ fn live_agent_rendering_matches_panel_emphasis_and_selected_theme() {
             let glyph_cell = rows[1].iter().find(|ch| ch.character == glyph).unwrap();
             assert_eq!(glyph_cell.styles.foreground, Some(tone.into()));
             assert_eq!(glyph_cell.styles.bold, Some(AnsiCode::On));
+            let focus_cell = rows[1].iter().find(|ch| ch.character == '⌖').unwrap();
+            assert_eq!(focus_cell.styles.foreground, Some(colors.emphasis_0.into()));
+            assert_eq!(focus_cell.styles.bold, Some(AnsiCode::On));
             let provider = rows[1].iter().position(|ch| ch.character == 'c').unwrap();
             assert_eq!(rows[1][provider].styles.bold, Some(AnsiCode::On));
             assert_eq!(

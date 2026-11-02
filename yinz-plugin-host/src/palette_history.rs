@@ -71,6 +71,76 @@ fn run_action(id: &str, from: Option<u64>) -> HistoryAction {
     }
 }
 
+/// Read only assistant prose from the current recorded run. A run id alone is
+/// insufficient on the shared archive: its header must belong to this host/session.
+pub(super) fn last_reply(
+    data: &DataAccess,
+    source: &yinz_bus::command_palette::AgentRunSource,
+) -> Result<Option<yinz_bus::command_palette::AgentReplyPreview>, String> {
+    use agent_proto::agents::rows;
+    use yinz_bus::command_palette::AgentReplyPreview;
+
+    let backend = Reader(data);
+    let owned = FetchRequest::entity(rows::RUN_ENTITY)
+        .filter(Pred::eq("uid", source.id.clone()))
+        .filter(store::host_or_legacy(&source.host_id))
+        .filter(Pred::eq("yinz_session_name", source.session.clone()))
+        .select(["uid"])
+        .limit(1);
+    if store::Backend::fetch(&backend, &owned)?.is_empty() {
+        return Ok(None);
+    }
+    let request = FetchRequest::entity(rows::ENTRY_ENTITY)
+        .filter(Pred::eq("run_id", source.id.clone()))
+        .filter(store::host_or_legacy(&source.host_id))
+        .filter(Pred::is_in("kind", ["message", "result"]))
+        .select(["revision", "text"])
+        .sort_by("revision", SortDir::Desc)
+        .limit(1);
+    let mut before = None;
+    loop {
+        let page = store::Backend::fetch(
+            &backend,
+            &match before {
+                Some(revision) => request.clone().filter(Pred::lt("revision", revision)),
+                None => request.clone(),
+            },
+        )?;
+        if page.is_empty() {
+            return Ok(None);
+        }
+        for row in &page.rows {
+            if let Some(DataValue::Text(text)) = page.get(row, "text") {
+                // Bounded, literal single-line text crosses back to screen. Keep
+                // the source truncation flag even if it fits the terminal width.
+                let normalized = text
+                    .chars()
+                    .map(|ch| if ch.is_control() { ' ' } else { ch })
+                    .collect::<String>()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !normalized.is_empty() {
+                    let mut chars = normalized.chars();
+                    let text = chars.by_ref().take(512).collect();
+                    let truncated = chars.next().is_some();
+                    return Ok(Some(AgentReplyPreview { text, truncated }));
+                }
+            }
+        }
+        before = page
+            .rows
+            .last()
+            .and_then(|row| match page.get(row, "revision") {
+                Some(DataValue::Int(revision)) => Some(*revision),
+                _ => None,
+            });
+        if before.is_none() || !page.truncated {
+            return Ok(None);
+        }
+    }
+}
+
 /// Every distinct prompt in the archive, described for the palette's picker.
 pub(super) fn prompt_library(data: &DataAccess) -> Result<Vec<PromptRecord>, String> {
     let now_ms = agent_proto::agents::now_ms();

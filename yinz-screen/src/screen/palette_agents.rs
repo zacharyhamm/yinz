@@ -140,6 +140,7 @@ impl State {
             if self.label_sources.is_empty() {
                 return;
             }
+            self.label_revision += 1;
             let revision = self.label_revision;
             senders
                 .send_to_plugin(PluginInstruction::PaletteAgentLabels(AgentLabelsRequest {
@@ -201,6 +202,38 @@ impl State {
 }
 
 impl Screen {
+    pub(super) fn schedule_palette_agent_labels_tick(&self, client: ClientId) {
+        let Some(state) = self.command_palettes.get(&client) else {
+            return;
+        };
+        let opening = state.agents.opening;
+        let senders = self.bus.senders.clone();
+        crate::global_async_runtime::get_tokio_runtime().spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            senders
+                .send_to_screen(yinz_bus::screen::ScreenInstruction::CommandPalette(
+                    Instruction::AgentLabelsTick { client, opening },
+                ))
+                .context("refreshing palette agent replies")
+                .non_fatal();
+        });
+    }
+
+    pub(super) fn palette_agent_labels_tick(&mut self, client: ClientId, opening: u64) -> bool {
+        let Some(state) = self
+            .command_palettes
+            .get_mut(&client)
+            .filter(|state| state.agents.opening == opening)
+        else {
+            return false;
+        };
+        // A slow archive read remains useful. Coalesce ticks until it completes;
+        // only source changes invalidate that read's revision.
+        state.agents.labels_dirty = true;
+        self.schedule_palette_agent_labels_tick(client);
+        true
+    }
+
     /// Open the past-prompt picker over the agent view, which keeps its draft underneath.
     pub(super) fn open_prompt_picker(&mut self, client: ClientId) {
         let timezone = self

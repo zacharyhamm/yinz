@@ -525,7 +525,9 @@ fn agent_search_prioritizes_exact_projects_and_worktrees_over_fuzzy_scores() {
                     host: None,
                     pane_id: id.into(),
                     activity: String::new(),
+                    last_reply: None,
                     hook_flash: false,
+                    focused: false,
                 },
             );
         }

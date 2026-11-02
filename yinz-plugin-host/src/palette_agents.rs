@@ -29,11 +29,20 @@ pub(crate) fn labels(
     data: &DataAccess,
 ) {
     let labels = agent_control::projects(data).map(|rows| {
-        resolve_labels(
-            request.sources,
+        let mut labels = resolve_labels(
+            request.sources.clone(),
             &project_data::projects::from_rows(&rows),
             &crate::project_provider::presentation_snapshot(),
-        )
+        );
+        for source in &request.sources {
+            if let Some(run) = &source.run {
+                match history::last_reply(data, run) {
+                    Ok(reply) => labels.entry(source.id.clone()).or_default().last_reply = reply,
+                    Err(error) => log::error!("Could not read palette agent reply: {error}"),
+                }
+            }
+        }
+        labels
     });
     senders
         .send_to_screen(ScreenInstruction::CommandPalette(
@@ -71,7 +80,11 @@ fn resolve_labels(
                 .unwrap_or_default();
             Some((
                 source.id,
-                yinz_bus::command_palette::AgentLabels { project, branch },
+                yinz_bus::command_palette::AgentLabels {
+                    project,
+                    branch,
+                    ..Default::default()
+                },
             ))
         })
         .collect()
