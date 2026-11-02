@@ -7,7 +7,8 @@ later, we have yinz.
 Hit "Ctrl+o+l" to launch the command palette. Or Ctrl+alt+p. Projects register
 automatically when you launch an agent in a git repository. A project is defined
 by the git remote, or if that is not set, just the path. "Create new project…"
-in the palette makes a folder and git repository, then opens an agent or terminal in it.
+in the palette makes a folder and git repository, then opens an agent or
+terminal in it.
 
 Yinz automatically rethemes agents launched via "Spawn". Type "theme" in the
 command palette to choose a theme.
@@ -24,7 +25,9 @@ makes use of the kitty graphics protocol.
 Yinz is pretty fast! It runs `notcurses-demo` pretty well, which causes upstream
 zellij to panic.
 
-Yinz is plugin driven. Plugins are written in scheme using a fork of "steel". It has a vim approach to plugins, just point it at a git repository (local or remote): [Load Scheme plugins from Git repositories](docs/GIT_PLUGINS.md)
+Yinz is plugin driven. Plugins are written in scheme using a fork of "steel". It
+has a vim approach to plugins, just point it at a git repository (local or
+remote): [Load Scheme plugins from Git repositories](docs/GIT_PLUGINS.md)
 
 Yinz has good remote support. Use something like tailscale to make your remote
 server accessible over the internet. Build yinz on the remote (we have no
@@ -48,12 +51,42 @@ is pretty stable though, I haven't run into a panic in a long time.
 Yinz works best with agents if you install the skills and hooks:
 
 `yinz hooks install`
-`yinz skills install`
 
+`yinz skills install`
 
 ## Install
 
-There are no binary releases at this time. From this checkout, run:
+Download the archive for your platform and `SHA256SUMS` from
+[GitHub Releases](https://github.com/zacharyhamm/yinz/releases). Linux builds
+target x86_64 or ARM64 on Ubuntu 24.04 and compatible newer glibc systems; macOS
+builds target Apple Silicon on macOS 15 or newer. Linux runtime libraries
+include glibc, libgcc, libstdc++, and zlib; each archive includes
+`DEPENDENCIES.txt` with its exact linked libraries. macOS releases are not
+signed or notarized.
+
+For example, on Linux x86_64, from the directory containing both downloads:
+
+```sh
+sha256sum --ignore-missing -c SHA256SUMS
+tar -xzf yinz-x86_64-unknown-linux-gnu.tar.gz
+./install.sh
+```
+
+On macOS use `shasum -a 256 --ignore-missing -c SHA256SUMS` and the
+`yinz-aarch64-apple-darwin.tar.gz` archive. Confirm the downloaded archive
+reports `OK` before extracting it. The installer defaults to
+`$HOME/.local/bin/yinz`; ensure `$HOME/.local/bin` is on your `PATH`. Builtins
+go to `${XDG_DATA_HOME:-$HOME/.local/share}/yinz` on Linux (XDG_DATA_HOME must
+be absolute) or `$HOME/Library/Application Support/org.Yinz-Contributors.Yinz`
+on macOS.
+
+Override destinations with
+`./install.sh --bin-dir /path/to/bin --data-dir /path/to/data`. When using a
+custom data directory, launch with `yinz --data-dir /path/to/data`. Install the
+entire archive: copying only the binary, including via cargo-binstall, does not
+install the required builtin plugins.
+
+To build from this checkout, run:
 
 ```sh
 cargo x install "$HOME/.local/bin/yinz"
@@ -76,3 +109,25 @@ embedded fallback or automatic runtime installation.
 For development, `cargo x run` installs builtin files into its selected data
 directory. Use `cargo x run --quick-run` for `target/dev-data`. `cargo x build`
 does not install builtin files.
+
+## Publishing a release
+
+After merging the release workflow, update the workspace version in `Cargo.toml`
+and the corresponding lockfile entries, then commit those changes. Tag that
+commit with the matching version and push the tag:
+
+```sh
+git tag -a v0.1.0 -m "Yinz v0.1.0"
+git push origin v0.1.0
+```
+
+The release workflow builds all three native archives, checks installation and
+executable versions, and publishes them with SHA-256 checksums and generated
+notes. Tags such as `v0.2.0-rc.1` publish prereleases and must also match the
+workspace version. No personal token is required; GitHub Actions must be enabled
+for the repository. Only the publishing job receives repository write
+permission.
+
+A failed upload leaves a draft; rerun the workflow to replace its assets and
+finish publishing. Already published releases are never overwritten. Release
+builds do not run the full workspace or integration test suites.
