@@ -52,7 +52,7 @@ jobs:
       - name: Test installer
         run: python3 -m unittest discover -s scripts/release/unit -v
       - name: Build
-        run: cargo x build --release --locked
+        run: cargo x build --release -- --locked
       - name: Package and verify installation
         env:
           RELEASE_TARGET: ${{ matrix.target }}
