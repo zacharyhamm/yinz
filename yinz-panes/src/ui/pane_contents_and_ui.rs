@@ -370,8 +370,10 @@ impl<'a> PaneContentsAndUi<'a> {
             return;
         }
         let vte_output = self.pane.render_terminal_title(client_mode, session_name);
+        // A restoring client may have discarded the render that populated this cache.
         if let Some(previous_title) = previous_title
             && *previous_title == vte_output
+            && !self.output.host_display_cleared_for_client(client_id)
         {
             return;
         }

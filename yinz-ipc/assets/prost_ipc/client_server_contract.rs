@@ -4086,7 +4086,7 @@ impl HostTerminalThemeIndication {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerToClientMsg {
-    #[prost(oneof="server_to_client_msg::Message", tags="30, 29, 28, 23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 26, 14, 15, 16, 18, 20, 21, 22, 27")]
+    #[prost(oneof="server_to_client_msg::Message", tags="31, 30, 29, 28, 23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 26, 14, 15, 16, 18, 20, 21, 22, 27")]
     pub message: ::core::option::Option<server_to_client_msg::Message>,
 }
 /// Nested message and enum types in `ServerToClientMsg`.
@@ -4094,6 +4094,8 @@ pub mod server_to_client_msg {
     #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Message {
+        #[prost(string, tag="31")]
+        ClipboardUpdate(::prost::alloc::string::String),
         #[prost(string, tag="30")]
         DesktopNotification(::prost::alloc::string::String),
         #[prost(bool, tag="29")]

@@ -1861,6 +1861,17 @@ pub fn start_server_impl(
                     }
                     drop(completion_tx); // cleanup is queued before the action completes
                 },
+                ServerInstruction::ClipboardUpdate(notifications) => {
+                    for (client_id, content) in notifications {
+                        send_to_client!(
+                            client_id,
+                            os_input,
+                            ServerToClientMsg::ClipboardUpdate { content },
+                            session_state,
+                            session_data
+                        );
+                    }
+                },
                 ServerInstruction::DesktopNotification(notifications) => {
                     for (client_id, content) in notifications {
                         send_to_client!(

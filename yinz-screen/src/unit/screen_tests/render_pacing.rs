@@ -1674,6 +1674,51 @@ fn screensaver_repaint_completes_after_full_frame_and_survives_backpressure() {
 }
 
 #[test]
+fn screensaver_wake_replays_cached_terminal_title() {
+    for floating in [false, true] {
+        let mut paced = screen_with_backlog();
+        let terminal = if floating {
+            let terminal = TerminalId::new(2);
+            add_pane_to_tab(
+                &mut paced.screen,
+                TabId::new(0),
+                PaneId::Terminal(terminal),
+                true,
+            );
+            paced
+                .screen
+                .get_active_tab_mut(CLIENT)
+                .unwrap()
+                .toggle_floating_panes(Some(CLIENT), None, None)
+                .unwrap();
+            terminal
+        } else {
+            TerminalId::new(1)
+        };
+        for title in ["old-title", "hidden-title"] {
+            paced
+                .screen
+                .get_active_tab_mut(CLIENT)
+                .unwrap()
+                .handle_pty_bytes(terminal, format!("\x1b]2;{title}\x07").into_bytes())
+                .unwrap();
+            paced_render(&mut paced.screen);
+            let frames: Vec<_> = paced.to_server.try_iter().collect();
+            assert!(frames.iter().any(|(instruction, _)| matches!(instruction,
+                ServerInstruction::Render(Some(output)) if output.get(&CLIENT).is_some_and(|content| content.contains(&yinz_runtime::shared::make_terminal_title(title, Some(&"yinz-test".into())))))), "floating={floating}, title={title}, frames={frames:?}");
+        }
+        *paced.backlog.lock().unwrap() = vec![(CLIENT, behind())];
+        paced.screen.request_client_repaint(CLIENT).unwrap();
+        paced_render(&mut paced.screen);
+        assert!(paced.screen.pending_client_repaints.contains(&CLIENT));
+        paced.backlog.lock().unwrap().clear();
+        paced_render(&mut paced.screen);
+        assert!(paced.to_server.try_iter().any(|(instruction, _)| matches!(instruction,
+            ServerInstruction::Render(Some(output)) if output.get(&CLIENT).is_some_and(|content| content.contains(&yinz_runtime::shared::make_terminal_title("hidden-title", Some(&"yinz-test".into())))))));
+    }
+}
+
+#[test]
 fn screensaver_wake_restores_graphics_overlays_and_cursor() {
     for watcher in [false, true] {
         let mut paced = screen_with_backlog();

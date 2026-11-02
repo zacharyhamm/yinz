@@ -316,6 +316,23 @@ fn screensaver_drains_background_frames_and_restores_on_wake() {
                         .then_some(())
                 },
             );
+            let clipboard = "\x1b]52;c;Y29weQ==\x07";
+            tx.send(ClientInstruction::from(
+                yinz_ipc::ipc::ServerToClientMsg::ClipboardUpdate {
+                    content: clipboard.into(),
+                },
+            ))
+            .unwrap();
+            os.stdout_attempts.wait_until(
+                "clipboard update during screensaver",
+                yinz_test_support::default_timeout(),
+                |writes| {
+                    writes
+                        .iter()
+                        .any(|write| write == clipboard.as_bytes())
+                        .then_some(())
+                },
+            );
             // Each hidden frame fills the entire budget. The next reserve can finish only if
             // the loop drains and releases the preceding frame while the screensaver is up.
             for _ in 0..5 {
@@ -357,6 +374,7 @@ fn screensaver_drains_background_frames_and_restores_on_wake() {
     let output = String::from_utf8(os.stdout_bytes()).unwrap();
     assert!(output.find("initial").unwrap() < output.find("\x1b[?25l").unwrap());
     assert!(output.contains("restored"));
+    assert_eq!(output.matches("\x1b]52;c;Y29weQ==\x07").count(), 1);
     assert!(!output.contains(&"H".repeat(100)));
     budget.reserve(100).unwrap();
     budget.release(100).unwrap();

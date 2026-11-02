@@ -341,7 +341,7 @@ impl Tab {
                         return Ok(());
                     }
                     self.senders
-                        .send_to_server(ServerInstruction::Render(Some(serialized_output)))
+                        .send_to_server(ServerInstruction::ClipboardUpdate(serialized_output))
                 })
                 .map(|_| Event::CopyToClipboard(self.clipboard_provider.as_copy_destination()))
                 .with_context(err_context)?,

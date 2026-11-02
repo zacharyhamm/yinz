@@ -5980,3 +5980,10 @@ fn desktop_notification_roundtrip() {
         content: "\x1b]99;i=notification:p=body;done\x07".into(),
     });
 }
+
+#[test]
+fn clipboard_update_roundtrip() {
+    test_server_roundtrip!(ServerToClientMsg::ClipboardUpdate {
+        content: "\x1b]52;c;Y29weQ==\x07".into(),
+    });
+}

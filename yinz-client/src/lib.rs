@@ -77,6 +77,7 @@ pub(crate) enum ClientInstruction {
     FromServer(u64, Box<ClientInstruction>),
     ServerReaderDrained(u64),
     Render(String),
+    ClipboardUpdate(String),
     DesktopNotification(String),
     UnblockInputThread,
     Exit(ExitReason),
@@ -126,6 +127,9 @@ impl From<ServerToClientMsg> for ClientInstruction {
             ServerToClientMsg::QueryTerminalSize => ClientInstruction::QueryTerminalSize,
             ServerToClientMsg::RenamedSession { name } => ClientInstruction::RenamedSession(name),
             ServerToClientMsg::SetMouseMode { enabled } => ClientInstruction::SetMouseMode(enabled),
+            ServerToClientMsg::ClipboardUpdate { content } => {
+                ClientInstruction::ClipboardUpdate(content)
+            },
             ServerToClientMsg::DesktopNotification { content } => {
                 ClientInstruction::DesktopNotification(content)
             },
@@ -164,6 +168,7 @@ impl From<&ClientInstruction> for ClientContext {
             ClientInstruction::Error(_) => ClientContext::Error,
             ClientInstruction::FromServer(_, ref instruction) => (&**instruction).into(),
             ClientInstruction::ServerReaderDrained(_) => ClientContext::UnblockInputThread,
+            ClientInstruction::ClipboardUpdate(_) => ClientContext::Render,
             ClientInstruction::DesktopNotification(_) => ClientContext::Render,
             ClientInstruction::Render(_) => ClientContext::Render,
             ClientInstruction::UnblockInputThread => ClientContext::UnblockInputThread,

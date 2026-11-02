@@ -3752,3 +3752,17 @@ fn clipboard_command_failures_report_failure_without_success() {
         }
     }
 }
+
+#[test]
+fn clipboard_uses_side_effect_message() {
+    let mut tab = create_new_tab(Size { cols: 80, rows: 24 }, ModeInfo::default());
+    let (sender, server_rx) = channels::unbounded();
+    tab.senders.to_server = Some(SenderWithContext::new(sender));
+    tab.write_selection_to_clipboard("copy").unwrap();
+    let messages: Vec<_> = server_rx.try_iter().collect();
+    assert_eq!(messages.len(), 1);
+    let (yinz_bus::ServerInstruction::ClipboardUpdate(output), _) = &messages[0] else {
+        panic!("clipboard must bypass visual rendering");
+    };
+    assert!(output[&ClientId::new(1)].contains("\x1b]52;c;Y29weQ=="));
+}

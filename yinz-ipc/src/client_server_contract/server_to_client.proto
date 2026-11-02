@@ -6,6 +6,7 @@ import "common_types.proto";
 message ServerToClientMsg {
   reserved 11, 17, 19;
   oneof message {
+    string clipboard_update = 31;
     string desktop_notification = 30;
     bool repaint_complete = 29;
     string session_request_json = 28;

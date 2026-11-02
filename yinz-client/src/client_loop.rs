@@ -401,12 +401,13 @@ impl ClientLoop<'_, '_> {
                 return true;
             },
             ClientInstruction::Error(backtrace) => self.fail(backtrace),
-            ClientInstruction::DesktopNotification(content) => {
+            ClientInstruction::DesktopNotification(content)
+            | ClientInstruction::ClipboardUpdate(content) => {
                 let mut stdout = self.os_input.get_stdout_writer();
                 stdout
                     .write_all(content.as_bytes())
                     .and_then(|()| stdout.flush())
-                    .context("write desktop notification to host terminal")
+                    .context("write terminal side effect to host terminal")
                     .non_fatal();
             },
             ClientInstruction::Render(output) => {

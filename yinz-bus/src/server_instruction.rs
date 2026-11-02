@@ -26,6 +26,7 @@ pub enum ServerInstruction {
     SessionReply(ClientId, yinz_types::session_destination::Reply),
     FirstClientConnected(CliAssets, ClientId),
     Render(Option<HashMap<ClientId, String>>),
+    ClipboardUpdate(HashMap<ClientId, String>),
     DesktopNotification(HashMap<ClientId, String>),
     RepaintComplete(ClientId),
     UnblockInputThread,
@@ -131,6 +132,7 @@ impl From<&ServerInstruction> for ServerContext {
         // The two enums are kept name-for-name; `instruction_context_tests` fails the test run if
         // a variant is added without either a matching `ServerContext` or an arm here.
         match server_instruction {
+            ServerInstruction::ClipboardUpdate(..) => ServerContext::Render,
             ServerInstruction::DesktopNotification(..) => ServerContext::Render,
             ServerInstruction::RepaintComplete(..) => ServerContext::Render,
             ServerInstruction::FirstClientConnected(..) => ServerContext::NewClient,

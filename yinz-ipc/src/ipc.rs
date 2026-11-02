@@ -320,6 +320,9 @@ pub enum ServerToClientMsg {
         name: SessionName,
     },
     ConfigFileUpdated,
+    ClipboardUpdate {
+        content: String,
+    },
     DesktopNotification {
         content: String,
     },

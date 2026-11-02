@@ -640,6 +640,9 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
             ServerToClientMsg::SetMouseMode { enabled } => {
                 server_to_client_msg::Message::SetMouseMode(enabled)
             },
+            ServerToClientMsg::ClipboardUpdate { content } => {
+                server_to_client_msg::Message::ClipboardUpdate(content)
+            },
             ServerToClientMsg::DesktopNotification { content } => {
                 server_to_client_msg::Message::DesktopNotification(content)
             },
@@ -812,6 +815,9 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
             },
             Some(server_to_client_msg::Message::SetMouseMode(enabled)) => {
                 Ok(ServerToClientMsg::SetMouseMode { enabled })
+            },
+            Some(server_to_client_msg::Message::ClipboardUpdate(content)) => {
+                Ok(ServerToClientMsg::ClipboardUpdate { content })
             },
             Some(server_to_client_msg::Message::DesktopNotification(content)) => {
                 Ok(ServerToClientMsg::DesktopNotification { content })
