@@ -2503,3 +2503,73 @@ fn centered_resize_drag_and_release_reach_tab_from_gutter() {
         "gutter release must end the resize"
     );
 }
+
+#[test]
+fn centered_gutters_dismiss_menus_and_clear_menu_hover() {
+    use yinz_types::data::{ContextMenuContext, ContextMenuItem};
+    use yinz_types::input::actions::Action;
+    use yinz_types::input::context_menu::ContextMenu;
+
+    let client = ClientId::new(1);
+    for click in [(0, 0), (79, 23)] {
+        for position in [
+            Position::new(8, 9),
+            Position::new(8, 90),
+            Position::new(2, 20),
+            Position::new(27, 20),
+        ] {
+            let mut screen = centered_mouse_test_screen();
+            let focus = screen.active_pane_id(client);
+            let items = vec![ContextMenuItem::new("Copy", vec![Action::Copy])];
+            screen.context_menu = ContextMenu::from_items(items.clone());
+            let request = screen.open_context_menu(
+                ContextMenuContext {
+                    pane_id: focus.unwrap(),
+                    click,
+                    ..Default::default()
+                },
+                client,
+            );
+            screen.set_context_menu_items(request, items, None, client);
+            let layout = screen
+                .context_menu_layout_for(client, screen.client_surface(client).unwrap())
+                .unwrap();
+            let row = layout.row_of_item(0).unwrap();
+            screen.handle_mouse_event(
+                MouseEvent::new_buttonless_motion(Position::new(
+                    (row + 3) as i32,
+                    (layout.x + 2 + 10) as u16,
+                )),
+                client,
+            );
+            assert_eq!(screen.context_menus[&client].selected, Some(0));
+            screen.handle_mouse_event(MouseEvent::new_buttonless_motion(position), client);
+            assert_eq!(screen.context_menus[&client].selected, None);
+            screen.handle_mouse_event(MouseEvent::new_left_press_event(position), client);
+            assert!(!screen.context_menu_is_open(client));
+            assert_eq!(screen.active_pane_id(client), focus);
+        }
+    }
+}
+
+#[test]
+fn centered_gutters_dismiss_palettes_and_capture_release() {
+    let client = ClientId::new(1);
+    for position in [
+        Position::new(8, 9),
+        Position::new(8, 90),
+        Position::new(2, 20),
+        Position::new(27, 20),
+    ] {
+        let mut screen = centered_mouse_test_screen();
+        let focus = screen.active_pane_id(client);
+        screen.toggle_command_palette(client);
+        assert!(screen.command_palettes.contains_key(&client));
+        screen.handle_mouse_event(MouseEvent::new_left_press_event(position), client);
+        assert!(!screen.command_palettes.contains_key(&client));
+        assert!(screen.command_palette_mouse_captures.contains(&client));
+        screen.handle_mouse_event(MouseEvent::new_left_release_event(position), client);
+        assert!(!screen.command_palette_mouse_captures.contains(&client));
+        assert_eq!(screen.active_pane_id(client), focus);
+    }
+}

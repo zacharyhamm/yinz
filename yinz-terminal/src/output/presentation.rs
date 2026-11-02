@@ -16,15 +16,8 @@ impl Presentation {
         )
     }
 
-    /// Translate the renderer's absolute cursor commands, leaving string control payloads
-    /// (OSC, DCS and APC, including graphics and hyperlinks) opaque. Relative movements
-    /// and saved cursors already operate in the translated coordinate system.
-    pub fn present(self, source: String) -> String {
-        if self.terminal.cols <= self.content.cols && self.terminal.rows <= self.content.rows {
-            return source;
-        }
+    fn margins(self) -> String {
         let (dx, dy) = self.offset();
-        let mut output = String::with_capacity(source.len());
         // Repaint margins after display erases. Geometry/theme changes request a full
         // repaint, so incremental and control-only frames need no margin output. Save both cursor
         // position and rendition so control-only frames do not disturb the application.
@@ -52,6 +45,19 @@ impl Presentation {
             }
         }
         margins.push_str("\x1b8");
+        margins
+    }
+
+    /// Translate the renderer's absolute cursor commands, leaving string control payloads
+    /// (OSC, DCS and APC, including graphics and hyperlinks) opaque. Relative movements
+    /// and saved cursors already operate in the translated coordinate system.
+    pub fn present(self, source: String) -> String {
+        if self.terminal.cols <= self.content.cols && self.terminal.rows <= self.content.rows {
+            return source;
+        }
+        let (dx, dy) = self.offset();
+        let mut output = String::with_capacity(source.len());
+        let mut margins = None;
         let bytes = source.as_bytes();
         let mut start = 0;
         let mut i = 0;
@@ -104,7 +110,7 @@ impl Presentation {
                         start = i + 1;
                     } else if bytes[i] == b'J' && matches!(params, "2" | "3") {
                         output.push_str(&source[start..=i]);
-                        output.push_str(&margins);
+                        output.push_str(margins.get_or_insert_with(|| self.margins()));
                         start = i + 1;
                     }
                     i += 1;

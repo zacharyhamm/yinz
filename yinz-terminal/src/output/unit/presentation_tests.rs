@@ -40,3 +40,31 @@ fn restores_margin_color_after_clear_and_preserves_equal_size_output() {
     assert_eq!(bytes.matches("\x1b[48;2;12;34;56m").count(), 1);
     assert!(bytes.ends_with("\x1b[4;11Hhello"));
 }
+
+#[test]
+fn incremental_frames_and_opaque_erases_do_not_paint_margins() {
+    let p = presentation(100, 30);
+    assert_eq!(p.present("\x1b[2;3H".into()), "\x1b[5;13H");
+    assert_eq!(p.present("x".into()), "x");
+    for payload in [
+        "\x1b]title\x1b[2J\x07",
+        "\x1bPdata\x1b[3J\x1b\\",
+        "\x1b_Gdata\x1b[2J\x1b\\",
+        "\x1b[0J",
+        "\x1b[1J",
+    ] {
+        assert_eq!(p.present(payload.into()), payload);
+    }
+}
+
+#[test]
+fn every_full_display_erase_repaints_the_same_margins() {
+    let p = presentation(100, 30);
+    let first = p.present("\x1b[2J".into());
+    let margins = first.strip_prefix("\x1b[2J").unwrap();
+    assert!(!margins.is_empty());
+    assert_eq!(
+        p.present("\x1b[2Jx\x1b[3J".into()),
+        format!("\x1b[2J{margins}x\x1b[3J{margins}")
+    );
+}

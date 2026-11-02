@@ -38,30 +38,23 @@ impl Screen {
             && !event.middle
             && !event.wheel_up
             && !event.wheel_down;
+        let mut outside = false;
         if let Some((_, presentation)) = self.client_presentations.get(&client_id) {
             let (x, y) = presentation.offset();
-            let outside = event.position.column() < x
+            outside = event.position.column() < x
                 || event.position.column() >= x + presentation.content.cols
                 || event.position.line() < y as isize
                 || event.position.line() >= (y + presentation.content.rows) as isize;
-            if outside && event.event_type == MouseEventType::Press {
-                return;
-            }
-            if outside && is_bare_motion {
-                // Relative columns saturate at zero, which would turn the left gutter
-                // into a hit on the leftmost pane. Leave without disturbing gestures.
-                if self
-                    .get_active_tab_mut(client_id)
-                    .map(|tab| tab.mouse_leave(client_id))
-                    .unwrap_or(false)
-                {
-                    self.render().non_fatal();
-                }
-                return;
-            }
             event.position = event.position.relative_to(y, x);
         }
-        if self.permission_modal_mouse(&event, client_id) {
+        // Columns cannot represent negative coordinates. Use an outside row for overlay
+        // hit-testing so the left gutter cannot hit an overlay touching column zero.
+        // Captured gestures still receive the actual translated position below.
+        let mut overlay_event = event;
+        if outside {
+            overlay_event.position.change_line(-1);
+        }
+        if self.permission_modal_mouse(&overlay_event, client_id) {
             return;
         }
         // A gesture belongs to its press target, even when it crosses a toast or
@@ -86,7 +79,7 @@ impl Screen {
         // to the pane under the menu is the one thing it must not do.
         if self.context_menu_is_open(client_id) {
             if let Some(surface) = surface {
-                self.handle_context_menu_mouse_event(&event, surface, client_id);
+                self.handle_context_menu_mouse_event(&overlay_event, surface, client_id);
             }
             return;
         }
@@ -97,7 +90,7 @@ impl Screen {
         // hit-tested - never the toasts it is covering.
         if self.notification_browser_is_visible(client_id) {
             if surface.is_some_and(|surface| {
-                self.handle_notification_browser_mouse(&event, surface, client_id, now)
+                self.handle_notification_browser_mouse(&overlay_event, surface, client_id, now)
             }) {
                 if event.event_type == MouseEventType::Press && event.left {
                     self.notification_mouse_captures.insert(client_id);
@@ -105,19 +98,19 @@ impl Screen {
                 return;
             }
         } else if surface.is_some_and(|surface| {
-            self.handle_pane_notification_click(&event, surface, client_id, now)
+            self.handle_pane_notification_click(&overlay_event, surface, client_id, now)
         }) {
             self.notification_mouse_captures.insert(client_id);
             return;
         }
         if self.command_palettes.contains_key(&client_id)
             && surface.is_some_and(|surface| {
-                usize::try_from(event.position.line())
+                usize::try_from(overlay_event.position.line())
                     .ok()
                     .is_some_and(|line| {
                         self.notification_cell_rects(surface, now, client_id)
                             .iter()
-                            .any(|rect| rect.contains(event.position.column(), line))
+                            .any(|rect| rect.contains(overlay_event.position.column(), line))
                     })
             })
         {
@@ -126,7 +119,22 @@ impl Screen {
             }
             return;
         }
-        if self.command_palette_handles_mouse(&event, client_id) {
+        if self.command_palette_handles_mouse(&overlay_event, client_id) {
+            return;
+        }
+        if outside && event.event_type == MouseEventType::Press {
+            return;
+        }
+        if outside && is_bare_motion {
+            // Relative columns saturate at zero, which would turn the left gutter
+            // into a hit on the leftmost pane. Leave without disturbing gestures.
+            if self
+                .get_active_tab_mut(client_id)
+                .map(|tab| tab.mouse_leave(client_id))
+                .unwrap_or(false)
+            {
+                self.render().non_fatal();
+            }
             return;
         }
         // A client descended into a nested guest has handed that pane its keys; alt+mouse
