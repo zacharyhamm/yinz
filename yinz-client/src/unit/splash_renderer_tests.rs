@@ -450,3 +450,31 @@ fn quote_wraps_to_the_logo_and_remains_centered_after_resizing() {
         );
     }
 }
+
+#[test]
+fn screensaver_hint_is_centered_and_readable_without_changing_splash_frames() {
+    for light in [false, true] {
+        for size in [Size { rows: 24, cols: 80 }, Size { rows: 10, cols: 28 }] {
+            let stage = Stage::new(size).unwrap();
+            let mut renderer = Renderer::new(stage, style(light), accent(light));
+            let frame = renderer.frame(Duration::ZERO);
+            assert!(!frame.contains("press any key"));
+            let mut output = frame.clone();
+            renderer.append_bottom_hint(&mut output, size, "press any key");
+            assert!(output.starts_with(&frame));
+            assert!(output.contains(&format!("\x1b[{};{}H", size.rows, (size.cols - 13) / 2 + 1)));
+            assert!(output.ends_with("press any key\x1b[m"));
+            let color = ensure_contrast(
+                renderer.foreground.map(|c| c.round() as u8),
+                renderer.background_luminance,
+                renderer.highlight,
+            );
+            assert!(
+                contrast(
+                    luminance(color.map(f32::from)),
+                    renderer.background_luminance
+                ) >= MIN_CONTRAST
+            );
+        }
+    }
+}

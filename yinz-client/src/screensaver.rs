@@ -13,8 +13,9 @@ use yinz_config::config::Config;
 use yinz_key_codec::vendored::termwiz::input::InputEvent;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::input::options::Options;
+use yinz_types::pane_size::Size;
 
-const FRAME_INTERVAL: Duration = Duration::from_millis(200);
+const LOOP_PAUSE: Duration = Duration::from_secs(3);
 
 pub(crate) struct Activity {
     last_input: Instant,
@@ -55,6 +56,7 @@ pub(crate) struct Screensaver {
     started: Instant,
     next_frame: Instant,
     restoring: bool,
+    last_size: Option<Size>,
 }
 
 impl Screensaver {
@@ -77,6 +79,7 @@ impl Screensaver {
             started: now,
             next_frame: now,
             restoring: false,
+            last_size: None,
         })
     }
 
@@ -108,7 +111,8 @@ impl Screensaver {
             self.restoring = false;
             return Ok(false);
         }
-        let stage = Stage::new(os.get_terminal_size());
+        let size = os.get_terminal_size();
+        let stage = Stage::new(size);
         if self.active() && (!state.sleeping || stage.is_none()) {
             state.sleeping = false;
             state.last_input = now;
@@ -141,20 +145,28 @@ impl Screensaver {
             .context("hide graphics for screensaver")?;
         }
         if let (Some(renderer), Some(stage)) = (&mut self.renderer, stage) {
-            let resized = stage != renderer.stage;
+            let resized = self.last_size != Some(size);
             if resized {
                 renderer.resize(stage);
             }
             if resized || now >= self.next_frame {
-                let output =
-                    renderer.frame(animation_time(now.saturating_duration_since(self.started)));
+                let elapsed = now.saturating_duration_since(self.started);
+                let mut output = renderer.frame(animation_time(elapsed));
+                renderer.append_bottom_hint(&mut output, size, "press any key");
                 write_synchronised(
                     &mut *os.get_stdout_writer(),
                     sync,
                     format!("\x1b[?25l{output}").as_bytes(),
                 )
                 .context("draw idle screensaver")?;
-                self.next_frame = now + FRAME_INTERVAL;
+                self.last_size = Some(size);
+                let phase = cycle_time(elapsed);
+                let delay = if phase < splash::DURATION {
+                    splash::FRAME_INTERVAL.min(splash::DURATION - phase)
+                } else {
+                    splash::DURATION + LOOP_PAUSE - phase
+                };
+                self.next_frame = now + delay;
             }
         }
         Ok(false)
@@ -182,7 +194,12 @@ impl Screensaver {
 }
 
 fn animation_time(elapsed: Duration) -> Duration {
-    Duration::from_secs_f64((elapsed.as_secs_f64() / 4.0) % 1.0)
+    cycle_time(elapsed).min(splash::DURATION)
+}
+
+fn cycle_time(elapsed: Duration) -> Duration {
+    let cycle = splash::DURATION + LOOP_PAUSE;
+    Duration::from_nanos((elapsed.as_nanos() % cycle.as_nanos()) as u64)
 }
 
 #[cfg(test)]

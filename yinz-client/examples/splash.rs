@@ -4,6 +4,13 @@
 mod geometry;
 #[path = "../src/splash/outlines.rs"]
 mod outlines;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "shared renderer includes a screensaver-only hint helper"
+    )
+)]
 #[path = "../src/splash/renderer.rs"]
 mod renderer;
 

@@ -211,6 +211,24 @@ impl Renderer {
         output
     }
 
+    pub(crate) fn append_bottom_hint(&self, output: &mut String, size: Size, hint: &str) {
+        let width = hint.width();
+        if size.rows == 0 || size.cols < width + 2 {
+            return;
+        }
+        let [r, g, b] = ensure_contrast(
+            self.foreground.map(|channel| channel.round() as u8),
+            self.background_luminance,
+            self.highlight,
+        );
+        let [br, bg, bb] = self.background.map(|channel| channel.round() as u8);
+        output.push_str(&format!(
+            "\x1b[{};{}H\x1b[48;2;{br};{bg};{bb}m\x1b[38;2;{r};{g};{b}m{hint}\x1b[m",
+            size.rows,
+            (size.cols - width) / 2 + 1,
+        ));
+    }
+
     fn project(
         &mut self,
         sample: &Sample,
