@@ -478,12 +478,13 @@ pin_context_to_instruction! {
     mod server;
     instruction: ServerInstruction;
     context: ServerContext;
-    special: ["ClipboardUpdate", "DesktopNotification", "RepaintComplete", "ConfigurationEditor", "SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError", "SignalQuit"];
+    special: ["ClipboardUpdate", "DesktopNotification", "RepaintComplete", "ConfigurationEditor", "SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError", "SignalQuit", "ClientAttachFailed"];
     only_special: ["NewClient", "AttachClient"];
     targets: [
         ("ClipboardUpdate", ServerInstruction::ClipboardUpdate(Default::default()), "Render"),
         ("DesktopNotification", ServerInstruction::DesktopNotification(Default::default()), "Render"),
         ("RepaintComplete", ServerInstruction::RepaintComplete(ClientId::new(1)), "Render"),
+        ("ClientAttachFailed", ServerInstruction::ClientAttachFailed(ClientId::new(1)), "ClientExit"),
         ("SignalQuit", ServerInstruction::SignalQuit(ClientId::new(1)), "ClientExit"),
         (
             "ConfigurationEditor",

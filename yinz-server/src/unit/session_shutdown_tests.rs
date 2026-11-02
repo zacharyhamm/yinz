@@ -201,6 +201,7 @@ fn failed_worker_spawns_preserve_partial_startup_until_the_server_queue_disconne
                 shutdown,
                 ownership,
                 envs::SessionState::new("startup-failure".into()),
+                Arc::new(background_jobs::SessionCheckpointWriter::default()),
                 ClientAttributes::default(),
                 Options::default(),
                 Layout::default(),

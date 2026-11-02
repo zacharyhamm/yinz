@@ -279,3 +279,59 @@ fn discovery_leaves_stale_sockets_for_the_owner_to_reclaim() {
         .iter()
         .any(|(candidate, _)| candidate.as_str() == ".session-locks"));
 }
+
+#[test]
+fn recovery_probe_sweep_starts_every_probe_before_waiting() {
+    use std::sync::{mpsc, Arc, Mutex};
+    let (started_tx, started_rx) = mpsc::channel();
+    let mut releases = Vec::new();
+    let mut receivers = Vec::new();
+    for _ in 0..4 {
+        let (tx, rx) = mpsc::channel();
+        releases.push(tx);
+        receivers.push(Mutex::new(rx));
+    }
+    let receivers = Arc::new(receivers);
+    let sweep = std::thread::spawn(move || {
+        probe_sockets_with(
+            (0..4)
+                .map(|i| (SessionName::new(i.to_string()), i))
+                .collect(),
+            move |name| {
+                let i: usize = name.as_str().parse().unwrap();
+                started_tx.send(i).unwrap();
+                receivers[i]
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap();
+                match i {
+                    0 => Ok(SessionProbe::Absent),
+                    1 => Ok(SessionProbe::Alive),
+                    2 => Ok(SessionProbe::Unresponsive),
+                    _ => Err(io::ErrorKind::PermissionDenied),
+                }
+            },
+        )
+    });
+    // Every probe must enter before any is released; a serial sweep fails.
+    for _ in 0..4 {
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+    for release in releases {
+        release.send(()).unwrap();
+    }
+    let results = sweep.join().unwrap();
+    assert_eq!(
+        results
+            .iter()
+            .map(|(_, _, status)| *status)
+            .collect::<Vec<_>>(),
+        vec![
+            SessionProbe::Absent,
+            SessionProbe::Alive,
+            SessionProbe::Unresponsive,
+            SessionProbe::Unresponsive
+        ]
+    );
+}

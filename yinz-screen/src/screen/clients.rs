@@ -63,7 +63,7 @@ impl Screen {
                 if attaching {
                     self.bus
                         .senders
-                        .send_to_server(ServerInstruction::ClientExit(client_id, None))
+                        .send_to_server(ServerInstruction::ClientAttachFailed(client_id))
                         .context("disconnecting client after failed registration")
                         .non_fatal();
                 }

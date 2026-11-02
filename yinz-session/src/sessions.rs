@@ -49,11 +49,20 @@ fn probe_sockets<T: Send + 'static>(candidates: Vec<(SessionName, T)>) -> Vec<(S
 fn probe_sockets_with_status<T: Send + 'static>(
     candidates: Vec<(SessionName, T)>,
 ) -> Vec<(SessionName, T, SessionProbe)> {
+    probe_sockets_with(candidates, session_status)
+}
+
+fn probe_sockets_with<T: Send + 'static>(
+    candidates: Vec<(SessionName, T)>,
+    probe: impl Fn(&SessionName) -> Result<SessionProbe, io::ErrorKind> + Send + Sync + 'static,
+) -> Vec<(SessionName, T, SessionProbe)> {
+    let probe = std::sync::Arc::new(probe);
     let probes: Vec<_> = candidates
         .into_iter()
         .map(|(name, extra)| {
+            let probe = probe.clone();
             std::thread::spawn(move || {
-                let status = assert_socket(&name).unwrap_or(SessionProbe::Unresponsive);
+                let status = probe(&name).unwrap_or(SessionProbe::Unresponsive);
                 (name, extra, status)
             })
         })
@@ -782,11 +791,8 @@ mod tests;
 /// Interrupted sessions that can safely be offered for resurrection.
 pub fn recovery_candidates() -> anyhow::Result<Vec<yinz_runtime::session_recovery::Candidate>> {
     let mut candidates = Vec::new();
-    for (name, age) in get_resurrectable_sessions() {
-        if !matches!(
-            session_status(&name),
-            Ok(yinz_ipc::probe::SessionProbe::Absent)
-        ) {
+    for (name, age, status) in probe_sockets_with_status(get_resurrectable_sessions()) {
+        if status != SessionProbe::Absent {
             continue;
         }
         let directory = session_info_folder_for_session(&name);

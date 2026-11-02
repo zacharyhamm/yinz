@@ -279,7 +279,7 @@ impl Screen {
             attach_traces_waiting_for_first_render.remove(&client_id);
             self.bus
                 .senders
-                .send_to_server(ServerInstruction::ClientExit(client_id, None))
+                .send_to_server(ServerInstruction::ClientAttachFailed(client_id))
                 .context("disconnecting client after failed destination sizing")
                 .non_fatal();
             return Ok(());

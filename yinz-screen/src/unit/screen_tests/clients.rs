@@ -1067,7 +1067,7 @@ fn failed_new_tab_registration_rolls_back_without_disconnecting() {
         receiver
             .try_iter()
             .filter(|(instruction, _)| matches!(
-                instruction, ServerInstruction::ClientExit(id, None) if *id == client
+                instruction, ServerInstruction::ClientAttachFailed(id) if *id == client
             ))
             .count(),
         0
@@ -1311,7 +1311,7 @@ fn failed_plugin_registration_rejects_attachment_once() {
     assert!(!screen.connected_clients.borrow().contains(&client));
     assert!(!screen.client_sizes.contains_key(&client));
     assert!(traces.is_empty());
-    assert_eq!(receiver.try_iter().filter(|(instruction, _)| matches!(instruction, ServerInstruction::ClientExit(id, None) if *id == client)).count(), 1);
+    assert_eq!(receiver.try_iter().filter(|(instruction, _)| matches!(instruction, ServerInstruction::ClientAttachFailed(id) if *id == client)).count(), 1);
 }
 
 #[test]
@@ -1525,7 +1525,7 @@ fn failed_layout_registration_preserves_departed_source_and_pending_output() {
             .concat()
             .contains("retained-content"));
         assert_eq!(receiver.try_iter().filter(|(instruction, _)|
-            matches!(instruction, ServerInstruction::ClientExit(id, None) if *id == returning)
+            matches!(instruction, ServerInstruction::ClientAttachFailed(id) if *id == returning)
         ).count(), 0);
     }
 }
@@ -1787,7 +1787,7 @@ fn failed_destination_sizing_preserves_committed_follow_state_and_retires_source
         receiver
             .try_iter()
             .filter(|(instruction, _)| matches!(instruction,
-        ServerInstruction::ClientExit(id, None) if *id == returning))
+        ServerInstruction::ClientAttachFailed(id) if *id == returning))
             .count(),
         1
     );

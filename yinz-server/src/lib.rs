@@ -939,6 +939,7 @@ pub fn start_server_impl(
             return;
         },
     };
+    let session_checkpoint = Arc::new(background_jobs::SessionCheckpointWriter::default());
     let recovery_run = yinz_runtime::session_recovery::begin(
         &yinz_runtime::consts::session_info_folder_for_session(&session_identity.current()),
     )
@@ -1304,6 +1305,7 @@ pub fn start_server_impl(
                             shutdown.clone(),
                             ownership.clone(),
                             session_identity.clone(),
+                            session_checkpoint.clone(),
                             client_attributes.clone(),
                             runtime_config_options.clone(),
                             layout.clone(),
@@ -1723,7 +1725,8 @@ pub fn start_server_impl(
                     );
                 },
                 ServerInstruction::ClientExit(client_id, _)
-                | ServerInstruction::SignalQuit(client_id) => {
+                | ServerInstruction::SignalQuit(client_id)
+                | ServerInstruction::ClientAttachFailed(client_id) => {
                     let intentional = matches!(instruction, ServerInstruction::ClientExit(..));
                     let completion_tx = match instruction {
                         ServerInstruction::ClientExit(_, completion) => completion,
@@ -1763,13 +1766,9 @@ pub fn start_server_impl(
                             // Refuse new connections now; join workers after leaving the server
                             // loop, once its bounded receiver has been disconnected.
                             if intentional && let Some(run) = &recovery_run {
-                                yinz_runtime::session_recovery::acknowledge(
-                                    &yinz_runtime::consts::session_info_folder_for_session(
-                                        &session_identity.current(),
-                                    ),
-                                    run,
-                                )
-                                .non_fatal();
+                                session_checkpoint
+                                    .acknowledge_recovery(session_identity.current(), run)
+                                    .non_fatal();
                             }
                             ownership.shutdown().non_fatal();
                             let client_ids_to_cleanup: Vec<ClientId> = session_state
@@ -1827,13 +1826,9 @@ pub fn start_server_impl(
                 ServerInstruction::KillSession
                 | ServerInstruction::KillSessionWithCompletion { .. } => {
                     if let Some(run) = &recovery_run {
-                        yinz_runtime::session_recovery::acknowledge(
-                            &yinz_runtime::consts::session_info_folder_for_session(
-                                &session_identity.current(),
-                            ),
-                            run,
-                        )
-                        .non_fatal();
+                        session_checkpoint
+                            .acknowledge_recovery(session_identity.current(), run)
+                            .non_fatal();
                     }
                     log::info!("shutdown: KillSession received");
                     if let ServerInstruction::KillSessionWithCompletion {
@@ -2007,13 +2002,9 @@ pub fn start_server_impl(
                             let _ = os_input.remove_client(watcher_id);
                         }
                         if let Some(run) = &recovery_run {
-                            yinz_runtime::session_recovery::acknowledge(
-                                &yinz_runtime::consts::session_info_folder_for_session(
-                                    &session_identity.current(),
-                                ),
-                                run,
-                            )
-                            .non_fatal();
+                            session_checkpoint
+                                .acknowledge_recovery(session_identity.current(), run)
+                                .non_fatal();
                         }
                         exit_reason = "the last pane closed";
                         break;
@@ -2682,6 +2673,7 @@ fn init_session(
     shutdown: Shutdown,
     ownership: Arc<yinz_ipc::session_ownership::SessionOwnership>,
     session_identity: envs::SessionState,
+    session_checkpoint: Arc<background_jobs::SessionCheckpointWriter>,
     client_attributes: ClientAttributes,
     config_options: Options,
     layout: Layout,
@@ -2739,7 +2731,6 @@ fn init_session(
 
     let serialization_interval = config_options.serialization_interval;
     let disable_session_metadata = config_options.disable_session_metadata.unwrap_or(false);
-    let session_checkpoint = Arc::new(background_jobs::SessionCheckpointWriter::default());
 
     // Config only exists once a client has connected, long after the pty backend
     // was built, so this is the first point at which we can know. It is safe to

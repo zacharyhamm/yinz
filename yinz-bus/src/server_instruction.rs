@@ -31,6 +31,8 @@ pub enum ServerInstruction {
     RepaintComplete(ClientId),
     UnblockInputThread,
     ClientExit(ClientId, Option<NotificationEnd>),
+    /// Attachment failed; cleanup must not dismiss recovery.
+    ClientAttachFailed(ClientId),
     SignalQuit(ClientId),
     RemoveClient(ClientId),
     Error(String),
@@ -136,7 +138,9 @@ impl From<&ServerInstruction> for ServerContext {
             ServerInstruction::ClipboardUpdate(..) => ServerContext::Render,
             ServerInstruction::DesktopNotification(..) => ServerContext::Render,
             ServerInstruction::RepaintComplete(..) => ServerContext::Render,
-            ServerInstruction::SignalQuit(..) => ServerContext::ClientExit,
+            ServerInstruction::SignalQuit(..) | ServerInstruction::ClientAttachFailed(..) => {
+                ServerContext::ClientExit
+            },
             ServerInstruction::FirstClientConnected(..) => ServerContext::NewClient,
             ServerInstruction::AttachWatcherClient(..) => ServerContext::AttachClient,
             ServerInstruction::ResolveLockedEscape(..) => ServerContext::ChangeMode,

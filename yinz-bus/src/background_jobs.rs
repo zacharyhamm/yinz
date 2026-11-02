@@ -1599,6 +1599,16 @@ impl SessionCheckpointWriter {
         result
     }
 
+    /// Resolve and publish under the rename lock so neither ordering can leave an old folder.
+    pub fn acknowledge_recovery(&self, session_name: SessionName, run: &str) -> Result<()> {
+        let mut name = self
+            .name
+            .lock()
+            .map_err(|_| anyhow!("checkpoint lock poisoned"))?;
+        let name = name.get_or_insert(session_name);
+        yinz_runtime::session_recovery::acknowledge(&self.cache_dir.join(&*name), run)
+    }
+
     pub fn rename(&self, old: &SessionName, new: &SessionName) -> Result<()> {
         let mut name = self
             .name

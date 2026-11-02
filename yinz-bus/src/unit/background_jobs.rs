@@ -355,3 +355,36 @@ fn scan_session_list_keeps_a_full_backlog_live() {
     assert!(resurrectable.is_empty());
     assert!(path.exists());
 }
+
+#[test]
+fn recovery_acknowledgement_follows_checkpoint_rename_in_both_orders() {
+    for rename_first in [false, true] {
+        let root = tempdir().unwrap();
+        let writer = SessionCheckpointWriter {
+            cache_dir: root.path().to_owned(),
+            ..Default::default()
+        };
+        let old = SessionName::new("old");
+        let renamed = SessionName::new("renamed");
+        // No checkpoint yet: the recovery record is the only session data.
+        let run = yinz_runtime::session_recovery::begin(&root.path().join(&old)).unwrap();
+        if rename_first {
+            writer.rename(&old, &renamed).unwrap();
+        }
+        // Deliberately supply a name read before the rename.
+        writer.acknowledge_recovery(old.clone(), &run).unwrap();
+        if !rename_first {
+            writer.rename(&old, &renamed).unwrap();
+        }
+        assert!(!root.path().join(&old).exists());
+        assert_eq!(
+            yinz_runtime::session_recovery::pending(&root.path().join(&renamed)).unwrap(),
+            None
+        );
+        assert!(root
+            .path()
+            .join(&renamed)
+            .join(format!("recovery-ack-{run}"))
+            .exists());
+    }
+}

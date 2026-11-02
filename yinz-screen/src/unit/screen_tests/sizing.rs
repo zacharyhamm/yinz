@@ -1283,7 +1283,7 @@ fn failed_destination_sizing_disconnects_without_replaying_pending_events() {
             receiver
                 .try_iter()
                 .filter(|(instruction, _)| matches!(instruction,
-            ServerInstruction::ClientExit(id, None) if *id == attaching))
+            ServerInstruction::ClientAttachFailed(id) if *id == attaching))
                 .count(),
             1
         );
@@ -1343,7 +1343,7 @@ fn failed_switch_to_the_destination_disconnects_the_attaching_client() {
         receiver
             .try_iter()
             .filter(|(instruction, _)| matches!(instruction,
-            ServerInstruction::ClientExit(id, None) if *id == attaching))
+            ServerInstruction::ClientAttachFailed(id) if *id == attaching))
             .count(),
         1
     );
@@ -2226,7 +2226,7 @@ fn attaching_survives_a_reflow_failure_in_a_tab_it_is_not_joining() {
     assert!(
         !receiver.try_iter().any(|(instruction, _)| matches!(
             instruction,
-            ServerInstruction::ClientExit(id, None) if id == attaching
+            ServerInstruction::ClientAttachFailed(id) if id == attaching
         )),
         "The attaching client's own tab reflowed cleanly"
     );
