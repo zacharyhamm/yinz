@@ -321,11 +321,24 @@ impl Screen {
         let copy_key = !toggle
             && key.as_ref().is_some_and(|key| {
                 self.mode_info.get(&client_id).is_some_and(|mode| {
-                    mode.keybinds
-                        .iter()
-                        .filter(|(input_mode, _)| *input_mode == mode.mode)
-                        .flat_map(|(_, bindings)| bindings)
-                        .any(|(binding, actions)| binding == key && actions.contains(&Action::Copy))
+                    let binding_for_mode = |input_mode| {
+                        mode.keybinds
+                            .iter()
+                            .filter(|(mode, _)| *mode == input_mode)
+                            .flat_map(|(_, bindings)| bindings)
+                            .find(|(binding, _)| binding == key)
+                    };
+                    binding_for_mode(mode.mode)
+                        .or_else(|| {
+                            // Opening the palette forces Locked mode. Keep Normal-mode
+                            // Copy shortcuts available unless Locked explicitly binds the key.
+                            if mode.mode == InputMode::Locked {
+                                binding_for_mode(InputMode::Normal)
+                            } else {
+                                None
+                            }
+                        })
+                        .is_some_and(|(_, actions)| actions.contains(&Action::Copy))
                 })
             });
         if copy_key

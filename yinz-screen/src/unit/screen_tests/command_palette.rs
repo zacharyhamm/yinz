@@ -8,6 +8,12 @@ const CLIENT: ClientId = ClientId::new(1);
 const SIZE: Size = Size { cols: 80, rows: 24 };
 
 fn selection_screen() -> (Screen, Receiver<(PluginInstruction, ErrorContext)>) {
+    selection_screen_with_keybinds(vec![])
+}
+
+fn selection_screen_with_keybinds(
+    keybinds: yinz_types::data::KeybindsVec,
+) -> (Screen, Receiver<(PluginInstruction, ErrorContext)>) {
     let mut screen = create_non_mirrored_screen(SIZE);
     // The synthetic default theme gives selected and ordinary text the same colors.
     screen.style.colors.text_selected.background =
@@ -15,7 +21,12 @@ fn selection_screen() -> (Screen, Receiver<(PluginInstruction, ErrorContext)>) {
     let (sender, receiver) = channels::unbounded();
     screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     new_tab(&mut screen, 1, TabId::new(0));
+    screen.mode_info.entry(CLIENT).or_default().keybinds = keybinds;
+    screen.change_mode(InputMode::Normal, None, CLIENT).unwrap();
     screen.toggle_command_palette(CLIENT);
+    // Apply the mode update sent by the server when the palette opens.
+    screen.change_mode(InputMode::Locked, None, CLIENT).unwrap();
+    assert_eq!(screen.mode_info[&CLIENT].mode, InputMode::Locked);
     screen
         .command_palettes
         .get_mut(&CLIENT)
@@ -58,7 +69,11 @@ fn copied_text(receiver: &Receiver<(PluginInstruction, ErrorContext)>) -> Vec<St
 fn palette_drag_uses_clipboard_setting_and_explicit_copy_including_busy_views() {
     for automatic in [false, true] {
         for busy in [false, true] {
-            let (mut screen, plugins) = selection_screen();
+            let key = KeyWithModifier::new(BareKey::Char('c')).with_ctrl_modifier();
+            let (mut screen, plugins) = selection_screen_with_keybinds(vec![(
+                InputMode::Normal,
+                vec![(key.clone(), vec![Action::Copy])],
+            )]);
             screen.copy_options.copy_on_select = automatic;
             screen
                 .command_palettes
@@ -91,9 +106,6 @@ fn palette_drag_uses_clipboard_setting_and_explicit_copy_including_busy_views() 
                 assert_eq!(copied_text(&plugins), vec!["alpha"]);
             } else {
                 assert!(copied_text(&plugins).is_empty());
-                let key = KeyWithModifier::new(BareKey::Char('c')).with_ctrl_modifier();
-                let mode = screen.mode_info.entry(CLIENT).or_default();
-                mode.keybinds = vec![(mode.mode, vec![(key.clone(), vec![Action::Copy])])];
                 assert!(screen.command_palette_handles_input(&Some(key), &[], false, CLIENT));
                 assert_eq!(copied_text(&plugins), vec!["alpha"]);
             }
@@ -103,6 +115,29 @@ fn palette_drag_uses_clipboard_setting_and_explicit_copy_including_busy_views() 
             screen.handle_mouse_event(MouseEvent::new_left_release_event(start), CLIENT);
             assert!(copied_text(&plugins).is_empty());
         }
+    }
+}
+
+#[test]
+fn palette_copy_respects_explicit_locked_bindings() {
+    for actions in [vec![Action::Copy], vec![Action::NoOp], vec![]] {
+        let key = KeyWithModifier::new(BareKey::Char('c')).with_ctrl_modifier();
+        let should_copy = actions.contains(&Action::Copy);
+        let (mut screen, plugins) = selection_screen_with_keybinds(vec![
+            (InputMode::Normal, vec![(key.clone(), vec![Action::Copy])]),
+            (InputMode::Locked, vec![(key.clone(), actions)]),
+        ]);
+        screen.copy_options.copy_on_select = false;
+        let start = palette_text_position(&screen, CLIENT, "alpha");
+        let end = Position::new(start.line() as i32, (start.column() + 5) as u16);
+        screen.handle_mouse_event(MouseEvent::new_left_press_event(start), CLIENT);
+        screen.handle_mouse_event(MouseEvent::new_left_release_event(end), CLIENT);
+        assert!(copied_text(&plugins).is_empty());
+        assert!(screen.command_palette_handles_input(&Some(key), &[], false, CLIENT));
+        assert_eq!(
+            copied_text(&plugins),
+            if should_copy { vec!["alpha"] } else { vec![] }
+        );
     }
 }
 
