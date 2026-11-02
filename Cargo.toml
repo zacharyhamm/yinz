@@ -2,7 +2,7 @@
 name = "yinz"
 authors = ["Zachary Hamm <hamm.zachary@gmail.com>"]
 description = "An agentic development environment and terminal multiplexer"
-include = ["src/**/*", "assets/layouts/*", "assets/config/*", "assets/skills/**", "LICENSE.md", "README.md", "!**/*_test.*", "!**/tests/**/*"]
+include = ["src/**/*", "assets/layouts/*", "assets/config/*", "assets/skills/**", "LICENSE", "README.md", "!**/*_test.*", "!**/tests/**/*"]
 # See 'workspace.package' for concrete values
 license.workspace = true
 repository.workspace = true
@@ -263,16 +263,11 @@ debug = "line-tables-only"
 
 [package.metadata.deb]
 depends = "$auto"
-license-file = ["LICENSE.md", "4"]
+license-file = ["LICENSE", "4"]
 assets = [
   ["target/release/yinz", "usr/bin/yinz", "755"],
   ["README.md", "usr/share/doc/yinz/README.md", "644"],
 ]
-
-[package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
-bin-dir = "{ bin }{ binary-ext }"
-pkg-fmt = "tgz"
 
 [features]
 default = ["vendored_curl"]
