@@ -86,7 +86,7 @@ fn server_client_contract() {
             test_server_messages();
 
             // Coverage is asserted inside the same thread, and after both halves have run, so it
-            // sees every invocation regardless of the order the test harness picks. The 374
+            // sees every invocation regardless of the order the test harness picks. The
             // invocations below are hand-written values; without this, adding a variant to
             // either enum and forgetting to test it is silent.
             let uncovered = uncovered_variants(Which::Client, ClientToServerMsg::VARIANTS);
@@ -212,6 +212,7 @@ fn a_remote_handoff_without_a_command_arrives_as_no_remote_pane() {
 
 fn test_client_messages() {
     use yinz_types::session_destination::*;
+    test_client_roundtrip!(ClientToServerMsg::RequestRepaint);
     for result in [
         Ok(ClientReply::Pending),
         Ok(ClientReply::Ready),
@@ -4751,6 +4752,13 @@ fn test_client_messages() {
 
 fn test_server_messages() {
     use yinz_types::session_destination::*;
+    test_server_roundtrip!(ServerToClientMsg::RepaintComplete);
+    test_server_roundtrip!(ServerToClientMsg::DesktopNotification {
+        content: "\x1b]99;i=notification:p=body;done\x07".into(),
+    });
+    test_server_roundtrip!(ServerToClientMsg::ClipboardUpdate {
+        content: "\x1b]52;c;Y29weQ==\x07".into(),
+    });
     for request in [
         ClientRequest::Inventory("opening".into()),
         ClientRequest::CancelAll,
@@ -5966,24 +5974,4 @@ fn saved_agent_layout_command_roundtrips() {
     let wire: crate::client_server_contract::client_server_contract::Run = run.clone().into();
     let restored = yinz_types::input::layout::Run::try_from(wire).unwrap();
     assert_eq!(run, restored);
-}
-
-#[test]
-fn screensaver_repaint_signals_roundtrip() {
-    test_client_roundtrip!(ClientToServerMsg::RequestRepaint);
-    test_server_roundtrip!(ServerToClientMsg::RepaintComplete);
-}
-
-#[test]
-fn desktop_notification_roundtrip() {
-    test_server_roundtrip!(ServerToClientMsg::DesktopNotification {
-        content: "\x1b]99;i=notification:p=body;done\x07".into(),
-    });
-}
-
-#[test]
-fn clipboard_update_roundtrip() {
-    test_server_roundtrip!(ServerToClientMsg::ClipboardUpdate {
-        content: "\x1b]52;c;Y29weQ==\x07".into(),
-    });
 }

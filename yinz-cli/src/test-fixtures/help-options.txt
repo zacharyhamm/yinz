@@ -19,6 +19,14 @@ Options:
 
           [possible values: true, false]
 
+      --screensaver <SCREENSAVER>
+          Show the idle screensaver (default: true)
+
+          [possible values: true, false]
+
+      --screensaver-idle-timeout <SCREENSAVER_IDLE_TIMEOUT>
+          Seconds without input before the screensaver starts (default: 60)
+
       --theme <THEME>
           Set the default theme
 
@@ -46,17 +54,17 @@ Options:
       --default-cwd <DEFAULT_CWD>
           Set the default cwd
 
-      --default-layout <DEFAULT_LAYOUT>
-          Set the default layout
-
-      --layout-dir <LAYOUT_DIR>
-          Set the layout_dir, defaults to subdirectory of config dir
-
       --remote <HOST>
           Operate on sessions on this host or SSH config alias through OpenSSH. Without a
           subcommand, start a new session and attach to it. The remote host names the session unless
           --session names it; a name that is already taken there, running or resurrectable, is
           refused. Configure the session on the remote host
+
+      --default-layout <DEFAULT_LAYOUT>
+          Set the default layout
+
+      --layout-dir <LAYOUT_DIR>
+          Set the layout_dir, defaults to subdirectory of config dir
 
       --theme-dir <THEME_DIR>
           Set the theme_dir, defaults to subdirectory of config dir
