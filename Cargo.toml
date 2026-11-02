@@ -251,6 +251,14 @@ lto = true
 strip = true
 codegen-units = 1
 
+# `cargo x install --low-memory`. Whole-program LTO with one codegen unit optimizes every crate as
+# one module in one rustc process, which peaks at several GB and can trip the OOM killer on
+# machines with less memory. Thin LTO keeps cross-crate optimization while splitting that work.
+[profile.release-low-mem]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+
 # `cargo bench` inherits `release` by default, whose `lto = true` + `codegen-units = 1` make
 # every bench build painfully slow for no measurement benefit. Keep the optimizations, drop the
 # whole-program link step, and keep line tables so profilers can attribute samples.

@@ -57,6 +57,9 @@ xflags::xflags! {
             /// Cargo profile to build with (e.g. `dev` for a fast, unoptimized install).
             /// Defaults to `release`.
             optional --profile name: String
+            /// Build with the `release-low-mem` profile: thin LTO instead of whole-program LTO,
+            /// so no single rustc needs several GB. Cannot be combined with `--profile`.
+            optional --low-memory
             /// Extra arguments appended to the native `cargo build` invocation
             /// (e.g. `--no-default-features`, `--features ...`, `--offline`, `--locked`, `-j N`).
             repeated args: OsString
@@ -211,6 +214,7 @@ pub struct Install {
     pub args: Vec<OsString>,
 
     pub profile: Option<String>,
+    pub low_memory: bool,
 }
 
 #[derive(Debug)]

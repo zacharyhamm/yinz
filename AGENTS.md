@@ -56,7 +56,8 @@ binary while tests run, causing tests to execute another checkout's code.
 Build the worktree's own binary before testing.
 
 `cargo x install <destination>` defaults to `release`. `--profile dev` leaves
-the host unoptimized. Builtin Scheme files from
+the host unoptimized. `--low-memory` builds `release-low-mem` (thin LTO), which
+avoids the multi-GB whole-program LTO rustc. Builtin Scheme files from
 `yinz-steel-builtins/assets/plugins/` must be installed in `<data-dir>/plugins/builtins/`.
 `cargo x install <destination> --data-dir <directory>` installs them before the binary.
 Without `--data-dir`, installation uses Yinz's default data directory. Reinstalling

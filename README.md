@@ -101,6 +101,13 @@ cargo x install "$HOME/.local/bin/yinz" --data-dir /path/to/data
 yinz --data-dir /path/to/data
 ```
 
+The release build's final link step can need several GB of memory. On machines
+with less memory, add `--low-memory` to build with thin LTO instead:
+
+```sh
+cargo x install "$HOME/.local/bin/yinz" --low-memory
+```
+
 Reinstalling replaces shipped builtin files, including local edits. It preserves
 unrelated files and user plugins. The sources are installed before the binary.
 Copying only the binary does not produce a complete installation. There is no

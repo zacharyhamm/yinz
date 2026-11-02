@@ -40,12 +40,12 @@ pub fn make(sh: &Shell, flags: flags::Make) -> anyhow::Result<()> {
 
 /// Install the native executable, and its builtin Scheme files.
 pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
-    let profile = flags.profile.as_deref().unwrap_or("release");
+    let profile = install_profile(&flags)?.to_owned();
     build::build(
         sh,
         flags::Build {
             release: false,
-            profile: Some(profile.to_owned()),
+            profile: Some(profile.clone()),
             args: flags.args,
         },
     )?;
@@ -66,13 +66,22 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
         .unwrap_or_else(yinz_runtime::home::get_default_data_dir);
     yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), &data_dir)?;
     let binary = crate::target_dir()
-        .join(build::profile_dir(profile))
+        .join(build::profile_dir(&profile))
         .join("yinz");
     // Rename a fresh inode so macOS does not reuse an outdated cached code signature.
     let staged = destination.with_extension("xtask-install-tmp");
     sh.copy_file(&binary, &staged)
         .context("stage installed binary")?;
     std::fs::rename(staged, destination).context("install native binary")
+}
+
+fn install_profile(flags: &flags::Install) -> anyhow::Result<&str> {
+    match (flags.profile.as_deref(), flags.low_memory) {
+        (Some(_), true) => anyhow::bail!("cannot use both --low-memory and --profile"),
+        (Some(profile), false) => Ok(profile),
+        (None, true) => Ok("release-low-mem"),
+        (None, false) => Ok("release"),
+    }
 }
 
 /// Run yinz debug build.
@@ -118,3 +127,7 @@ fn run_interactive(cmd: xshell::Cmd<'_>) -> anyhow::Result<()> {
     anyhow::ensure!(status.success(), "{description} failed with {status}");
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "unit/pipelines.rs"]
+mod tests;
