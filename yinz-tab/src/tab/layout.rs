@@ -389,6 +389,7 @@ impl Tab {
         self.tiled_panes.resize(display_area);
         self.refresh_overlay_expansion();
         self.set_should_clear_display_before_rendering();
+        self.set_force_render();
         self.senders
             .send_to_pty_writer(PtyWriteInstruction::StartCachingResizes)
             .context("keep pane resizes batched until the screen event ends")?;

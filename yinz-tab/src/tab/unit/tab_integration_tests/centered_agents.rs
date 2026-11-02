@@ -666,6 +666,108 @@ fn centered_agent_split_fullscreen_and_close_preserve_layout() {
 }
 
 #[test]
+fn centered_agent_layout_switch_repaints_surround_with_unchanged_widths() {
+    let size = Size {
+        cols: 600,
+        rows: 24,
+    };
+    let layout_kdl = r#"
+        layout {
+            pane split_direction="vertical" {
+                pane
+                pane { pane; pane; }
+            }
+            swap_tiled_layout name="vertical" {
+                tab {
+                    pane split_direction="vertical" {
+                        pane
+                        pane { pane; pane; }
+                    }
+                }
+            }
+            swap_tiled_layout name="three-columns" {
+                tab max_panes=2 split_direction="vertical" { pane; pane; }
+                tab max_panes=3 split_direction="vertical" { pane; pane; pane; }
+            }
+        }
+    "#;
+    // With two content panes the built-in vertical and three-columns layouts
+    // have the same geometry. Three panes also exercise a change in packing.
+    for pane_count in [2, 3] {
+        let layout_kdl = if pane_count == 2 {
+            layout_kdl.replace("pane { pane; pane; }", "pane")
+        } else {
+            layout_kdl.to_owned()
+        };
+        let layout = yinz_config::kdl::layout::from_kdl(&layout_kdl, None, None, None).unwrap();
+        let mut tab = create_new_tab_with_layout(size, ModeInfo::default(), &layout_kdl);
+        tab.swap_layouts
+            .set_swap_tiled_layouts(layout.swap_tiled_layouts);
+        tab.max_agent_width = 80;
+        for id in tab.get_tiled_pane_ids() {
+            mark_agent(&mut tab, id);
+        }
+        let mut theme = tab.style.colors;
+        theme.pane_surround = Some(PaletteColor::Rgb((1, 2, 3)));
+        tab.update_theme(theme);
+        let mut grid = host_grid(size);
+        let check_frame = |tab: &Tab, grid: &Grid| {
+            let panes: Vec<_> = tab.tiled_panes.get_panes().map(|(_, pane)| pane).collect();
+            let leftmost = panes
+                .iter()
+                .min_by_key(|pane| pane.render_geom().x)
+                .unwrap();
+            for pane in &panes {
+                assert_eq!(pane.get_content_columns(), 80);
+            }
+            // Packing moves panes across their original slots, so check all cells
+            // outside the displayed panes, including the right-hand gutter.
+            for y in 0..size.rows {
+                for x in 0..size.cols {
+                    if panes.iter().any(|pane| {
+                        let geom = pane.render_geom();
+                        x >= geom.x
+                            && x < geom.x + geom.cols.as_usize()
+                            && y >= geom.y
+                            && y < geom.y + geom.rows.as_usize()
+                    }) {
+                        continue;
+                    }
+                    let cell = grid.get_character_at(x, y).unwrap();
+                    assert_eq!(cell.character, ' ', "margin at {x},{y}");
+                    assert_eq!(
+                        cell.styles.background,
+                        Some(AnsiCode::RgbCode((1, 2, 3))),
+                        "margin at {x},{y} in {:?}",
+                        tab.swap_layout_info()
+                    );
+                }
+            }
+            assert_surround(tab, leftmost.pid(), grid);
+        };
+        render_into(&mut tab, &mut grid);
+        assert_eq!(tab.swap_layout_info(), (Some("vertical".into()), false));
+        check_frame(&tab, &grid);
+        // Keep the width limit and agent identities unchanged throughout. Neither
+        // width updates nor new PTY output should be needed to restore the gutters.
+        for backwards in [false, true] {
+            for expected in ["three-columns", "vertical", "three-columns", "vertical"] {
+                if backwards {
+                    tab.previous_swap_layout().unwrap();
+                } else {
+                    tab.next_swap_layout().unwrap();
+                }
+                assert_eq!(tab.swap_layout_info(), (Some(expected.into()), false));
+                render_into(&mut tab, &mut grid);
+                check_frame(&tab, &grid);
+                render_into(&mut tab, &mut grid);
+                check_frame(&tab, &grid);
+            }
+        }
+    }
+}
+
+#[test]
 fn pane_surround_fullscreen_in_each_layer_and_frame_style() {
     let size = Size {
         cols: 241,
