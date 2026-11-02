@@ -81,7 +81,9 @@ pub(crate) enum ClientInstruction {
     DesktopNotification(String),
     UnblockInputThread,
     Exit(ExitReason),
-    Connected,
+    Connected {
+        signal_quit: bool,
+    },
     Log(Vec<String>),
     LogError(Vec<String>),
     SwitchSession(SessionConnection),
@@ -111,7 +113,9 @@ impl From<ServerToClientMsg> for ClientInstruction {
             ServerToClientMsg::Exit { exit_reason } => ClientInstruction::Exit(exit_reason),
             ServerToClientMsg::Render { content } => ClientInstruction::Render(content),
             ServerToClientMsg::UnblockInputThread => ClientInstruction::UnblockInputThread,
-            ServerToClientMsg::Connected { .. } => ClientInstruction::Connected,
+            ServerToClientMsg::Connected { signal_quit, .. } => {
+                ClientInstruction::Connected { signal_quit }
+            },
             ServerToClientMsg::Log { lines } => ClientInstruction::Log(lines),
             ServerToClientMsg::LogError { lines } => ClientInstruction::LogError(lines),
             ServerToClientMsg::SessionRequest(request) => {
@@ -172,7 +176,7 @@ impl From<&ClientInstruction> for ClientContext {
             ClientInstruction::DesktopNotification(_) => ClientContext::Render,
             ClientInstruction::Render(_) => ClientContext::Render,
             ClientInstruction::UnblockInputThread => ClientContext::UnblockInputThread,
-            ClientInstruction::Connected => ClientContext::Connected,
+            ClientInstruction::Connected { .. } => ClientContext::Connected,
             ClientInstruction::Log(_) => ClientContext::Log,
             ClientInstruction::LogError(_) => ClientContext::LogError,
             ClientInstruction::SwitchSession(..) | ClientInstruction::SessionRequest(..) => {
@@ -785,6 +789,8 @@ fn run_client(
         });
     }
 
+    // Scoped to this attachment, shared only with its signal listener and event loop.
+    let signal_quit_supported = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let on_force_close = config_options.on_force_close.unwrap_or_default();
     let stdin_ansi_parser = Arc::new(Mutex::new(StdinAnsiParser::new()));
 
@@ -809,6 +815,7 @@ fn run_client(
             }),
             Box::new({
                 let os_api = os_input.clone();
+                let signal_quit_supported = signal_quit_supported.clone();
                 move || {
                     if let Some(control) = os_api.remote_recovery()
                         && !control.stamp().1
@@ -818,6 +825,14 @@ fn run_client(
                     }
                     // A paused terminal must not keep the client from quitting.
                     crate::terminal_escapes::abandon_stalled_output();
+                    if matches!(
+                        on_force_close,
+                        yinz_types::input::options::OnForceClose::Quit
+                    ) && signal_quit_supported.load(Ordering::Acquire)
+                    {
+                        os_api.send_to_server(ClientToServerMsg::SignalQuit);
+                        return;
+                    }
                     os_api.send_to_server(ClientToServerMsg::Action {
                         action: on_force_close.into(),
                         terminal_id: None,
@@ -991,6 +1006,7 @@ fn run_client(
             .push(router_thread.take().expect("initial router"));
     }
     let mut outcome = crate::client_loop::ClientLoop {
+        signal_quit_supported,
         sessions: &mut sessions,
         recovery: &mut recovery,
         send_client_instructions: Some(&send_client_instructions),

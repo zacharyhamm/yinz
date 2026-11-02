@@ -242,6 +242,7 @@ fn run_with_saver(
     let nested = NestedReannounce::spawn(Box::new(FakeClientOsApi::new()), "splash-test".into());
     nested.stop();
     ClientLoop {
+        signal_quit_supported: Default::default(),
         recovery: &mut None,
         send_client_instructions: None,
         sessions: &mut crate::session_switch::Sessions::new(

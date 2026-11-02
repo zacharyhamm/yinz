@@ -22,6 +22,7 @@ fn fake_ssh_command(session: &Session, names: &[&str]) -> Command {
         r#"printf '%s\n' "$@" >> "$YINZ_TEST_SSH_ARGS"
 for command do :; done
 case "$command" in
+    *--recovery*) printf '%s\n' '[]' ;;
     *remote-sessions*) printf '%s\n' "$YINZ_TEST_SESSIONS" ;;
     *) echo 'selected-session-bootstrap' >&2; exit 1 ;;
 esac"#,
@@ -255,7 +256,7 @@ fn remote_attach_offers_a_new_session_when_the_host_has_none() {
         });
         waiter.join().unwrap();
         let args = fs::read_to_string(session.0.path().join("ssh-args")).unwrap();
-        assert_eq!(args.matches("remote-sessions").count(), 1, "{args}");
+        assert_eq!(args.matches("remote-sessions").count(), 2, "{args}");
         let bootstrap = args.lines().find(|line| line.contains("'remote-session'"));
         if answer == b"y" {
             let bootstrap = bootstrap.unwrap();
@@ -456,6 +457,7 @@ fn local_resurrection_preserves_terminal_settings_geometry_pane_limit_and_debug(
                     .send_server_msg(ServerToClientMsg::Connected {
                         warp_companions: false,
                         warp_held_terminals: false,
+                        signal_quit: false,
                     })
                     .unwrap();
             },
@@ -717,6 +719,7 @@ fn interrupted_startup(stage: &str, signal: Signal) {
                 .send_server_msg(ServerToClientMsg::Connected {
                     warp_companions: false,
                     warp_held_terminals: false,
+                    signal_quit: false,
                 })
                 .unwrap();
             if before_guard {
@@ -749,6 +752,7 @@ fn interrupted_startup(stage: &str, signal: Signal) {
                         .send_server_msg(ServerToClientMsg::Connected {
                             warp_companions: false,
                             warp_held_terminals: false,
+                            signal_quit: false,
                         })
                         .unwrap();
                 } else {
@@ -1309,3 +1313,115 @@ while True:
     client, _ = listener.accept()
     threading.Thread(target=relay, args=(client,), daemon=True).start()
 "#;
+
+#[test]
+fn remote_recovery_requests_prioritize_cancellation_over_ssh_results() {
+    use std::io::Write;
+
+    for dismiss in [false, true] {
+        for (cancel, ssh_status) in [(true, 0), (true, 1), (false, 1)] {
+            let session = Session::new();
+            let root = session.0.path();
+            yinz_test_support::write_warm_script(
+                &root.join("ssh"),
+                r#"
+for command do :; done
+case "$command" in
+    *--dismiss-recovery*) ;;
+    *--recovery*)
+        if [ "$YINZ_TEST_DISMISS" = true ]; then
+            printf '%s\n' '[{"name":"interrupted-session","run":"00000000-0000-4000-8000-000000000001","age":{"secs":1,"nanos":0}}]'
+            exit 0
+        fi ;;
+    *) echo 'unexpected SSH request' >&2; exit 2 ;;
+esac
+printf '%s\n' "$command" > "$YINZ_TEST_REQUEST"
+if [ "$YINZ_TEST_CANCEL" = true ]; then kill -TERM "$PPID"; fi
+printf '%s\n' '[]'
+echo 'recovery SSH failure fixture' >&2
+exit "$YINZ_TEST_STATUS"
+"#,
+            );
+            let mut path = vec![root.to_path_buf()];
+            path.extend(std::env::split_paths(
+                &std::env::var_os("PATH").unwrap_or_default(),
+            ));
+            let pty = nix::pty::openpty(
+                Some(&nix::pty::Winsize {
+                    ws_row: 24,
+                    ws_col: 100,
+                    ws_xpixel: 0,
+                    ws_ypixel: 0,
+                }),
+                None,
+            )
+            .unwrap();
+            let slave = fs::File::from(pty.slave);
+            let mut master = fs::File::from(pty.master);
+            let mut reader = master.try_clone().unwrap();
+            let screen = Watched::new(Vec::new());
+            let captured = screen.clone();
+            let capture = std::thread::spawn(move || {
+                let mut buffer = [0; 4096];
+                while let Ok(count) = reader.read(&mut buffer) {
+                    if count == 0 {
+                        break;
+                    }
+                    captured.lock().extend_from_slice(&buffer[..count]);
+                }
+            });
+            let child = session
+                .command()
+                .env("PATH", std::env::join_paths(path).unwrap())
+                .env("YINZ_TEST_DISMISS", dismiss.to_string())
+                .env("YINZ_TEST_CANCEL", cancel.to_string())
+                .env("YINZ_TEST_STATUS", ssh_status.to_string())
+                .env("YINZ_TEST_REQUEST", root.join("request"))
+                .args(["--remote", "example"])
+                .stdin(slave.try_clone().unwrap())
+                .stdout(slave.try_clone().unwrap())
+                .stderr(slave.try_clone().unwrap())
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            let output = Watched::new(None);
+            let completed = output.clone();
+            let waiter = std::thread::spawn(move || {
+                *completed.lock() = Some(child.wait_with_output().unwrap());
+            });
+            if dismiss {
+                screen.wait_until("recovery choices", default_timeout(), |bytes| {
+                    String::from_utf8_lossy(bytes)
+                        .contains("Start fresh")
+                        .then_some(())
+                });
+                master.write_all(b"Start fresh\r").unwrap();
+            }
+            output.wait_until("recovery request exit", default_timeout(), |output| {
+                output.as_ref().map(|output| {
+                    assert_eq!(
+                        output.status.code(),
+                        Some(if cancel { 130 } else { 1 }),
+                        "dismiss={dismiss} cancel={cancel} ssh_status={ssh_status}: {}",
+                        String::from_utf8_lossy(&screen.get())
+                    );
+                })
+            });
+            waiter.join().unwrap();
+            assert_eq!(
+                fs::read_to_string(root.join("request"))
+                    .unwrap()
+                    .contains("--dismiss-recovery"),
+                dismiss
+            );
+            drop(slave);
+            drop(master);
+            capture.join().unwrap();
+            if !cancel {
+                assert!(
+                    String::from_utf8_lossy(&screen.get()).contains("recovery SSH failure fixture")
+                );
+            }
+        }
+    }
+}

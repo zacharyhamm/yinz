@@ -576,3 +576,48 @@ pub(crate) fn attachment_rejected(reason: yinz_ipc::ipc::ExitReason) -> anyhow::
     }
     .into()
 }
+
+/// Query or acknowledge remote recovery offers through the versioned SSH endpoint.
+pub fn recovery_request(
+    host: &str,
+    cancelled: &AtomicBool,
+    env: &EnvironmentVariables,
+    dismiss: Option<&str>,
+) -> Result<Vec<yinz_runtime::session_recovery::Candidate>> {
+    let contract = CLIENT_SERVER_CONTRACT_VERSION.to_string();
+    let bootstrap = REMOTE_BOOTSTRAP_VERSION.to_string();
+    let mut args = vec![
+        "yinz",
+        "remote-sessions",
+        "--client-version",
+        VERSION,
+        "--contract-version",
+        &contract,
+        "--bootstrap-version",
+        &bootstrap,
+        "--recovery",
+    ];
+    if let Some(dismiss) = dismiss {
+        args.extend(["--dismiss-recovery", dismiss]);
+    }
+    let output = ssh::bootstrap_output(
+        &mut ssh_command(host, &args, env).context("build recovery request")?,
+        Duration::from_secs(10),
+        Some(cancelled),
+    )
+    .context("request remote recovery")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "Remote recovery failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if dismiss.is_some() {
+        return Ok(Vec::new());
+    }
+    let candidates: Vec<yinz_runtime::session_recovery::Candidate> =
+        serde_json::from_slice(&output.stdout).context("decode remote recovery candidates")?;
+    for candidate in &candidates {
+        validate_name(&candidate.name)?;
+    }
+    Ok(candidates)
+}

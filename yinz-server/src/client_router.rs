@@ -363,6 +363,7 @@ pub(crate) fn route_thread_main(
                         .is_watcher(&client_id);
                     if is_watcher {
                         let should_exit = match &instruction {
+                            ClientToServerMsg::SignalQuit => true,
                             ClientToServerMsg::Key { key, .. } => {
                                 (key.bare_key == BareKey::Char('q')
                                     && key.key_modifiers.contains(&KeyModifier::Ctrl))
@@ -886,6 +887,9 @@ pub(crate) fn route_thread_main(
                             to_server
                                 .send(attach_watcher_instruction)
                                 .with_context(err_context)?;
+                        },
+                        ClientToServerMsg::SignalQuit => {
+                            to_server.send(ServerInstruction::SignalQuit(client_id)).with_context(err_context)?;
                         },
                         ClientToServerMsg::ClientExited => return Ok(true),
                         ClientToServerMsg::KillSessionWithCompletion { report_progress } => {

@@ -654,7 +654,10 @@ fn check_query_cleanup(error: ErrorKind, reconnect: bool, quit: bool) {
     use yinz_test_support::default_timeout;
     use yinz_types::input::{actions::Action, options::OnForceClose};
 
-    for force_close in [OnForceClose::Detach, OnForceClose::Quit] {
+    for (force_close, supported) in [OnForceClose::Detach, OnForceClose::Quit]
+        .into_iter()
+        .flat_map(|action| [false, true].map(|supported| (action, supported)))
+    {
         let (signals, rx) = yinz_runtime::channels::bounded(2);
         let os = FakeClientOsApi::new()
             .capturing_stdout()
@@ -683,10 +686,32 @@ fn check_query_cleanup(error: ErrorKind, reconnect: bool, quit: bool) {
                     .then_some(())
             });
         if quit {
+            // A render after Connected proves that the event loop consumed the capability.
+            // No Connected at all models older servers' attachment behavior.
+            if supported {
+                os.queue_from_server(ServerToClientMsg::Connected {
+                    warp_companions: false,
+                    warp_held_terminals: false,
+                    signal_quit: true,
+                });
+            }
+            os.queue_from_server(ServerToClientMsg::Render {
+                content: "capability received".into(),
+            });
+            os.stdout_attempts
+                .wait_until("attachment render", default_timeout(), |writes| {
+                    writes
+                        .iter()
+                        .any(|bytes| bytes == b"capability received")
+                        .then_some(())
+                });
             signals.send(SignalEvent::Quit).unwrap();
             let expected: Action = force_close.into();
             os.sent_to_server.wait_until("force-close action", default_timeout(), |messages| {
-                messages.iter().any(|msg| matches!(msg, ClientToServerMsg::Action { action, .. } if action == &expected)).then_some(())
+                messages.iter().any(|msg| match expected {
+                    Action::Quit if supported => matches!(msg, ClientToServerMsg::SignalQuit),
+                    _ => matches!(msg, ClientToServerMsg::Action { action, .. } if action == &expected),
+                }).then_some(())
             });
         }
         if reconnect {

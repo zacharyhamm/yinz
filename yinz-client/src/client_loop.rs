@@ -39,6 +39,7 @@ pub struct ClientOutcome {
 }
 
 pub(crate) struct ClientLoop<'a, 'config> {
+    pub signal_quit_supported: Arc<std::sync::atomic::AtomicBool>,
     pub recovery: &'a mut Option<crate::remote_recovery::Recovery>,
     pub send_client_instructions: Option<&'a SenderWithContext<ClientInstruction>>,
     pub sessions: &'a mut crate::session_switch::Sessions<'config>,
@@ -297,6 +298,8 @@ impl ClientLoop<'_, '_> {
             if let Some(mut prepared) =
                 recovery.poll(self.os_input, self.sessions.name(), Instant::now())?
             {
+                self.signal_quit_supported
+                    .store(false, std::sync::atomic::Ordering::Release);
                 recovery.install(self.os_input, &mut prepared)?;
                 // The router owns a shared budget clone, supplied by the startup path.
                 let router = crate::router::spawn_with_initial(
@@ -497,8 +500,11 @@ impl ClientLoop<'_, '_> {
             ClientInstruction::RenamedSession(name) => {
                 self.sessions.rename(name.into_string());
             },
-            ClientInstruction::Connected
-            | ClientInstruction::UnblockCliPipeInput(..)
+            ClientInstruction::Connected { signal_quit } => {
+                self.signal_quit_supported
+                    .store(signal_quit, std::sync::atomic::Ordering::Release);
+            },
+            ClientInstruction::UnblockCliPipeInput(..)
             | ClientInstruction::CliPipeOutput(..)
             | ClientInstruction::ConfigFileUpdated => {},
         }

@@ -520,6 +520,7 @@ fn force_delete_waits_for_completion_and_preserves_checkpoint_on_failure() {
                         .send_server_msg(ServerToClientMsg::Connected {
                             warp_companions: false,
                             warp_held_terminals: false,
+                            signal_quit: false,
                         })
                         .unwrap();
                 },
@@ -1144,4 +1145,187 @@ fn live_kill_session_confirms_a_sweep_longer_than_ten_seconds() {
             // A live kill succeeds only on completion; fallback orphan cleanup cannot return success.
             assert!(std::os::unix::net::UnixStream::connect(session.socket()).is_err());
         });
+}
+
+impl Session {
+    fn recovery_request(
+        &self,
+        dismiss: Option<&str>,
+    ) -> Vec<yinz_runtime::session_recovery::Candidate> {
+        let mut command = self.command();
+        command.args([
+            "remote-sessions",
+            "--recovery",
+            "--client-version",
+            yinz_runtime::consts::VERSION,
+            "--contract-version",
+            &yinz_runtime::consts::CLIENT_SERVER_CONTRACT_VERSION.to_string(),
+            "--bootstrap-version",
+            &yinz_runtime::consts::REMOTE_BOOTSTRAP_VERSION.to_string(),
+        ]);
+        if let Some(dismiss) = dismiss {
+            command.args(["--dismiss-recovery", dismiss]);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if dismiss.is_some() {
+            Vec::new()
+        } else {
+            serde_json::from_slice(&output.stdout).unwrap()
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn interrupted_session_recovery_survives_signals_and_remote_dismissal() {
+    use nix::{
+        sys::signal::{kill, Signal},
+        unistd::Pid,
+    };
+    for signal in [Signal::SIGTERM, Signal::SIGKILL] {
+        let session = Session::new();
+        session.remote_layout();
+        session.remote_endpoint(true);
+        session.wait_for_panes(false);
+        session.success(&["--session", NAME, "action", "save-session"]);
+        assert!(
+            session.recovery_request(None).is_empty(),
+            "live sessions are excluded"
+        );
+        kill(Pid::from_raw(server_pid(&session).unwrap()), signal).unwrap();
+        let observed = yinz_test_support::Watched::new(Vec::new());
+        std::thread::scope(|scope| {
+            let observed = &observed;
+            let session = &session;
+            scope.spawn(move || {
+                let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                while std::time::Instant::now() < deadline {
+                    let candidates = session.recovery_request(None);
+                    let ready = !candidates.is_empty();
+                    *observed.lock() = candidates;
+                    if ready {
+                        return;
+                    }
+                }
+            });
+            observed.wait_until(
+                "interrupted session recovery",
+                Duration::from_secs(30),
+                |c| (!c.is_empty()).then_some(()),
+            );
+        });
+        let candidates = session.recovery_request(None);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].name, NAME);
+        session.recovery_request(Some(&serde_json::to_string(&candidates).unwrap()));
+        assert!(session.recovery_request(None).is_empty());
+        assert!(SessionCheckpoint::read(&session.folder())
+            .unwrap()
+            .layout_path()
+            .exists());
+        session.remote_endpoint(true);
+        session.wait_for_panes(false);
+        session.success(&["kill-session", NAME]);
+        assert!(
+            session.recovery_request(None).is_empty(),
+            "intentional kill is excluded"
+        );
+    }
+}
+
+#[test]
+fn watcher_signal_quit_preserves_the_live_session_and_recovery_state() {
+    use interprocess::local_socket::traits::Stream;
+    let session = Session::new();
+    session.remote_layout();
+    session.remote_endpoint(true);
+    session.wait_for_panes(false);
+    // Watchers mirror an attached client's screen; keep one attached throughout.
+    let active_stream = yinz_ipc::consts::ipc_connect(&session.socket()).unwrap();
+    active_stream
+        .set_recv_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let mut active = IpcSenderWithContext::<ClientToServerMsg>::new(active_stream);
+    let mut active_receiver = active.get_receiver::<ServerToClientMsg>().unwrap();
+    active
+        .send_client_msg(ClientToServerMsg::AttachClient {
+            cli_assets: yinz_types::input::cli_assets::CliAssets {
+                config_file_path: Some(session.0.path().join("config.kdl")),
+                terminal_window_size: yinz_types::pane_size::Size { rows: 24, cols: 80 },
+                ..Default::default()
+            },
+            tab_number_to_focus: None,
+            pane_to_focus: None,
+        })
+        .unwrap();
+    loop {
+        match active_receiver.recv_server_msg() {
+            IpcRecv::Msg(ServerToClientMsg::Render { content }, _)
+                if content.contains("Pane #1") =>
+            {
+                break
+            },
+            IpcRecv::Msg(ServerToClientMsg::Exit { exit_reason }, _) => {
+                panic!("active client rejected: {exit_reason}")
+            },
+            IpcRecv::Msg(_, _) => {},
+            _ => panic!("active client did not render the pane"),
+        }
+    }
+    let stream = yinz_ipc::consts::ipc_connect(&session.socket()).unwrap();
+    stream
+        .set_recv_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(stream);
+    let mut receiver = sender.get_receiver::<ServerToClientMsg>().unwrap();
+    sender
+        .send_client_msg(ClientToServerMsg::AttachWatcherClient {
+            terminal_size: yinz_types::pane_size::Size { rows: 24, cols: 80 },
+        })
+        .unwrap();
+    let mut signal_quit = false;
+    // Broadcasts may precede Connected. Rendering proves watcher registration finished.
+    loop {
+        match receiver.recv_server_msg() {
+            IpcRecv::Msg(
+                ServerToClientMsg::Connected {
+                    signal_quit: supported,
+                    ..
+                },
+                _,
+            ) => signal_quit = supported,
+            IpcRecv::Msg(ServerToClientMsg::Render { content }, _)
+                if content.contains("Pane #1") =>
+            {
+                break
+            },
+            IpcRecv::Msg(ServerToClientMsg::Exit { exit_reason }, _) => {
+                panic!("watcher attachment rejected: {exit_reason}")
+            },
+            IpcRecv::Msg(_, _) => {},
+            _ => panic!("watcher attachment ended before rendering"),
+        }
+    }
+    assert!(signal_quit, "watcher attachment must advertise signal quit");
+    sender
+        .send_client_msg(ClientToServerMsg::SignalQuit)
+        .unwrap();
+    loop {
+        match receiver.recv_server_msg() {
+            IpcRecv::Msg(ServerToClientMsg::Exit { exit_reason }, _) => {
+                assert_eq!(exit_reason, ExitReason::Normal);
+                break;
+            },
+            IpcRecv::Msg(_, _) => {},
+            _ => panic!("watcher disconnected without a normal exit"),
+        }
+    }
+    session.wait_for_panes(false);
+    assert!(session.recovery_request(None).is_empty());
+    session.success(&["kill-session", NAME]);
 }

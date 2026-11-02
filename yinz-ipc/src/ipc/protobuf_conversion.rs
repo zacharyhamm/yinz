@@ -198,6 +198,9 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
                 raw_bytes: raw_bytes.into_iter().map(|b| b as u32).collect(),
                 is_kitty_keyboard_protocol,
             }),
+            ClientToServerMsg::SignalQuit => {
+                client_to_server_msg::Message::SignalQuit(ClientExitedMsg {})
+            },
             ClientToServerMsg::ClientExited => {
                 client_to_server_msg::Message::ClientExited(ClientExitedMsg {})
             },
@@ -435,6 +438,7 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                 raw_bytes: key.raw_bytes.into_iter().map(|b| b as u8).collect(),
                 is_kitty_keyboard_protocol: key.is_kitty_keyboard_protocol,
             }),
+            Some(client_to_server_msg::Message::SignalQuit(_)) => Ok(ClientToServerMsg::SignalQuit),
             Some(client_to_server_msg::Message::ClientExited(_)) => {
                 Ok(ClientToServerMsg::ClientExited)
             },
@@ -606,9 +610,11 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
             ServerToClientMsg::Connected {
                 warp_companions,
                 warp_held_terminals,
+                signal_quit,
             } => server_to_client_msg::Message::Connected(ConnectedMsg {
                 warp_companions,
                 warp_held_terminals,
+                signal_quit,
             }),
             ServerToClientMsg::Log { lines } => {
                 server_to_client_msg::Message::Log(LogMsg { lines })
@@ -776,6 +782,7 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
                 Ok(ServerToClientMsg::Connected {
                     warp_companions: msg.warp_companions,
                     warp_held_terminals: msg.warp_held_terminals,
+                    signal_quit: msg.signal_quit,
                 })
             },
             Some(server_to_client_msg::Message::Log(log)) => {

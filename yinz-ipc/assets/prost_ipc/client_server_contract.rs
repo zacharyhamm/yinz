@@ -3759,7 +3759,7 @@ impl ThemeHue {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientToServerMsg {
-    #[prost(oneof="client_to_server_msg::Message", tags="38, 37, 33, 34, 36, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 35, 11, 12, 32, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29, 30, 31")]
+    #[prost(oneof="client_to_server_msg::Message", tags="38, 37, 33, 34, 36, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 35, 11, 39, 12, 32, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29, 30, 31")]
     pub message: ::core::option::Option<client_to_server_msg::Message>,
 }
 /// Nested message and enum types in `ClientToServerMsg`.
@@ -3801,6 +3801,8 @@ pub mod client_to_server_msg {
         Paste(::prost::alloc::string::String),
         #[prost(message, tag="11")]
         ClientExited(super::ClientExitedMsg),
+        #[prost(message, tag="39")]
+        SignalQuit(super::ClientExitedMsg),
         #[prost(message, tag="12")]
         KillSession(super::KillSessionMsg),
         #[prost(message, tag="32")]
@@ -4176,9 +4178,10 @@ pub struct ExitMsg {
 pub struct ConnectedMsg {
     #[prost(bool, tag="1")]
     pub warp_companions: bool,
-    /// Empty message
     #[prost(bool, tag="2")]
     pub warp_held_terminals: bool,
+    #[prost(bool, tag="3")]
+    pub signal_quit: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

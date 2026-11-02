@@ -882,3 +882,63 @@ fn startup_retries_without_client_traffic_and_preserves_fifo_after_timeout() {
         );
     }
 }
+
+#[test]
+fn watcher_signal_quit_exits_normally_without_terminating_the_session() {
+    use interprocess::local_socket::traits::Listener;
+    use yinz_ipc::ipc::IpcSenderWithContext;
+
+    let (session, threads) = paused_session();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("watcher.sock");
+    let listener = yinz_ipc::consts::ipc_bind(&path).unwrap();
+    let client = yinz_ipc::consts::ipc_connect(&path).unwrap();
+    let server = listener.accept().unwrap();
+    let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(client);
+    sender
+        .send_client_msg(ClientToServerMsg::SignalQuit)
+        .unwrap();
+    // Bound a broken implementation: ignoring SignalQuit must not hang this test.
+    sender
+        .send_client_msg(ClientToServerMsg::ClientExited)
+        .unwrap();
+    drop(sender);
+    let mut state = SessionState::new();
+    let watcher = state.new_client().unwrap();
+    state.convert_client_to_watcher(watcher);
+    let interactive = state.new_client().unwrap();
+    state.interactive_clients.insert(interactive);
+    let state = Arc::new(RwLock::new(state));
+    let os = CapturingOs::default();
+    route_thread_main(
+        Arc::new(RwLock::new(Some(session))),
+        state.clone(),
+        Box::new(os.clone()),
+        threads.to_server.clone(),
+        IpcReceiverWithContext::new(server),
+        watcher,
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    assert_eq!(
+        os.server_to_client_messages.get().get(&watcher),
+        Some(&vec![ServerToClientMsg::Exit {
+            exit_reason: ExitReason::Normal
+        }])
+    );
+    let instructions: Vec<_> = threads
+        .server_receiver
+        .try_iter()
+        .map(|(instruction, _)| instruction)
+        .collect();
+    assert!(
+        matches!(instructions.as_slice(), [ServerInstruction::RemoveClient(id)] if *id == watcher),
+        "{instructions:?}"
+    );
+    assert!(threads.screen_receiver.try_iter().any(|(instruction, _)| matches!(instruction, ScreenInstruction::RemoveWatcherClient(id) if id == watcher)));
+    assert!(state
+        .read()
+        .unwrap()
+        .interactive_client_ids()
+        .contains(&interactive));
+}

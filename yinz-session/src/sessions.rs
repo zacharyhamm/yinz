@@ -778,3 +778,48 @@ const NOUNS: &[&str] = &[
 #[cfg(all(test, unix))]
 #[path = "unit/sessions_tests.rs"]
 mod tests;
+
+/// Interrupted sessions that can safely be offered for resurrection.
+pub fn recovery_candidates() -> anyhow::Result<Vec<yinz_runtime::session_recovery::Candidate>> {
+    let mut candidates = Vec::new();
+    for (name, age) in get_resurrectable_sessions() {
+        if !matches!(
+            session_status(&name),
+            Ok(yinz_ipc::probe::SessionProbe::Absent)
+        ) {
+            continue;
+        }
+        let directory = session_info_folder_for_session(&name);
+        if let Some(run) = yinz_runtime::session_recovery::pending(&directory)?
+            && resurrection_layout(&name).is_ok_and(|layout| layout.is_some())
+        {
+            candidates.push(yinz_runtime::session_recovery::Candidate {
+                name: name.to_string(),
+                run,
+                age,
+            });
+        }
+    }
+    candidates.sort_by(|a, b| a.age.cmp(&b.age).then_with(|| a.name.cmp(&b.name)));
+    Ok(candidates)
+}
+
+pub fn dismiss_recovery(
+    candidates: &[yinz_runtime::session_recovery::Candidate],
+) -> anyhow::Result<()> {
+    for candidate in candidates {
+        let name = SessionName::new(candidate.name.clone());
+        if name.as_str().is_empty()
+            || name.as_str().contains('/')
+            || name.as_str() == "."
+            || name.as_str() == ".."
+        {
+            anyhow::bail!("invalid recovery session name");
+        }
+        yinz_runtime::session_recovery::acknowledge(
+            &session_info_folder_for_session(&name),
+            &candidate.run,
+        )?;
+    }
+    Ok(())
+}

@@ -439,6 +439,10 @@ pub enum Command {
     #[clap(hide = true)]
     RemoteSessions {
         #[clap(long)]
+        recovery: bool,
+        #[clap(long)]
+        dismiss_recovery: Option<String>,
+        #[clap(long)]
         client_version: String,
         #[clap(long)]
         contract_version: usize,

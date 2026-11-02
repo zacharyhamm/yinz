@@ -489,13 +489,15 @@ fn prepare(opts: &CliArgs, host: &str, name: Option<&str>) -> Result<StartupCanc
 pub(crate) fn start(opts: &CliArgs, host: &str) -> Result<i32> {
     let cancellation = prepare(opts, host, opts.session.as_deref())?;
     let local = load_local_config(opts)?;
-    run(
-        opts,
-        host,
-        Target::New(opts.session.clone()),
-        &cancellation,
-        local,
-    )
+    let target = if opts.session.is_none() {
+        let Some(target) = recovery_target(host, &cancellation, &local.0.env, false)? else {
+            return Ok(0);
+        };
+        target
+    } else {
+        Target::New(opts.session.clone())
+    };
+    run(opts, host, target, &cancellation, local)
 }
 
 pub(crate) fn attach(opts: &CliArgs, host: &str, name: Option<&str>, create: bool) -> Result<i32> {
@@ -521,16 +523,11 @@ pub(crate) fn attach(opts: &CliArgs, host: &str, name: Option<&str>, create: boo
                 Some(Outcome::Interrupted) => return Ok(yinz_client::INTERRUPTED_EXIT_STATUS),
                 Some(_) => bail!("remote session picker returned no remote destination"),
                 None => {
-                    let answer = confirm_new_session(host);
-                    // A signal can end the question with an error as well as an answer.
-                    if cancellation.is_cancelled() {
-                        return Ok(yinz_client::INTERRUPTED_EXIT_STATUS);
-                    }
-                    match answer? {
-                        Some(true) => Target::New(None),
-                        Some(false) => return Ok(0),
-                        None => return Ok(yinz_client::INTERRUPTED_EXIT_STATUS),
-                    }
+                    let Some(target) = recovery_target(host, &cancellation, &local.0.env, true)?
+                    else {
+                        return Ok(0);
+                    };
+                    target
                 },
             }
         },
@@ -623,8 +620,29 @@ struct SessionList {
     sessions: Vec<(SessionName, Duration, yinz_cli::sessions::SessionListing)>,
 }
 
-pub(crate) fn list(client_version: &str, contract: usize, bootstrap: usize) -> Result<()> {
+pub(crate) fn list(
+    client_version: &str,
+    contract: usize,
+    bootstrap: usize,
+    recovery: bool,
+    dismiss: Option<&str>,
+) -> Result<()> {
     check_versions(client_version, contract, bootstrap)?;
+    if let Some(dismiss) = dismiss {
+        let candidates =
+            serde_json::from_str::<Vec<yinz_runtime::session_recovery::Candidate>>(dismiss)
+                .context("decode recovery dismissal")?;
+        yinz_session::sessions::dismiss_recovery(&candidates)?;
+        return Ok(());
+    }
+    if recovery {
+        println!(
+            "{}",
+            serde_json::to_string(&yinz_session::sessions::recovery_candidates()?)
+                .context("encode recovery candidates")?
+        );
+        return Ok(());
+    }
     let mut sessions = yinz_cli::sessions::collect_sessions(false)
         .map_err(std::io::Error::from)
         .context("collect remote sessions")?;
@@ -640,4 +658,53 @@ pub(crate) fn list(client_version: &str, contract: usize, bootstrap: usize) -> R
         serde_json::to_string(&response).context("encode remote sessions")?
     );
     Ok(())
+}
+
+fn recovery_target(
+    host: &str,
+    cancellation: &StartupCancellation,
+    env: &yinz_types::envs::EnvironmentVariables,
+    confirm_creation: bool,
+) -> Result<Option<Target>> {
+    use yinz_client::remote_sessions::recovery_request;
+    if !crate::commands::can_pick_a_session() {
+        return Ok(Some(Target::New(None)));
+    }
+    let candidates = recovery_request(host, &cancellation.cancelled, env, None);
+    if cancellation.is_cancelled() {
+        crate::remote_commands::exit(yinz_client::INTERRUPTED_EXIT_STATUS);
+    }
+    let candidates = candidates?;
+    if candidates.is_empty() {
+        if confirm_creation {
+            let answer = confirm_new_session(host);
+            if cancellation.is_cancelled() {
+                crate::remote_commands::exit(yinz_client::INTERRUPTED_EXIT_STATUS);
+            }
+            match answer? {
+                Some(true) => {},
+                Some(false) => return Ok(None),
+                None => crate::remote_commands::exit(yinz_client::INTERRUPTED_EXIT_STATUS),
+            }
+        }
+        return Ok(Some(Target::New(None)));
+    }
+    match crate::recovery::choose(&candidates)? {
+        Outcome::Picked(Destination::Local(name)) => Ok(Some(Target::Named {
+            name: name.into_string(),
+            create: true,
+        })),
+        Outcome::Picked(Destination::StartFresh) => {
+            let encoded =
+                serde_json::to_string(&candidates).context("encode remote recovery dismissal")?;
+            let dismissed = recovery_request(host, &cancellation.cancelled, env, Some(&encoded));
+            if cancellation.is_cancelled() {
+                crate::remote_commands::exit(yinz_client::INTERRUPTED_EXIT_STATUS);
+            }
+            dismissed?;
+            Ok(Some(Target::New(None)))
+        },
+        Outcome::Interrupted => crate::remote_commands::exit(yinz_client::INTERRUPTED_EXIT_STATUS),
+        _ => Ok(None),
+    }
 }

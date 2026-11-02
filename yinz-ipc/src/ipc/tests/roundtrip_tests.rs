@@ -4377,6 +4377,7 @@ fn test_client_messages() {
         result: Err("conflict".into())
     });
     test_client_roundtrip!(ClientToServerMsg::ClientExited);
+    test_client_roundtrip!(ClientToServerMsg::SignalQuit);
     test_client_roundtrip!(ClientToServerMsg::KillSession);
     test_client_roundtrip!(ClientToServerMsg::KillSessionWithCompletion {
         report_progress: false
@@ -4892,10 +4893,12 @@ fn test_server_messages() {
     test_server_roundtrip!(ServerToClientMsg::Connected {
         warp_companions: true,
         warp_held_terminals: false,
+        signal_quit: false,
     });
     test_server_roundtrip!(ServerToClientMsg::Connected {
         warp_companions: true,
-        warp_held_terminals: true
+        warp_held_terminals: true,
+        signal_quit: true,
     });
     test_server_roundtrip!(ServerToClientMsg::QueryTerminalSize);
     test_server_roundtrip!(ServerToClientMsg::ConfigFileUpdated);
@@ -5632,6 +5635,7 @@ fn warp_held_capability_defaults_to_false_for_older_destinations() {
     let connected = ConnectedMsg::decode(&b"\x08\x01"[..]).unwrap();
     assert!(connected.warp_companions);
     assert!(!connected.warp_held_terminals);
+    assert!(!connected.signal_quit);
 }
 
 #[test]
@@ -5993,4 +5997,37 @@ fn saved_agent_layout_command_roundtrips() {
     let wire: crate::client_server_contract::client_server_contract::Run = run.clone().into();
     let restored = yinz_types::input::layout::Run::try_from(wire).unwrap();
     assert_eq!(run, restored);
+}
+
+#[test]
+fn signal_quit_capability_defaults_to_false_for_older_servers() {
+    use crate::client_server_contract::client_server_contract::{
+        server_to_client_msg, ConnectedMsg, ServerToClientMsg as WireMessage,
+    };
+    use prost::Message;
+    for bytes in [&b""[..], &b"\x08\x01\x10\x01"[..]] {
+        let message = WireMessage {
+            message: Some(server_to_client_msg::Message::Connected(
+                ConnectedMsg::decode(bytes).unwrap(),
+            )),
+        };
+        assert!(matches!(
+            ServerToClientMsg::try_from(message).unwrap(),
+            ServerToClientMsg::Connected {
+                signal_quit: false,
+                ..
+            }
+        ));
+    }
+    let message: ServerToClientMsg = serde_json::from_str(
+        r#"{"Connected":{"warp_companions":true,"warp_held_terminals":true}}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        message,
+        ServerToClientMsg::Connected {
+            signal_quit: false,
+            ..
+        }
+    ));
 }

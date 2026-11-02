@@ -202,6 +202,7 @@ pub enum ClientToServerMsg {
     },
     Paste(String),
     ClientExited,
+    SignalQuit,
     KillSession,
     KillSessionWithCompletion {
         #[serde(default)]
@@ -297,6 +298,8 @@ pub enum ServerToClientMsg {
         warp_companions: bool,
         #[serde(default)]
         warp_held_terminals: bool,
+        #[serde(default)]
+        signal_quit: bool,
     },
     Log {
         lines: Vec<String>,

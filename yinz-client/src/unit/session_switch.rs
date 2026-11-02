@@ -307,6 +307,7 @@ fn client_loop_rename_updates_current_identity_without_cancelling_preparation() 
         let nested = NestedReannounce::spawn(Box::new(os.clone()), "rename-test".into());
         nested.stop();
         let outcome = ClientLoop {
+            signal_quit_supported: Default::default(),
             recovery: &mut None,
             send_client_instructions: None,
             sessions: &mut sessions,
@@ -698,6 +699,7 @@ fn fatal_client_exit_reaps_preparation_children() {
         let nested = NestedReannounce::spawn(Box::new(os.clone()), "shutdown-test".into());
         nested.stop();
         ClientLoop {
+            signal_quit_supported: Default::default(),
             recovery: &mut None,
             send_client_instructions: None,
             sessions: &mut sessions,
@@ -1429,6 +1431,7 @@ fn local_switch_options_exclude_the_source_layout_and_reload_without_losing_cli_
                 .send_server_msg(ServerToClientMsg::Connected {
                     warp_companions: false,
                     warp_held_terminals: false,
+                    signal_quit: false,
                 })
                 .unwrap();
         });

@@ -223,6 +223,7 @@ fn the_client_loop_releases_render_pressure_on_delivery_and_terminal_failure() {
             nested_reannounce.stop();
             let (input_sender, _input_receiver) = channels::unbounded();
             let outcome = ClientLoop {
+                signal_quit_supported: Default::default(),
                 recovery: &mut None,
                 send_client_instructions: None,
                 sessions: &mut crate::session_switch::Sessions::new(

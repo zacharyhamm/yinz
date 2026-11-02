@@ -9,6 +9,7 @@ use yinz_types::internal_ids::SessionName;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Destination {
+    StartFresh,
     Local(SessionName),
     Remote { host: String, name: SessionName },
 }
@@ -283,7 +284,12 @@ impl PickerState {
         let footer = max_lines >= 3;
         let body = max_lines - 1 - usize::from(footer);
         let mut lines = vec![format!(
-            "\u{1b}[1mSession:\u{1b}[m {}\u{1b}[7m \u{1b}[m",
+            "\u{1b}[1m{}:\u{1b}[m {}\u{1b}[7m \u{1b}[m",
+            if self.verb == "recover" {
+                "Recover interrupted session"
+            } else {
+                "Session"
+            },
             self.input
         )];
         if body == 0 {
@@ -318,6 +324,7 @@ impl PickerState {
                             )
                         )
                     },
+                    None if row.destination == Some(Destination::StartFresh) => row.label.clone(),
                     None => format_session_line(
                         row.label.as_str(),
                         row.age,

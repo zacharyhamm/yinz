@@ -939,6 +939,11 @@ pub fn start_server_impl(
             return;
         },
     };
+    let recovery_run = yinz_runtime::session_recovery::begin(
+        &yinz_runtime::consts::session_info_folder_for_session(&session_identity.current()),
+    )
+    .to_log()
+    .ok();
     let listener = match startup_stage("server.bind_socket", || ownership.bind()) {
         Ok(listener) => listener,
         Err(error) => {
@@ -1192,6 +1197,24 @@ pub fn start_server_impl(
                     "attach trace: server main loop received ConnStatus client_id={client_id}"
                 ),
                 _ => {},
+            }
+            // Advertise on the attachment itself: ConnStatus probes use a separate,
+            // short-lived socket and cannot negotiate a later connection's capabilities.
+            if let ServerInstruction::FirstClientConnected(_, client_id)
+            | ServerInstruction::AttachClient(_, _, _, client_id)
+            | ServerInstruction::AttachWatcherClient(client_id, _) = &instruction
+            {
+                os_input
+                    .send_to_client(
+                        *client_id,
+                        ServerToClientMsg::Connected {
+                            warp_companions: true,
+                            warp_held_terminals: true,
+                            signal_quit: true,
+                        },
+                    )
+                    .context("advertise attachment capabilities")
+                    .non_fatal();
             }
             match instruction {
                 ServerInstruction::FirstClientConnected(cli_assets, client_id) => {
@@ -1699,7 +1722,13 @@ pub fn start_server_impl(
                         session_data
                     );
                 },
-                ServerInstruction::ClientExit(client_id, completion_tx) => {
+                ServerInstruction::ClientExit(client_id, _)
+                | ServerInstruction::SignalQuit(client_id) => {
+                    let intentional = matches!(instruction, ServerInstruction::ClientExit(..));
+                    let completion_tx = match instruction {
+                        ServerInstruction::ClientExit(_, completion) => completion,
+                        _ => None,
+                    };
                     startup_traces_waiting_for_first_render.remove(&client_id);
                     let _ = os_input.send_to_client(
                         client_id,
@@ -1733,6 +1762,15 @@ pub fn start_server_impl(
                         {
                             // Refuse new connections now; join workers after leaving the server
                             // loop, once its bounded receiver has been disconnected.
+                            if intentional && let Some(run) = &recovery_run {
+                                yinz_runtime::session_recovery::acknowledge(
+                                    &yinz_runtime::consts::session_info_folder_for_session(
+                                        &session_identity.current(),
+                                    ),
+                                    run,
+                                )
+                                .non_fatal();
+                            }
                             ownership.shutdown().non_fatal();
                             let client_ids_to_cleanup: Vec<ClientId> = session_state
                                 .read()
@@ -1788,6 +1826,15 @@ pub fn start_server_impl(
                 },
                 ServerInstruction::KillSession
                 | ServerInstruction::KillSessionWithCompletion { .. } => {
+                    if let Some(run) = &recovery_run {
+                        yinz_runtime::session_recovery::acknowledge(
+                            &yinz_runtime::consts::session_info_folder_for_session(
+                                &session_identity.current(),
+                            ),
+                            run,
+                        )
+                        .non_fatal();
+                    }
                     log::info!("shutdown: KillSession received");
                     if let ServerInstruction::KillSessionWithCompletion {
                         client_id,
@@ -1959,6 +2006,15 @@ pub fn start_server_impl(
                             );
                             let _ = os_input.remove_client(watcher_id);
                         }
+                        if let Some(run) = &recovery_run {
+                            yinz_runtime::session_recovery::acknowledge(
+                                &yinz_runtime::consts::session_info_folder_for_session(
+                                    &session_identity.current(),
+                                ),
+                                run,
+                            )
+                            .non_fatal();
+                        }
                         exit_reason = "the last pane closed";
                         break;
                     }
@@ -1984,6 +2040,7 @@ pub fn start_server_impl(
                         ServerToClientMsg::Connected {
                             warp_companions: true,
                             warp_held_terminals: true,
+                            signal_quit: true,
                         },
                     );
                     log::info!(

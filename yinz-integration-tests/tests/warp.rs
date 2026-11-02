@@ -2066,6 +2066,7 @@ fn warp_disconnected_destination_restores_the_only_held_pane() {
                     .send_server_msg(ServerToClientMsg::Connected {
                         warp_companions: true,
                         warp_held_terminals: true,
+                        signal_quit: false,
                     })
                     .unwrap();
             },

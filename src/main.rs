@@ -4,6 +4,7 @@ mod agent_hooks;
 mod agent_report;
 mod commands;
 mod portable_skills;
+mod recovery;
 mod remote_commands;
 mod remote_session;
 mod repl;
@@ -124,14 +125,20 @@ fn main() {
         remote_commands::exit(1);
     }
     if let Some(Command::RemoteSessions {
+        recovery,
+        dismiss_recovery,
         client_version,
         contract_version,
         bootstrap_version,
     }) = &opts.command
     {
-        if let Err(error) =
-            remote_session::list(client_version, *contract_version, *bootstrap_version)
-        {
+        if let Err(error) = remote_session::list(
+            client_version,
+            *contract_version,
+            *bootstrap_version,
+            *recovery,
+            dismiss_recovery.as_deref(),
+        ) {
             eprintln!("Error: {error:#}");
             remote_commands::exit(1);
         }

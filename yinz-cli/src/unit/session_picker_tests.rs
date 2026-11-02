@@ -430,3 +430,25 @@ fn first_remote_result_replaces_an_initially_disabled_selection() {
         Outcome::Picked(remote.destination.unwrap())
     );
 }
+
+#[test]
+fn recovery_picker_selects_saved_sessions_or_start_fresh() {
+    let saved = row("interrupted", SessionListing::Exited);
+    let mut fresh = row("Start fresh", SessionListing::Running);
+    fresh.destination = Some(Destination::StartFresh);
+    let mut picker = PickerState::new(vec![saved, fresh], "recover");
+    assert_eq!(
+        picker.handle(PickerKey::Enter),
+        Outcome::Picked(Destination::Local("interrupted".into()))
+    );
+    picker.handle(PickerKey::Down);
+    assert_eq!(
+        picker.handle(PickerKey::Enter),
+        Outcome::Picked(Destination::StartFresh)
+    );
+    assert!(matches!(
+        picker.handle(PickerKey::Escape),
+        Outcome::Cancelled(_)
+    ));
+    assert_eq!(picker.handle(PickerKey::Interrupt), Outcome::Interrupted);
+}

@@ -265,6 +265,7 @@ fn warp_capabilities(session: &SessionName, timeout: Duration) -> Result<(bool, 
                 ServerToClientMsg::Connected {
                     warp_companions,
                     warp_held_terminals,
+                    ..
                 },
                 _,
             )) => return Ok((warp_companions, warp_held_terminals)),

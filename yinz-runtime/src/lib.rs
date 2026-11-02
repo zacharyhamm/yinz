@@ -15,6 +15,7 @@ pub mod own_binary;
 #[cfg(unix)]
 pub mod owned_dir;
 pub mod session_checkpoint;
+pub mod session_recovery;
 pub mod shared;
 
 pub mod host_terminal_env;

@@ -140,6 +140,7 @@ fn send_apis_propagate_flush_failures() {
             .send_server_msg(ServerToClientMsg::Connected {
                 warp_companions: true,
                 warp_held_terminals: false,
+                signal_quit: false,
             })
             .unwrap_err(),
         send_protobuf_client_to_server(&mut flush_failing_sender(), ClientToServerMsg::ConnStatus)
@@ -149,6 +150,7 @@ fn send_apis_propagate_flush_failures() {
             ServerToClientMsg::Connected {
                 warp_companions: true,
                 warp_held_terminals: false,
+                signal_quit: false,
             },
         )
         .unwrap_err(),
@@ -273,6 +275,7 @@ fn server_to_client_message_over_socket() {
             .send_server_msg(ServerToClientMsg::Connected {
                 warp_companions: true,
                 warp_held_terminals: false,
+                signal_quit: false,
             })
             .expect("send failed");
     });
@@ -290,6 +293,7 @@ fn server_to_client_message_over_socket() {
             ServerToClientMsg::Connected {
                 warp_companions: true,
                 warp_held_terminals: false,
+                signal_quit: false,
             }
         ),
         "should be Connected, got: {:?}",
@@ -314,6 +318,7 @@ fn bidirectional_communication_via_fd_duplication() {
             .send_server_msg(ServerToClientMsg::Connected {
                 warp_companions: true,
                 warp_held_terminals: false,
+                signal_quit: false,
             })
             .expect("send failed");
 
@@ -340,6 +345,7 @@ fn bidirectional_communication_via_fd_duplication() {
             ServerToClientMsg::Connected {
                 warp_companions: true,
                 warp_held_terminals: false,
+                signal_quit: false,
             }
         ),
         "should be Connected"
@@ -480,6 +486,7 @@ fn session_probe_accepts_responding_socket() {
             .send_server_msg(ServerToClientMsg::Connected {
                 warp_companions: true,
                 warp_held_terminals: false,
+                signal_quit: false,
             })
             .expect("send failed");
     });
@@ -499,6 +506,7 @@ fn session_probe_accepts_responding_socket() {
                 ServerToClientMsg::Connected {
                     warp_companions: true,
                     warp_held_terminals: false,
+                    signal_quit: false,
                 },
                 _
             ))
@@ -879,6 +887,7 @@ fn a_probe_timeout_is_an_unresponsive_server_not_an_absent_one() {
             ServerToClientMsg::Connected {
                 warp_companions: true,
                 warp_held_terminals: false,
+                signal_quit: false,
             },
             ErrorContext::new()
         )),

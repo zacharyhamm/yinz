@@ -122,6 +122,9 @@ fn pick_session_to_attach(remote: Option<(&CliArgs, Vec<String>)>) -> SessionNam
             }
         },
         Ok(Outcome::Picked(Destination::Local(name))) => name,
+        Ok(Outcome::Picked(Destination::StartFresh)) => {
+            unreachable!("attach picker has no fresh row")
+        },
         Ok(Outcome::Cancelled(message)) => {
             if let Some(message) = message {
                 eprintln!("{message}");
@@ -878,6 +881,34 @@ pub(crate) fn start_client(opts: CliArgs) {
             });
         };
 
+        if !is_a_reconnect
+            && opts.command.is_none()
+            && opts.session.is_none()
+            && config_options.session_name.is_none()
+            && opts.layout.is_none()
+            && opts.layout_string.is_none()
+            && opts.new_session_with_layout.is_none()
+            && current_session().is_none()
+            && can_pick_a_session()
+        {
+            match crate::recovery::local() {
+                Ok(Some(name)) => {
+                    opts.command = Some(Command::Sessions(Sessions::Attach {
+                        session_name: Some(name),
+                        create: true,
+                        create_background: false,
+                        force_run_commands: false,
+                        index: None,
+                        options: None,
+                    }))
+                },
+                Ok(None) => {},
+                Err(error) => {
+                    eprintln!("{error:#}");
+                    crate::remote_commands::exit(1);
+                },
+            }
+        }
         if let Some(Command::Sessions(Sessions::Attach {
             session_name,
             create,

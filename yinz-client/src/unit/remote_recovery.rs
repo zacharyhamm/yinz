@@ -356,6 +356,14 @@ fn queued_stale_frames_and_session_switches_do_not_affect_the_replacement() {
     let budget = Arc::new(RenderBudget::new(100));
     budget.reserve(5).unwrap();
     for instruction in [
+        ClientInstruction::FromServer(
+            1,
+            Box::new(ClientInstruction::Connected { signal_quit: false }),
+        ),
+        ClientInstruction::FromServer(
+            0,
+            Box::new(ClientInstruction::Connected { signal_quit: true }),
+        ),
         ClientInstruction::FromServer(0, Box::new(ClientInstruction::Render("STALE".into()))),
         ClientInstruction::FromServer(
             0,
@@ -375,7 +383,9 @@ fn queued_stale_frames_and_session_switches_do_not_affect_the_replacement() {
     let mut config = Default::default();
     let mut sessions =
         session_switch::Sessions::new(Some("host".into()), "work".into(), &args, &mut config);
+    let signal_quit_supported = Arc::new(AtomicBool::new(true));
     let outcome = ClientLoop {
+        signal_quit_supported: signal_quit_supported.clone(),
         sessions: &mut sessions,
         recovery: &mut Some(recovery),
         send_client_instructions: Some(&tx),
@@ -393,6 +403,7 @@ fn queued_stale_frames_and_session_switches_do_not_affect_the_replacement() {
         screensaver: None,
     }
     .run(&rx);
+    assert!(!signal_quit_supported.load(Ordering::Acquire));
     assert_eq!(outcome.exit_status, 0);
     assert!(outcome.reconnect_to_session.is_none());
     assert!(!String::from_utf8(os.stdout_bytes())

@@ -220,6 +220,7 @@ impl<'a> Sessions<'a> {
             .filter_map(|row| {
                 use yinz_cli::session_picker::Destination as Pick;
                 let (destination, name) = match row.destination {
+                    Some(Pick::StartFresh) => return None,
                     Some(Pick::Local(name)) => (Destination::Local, Some(name.into_string())),
                     Some(Pick::Remote { host, name }) => {
                         (Destination::Remote(host), Some(name.into_string()))
