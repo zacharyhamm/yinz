@@ -2,14 +2,119 @@
 use isahc::{config::RedirectPolicy, prelude::*, HttpClient, Request};
 use serde::Deserialize;
 use serde_json::Value;
-use std::{io::Read, path::Path, time::Duration};
+use std::{
+    collections::HashMap,
+    io::Read,
+    path::Path,
+    sync::{Arc, Condvar, LazyLock, Mutex},
+    time::{Duration, Instant, SystemTime},
+};
 use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::control::{ProviderUsage, ProviderUsageStatus, ProviderUsageWindow};
 
 const DATA_LIMIT: u64 = 1024 * 1024;
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 
+#[derive(Default)]
+struct FetchMetadata {
+    throttled: bool,
+    retry_after: Option<Duration>,
+}
+
+#[derive(Default)]
+struct CacheEntry {
+    result: Option<(ProviderUsage, Instant)>,
+    pending: bool,
+    throttle_streak: u32,
+}
+
+#[derive(Default)]
+struct ProviderCache {
+    entry: Mutex<CacheEntry>,
+    completed: Condvar,
+}
+
+impl ProviderCache {
+    fn collect(
+        &self,
+        provider: &str,
+        now: impl Fn() -> Instant,
+        fetch: impl FnOnce() -> (ProviderUsage, FetchMetadata),
+    ) -> ProviderUsage {
+        let mut entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if let Some((result, deadline)) = &entry.result
+                && now() < *deadline
+            {
+                return result.clone();
+            }
+            if !entry.pending {
+                break;
+            }
+            entry = self
+                .completed
+                .wait(entry)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+        entry.pending = true;
+        drop(entry);
+
+        // A collector panic must not leave every later caller waiting forever.
+        let (result, metadata) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(fetch))
+            .unwrap_or_else(|_| {
+                (
+                    failure(
+                        provider,
+                        ProviderUsageStatus::Error,
+                        "Could not read provider limits.",
+                    ),
+                    FetchMetadata::default(),
+                )
+            });
+        let mut entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
+        let ttl = if metadata.throttled {
+            entry.throttle_streak = entry.throttle_streak.saturating_add(1);
+            let backoff = Duration::from_secs(
+                (300 * (1u64 << entry.throttle_streak.saturating_sub(1).min(3))).min(1800),
+            );
+            backoff.max(metadata.retry_after.unwrap_or_default())
+        } else {
+            entry.throttle_streak = 0;
+            Duration::from_secs(60)
+        };
+        let completed = now();
+        // Reject unrepresentable server deadlines rather than overflowing Instant.
+        let deadline = completed
+            .checked_add(ttl)
+            .unwrap_or_else(|| completed + Duration::from_secs(1800));
+        entry.result = Some((result.clone(), deadline));
+        entry.pending = false;
+        self.completed.notify_all();
+        result
+    }
+}
+
+static USAGE_CACHE: LazyLock<Mutex<HashMap<String, Arc<ProviderCache>>>> =
+    LazyLock::new(Mutex::default);
+
 pub(crate) fn collect(provider: &str) -> ProviderUsage {
+    if !matches!(provider, "codex" | "claude") {
+        return collect_uncached(provider, &mut FetchMetadata::default());
+    }
+    let cache = USAGE_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(provider.to_owned())
+        .or_default()
+        .clone();
+    cache.collect(provider, Instant::now, || {
+        let mut metadata = FetchMetadata::default();
+        let usage = collect_uncached(provider, &mut metadata);
+        (usage, metadata)
+    })
+}
+
+fn collect_uncached(provider: &str, metadata: &mut FetchMetadata) -> ProviderUsage {
     match provider {
         "codex" => {
             let result = tokio::runtime::Builder::new_current_thread()
@@ -22,7 +127,7 @@ pub(crate) fn collect(provider: &str) -> ProviderUsage {
             result.unwrap_or_else(|_| failure("codex", ProviderUsageStatus::Error,
                 "Could not read Codex limits. Check that Codex is installed, supports app-server, and is signed in."))
         },
-        "claude" => claude(),
+        "claude" => claude(metadata),
         _ => failure(
             provider,
             ProviderUsageStatus::Unsupported,
@@ -186,7 +291,13 @@ fn mac_credentials() -> Option<ClaudeCredentials> {
     })
 }
 
-fn claude() -> ProviderUsage {
+fn claude(metadata: &mut FetchMetadata) -> ProviderUsage {
+    let fetch = |token: &str| {
+        let (status, body, retry_after) = fetch_claude(token)?;
+        metadata.throttled = status == 429;
+        metadata.retry_after = retry_after;
+        Ok((status, body))
+    };
     let config_override = std::env::var_os("CLAUDE_CONFIG_DIR");
     let root = yinz_runtime::agent::paths::config_root(
         "claude",
@@ -212,11 +323,11 @@ fn claude() -> ProviderUsage {
     #[cfg(target_os = "macos")]
     if config_override.as_ref().is_none_or(|root| root.is_empty()) {
         if let Some(credentials) = mac_credentials() {
-            return claude_with(credentials, now_ms(), fetch_claude);
+            return claude_with(credentials, now_ms(), fetch);
         }
     }
     match file_credentials(&root) {
-        Ok(Some(credentials)) => claude_with(credentials, now_ms(), fetch_claude),
+        Ok(Some(credentials)) => claude_with(credentials, now_ms(), fetch),
         Ok(None) => failure(
             "claude",
             ProviderUsageStatus::Unavailable,
@@ -241,7 +352,17 @@ fn claude_request(token: &str) -> Result<Request<()>> {
         .map_err(|_| anyhow!("could not construct Claude usage request"))
 }
 
-fn fetch_claude(token: &str) -> Result<(u16, Vec<u8>)> {
+fn retry_after(value: &str, now: SystemTime) -> Option<Duration> {
+    let value = value.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let date = chrono::DateTime::parse_from_rfc2822(value).ok()?;
+    let deadline: SystemTime = date.with_timezone(&chrono::Utc).into();
+    Some(deadline.duration_since(now).unwrap_or_default())
+}
+
+fn fetch_claude(token: &str) -> Result<(u16, Vec<u8>, Option<Duration>)> {
     let client = HttpClient::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
@@ -253,13 +374,18 @@ fn fetch_claude(token: &str) -> Result<(u16, Vec<u8>)> {
         .send(claude_request(token)?)
         .map_err(|_| anyhow!("Claude usage request failed"))?;
     let status = response.status().as_u16();
+    let retry = response
+        .headers()
+        .get("Retry-After")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| retry_after(value, SystemTime::now()));
     // Error bodies can contain credentials or account details; do not read or return them.
     let body = if response.status().is_success() {
         bounded_read(response.body_mut())?
     } else {
         vec![]
     };
-    Ok((status, body))
+    Ok((status, body, retry))
 }
 
 fn claude_with(

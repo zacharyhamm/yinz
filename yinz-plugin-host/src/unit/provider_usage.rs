@@ -155,3 +155,129 @@ fn request_keeps_credentials_in_headers_and_uses_fixed_https_origin() {
     assert_eq!(unsupported.status, ProviderUsageStatus::Unsupported);
     assert_eq!(unsupported.observed_at_ms, None);
 }
+
+fn cached_result(throttled: bool, retry: Option<u64>) -> (ProviderUsage, FetchMetadata) {
+    (
+        failure("claude", ProviderUsageStatus::Error, "test result"),
+        FetchMetadata {
+            throttled,
+            retry_after: retry.map(Duration::from_secs),
+        },
+    )
+}
+
+#[test]
+fn shared_cache_expires_and_backs_off_then_recovers() {
+    use std::cell::Cell;
+    let cache = ProviderCache::default();
+    let clock = Cell::new(Instant::now());
+    let now = || clock.get();
+    let unexpected_fetches = Cell::new(0);
+    cache.collect("claude", now, || cached_result(false, None));
+    cache.collect("claude", now, || {
+        unexpected_fetches.set(unexpected_fetches.get() + 1);
+        cached_result(false, None)
+    });
+    // Inspect deadlines as well as results: collector panics are deliberately sanitized.
+    assert_eq!(
+        cache.entry.lock().unwrap().result.as_ref().unwrap().1,
+        now() + Duration::from_secs(60)
+    );
+    clock.set(now() + Duration::from_secs(60));
+    for seconds in [300, 600, 1200, 1800, 1800] {
+        cache.collect("claude", now, || cached_result(true, None));
+        let deadline = cache.entry.lock().unwrap().result.as_ref().unwrap().1;
+        assert_eq!(deadline, now() + Duration::from_secs(seconds));
+        cache.collect("claude", now, || {
+            unexpected_fetches.set(unexpected_fetches.get() + 1);
+            cached_result(false, None)
+        });
+        assert_eq!(
+            cache.entry.lock().unwrap().result.as_ref().unwrap().1,
+            deadline
+        );
+        clock.set(deadline);
+    }
+    assert_eq!(unexpected_fetches.get(), 0);
+    cache.collect("claude", now, || cached_result(true, Some(3600)));
+    assert_eq!(
+        cache.entry.lock().unwrap().result.as_ref().unwrap().1,
+        now() + Duration::from_secs(3600)
+    );
+    clock.set(now() + Duration::from_secs(3600));
+    cache.collect("claude", now, || cached_result(false, None));
+    assert_eq!(cache.entry.lock().unwrap().throttle_streak, 0);
+    clock.set(now() + Duration::from_secs(60));
+    cache.collect("claude", now, || cached_result(true, None));
+    assert_eq!(
+        cache.entry.lock().unwrap().result.as_ref().unwrap().1,
+        now() + Duration::from_secs(300)
+    );
+}
+
+#[test]
+fn retry_after_supports_seconds_dates_and_invalid_headers() {
+    let epoch = SystemTime::UNIX_EPOCH;
+    assert_eq!(retry_after("120", epoch), Some(Duration::from_secs(120)));
+    assert_eq!(
+        retry_after("Thu, 01 Jan 1970 00:02:00 GMT", epoch),
+        Some(Duration::from_secs(120))
+    );
+    assert_eq!(
+        retry_after(
+            "Thu, 01 Jan 1970 00:00:00 GMT",
+            epoch + Duration::from_secs(1)
+        ),
+        Some(Duration::ZERO)
+    );
+    assert_eq!(retry_after("nonsense", epoch), None);
+    assert_eq!(retry_after("-10", epoch), None);
+}
+
+#[test]
+fn concurrent_callers_share_one_fetch_and_providers_are_independent() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let cache = ProviderCache::default();
+    let other = ProviderCache::default();
+    let calls = AtomicUsize::new(0);
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let cache_ref = &cache;
+        let calls_ref = &calls;
+        let first = scope.spawn(move || {
+            cache_ref.collect("claude", Instant::now, || {
+                calls_ref.fetch_add(1, Ordering::SeqCst);
+                started_tx.send(()).unwrap();
+                finish_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                cached_result(false, None)
+            })
+        });
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let second = scope.spawn(|| {
+            cache.collect("claude", Instant::now, || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                cached_result(false, None)
+            })
+        });
+        other.collect("codex", Instant::now, || cached_result(false, None));
+        finish_tx.send(()).unwrap();
+        assert_eq!(first.join().unwrap(), second.join().unwrap());
+    });
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn collector_panic_releases_pending_state_and_caches_sanitized_failure() {
+    let cache = ProviderCache::default();
+    let result = cache.collect("claude", Instant::now, || panic!("sentinel-secret"));
+    assert_eq!(result.status, ProviderUsageStatus::Error);
+    assert!(!result.message.unwrap().contains("sentinel-secret"));
+    assert!(!cache.entry.lock().unwrap().pending);
+    assert_eq!(
+        cache
+            .collect("claude", Instant::now, || panic!("unexpected retry"))
+            .status,
+        ProviderUsageStatus::Error
+    );
+}
