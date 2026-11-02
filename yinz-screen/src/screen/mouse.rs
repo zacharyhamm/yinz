@@ -32,6 +32,12 @@ impl Screen {
         }
     }
     pub fn handle_mouse_event(&mut self, mut event: MouseEvent, client_id: ClientId) {
+        let is_bare_motion = event.event_type == MouseEventType::Motion
+            && !event.left
+            && !event.right
+            && !event.middle
+            && !event.wheel_up
+            && !event.wheel_down;
         if let Some((_, presentation)) = self.client_presentations.get(&client_id) {
             let (x, y) = presentation.offset();
             let outside = event.position.column() < x
@@ -39,6 +45,18 @@ impl Screen {
                 || event.position.line() < y as isize
                 || event.position.line() >= (y + presentation.content.rows) as isize;
             if outside && event.event_type == MouseEventType::Press {
+                return;
+            }
+            if outside && is_bare_motion {
+                // Relative columns saturate at zero, which would turn the left gutter
+                // into a hit on the leftmost pane. Leave without disturbing gestures.
+                if self
+                    .get_active_tab_mut(client_id)
+                    .map(|tab| tab.mouse_leave(client_id))
+                    .unwrap_or(false)
+                {
+                    self.render().non_fatal();
+                }
                 return;
             }
             event.position = event.position.relative_to(y, x);
@@ -58,12 +76,6 @@ impl Screen {
             }
             return;
         }
-        let is_bare_motion = event.event_type == MouseEventType::Motion
-            && !event.left
-            && !event.right
-            && !event.middle
-            && !event.wheel_up
-            && !event.wheel_down;
         let active_pane_id_before = self.active_pane_id(client_id);
         let active_pane_was_scrolled = self.active_pane_is_scrolled(client_id);
         let surface = self.client_surface(client_id);

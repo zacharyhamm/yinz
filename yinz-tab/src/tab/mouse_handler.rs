@@ -491,6 +491,17 @@ fn resize_target(details: &ClickedPaneDetails) -> ResizeDragTarget {
     }
 }
 
+impl Tab {
+    /// Clear this client's hover when its pointer leaves the presented content.
+    /// Returns whether visible state changed; active gestures remain intact.
+    pub fn mouse_leave(&mut self, client_id: ClientId) -> bool {
+        let cleared = clear_hover_for_client(self, client_id);
+        self.mouse_last_pane_id.remove(&client_id);
+        let help_cleared = self.mouse_help_text_visible.remove(&client_id).is_some();
+        cleared || help_cleared
+    }
+}
+
 pub struct MouseHandler;
 
 impl MouseHandler {

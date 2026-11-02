@@ -2357,3 +2357,149 @@ fn smaller_client_centers_entire_view_and_detach_restores_origin() {
     assert_eq!(screen.client_presentations[&client].1.offset(), (0, 0));
     assert_eq!(cursor, Some(pane_cursor(&mut screen, client)));
 }
+
+fn centered_mouse_test_screen() -> Screen {
+    let mut screen = create_new_screen(
+        Size {
+            cols: 100,
+            rows: 30,
+        },
+        true,
+        true,
+    );
+    let client = ClientId::new(1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.add_client(ClientId::new(2)).unwrap();
+    screen
+        .set_client_size(ClientId::new(2), Size { cols: 80, rows: 24 })
+        .unwrap();
+    screen.resize_to_clients().unwrap();
+    let tab = screen.get_active_tab_mut(client).unwrap();
+    tab.vertical_split(
+        PaneId::Terminal(TerminalId::new(2)),
+        None,
+        None,
+        client,
+        None,
+        None,
+    )
+    .unwrap();
+    tab.update_advanced_mouse_actions(true);
+    tab.update_mouse_hover_effects(true);
+    let receiver = screen_wired_to_server(&mut screen);
+    client_frame_bytes(&mut screen, &receiver);
+    assert_eq!(screen.client_presentations[&client].1.offset(), (10, 3));
+    screen
+}
+
+#[test]
+fn centered_gutter_motion_preserves_focus_and_reentry_focuses_content() {
+    let mut screen = centered_mouse_test_screen();
+    let client = ClientId::new(1);
+    let left = PaneId::Terminal(TerminalId::new(1));
+    let right = PaneId::Terminal(TerminalId::new(2));
+    screen
+        .get_active_tab_mut(client)
+        .unwrap()
+        .update_focus_follows_mouse(true);
+    assert_eq!(screen.active_pane_id(client), Some(right));
+
+    for position in [
+        Position::new(8, 9),
+        Position::new(8, 90),
+        Position::new(2, 20),
+        Position::new(27, 20),
+    ] {
+        screen.handle_mouse_event(MouseEvent::new_buttonless_motion(position), client);
+        assert_eq!(screen.active_pane_id(client), Some(right));
+    }
+    screen.handle_mouse_event(
+        MouseEvent::new_buttonless_motion(Position::new(8, 20)),
+        client,
+    );
+    assert_eq!(screen.active_pane_id(client), Some(left));
+}
+
+#[test]
+fn centered_gutter_motion_clears_hover_and_reentry_restores_it() {
+    let mut screen = centered_mouse_test_screen();
+    let client = ClientId::new(1);
+    let left = PaneId::Terminal(TerminalId::new(1));
+    screen
+        .get_active_tab_mut(client)
+        .unwrap()
+        .update_focus_follows_mouse(false);
+    for position in [
+        Position::new(8, 9),
+        Position::new(8, 90),
+        Position::new(2, 20),
+        Position::new(27, 20),
+    ] {
+        screen.handle_mouse_event(
+            MouseEvent::new_buttonless_motion(Position::new(8, 20)),
+            client,
+        );
+        assert_eq!(
+            screen
+                .get_active_tab(client)
+                .unwrap()
+                .query_mouse_hover_pane_id()
+                .get(&client),
+            Some(&left),
+        );
+        screen.handle_mouse_event(MouseEvent::new_buttonless_motion(position), client);
+        assert!(!screen
+            .get_active_tab(client)
+            .unwrap()
+            .query_mouse_hover_pane_id()
+            .contains_key(&client));
+    }
+}
+
+#[test]
+fn centered_resize_drag_and_release_reach_tab_from_gutter() {
+    let mut screen = centered_mouse_test_screen();
+    let client = ClientId::new(1);
+    let right = PaneId::Terminal(TerminalId::new(2));
+    let right_x = |screen: &Screen| {
+        screen
+            .get_active_tab(client)
+            .unwrap()
+            .get_pane_with_id(right)
+            .unwrap()
+            .current_geom()
+            .x
+    };
+    screen
+        .get_active_tab_mut(client)
+        .unwrap()
+        .set_pane_frames(yinz_types::input::options::PaneFrameStyle::Full);
+    let initial_x = right_x(&screen);
+    screen.handle_mouse_event(
+        MouseEvent::new_left_press_with_ctrl_event(Position::new(8, (10 + initial_x) as u16)),
+        client,
+    );
+    screen.handle_mouse_event(
+        MouseEvent::new_left_motion_with_ctrl_event(Position::new(2, (11 + initial_x) as u16)),
+        client,
+    );
+    assert_ne!(
+        right_x(&screen),
+        initial_x,
+        "gutter motion must advance the resize"
+    );
+    screen.handle_mouse_event(
+        MouseEvent::new_left_release_with_ctrl_event(Position::new(2, (11 + initial_x) as u16)),
+        client,
+    );
+    let released_x = right_x(&screen);
+    screen.handle_mouse_event(
+        MouseEvent::new_left_motion_with_ctrl_event(Position::new(8, 60)),
+        client,
+    );
+    assert_eq!(
+        right_x(&screen),
+        released_x,
+        "gutter release must end the resize"
+    );
+}
