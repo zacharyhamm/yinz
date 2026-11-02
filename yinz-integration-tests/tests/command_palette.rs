@@ -1836,13 +1836,18 @@ fn session_palette_notifications_and_cancel_first_disconnect_confirmation() {
 
 #[test]
 fn session_palette_directory_picker_keeps_notifications_suspended_until_close() {
+    let root = tempfile::tempdir().unwrap();
+    let root_path = root.path().canonicalize().unwrap();
+    let project = root_path.join("chosen-project");
+    std::fs::create_dir(&project).unwrap();
+    let chosen_directory = format!("Directory: {}", project.display());
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
         .with_config(
             "load_plugins clear-defaults=true { \"yinz:session-palette\" { shared true; }; }\npane_animations false\nnotification_timeout 1",
         )
-        .with_layout(LayoutInfo::Stringified(
-            "layout { pane cwd=\"/tmp\"; }".into(),
-        ))
+        .with_layout(LayoutInfo::Stringified(format!(
+            "layout {{ pane cwd={root_path:?}; }}",
+        )))
         .start();
     yinz.expect_pty_spawn().output(PROMPT);
     yinz.wait_until("shell ready", |s| s.contains("$"));
@@ -1864,50 +1869,44 @@ fn session_palette_directory_picker_keeps_notifications_suspended_until_close() 
         s.contains("Directory:") && s.contains("kept-name")
     });
     yinz.send_stdin(b"\x1b[A\r");
-    let picker = yinz.expect_pty_spawn();
-    picker.output(b"PALETTE DIRECTORY PICKER");
     yinz.wait_until("picker owns screen", |s| {
-        s.contains("PALETTE DIRECTORY PICKER")
+        s.contains("chosen-project/")
+            && s.contains("Ctrl+Enter")
             && !s.contains("Configure new session")
             && !s.contains("Retained picker history")
     });
-    let picker_keys = b"\x1b[A\x1b[B\r x";
-    yinz.send_stdin(picker_keys);
-    picker.wait_for_stdin("picker receives navigation, Enter and Space", |bytes| {
-        bytes.ends_with(picker_keys)
+    yinz.send_stdin(b"chosen\r");
+    yinz.wait_until("chosen folder opens", |s| {
+        s.contains("chosen-project")
+            && !s.contains("chosen-project/")
+            && s.contains("Ctrl+Enter")
+            && !s.contains("Retained picker history")
     });
-    let Some(yinz_types::input::command::TerminalAction::RunCommand(command)) =
-        picker.terminal_action()
-    else {
-        panic!("picker command")
-    };
-    let script = &command.args[1];
-    let output = script
-        .split_once("out='")
-        .unwrap()
-        .1
-        .split_once('\'')
-        .unwrap()
-        .0;
-    std::fs::write(output, "/tmp\0").unwrap();
-    picker.exit(Some(0));
+    yinz.send_stdin(b"\x1b[13;5u"); // Ctrl+Enter selects the current directory.
     yinz.wait_until("chosen directory and name preserved", |s| {
-        s.contains("Directory: /tmp")
+        s.contains(&chosen_directory)
             && s.contains("kept-name")
             && !s.contains("Retained picker history")
     });
     yinz.send_stdin(&keys::ENTER);
-    let cancelled = yinz.expect_pty_spawn();
-    cancelled.exit(Some(130));
+    yinz.wait_until("picker reopens at chosen directory", |s| {
+        s.contains("chosen-project")
+            && s.contains("Ctrl+Enter")
+            && !s.contains("Configure new session")
+            && !s.contains("Retained picker history")
+    });
+    yinz.send_stdin(&keys::ESC);
     yinz.wait_until("cancel preserves directory and name", |s| {
-        s.contains("Directory: /tmp")
+        s.contains(&chosen_directory)
             && s.contains("kept-name")
             && !s.contains("Working")
             && !s.contains("Retained picker history")
     });
     yinz.send_stdin(&keys::ESC);
     yinz.wait_until("back preserves initial name", |s| {
-        s.contains("kept-name") && !s.contains("Directory:")
+        s.contains("kept-name")
+            && !s.contains("Directory:")
+            && !s.contains("Retained picker history")
     });
     yinz.send_stdin(DO);
     yinz.wait_until("closing palette restores history", |s| {

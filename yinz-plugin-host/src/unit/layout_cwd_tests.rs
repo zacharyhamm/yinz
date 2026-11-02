@@ -377,14 +377,12 @@ fn session_palette_empty_browse_and_other_plugins_keep_focused_directory_semanti
         assert_eq!(request.cwd, focused);
         assert_eq!(request.options.roots, None);
     }
-    let roots = Some(vec![
-        "relative".into(),
-        "~/project".into(),
-        "$HOME/project".into(),
-    ]);
-    let request = browse(&mut env, roots.clone(), focused);
-    assert_eq!(request.cwd, focused);
-    assert_eq!(request.options.roots, roots);
+    for root in ["relative", "~/project", "$HOME/project"] {
+        let roots = Some(vec![root.into()]);
+        let request = browse(&mut env, roots.clone(), focused);
+        assert_eq!(request.cwd, focused);
+        assert_eq!(request.options.roots, roots);
+    }
 }
 
 #[test]
