@@ -852,7 +852,6 @@ impl Screen {
         let address = Self::warp_address(released.pane)?;
         let pane_id = PaneId::Terminal(terminal_id);
         let agent_input = self.warped_agent_input(pane_id);
-        let scrollback_lines = self.scrollback_lines_to_serialize;
         let tab = self
             .tabs
             .values_mut()
@@ -864,7 +863,9 @@ impl Screen {
             .get_pane_with_id(pane_id)
             .ok_or_else(|| "warp pane vanished".to_owned())?;
         let (contents, agent_theme) = pane
-            .serialize_handoff(scrollback_lines, Self::WARP_CONTENTS_BUDGET)
+            // Session-save limits must not truncate a live pane being moved. The
+            // handoff's byte budget already bounds how much history can travel.
+            .serialize_handoff(Some(0), Self::WARP_CONTENTS_BUDGET)
             .map(|(c, m)| (Some(c), m))
             .unwrap_or_default();
         let payload = Box::new(WarpedPane {
@@ -1122,7 +1123,6 @@ impl Screen {
         // many panes are sharing it.
         let budget =
             Self::warp_budget_per_pane(prepared.tiled_panes.len() + prepared.floating_panes.len());
-        let scrollback_lines = self.scrollback_lines_to_serialize;
         let tab = self
             .tabs
             .get(&tab_index)
@@ -1137,7 +1137,7 @@ impl Screen {
             .unwrap_or_default();
             let (contents, agent_theme) = tab
                 .get_pane_with_id(*pane_id)
-                .and_then(|p| p.serialize_handoff(scrollback_lines, budget))
+                .and_then(|p| p.serialize_handoff(Some(0), budget))
                 .map(|(c, m)| (Some(c), m))
                 .unwrap_or_default();
             WarpedPane {

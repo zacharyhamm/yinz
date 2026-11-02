@@ -2008,15 +2008,6 @@ impl Grid {
         budget: usize,
     ) -> Option<(String, Option<yinz_types::agent::theme::AgentThemeHandoff>)> {
         use yinz_types::agent::theme::{AgentThemeHandoff, HandoffLaunch};
-        if !self
-            .agent_palettes
-            .iter()
-            .any(|p| p.upgrade().is_some_and(|p| p.has_snapshot()))
-        {
-            return self
-                .serialize(scrollback)
-                .map(|c| (crate::agent_theme::fit_legacy_contents(c, budget), None));
-        }
         let first = match scrollback {
             None => self.lines_above.len(),
             Some(0) => 0,
@@ -2030,6 +2021,21 @@ impl Grid {
             .chain(&self.lines_below)
             .cloned()
             .collect();
+        // A scrolled viewport is only a window into the live transcript. Carry
+        // its newer rows too, including when there is no agent palette metadata.
+        let serialize_legacy = || {
+            self.output_buffer
+                .serialize(&rows, self.osc8_hyperlinks, None)
+                .ok()
+                .map(|c| (crate::agent_theme::fit_legacy_contents(c, budget), None))
+        };
+        if !self
+            .agent_palettes
+            .iter()
+            .any(|p| p.upgrade().is_some_and(|p| p.has_snapshot()))
+        {
+            return serialize_legacy();
+        }
         let mut metadata = AgentThemeHandoff::default();
         if let Some(active) = &self.agent_launch {
             metadata.active = Some(HandoffLaunch {
@@ -2042,9 +2048,7 @@ impl Grid {
             .serialize_handoff(&rows, self.width, self.osc8_hyperlinks, &mut metadata)
             .ok()?;
         if metadata.snapshots.is_empty() {
-            return self
-                .serialize(scrollback)
-                .map(|c| (crate::agent_theme::fit_legacy_contents(c, budget), None));
+            return serialize_legacy();
         }
         // Cut at a serialized row boundary, never in an SGR/OSC or UTF-8 sequence.
         loop {

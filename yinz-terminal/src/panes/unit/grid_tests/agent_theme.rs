@@ -432,6 +432,37 @@ fn insert_mode_assigns_ownership_beyond_the_materialized_row() {
 }
 
 #[test]
+fn handoff_preserves_history_below_a_scrolled_viewport_with_or_without_a_theme() {
+    for themed in [false, true] {
+        let mut grid = create_grid_with_size_and_raw(5, 20, b"");
+        if themed {
+            event(&mut grid, "one", Some(source("codex", Role::Success)));
+        }
+        for i in 0..30 {
+            feed_bytes(&mut grid, format!("history-{i:03}\r\n").as_bytes());
+        }
+        let expected = grid.dump_screen(true);
+        grid.move_viewport_up(10);
+        assert!(!grid.lines_below.is_empty());
+
+        let (contents, metadata) = grid.serialize_handoff(Some(0), 100_000).unwrap();
+        assert_eq!(metadata.is_some(), themed);
+        let mut adopted = create_grid_with_size_and_raw(5, 20, b"");
+        feed_bytes(
+            &mut adopted,
+            &crate::agent_theme::handoff_replay(contents, metadata),
+        );
+        // Serialized history starts with a row separator so it can follow existing output.
+        assert_eq!(
+            adopted.dump_screen(true).trim_matches('\n'),
+            expected.trim_matches('\n'),
+            "themed={themed}"
+        );
+        assert!(adopted.dump_screen(false).contains("history-029"));
+    }
+}
+
+#[test]
 fn handoff_padding_preserves_legacy_continuation_and_wrap() {
     for content in [
         "",

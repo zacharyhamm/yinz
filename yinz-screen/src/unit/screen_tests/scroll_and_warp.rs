@@ -4850,6 +4850,79 @@ fn an_adopted_held_pane_restores_its_state_and_scrollback() {
 }
 
 #[test]
+fn pane_and_tab_warps_preserve_history_independently_of_session_save_settings() {
+    for whole_tab in [false, true] {
+        for saved_lines in [None, Some(1), Some(0)] {
+            for scrolled in [false, true] {
+                let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+                new_tab(&mut screen, 1, TabId::new(0));
+                new_tab(&mut screen, 2, TabId::new(1));
+                screen.scrollback_lines_to_serialize = saved_lines;
+                let pane = screen
+                    .tabs
+                    .get_mut(&TabId::new(0))
+                    .unwrap()
+                    .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(1)))
+                    .unwrap();
+                let history: String = (0..100).map(|i| format!("history-{i:03}\r\n")).collect();
+                pane.handle_pty_bytes(history.into_bytes());
+                assert!(!pane.dump_screen(false, None).contains("history-000"));
+                if scrolled {
+                    pane.scroll_up(40, None);
+                    assert!(!pane.dump_screen(false, None).contains("history-099"));
+                }
+                let release = || {
+                    Ok(released_for_warp(ReleasedPane::Local(ReleasedPtyHost {
+                        host_id: "fixture".into(),
+                        host_pid: ProcessId::new(1),
+                        control_socket: Some("/tmp/fixture.sock".into()),
+                    })))
+                };
+                let payload = if whole_tab {
+                    let (tab, ids, prepared) = screen
+                        .check_tab_can_be_warped(Some(TabId::new(0)), ClientId::new(1))
+                        .unwrap();
+                    screen
+                        .take_released_tab_for_warp(
+                            tab,
+                            ids.into_iter().map(|id| (id, release())).collect(),
+                            prepared,
+                        )
+                        .unwrap()
+                        .tiled_panes
+                        .remove(0)
+                } else {
+                    *screen
+                        .take_released_pane_for_warp(TerminalId::new(1), release())
+                        .unwrap()
+                };
+                let destination = screen
+                    .tabs
+                    .get_mut(&TabId::new(1))
+                    .unwrap()
+                    .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(2)))
+                    .unwrap();
+                destination.handle_pty_bytes(yinz_terminal::agent_theme::handoff_replay(
+                    payload.contents.unwrap(),
+                    payload.agent_theme,
+                ));
+                let restored = destination.dump_screen(true, None);
+                let lines: Vec<_> = restored
+                    .lines()
+                    .filter(|line| line.starts_with("history-"))
+                    .collect();
+                let expected: Vec<_> = (0..100).map(|i| format!("history-{i:03}")).collect();
+                assert_eq!(
+                    lines, expected,
+                    "whole_tab={whole_tab}, saved_lines={saved_lines:?}, scrolled={scrolled}"
+                );
+                assert!(destination.dump_screen(false, None).contains("history-099"));
+            }
+        }
+    }
+}
+
+#[test]
 fn agent_theme_history_travels_through_pane_and_tab_warps() {
     use yinz_terminal::panes::terminal_character::{AnsiCode, NamedColor};
     use yinz_types::agent::theme::*;
