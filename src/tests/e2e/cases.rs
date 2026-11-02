@@ -139,7 +139,9 @@ pub fn starts_with_one_terminal() {
             name: "Wait for app to load",
             instruction: |remote_terminal: RemoteTerminal| -> bool {
                 let mut step_is_complete = false;
-                if remote_terminal.status_bar_appears() && remote_terminal.cursor_position_is(2, 2)
+                if remote_terminal.status_bar_appears()
+                    && remote_terminal.cursor_position_is(2, 2)
+                    && remote_terminal.snapshot_contains("Pane #1")
                 {
                     step_is_complete = true;
                 }
@@ -179,6 +181,7 @@ pub fn typing_exit_closes_pane() {
                     let mut step_is_complete = false;
                     if remote_terminal.status_bar_appears()
                         && remote_terminal.cursor_position_is(2, 2)
+                        && remote_terminal.snapshot_contains("Pane #1")
                     {
                         remote_terminal.send_key(&PANE_MODE);
                         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -189,11 +192,25 @@ pub fn typing_exit_closes_pane() {
                 },
             })
             .add_step(Step {
+                name: "Name the split pane",
+                instruction: |remote_terminal: RemoteTerminal| -> bool {
+                    if remote_terminal.cursor_position_is(62, 2)
+                        && remote_terminal.status_bar_appears()
+                    {
+                        remote_terminal.name_split_pane();
+                        true
+                    } else {
+                        false
+                    }
+                },
+            })
+            .add_step(Step {
                 name: "Type exit",
                 instruction: |mut remote_terminal: RemoteTerminal| -> bool {
                     let mut step_is_complete = false;
-                    if remote_terminal.cursor_position_is(62, 3)
+                    if remote_terminal.cursor_position_is(62, 2)
                         && remote_terminal.status_bar_appears()
+                        && remote_terminal.snapshot_contains("Pane #2")
                     {
                         remote_terminal.send_key("e".as_bytes());
                         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -214,7 +231,9 @@ pub fn typing_exit_closes_pane() {
             name: "Wait for pane to close",
             instruction: |remote_terminal: RemoteTerminal| -> bool {
                 let mut step_is_complete = false;
-                if remote_terminal.cursor_position_is(2, 2) && remote_terminal.status_bar_appears()
+                if remote_terminal.cursor_position_is(2, 2)
+                    && remote_terminal.status_bar_appears()
+                    && remote_terminal.snapshot_contains("Pane #1")
                 {
                     // cursor is in the original pane
                     step_is_complete = true;
@@ -255,6 +274,7 @@ pub fn resize_terminal_window() {
                     let mut step_is_complete = false;
                     if remote_terminal.status_bar_appears()
                         && remote_terminal.cursor_position_is(2, 2)
+                        && remote_terminal.snapshot_contains("Pane #1")
                     {
                         remote_terminal.send_key(&PANE_MODE);
                         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -265,11 +285,25 @@ pub fn resize_terminal_window() {
                 },
             })
             .add_step(Step {
+                name: "Name the split pane",
+                instruction: |remote_terminal: RemoteTerminal| -> bool {
+                    if remote_terminal.cursor_position_is(62, 2)
+                        && remote_terminal.status_bar_appears()
+                    {
+                        remote_terminal.name_split_pane();
+                        true
+                    } else {
+                        false
+                    }
+                },
+            })
+            .add_step(Step {
                 name: "Change terminal window size",
                 instruction: |mut remote_terminal: RemoteTerminal| -> bool {
                     let mut step_is_complete = false;
-                    if remote_terminal.cursor_position_is(62, 3)
+                    if remote_terminal.cursor_position_is(62, 2)
                         && remote_terminal.status_bar_appears()
+                        && remote_terminal.snapshot_contains("Pane #2")
                     {
                         // new pane has been opened and focused
                         remote_terminal.change_size(100, 24);
@@ -283,7 +317,10 @@ pub fn resize_terminal_window() {
             name: "wait for terminal to be resized and app to be re-rendered",
             instruction: |remote_terminal: RemoteTerminal| -> bool {
                 let mut step_is_complete = false;
-                if remote_terminal.cursor_position_is(52, 3) && remote_terminal.ctrl_plus_appears()
+                if remote_terminal.cursor_position_is(52, 2)
+                    && remote_terminal.ctrl_plus_appears()
+                    && remote_terminal.snapshot_contains("Pane #1")
+                    && remote_terminal.snapshot_contains("Pane #2")
                 {
                     // size has been changed
                     step_is_complete = true;
@@ -400,6 +437,7 @@ pub fn send_blocking_command_through_the_cli() {
                     let mut step_is_complete = false;
                     if remote_terminal.status_bar_appears()
                         && remote_terminal.cursor_position_is(2, 2)
+                        && remote_terminal.snapshot_contains("Pane #1")
                     {
                         std::thread::sleep(std::time::Duration::from_millis(100));
                         remote_terminal
@@ -455,7 +493,8 @@ pub fn send_blocking_command_through_the_cli() {
                 let mut step_is_complete = false;
                 // wait until echo $? is visible, the exit status rendered, and the cursor is back
                 // at a blank prompt, which means the shell command actually executed
-                if remote_terminal.snapshot_contains("echo $?")
+                if remote_terminal.snapshot_contains("Pane #1")
+                    && remote_terminal.snapshot_contains("echo $?")
                     && remote_terminal.snapshot_contains("42")
                     && remote_terminal.snapshot_contains("$ \u{2588}")
                     && remote_terminal.status_bar_appears()

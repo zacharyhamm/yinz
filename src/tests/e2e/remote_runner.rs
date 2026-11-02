@@ -40,6 +40,20 @@ fn ssh_connect() -> ssh2::Session {
     sess
 }
 
+// Run fixture actions on a separate SSH channel so they do not alter shell contents.
+fn run_fixture_action(action: &str) {
+    let session = ssh_connect();
+    let mut channel = session.channel_session().unwrap();
+    channel
+        .exec(&format!(
+            "{YINZ_EXECUTABLE_LOCATION} --data-dir {YINZ_DATA_DIR} --session {SESSION_NAME} action {action}"
+        ))
+        .unwrap();
+    channel.read_to_end(&mut Vec::new()).unwrap();
+    channel.wait_close().unwrap();
+    assert_eq!(channel.exit_status().unwrap(), 0);
+}
+
 fn setup_remote_environment(channel: &mut ssh2::Channel, win_size: Size) {
     let (columns, rows) = (win_size.cols as u32, win_size.rows as u32);
     channel
@@ -318,6 +332,9 @@ impl RemoteTerminal {
         channel.write_all(key).unwrap();
         channel.flush().unwrap();
     }
+    pub fn name_split_pane(&self) {
+        run_fixture_action("rename-pane 'Pane #2'");
+    }
     pub fn change_size(&mut self, cols: u32, rows: u32) {
         self.channel
             .lock()
@@ -406,13 +423,9 @@ impl RemoteRunner {
         let reader_thread =
             read_from_channel(&channel, &last_snapshot, &cursor_coordinates, &pane_geom);
         wait_for_startup(&last_snapshot);
-        // Pin the title so process-name polling cannot race terminal snapshots.
-        let naming_session = ssh_connect();
-        let mut naming_channel = naming_session.channel_session().unwrap();
-        naming_channel.exec(&format!("{YINZ_EXECUTABLE_LOCATION} --data-dir {YINZ_DATA_DIR} --session {SESSION_NAME} action rename-tab 'Tab #1'")).unwrap();
-        naming_channel.read_to_end(&mut Vec::new()).unwrap();
-        naming_channel.wait_close().unwrap();
-        assert_eq!(naming_channel.exit_status().unwrap(), 0);
+        // Pin titles so process-name polling cannot race terminal snapshots.
+        run_fixture_action("rename-tab 'Tab #1'");
+        run_fixture_action("rename-pane 'Pane #1'");
         RemoteRunner {
             steps: vec![],
             channel,

@@ -1,9 +1,10 @@
 ---
 source: src/tests/e2e/cases.rs
+assertion_line: 520
 expression: last_snapshot
 ---
- Yinz (e2e-test)  Default 
- [0] Tab #1  + 
+ Yinz (e2e-test)  [0] Tab #1  + 
+                                                                    👇 [0] Pane #1                                                                    
 $ /usr/src/yinz/yinz run --blocking --floating --close-on-exit -- bash -c 'sleep 2 && exit 42'                                                        
 terminal_1                                                                                                                                            
 $ echo $?                                                                                                                                             

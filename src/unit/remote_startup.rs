@@ -768,18 +768,20 @@ fn interrupted_startup(stage: &str, signal: Signal) {
                             },
                         })
                         .unwrap();
+                    // Switching tears down the old SSH forward, which can discard the
+                    // final ClientExited before it reaches this server. EOF is valid too;
+                    // the next bootstrap below proves the client completed the switch.
+                    // The client has stopped receiving here, so no Exit reply is needed.
                     loop {
                         match receiver.recv_client_msg() {
-                            IpcRecv::Msg(ClientToServerMsg::ClientExited, _) => break,
+                            IpcRecv::Msg(ClientToServerMsg::ClientExited, _) | IpcRecv::Eof => {
+                                break
+                            },
                             IpcRecv::Msg(_, _) => {},
-                            _ => panic!("client did not complete switch"),
+                            IpcRecv::Malformed => panic!("malformed message during client switch"),
+                            IpcRecv::Idle => panic!("timed out waiting for client switch"),
                         }
                     }
-                    sender
-                        .send_server_msg(ServerToClientMsg::Exit {
-                            exit_reason: ExitReason::Normal,
-                        })
-                        .unwrap();
                 }
             }
         }))

@@ -1,11 +1,12 @@
 ---
 source: src/tests/e2e/cases.rs
+assertion_line: 343
 expression: last_snapshot
 ---
- Yinz (e2e-test)  Default 
- Tab #1  + 
-                    [0] Pane #1                  │                    [1] Pane #2                                       
+ Yinz (e2e-test)  Tab #1  + 
+                    [0] Pane #1                  │                  👇 [1] Pane #2                                      
 $                                                │$ █                                                                   
+                                                 │                                                                      
                                                  │                                                                      
                                                  │                                                                      
                                                  │                                                                      

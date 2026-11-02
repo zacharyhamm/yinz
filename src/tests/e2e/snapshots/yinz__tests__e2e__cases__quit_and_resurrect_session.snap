@@ -1,6 +1,6 @@
 ---
 source: src/tests/e2e/cases.rs
-assertion_line: 362
+assertion_line: 377
 expression: last_snapshot
 ---
  Yinz (e2e-test)  Tab #1  [6] Tab #2  [7] Tab #3  [11] Tab #4  <ENTER> run, <ESC> drop to shell, <Ctrl-c> exit  
@@ -11,7 +11,7 @@ $                                                          │$
                                                            │                                                            
                              ┌ [3] Pane #4 ────────────────────────────────── PIN [ ] ┐                                 
                              │$                                                       │                                 
-                             │ ┌ [4] top ────────────────────────────────────── PIN [ ] ┐                               
+                             │ ┌ 👇 [4] top ─────────────────────────────────── PIN [ ] ┐                               
                              │ │                                                        │                               
                              │ │                                                        │ ┐                             
                              │ │                                                        │ │─────────────────────────────
