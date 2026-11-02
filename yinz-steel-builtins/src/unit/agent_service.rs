@@ -1474,3 +1474,120 @@ fn counts_use_panel_classification_and_publish_only_changes() {
         11
     );
 }
+
+#[test]
+fn weekly_usage_selects_only_overall_weekly_quota() {
+    let (mut runtime, _) = plugin_with_source(
+        "agent-service",
+        r#"(require "./agent-service/state.scm") (define (load _) (as-reset!))"#,
+        json!({}),
+        BTreeMap::new(),
+        "",
+    );
+    for (used, expected) in [(27.2, 72), (0.0, 100), (100.0, 0), (125.0, 0)] {
+        let response = json!({"usage":{"status":"ok","windows":[
+            {"label":"5-hour limit","used_percent":99},
+            {"label":"Weekly Sonnet","used_percent":98},
+            {"label":"Weekly limit","used_percent":used}
+        ]}});
+        assert_eq!(
+            runtime
+                .invoke("as-weekly-remaining", vec![response])
+                .unwrap(),
+            expected
+        );
+    }
+    for usage in [
+        json!(null),
+        json!({"status":"error","windows":[{"label":"Weekly limit","used_percent":1}]}),
+        json!({"status":"ok","windows":[{"label":"Weekly Opus","used_percent":1}]}),
+    ] {
+        assert_eq!(
+            runtime
+                .invoke("as-weekly-remaining", vec![json!({"usage":usage})])
+                .unwrap(),
+            json!(null)
+        );
+    }
+}
+
+#[test]
+fn weekly_usage_tracks_focus_and_throttles_requests() {
+    let (mut runtime, host) = plugin_with_source(
+        "agent-service",
+        r#"
+        (require "./agent-service/state.scm")
+        (define pending (vector #f))
+        (define (yinz-agent-control request)
+          (vector-set! pending 0 (yinz-deferred))
+          (as-set! "requests" (+ 1 (as-get "requests")))
+          (vector-ref pending 0))
+        (define (load _)
+          (as-reset!) (as-set! "requests" 0)
+          (as-set! "count-subscribers" '(42))
+          (as-set! "panes" (list (hash "pane_id" 1 "title" "codex" "command" "codex"
+            "status" "Running" "cwd" json-null "tab" '(1 "agents") "agent" json-null))))
+        (define (focus id) (as-set! "focused" id) (as-publish-counts! #f))
+        (define (finish used)
+          (yinz-resolve! (vector-ref pending 0) (hash "usage" (hash "status" "ok"
+            "windows" (list (hash "label" "Weekly limit" "used_percent" used))))) (yinz-async-poll) #t)
+        (define (fail) (yinz-reject! (vector-ref pending 0) "unavailable") (yinz-async-poll) #t)
+        "#,
+        json!({}),
+        BTreeMap::new(),
+        "(define test-clock (vector 0)) (define (yinz-now-ms) (vector-ref test-clock 0))",
+    );
+    runtime.invoke("focus", vec![json!(1)]).unwrap();
+    runtime.invoke("focus", vec![json!(1)]).unwrap();
+    assert_eq!(
+        runtime.invoke("as-get", vec![json!("requests")]).unwrap(),
+        1
+    );
+    runtime.invoke("focus", vec![json!(null)]).unwrap();
+    runtime.invoke("finish", vec![json!(27.2)]).unwrap();
+    assert_eq!(
+        runtime
+            .invoke("as-get", vec![json!("published-usage")])
+            .unwrap(),
+        json!(null)
+    );
+    runtime.invoke("focus", vec![json!(1)]).unwrap();
+    assert_eq!(
+        runtime
+            .invoke("as-get", vec![json!("published-usage")])
+            .unwrap(),
+        72
+    );
+    runtime.eval("(vector-set! test-clock 0 60000)").unwrap();
+    runtime.invoke("focus", vec![json!(1)]).unwrap();
+    assert_eq!(
+        runtime.invoke("as-get", vec![json!("requests")]).unwrap(),
+        2
+    );
+    runtime.invoke("fail", vec![]).unwrap();
+    runtime.invoke("focus", vec![json!(1)]).unwrap();
+    assert_eq!(
+        runtime.invoke("as-get", vec![json!("requests")]).unwrap(),
+        2
+    );
+    assert_eq!(
+        runtime
+            .invoke("as-get", vec![json!("published-usage")])
+            .unwrap(),
+        json!(null)
+    );
+    runtime
+        .eval(r#"(as-map-set! "hosts" 1 "remote") (vector-set! test-clock 0 120000)"#)
+        .unwrap();
+    runtime.invoke("focus", vec![json!(1)]).unwrap();
+    assert_eq!(
+        runtime.invoke("as-get", vec![json!("requests")]).unwrap(),
+        2
+    );
+    assert!(host
+        .lock()
+        .unwrap()
+        .commands
+        .iter()
+        .any(|c| c.get("MessageToPlugin").is_some()));
+}

@@ -3,12 +3,13 @@
 
 (define state (hash "modeInfo" (bar-default-mode) "tabs" '() "classic" #f "tipName" "quicknav"
     "copied" #f "clipboardFailure" #f "counts" (hash "busy" 0 "waiting" 0 "idle" 0)
-    "clock" (hash "time" "" "date" "") "hintRevealed" #f "newPaneHovered" #f "floatingHovered" #f))
+    "usage" json-null "clock" (hash "time" "" "date" "") "hintRevealed" #f "newPaneHovered" #f "floatingHovered" #f))
 (define service-id #f)
 (define service-seq 0)
 (define (clear-counts!)
   (set! service-seq 0)
-  (define changed (not (equal? (hash-ref state "counts") (hash "busy" 0 "waiting" 0 "idle" 0))))
+  (define changed (or (not (json-null? (hash-ref state "usage"))) (not (equal? (hash-ref state "counts") (hash "busy" 0 "waiting" 0 "idle" 0)))))
+  (set-state! "usage" json-null)
   (set-state! "counts" (hash "busy" 0 "waiting" 0 "idle" 0))
   changed)
 (define (subscribe-counts!)
@@ -40,7 +41,10 @@
           (begin
             (set! service-seq seq)
             (define visible (hash "busy" (hash-ref counts "busy") "waiting" (hash-ref counts "waiting") "idle" (hash-ref counts "idle")))
-            (define changed (not (equal? visible (hash-ref state "counts"))))
+            (define raw-usage (bar-get counts "weekly_remaining" json-null))
+            (define usage (if (and (integer? raw-usage) (<= 0 raw-usage) (<= raw-usage 100)) raw-usage json-null))
+            (define changed (or (not (equal? usage (hash-ref state "usage"))) (not (equal? visible (hash-ref state "counts")))))
+            (set-state! "usage" usage)
             (set-state! "counts" visible) changed) #f)))
     (else #f)))
 (define cached-keybinds '())

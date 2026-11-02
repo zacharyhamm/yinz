@@ -553,3 +553,24 @@ fn status_counts_reject_invalid_messages_and_clear_on_service_changes() {
         json!({"total":1,"busy":1,"waiting":0,"idle":0,"held":0,"exited":0,"unknown":0})
     ));
 }
+
+#[test]
+fn weekly_usage_renders_between_counts_and_clock_and_clears() {
+    let mut status = Status::new(false);
+    let payload = json!({"total":1,"busy":1,"waiting":0,"idle":0,"held":0,"exited":0,"unknown":0,"weekly_remaining":72});
+    assert!(status.count_message(42, 1, payload.clone()));
+    let frame = status.render(1, 200);
+    let usage = frame.find("◔ 72%").unwrap();
+    assert!(frame.find("●1").or_else(|| frame.find("1b")).unwrap() < usage);
+    assert!(usage < frame.find("00:00").unwrap());
+    for cols in 0..100 {
+        status.render(1, cols);
+    }
+    assert!(!status.count_message(99, 2, payload));
+    assert!(status.count_message(
+        42,
+        2,
+        json!({"total":1,"busy":1,"waiting":0,"idle":0,"held":0,"exited":0,"unknown":0})
+    ));
+    assert!(!status.render(1, 200).contains("◔"));
+}
