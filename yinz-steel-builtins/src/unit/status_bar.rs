@@ -557,8 +557,22 @@ fn status_counts_reject_invalid_messages_and_clear_on_service_changes() {
 #[test]
 fn weekly_usage_renders_between_counts_and_clock_and_clears() {
     let mut status = Status::new(false);
-    let payload = json!({"total":1,"busy":1,"waiting":0,"idle":0,"held":0,"exited":0,"unknown":0,"weekly_remaining":72});
+    status.tab();
+    let panes = |focused| {
+        json!({"PaneUpdate":{"panes":{"0":[
+            yinz_types::data::PaneInfo { id: yinz_types::pane_id::PaneId::from_legacy(1, false), is_focused: focused == 1, ..Default::default() },
+            yinz_types::data::PaneInfo { id: yinz_types::pane_id::PaneId::from_legacy(2, false), is_focused: focused == 2, ..Default::default() },
+            yinz_types::data::PaneInfo { id: yinz_types::pane_id::PaneId::from_legacy(3, false), is_focused: focused == 3, ..Default::default() }
+        ]}}})
+    };
+    status.event(panes(1));
+    let payload = json!({"total":1,"busy":1,"waiting":0,"idle":0,"held":0,"exited":0,"unknown":0,"weekly_remaining_by_pane":{"1":72,"2":41}});
     assert!(status.count_message(42, 1, payload.clone()));
+    let mut other_client = Status::new(false);
+    other_client.tab();
+    other_client.event(panes(2));
+    assert!(other_client.count_message(42, 1, payload.clone()));
+    assert!(other_client.render(1, 200).contains("◔ 41%"));
     let frame = status.render(1, 200);
     let usage = frame.find("◔ 72%").unwrap();
     assert!(frame.find("●1").or_else(|| frame.find("1b")).unwrap() < usage);
@@ -566,6 +580,17 @@ fn weekly_usage_renders_between_counts_and_clock_and_clears() {
     for cols in 0..100 {
         status.render(1, cols);
     }
+    // Focus switches use the cached quotas immediately, without another service message.
+    assert!(status.event(panes(2)));
+    assert!(status.render(1, 200).contains("◔ 41%"));
+    assert!(status.event(panes(3)));
+    assert!(!status.render(1, 200).contains("◔"));
+    assert!(status.event(panes(1)));
+    assert!(status.render(1, 200).contains("◔ 72%"));
+    status.event(json!({"TabUpdate":[TabInfo {active:false,..Default::default()}]}));
+    assert!(!status.render(1, 200).contains("◔"));
+    status.tab();
+    assert!(status.render(1, 200).contains("◔ 72%"));
     assert!(!status.count_message(99, 2, payload));
     assert!(status.count_message(
         42,

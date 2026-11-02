@@ -1512,82 +1512,96 @@ fn weekly_usage_selects_only_overall_weekly_quota() {
 }
 
 #[test]
-fn weekly_usage_tracks_focus_and_throttles_requests() {
+fn weekly_usage_publishes_both_providers_and_throttles_requests() {
     let (mut runtime, host) = plugin_with_source(
         "agent-service",
         r#"
         (require "./agent-service/state.scm")
-        (define pending (vector #f))
+        (define pending (vector (hash)))
         (define (yinz-agent-control request)
-          (vector-set! pending 0 (yinz-deferred))
-          (as-set! "requests" (+ 1 (as-get "requests")))
-          (vector-ref pending 0))
+          (define provider (hash-ref (hash-ref request "Usage") "provider"))
+          (define deferred (yinz-deferred))
+          (vector-set! pending 0 (hash-insert (vector-ref pending 0) provider deferred))
+          (as-set! "requests" (+ 1 (as-get "requests"))) deferred)
         (define (load _)
           (as-reset!) (as-set! "requests" 0)
           (as-set! "count-subscribers" '(42))
-          (as-set! "panes" (list (hash "pane_id" 1 "title" "codex" "command" "codex"
-            "status" "Running" "cwd" json-null "tab" '(1 "agents") "agent" json-null))))
-        (define (focus id) (as-set! "focused" id) (as-publish-counts! #f))
-        (define (finish used)
-          (yinz-resolve! (vector-ref pending 0) (hash "usage" (hash "status" "ok"
+          (as-set! "panes" (map (lambda (id command)
+            (hash "pane_id" id "title" command "command" command
+              "status" "Running" "cwd" json-null "tab" '(1 "agents") "agent" json-null))
+            '(1 2 3) '("codex" "claude" "codex"))))
+        (define (publish) (as-publish-counts! #f))
+        (define (finish provider used)
+          (yinz-resolve! (hash-ref (vector-ref pending 0) provider) (hash "usage" (hash "status" "ok"
             "windows" (list (hash "label" "Weekly limit" "used_percent" used))))) (yinz-async-poll) #t)
-        (define (fail) (yinz-reject! (vector-ref pending 0) "unavailable") (yinz-async-poll) #t)
+        (define (fail provider)
+          (yinz-reject! (hash-ref (vector-ref pending 0) provider) "unavailable") (yinz-async-poll) #t)
         "#,
         json!({}),
         BTreeMap::new(),
         "(define test-clock (vector 0)) (define (yinz-now-ms) (vector-ref test-clock 0))",
     );
-    runtime.invoke("focus", vec![json!(1)]).unwrap();
-    runtime.invoke("focus", vec![json!(1)]).unwrap();
-    assert_eq!(
-        runtime.invoke("as-get", vec![json!("requests")]).unwrap(),
-        1
-    );
-    runtime.invoke("focus", vec![json!(null)]).unwrap();
-    runtime.invoke("finish", vec![json!(27.2)]).unwrap();
-    assert_eq!(
-        runtime
-            .invoke("as-get", vec![json!("published-usage")])
-            .unwrap(),
-        json!(null)
-    );
-    runtime.invoke("focus", vec![json!(1)]).unwrap();
-    assert_eq!(
-        runtime
-            .invoke("as-get", vec![json!("published-usage")])
-            .unwrap(),
-        72
-    );
-    runtime.eval("(vector-set! test-clock 0 60000)").unwrap();
-    runtime.invoke("focus", vec![json!(1)]).unwrap();
+    // One request per provider, regardless of pane count or the shared service's focus.
+    for _ in 0..2 {
+        runtime.invoke("publish", vec![]).unwrap();
+    }
     assert_eq!(
         runtime.invoke("as-get", vec![json!("requests")]).unwrap(),
         2
-    );
-    runtime.invoke("fail", vec![]).unwrap();
-    runtime.invoke("focus", vec![json!(1)]).unwrap();
-    assert_eq!(
-        runtime.invoke("as-get", vec![json!("requests")]).unwrap(),
-        2
-    );
-    assert_eq!(
-        runtime
-            .invoke("as-get", vec![json!("published-usage")])
-            .unwrap(),
-        json!(null)
     );
     runtime
-        .eval(r#"(as-map-set! "hosts" 1 "remote") (vector-set! test-clock 0 120000)"#)
+        .invoke("finish", vec![json!("codex"), json!(27.2)])
         .unwrap();
-    runtime.invoke("focus", vec![json!(1)]).unwrap();
+    runtime
+        .invoke("finish", vec![json!("claude"), json!(59)])
+        .unwrap();
+    assert_eq!(
+        runtime
+            .invoke("as-get", vec![json!("published-usage")])
+            .unwrap(),
+        json!({"1":72,"2":41,"3":72})
+    );
+    runtime.eval("(vector-set! test-clock 0 60000)").unwrap();
+    runtime.invoke("publish", vec![]).unwrap();
     assert_eq!(
         runtime.invoke("as-get", vec![json!("requests")]).unwrap(),
-        2
+        4
     );
-    assert!(host
-        .lock()
-        .unwrap()
+    runtime.invoke("fail", vec![json!("codex")]).unwrap();
+    runtime.invoke("publish", vec![]).unwrap();
+    assert_eq!(
+        runtime.invoke("as-get", vec![json!("requests")]).unwrap(),
+        4
+    );
+    assert_eq!(
+        runtime
+            .invoke("as-get", vec![json!("published-usage")])
+            .unwrap(),
+        json!({"1":null,"2":41,"3":null})
+    );
+    runtime.eval(r#"(as-map-set! "hosts" 2 "remote")"#).unwrap();
+    runtime.invoke("publish", vec![]).unwrap();
+    // A late result for a remote/removed pane must not reintroduce its local quota.
+    runtime
+        .invoke("finish", vec![json!("claude"), json!(10)])
+        .unwrap();
+    assert_eq!(
+        runtime
+            .invoke("as-get", vec![json!("published-usage")])
+            .unwrap(),
+        json!({"1":null,"3":null})
+    );
+    let host = host.lock().unwrap();
+    let message = host
         .commands
         .iter()
-        .any(|c| c.get("MessageToPlugin").is_some()));
+        .filter_map(|c| c.get("MessageToPlugin"))
+        .rfind(|m| m["message_name"] == "agent_counts")
+        .unwrap();
+    let payload: serde_json::Value =
+        serde_json::from_str(message["message_payload"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        payload["weekly_remaining_by_pane"],
+        json!({"1":null,"3":null})
+    );
 }
