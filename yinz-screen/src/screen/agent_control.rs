@@ -1134,7 +1134,7 @@ impl Screen {
                 self.agent_reply(&client, response);
                 return;
             },
-            Spawn { .. } | SpawnNewProject { .. } | Usage { .. } => {
+            Spawn { .. } | SpawnNewProject { .. } | CreateProject { .. } | Usage { .. } => {
                 self.agent_reply(&client, AgentResponse::new(AgentOutcome::Rejected));
                 return;
             },
@@ -1926,6 +1926,7 @@ impl Screen {
             | Restart { .. }
             | Spawn { .. }
             | SpawnNewProject { .. }
+            | CreateProject { .. }
             | SpawnPlacementSupport
             | SpawnSuppressedSupport
             | SpawnBubblewrapSupport => {},

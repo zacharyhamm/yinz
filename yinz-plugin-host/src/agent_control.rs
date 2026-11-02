@@ -78,6 +78,12 @@ pub fn control_agent(
     };
     let result = (|| -> Result<AgentResponse, String> {
         let request = match request {
+            AgentRequest::CreateProject { name, destination } => {
+                let (name, root) = create_project(&name, &destination, senders, data)?;
+                let mut response = AgentResponse::new(AgentOutcome::Ok);
+                response.project = Some(yinz_types::agent::control::CreatedProject { name, root });
+                return Ok(response);
+            },
             AgentRequest::Usage { provider } => {
                 let mut response = AgentResponse::new(AgentOutcome::Ok);
                 response.usage = Some(crate::provider_usage::collect(&provider));

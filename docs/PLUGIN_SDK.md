@@ -496,6 +496,17 @@ Agent waits and prompts have no default deadline. Cancel their deferred result
 to release listeners. Agent control uses the host protocol; sending text uses
 terminal input.
 
+`yinz-agent-control` also accepts `(hash "CreateProject" (hash "name" name
+"destination" path))` with `RunCommands` permission. It creates a new Git
+repository on `main`, without a commit, and registers it. Relative destinations
+resolve from the plugin's host folder; absolute destinations are host paths.
+The parent must exist, and existing destinations or conflicting registrations
+are rejected before creation. Success returns `"outcome": "ok"` and a `"project"`
+object containing the registered `"name"` and canonical `"root"`. Failure messages
+identify directories retained after partial creation. To launch afterwards, send
+`Spawn` with that project name, its explicit root as `cwd`, and
+`"allow_outside_worktree": true` in the spec.
+
 `yinz-agent-restart` requires `RunCommands` and an explicit `"session"` option:
 `"resume"` uses the pane's remembered session id, and `"fresh"` starts a new
 conversation. Optional `"prompt"` is a string or `json-null`. `"context"` is a

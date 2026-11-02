@@ -304,6 +304,10 @@ impl FloatingPanes {
                 *self.viewport.borrow(),
                 pane.position_and_size(),
             ));
+            // Layout creation may have notified the plugin before this placement
+            // enlarged the pane. Its renderer must receive the final content size,
+            // not keep laying out a small frame in the new pane's top-left corner.
+            resize_pty!(pane, os_api, self.senders, self.character_cell_size).non_fatal();
         }
         self.desired_pane_positions
             .insert(pane_id, pane.position_and_size());

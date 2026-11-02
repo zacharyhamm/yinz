@@ -367,6 +367,9 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     serde_json::from_str(&request).context("decode agent request")?;
                 if let yinz_types::agent::control::AgentRequest::SpawnNewProject {
                     destination, ..
+                }
+                | yinz_types::agent::control::AgentRequest::CreateProject {
+                    destination, ..
                 } = &mut request
                     && destination.is_relative()
                 {

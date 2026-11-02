@@ -100,7 +100,7 @@
     (if setup?
       (begin
         (set! screen "presets") (set! preset-selected 0)
-        (yinz-command (hash "RenamePluginPane" (list id "First Run Setup Wizard (Step 1/2)"))))
+        (yinz-command (hash "RenamePluginPane" (list id "First Run Setup Wizard (Step 1/3)"))))
       (yinz-command (hash "RenamePluginPane" (list id "Configuration"))))))
 (define (update event)
   (cond

@@ -4848,6 +4848,7 @@ fn test_server_messages() {
             output: Some("Ready\n>".into()),
             launch_resources: None,
             usage: None,
+            project: None,
             message: Some("approval required".into()),
             acknowledged: true,
             turn_id: Some("turn-7".into()),
@@ -5690,6 +5691,24 @@ fn global_background_opacity_wire_range_and_roundtrip() {
         })
         .is_err());
     }
+}
+
+#[test]
+fn agent_create_project_roundtrip() {
+    use yinz_types::agent::control::{AgentRequest, AgentResponse, CreatedProject};
+    test_client_roundtrip!(ClientToServerMsg::AgentControl(
+        AgentRequest::CreateProject {
+            name: "项目 with spaces".into(),
+            destination: "/parent/项目 with spaces".into(),
+        }
+    ));
+    test_server_roundtrip!(ServerToClientMsg::AgentControl(AgentResponse {
+        project: Some(CreatedProject {
+            name: "项目 with spaces".into(),
+            root: "/canonical/parent/项目 with spaces".into(),
+        }),
+        ..Default::default()
+    }));
 }
 
 #[test]

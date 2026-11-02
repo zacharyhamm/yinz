@@ -84,7 +84,7 @@ fn configuration_load_and_wizard_preserve_pane_setup_contract() {
     let mut setup = Configuration::new(true);
     assert!(setup
         .commands()
-        .contains(&json!({"RenamePluginPane":[42,"First Run Setup Wizard (Step 1/2)"]})));
+        .contains(&json!({"RenamePluginPane":[42,"First Run Setup Wizard (Step 1/3)"]})));
     assert_eq!(
         setup
             .commands()
@@ -129,6 +129,7 @@ fn project_setup_at(cwd: &str) -> Configuration {
             json!({"columns":[],"rows":[],"truncated":false,"next_cursor":null}),
         ),
         ("OpenTerminalNearPlugin".into(), json!({"Terminal":7})),
+        ("GetAgentProviders".into(), json!([])),
     ]);
     plugin.press("Enter");
     plugin.event(json!({"HostFolderChanged":"/"}));
@@ -173,6 +174,11 @@ fn configuration_project_picker_preserves_input_on_cancel_and_opens_selected_dir
         .as_array()
         .unwrap()
         .is_empty());
+    assert!(plugin.render(30, 100).contains("Start working"));
+    assert!(!plugin.commands().contains(&json!("CloseSelf")));
+    plugin.press("Tab");
+    plugin.press("Tab");
+    plugin.press("Enter");
     assert_eq!(
         plugin.last("OpenTerminalNearPlugin")["path"],
         "/host/chosen folder"
@@ -262,7 +268,7 @@ fn configuration_project_probe_validates_directories_without_interpreting_path_t
             .unwrap()
     };
     let temp = tempfile::tempdir().unwrap();
-    let folder = temp.path().join("repo 'quoted' $(false) ");
+    let folder = temp.path().join("repo 目录 'quoted' $(false) ");
     std::fs::create_dir(&folder).unwrap();
     let alias = temp.path().join("alias");
     std::os::unix::fs::symlink(&folder, &alias).unwrap();
@@ -272,6 +278,25 @@ fn configuration_project_probe_validates_directories_without_interpreting_path_t
         String::from_utf8(output.stdout).unwrap(),
         format!("{}\n", folder.canonicalize().unwrap().display())
     );
+    for path in ["~".to_owned(), "~/alias".to_owned(), "alias".to_owned()] {
+        let output = std::process::Command::new(args[0].as_str().unwrap())
+            .args(args[1..args.len() - 2].iter().map(|s| s.as_str().unwrap()))
+            .arg(temp.path())
+            .arg(&path)
+            .env("HOME", temp.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let expected = if path == "~" {
+            temp.path().canonicalize().unwrap()
+        } else {
+            folder.canonicalize().unwrap()
+        };
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("{}\n", expected.display())
+        );
+    }
     let file = temp.path().join("file");
     std::fs::write(&file, "").unwrap();
     assert!(!probe(&file).status.success());
@@ -809,12 +834,20 @@ fn assert_wizard_bounds(output: &str, cols: usize, rows: usize) {
         let coordinates: Vec<_> = component.split(';').nth(1).unwrap().split('/').collect();
         let x: usize = coordinates[0].parse().unwrap();
         let y: usize = coordinates[1].parse().unwrap();
-        let width: usize = coordinates[2].parse().unwrap_or(0);
+        let width: usize = coordinates[2].parse().unwrap_or_else(|_| {
+            // Wizard ribbon labels are ASCII; the renderer adds one padding cell per side.
+            rendered_text(&format!("\x1bPy{component}")).chars().count() + 2
+        });
         assert!(
             x < cols && x + width <= cols && y < rows,
             "{coordinates:?} in {cols}x{rows}"
         );
-        assert!(occupied.insert(y), "overlap on row {y}");
+        for column in x..x + width {
+            assert!(
+                occupied.insert((column, y)),
+                "overlap at {column},{y} in {cols}x{rows}: {output:?}"
+            );
+        }
     }
 }
 
@@ -860,6 +893,7 @@ fn setup_project_resizes_preserve_drafts_validation_and_pending_picker() {
     let mut plugin = project_setup_at(path);
     plugin.press("Tab");
     plugin.event(json!({"PastedText":"draft project"}));
+    plugin.press("Tab");
     plugin.press("Tab");
     plugin.press("Tab");
     plugin.ctrl("f");
@@ -908,4 +942,334 @@ fn setup_project_resizes_preserve_drafts_validation_and_pending_picker() {
             assert!(text.contains(path) && text.contains("draft project"));
         }
     }
+}
+
+fn choose_new_project(plugin: &mut Configuration, folder: &str) {
+    plugin.key(json!("Tab"), &["Shift"]);
+    plugin.press("Enter");
+    plugin.press("Down");
+    plugin.press("Enter");
+    assert!(plugin.render(40, 120).contains("Parent directory"));
+    plugin.press("Tab");
+    plugin.event(json!({"PastedText":folder}));
+}
+
+fn project_control_reply(plugin: &mut Configuration, response: Value) {
+    let request = plugin.last("AgentControl");
+    plugin.event(json!({"CustomMessage":["agent-response", json!({
+        "id":request["id"], "response":response
+    }).to_string()]}));
+}
+
+fn project_control_request(plugin: &Configuration) -> yinz_types::agent::control::AgentRequest {
+    serde_json::from_str(plugin.last("AgentControl")["request"].as_str().unwrap()).unwrap()
+}
+
+fn assert_setup_sizes(plugin: &mut Configuration) {
+    for (cols, rows) in [
+        (120, 40),
+        (80, 24),
+        (60, 20),
+        (40, 12),
+        (20, 8),
+        (1, 1),
+        (0, 8),
+        (20, 0),
+        (120, 40),
+    ] {
+        assert_wizard_bounds(&plugin.runtime.render(rows, cols).unwrap(), cols, rows);
+    }
+}
+
+#[test]
+fn configuration_new_project_and_launch_keep_pending_state_retry_and_focus() {
+    use yinz_types::agent::control::AgentRequest;
+    let mut plugin = project_setup_at("/work/目录 parent");
+    choose_new_project(&mut plugin, "new 项目");
+    assert_setup_sizes(&mut plugin);
+    let context = submit_project(&mut plugin);
+    plugin.event(json!({"RunCommandResult":[0,"/work/目录 parent\n".as_bytes(),[],context]}));
+    assert_eq!(
+        project_control_request(&plugin),
+        AgentRequest::CreateProject {
+            name: "new 项目".into(),
+            destination: "/work/目录 parent/new 项目".into()
+        }
+    );
+    let before = plugin.commands().len();
+    plugin.press("Enter");
+    plugin.press("Tab");
+    assert_setup_sizes(&mut plugin);
+    assert_eq!(
+        plugin.commands()[before..]
+            .iter()
+            .filter(|c| c.get("AgentControl").is_some())
+            .count(),
+        0
+    );
+    assert!(!plugin.render(40, 120).contains("Start working"));
+    project_control_reply(
+        &mut plugin,
+        json!({"outcome":"ok", "project":{"name":"new 项目","root":"/resolved/new 项目"}}),
+    );
+    let text = plugin.render(40, 120);
+    assert!(
+        text.contains("Start working") && text.contains("/resolved/new 项目"),
+        "{text}"
+    );
+    assert!(plugin
+        .commands()
+        .contains(&json!({"RenamePluginPane":[42,"First Run Setup Wizard (Step 3/3)"]})));
+    // Select a different provider from the catalog's default, then launch.
+    plugin.press("Enter");
+    plugin.press("Down");
+    plugin.press("Enter");
+    plugin.press("Tab");
+    plugin.press("Enter");
+    let AgentRequest::Spawn {
+        spec, cwd, project, ..
+    } = project_control_request(&plugin)
+    else {
+        panic!("spawn expected")
+    };
+    let offered = plugin
+        .runtime
+        .invoke(
+            "yinz-agent-model",
+            vec![json!("launch"), json!("Offered"), Value::Null],
+        )
+        .unwrap();
+    assert_eq!(spec.kind.as_deref(), offered[1].as_str());
+    assert_eq!(cwd.unwrap().to_str(), Some("/resolved/new 项目"));
+    assert_eq!(project.as_deref(), Some("new 项目"));
+    assert_eq!(spec.allow_outside_worktree, Some(true));
+    assert!(spec.branch.is_none() && spec.worktree.is_none() && spec.prompt.is_none());
+    assert!(spec.model.is_none() && spec.permission_mode.is_none());
+    assert_setup_sizes(&mut plugin);
+    let launch = plugin.last("AgentControl");
+    plugin.press("Enter");
+    assert_eq!(plugin.last("AgentControl"), launch);
+    project_control_reply(
+        &mut plugin,
+        json!({"outcome":"rejected","message":"provider unavailable"}),
+    );
+    assert!(plugin.render(40, 120).contains("provider unavailable"));
+    assert_setup_sizes(&mut plugin);
+    plugin.press("Enter");
+    assert_eq!(plugin.last("AgentControl")["request"], launch["request"]);
+    assert_ne!(plugin.last("AgentControl")["id"], launch["id"]);
+    project_control_reply(
+        &mut plugin,
+        json!({"outcome":"ok","spawned":{"pane_id":"terminal_17"}}),
+    );
+    assert!(plugin.commands().ends_with(&[
+        json!("CloseSelf"),
+        json!({"FocusTerminalPane":[17,false,false]})
+    ]));
+}
+
+#[test]
+fn configuration_new_project_failures_preserve_drafts_and_allow_terminal_fallback() {
+    let mut plugin = project_setup();
+    choose_new_project(&mut plugin, "new-project");
+    let context = submit_project(&mut plugin);
+    plugin.event(json!({"RunCommandResult":[0,b"/work/repo\n".to_vec(),[],context]}));
+    project_control_reply(
+        &mut plugin,
+        json!({"outcome":"rejected","message":"git failed; retained project directory /work/repo/new-project"}),
+    );
+    assert_setup_sizes(&mut plugin);
+    let text = plugin.render(40, 120);
+    assert!(text.contains("retained project directory") && text.contains("new-project"));
+    assert!(!plugin.commands().contains(&json!("CloseSelf")));
+    plugin.press("Enter");
+    let context = plugin.last("RunCommand")[3].clone();
+    plugin.event(json!({"RunCommandResult":[0,b"/work/repo\n".to_vec(),[],context]}));
+    project_control_reply(
+        &mut plugin,
+        json!({"outcome":"ok","project":{"name":"new-project","root":"/work/repo/new-project"}}),
+    );
+    plugin.press("Tab");
+    plugin.press("Enter");
+    project_control_reply(
+        &mut plugin,
+        json!({"outcome":"failed","message":"provider unavailable"}),
+    );
+    let creations = plugin
+        .commands()
+        .iter()
+        .filter(|c| c.get("AgentControl").is_some())
+        .count();
+    plugin
+        .host
+        .lock()
+        .unwrap()
+        .replies
+        .insert("OpenTerminalNearPlugin".into(), Value::Null);
+    plugin.press("Tab");
+    plugin.press("Enter");
+    assert!(plugin.render(40, 120).contains("shell could not be opened"));
+    plugin
+        .host
+        .lock()
+        .unwrap()
+        .replies
+        .insert("OpenTerminalNearPlugin".into(), json!({"Terminal":7}));
+    plugin.press("Enter");
+    assert_eq!(
+        plugin.last("OpenTerminalNearPlugin")["path"],
+        "/host/work/repo/new-project"
+    );
+    assert_eq!(
+        plugin
+            .commands()
+            .iter()
+            .filter(|c| c.get("AgentControl").is_some())
+            .count(),
+        creations
+    );
+    assert!(plugin.commands().ends_with(&[
+        json!("CloseSelf"),
+        json!({"FocusTerminalPane":[7,false,false]})
+    ]));
+}
+
+#[test]
+fn configuration_new_project_rejects_folder_paths_and_skip_ignores_late_creation() {
+    for folder in ["", ".", "..", "nested/path", "/absolute"] {
+        let mut plugin = project_setup();
+        choose_new_project(&mut plugin, folder);
+        plugin.press("Tab");
+        plugin.press("Tab");
+        plugin.press("Enter");
+        assert!(plugin.render(40, 120).contains("without slashes"));
+        assert!(!plugin
+            .commands()
+            .iter()
+            .any(|c| c.get("RunCommand").is_some()));
+    }
+    let mut plugin = project_setup();
+    choose_new_project(&mut plugin, "new-project");
+    let context = submit_project(&mut plugin);
+    plugin.event(json!({"RunCommandResult":[0,b"/work/repo\n".to_vec(),[],context]}));
+    plugin.press("Esc");
+    let before = plugin.commands().len();
+    project_control_reply(
+        &mut plugin,
+        json!({"outcome":"ok","project":{"name":"new-project","root":"/work/repo/new-project"}}),
+    );
+    assert!(!plugin.commands()[before..]
+        .iter()
+        .any(|c| c.get("RenamePluginPane").is_some()));
+}
+
+#[test]
+fn configuration_registered_project_can_finish_without_launching() {
+    for escape in [false, true] {
+        let mut plugin = project_setup();
+        let context = submit_project(&mut plugin);
+        plugin.event(json!({"RunCommandResult":[0,b"/work/repo\n".to_vec(),[],context]}));
+        if escape {
+            plugin.press("Esc");
+        } else {
+            plugin.press("Tab");
+            plugin.press("Tab");
+            plugin.press("Tab");
+            plugin.press("Enter");
+        }
+        assert!(plugin.commands().contains(&json!("CloseSelf")));
+        assert!(!plugin
+            .commands()
+            .iter()
+            .any(|c| c.get("OpenTerminalNearPlugin").is_some() || c.get("AgentControl").is_some()));
+        assert!(plugin
+            .commands()
+            .iter()
+            .any(|c| c.get("DataApply").is_some()));
+    }
+}
+
+#[test]
+fn configuration_new_project_browsing_and_mode_switches_preserve_both_drafts() {
+    let mut plugin = project_setup();
+    plugin.press("Tab");
+    plugin.event(json!({"PastedText":"existing name"}));
+    plugin.key(json!("Tab"), &["Shift"]);
+    choose_new_project(&mut plugin, "new folder");
+    plugin.press("Tab");
+    plugin.event(json!({"PastedText":"custom project"}));
+    plugin.key(json!("Tab"), &["Shift"]);
+    plugin.key(json!("Tab"), &["Shift"]);
+    plugin.ctrl("f");
+    let pick = plugin.last("Pick")["Start"].clone();
+    assert_eq!(
+        pick["options"],
+        json!({"kind":"directory","roots":["/work/repo"]})
+    );
+    assert_setup_sizes(&mut plugin);
+    plugin.event(
+        json!({"PickResult":{"request_id":pick["request_id"],"result":{"Ok":"/parent 目录"}}}),
+    );
+    // Return to existing-folder mode, then back to creation, without rebuilding either form.
+    plugin.key(json!("Tab"), &["Shift"]);
+    plugin.press("Enter");
+    plugin.press("Up");
+    plugin.press("Enter");
+    let text = plugin.render(40, 120);
+    assert!(text.contains("existing name") && text.contains("/work/repo"));
+    plugin.key(json!("Tab"), &["Shift"]);
+    plugin.press("Enter");
+    plugin.press("Down");
+    plugin.press("Enter");
+    let text = plugin.render(40, 120);
+    assert!(
+        text.contains("custom project")
+            && text.contains("new folder")
+            && text.contains("/parent 目录")
+    );
+    plugin.press("Tab");
+    let context = submit_project(&mut plugin);
+    plugin.event(json!({"RunCommandResult":[0,"/parent 目录\n".as_bytes(),[],context]}));
+    assert_eq!(
+        project_control_request(&plugin),
+        yinz_types::agent::control::AgentRequest::CreateProject {
+            name: "custom project".into(),
+            destination: "/parent 目录/new folder".into()
+        }
+    );
+}
+
+#[test]
+fn configuration_existing_folder_uses_registered_name_with_surrounding_spaces() {
+    let mut plugin = project_setup_at("/work/ repo ");
+    let context = submit_project(&mut plugin);
+    plugin.event(json!({"RunCommandResult":[0,b"/work/ repo \n".to_vec(),[],context]}));
+    plugin.press("Tab");
+    plugin.press("Enter");
+    let yinz_types::agent::control::AgentRequest::Spawn { project, cwd, .. } =
+        project_control_request(&plugin)
+    else {
+        panic!("spawn expected")
+    };
+    assert_eq!(project.as_deref(), Some("repo"));
+    assert_eq!(cwd.unwrap().to_str(), Some("/work/ repo "));
+
+    let mut plugin = project_setup_at("/work/ repo ");
+    plugin.host.lock().unwrap().replies.insert(
+        "DataFetch".into(),
+        json!({
+            "columns":["id","rev","name","root"],
+            "rows":[[{"Int":1},{"Int":4},{"Text":"repo"},{"Text":"/other/repo"}]],
+            "truncated":false,"next_cursor":null
+        }),
+    );
+    let context = submit_project(&mut plugin);
+    plugin.event(json!({"RunCommandResult":[0,b"/work/ repo \n".to_vec(),[],context]}));
+    assert!(plugin
+        .render(30, 100)
+        .contains("already uses this project name"));
+    assert!(!plugin
+        .commands()
+        .iter()
+        .any(|c| c.get("DataApply").is_some()));
 }

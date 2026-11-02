@@ -2,6 +2,7 @@
 use super::*;
 use prost::Message;
 use std::path::Path;
+use yinz_types::geometry::{FloatingPaneCoordinates, PercentOrFixed};
 use yinz_types::pick::{PickCommand, PickKind, PickRequest, PickResult};
 
 pub(super) struct PendingPick {
@@ -263,7 +264,12 @@ impl PluginBridge {
                     should_focus: Some(true),
                     client_id: Some(client),
                     completion: None,
-                    overlay: Some(yinz_types::data::OverlayPlacement::dismissible(None)),
+                    overlay: Some(yinz_types::data::OverlayPlacement::dismissible(Some(
+                        FloatingPaneCoordinates {
+                            width: Some(PercentOrFixed::Percent(80)),
+                            ..Default::default()
+                        },
+                    ))),
                     reserved_slot: None,
                 }));
                 if let Err(error) = self.load_plugin(

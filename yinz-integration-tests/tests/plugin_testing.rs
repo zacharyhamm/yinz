@@ -2,6 +2,25 @@ use std::{path::Path, sync::atomic::AtomicBool};
 use yinz_types::authoring::{PluginTestKind, PluginTestOptions};
 
 #[test]
+fn first_run_configuration_integration_suite() {
+    let data = tempfile::tempdir().unwrap();
+    yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), data.path()).unwrap();
+    let report = yinz_server::plugin_testing::run_named(
+        data.path(),
+        Path::new("/unused"),
+        "configuration",
+        &PluginTestOptions {
+            kind: PluginTestKind::Integration,
+            ..Default::default()
+        },
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(report.passed(), "{report:#?}");
+}
+
+#[test]
 fn installed_builtin_scheme_integration_suites() {
     let data = tempfile::tempdir().unwrap();
     yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), data.path()).unwrap();

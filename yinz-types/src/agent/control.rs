@@ -144,6 +144,11 @@ pub enum AgentRequest {
         project: Option<String>,
         remote_host: Option<String>,
     },
+    /// Create and register a Git project without launching a pane.
+    CreateProject {
+        name: String,
+        destination: PathBuf,
+    },
     /// Distinct wire variant so older servers cannot silently launch in another checkout.
     SpawnNewProject {
         name: String,
@@ -263,11 +268,19 @@ pub struct ProviderUsageWindow {
     pub resets_at_ms: Option<u64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreatedProject {
+    pub name: String,
+    pub root: PathBuf,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AgentResponse {
     pub outcome: AgentOutcome,
     pub agents: Vec<AgentStatus>,
     pub spawned: Option<SpawnedAgent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<CreatedProject>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restarted: Option<RestartedAgent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

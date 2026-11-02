@@ -1783,6 +1783,26 @@ fn new_project_spawn_git_failure_retains_directory_without_registration() {
     );
     assert!(root.is_dir());
     assert!(projects(&data).unwrap().rows.is_empty());
+    let retained = root.with_file_name("create-only");
+    let response = control_agent(
+        AgentRequest::CreateProject {
+            name: "create-only".into(),
+            destination: retained.clone(),
+        },
+        crate::ClientId::new(1),
+        &ThreadSenders::default(),
+        &data,
+    );
+    assert_eq!(response.outcome, AgentOutcome::Rejected);
+    assert!(response.project.is_none());
+    let message = response.message.unwrap();
+    assert!(
+        message.contains("initialize project repository")
+            && message.contains("retained project directory"),
+        "{message}"
+    );
+    assert!(retained.is_dir());
+    assert!(projects(&data).unwrap().rows.is_empty());
 }
 
 #[test]
@@ -1832,7 +1852,7 @@ fn new_project_spawn_never_overwrites_a_concurrent_name_or_root_registration() {
             self.inner.apply(namespace, mutations)
         }
     }
-    for same_name in [true, false] {
+    for (same_name, create_only) in [(true, false), (false, false), (true, true), (false, true)] {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap().join("new-app");
         let other = project_data::projects::validate(
@@ -1855,19 +1875,164 @@ fn new_project_spawn_never_overwrites_a_concurrent_name_or_root_registration() {
                 .unwrap();
         }
         let response = control_agent(
-            new_project_request(root.clone()),
+            if create_only {
+                AgentRequest::CreateProject {
+                    name: "new-app".into(),
+                    destination: root.clone(),
+                }
+            } else {
+                new_project_request(root.clone())
+            },
             crate::ClientId::new(1),
             &ThreadSenders::default(),
             &data,
         );
-        assert_eq!(response.outcome, AgentOutcome::Failed, "{response:?}");
+        assert_eq!(
+            response.outcome,
+            if create_only {
+                AgentOutcome::Rejected
+            } else {
+                AgentOutcome::Failed
+            },
+            "{response:?}"
+        );
         assert!(response
             .message
             .unwrap()
-            .contains("registration did not succeed"));
+            .contains("retained project directory"));
         assert!(root.join(".git").is_dir());
         let registry = project_data::projects::from_rows(&projects(&data).unwrap());
         assert_eq!(registry.len(), 1);
         assert_eq!(registry[&other.name].root, other.root);
     }
+}
+
+#[test]
+fn create_project_control_uses_permissions_relative_paths_and_correlated_delivery() {
+    use std::collections::HashSet;
+    use yinz_runtime::channels::{self, SenderWithContext};
+    use yinz_types::data::{Event, PermissionType, PluginCommand};
+
+    let mut env = crate::test_env::test_env();
+    let temp = tempfile::tempdir().unwrap();
+    env.plugin_cwd = temp.path().canonicalize().unwrap();
+    env.data_access = std::sync::Arc::new(new_project_data(temp.path()));
+    env.client_id = crate::ClientId::new(7);
+    env.generation = Some(91);
+    let (to_plugin, plugin_rx) = channels::unbounded();
+    let (to_screen, screen_rx) = channels::unbounded();
+    let (to_pty, pty_rx) = channels::unbounded();
+    env.senders = ThreadSenders {
+        to_plugin: Some(SenderWithContext::new(to_plugin)),
+        to_screen: Some(SenderWithContext::new(to_screen)),
+        to_pty: Some(SenderWithContext::new(to_pty)),
+        ..Default::default()
+    };
+    let command = PluginCommand::AgentControl {
+        id: "create-fixture".into(),
+        request: serde_json::to_string(&AgentRequest::CreateProject {
+            name: "项目 with spaces".into(),
+            destination: "项目 with spaces".into(),
+        })
+        .unwrap(),
+    };
+    crate::yinz_exports::run_plugin_command(&mut env, command.clone()).unwrap();
+    assert!(!env.plugin_cwd.join("项目 with spaces").exists());
+    *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::RunCommands]));
+    crate::yinz_exports::run_plugin_command(&mut env, command).unwrap();
+    let response = loop {
+        let (instruction, _) = plugin_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        if let PluginInstruction::PluginEvent(
+            plugin,
+            client,
+            generation,
+            Event::CustomMessage(name, body),
+        ) = instruction
+        {
+            assert_eq!(plugin, env.plugin_id);
+            assert_eq!(client, env.client_id);
+            assert_eq!(generation, 91);
+            assert_eq!(name, "agent-response");
+            let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(body["id"], "create-fixture");
+            break serde_json::from_value::<AgentResponse>(body["response"].clone()).unwrap();
+        }
+    };
+    assert_eq!(response.outcome, AgentOutcome::Ok, "{response:?}");
+    let created = response.project.unwrap();
+    assert_eq!(created.name, "项目 with spaces");
+    assert_eq!(created.root, env.plugin_cwd.join("项目 with spaces"));
+    assert_eq!(
+        std::fs::read_to_string(created.root.join(".git/HEAD")).unwrap(),
+        "ref: refs/heads/main\n"
+    );
+    assert!(!created.root.join(".git/refs/heads/main").exists());
+    assert_eq!(
+        project_data::projects::from_rows(&projects(&env.data_access).unwrap())[&created.name].root,
+        created.root.to_str().unwrap()
+    );
+    assert!(screen_rx.is_empty());
+    assert!(pty_rx.is_empty());
+}
+
+#[test]
+fn create_project_control_rejects_conflicts_and_inaccessible_parents_before_creation() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = new_project_data(temp.path());
+    let root = temp.path().canonicalize().unwrap().join("project");
+    let create = |name: &str, destination: PathBuf| {
+        control_agent(
+            AgentRequest::CreateProject {
+                name: name.into(),
+                destination,
+            },
+            crate::ClientId::new(1),
+            &ThreadSenders::default(),
+            &data,
+        )
+    };
+    for destination in [root.join("missing/child"), "relative".into()] {
+        assert_eq!(
+            create("project", destination).outcome,
+            AgentOutcome::Rejected
+        );
+        assert!(!root.exists());
+    }
+    std::fs::write(&root, "existing file").unwrap();
+    for destination in [root.clone(), root.join("child")] {
+        assert_eq!(
+            create("project", destination).outcome,
+            AgentOutcome::Rejected
+        );
+        assert_eq!(std::fs::read_to_string(&root).unwrap(), "existing file");
+    }
+    std::fs::remove_file(&root).unwrap();
+    for (name, registered_root) in [("project", "/elsewhere"), ("other", root.to_str().unwrap())] {
+        let project = project_data::projects::validate(name, registered_root).unwrap();
+        data.plugin_data()
+            .apply(
+                project_data::store::SHARED,
+                &[project_data::projects::to_mutation(&project)],
+            )
+            .unwrap();
+        let response = create("project", root.clone());
+        assert_eq!(response.outcome, AgentOutcome::Rejected, "{response:?}");
+        assert!(response.project.is_none());
+        assert!(!root.exists());
+        data.plugin_data()
+            .apply(
+                project_data::store::SHARED,
+                &[project_data::projects::delete_mutation(name)],
+            )
+            .unwrap();
+    }
+    // A real permission failure (rather than just a missing parent).
+    use std::os::unix::fs::PermissionsExt;
+    let parent = temp.path().join("private");
+    std::fs::create_dir(&parent).unwrap();
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o0)).unwrap();
+    let response = create("project", parent.join("child"));
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(response.outcome, AgentOutcome::Rejected, "{response:?}");
+    assert!(!parent.join("child").exists());
 }

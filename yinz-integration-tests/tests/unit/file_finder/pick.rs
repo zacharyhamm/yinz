@@ -327,7 +327,7 @@ fn first_run_wizard_browses_selects_cancels_and_reopens_strider() {
         .start();
     let shell = yinz.expect_pty_spawn();
     shell.output(PROMPT);
-    yinz.wait_until("first-run preset wizard", |grid| grid.contains("Step 1/2"));
+    yinz.wait_until("first-run preset wizard", |grid| grid.contains("Step 1/3"));
     assert_centered_wizard(&yinz, TERMINAL_SIZE);
     yinz.send_stdin(b"\x1b[B");
     resize_wizard(&yinz);
@@ -342,7 +342,7 @@ fn first_run_wizard_browses_selects_cancels_and_reopens_strider() {
         grid.contains("Choose your first project")
     });
     resize_wizard(&yinz);
-    yinz.send_stdin(b"\tresize draft\t\t");
+    yinz.send_stdin(b"\tresize draft\t\t\t");
     yinz.send_stdin(b"\x06");
     yinz.wait_until("Strider folder browser", |grid| {
         grid.contains("chosen-project/") && grid.contains("Ctrl+Enter")
@@ -383,5 +383,41 @@ fn first_run_wizard_browses_selects_cancels_and_reopens_strider() {
     yinz.wait_until("wizard survives repeated browsing", |grid| {
         grid.contains("Choose your first project")
     });
+    yinz.quit();
+}
+
+#[test]
+fn first_run_wizard_renders_at_its_centered_size_before_any_terminal_resize() {
+    let config = tempfile::tempdir().unwrap();
+    let size = yinz_types::pane_size::Size { cols: 90, rows: 51 };
+    let mut yinz = TestRunner::new(size)
+        .with_config(NO_BACKGROUND_PLUGINS)
+        .with_config_dir(config.path().to_owned())
+        .with_layout(yinz_types::data::LayoutInfo::Stringified(
+            "layout { pane; floating_panes { pane { plugin location=\"yinz:configuration\" { is_setup_wizard \"true\"; }; }; }; }".into()
+        ))
+        .start();
+    yinz.expect_pty_spawn().output(PROMPT);
+    // The 32-row pane has a 30-row content area. Help belongs on its last row,
+    // not the last row of the smaller rectangle used to allocate the pane.
+    let top = (size.rows - 32) / 2;
+    yinz.wait_until(
+        "preset uses the final content size before resizing",
+        |grid| grid.row_of_line("Enter") == Some(top + 30) && grid.contains("1. Default"),
+    );
+    assert_centered_wizard(&yinz, size);
+    yinz.send_stdin(b"\r");
+    let project = yinz.wait_until("project content before resizing", |grid| {
+        grid.contains("Choose your first project")
+    });
+    let title = "Choose your first project";
+    let title_row = project
+        .text
+        .lines()
+        .find(|line| line.contains(title))
+        .unwrap();
+    let x = title_row[..title_row.find(title).unwrap()].chars().count();
+    assert!(x.abs_diff(size.cols - x - title.len()) <= 1, "{project}");
+    assert!(project.row_of_line(title).unwrap() > top + 5, "{project}");
     yinz.quit();
 }

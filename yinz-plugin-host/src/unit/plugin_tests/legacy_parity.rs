@@ -135,7 +135,7 @@ fn actual_wasm_and_steel_configuration_presets_and_setup_wizard() {
     pair.key("Down");
     pair.key("Down");
     pair.key("Ctrl a");
-    // The two-step onboarding now intentionally differs from the recorded one-step
+    // The three-step onboarding now intentionally differs from the recorded one-step
     // wizard. Its transitions, picker, and project persistence are covered by the
     // builtin configuration UI tests; normal preset editing retains parity here.
 }
