@@ -191,6 +191,10 @@ impl Screen {
         }
         for client in presented {
             self.close_command_palette(client);
+            // The modal owns the interrupted gesture, even if it closes before release.
+            if self.command_palette_mouse_captures.remove(&client) {
+                self.permission_mouse_captures.insert(client);
+            }
             self.close_context_menu(client);
         }
     }

@@ -193,6 +193,98 @@ fn palette_drag_captures_outside_release_and_cancelled_gestures() {
 }
 
 #[test]
+fn permission_modal_takes_palette_gesture_until_release() {
+    use yinz_types::data::{PermissionType, PluginPermission};
+
+    for gesture in ["drag", "control", "outside"] {
+        for cancel_before_release in [false, true] {
+            let mut screen = create_non_mirrored_screen(SIZE);
+            let (plugin_tx, plugins) = channels::unbounded();
+            screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+            let terminal = TerminalId::new(1);
+            let (tx, rx) = channels::unbounded();
+            screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(tx));
+            new_tab(&mut screen, 1, TabId::new(0));
+            screen.toggle_command_palette(CLIENT);
+            screen
+                .command_palettes
+                .get_mut(&CLIENT)
+                .unwrap()
+                .widget_mut()
+                .open_text("alpha beta".into());
+            screen
+                .get_active_tab_mut(CLIENT)
+                .unwrap()
+                .handle_pty_bytes(terminal, b"\x1b[?1002h\x1b[?1006h".to_vec())
+                .unwrap();
+            let start = match gesture {
+                "control" => {
+                    screen.close_command_palette(CLIENT);
+                    screen.toggle_command_palette(CLIENT);
+                    let widget = screen.command_palettes[&CLIENT].widget();
+                    let layout = widget.layout(screen.command_palette_surface(CLIENT).unwrap());
+                    (0..SIZE.rows)
+                        .flat_map(|row| {
+                            (0..SIZE.cols).map(move |col| Position::new(row as i32, col as u16))
+                        })
+                        .find(|position| widget.mouse_control(&layout, *position))
+                        .expect("palette has an input control")
+                },
+                "outside" => Position::new(0, 0),
+                _ => palette_text_position(&screen, CLIENT, "alpha"),
+            };
+            screen.handle_mouse_event(MouseEvent::new_left_press_event(start), CLIENT);
+            if gesture == "drag" {
+                let end = Position::new(start.line() as i32, (start.column() + 5) as u16);
+                screen.handle_mouse_event(MouseEvent::new_left_motion_event(end), CLIENT);
+            }
+            assert!(screen.palette_captures_mouse(CLIENT));
+            rx.try_iter().for_each(drop);
+            let mut request = PluginPermission::new(
+                "fixture.scm".into(),
+                vec![PermissionType::ReadApplicationState],
+            );
+            request.request_id = 42;
+            screen.open_permission_modal(PluginId::new(9), request);
+            assert!(!screen.command_palette_is_open(CLIENT));
+            if cancel_before_release {
+                screen.cancel_permission_modal(42);
+            }
+            // Release over Allow must neither answer the modal nor reach the terminal.
+            let allow = Position::new(((SIZE.rows - 7) / 2 + 5) as i32, (SIZE.cols / 2) as u16);
+            screen.handle_mouse_event(MouseEvent::new_left_motion_event(allow), CLIENT);
+            screen.handle_mouse_event(MouseEvent::new_left_release_event(allow), CLIENT);
+            assert_eq!(screen.permission_modal_open(CLIENT), !cancel_before_release);
+            assert!(!screen.palette_captures_mouse(CLIENT));
+            assert!(!screen.permission_mouse_captures.contains(&CLIENT));
+            assert!(rx.try_recv().is_err());
+            assert!(plugins.try_iter().all(|(instruction, _)| !matches!(
+                instruction,
+                PluginInstruction::PermissionAnswer { .. } | PluginInstruction::RecordClipboard(_)
+            )));
+            screen.cancel_permission_modal(42);
+
+            // The very next gesture reaches the mouse-reporting application.
+            screen.handle_mouse_event(MouseEvent::new_left_press_event(allow), CLIENT);
+            screen.handle_mouse_event(MouseEvent::new_left_release_event(allow), CLIENT);
+            let writes: Vec<_> = rx
+                .try_iter()
+                .filter_map(|(instruction, _)| match instruction {
+                    PtyWriteInstruction::Write(bytes, id, _) => Some((bytes, id)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(writes.len(), 2, "{gesture}, {cancel_before_release}");
+            assert!(writes
+                .iter()
+                .all(|(bytes, id)| *id == terminal && bytes.starts_with(b"\x1b[<")));
+            assert!(writes[0].0.ends_with(b"M"));
+            assert!(writes[1].0.ends_with(b"m"));
+        }
+    }
+}
+
+#[test]
 fn palette_drag_on_a_picker_row_does_not_click_it() {
     let mut screen = theme_screen();
     open_themes(&mut screen);
