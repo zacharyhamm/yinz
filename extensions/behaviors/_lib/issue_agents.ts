@@ -469,7 +469,8 @@ export function createAgentMethods(
           const child = await childState(context, task);
           if (
             !isRejectedLaunch(child) &&
-            (child.phase !== "completed" || child.outcome !== "completed" ||
+            (!["completed", "completed_unusable"].includes(child.phase) ||
+              child.outcome !== "completed" ||
               child.backgroundTasks.length || !child.paneId ||
               !child.conversationId || !child.submissionId)
           ) {

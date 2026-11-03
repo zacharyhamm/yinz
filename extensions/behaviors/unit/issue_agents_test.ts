@@ -358,6 +358,96 @@ Deno.test("malformed completed evidence can be explicitly discarded without appl
   assert(h.calls[0].name !== h.calls[1].name);
 });
 
+Deno.test("missing final text can be explicitly discarded before dispatching replacement work", async () => {
+  for (const message of [null, undefined, "", " \n\t"]) {
+    const h = harness();
+    let cliCalls = 0;
+    h.controls.agentRunner = (args) => {
+      cliCalls++;
+      const value = args[3] === "spawn"
+        ? {
+          outcome: "ok",
+          spawned: {
+            pane_id: "terminal_7",
+            cwd: args[args.indexOf("--cwd") + 1],
+          },
+        }
+        : {
+          outcome: args[3] === "prompt" ? "completed" : "ok",
+          agents: [{
+            pane_id: "terminal_7",
+            session: options.session,
+            agent: {
+              kind: "claude",
+              session_id: "conversation-1",
+              state: "idle",
+            },
+            ready: true,
+            status_available: true,
+            prompt_supported: true,
+          }],
+          submission_id: args[3] === "prompt" ? "submission-1" : undefined,
+          message,
+        };
+      return Promise.resolve({
+        code: 0,
+        stdout: JSON.stringify(value),
+        stderr: "",
+      });
+    };
+    await rejects(
+      () =>
+        h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+      "discard-agent",
+    );
+    const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    equal(
+      AgentStateSchema.parse(h.child.get("state")).phase,
+      "completed_unusable",
+    );
+    assert(!h.child.has("result"));
+    await rejects(
+      () => h.methods.resume_agent.execute({}, h.context),
+      "discard-agent",
+    );
+    equal(cliCalls, 3);
+    await rejects(() => assertNoPendingAgent(h.context), "unresolved");
+    assert(
+      !h.methods.discard_agent.arguments.safeParse({
+        request: "Discard empty answer",
+        confirmedStopped: false,
+      }).success,
+    );
+    const discard = {
+      request: "Discard empty answer",
+      confirmedStopped: true as const,
+    };
+    h.resources.set("state", transition(createState(issue), "triage", triage));
+    await rejects(
+      () => h.methods.discard_agent.execute(discard, h.context),
+      "may already be applied",
+    );
+    h.resources.set("state", task.before);
+    await h.methods.discard_agent.execute(discard, h.context);
+    equal(h.resources.get("state"), task.before);
+    equal(
+      AgentTaskSchema.parse(h.resources.get("agent-task")).status,
+      "discarded",
+    );
+    await assertNoPendingAgent(h.context);
+    h.controls.agentRunner = undefined;
+    await h.methods.run_agent.execute(
+      { ...options, role: "triage" },
+      h.context,
+    );
+    equal((h.resources.get("state") as LifecycleState).phase, "classified");
+    assert(
+      AgentTaskSchema.parse(h.resources.get("agent-task")).behaviorName !==
+        task.behaviorName,
+    );
+  }
+});
+
 Deno.test("discard cannot unblock a live or uncertain pane assignment", async () => {
   const h = harness();
   h.controls.childPhase = "waiting";

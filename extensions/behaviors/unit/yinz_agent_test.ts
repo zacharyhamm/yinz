@@ -360,6 +360,70 @@ Deno.test("completion requires matching submission, unchanged conversation and a
   }
 });
 
+Deno.test("missing final text persists terminal failure without reusing stale text or retrieving again", async () => {
+  for (const message of [null, undefined, "", " \n\t"]) {
+    for (const recover of [false, true]) {
+      const h = harness([
+        spawned,
+        { ...ready(), message: "Old status text" },
+        ...(recover ? [new Error("Lost response")] : []),
+        completed({ message }),
+      ]);
+      if (recover) {
+        await rejects(
+          () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+          "Lost response",
+        );
+      }
+      await rejects(
+        () =>
+          recover
+            ? resumeAgent(h.context, h.dependencies)
+            : runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+        "discard-agent",
+      );
+      const state = AgentStateSchema.parse(h.records.get("state"));
+      equal(state.phase, "completed_unusable");
+      equal(state.outcome, "completed");
+      equal(state.message, undefined);
+      equal(state.backgroundTasks, []);
+      assert(!h.records.has("result"));
+      const count = h.calls.length;
+      await rejects(
+        () => resumeAgent(h.context, h.dependencies),
+        "discard-agent",
+      );
+      equal(h.calls.length, count);
+    }
+  }
+});
+
+Deno.test("missing final text does not mark mismatched or active submissions terminal", async () => {
+  for (
+    const patch of [
+      { submission_id: "other" },
+      { agents: [agent("other")] },
+      { agents: [{ ...agent(), pane_id: "terminal_8" }] },
+      { agents: [agent("conversation-1", "muse")] },
+      { background_tasks: ["worker"] },
+      { agents: [{ ...agent(), background_tasks: ["worker"] }] },
+    ]
+  ) {
+    const h = harness([
+      spawned,
+      ready(),
+      completed({ message: null, ...patch }),
+      new Error("Background still active"),
+    ]);
+    await rejects(
+      () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+      "",
+    );
+    assert(h.records.get("state")?.phase !== "completed_unusable");
+    assert(!h.records.has("result"));
+  }
+});
+
 Deno.test("background interim completion waits for the original conversation's final idle answer", async () => {
   const h = harness([
     spawned,

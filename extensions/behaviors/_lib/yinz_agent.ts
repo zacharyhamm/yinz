@@ -67,6 +67,7 @@ export const AgentStateSchema = z.object({
     "waiting",
     "background",
     "completed",
+    "completed_unusable",
   ]),
   paneId: Pane.optional(),
   tabId: z.number().int().optional(),
@@ -439,7 +440,13 @@ async function acceptSubmission(
     return await observeBackground(context, state, dependencies);
   }
   if (!value.message?.trim()) {
-    throw new Error("Completed task did not return a final message");
+    // Identity and both background lists have been verified above. Preserve
+    // terminality even though there is no answer that can become evidence.
+    state.phase = "completed_unusable";
+    delete state.message;
+    throw new Error(
+      "Completed task did not return a final message; use discard-agent to discard this unusable completion",
+    );
   }
   return await finish(context, state, dependencies);
 }
@@ -639,6 +646,11 @@ export async function resumeAgent(
 ) {
   const state = await load(context, dependencies);
   return await guarded(context, state, dependencies, async () => {
+    if (state.phase === "completed_unusable") {
+      throw new Error(
+        "Completed task did not return a final message; use discard-agent to discard this unusable completion",
+      );
+    }
     if (state.phase === "launch_rejected") {
       throw new Error(
         "Agent launch was rejected; use discard-agent for this lifecycle task before dispatching a new task with corrected configuration",
