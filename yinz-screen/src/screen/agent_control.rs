@@ -3911,7 +3911,7 @@ impl Screen {
                         && (self.claude_background_pending(pane)
                             || status.agent.state != operation.agent.state
                             || !status.background_tasks.is_empty()))
-                    || status.agent.state == AgentState::Exited
+                    || matches!(status.agent.state, AgentState::Waiting | AgentState::Exited)
             }) || (!steering
                 && self
                     .agent_lifecycle

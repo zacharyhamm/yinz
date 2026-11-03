@@ -51,6 +51,8 @@ fn claude_steering_delivers_without_interrupting_and_publishes_background_activi
             prompt_id: Some(prompt_id.into()),
             prompt: (name == "UserPromptSubmit").then(|| if prompt_id == "notification" {
                 "<task-notification><task-id>bash</task-id><status>completed</status></task-notification>".into()
+            } else if prompt_id == "initial" {
+                "start".into()
             } else { "steer".into() }),
             agent_id: worker.map(str::to_owned),
             claude_turn_complete: (name == "Stop").then_some(true),
@@ -95,8 +97,32 @@ fn claude_steering_delivers_without_interrupting_and_publishes_background_activi
             }
         };
     report("SessionStart", "", None, &[]);
-    report("UserPromptSubmit", "manual", None, &[]);
-    report("SubagentStart", "manual", Some("worker"), &[]);
+    sender
+        .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Prompt {
+            pane_id: pane,
+            expected_session_id: Some("claude-session".into()),
+            prompt: "start".into(),
+            submission_id: Some("initial".into()),
+            preserve_draft: false,
+            wait: false,
+            timeout_ms: 30_000,
+        }))
+        .unwrap();
+    // Include draft preparation in the initial baseline; preserving steering adds
+    // only its own paste and Enter below.
+    let initial_bytes = agent.wait_for_stdin("initial paste and Enter reach Claude", |bytes| {
+        bytes.ends_with(b"\x1b[200~start\x1b[201~\r")
+    });
+    report("UserPromptSubmit", "initial", None, &[]);
+    let submitted = reply(&mut receiver);
+    assert_eq!(submitted.outcome, AgentOutcome::Submitted);
+    assert_eq!(submitted.submission_id.as_deref(), Some("initial"));
+    assert!(submitted.acknowledged);
+    agent.output(composer("Initial prompt accepted").as_bytes());
+    yinz.wait_until("Claude consumed the initial prompt", |snapshot| {
+        snapshot.contains("Initial prompt accepted")
+    });
+    report("SubagentStart", "initial", Some("worker"), &[]);
     sender
         .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Status {
             pane_id: pane,
@@ -120,15 +146,15 @@ fn claude_steering_delivers_without_interrupting_and_publishes_background_activi
         }))
         .unwrap();
     let bytes = agent.wait_for_stdin("steering paste and Enter reach Claude", |bytes| {
-        bytes.ends_with(b"\x1b[200~steer\x1b[201~\r")
+        bytes[initial_bytes.len()..].ends_with(b"\x1b[200~steer\x1b[201~\r")
     });
-    assert_eq!(bytes, b"\x1b[200~steer\x1b[201~\r");
+    assert_eq!(&bytes[initial_bytes.len()..], b"\x1b[200~steer\x1b[201~\r");
     report("UserPromptSubmit", "steering", None, &[]);
     agent.output(composer("Steering accepted").as_bytes());
     yinz.wait_until("Claude consumed the steering prompt", |snapshot| {
         snapshot.contains("Steering accepted")
     });
-    report("Stop", "manual", None, &[]);
+    report("Stop", "initial", None, &[]);
     report("Stop", "steering", None, &["bash"]);
     let completed = reply(&mut receiver);
     assert_eq!(completed.outcome, AgentOutcome::Completed);

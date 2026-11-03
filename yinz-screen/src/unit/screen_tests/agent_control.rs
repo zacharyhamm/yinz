@@ -11188,6 +11188,93 @@ fn claude_steering_replaces_unconsumed_input_despite_unrelated_output() {
 }
 
 #[test]
+fn claude_steering_preparation_stops_when_permission_or_question_hooks_arrive() {
+    for waiting_hook in [
+        claude_permission_prompt(),
+        HookEvent {
+            tool_name: Some("AskUserQuestion".into()),
+            ..hook("PreToolUse")
+        },
+    ] {
+        for stage in ["marker", "clear", "settling"] {
+            let (mut screen, messages, writes) = setup("claude");
+            report_kind(&mut screen, "claude", hook("SessionStart"));
+            screen.agent_control_with_clear(identified_prompt("parent", false), CLIENT, &writes);
+            finish_paste(&writes);
+            report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+            assert_eq!(
+                replies(&messages, CLIENT)[0].outcome,
+                AgentOutcome::Submitted
+            );
+
+            screen.agent_control(steering_prompt("next"), ClientId::new(2));
+            if stage != "marker" {
+                assert!(finish_paste(&writes).starts_with(b"\x1b[200~yz"));
+                screen.refresh_agent_controls();
+            }
+            // Keep the marker or clear acknowledgement pending across the hook.
+            let mut queued = writes.try_iter().collect::<Vec<_>>();
+            assert_eq!(queued.len(), 1);
+            let PtyWriteInstruction::Write(bytes, _, Some(_)) = &queued[0].0 else {
+                panic!("preparation must have a pending write");
+            };
+            if stage != "marker" {
+                assert_eq!(bytes, b"\x03");
+            } else {
+                assert!(bytes.starts_with(b"\x1b[200~yz"));
+            }
+            if stage == "settling" {
+                // Acknowledge clearing before the hook; the report's initial refresh
+                // starts the settling interval, with no prompt bytes delivered yet.
+                queued.clear();
+            }
+
+            report_kind(&mut screen, "claude", waiting_hook.clone());
+            assert_eq!(
+                screen.agent_status_for_test().agent.state,
+                AgentState::Waiting
+            );
+            let result = replies(&messages, ClientId::new(2));
+            assert_eq!(result.len(), 1, "{waiting_hook:?}, stage={stage}");
+            assert_eq!(result[0].outcome, AgentOutcome::Interrupted);
+            assert_eq!(result[0].submission_id.as_deref(), Some("next"));
+            assert!(!result[0].acknowledged);
+            assert!(result[0]
+                .message
+                .as_ref()
+                .unwrap()
+                .contains("prompt was not sent"));
+            assert!(finish_paste(&writes).is_empty());
+
+            drop(queued);
+            let now = Instant::now();
+            for tick in 0..=3 {
+                screen.refresh_agent_controls_at(now + Duration::from_millis(tick * 600));
+                assert!(
+                    finish_paste(&writes).is_empty(),
+                    "no preparation, paste, or Enter after waiting"
+                );
+            }
+            assert!(screen.agent_draft_clears.is_empty());
+            assert!(replies(&messages, ClientId::new(2)).is_empty());
+
+            report_kind(&mut screen, "claude", hook("PostToolUse"));
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_stop("prompt", "parent answer", &[]),
+            );
+            screen.agent_control(wait_submission("parent"), CLIENT);
+            let parent = replies(&messages, CLIENT);
+            assert_eq!(parent.len(), 1);
+            assert_eq!(parent[0].outcome, AgentOutcome::Completed);
+            assert_eq!(parent[0].message.as_deref(), Some("parent answer"));
+            assert!(finish_paste(&writes).is_empty());
+        }
+    }
+}
+
+#[test]
 fn claude_steering_preparation_reports_failures_without_sending_the_prompt() {
     for failure in ["writer", "input", "conversation", "timeout"] {
         let (mut screen, messages, writes) = setup("claude");
