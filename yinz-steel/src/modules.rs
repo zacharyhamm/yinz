@@ -85,11 +85,13 @@ fn freeze_sources(directory: &Path, handle: &File) -> Result<BTreeMap<PathBuf, S
 impl SourceRoot {
     /// An absent entry leaf is allowed for editor checks; its parent must exist inside the root.
     pub fn file(entry: &Path, root: Option<&Path>) -> Result<Self> {
-        let entry = yinz_steel_builtins::source_path(entry)?;
+        let entry = yinz_runtime::builtin_generation::source_path(entry)?;
         let entry = entry.as_path();
-        let root = root.map(yinz_steel_builtins::source_path).transpose()?;
+        let root = root
+            .map(yinz_runtime::builtin_generation::source_path)
+            .transpose()?;
         let root = root.as_deref();
-        let generation = yinz_steel_builtins::source_read_guard(entry)?;
+        let generation = yinz_runtime::builtin_generation::source_read_guard(entry)?;
         extension(entry)?;
         let absolute = if entry.is_absolute() {
             entry.to_owned()

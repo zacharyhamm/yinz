@@ -288,7 +288,7 @@ fn standalone_codex_hooks_reject_reference_less_panes() {
             "empty-remote-token",
             "detached-daemon",
         ] {
-            let mut reporter = Command::new(root.join("yinz"));
+            let mut reporter = Command::new(root.join("bin/yinz"));
             reporter
                 .args(["agent", "codex-report"])
                 .env("YINZ_SOCKET_DIR", root.join("socket-alias"))
@@ -400,7 +400,11 @@ fn standalone_codex_hooks_reject_reference_less_panes() {
     let session = Session(tempfile::tempdir().unwrap());
     let root = session.0.path();
     std::os::unix::fs::symlink(root, root.join("socket-alias")).unwrap();
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_yinz"), root.join("yinz")).unwrap();
+    // XDG_DATA_HOME, XDG_CONFIG_HOME and XDG_CACHE_HOME each append `yinz`.
+    // Keep the executable alias out of that directory so plugin-host startup can
+    // create its generation lock even when no builtin plugins are loaded.
+    std::fs::create_dir(root.join("bin")).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_yinz"), root.join("bin/yinz")).unwrap();
     let socket_dir = root.join(&*yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR);
     std::fs::create_dir_all(&socket_dir).unwrap();
     let _other_session =
@@ -437,8 +441,32 @@ fn standalone_codex_hooks_reject_reference_less_panes() {
     );
     let (mut peer, _) = connection
         .recv_timeout(Duration::from_secs(30))
-        .unwrap()
+        .unwrap_or_else(|error| {
+            let panes = session
+                .command()
+                .args(["--session", "report-test", "action", "list-panes", "--json"])
+                .output();
+            let mut screens = String::new();
+            if let Ok(panes) = &panes
+                && let Ok(serde_json::Value::Array(panes)) = serde_json::from_slice(&panes.stdout)
+            {
+                for pane in panes.iter().filter(|pane| pane["is_plugin"] == false) {
+                    let id = pane["id"].to_string();
+                    let screen = session.command().args([
+                        "--session", "report-test", "action", "dump-screen", "--full", "--pane-id", &id,
+                    ]).output();
+                    screens.push_str(&format!("\npane {id}: {screen:?}"));
+                }
+            }
+            let log = root.join(format!("yinz-{}", nix::unistd::Uid::current()))
+                .join("yinz-log/yinz.log");
+            panic!(
+                "child startup handshake failed: {error}; startup: {output:?}; panes: {panes:?}; screens: {screens}; log: {}",
+                std::fs::read_to_string(log).unwrap_or_default()
+            );
+        })
         .unwrap();
+    assert!(root.join("yinz/plugins").is_dir());
     peer.set_read_timeout(Some(Duration::from_secs(30)))
         .unwrap();
     let mut reports = BufReader::new(peer.try_clone().unwrap());

@@ -1066,17 +1066,39 @@ fn bootstrap_from_a_client_without_bootstrap_versioning_cannot_create_a_session(
 }
 
 #[test]
-fn remote_bootstrap_version_mismatch_cannot_create_a_session() {
+fn remote_bootstrap_accepts_different_application_versions_with_matching_contracts() {
     let session = Session::new();
     let out = session
         .remote_bootstrap(true)
-        .args(["--client-version", "incompatible"])
+        .args(["--client-version", "different-release"])
         .output()
         .unwrap();
-    assert!(!out.status.success());
-    let error = String::from_utf8_lossy(&out.stderr);
-    assert!(error.contains("incompatible") && error.contains(yinz_runtime::consts::VERSION));
-    assert!(!session.socket().exists());
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(session.socket().exists());
+    session.wait_for_panes(false);
+}
+
+#[test]
+fn remote_bootstrap_contract_mismatch_cannot_create_a_session() {
+    for option in ["--contract-version", "--bootstrap-version"] {
+        let session = Session::new();
+        let out = session
+            .remote_bootstrap(true)
+            .args([option, "999999"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{option}");
+        let error = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            error.contains("compatibility mismatch") && error.contains("999999"),
+            "{option}: {error}"
+        );
+        assert!(!session.socket().exists(), "{option} created a session");
+    }
 }
 
 #[test]
@@ -1299,7 +1321,6 @@ fn watcher_signal_quit_preserves_the_live_session_and_recovery_state() {
             IpcRecv::Msg(
                 ServerToClientMsg::Connected {
                     signal_quit: supported,
-                    update_protocol: 0,
                     ..
                 },
                 _,

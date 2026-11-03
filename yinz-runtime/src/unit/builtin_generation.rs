@@ -49,10 +49,7 @@ fn session_generation_preserves_live_edits_then_pins_old_sources_after_exchange(
         fs::read_to_string(retained.parent().unwrap().join("dependency.scm")).unwrap(),
         "dependency old"
     );
-    assert_eq!(
-        super::super::builtin_path(data.path(), "tab-bar").unwrap(),
-        retained
-    );
+    assert_eq!(builtin_path(data.path(), "tab-bar").unwrap(), retained);
     drop(generation);
     assert!(!retained.exists());
     assert_eq!(source_path(&entry).unwrap(), entry);
@@ -73,7 +70,7 @@ fn session_generation_remembers_removed_builtin_entrypoints_and_rejects_escapes(
     fs::rename(&root, data.path().join("retired")).unwrap();
     fs::create_dir(&root).unwrap();
     assert_eq!(
-        fs::read_to_string(super::super::builtin_path(data.path(), "tab-bar").unwrap()).unwrap(),
+        fs::read_to_string(builtin_path(data.path(), "tab-bar").unwrap()).unwrap(),
         "old"
     );
     assert!(source_path(&root.join("../secret.scm")).is_err());

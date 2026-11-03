@@ -212,6 +212,61 @@ fn a_remote_handoff_without_a_command_arrives_as_no_remote_pane() {
 }
 
 fn test_client_messages() {
+    use yinz_types::{session_update, update_client};
+    for result in [
+        Ok(update_client::ClientReply::Pending),
+        Ok(update_client::ClientReply::Participant(
+            serde_json::json!({"installed": "v2", "ready": true}),
+        )),
+        Ok(update_client::ClientReply::Restarting),
+        Ok(update_client::ClientReply::Resumed {
+            operation: "operation".into(),
+            source_client: ClientId::new(42),
+        }),
+        Err("publication failed".into()),
+    ] {
+        test_client_roundtrip!(ClientToServerMsg::UpdateReply(update_client::Reply {
+            token: "reply-token".into(),
+            result,
+        }));
+    }
+    for command in [
+        session_update::Command::Identity,
+        session_update::Command::Start,
+        session_update::Command::ReleaseMigration {
+            snapshot: "/tmp/session snapshot.json".into(),
+        },
+        session_update::Command::RestoreClients {
+            clients: vec![session_update::Client {
+                id: ClientId::new(42),
+                supports_update: true,
+                resumed: Some(("operation".into(), ClientId::new(7))),
+                configuration: "default_mode \"locked\"\n".into(),
+                mode: InputMode::Locked,
+            }],
+        },
+        session_update::Command::Client {
+            client: ClientId::new(42),
+            request: update_client::Request {
+                token: "nested-token".into(),
+                request: update_client::ClientRequest::Restart {
+                    operation: "operation".into(),
+                    source_client: ClientId::new(42),
+                    executable: "/opt/yinz".into(),
+                    target: SessionConnection {
+                        name: Some("session".into()),
+                        ..Default::default()
+                    },
+                },
+            },
+        },
+    ] {
+        test_client_roundtrip!(ClientToServerMsg::SessionUpdate(session_update::Request {
+            token: "request-token".into(),
+            operation: "operation".into(),
+            command,
+        }));
+    }
     use yinz_types::session_destination::*;
     test_client_roundtrip!(ClientToServerMsg::RequestRepaint);
     for result in [
@@ -4778,6 +4833,47 @@ fn test_client_messages() {
 }
 
 fn test_server_messages() {
+    use yinz_types::{session_update, update_client};
+    for request in [
+        update_client::ClientRequest::Participant(update_client::ParticipantRequest::Prepare {
+            operation: "operation".into(),
+            release: serde_json::json!({"version": "v2", "assets": ["yinz.tar.gz"]}),
+        }),
+        update_client::ClientRequest::Poll {
+            token: "pending-token".into(),
+        },
+        update_client::ClientRequest::Ready {
+            operation: "operation".into(),
+            source_client: ClientId::new(42),
+        },
+        update_client::ClientRequest::Restart {
+            operation: "operation".into(),
+            source_client: ClientId::new(42),
+            executable: "/opt/yinz".into(),
+            target: SessionConnection {
+                name: Some("session".into()),
+                ..Default::default()
+            },
+        },
+    ] {
+        test_server_roundtrip!(ServerToClientMsg::UpdateRequest(update_client::Request {
+            token: "request-token".into(),
+            request,
+        }));
+    }
+    for result in [
+        Ok(serde_json::json!({"state": "preparing", "clients": [7, 42]})),
+        Err("operation cancelled".into()),
+    ] {
+        test_server_roundtrip!(ServerToClientMsg::SessionUpdateReply(
+            session_update::Reply {
+                token: "reply-token".into(),
+                operation: "operation".into(),
+                result,
+            }
+        ));
+    }
+
     use yinz_types::session_destination::*;
     test_server_roundtrip!(ServerToClientMsg::RepaintComplete);
     test_server_roundtrip!(ServerToClientMsg::DesktopNotification {

@@ -52,6 +52,8 @@ fn boundaries_cover_all_dependency_kinds_targets_and_aliases() {
     validate_dependency_boundaries(&metadata).unwrap();
     for (source, destination) in [
         ("yinz-types", "yinz-cli"),
+        ("yinz-steel", "yinz-steel-builtins"),
+        ("yinz-plugin-authoring", "yinz-steel-builtins"),
         ("yinz-terminal", "yinz-ipc"),
         ("yinz-bus", "yinz-routing"),
         ("yinz-bus", "yinz-terminal"),
@@ -218,4 +220,9 @@ fn engine_free_crates_reject_engines_directly_and_through_workspace_crates() {
             None => result.unwrap(),
         }
     }
+}
+
+#[test]
+fn current_workspace_respects_dependency_boundaries() {
+    check_dependency_boundaries(&Shell::new().unwrap()).unwrap();
 }

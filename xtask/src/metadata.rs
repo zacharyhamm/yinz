@@ -48,6 +48,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
     (
         "yinz-steel",
         &[
+            "yinz-runtime",
             "yinz-config",
             "yinz-tile",
             "yinz-tile-markdown",

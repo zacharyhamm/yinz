@@ -1,4 +1,5 @@
 //! Keep old live servers on their builtin generation after installation exchange.
+use crate::errors::prelude::*;
 use std::{
     collections::HashMap,
     fs,
@@ -6,7 +7,54 @@ use std::{
     path::{Component, Path, PathBuf},
     sync::{Arc, LazyLock, Mutex, Weak},
 };
-use yinz_runtime::errors::prelude::*;
+
+/// Pin installation reads against the updater's directory exchange. The lock inode
+/// lives beside `builtins`, so replacing that directory cannot replace the lock.
+pub fn read_guard(data_dir: &Path) -> Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = data_dir.join("plugins/.yinz-update.lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&path)
+        .with_context(|| format!("open builtin generation lock {}", path.display()))?;
+    file.lock_shared()
+        .context("pin builtin installation generation")?;
+    Ok(file)
+}
+
+/// File URLs into the installed tree use the same generation protection as builtin tags.
+pub fn source_read_guard(source: &Path) -> Result<Option<std::fs::File>> {
+    let data_dir = source.ancestors().find_map(|ancestor| {
+        (ancestor.file_name().is_some_and(|name| name == "builtins")
+            && ancestor
+                .parent()?
+                .file_name()
+                .is_some_and(|name| name == "plugins"))
+        .then(|| ancestor.parent().and_then(Path::parent))
+        .flatten()
+    });
+    data_dir.map(read_guard).transpose()
+}
+
+pub fn builtin_path(data_dir: &Path, tag: &str) -> Result<PathBuf> {
+    anyhow::ensure!(
+        crate::consts::BUILTIN_PLUGIN_NAMES.contains(&tag),
+        "unknown builtin plugin '{tag}'"
+    );
+    let path = source_path(&data_dir.join("plugins/builtins").join(format!("{tag}.scm")))?;
+    anyhow::ensure!(
+        path.exists(),
+        "builtin plugin is missing at {}; reinstall Yinz with --data-dir {}",
+        path.display(),
+        data_dir.display()
+    );
+    Ok(path)
+}
 
 static GENERATIONS: LazyLock<Mutex<HashMap<PathBuf, Weak<Generation>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -32,7 +80,7 @@ pub struct SessionGeneration {
 
 pub fn pin_session_generation(data_dir: &Path) -> Result<SessionGeneration> {
     let root = data_dir.join("plugins/builtins");
-    let _lock = super::read_guard(data_dir)?;
+    let _lock = read_guard(data_dir)?;
     let data_dir = data_dir
         .canonicalize()
         .context("resolve builtin generation data directory")?;
@@ -117,7 +165,7 @@ pub fn source_path(source: &Path) -> Result<PathBuf> {
             .all(|component| matches!(component, Component::Normal(_) | Component::CurDir)),
         "builtin source escapes its generation"
     );
-    let _lock = super::read_guard(&data_dir)?;
+    let _lock = read_guard(&data_dir)?;
     let mut state = generation
         .state
         .lock()
@@ -268,5 +316,5 @@ fn copy_sources(source: &Path, destination: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "unit/generation.rs"]
+#[path = "unit/builtin_generation.rs"]
 mod tests;

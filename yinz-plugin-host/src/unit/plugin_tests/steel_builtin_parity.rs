@@ -344,6 +344,27 @@ fn normalize_palette_display(value: &mut Value, session_palette: bool) {
             }
         },
         Value::Array(values) => {
+            if session_palette && values.iter().any(|value| value["id"] == "switch-session") {
+                // The reference predates these actions. Assert their exact additions,
+                // then retain strict reference comparisons for every existing action.
+                let updates = [
+                    ("update-yinz", "Update Yinz…"),
+                    ("update-status", "Yinz update status"),
+                    ("cancel-update", "Cancel Yinz update"),
+                ];
+                let added = values
+                    .iter()
+                    .filter(|value| updates.iter().any(|(id, _)| value["id"] == *id))
+                    .map(|value| {
+                        (
+                            value["id"].as_str().unwrap(),
+                            value["label"].as_str().unwrap(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(added, updates);
+                values.retain(|value| !updates.iter().any(|(id, _)| value["id"] == *id));
+            }
             for value in values {
                 normalize_palette_display(value, session_palette);
             }

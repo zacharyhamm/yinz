@@ -5003,7 +5003,6 @@ dependencies = [
  "yinz-config",
  "yinz-plugin-api",
  "yinz-runtime",
- "yinz-steel-builtins",
  "yinz-test-support",
  "yinz-types",
 ]
@@ -5339,7 +5338,7 @@ dependencies = [
  "unicode-width 0.2.2",
  "url",
  "yinz-config",
- "yinz-steel-builtins",
+ "yinz-runtime",
  "yinz-tile",
  "yinz-tile-markdown",
  "yinz-types",
@@ -5350,7 +5349,6 @@ name = "yinz-steel-builtins"
 version = "0.1.1"
 dependencies = [
  "anyhow",
- "libc",
  "serde",
  "serde_json",
  "tempfile",

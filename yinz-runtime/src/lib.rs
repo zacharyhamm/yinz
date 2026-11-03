@@ -1,5 +1,6 @@
 //! Environment, errors, and host runtime services.
 
+pub mod builtin_generation;
 pub mod channels;
 pub mod client_time;
 pub mod common_path;

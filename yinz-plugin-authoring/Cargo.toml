@@ -13,7 +13,6 @@ yinz-config = { workspace = true }
 yinz-plugin-api = { workspace = true }
 yinz-runtime = { workspace = true }
 yinz-types = { workspace = true }
-yinz-steel-builtins = { workspace = true }
 anyhow = { workspace = true }
 libc = { workspace = true }
 serde = { workspace = true }

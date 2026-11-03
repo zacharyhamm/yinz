@@ -88,3 +88,35 @@ fn reinstall_replaces_file_symlinks_without_writing_their_targets() {
         "unrelated"
     );
 }
+
+#[test]
+fn steel_source_resolution_shares_the_builtin_session_generation() {
+    use yinz_steel::modules::SourceRoot;
+
+    let data = tempfile::tempdir().unwrap();
+    let root = data.path().join("plugins/builtins");
+    std::fs::create_dir_all(&root).unwrap();
+    let entry = root.join("tab-bar.scm");
+    std::fs::write(&entry, "; old entry").unwrap();
+    std::fs::write(root.join("dependency.scm"), "; old dependency").unwrap();
+    // Pin through the builtin crate, then resolve through Steel after publication.
+    // A second registry in either crate would incorrectly load the new sources.
+    let _generation = pin_session_generation(data.path()).unwrap();
+    let retired = data.path().join("retired");
+    std::fs::rename(&root, &retired).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(&entry, "; new entry").unwrap();
+    std::fs::write(root.join("dependency.scm"), "; new dependency").unwrap();
+    std::fs::remove_dir_all(retired).unwrap();
+    let mut sources = SourceRoot::file(&entry, Some(&root)).unwrap();
+    assert_eq!(sources.read_entry().unwrap(), "; old entry");
+    let origin = sources.entry_id().to_owned();
+    assert_eq!(
+        sources.load(&origin, "./dependency.scm").unwrap().source,
+        "; old dependency"
+    );
+    assert_eq!(
+        std::fs::read_to_string(builtin_path(data.path(), "tab-bar").unwrap()).unwrap(),
+        "; old entry"
+    );
+}

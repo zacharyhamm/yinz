@@ -20,7 +20,7 @@ pub fn check_plugin(path: &Path) -> anyhow::Result<()> {
 pub fn check_plugin_report(
     path: &Path,
 ) -> anyhow::Result<yinz_types::authoring::PluginCheckReport> {
-    let _source_generation = yinz_steel_builtins::source_read_guard(path)?;
+    let _source_generation = yinz_runtime::builtin_generation::source_read_guard(path)?;
     if !is_script_plugin(path) {
         anyhow::bail!(
             "{}",
