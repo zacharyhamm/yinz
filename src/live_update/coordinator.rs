@@ -237,9 +237,14 @@ pub fn run(socket: &Path, data_dir: &Path, operation: &str) -> Result<()> {
     } else {
         Some(Connection::connect(&store.journal.source_socket)?)
     };
+    let mut recreated = false;
     if !store.journal.handoff_committed && source.is_none() && store.journal.source.is_some() {
         match recreate_source(&mut store) {
-            Ok(recovery) => source = Some(recovery),
+            Ok(recovery) => {
+                // recreate_source has already initialized and restored clients.
+                recreated = true;
+                source = Some(recovery);
+            },
             Err(error) => {
                 store
                     .journal
@@ -250,7 +255,8 @@ pub fn run(socket: &Path, data_dir: &Path, operation: &str) -> Result<()> {
             },
         }
     }
-    if store.journal.recovery_source_identity.is_some()
+    if !recreated
+        && store.journal.recovery_source_identity.is_some()
         && let Some(source) = source.as_mut()
     {
         initialize_recovery_source(&store, source)?;
@@ -688,7 +694,8 @@ fn cleanup_remote_helpers(store: &mut Store) -> Result<()> {
 
 pub(super) fn publish_participants(store: &mut Store, source: &mut Connection) -> Result<()> {
     let operation = store.journal.operation.clone();
-    for index in unique_participants(&store.journal) {
+    let unique = unique_participants(&store.journal);
+    for &index in &unique {
         set_installation_state(&mut store.journal, index, "publishing");
         store.save()?;
         participant(
@@ -703,9 +710,11 @@ pub(super) fn publish_participants(store: &mut Store, source: &mut Connection) -
         store.save()?;
     }
     // Shared installations prepare once, but each client must acknowledge its
-    // own published operation before it accepts a restart request.
+    // own published operation before it accepts a restart request. A client
+    // that published its own installation above has already acknowledged it.
     for index in 0..store.journal.participants.len() {
-        if matches!(store.journal.participants[index].route, Route::Client(id)
+        if !unique.contains(&index)
+            && matches!(store.journal.participants[index].route, Route::Client(id)
             if !store.journal.disconnected_clients.contains(&id))
         {
             participant(

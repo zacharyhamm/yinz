@@ -214,7 +214,7 @@ fn fingerprint(source: &Path) -> Result<Fingerprint> {
                 .context("inspect builtin generation entry")?;
             if kind.is_dir() {
                 pending.push((entry.path(), depth + 1));
-            } else if kind.is_file() {
+            } else if kind.is_file() && retained_source(&entry.path()) {
                 let metadata = entry
                     .metadata()
                     .context("inspect builtin source metadata")?;
@@ -232,6 +232,14 @@ fn fingerprint(source: &Path) -> Result<Fingerprint> {
     }
     entries.sort();
     Ok(entries)
+}
+
+/// Only Scheme sources belong to a retained generation.
+fn retained_source(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("scm" | "ss" | "sld")
+    )
 }
 
 fn snapshot(source: &Path) -> Result<tempfile::TempDir> {
@@ -265,15 +273,7 @@ fn copy_sources(source: &Path, destination: &Path) -> Result<()> {
                 .context("inspect builtin generation entry")?;
             if kind.is_dir() {
                 pending.push((entry.path(), destination.join(entry.file_name()), depth + 1));
-            } else if kind.is_file()
-                && matches!(
-                    entry
-                        .path()
-                        .extension()
-                        .and_then(|extension| extension.to_str()),
-                    Some("scm" | "ss" | "sld")
-                )
-            {
+            } else if kind.is_file() && retained_source(&entry.path()) {
                 let size = entry
                     .metadata()
                     .context("inspect builtin source size")?

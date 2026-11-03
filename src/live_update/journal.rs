@@ -147,10 +147,16 @@ impl Store {
                         && journal.source_socket == socket,
                     "update journal identity or format mismatch"
                 );
+                // The snapshot always lives in this operation directory. A
+                // relative path recorded from a relative data directory must
+                // not depend on whichever directory this process started in.
                 if journal.snapshot.is_relative() {
-                    journal.snapshot = std::env::current_dir()
-                        .context("resolve interrupted snapshot directory")?
-                        .join(&journal.snapshot);
+                    journal.snapshot = directory.join(
+                        journal
+                            .snapshot
+                            .file_name()
+                            .context("interrupted snapshot path has no file name")?,
+                    );
                 }
                 journal
             },

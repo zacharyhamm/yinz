@@ -62,8 +62,15 @@ pub(crate) fn route_client_request(
         ));
         return;
     }
-    pending.requests.insert(key, (reply, Instant::now()));
+    pending
+        .requests
+        .insert(key.clone(), (reply, Instant::now()));
     if let Err(error) = os_input.send_to_client(client, ServerToClientMsg::UpdateRequest(request)) {
+        // Answer now: the coordinator would otherwise wait out its full timeout
+        // for a reply that the removed client can never send.
+        if let Some((reply, _)) = pending.requests.remove(&key) {
+            let _ = reply.send(Err(format!("deliver client update request: {error:#}")));
+        }
         Err::<(), _>(error)
             .context("deliver client update request")
             .non_fatal();

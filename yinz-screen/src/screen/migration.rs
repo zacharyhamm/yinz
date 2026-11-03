@@ -655,15 +655,24 @@ impl Screen {
                 // PTY durably records each transition before reporting the batch.
                 // Retain those receipts rather than overwriting them with the
                 // screen's older pre-release snapshot.
-                if let Ok(document) = migration::load_snapshot(&state.path, &operation) {
-                    state.snapshot = document;
+                let reloaded = migration::load_snapshot(&state.path, &operation);
+                let receipts_lost = reloaded.is_err();
+                match reloaded {
+                    Ok(document) => {
+                        state.snapshot = document;
+                        state.snapshot.errors.clear();
+                    },
+                    Err(error) => {
+                        state.snapshot.errors =
+                            vec![format!("reload terminal release receipts: {error:#}")];
+                    },
                 }
-                state.snapshot.errors = results
-                    .into_iter()
-                    .filter_map(|(id, result)| {
+                state
+                    .snapshot
+                    .errors
+                    .extend(results.into_iter().filter_map(|(id, result)| {
                         result.err().map(|error| format!("terminal_{id}: {error}"))
-                    })
-                    .collect();
+                    }));
                 if state.snapshot.errors.is_empty() {
                     state.stage = Stage::Released;
                     state.snapshot.phase = MigrationPhase::Released;
@@ -680,7 +689,13 @@ impl Screen {
                     state.stage = Stage::Recovery;
                     state.snapshot.phase = MigrationPhase::Recovery;
                 }
-                let saved = migration::save_snapshot(&state.path, &state.snapshot);
+                // Without the PTY's durable receipts, this screen copy still
+                // records pre-release ownership; never write it over them.
+                let saved = if receipts_lost {
+                    Ok(())
+                } else {
+                    migration::save_snapshot(&state.path, &state.snapshot)
+                };
                 if let Some(reply) = state.release_reply.take() {
                     let result=saved.and_then(|()| {
                         anyhow::ensure!(state.stage==Stage::Released,"some terminal releases are uncertain; retain both servers and recover operation {} from {}",state.operation,state.path.display());

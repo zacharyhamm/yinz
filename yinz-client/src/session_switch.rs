@@ -170,7 +170,7 @@ impl<'a> Sessions<'a> {
 
     pub fn update_rendered(&mut self, os: &dyn ClientOsApi) {
         self.update_render_received = true;
-        if self.update_protocol == yinz_types::update_client::PROTOCOL_VERSION
+        if self.update_protocol == yinz_types::session_update::PROTOCOL_VERSION
             && self.update_ready_granted
             && !self.update_ready_sent
             && let (Some(operation), Some(source)) = (
@@ -207,7 +207,7 @@ impl<'a> Sessions<'a> {
             source_client,
         } = &request.request
         {
-            if self.update_protocol != yinz_types::update_client::PROTOCOL_VERSION
+            if self.update_protocol != yinz_types::session_update::PROTOCOL_VERSION
                 || self.cli_args.update_resume.as_deref() != Some(operation)
                 || self.cli_args.update_source_client != Some(source_client.get())
             {

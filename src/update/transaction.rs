@@ -274,9 +274,9 @@ impl Transaction {
             "release is missing its executable or builtin plugins"
         );
         let location = Location::lock(executable, data_dir)?;
-        location.check_claim(operation)?;
         if let Some(journal) = location.read_journal()? {
             if journal.operation == operation {
+                location.check_claim(operation)?;
                 anyhow::ensure!(matches!(journal.status, Status::Prepared | Status::Publishing | Status::Published | Status::Committed), "update preparation was interrupted or rolled back; recover operation {operation} before retrying");
                 return Ok(Self { location, journal });
             }
@@ -285,10 +285,14 @@ impl Transaction {
                 "installation belongs to unfinished update {}",
                 journal.operation
             );
+            // A terminal operation whose cleanup failed may still hold its claim.
+            // Cleanup releases that claim before the new operation checks it.
             let mut previous = Self { location, journal };
             previous.cleanup()?;
+            previous.location.check_claim(operation)?;
             return Self::prepare_after_lock(source, previous.location, operation);
         }
+        location.check_claim(operation)?;
         Self::prepare_after_lock(source, location, operation)
     }
 
