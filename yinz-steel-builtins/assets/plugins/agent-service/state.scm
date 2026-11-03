@@ -202,7 +202,7 @@
             (as-call "finish-run" id "Closed" (yinz-wall-clock-ms))
             (as-map-remove! "hooks" id)
             (as-set! "event-fed" (filter (lambda (other) (not (= id other))) (as-get "event-fed"))))
-          ((not (member id (as-get "event-fed")))
+          ((or (not (member id (as-get "event-fed"))) (equal? (hash-ref agent "kind") "claude"))
             (define feed (as-model "HookFeed" agent))
             (when (as-present? feed) (as-map-set! "hooks" id feed)))))) (as-panes))
   (as-call "adopt-arrived-runs")

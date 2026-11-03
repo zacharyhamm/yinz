@@ -5,7 +5,7 @@ controller for live agent operations. Timeouts never trigger automatic retries.
 
 | Topic | Canonical interface | Boundary |
 |---|---|---|
-| Live agents | `agent list/status/spawn/prompt/wait/read/recover/send-keys` | Readiness, conversation guards, acknowledgement, and turn outcomes. Use `--json`. `wait --submission ID` resumes a particular prompt; `wait --until idle` observes readiness. Project filtering is available on list. |
+| Live agents | `agent list/status/spawn/prompt/wait/read/recover/send-keys` | Readiness, conversation guards, acknowledgement, and turn outcomes. Use `--json`. `wait --submission ID` resumes a particular prompt; `ready` allows text submission, including busy Claude steering; `wait --until idle` awaits all tracked activity. Project filtering is available on list. |
 | Agent records | `agent register/runs/run/history-search/predecessors` | Registration uses `agent-service`. Archive queries use `project-store` and retain pagination and ownership filters. |
 | Sessions and panes | [`attach --remote HOST SESSION`](REMOTE_SESSIONS.md), `list-sessions`, `action list-panes/list-tabs/new-pane/new-tab/dump-screen/pane-wait`, pane and tab actions, `pty-host` | General programs, remote placement, output, exit, and closure waits. |
 | Projects | Named project commands under `action` | Preserve domain rules and guarded configuration writes. |

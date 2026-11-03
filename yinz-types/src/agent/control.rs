@@ -326,7 +326,7 @@ pub enum NotReadyReason {
 }
 
 /// The capability checks sampled together by the screen thread. These explain
-/// `prompt_unsupported`; idle state and input consumption are separate checks.
+/// `prompt_unsupported`; activity and input consumption are separate checks.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AgentReadiness {
     pub kind_supported: bool,
@@ -413,6 +413,8 @@ pub struct AgentStatus {
     pub agent: AgentInfo,
     pub cwd: Option<String>,
     pub branch: Option<String>,
+    /// Whether a text prompt can safely be submitted. Independent of activity:
+    /// Claude can be busy with a turn or background workers and still accept steering.
     pub ready: bool,
     #[serde(default)]
     pub not_ready_reason: Option<NotReadyReason>,
@@ -558,6 +560,7 @@ impl PromptObservation {
     /// fingerprint takes precedence over recognizing a provider-generated notification.
     pub fn matches_submission(&self, hook: &HookEvent) -> bool {
         hook.hook_event_name == "UserPromptSubmit"
+            && (!self.acknowledged || self.acknowledges(hook))
             && (self.conversation_id.is_empty() || hook.session_id == self.conversation_id)
             && submit_matches(
                 hook,
@@ -675,6 +678,10 @@ impl PromptObservation {
             return None;
         }
         if hook.hook_event_name == "UserPromptSubmit" {
+            // A steering prompt starts another observation; it never replaces this one.
+            if self.kind == "claude" && self.acknowledged {
+                return None;
+            }
             if !submit_matches(
                 hook,
                 self.kind.as_str(),
@@ -726,6 +733,9 @@ impl PromptObservation {
                 .as_deref()
                 .is_some_and(|turn| hook.turn_id.as_deref() != Some(turn))
         {
+            return None;
+        }
+        if self.kind == "claude" && hook.prompt_id.is_some() && hook.prompt_id != self.prompt_id {
             return None;
         }
         match hook.hook_event_name.as_str() {

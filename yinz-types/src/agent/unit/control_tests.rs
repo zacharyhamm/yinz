@@ -1647,3 +1647,33 @@ fn spawn_placement_validates_flat_fields_and_direct_requests() {
         }
     ));
 }
+
+#[test]
+fn claude_steering_observations_keep_their_own_prompt_identity() {
+    let mut first = PromptObservation::new("claude", "conversation", "same text");
+    let mut second = PromptObservation::new("claude", "conversation", "same text");
+    let a = event("claude", "UserPromptSubmit", Some("one"), Some("same text"));
+    let b = event("claude", "UserPromptSubmit", Some("two"), Some("same text"));
+    assert_eq!(observe(&mut first, &a), Some(AgentOutcome::Submitted));
+    assert_eq!(observe(&mut first, &b), None);
+    assert_eq!(observe(&mut second, &b), Some(AgentOutcome::Submitted));
+    assert_eq!(
+        observe(&mut first, &event("claude", "Stop", Some("two"), None)),
+        None
+    );
+    assert_eq!(
+        observe(
+            &mut second,
+            &event("claude", "StopFailure", Some("one"), None)
+        ),
+        None
+    );
+    assert_eq!(
+        observe(&mut first, &event("claude", "Stop", Some("one"), None)),
+        Some(AgentOutcome::Completed)
+    );
+    assert_eq!(
+        observe(&mut second, &event("claude", "Stop", Some("two"), None)),
+        Some(AgentOutcome::Completed)
+    );
+}

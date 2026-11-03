@@ -43,7 +43,8 @@ Use the actual `spawned.pane_id`, `spawned.tab_id`, `spawned.cwd`, and `spawned.
 `spawned.created_tab_id` identifies a tab created by this launch, including automatic overflow.
 If spawn fails, inspect `spawned` and `launch_resources`: a pane, tab, branch, or worktree may already exist. Reconcile those resources before retrying.
 The idle wait returns status in `agents`. Use its `agent.session_id` as the conversation guard and check `status_available` and `prompt_supported`.
-If `ready` is false only because of `unconsumed_input`, send the requested prompt directly. Do not wait for draft removal or request recovery.
+For Claude, `busy` and `ready` can both be true: send an ordinary prompt to steer active work without interrupting it. Wait for acknowledgement before another submission, and retain each submission ID for its own result. Busy steering requires a visible empty composer; inspect and resolve drafts or dialogs instead of discarding them while work runs.
+If the agent is idle and `ready` is false only because of `unconsumed_input`, send the requested prompt directly. Do not wait for draft removal or request recovery.
 Other readiness failures still require attention. Muse’s first prompt also requires its visible composer after setup.
 Completed prompt responses include the answer in `message` when the provider reports it. Use `status` for a fresh observation and `read` to diagnose missing readiness, dialogs, or missing output; neither is an automatic extra step.
 If startup remains `Spawned` or reports `status_unavailable`, read the pane and check hooks. Answer a visible startup dialog deliberately with `send-keys`, within the user's authorization, then wait again. A Codex worktree trust prompt accepts `y Enter`; do not approve trust without authorization.
@@ -73,10 +74,10 @@ yinz agent wait terminal_3 --submission SUBMISSION_ID --conversation CONVERSATIO
 
 This returns the original turn's outcome, including failure; `acknowledged` and `turn_id` describe that submission. It can return `needs_input` again while a dialog remains.
 For parallel workers, submit without `--wait`, save each pane/conversation/submission triple, and wait on those submissions later.
-Do not combine `--submission` with `--until`. A plain `wait --until idle` observes readiness and returns the last completed turn's text, which does not establish the outcome of your task.
-Only the last 32 submissions per pane/conversation are retained in memory; target replacement, exit, closure, and server restart discard them. Unknown or expired IDs return `rejected`. A retained ID cannot be submitted again. An unavailable result does not prove the work never ran: inspect before any retry rather than treating the ID as durable deduplication.
+Do not combine `--submission` with `--until`. A plain `wait --until idle` observes inactivity and readiness and returns the last completed turn's text, which does not establish the outcome of your task.
+A recent window of 32 submissions per pane/conversation is retained in memory, along with all unresolved submissions; target replacement, exit, closure, and server restart discard them. Unknown or expired IDs return `rejected`. A retained ID cannot be submitted again. An unavailable result does not prove the work never ran: inspect before any retry rather than treating the ID as durable deduplication.
 When Claude runs a command or subagent in the background, `completed` carries only its interim text and lists `background_tasks`.
-Use a separate `wait --until idle --conversation ID` for that background work's final text. A long-running background server keeps the state wait pending until its timeout.
+Claude remains busy while its parent, tracked workers, background tasks, or notification processing are active. Use `ready` to decide whether to send steering, or a separate `wait --until idle --conversation ID` for that background work's final text. A long-running background server keeps the state wait pending until its timeout.
 
 To start a fresh conversation in the same pane, prompt exactly `/clear` (Claude) or `/new` (Codex or Pi).
 The reply is `target_changed`; wait for idle, then use the new conversation ID. Other slash commands need `send-keys`, and typing `/clear` or `/new` through `send-keys` does not establish readiness.

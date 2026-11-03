@@ -1241,3 +1241,72 @@ fn agent_service_actual_runtimes_match_delayed_bootstrap_after_newer_pane_event(
     ));
     stored_equal(&wasm, &steel);
 }
+
+#[test]
+fn agent_service_claude_activity_uses_the_host_manifest_after_parent_and_worker_hooks() {
+    use super::runtime_parity::SteelReference;
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+    let clock = Arc::new(AtomicU64::new(90_000));
+    let mut session = session(true);
+    session.panes.panes.get_mut(&TabPosition::new(0)).unwrap()[0].agent = Some(AgentInfo {
+        kind: "claude".into(),
+        state: AgentState::Busy,
+        source: AgentSource::Reported,
+        session_id: Some("conversation-1".into()),
+        detail: None,
+        waiting_on: None,
+        wait_needs_a_person: false,
+        cwd: None,
+        run_id: None,
+    });
+    let mut panes = session.panes.clone();
+    let (_, responder) = host(clock.clone(), session, false);
+    let mut service = SteelReference::with_clock(
+        "agent-service",
+        BTreeMap::new(),
+        std::path::Path::new("/work"),
+        responder,
+        Some(clock),
+    );
+    let snapshot = |service: &mut SteelReference| -> Value {
+        service.pipe(&message(
+            "agent_subscribe",
+            PipeSource::Plugin(PluginId::new(7)),
+            None,
+        ));
+        service
+            .take_commands()
+            .iter()
+            .find_map(|command| {
+                let send = command.get("MessageToPlugin")?;
+                (send["message_name"] == "agent_snapshot").then(|| {
+                    serde_json::from_str(send["message_payload"].as_str().unwrap()).unwrap()
+                })
+            })
+            .unwrap()
+    };
+    service.update(&hook(
+        "Stop",
+        json!({"prompt_id":"parent","claude_turn_complete":true}),
+    ));
+    assert_eq!(snapshot(&mut service)["hooks"]["10"]["phase"], "Busy");
+    panes.panes.get_mut(&TabPosition::new(0)).unwrap()[0]
+        .agent
+        .as_mut()
+        .unwrap()
+        .state = AgentState::Waiting;
+    service.update(&Event::PaneUpdate(panes.clone()));
+    service.update(&hook(
+        "PreToolUse",
+        json!({"agent_id":"worker","tool_name":"AskUserQuestion"}),
+    ));
+    assert_eq!(snapshot(&mut service)["hooks"]["10"]["phase"], "Waiting");
+    panes.panes.get_mut(&TabPosition::new(0)).unwrap()[0]
+        .agent
+        .as_mut()
+        .unwrap()
+        .state = AgentState::Idle;
+    service.update(&Event::PaneUpdate(panes));
+    service.update(&hook("SubagentStop", json!({"agent_id":"worker"})));
+    assert_eq!(snapshot(&mut service)["hooks"]["10"]["phase"], "Idle");
+}

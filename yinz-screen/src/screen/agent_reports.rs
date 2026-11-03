@@ -144,9 +144,10 @@ pub(super) fn apply_queued_agent_report(
     // Older installed reporters can still send Idle for an ordinary Claude or Antigravity Stop.
     // Correlate internal confirmations before applying or broadcasting any state.
     if report.kind == "claude"
-        && hook
-            .as_ref()
-            .is_some_and(|hook| screen.ignore_claude_confirmation(pane_id, hook))
+        && hook.as_ref().is_some_and(|hook| {
+            screen.ignore_claude_confirmation(pane_id, hook)
+                || screen.ignore_claude_worker(pane_id, hook)
+        })
     {
         log::debug!(
             "agent report ignored report={:?} reason=claude_confirmation",
@@ -178,7 +179,7 @@ pub(super) fn apply_queued_agent_report(
             "agy" => hook.agy_turn_complete,
             _ => None,
         };
-        if complete != Some(true) || screen.claude_turn_continues(pane_id, hook) {
+        if complete != Some(true) {
             if let yinz_types::agent::report::AgentReportState::Set(agent) = &mut normalized.state {
                 agent.state = yinz_types::agent::AgentState::Busy;
             }
@@ -267,6 +268,7 @@ pub(super) fn apply_queued_agent_report(
     )
     .then(|| screen.get_pane_info(pane_id).and_then(|pane| pane.agent))
     .flatten();
+    let previous = screen.get_pane_info(pane_id).and_then(|pane| pane.agent);
     let result = screen.apply_agent_report_state(report, hook.as_ref());
     trace.record(
         "state",
@@ -274,17 +276,6 @@ pub(super) fn apply_queued_agent_report(
         if result.is_ok() { "ok" } else { "error" },
     );
     result?;
-    if let Some(hook) = hook.as_ref().filter(|hook| !hook.archive_only) {
-        screen.flash_agent_hook(pane_id, &report.kind, hook, cleared_agent);
-        let at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
-        screen.with_pane(pane_id, |pane| pane.set_last_hook_at_ms(at));
-        // Publish even identical or stateless hooks, before the corresponding AgentEvent.
-        screen.report_pane_state()?;
-        screen.render()?;
-    }
     if let Some(event) = &report.event {
         screen.agent_control_event(event, hook.as_ref());
         if trace.enabled {
@@ -309,6 +300,26 @@ pub(super) fn apply_queued_agent_report(
             .as_ref()
             .and_then(|hook| screen.event_submission(pane_id, hook));
         screen.observe_agent_event(event, hook.as_ref(), submission);
+    }
+    let current = screen.get_pane_info(pane_id).and_then(|pane| pane.agent);
+    if previous != current {
+        screen.fire_agent_state_hooks(pane_id, previous.as_ref(), current.as_ref());
+        if screen.update_plugin_tab_names() {
+            screen.log_and_report_session_state()?;
+        }
+    }
+    if let Some(hook) = hook.as_ref().filter(|hook| !hook.archive_only) {
+        screen.flash_agent_hook(pane_id, &report.kind, hook, cleared_agent);
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        screen.with_pane(pane_id, |pane| pane.set_last_hook_at_ms(at));
+    }
+    if previous != current || hook.as_ref().is_some_and(|hook| !hook.archive_only) {
+        // Publish even identical or stateless hooks, before the corresponding AgentEvent.
+        screen.report_pane_state()?;
+        screen.render()?;
     }
     let started = std::time::Instant::now();
     trace.record("event_enqueue", Duration::ZERO, "enter");
@@ -360,6 +371,23 @@ pub(crate) fn apply_pane_agent_report(
     pane_id: PaneId,
     agent: Option<AgentInfo>,
 ) -> Result<bool> {
+    set_pane_agent_report(screen, pane_id, agent, true)
+}
+
+pub(super) fn stage_pane_agent_report(
+    screen: &mut Screen,
+    pane_id: PaneId,
+    agent: Option<AgentInfo>,
+) -> Result<bool> {
+    set_pane_agent_report(screen, pane_id, agent, false)
+}
+
+fn set_pane_agent_report(
+    screen: &mut Screen,
+    pane_id: PaneId,
+    agent: Option<AgentInfo>,
+    publish: bool,
+) -> Result<bool> {
     screen.claude_permission_waits.remove(&pane_id);
     // Read before the write: which hooks a change fires is a question about the edge, and the
     // pane only answers whether anything changed.
@@ -380,6 +408,10 @@ pub(crate) fn apply_pane_agent_report(
                 .as_ref()
                 .and_then(|previous| previous.run_id.clone());
         }
+        if publish {
+            screen.remember_claude_parent(pane_id, &agent);
+        }
+        screen.aggregate_claude_state(pane_id, &mut agent);
         agent
     });
     let changed = screen
@@ -438,7 +470,7 @@ pub(crate) fn apply_pane_agent_report(
     }
     // A report that repeats itself costs nothing; a changed one is news to every reader of the
     // manifest.
-    if changed {
+    if changed && publish {
         screen.fire_agent_state_hooks(pane_id, previous.as_ref(), agent.as_ref());
         if screen.update_plugin_tab_names() {
             screen.log_and_report_session_state()?;

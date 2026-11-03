@@ -29,7 +29,7 @@ pub fn is_pi_extension_argument(arg: &str) -> bool {
 /// What the agent in a pane is doing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumString)]
 pub enum AgentState {
-    /// Working.
+    /// Working, including tracked background workers. Prompt readiness is independent.
     Busy,
     /// Stopped and blocked on the user: a permission prompt, a question, a form.
     Waiting,

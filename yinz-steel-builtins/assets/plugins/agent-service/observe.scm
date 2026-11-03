@@ -41,6 +41,13 @@
               (if (and (as-present? previous-wait) (equal? (hash-ref event "hook_event_name") "Notification")) previous-wait (as-model "WaitingDetail" event)) json-null))
           (define feed (hash "phase" phase "detail" (as-model "HookDetail" kind event) "waiting_on" waiting
               "session_id" (hash-ref event "session_id") "cwd" (hash-ref event "cwd")))
+          ;; The host combines Claude's parent, workers and notification turns before publishing.
+          (define agent (hash-ref pane "agent"))
+          (when (and (equal? kind "claude") (as-present? agent)
+              (equal? (hash-ref agent "kind") kind)
+              (equal? (hash-ref agent "session_id") (hash-ref event "session_id")))
+            (define reported (as-model "HookFeed" agent))
+            (when (as-present? reported) (set! feed reported) (set! phase (hash-ref reported "phase"))))
           (as-set! "event-fed" (as-unique (cons id (as-get "event-fed"))))
           (define changed (not (equal? previous feed)))
           (when changed (as-map-set! "hooks" id feed))

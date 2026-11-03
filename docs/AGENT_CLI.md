@@ -501,10 +501,21 @@ lifecycle hooks. The terminal must support bracketed paste. Prompt submission
 and key input require a verified agent command pane. An agent started manually
 inside a shell can appear in listings without satisfying that requirement.
 
-Yinz rejects prompts when the agent is busy, waiting or already has a pending
-submission. Unconsumed manual input also makes the pane unready. There is no
-prompt queue. The server registers observation before it writes the prompt.
-Yinz waits for paste delivery, then waits 100 ms before sending Enter. It checks
+Use `ready` to decide whether a text prompt can be submitted; activity and readiness
+are independent. Claude can be `busy` and `ready` while its parent turn, subagents,
+or background Bash tasks are running. Steering requires a visible empty composer
+and uses bracketed paste and Enter without interrupting work. It submits input for
+Claude to consume at its supported opportunity; it does not promise immediate execution.
+Waiting dialogs and unacknowledged submissions still block prompts. Other providers
+require idle state. There is no Yinz prompt queue.
+
+The server registers observation before it writes the prompt. Each acknowledged
+Claude submission keeps its own identity and result waiter when another prompt is
+accepted. Earlier turns and background notifications cannot acknowledge or complete
+a later submission. Conversation resets such as `/clear`, recovery, and explicit
+draft discard retain their inactivity guards.
+Yinz waits for paste delivery, then waits 500 ms for Claude or 100 ms for other
+built-in providers before sending Enter. It checks
 input ownership and the target again before Enter. For the first Muse prompt,
 it also checks that the cursor remains inside the composer. This delay does not prove
 acceptance. Only a matching hook acknowledges the prompt.
@@ -523,8 +534,9 @@ This Claude version treats `#` as ordinary input and does not open a memory edit
 Readiness requires a known consumed input revision that matches the pane's current
 revision. Startup reports establish that revision. A matching CLI prompt report
 uses the revision captured when Yinz sent the prompt. Manual acceptance alone
-cannot restore readiness because Yinz cannot identify which input revision it
-consumed. Tool and completion reports do not resolve an unknown revision.
+cannot prove which input revision it consumed. During Claude activity, a freshly
+rendered empty composer can establish steering readiness without consuming that
+revision on behalf of an earlier submission. Tool and completion reports do not resolve an unknown revision.
 Input revisions restart at zero when the pane's process respawns, including when
 scrollback is retained. Input typed after respawn still prevents startup reports
 from establishing readiness.
@@ -569,7 +581,8 @@ an ID. Responses for admitted prompts carry `submission_id`, and transport error
 echo the client-known ID. For concurrent workers, submit without `--wait`, retain
 each pane/conversation/submission triple, and wait on those IDs later.
 
-The server retains only the last 32 submissions per pane/conversation in memory.
+The server retains a recent window of 32 submissions per pane/conversation in memory,
+keeping unresolved submissions even when they exceed that window.
 Target replacement, exit, closure, and server restart discard this history. Unknown or expired
 IDs return `rejected`; reusing a retained ID for another prompt is refused without
 sending input. These IDs are not durable idempotency keys. An unavailable result
@@ -599,7 +612,10 @@ Conversation pins and pending operations can report `target_changed` or `target_
 code changes or test results. Automatic policy waits do not produce
 `needs_input` unless a person must respond. Worker permission requests, questions and
 elicitation also produce `needs_input` for their parent conversation. The pane
-stays `waiting` until all worker waits clear, then shows the latest parent state.
+stays `waiting` until all worker waits clear. Claude then shows `busy` while its
+parent, any tracked worker, background task, or task-notification processing remains
+active. `wait --until idle` waits for all of that work; completing one prompt does
+not imply the pane is idle.
 
 The default deadline is 30 seconds. `prompt --wait` defaults to 10 minutes.
 `--timeout` accepts durations from `1ms` to `24h` and includes acceptance time.
@@ -608,7 +624,9 @@ An unacknowledged timeout means acceptance is uncertain. An acknowledged timeout
 means the turn was accepted, but Yinz did not observe completion before the deadline.
 Failure and interruption messages retain the provider's message when available.
 Yinz keeps an unresolved submission claim until lifecycle reports resolve it or
-the target changes. New prompts are rejected while that claim remains. Manual
+the target changes. Unacknowledged or uncertain submissions block new prompts.
+An acknowledged Claude turn whose completion waiter timed out can still accept
+steering when `ready` is true. Manual
 input ends the caller's wait as `interrupted`, but it cannot recall a submission
 already in transit. Its claim can remain until the original turn is resolved.
 A retry cannot take ownership of that turn's completion. An unacknowledged

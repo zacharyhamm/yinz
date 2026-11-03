@@ -3867,6 +3867,8 @@ fn claude_worker_permission_reminders_preserve_parent_state_and_worker_waits() {
                 Some(parent.clone())
             );
 
+            // The previous worker stopped; subsequent waits belong to another worker.
+            worker.agent_id = Some("live-worker".into());
             worker.hook_event_name = "PermissionRequest".into();
             for mode in ["plan", "default", "acceptEdits", "auto"] {
                 worker.permission_mode = Some(mode.into());
@@ -5385,7 +5387,13 @@ fn background_work_is_reported_and_an_idle_wait_returns_its_final_answer() {
         assert_eq!(completed.outcome, AgentOutcome::Completed);
         assert_eq!(completed.message.as_deref(), Some("Started."));
         assert_eq!(completed.background_tasks, ["agent", "bash"]);
-        assert!(completed.agents[0].ready, "the composer stays usable");
+        assert_eq!(completed.agents[0].agent.state, AgentState::Busy);
+        assert!(
+            !completed.agents[0].ready,
+            "steering requires a visible empty composer"
+        );
+        draft_frame(&mut screen, "claude", "", 0, Instant::now());
+        assert!(screen.agent_status_for_test().ready);
         assert_eq!(completed.agents[0].background_tasks, ["agent", "bash"]);
 
         screen.agent_control(wait(AgentState::Idle), CLIENT);
@@ -5592,6 +5600,12 @@ fn background_tracking_ends_with_recovery_and_the_conversation() {
         match end {
             "recover" => {
                 screen.agent_control(recover(), CLIENT);
+                assert_eq!(
+                    replies(&messages, CLIENT)[0].outcome,
+                    AgentOutcome::Rejected
+                );
+                send_esc(&mut screen, &messages);
+                recover_after_quiet(&mut screen, interrupted_recover());
                 assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
             },
             "clear" => {
@@ -5633,7 +5647,7 @@ fn an_idle_wait_times_out_while_background_work_runs() {
     screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(31));
     let timed_out = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(timed_out.outcome, AgentOutcome::TimedOut);
-    assert!(timed_out.agents[0].ready);
+    assert_eq!(timed_out.agents[0].agent.state, AgentState::Busy);
     assert_eq!(timed_out.agents[0].background_tasks, ["bash"]);
 }
 
@@ -5691,12 +5705,11 @@ fn a_failed_notification_confirmation_ends_only_that_turn() {
             ..claude_stop("notification", "", &[])
         },
     );
-    // Like an unverified caller turn, the agent stays busy until recovery, but the
-    // notification no longer holds background tracking or the caller's confirmation.
+    // An observer timeout cannot certify that background processing finished.
     let status = screen.agent_status_for_test();
-    assert!(status.background_tasks.is_empty());
+    assert_eq!(status.background_tasks, ["bash"]);
     assert_eq!(status.agent.state, AgentState::Busy);
-    assert!(!screen.claude_background_pending_for_test());
+    assert!(screen.claude_background_pending_for_test());
     send_esc(&mut screen, &messages);
     recover_after_quiet(&mut screen, interrupted_recover());
     let recovered = replies(&messages, CLIENT).pop().unwrap();
@@ -10094,4 +10107,578 @@ fn hook_flash_idle_hooks_restart_title_deadline_without_arming_palette() {
         assert!(screen.pane_title_hook_is_flashing(&pane, screen.frame_now()));
         assert!(!screen.agent_hook_is_flashing(&pane, screen.frame_now()));
     }
+}
+
+fn claude_worker(name: &str, id: &str) -> HookEvent {
+    HookEvent {
+        agent_id: Some(id.into()),
+        ..hook(name)
+    }
+}
+
+fn steering_prompt(id: &str) -> AgentRequest {
+    AgentRequest::Prompt {
+        submission_id: Some(id.into()),
+        prompt: "steer".into(),
+        preserve_draft: true,
+        pane_id: PANE,
+        expected_session_id: Some("conversation".into()),
+        wait: true,
+        timeout_ms: 30_000,
+    }
+}
+
+fn steering_ack(id: &str) -> HookEvent {
+    HookEvent {
+        prompt_id: Some(id.into()),
+        prompt: Some("steer".into()),
+        ..hook("UserPromptSubmit")
+    }
+}
+
+fn deliver_steering(
+    screen: &mut Screen,
+    writes: &Receiver<(PtyWriteInstruction, ErrorContext)>,
+    id: &str,
+    client: ClientId,
+) {
+    draft_frame(screen, "claude", "", 0, Instant::now());
+    assert!(screen.agent_status_for_test().ready);
+    screen.agent_control(steering_prompt(id), client);
+    assert_eq!(
+        finish_paste(writes),
+        b"\x1b[200~steer\x1b[201~",
+        "steering must not clear or interrupt"
+    );
+    let now = Instant::now();
+    screen.refresh_agent_controls_at(now);
+    screen.refresh_agent_controls_at(now + Duration::from_millis(600));
+    assert_eq!(finish_paste(writes), b"\r");
+}
+
+#[test]
+fn claude_workers_and_notifications_publish_aggregate_activity_without_idle_edges() {
+    for target in pane_targets() {
+        for parent_finishes_first in [false, true] {
+            let (mut screen, messages, writes) = setup_on_target("claude", target.clone());
+            report_kind(&mut screen, "claude", hook("SessionStart"));
+            screen.agent_control_with_clear(identified_prompt("parent", true), CLIENT, &writes);
+            finish_paste(&writes);
+            report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+            for id in ["one", "two", "one"] {
+                report_kind(&mut screen, "claude", claude_worker("SubagentStart", id));
+            }
+            let (sender, plugins) = channels::unbounded();
+            screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+            screen.background_plugin_subscriptions.insert(
+                (PluginId::new(99), CLIENT),
+                HashSet::from([EventType::PaneUpdate]),
+            );
+            if parent_finishes_first {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    claude_stop("prompt", "parent", &["bash"]),
+                );
+                assert_eq!(
+                    replies(&messages, CLIENT)[0].agents[0].agent.state,
+                    AgentState::Busy
+                );
+            }
+            for id in ["one", "one", "two"] {
+                report_kind(&mut screen, "claude", claude_worker("SubagentStop", id));
+                assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+            }
+            if !parent_finishes_first {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    claude_stop("prompt", "parent", &["bash"]),
+                );
+                assert_eq!(
+                    replies(&messages, CLIENT)[0].agents[0].agent.state,
+                    AgentState::Busy
+                );
+            }
+            assert!(plugins.try_iter().all(|(instruction, _)| {
+                let PluginInstruction::Update(updates) = instruction else { return true };
+                updates.into_iter().all(|(_, _, event)| {
+                    !matches!(event, Event::PaneUpdate(manifest) if manifest.panes.values().flatten()
+                        .any(|pane| pane.id == PANE && pane.agent.as_ref().is_some_and(|a| a.state == AgentState::Idle)))
+                })
+            }), "parent completion must never publish an idle pane while work remains");
+            screen.agent_control(wait(AgentState::Idle), CLIENT);
+            report_kind(
+                &mut screen,
+                "claude",
+                task_notification("notification", &["bash"]),
+            );
+            assert!(replies(&messages, CLIENT).is_empty());
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_stop("notification", "finished", &[]),
+            );
+            assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+            // A completed worker's duplicate start and question cannot resurrect it.
+            report_kind(&mut screen, "claude", claude_worker("SubagentStart", "one"));
+            report_kind(
+                &mut screen,
+                "claude",
+                HookEvent {
+                    tool_name: Some("AskUserQuestion".into()),
+                    ..claude_worker("PreToolUse", "one")
+                },
+            );
+            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+        }
+    }
+}
+
+#[test]
+fn claude_worker_waits_and_foreign_events_preserve_the_underlying_parent() {
+    for parent_done in [false, true] {
+        let (mut screen, _, _) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker("SubagentStart", "worker"),
+        );
+        if parent_done {
+            report_kind(&mut screen, "claude", claude_stop("prompt", "done", &[]));
+        }
+        report_kind(
+            &mut screen,
+            "claude",
+            HookEvent {
+                tool_name: Some("AskUserQuestion".into()),
+                ..claude_worker("PreToolUse", "worker")
+            },
+        );
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
+        assert!(!screen.agent_status_for_test().ready);
+        report_kind(
+            &mut screen,
+            "claude",
+            HookEvent {
+                session_id: "foreign".into(),
+                ..claude_worker("SubagentStop", "worker")
+            },
+        );
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker("PostToolUse", "worker"),
+        );
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker("SubagentStop", "worker"),
+        );
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            if parent_done {
+                AgentState::Idle
+            } else {
+                AgentState::Busy
+            }
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker("SubagentStart", "next"),
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            HookEvent {
+                session_id: "replacement".into(),
+                ..hook("SessionStart")
+            },
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker("SubagentStart", "stale"),
+        );
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+    }
+}
+
+#[test]
+fn claude_sequential_steering_keeps_each_completion_and_ignores_old_acknowledgements() {
+    for target in pane_targets() {
+        for managed in [false, true] {
+            let (mut screen, messages, writes) = setup_on_target("claude", target.clone());
+            report_kind(&mut screen, "claude", hook("SessionStart"));
+            if managed {
+                screen.agent_control_with_clear(identified_prompt("parent", true), CLIENT, &writes);
+                finish_paste(&writes);
+            }
+            report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+            deliver_steering(&mut screen, &writes, "one", ClientId::new(2));
+            screen.agent_control(steering_prompt("blocked"), ClientId::new(3));
+            assert_eq!(
+                replies(&messages, ClientId::new(3))[0].outcome,
+                AgentOutcome::Rejected
+            );
+            report_kind(&mut screen, "claude", steering_ack("one"));
+            assert!(
+                replies(&messages, CLIENT).is_empty(),
+                "steering must preserve the parent's waiter"
+            );
+            deliver_steering(&mut screen, &writes, "two", ClientId::new(3));
+            report_kind(&mut screen, "claude", steering_ack("one"));
+            assert_eq!(
+                screen.agent_status_for_test().not_ready_reason,
+                Some(NotReadyReason::PendingSubmission)
+            );
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_stop("one", "first steering", &[]),
+            );
+            let first = replies(&messages, ClientId::new(2));
+            assert_eq!(first[0].submission_id.as_deref(), Some("one"));
+            assert_eq!(first[0].outcome, AgentOutcome::Completed);
+            assert!(
+                !first[0].agents[0].ready,
+                "the next submission still owns the composer"
+            );
+            assert!(replies(&messages, ClientId::new(3)).is_empty());
+            report_kind(&mut screen, "claude", steering_ack("two"));
+            // Latest confirmation can beat the first parent confirmation.
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_stop("two", "latest answer", &[]),
+            );
+            let second = replies(&messages, ClientId::new(3));
+            assert_eq!(second[0].submission_id.as_deref(), Some("two"));
+            assert_eq!(second[0].message.as_deref(), Some("latest answer"));
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_stop("prompt", "parent answer", &[]),
+            );
+            let parent = replies(&messages, CLIENT);
+            if managed {
+                assert_eq!(parent.len(), 1);
+                assert_eq!(parent[0].outcome, AgentOutcome::Completed);
+                assert_eq!(parent[0].submission_id.as_deref(), Some("parent"));
+            } else {
+                assert!(parent.is_empty());
+            }
+            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+            screen.agent_control(wait(AgentState::Idle), CLIENT);
+            assert_eq!(
+                replies(&messages, CLIENT)[0].message.as_deref(),
+                Some("latest answer")
+            );
+        }
+    }
+}
+
+#[test]
+fn claude_steering_rejects_drafts_dialogs_clear_and_changed_input() {
+    for case in [
+        "draft",
+        "dialog",
+        "hidden",
+        "clear",
+        "input",
+        "conversation",
+    ] {
+        let (mut screen, messages, writes) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        draft_frame(
+            &mut screen,
+            "claude",
+            if case == "draft" { "draft" } else { "" },
+            if case == "draft" { 5 } else { 0 },
+            Instant::now(),
+        );
+        match case {
+            "dialog" => report_kind(&mut screen, "claude", claude_permission_prompt()),
+            "hidden" => {
+                screen
+                    .tabs
+                    .get_mut(&TabId::new(0))
+                    .unwrap()
+                    .handle_pty_bytes(TerminalId::new(7), b"\x1b[?25l".to_vec())
+                    .unwrap();
+            },
+            _ => {},
+        }
+        let request = if case == "clear" {
+            clear_prompt()
+        } else if case == "conversation" {
+            let mut request = steering_prompt("one");
+            if let AgentRequest::Prompt {
+                expected_session_id,
+                ..
+            } = &mut request
+            {
+                *expected_session_id = Some("foreign".into());
+            }
+            request
+        } else {
+            steering_prompt("one")
+        };
+        screen.agent_control(request, CLIENT);
+        if case == "input" {
+            assert_eq!(finish_paste(&writes), b"\x1b[200~steer\x1b[201~");
+            screen.agent_control(send_keys(vec![BareKey::Char('x')]), ClientId::new(2));
+            screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(1));
+            assert_eq!(finish_paste(&writes), b"x");
+            assert_eq!(
+                replies(&messages, CLIENT)[0].outcome,
+                AgentOutcome::Interrupted
+            );
+        } else {
+            assert!(finish_paste(&writes).is_empty(), "{case}");
+            assert!(
+                matches!(
+                    replies(&messages, CLIENT)[0].outcome,
+                    AgentOutcome::Rejected | AgentOutcome::TargetChanged
+                ),
+                "{case}"
+            );
+        }
+    }
+}
+
+#[test]
+fn claude_steering_timeout_or_delivery_failure_does_not_finish_the_parent() {
+    for failure in [false, true] {
+        let (mut screen, messages, writes) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        screen.agent_control_with_clear(identified_prompt("parent", true), CLIENT, &writes);
+        finish_paste(&writes);
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        draft_frame(&mut screen, "claude", "", 0, Instant::now());
+        let mut request = steering_prompt("one");
+        if let AgentRequest::Prompt { timeout_ms, .. } = &mut request {
+            *timeout_ms = 10_000;
+        }
+        screen.agent_control(request, ClientId::new(2));
+        if failure {
+            for (instruction, _) in writes.try_iter() {
+                if let PtyWriteInstruction::Write(_, _, Some(mut completion)) = instruction {
+                    completion.set_error_message("failed steering paste".into());
+                }
+            }
+            screen.refresh_agent_controls();
+        } else {
+            finish_paste(&writes);
+            screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(11));
+        }
+        let response = replies(&messages, ClientId::new(2));
+        assert_eq!(
+            response[0].outcome,
+            if failure {
+                AgentOutcome::Failed
+            } else {
+                AgentOutcome::TimedOut
+            }
+        );
+        assert!(!response[0].acknowledged);
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_stop("prompt", "parent answer", &[]),
+        );
+        let parent = replies(&messages, CLIENT);
+        assert_eq!(parent.last().unwrap().outcome, AgentOutcome::Completed);
+        assert!(!screen.agent_status_for_test().ready);
+        // A late acknowledgement belongs only to the steering receipt.
+        report_kind(&mut screen, "claude", steering_ack("one"));
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_stop("one", "steering answer", &[]),
+        );
+        assert!(replies(&messages, ClientId::new(2)).is_empty());
+        screen.agent_control(wait_submission("one"), ClientId::new(2));
+        let result = replies(&messages, ClientId::new(2));
+        assert_eq!(result[0].outcome, AgentOutcome::Completed);
+        assert_eq!(result[0].message.as_deref(), Some("steering answer"));
+    }
+}
+
+#[test]
+fn claude_acknowledged_timeout_keeps_its_result_without_blocking_steering() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    let mut request = identified_prompt("parent", true);
+    if let AgentRequest::Prompt { timeout_ms, .. } = &mut request {
+        *timeout_ms = 1_000;
+    }
+    screen.agent_control_with_clear(request, CLIENT, &writes);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(2));
+    let timeout = replies(&messages, CLIENT);
+    assert_eq!(timeout[0].outcome, AgentOutcome::TimedOut);
+    assert!(timeout[0].acknowledged);
+    deliver_steering(&mut screen, &writes, "next", ClientId::new(2));
+    report_kind(&mut screen, "claude", steering_ack("next"));
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("prompt", "parent answer", &[]),
+    );
+    assert!(replies(&messages, ClientId::new(2)).is_empty());
+    screen.agent_control(wait_submission("parent"), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT)[0].message.as_deref(),
+        Some("parent answer")
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("next", "steered answer", &[]),
+    );
+    assert_eq!(
+        replies(&messages, ClientId::new(2))[0].outcome,
+        AgentOutcome::Completed
+    );
+}
+
+#[test]
+fn claude_background_notifications_cannot_acknowledge_steering_or_hide_permission_waits() {
+    let (mut screen, messages, writes) = setup("claude");
+    complete_with_background(&mut screen, &messages, &writes, &["bash"]);
+    deliver_steering(&mut screen, &writes, "next", CLIENT);
+    report_kind(
+        &mut screen,
+        "claude",
+        task_notification("notification", &["bash"]),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            prompt_id: Some("notification".into()),
+            ..claude_permission_prompt()
+        },
+    );
+    assert_eq!(
+        screen.agent_status_for_test().agent.state,
+        AgentState::Waiting
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            prompt_id: Some("notification".into()),
+            ..hook("PostToolUse")
+        },
+    );
+    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("notification", "background answer", &[]),
+    );
+    assert!(replies(&messages, CLIENT).is_empty());
+    assert_eq!(
+        screen.agent_status_for_test().not_ready_reason,
+        Some(NotReadyReason::PendingSubmission)
+    );
+    report_kind(&mut screen, "claude", steering_ack("next"));
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("next", "steered answer", &["bash"]),
+    );
+    let result = replies(&messages, CLIENT);
+    assert_eq!(result[0].outcome, AgentOutcome::Completed);
+    assert_eq!(result[0].message.as_deref(), Some("steered answer"));
+    assert!(
+        result[0].background_tasks.is_empty(),
+        "late confirmations cannot restart completed tasks"
+    );
+    assert_eq!(result[0].agents[0].agent.state, AgentState::Idle);
+}
+
+#[test]
+fn claude_steering_rechecks_the_composer_before_enter() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    draft_frame(&mut screen, "claude", "", 0, Instant::now());
+    screen.agent_control(steering_prompt("next"), CLIENT);
+    finish_paste(&writes);
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .handle_pty_bytes(
+            TerminalId::new(7),
+            b"\x1b[2J\x1b[HAllow this tool?".to_vec(),
+        )
+        .unwrap();
+    let now = Instant::now();
+    screen.refresh_agent_controls_at(now);
+    screen.refresh_agent_controls_at(now + Duration::from_secs(1));
+    assert!(finish_paste(&writes).is_empty());
+    assert_eq!(
+        replies(&messages, CLIENT)[0].outcome,
+        AgentOutcome::Interrupted
+    );
+}
+
+#[test]
+fn claude_late_uncertainty_is_retained_when_a_newer_steering_turn_completes() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    screen.agent_control_with_clear(identified_prompt("parent", true), CLIENT, &writes);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    deliver_steering(&mut screen, &writes, "next", ClientId::new(2));
+    report_kind(&mut screen, "claude", steering_ack("next"));
+    draft_frame(&mut screen, "claude", "", 0, Instant::now());
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            claude_turn_complete: Some(false),
+            ..claude_stop("prompt", "", &[])
+        },
+    );
+    assert_eq!(
+        replies(&messages, CLIENT)[0].outcome,
+        AgentOutcome::StatusUnavailable
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("next", "next answer", &[]),
+    );
+    let completed = replies(&messages, ClientId::new(2));
+    assert_eq!(completed[0].outcome, AgentOutcome::Completed);
+    assert_eq!(
+        completed[0].agents[0].not_ready_reason,
+        Some(NotReadyReason::UnresolvedTurn)
+    );
+    assert!(!screen.agent_status_for_test().ready);
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("prompt", "parent answer", &[]),
+    );
+    assert!(screen.agent_status_for_test().ready);
 }

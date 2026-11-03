@@ -34,6 +34,7 @@ pub(super) struct PermissionWait {
 pub(super) struct Lifecycle {
     kind: String,
     conversation: String,
+    claude: ClaudeActivity,
     input_revision: Option<u64>,
     /// When the last hook from this pane arrived, worker and stateless hooks included.
     pub(super) last_report: Instant,
@@ -52,15 +53,27 @@ pub(super) struct Lifecycle {
     /// Claude `<task-notification>` turns in flight, by prompt ID. They run beside the
     /// caller's prompt tracking, which they never replace.
     claude_notifications: BTreeMap<String, ClaudeNotification>,
-    /// The last confirmed notification turn, so a duplicate submission hook is not a new one.
-    claude_previous_notification: Option<String>,
-    /// Tasks finished by notification turns confirmed before the caller turn they followed.
-    /// Observers confirm turns independently, so the caller's confirmation can arrive last;
-    /// it must not restart these tasks, and while this is set a later turn already supplied
-    /// the final answer.
-    claude_overtaken: Option<BTreeSet<String>>,
     /// The final assistant text of the last completed turn, until the next caller prompt.
     last_message: Option<String>,
+}
+
+/// Presentation and result observation have different lifetimes. Keep the parent's
+/// state beneath worker waits/activity, and retain identities after newer prompts arrive.
+#[derive(Clone, Default)]
+struct ClaudeActivity {
+    parent: Option<AgentInfo>,
+    workers: BTreeSet<String>,
+    stopped_workers: BTreeSet<String>,
+    turns: BTreeMap<String, ClaudeTurn>,
+    completed_tasks: BTreeSet<String>,
+    sequence: u64,
+    message_sequence: u64,
+}
+
+#[derive(Clone)]
+struct ClaudeTurn {
+    confirmation: Option<bool>,
+    sequence: u64,
 }
 
 impl Lifecycle {
@@ -90,9 +103,7 @@ impl Lifecycle {
 struct ClaudeNotification {
     /// The tasks the notification reports finished.
     tasks: Vec<String>,
-    /// The caller prompt that was submitted but unconfirmed when this turn began, so this
-    /// turn ran after it.
-    after: Option<String>,
+    waiting: Option<AgentInfo>,
 }
 
 pub(super) struct DialogInput {
@@ -144,10 +155,12 @@ pub(super) struct Pending {
     prompt: Option<PromptObservation>,
     submission_id: Option<String>,
     clear: bool,
+    steering: bool,
     wait: bool,
     until: AgentState,
     session_ended: bool,
     abandoned: bool,
+    blocks_steering: bool,
     resolved: bool,
     delivery: Option<tokio::sync::oneshot::Receiver<yinz_bus::route::ActionCompletionResult>>,
     enter_at: Option<Instant>,
@@ -157,11 +170,13 @@ pub(super) struct Pending {
 
 impl Pending {
     fn not_ready_reason(&self) -> Option<NotReadyReason> {
-        self.prompt.as_ref().map(|prompt| {
-            if prompt.acknowledged() {
-                NotReadyReason::UnresolvedTurn
+        self.prompt.as_ref().and_then(|prompt| {
+            if !prompt.acknowledged() || self.delivery.is_some() || self.enter_at.is_some() {
+                Some(NotReadyReason::PendingSubmission)
+            } else if self.kind == "claude" && !self.blocks_steering {
+                None
             } else {
-                NotReadyReason::PendingSubmission
+                Some(NotReadyReason::UnresolvedTurn)
             }
         })
     }
@@ -273,32 +288,23 @@ impl Screen {
             return !self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
                 lifecycle.kind == "claude"
                     && lifecycle.conversation == hook.session_id
-                    && (lifecycle.claude_notification(hook).is_some()
-                        || (lifecycle.claude_prompt_id.is_some()
-                            && lifecycle.claude_prompt_id == hook.prompt_id
-                            && (lifecycle.claude_confirmation.is_none()
-                                || (lifecycle.claude_confirmation == Some(false)
-                                    && hook.claude_turn_complete == Some(true)))))
-            });
-        }
-        if self.agent_task_notification(pane, "claude", hook) {
-            // A repeated hook for a notification turn already in flight or confirmed.
-            return self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
-                lifecycle.kind == "claude"
-                    && lifecycle.conversation == hook.session_id
                     && hook.prompt_id.as_ref().is_some_and(|prompt| {
-                        lifecycle.claude_notifications.contains_key(prompt)
-                            || lifecycle.claude_previous_notification.as_ref() == Some(prompt)
+                        lifecycle.claude.turns.get(prompt).is_some_and(|turn| {
+                            turn.confirmation.is_none()
+                                || (turn.confirmation == Some(false)
+                                    && hook.claude_turn_complete == Some(true))
+                        })
                     })
             });
         }
-        if hook.hook_event_name == "UserPromptSubmit" && hook.prompt_id.is_some() {
+        if hook.hook_event_name == "UserPromptSubmit" {
             return self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
                 lifecycle.kind == "claude"
                     && lifecycle.conversation == hook.session_id
-                    && (lifecycle.claude_previous_prompt_id == hook.prompt_id
-                        || (lifecycle.claude_prompt_id == hook.prompt_id
-                            && lifecycle.claude_confirmation.is_some()))
+                    && hook
+                        .prompt_id
+                        .as_ref()
+                        .is_some_and(|prompt| lifecycle.claude.turns.contains_key(prompt))
             });
         }
         hook.hook_event_name == "Stop"
@@ -309,24 +315,119 @@ impl Screen {
             })
     }
 
-    /// Whether a Claude confirmation must leave the agent busy: another notification turn
-    /// started after the confirmed one and is still running.
-    pub(super) fn claude_turn_continues(&self, pane: PaneId, hook: &HookEvent) -> bool {
-        self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
-            lifecycle.kind == "claude"
-                && lifecycle.conversation == hook.session_id
-                && lifecycle
-                    .claude_notifications
-                    .keys()
-                    .any(|prompt| Some(prompt) != hook.prompt_id.as_ref())
-        })
+    pub(super) fn ignore_claude_worker(&self, pane: PaneId, hook: &HookEvent) -> bool {
+        hook.is_worker()
+            && !self.agent_lifecycle.get(&pane).is_some_and(|l| {
+                l.kind == "claude"
+                    && l.conversation == hook.session_id
+                    && !hook.archive_only
+                    && hook
+                        .agent_id
+                        .as_ref()
+                        .is_some_and(|id| !id.is_empty() && !l.claude.stopped_workers.contains(id))
+            })
+    }
+
+    fn reconcile_claude_activity(
+        &mut self,
+        pane: PaneId,
+        event: &AgentEvent,
+        hook: Option<&HookEvent>,
+    ) {
+        let Some(hook) = hook.filter(|hook| event.kind == "claude" && !hook.archive_only) else {
+            return;
+        };
+        let Some(mut visible) = self.get_pane_info(pane).and_then(|p| p.agent) else {
+            return;
+        };
+        let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane).filter(|l| {
+            l.kind == "claude"
+                && l.conversation == hook.session_id
+                && visible.session_id.as_ref() == Some(&l.conversation)
+        }) else {
+            return;
+        };
+        if let Some(id) = hook.agent_id.as_ref().filter(|id| !id.is_empty()) {
+            match hook.hook_event_name.as_str() {
+                "SubagentStart" => {
+                    lifecycle.claude.workers.insert(id.clone());
+                },
+                "SubagentStop" => {
+                    lifecycle.claude.workers.remove(id);
+                    lifecycle.claude.stopped_workers.insert(id.clone());
+                },
+                _ => {},
+            }
+        }
+        let parent = lifecycle.claude.parent.get_or_insert_with(|| {
+            let mut parent = self
+                .agent_worker_waits
+                .get(&pane)
+                .map_or_else(|| visible.clone(), |w| w.parent.clone());
+            if lifecycle.claude_prompt_id.is_none() && !lifecycle.claude_notifications.is_empty() {
+                parent.state = AgentState::Idle;
+                parent.detail = None;
+            }
+            parent
+        });
+        if visible.state != AgentState::Waiting {
+            visible.state = parent.state;
+            visible.detail = parent.detail.clone();
+            visible.waiting_on = parent.waiting_on.clone();
+            visible.wait_needs_a_person = parent.wait_needs_a_person;
+            if visible.state == AgentState::Idle
+                && (!lifecycle.claude.workers.is_empty()
+                    || !lifecycle.background_tasks.is_empty()
+                    || !lifecycle.claude_notifications.is_empty())
+            {
+                visible.state = AgentState::Busy;
+            }
+        }
+        if visible.state != AgentState::Waiting
+            && let Some(waiting) = lifecycle
+                .claude_notifications
+                .values()
+                .find_map(|n| n.waiting.as_ref())
+        {
+            visible.state = waiting.state;
+            visible.detail = waiting.detail.clone();
+            visible.waiting_on = waiting.waiting_on.clone();
+            visible.wait_needs_a_person = waiting.wait_needs_a_person;
+        }
+        if let Some(tab) = self.tab_containing_pane_mut(pane) {
+            tab.set_pane_agent(pane, Some(visible));
+        }
+    }
+
+    pub(super) fn aggregate_claude_state(&self, pane: PaneId, agent: &mut AgentInfo) {
+        if agent.kind == "claude"
+            && agent.state == AgentState::Idle
+            && agent
+                .session_id
+                .as_deref()
+                .is_some_and(|conversation| self.has_agent_lifecycle(pane, "claude", conversation))
+            && self.claude_background_pending(pane)
+        {
+            agent.state = AgentState::Busy;
+        }
+    }
+
+    pub(super) fn remember_claude_parent(&mut self, pane: PaneId, agent: &AgentInfo) {
+        if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane).filter(|l| {
+            agent.kind == "claude"
+                && l.kind == "claude"
+                && agent.session_id.as_ref() == Some(&l.conversation)
+        }) {
+            lifecycle.claude.parent = Some(agent.clone());
+        }
     }
 
     /// Claude background work an idle wait must still see finish.
     fn claude_background_pending(&self, pane: PaneId) -> bool {
         self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
             lifecycle.kind == "claude"
-                && (!lifecycle.background_tasks.is_empty()
+                && (!lifecycle.claude.workers.is_empty()
+                    || !lifecycle.background_tasks.is_empty()
                     || !lifecycle.claude_notifications.is_empty())
         })
     }
@@ -342,6 +443,29 @@ impl Screen {
         }) else {
             return;
         };
+        if event.kind == "claude" {
+            if event.hook == "UserPromptSubmit" {
+                if let Some(id) = hook.prompt_id.as_ref().filter(|id| !id.is_empty())
+                    && !lifecycle.claude.turns.contains_key(id)
+                {
+                    lifecycle.claude.sequence += 1;
+                    lifecycle.claude.turns.insert(
+                        id.clone(),
+                        ClaudeTurn {
+                            confirmation: None,
+                            sequence: lifecycle.claude.sequence,
+                        },
+                    );
+                }
+            } else if let Some(complete) = hook.claude_turn_complete
+                && let Some(turn) = hook
+                    .prompt_id
+                    .as_ref()
+                    .and_then(|id| lifecycle.claude.turns.get_mut(id))
+            {
+                turn.confirmation = Some(complete);
+            }
+        }
         if notification {
             if let Some(prompt) = hook.prompt_id.clone().filter(|id| !id.is_empty()) {
                 let tasks = hook
@@ -349,63 +473,59 @@ impl Screen {
                     .as_deref()
                     .and_then(claude_task_notification_ids)
                     .unwrap_or_default();
-                let after = lifecycle
-                    .claude_prompt_id
-                    .clone()
-                    .filter(|_| lifecycle.claude_confirmation != Some(true));
-                lifecycle
-                    .claude_notifications
-                    .insert(prompt, ClaudeNotification { tasks, after });
+                lifecycle.claude_notifications.insert(
+                    prompt,
+                    ClaudeNotification {
+                        tasks,
+                        waiting: None,
+                    },
+                );
             }
             return;
         }
         match event.hook.as_str() {
             "UserPromptSubmit" => {
                 lifecycle.last_message = None;
-                lifecycle.claude_overtaken = None;
             },
             "Stop" if event.kind == "claude" => {
                 let Some(complete) = hook.claude_turn_complete else {
                     return;
                 };
-                let overtaken = if let Some(notification) = hook
+                if !complete {
+                    // An observer timeout does not prove notification processing stopped.
+                    return;
+                }
+                if let Some(notification) = hook
                     .prompt_id
                     .as_ref()
                     .and_then(|prompt| lifecycle.claude_notifications.remove(prompt))
                 {
-                    for task in &notification.tasks {
-                        lifecycle.background_tasks.remove(task);
-                    }
-                    lifecycle.claude_previous_notification = hook.prompt_id.clone();
-                    if notification.after.is_some()
-                        && notification.after == lifecycle.claude_prompt_id
-                        && lifecycle.claude_confirmation != Some(true)
-                    {
-                        lifecycle
-                            .claude_overtaken
-                            .get_or_insert_default()
-                            .extend(notification.tasks);
-                    }
-                    None
-                } else if complete {
-                    lifecycle.claude_overtaken.take()
-                } else {
-                    None
-                };
-                if complete {
-                    lifecycle.background_tasks.extend(
-                        hook.claude_background_tasks
-                            .iter()
-                            .filter(|task| {
-                                overtaken.as_ref().is_none_or(|done| !done.contains(*task))
-                            })
-                            .cloned(),
-                    );
-                    if overtaken.is_none() {
-                        lifecycle.last_message = event.last_message.clone();
+                    for task in notification.tasks {
+                        lifecycle.background_tasks.remove(&task);
+                        lifecycle.claude.completed_tasks.insert(task);
                     }
                 }
+                lifecycle.background_tasks.extend(
+                    hook.claude_background_tasks
+                        .iter()
+                        .filter(|task| !lifecycle.claude.completed_tasks.contains(*task))
+                        .cloned(),
+                );
+                let sequence = hook
+                    .prompt_id
+                    .as_ref()
+                    .and_then(|id| lifecycle.claude.turns.get(id))
+                    .map_or(0, |turn| turn.sequence);
+                if sequence >= lifecycle.claude.message_sequence {
+                    lifecycle.claude.message_sequence = sequence;
+                    lifecycle.last_message = event.last_message.clone();
+                }
             },
+            "StopFailure"
+                if event.kind == "claude"
+                    && hook.prompt_id.is_some()
+                    && lifecycle.claude_prompt_id.is_some()
+                    && hook.prompt_id != lifecycle.claude_prompt_id => {},
             "Stop" | "StopFailure" => lifecycle.last_message = event.last_message.clone(),
             _ => {},
         }
@@ -558,6 +678,16 @@ impl Screen {
             else {
                 return Ok(true);
             };
+            if let Some(raw) = self
+                .agent_lifecycle
+                .get(&pane)
+                .and_then(|l| l.claude.parent.as_ref())
+            {
+                parent.state = raw.state;
+                parent.detail = raw.detail.clone();
+                parent.waiting_on = raw.waiting_on.clone();
+                parent.wait_needs_a_person = raw.wait_needs_a_person;
+            }
             if let Some(workers) = &workers {
                 // Only the presentation is overlaid. Keep current run and checkout metadata.
                 parent.state = workers.parent.state;
@@ -601,7 +731,63 @@ impl Screen {
                     return Ok(true);
                 },
                 AgentReportState::Clear => None,
-                AgentReportState::Set(agent) => Some(agent.clone()),
+                AgentReportState::Set(agent) => {
+                    let notification = hook
+                        .is_some_and(|hook| self.agent_task_notification(pane, &report.kind, hook));
+                    let lifecycle = self.agent_lifecycle.get_mut(&pane).filter(|l| {
+                        report.kind == "claude"
+                            && l.kind == "claude"
+                            && agent.session_id.as_ref() == Some(&l.conversation)
+                    });
+                    if let Some(lifecycle) = lifecycle {
+                        let notification_id = hook.and_then(|hook| {
+                            hook.prompt_id
+                                .as_ref()
+                                .filter(|id| lifecycle.claude_notifications.contains_key(*id))
+                                .cloned()
+                                .or_else(|| {
+                                    (lifecycle.claude_confirmation == Some(true)
+                                        && !matches!(
+                                            hook.hook_event_name.as_str(),
+                                            "UserPromptSubmit" | "SessionStart" | "SessionEnd"
+                                        )
+                                        && hook.claude_turn_complete.is_none())
+                                    .then(|| lifecycle.claude_notifications.keys().next().cloned())
+                                    .flatten()
+                                })
+                        });
+                        if let Some(notification) = notification_id
+                            .as_ref()
+                            .and_then(|id| lifecycle.claude_notifications.get_mut(id))
+                        {
+                            notification.waiting =
+                                (agent.state == AgentState::Waiting).then(|| agent.clone());
+                        }
+                        if notification
+                            || notification_id.is_some()
+                            || hook.is_some_and(|hook| {
+                                (hook.claude_turn_complete.is_some()
+                                    || matches!(
+                                        hook.hook_event_name.as_str(),
+                                        "StopFailure" | "Interrupt"
+                                    ))
+                                    && hook.prompt_id.is_some()
+                                    && lifecycle.claude_prompt_id.is_some()
+                                    && hook.prompt_id != lifecycle.claude_prompt_id
+                            })
+                        {
+                            lifecycle
+                                .claude
+                                .parent
+                                .clone()
+                                .or_else(|| Some(agent.clone()))
+                        } else {
+                            Some(agent.clone())
+                        }
+                    } else {
+                        Some(agent.clone())
+                    }
+                },
             }
         };
         if agent.is_none() {
@@ -626,6 +812,15 @@ impl Screen {
                 input_revision: self.agent_input_revision(pane),
             })
         };
+        if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane).filter(|l| {
+            report.kind == "claude"
+                && l.kind == "claude"
+                && agent
+                    .as_ref()
+                    .is_some_and(|a| a.session_id.as_ref() == Some(&l.conversation))
+        }) {
+            lifecycle.claude.parent = agent.clone();
+        }
         let mut visible = agent.clone();
         if let (Some(workers), Some(parent)) = (&mut workers, agent) {
             if workers.parent.kind == parent.kind
@@ -670,7 +865,7 @@ impl Screen {
         let clear_input = clear_transition
             .then(|| self.agent_clear_inputs.remove(&pane))
             .flatten();
-        let result = super::thread_main::apply_pane_agent_report(self, pane, visible)
+        let result = super::agent_reports::stage_pane_agent_report(self, pane, visible)
             .context("apply parent state and worker waits")?;
         if result && let Some(wait) = permission_wait {
             self.claude_permission_waits.insert(pane, wait);
@@ -799,7 +994,8 @@ impl Screen {
         pending_claim: Option<NotReadyReason>,
     ) -> Option<AgentStatus> {
         let info = self.get_pane_info(pane_id)?;
-        let agent = info.agent?;
+        let mut agent = info.agent?;
+        self.aggregate_claude_state(pane_id, &mut agent);
         // The Muse bootstrap proves hook capability before the provider speaks.
         // Only its visible composer can establish readiness before the first turn.
         let provisional_muse = agent.kind == "muse"
@@ -819,7 +1015,9 @@ impl Screen {
             Some(NotReadyReason::ClearingDraft)
         } else if !prompt_supported {
             Some(NotReadyReason::PromptUnsupported)
-        } else if agent.state != AgentState::Idle {
+        } else if agent.state != AgentState::Idle
+            && !(agent.kind == "claude" && agent.state == AgentState::Busy)
+        {
             Some(NotReadyReason::NotIdle)
         } else if let Some(reason) = pending_claim.or_else(|| {
             self.agent_controls
@@ -828,6 +1026,8 @@ impl Screen {
                 .find_map(Pending::not_ready_reason)
         }) {
             Some(reason)
+        } else if self.claude_steering(pane_id, &agent) {
+            (!self.claude_steering_composer(pane_id)).then_some(NotReadyReason::UnconsumedInput)
         } else if (provisional_muse && !self.muse_composer(pane_id, true))
             || !(self.agent_lifecycle.get(&pane_id).is_some_and(|lifecycle| {
                 lifecycle.input_revision == Some(self.agent_input_revision(pane_id))
@@ -851,6 +1051,7 @@ impl Screen {
         let not_ready_reason = not_ready_reason.filter(|reason| {
             *reason != NotReadyReason::UnconsumedInput
                 || self.draft_composer(pane_id, &agent.kind).is_none()
+                || self.claude_steering(pane_id, &agent)
                 || self.claude_background_pending(pane_id)
                 || self
                     .agent_lifecycle
@@ -1246,10 +1447,12 @@ impl Screen {
                         prompt: None,
                         submission_id: None,
                         clear: false,
+                        steering: false,
                         wait: true,
                         until: *until,
                         session_ended: true,
                         abandoned: false,
+                        blocks_steering: false,
                         resolved: false,
                         delivery: None,
                         enter_at: None,
@@ -1737,12 +1940,22 @@ impl Screen {
                     );
                     return;
                 }
-                if !status.background_tasks.is_empty() || self.claude_background_pending(pane) {
-                    reject(
-                        self,
-                        AgentOutcome::Rejected,
-                        "background work is still running",
-                    );
+                let reset =
+                    yinz_types::agent::control::is_conversation_reset(&status.agent.kind, &prompt);
+                if reset
+                    && (status.agent.state != AgentState::Idle
+                        || self.claude_background_pending(pane)
+                        || self
+                            .agent_controls
+                            .iter()
+                            .any(|pending| pending.pane == pane && pending.prompt.is_some()))
+                {
+                    reject(self, AgentOutcome::Rejected, "conversation reset requires an inactive agent with no outstanding submissions");
+                    return;
+                }
+                let steering = self.claude_steering(pane, &status.agent);
+                if steering && !self.claude_steering_composer(pane) {
+                    reject(self, AgentOutcome::Rejected, "steering requires a visible empty composer; inspect the draft or dialog before submitting");
                     return;
                 }
                 let clear_key = match input
@@ -1761,7 +1974,13 @@ impl Screen {
                 };
                 let submissions = self.agent_submissions.entry(pane).or_default();
                 while submissions.len() >= SUBMISSION_HISTORY_LIMIT {
-                    submissions.pop_front();
+                    let Some(index) = submissions
+                        .iter()
+                        .position(|submission| submission.result.is_some())
+                    else {
+                        break;
+                    };
+                    submissions.remove(index);
                 }
                 submissions.push_back(Submission {
                     id: submission_id.clone(),
@@ -1785,10 +2004,12 @@ impl Screen {
                         &status.agent.kind,
                         &prompt,
                     ),
+                    steering,
                     wait,
                     until: AgentState::Idle,
                     session_ended: false,
                     abandoned: false,
+                    blocks_steering: false,
                     resolved: false,
                     delivery: None,
                     enter_at: None,
@@ -1822,6 +2043,10 @@ impl Screen {
                 } else {
                     (Vec::new(), prompt.into_bytes())
                 };
+                if steering {
+                    self.deliver_agent_prompt(pending, prefix, paste);
+                    return;
+                }
                 self.begin_draft_clear(
                     pane,
                     status.agent,
@@ -1874,10 +2099,12 @@ impl Screen {
                     prompt: None,
                     submission_id: Some(submission_id),
                     clear: false,
+                    steering: false,
                     wait: true,
                     until: AgentState::Idle,
                     session_ended: false,
                     abandoned: false,
+                    blocks_steering: false,
                     resolved: false,
                     delivery: None,
                     enter_at: None,
@@ -1907,10 +2134,12 @@ impl Screen {
                     prompt: None,
                     submission_id: None,
                     clear: false,
+                    steering: false,
                     wait: true,
                     until,
                     session_ended: false,
                     abandoned: false,
+                    blocks_steering: false,
                     resolved: false,
                     delivery: None,
                     enter_at: None,
@@ -1935,6 +2164,7 @@ impl Screen {
 
     fn deliver_agent_prompt(&mut self, mut pending: Pending, prefix: Vec<u8>, paste: Vec<u8>) {
         let pane = pending.pane;
+        let previous_revision = self.agent_input_revision(pane);
         let kind = pending.kind.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         pending.delivery = Some(rx);
@@ -1965,6 +2195,7 @@ impl Screen {
             }
         };
         let revision = self.agent_input_revision(pane);
+        self.advance_claude_observers(pane, previous_revision, revision);
         if let Some(pending) = self.agent_controls.last_mut() {
             pending.input_revision = revision;
         }
@@ -1979,13 +2210,74 @@ impl Screen {
                 pending.not_ready_reason(),
             );
             pending.abandoned = true;
+            pending.blocks_steering = true;
             pending.client = None;
             pending.deadline = None;
             self.agent_controls.push(pending);
         }
     }
 
+    fn advance_claude_observers(&mut self, pane: PaneId, from: u64, to: u64) {
+        for pending in &mut self.agent_controls {
+            if pending.pane == pane
+                && pending.kind == "claude"
+                && pending.input_revision == from
+                && pending
+                    .prompt
+                    .as_ref()
+                    .is_some_and(PromptObservation::acknowledged)
+            {
+                pending.input_revision = to;
+            }
+        }
+    }
+
+    fn claude_steering(&self, pane: PaneId, agent: &AgentInfo) -> bool {
+        agent.kind == "claude"
+            && (agent.state == AgentState::Busy
+                || self.agent_controls.iter().any(|pending| {
+                    pending.pane == pane
+                        && pending
+                            .prompt
+                            .as_ref()
+                            .is_some_and(PromptObservation::acknowledged)
+                }))
+    }
+
+    fn claude_steering_composer(&self, pane: PaneId) -> bool {
+        self.draft_composer(pane, "claude").is_some_and(|c| c.empty)
+            && self.agent_input_at(pane).is_none_or(|input| {
+                self.pane_output_activity
+                    .get(&pane)
+                    .is_some_and(|output| *output > input)
+            })
+    }
+
     fn finalize_agent_recovery(&mut self, pane: PaneId, agent: &AgentInfo, revision: u64) {
+        if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
+            lifecycle.input_revision = Some(revision);
+            lifecycle.background_tasks.clear();
+            lifecycle.claude_notifications.clear();
+            lifecycle
+                .claude
+                .stopped_workers
+                .append(&mut lifecycle.claude.workers);
+            for turn in lifecycle.claude.turns.values_mut() {
+                turn.confirmation = Some(true);
+            }
+            if let Some(parent) = &mut lifecycle.claude.parent {
+                parent.state = AgentState::Idle;
+                parent.detail = None;
+                parent.waiting_on = None;
+                parent.wait_needs_a_person = false;
+            }
+            if lifecycle.kind == "claude" {
+                lifecycle.claude_confirmation = Some(true);
+            }
+            if lifecycle.kind == "agy" {
+                lifecycle.agy_confirmation = Some(true);
+            }
+        }
         let state = agent.state;
         if state != AgentState::Idle {
             let mut idle = agent.clone();
@@ -2017,19 +2309,6 @@ impl Screen {
             .retain(|pending| pending.pane != pane || pending.prompt.is_none());
         self.agent_dialog_inputs.remove(&pane);
         self.agent_clear_inputs.remove(&pane);
-
-        if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
-            lifecycle.input_revision = Some(revision);
-            lifecycle.background_tasks.clear();
-            lifecycle.claude_notifications.clear();
-            lifecycle.claude_overtaken = None;
-            if lifecycle.kind == "claude" {
-                lifecycle.claude_confirmation = Some(true);
-            }
-            if lifecycle.kind == "agy" {
-                lifecycle.agy_confirmation = Some(true);
-            }
-        }
     }
 
     fn agent_write_key(&mut self, pane: PaneId, key: KeyWithModifier) -> Result<()> {
@@ -2181,7 +2460,20 @@ impl Screen {
                     .map(|reason| (pending.pane, reason))
             })
             .collect();
+        let mut advances = Vec::new();
         for mut pending in std::mem::take(&mut self.agent_controls) {
+            for &(pane, from, to) in &advances {
+                if pending.pane == pane
+                    && pending.kind == "claude"
+                    && pending.input_revision == from
+                    && pending
+                        .prompt
+                        .as_ref()
+                        .is_some_and(PromptObservation::acknowledged)
+                {
+                    pending.input_revision = to;
+                }
+            }
             if pending.abandoned && pending.delivery.is_none() {
                 keep.push(pending);
                 continue;
@@ -2323,9 +2615,13 @@ impl Screen {
                     .as_ref()
                     .is_some_and(|prompt| !prompt.acknowledged())
                 {
-                    if status
-                        .as_ref()
-                        .is_none_or(|status| status.agent.state != AgentState::Idle)
+                    if status.as_ref().is_none_or(|status| {
+                        status.agent.state != AgentState::Idle
+                            && !(pending.kind == "claude"
+                                && !pending.clear
+                                && status.agent.state == AgentState::Busy)
+                    }) || (pending.steering
+                        && self.draft_composer(pending.pane, "claude").is_none())
                         || (pending.kind == "muse"
                             && pending.conversation.is_none()
                             && !self.muse_composer(pending.pane, false))
@@ -2338,7 +2634,9 @@ impl Screen {
                                 outcome = Some(AgentOutcome::Failed);
                             },
                             _ => {
-                                pending.input_revision = self.agent_input_revision(pending.pane);
+                                let revision = self.agent_input_revision(pending.pane);
+                                advances.push((pending.pane, pending.input_revision, revision));
+                                pending.input_revision = revision;
                                 if pending.clear
                                     && let (Some(conversation), Some(deadline)) =
                                         (&pending.conversation, pending.deadline)
@@ -2378,6 +2676,9 @@ impl Screen {
                             | AgentOutcome::Interrupted
                             | AgentOutcome::Failed
                     );
+                if retain_claim {
+                    pending.blocks_steering = outcome != AgentOutcome::TimedOut;
+                }
                 self.finish_agent_control(
                     &pending,
                     outcome,
@@ -2397,6 +2698,7 @@ impl Screen {
                     pending.client = None;
                     pending.deadline = None;
                     pending.abandoned = true;
+                    pending.blocks_steering = outcome != AgentOutcome::TimedOut;
                     pending.enter_at = None;
                     keep.push(pending);
                 }
@@ -2413,6 +2715,9 @@ impl Screen {
             }
         }
         self.agent_controls = keep;
+        for (pane, from, to) in advances {
+            self.advance_claude_observers(pane, from, to);
+        }
     }
 
     fn refresh_claude_permission_waits(&mut self) {
@@ -2447,6 +2752,9 @@ impl Screen {
             agent.detail = None;
             agent.waiting_on = None;
             agent.wait_needs_a_person = false;
+            if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
+                lifecycle.claude.parent = Some(agent.clone());
+            }
             if let Some(workers) = self.agent_worker_waits.get_mut(&pane) {
                 workers.parent = agent;
             } else {
@@ -2458,6 +2766,9 @@ impl Screen {
     }
 
     pub(super) fn agent_control_event(&mut self, event: &AgentEvent, hook: Option<&HookEvent>) {
+        if hook.is_some_and(|hook| hook.archive_only) {
+            return;
+        }
         let pane = PaneId::Terminal(event.pane_id);
         let parent = hook.is_some_and(|hook| !hook.is_worker());
         // A notification turn's confirmation never speaks for the caller's prompt.
@@ -2475,6 +2786,7 @@ impl Screen {
             && !claude_notification_stop
             && hook.is_some_and(|hook| hook.claude_turn_complete == Some(false))
             && let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane)
+            && hook.is_some_and(|hook| hook.prompt_id == lifecycle.claude_prompt_id)
         {
             lifecycle.claude_confirmation = Some(false);
         }
@@ -2564,8 +2876,261 @@ impl Screen {
                 lifecycle.input_revision = Some(revision);
             }
         }
+        let accepted_input_revision = hook
+            .filter(|_| parent && event.hook == "UserPromptSubmit")
+            .and_then(|hook| {
+                self.agent_controls.iter().find(|pending| {
+                    pending.pane == pane
+                        && pending.kind == event.kind
+                        && pending.prompt.as_ref().is_some_and(|p| {
+                            p.matches_submission(hook)
+                                && (!p.acknowledged() || p.acknowledges(hook))
+                        })
+                })
+            })
+            .map(|pending| pending.input_revision);
+        if parent {
+            log::debug!(
+            "agent lifecycle hook session={:?} pane={pane:?} kind={:?} conversation={:?} hook={:?} state={:?}",
+            self.session_name, event.kind, event.session_id, event.hook,
+            hook.and_then(|hook| yinz_types::agent::hook_state_for(&event.kind, hook)),
+        );
+            if hook.is_some_and(|hook| {
+                hook.codex_hooks_ready == Some(false) || hook.muse_hooks_ready == Some(false)
+            }) {
+                self.remove_agent_lifecycle(pane, "hooks_unverified");
+                self.agent_dialog_inputs.remove(&pane);
+            } else if event.hook == "SessionEnd" {
+                self.remove_agent_lifecycle(pane, "session_end");
+                self.agent_dialog_inputs.remove(&pane);
+                self.agent_worker_waits.remove(&pane);
+            } else if event.kind == "muse"
+                && event.session_id.is_none()
+                && hook.is_some_and(|hook| {
+                    hook.hook_event_name == "SessionStart"
+                        && hook.source.as_deref() != Some("compact")
+                        && hook.session_id.is_empty()
+                        && hook.muse_hooks_ready == Some(true)
+                        && yinz_types::agent::hook_state_for(&event.kind, hook).is_some()
+                })
+            {
+                // The launcher's startup announcement: verified hook wiring, but
+                // unpinned, because Muse speaks no session id until its first turn.
+                // Claimed by the marker alone - a provider hook never carries one.
+                let previous = self
+                    .agent_lifecycle
+                    .get(&pane)
+                    .filter(|previous| previous.kind == "muse" && previous.conversation.is_empty());
+                if previous.is_none() {
+                    log::debug!("agent lifecycle created pane={pane:?} kind=muse provisional=true");
+                }
+                let input_revision = clear_revision.or(dialog_revision).or(previous
+                    .map(|previous| previous.input_revision)
+                    .unwrap_or_else(|| (self.agent_input_revision(pane) == 0).then_some(0)));
+                self.agent_lifecycle.insert(
+                    pane,
+                    Lifecycle {
+                        claude: ClaudeActivity::default(),
+                        kind: "muse".to_owned(),
+                        conversation: String::new(),
+                        input_revision,
+                        last_report: Instant::now(),
+                        ended_turn: previous.and_then(|previous| previous.ended_turn.clone()),
+                        claude_prompt_id: None,
+                        claude_confirmation: None,
+                        claude_previous_prompt_id: None,
+                        agy_confirmation: None,
+                        background_tasks: BTreeSet::new(),
+                        claude_notifications: BTreeMap::new(),
+                        last_message: None,
+                    },
+                );
+            } else if let Some(conversation) = event.session_id.as_ref().filter(|id| {
+                !id.is_empty()
+                    && hook
+                        .as_ref()
+                        .and_then(|hook| yinz_types::agent::hook_state_for(&event.kind, hook))
+                        .is_some()
+            }) {
+                // Some(None) means a transferred draft: even a startup report cannot
+                // treat the destination's zero input revision as an empty source composer.
+                let transferred =
+                    self.warped_agent_inputs
+                        .remove(&pane)
+                        .map(|(input, revision)| {
+                            (input.kind == event.kind
+                                && input.conversation == *conversation
+                                && input.consumed
+                                && revision == self.agent_input_revision(pane))
+                            .then_some(revision)
+                        });
+                let previous = self.agent_lifecycle.get(&pane).filter(|previous| {
+                    previous.kind == event.kind && previous.conversation == *conversation
+                });
+                if previous.is_none() {
+                    log::debug!(
+                    "agent lifecycle created session={:?} pane={pane:?} kind={:?} conversation={conversation:?}",
+                    self.session_name, event.kind,
+                );
+                }
+                // Without tracked CLI dialog input, startup cannot consume a draft. Only a pane
+                // with no input can establish consumption; matching evidence is preserved as-is.
+                let input_revision = clear_revision
+                    .or(dialog_revision)
+                    .or(if event.hook == "UserPromptSubmit" && !notification {
+                        accepted_input_revision
+                    } else {
+                        None
+                    })
+                    .or(if previous.is_none() {
+                        transferred.flatten()
+                    } else {
+                        None
+                    })
+                    .or(match event.hook.as_str() {
+                        "SessionStart" if transferred.is_some() && previous.is_none() => {
+                            transferred.flatten()
+                        },
+                        "SessionStart" => previous
+                            .map(|previous| previous.input_revision)
+                            .unwrap_or_else(|| (self.agent_input_revision(pane) == 0).then_some(0)),
+                        // Claude starts a notification turn by itself; it consumes no input.
+                        "UserPromptSubmit" if !notification => {
+                            accepted_input_revision.or_else(|| {
+                                (event.kind == "agy"
+                                    && previous.is_none()
+                                    && self.agent_input_revision(pane) == 0)
+                                    .then_some(0)
+                            })
+                        },
+                        "PreInvocation" if event.kind == "agy" => {
+                            accepted_input_revision.or_else(|| {
+                                previous
+                                    .map(|previous| previous.input_revision)
+                                    .unwrap_or_else(|| {
+                                        (self.agent_input_revision(pane) == 0).then_some(0)
+                                    })
+                            })
+                        },
+                        // An uncorrelated acceptance may arrive after a newer draft. Tool progress
+                        // and completion preserve consumption, including when it is unknown.
+                        _ => previous.and_then(|previous| previous.input_revision),
+                    });
+                let ended_turn = match event.hook.as_str() {
+                    "Interrupt" | "StopFailure"
+                        if event.kind == "claude"
+                            && hook.is_some_and(|hook| {
+                                hook.prompt_id.is_some()
+                                    && previous.is_some_and(|l| {
+                                        l.claude_prompt_id.is_some()
+                                            && hook.prompt_id != l.claude_prompt_id
+                                    })
+                            }) =>
+                    {
+                        previous.and_then(|previous| previous.ended_turn.clone())
+                    },
+                    "Interrupt" | "StopFailure" => hook
+                        .and_then(|hook| hook.turn_id.clone())
+                        .filter(|turn| !turn.is_empty()),
+                    "UserPromptSubmit" if !notification => None,
+                    "PreInvocation" => None,
+                    _ => previous.and_then(|previous| previous.ended_turn.clone()),
+                };
+                self.agent_lifecycle.insert(
+                    pane,
+                    Lifecycle {
+                        claude: previous
+                            .map(|previous| previous.claude.clone())
+                            .unwrap_or_default(),
+                        kind: event.kind.clone(),
+                        conversation: conversation.clone(),
+                        input_revision,
+                        last_report: Instant::now(),
+                        ended_turn,
+                        claude_prompt_id: if event.hook == "UserPromptSubmit" && !notification {
+                            hook.and_then(|hook| hook.prompt_id.clone())
+                        } else {
+                            previous.and_then(|previous| previous.claude_prompt_id.clone())
+                        },
+                        claude_previous_prompt_id: previous.and_then(|previous| {
+                            if event.hook == "UserPromptSubmit"
+                                && !notification
+                                && (previous.claude_confirmation.is_some()
+                                    || previous.agy_confirmation.is_some())
+                            {
+                                previous.claude_prompt_id.clone()
+                            } else {
+                                previous.claude_previous_prompt_id.clone()
+                            }
+                        }),
+                        claude_confirmation: if notification
+                            || claude_notification_stop
+                            || (event.kind == "claude"
+                                && hook.is_some_and(|hook| {
+                                    (hook.claude_turn_complete.is_some()
+                                        || matches!(
+                                            hook.hook_event_name.as_str(),
+                                            "StopFailure" | "Interrupt"
+                                        ))
+                                        && hook.prompt_id.is_some()
+                                        && previous.is_some_and(|l| {
+                                            l.claude_prompt_id.is_some()
+                                                && l.claude_prompt_id != hook.prompt_id
+                                        })
+                                })) {
+                            previous.and_then(|previous| previous.claude_confirmation)
+                        } else if event.hook == "UserPromptSubmit" {
+                            None
+                        } else if event.kind == "claude"
+                            && matches!(event.hook.as_str(), "StopFailure" | "Interrupt")
+                        {
+                            Some(true)
+                        } else {
+                            hook.and_then(|hook| hook.claude_turn_complete).or_else(|| {
+                                previous.and_then(|previous| previous.claude_confirmation)
+                            })
+                        },
+                        background_tasks: previous
+                            .map(|previous| previous.background_tasks.clone())
+                            .unwrap_or_default(),
+                        claude_notifications: previous
+                            .map(|previous| previous.claude_notifications.clone())
+                            .unwrap_or_default(),
+                        last_message: previous.and_then(|previous| previous.last_message.clone()),
+                        agy_confirmation: if matches!(
+                            event.hook.as_str(),
+                            "UserPromptSubmit" | "PreInvocation"
+                        ) {
+                            None
+                        } else if event.kind == "agy"
+                            && matches!(event.hook.as_str(), "StopFailure" | "Interrupt")
+                        {
+                            Some(true)
+                        } else {
+                            hook.and_then(|hook| hook.agy_turn_complete)
+                                .or_else(|| previous.and_then(|previous| previous.agy_confirmation))
+                        },
+                    },
+                );
+            }
+            // An adopted pane has no lifecycle until its first stateful hook. Register a
+            // notification after creating that lifecycle so its confirmation can be matched.
+            if let Some(hook) = hook.filter(|_| notification || event.hook == "UserPromptSubmit") {
+                self.track_agent_turn(pane, event, hook);
+            }
+        }
+        self.reconcile_claude_activity(pane, event, hook);
+        let claude_claims: Vec<_> = self
+            .agent_controls
+            .iter()
+            .filter(|pending| pending.pane == pane && pending.kind == "claude")
+            .filter_map(|pending| {
+                pending
+                    .not_ready_reason()
+                    .map(|reason| (pending.submission_id.clone(), reason))
+            })
+            .collect();
         let mut keep = Vec::new();
-        let mut accepted_input_revision = None;
         for mut pending in std::mem::take(&mut self.agent_controls) {
             if pending.pane != pane {
                 keep.push(pending);
@@ -2586,6 +3151,10 @@ impl Screen {
                 // may survive that gap; the pane's exit flag still confirms termination.
                 pending.session_ended = true;
             }
+            let other_claim = claude_claims
+                .iter()
+                .find(|(id, _)| *id != pending.submission_id)
+                .map(|(_, reason)| *reason);
             let outcome = if parent
                 && event.hook == "SessionStart"
                 && hook
@@ -2609,18 +3178,6 @@ impl Screen {
                     .as_mut()
                     .and_then(|prompt| prompt.observe(event, hook))
             };
-            if parent
-                && event.hook == "UserPromptSubmit"
-                && matches!(outcome, None | Some(AgentOutcome::Submitted))
-                && pending
-                    .prompt
-                    .as_ref()
-                    .is_some_and(|prompt| prompt.acknowledged())
-            {
-                // A late or duplicate acceptance consumes only the submitted input,
-                // not a newer draft that interrupted the caller's wait.
-                accepted_input_revision = Some(pending.input_revision);
-            }
             if outcome == Some(AgentOutcome::Submitted) && pending.conversation.is_none() {
                 pending.conversation = event.session_id.clone();
             }
@@ -2647,7 +3204,7 @@ impl Screen {
                             &pending,
                             AgentOutcome::Submitted,
                             None,
-                            pending.not_ready_reason(),
+                            pending.not_ready_reason().or(other_claim),
                         );
                         pending.client = None;
                     }
@@ -2676,11 +3233,17 @@ impl Screen {
                         } else {
                             event.last_message.clone()
                         };
+                    if retain_claim {
+                        pending.blocks_steering = outcome != AgentOutcome::NeedsInput;
+                    }
                     self.finish_agent_control(
                         &pending,
                         outcome,
                         message,
-                        retain_claim.then(|| pending.not_ready_reason()).flatten(),
+                        retain_claim
+                            .then(|| pending.not_ready_reason())
+                            .flatten()
+                            .or(other_claim),
                     );
                     if matches!(
                         outcome,
@@ -2691,6 +3254,7 @@ impl Screen {
                         pending.client = None;
                         pending.deadline = None;
                         pending.abandoned = true;
+                        pending.blocks_steering = outcome != AgentOutcome::NeedsInput;
                         pending.enter_at = None;
                         keep.push(pending);
                     } else if pending.delivery.is_some()
@@ -2698,6 +3262,7 @@ impl Screen {
                     {
                         pending.resolved = true;
                         pending.abandoned = true;
+                        pending.blocks_steering = true;
                         pending.client = None;
                         pending.deadline = None;
                         pending.enter_at = None;
@@ -2708,210 +3273,6 @@ impl Screen {
             }
         }
         self.agent_controls = keep;
-        if !parent {
-            return;
-        }
-        log::debug!(
-            "agent lifecycle hook session={:?} pane={pane:?} kind={:?} conversation={:?} hook={:?} state={:?}",
-            self.session_name, event.kind, event.session_id, event.hook,
-            hook.and_then(|hook| yinz_types::agent::hook_state_for(&event.kind, hook)),
-        );
-        if hook.is_some_and(|hook| {
-            hook.codex_hooks_ready == Some(false) || hook.muse_hooks_ready == Some(false)
-        }) {
-            self.remove_agent_lifecycle(pane, "hooks_unverified");
-            self.agent_dialog_inputs.remove(&pane);
-        } else if event.hook == "SessionEnd" {
-            self.remove_agent_lifecycle(pane, "session_end");
-            self.agent_dialog_inputs.remove(&pane);
-            self.agent_worker_waits.remove(&pane);
-        } else if event.kind == "muse"
-            && event.session_id.is_none()
-            && hook.is_some_and(|hook| {
-                hook.hook_event_name == "SessionStart"
-                    && hook.source.as_deref() != Some("compact")
-                    && hook.session_id.is_empty()
-                    && hook.muse_hooks_ready == Some(true)
-                    && yinz_types::agent::hook_state_for(&event.kind, hook).is_some()
-            })
-        {
-            // The launcher's startup announcement: verified hook wiring, but
-            // unpinned, because Muse speaks no session id until its first turn.
-            // Claimed by the marker alone - a provider hook never carries one.
-            let previous = self
-                .agent_lifecycle
-                .get(&pane)
-                .filter(|previous| previous.kind == "muse" && previous.conversation.is_empty());
-            if previous.is_none() {
-                log::debug!("agent lifecycle created pane={pane:?} kind=muse provisional=true");
-            }
-            let input_revision = clear_revision.or(dialog_revision).or(previous
-                .map(|previous| previous.input_revision)
-                .unwrap_or_else(|| (self.agent_input_revision(pane) == 0).then_some(0)));
-            self.agent_lifecycle.insert(
-                pane,
-                Lifecycle {
-                    kind: "muse".to_owned(),
-                    conversation: String::new(),
-                    input_revision,
-                    last_report: Instant::now(),
-                    ended_turn: previous.and_then(|previous| previous.ended_turn.clone()),
-                    claude_prompt_id: None,
-                    claude_confirmation: None,
-                    claude_previous_prompt_id: None,
-                    agy_confirmation: None,
-                    background_tasks: BTreeSet::new(),
-                    claude_notifications: BTreeMap::new(),
-                    claude_previous_notification: None,
-                    claude_overtaken: None,
-                    last_message: None,
-                },
-            );
-        } else if let Some(conversation) = event.session_id.as_ref().filter(|id| {
-            !id.is_empty()
-                && hook
-                    .as_ref()
-                    .and_then(|hook| yinz_types::agent::hook_state_for(&event.kind, hook))
-                    .is_some()
-        }) {
-            // Some(None) means a transferred draft: even a startup report cannot
-            // treat the destination's zero input revision as an empty source composer.
-            let transferred = self
-                .warped_agent_inputs
-                .remove(&pane)
-                .map(|(input, revision)| {
-                    (input.kind == event.kind
-                        && input.conversation == *conversation
-                        && input.consumed
-                        && revision == self.agent_input_revision(pane))
-                    .then_some(revision)
-                });
-            let previous = self.agent_lifecycle.get(&pane).filter(|previous| {
-                previous.kind == event.kind && previous.conversation == *conversation
-            });
-            if previous.is_none() {
-                log::debug!(
-                    "agent lifecycle created session={:?} pane={pane:?} kind={:?} conversation={conversation:?}",
-                    self.session_name, event.kind,
-                );
-            }
-            // Without tracked CLI dialog input, startup cannot consume a draft. Only a pane
-            // with no input can establish consumption; matching evidence is preserved as-is.
-            let input_revision = clear_revision
-                .or(dialog_revision)
-                .or(if event.hook == "UserPromptSubmit" && !notification {
-                    accepted_input_revision
-                } else {
-                    None
-                })
-                .or(if previous.is_none() {
-                    transferred.flatten()
-                } else {
-                    None
-                })
-                .or(match event.hook.as_str() {
-                    "SessionStart" if transferred.is_some() && previous.is_none() => {
-                        transferred.flatten()
-                    },
-                    "SessionStart" => previous
-                        .map(|previous| previous.input_revision)
-                        .unwrap_or_else(|| (self.agent_input_revision(pane) == 0).then_some(0)),
-                    // Claude starts a notification turn by itself; it consumes no input.
-                    "UserPromptSubmit" if !notification => accepted_input_revision.or_else(|| {
-                        (event.kind == "agy"
-                            && previous.is_none()
-                            && self.agent_input_revision(pane) == 0)
-                            .then_some(0)
-                    }),
-                    "PreInvocation" if event.kind == "agy" => {
-                        accepted_input_revision.or_else(|| {
-                            previous
-                                .map(|previous| previous.input_revision)
-                                .unwrap_or_else(|| {
-                                    (self.agent_input_revision(pane) == 0).then_some(0)
-                                })
-                        })
-                    },
-                    // An uncorrelated acceptance may arrive after a newer draft. Tool progress
-                    // and completion preserve consumption, including when it is unknown.
-                    _ => previous.and_then(|previous| previous.input_revision),
-                });
-            let ended_turn = match event.hook.as_str() {
-                "Interrupt" | "StopFailure" => hook
-                    .and_then(|hook| hook.turn_id.clone())
-                    .filter(|turn| !turn.is_empty()),
-                "UserPromptSubmit" if !notification => None,
-                "PreInvocation" => None,
-                _ => previous.and_then(|previous| previous.ended_turn.clone()),
-            };
-            self.agent_lifecycle.insert(
-                pane,
-                Lifecycle {
-                    kind: event.kind.clone(),
-                    conversation: conversation.clone(),
-                    input_revision,
-                    last_report: Instant::now(),
-                    ended_turn,
-                    claude_prompt_id: if event.hook == "UserPromptSubmit" && !notification {
-                        hook.and_then(|hook| hook.prompt_id.clone())
-                    } else {
-                        previous.and_then(|previous| previous.claude_prompt_id.clone())
-                    },
-                    claude_previous_prompt_id: previous.and_then(|previous| {
-                        if event.hook == "UserPromptSubmit"
-                            && !notification
-                            && (previous.claude_confirmation.is_some()
-                                || previous.agy_confirmation.is_some())
-                        {
-                            previous.claude_prompt_id.clone()
-                        } else {
-                            previous.claude_previous_prompt_id.clone()
-                        }
-                    }),
-                    claude_confirmation: if notification || claude_notification_stop {
-                        previous.and_then(|previous| previous.claude_confirmation)
-                    } else if event.hook == "UserPromptSubmit" {
-                        None
-                    } else if event.kind == "claude"
-                        && matches!(event.hook.as_str(), "StopFailure" | "Interrupt")
-                    {
-                        Some(true)
-                    } else {
-                        hook.and_then(|hook| hook.claude_turn_complete)
-                            .or_else(|| previous.and_then(|previous| previous.claude_confirmation))
-                    },
-                    background_tasks: previous
-                        .map(|previous| previous.background_tasks.clone())
-                        .unwrap_or_default(),
-                    claude_notifications: previous
-                        .map(|previous| previous.claude_notifications.clone())
-                        .unwrap_or_default(),
-                    claude_previous_notification: previous
-                        .and_then(|previous| previous.claude_previous_notification.clone()),
-                    claude_overtaken: previous
-                        .and_then(|previous| previous.claude_overtaken.clone()),
-                    last_message: previous.and_then(|previous| previous.last_message.clone()),
-                    agy_confirmation: if matches!(
-                        event.hook.as_str(),
-                        "UserPromptSubmit" | "PreInvocation"
-                    ) {
-                        None
-                    } else if event.kind == "agy"
-                        && matches!(event.hook.as_str(), "StopFailure" | "Interrupt")
-                    {
-                        Some(true)
-                    } else {
-                        hook.and_then(|hook| hook.agy_turn_complete)
-                            .or_else(|| previous.and_then(|previous| previous.agy_confirmation))
-                    },
-                },
-            );
-        }
-        // An adopted pane has no lifecycle until its first stateful hook. Register a
-        // notification after creating that lifecycle so its confirmation can be matched.
-        if let Some(hook) = hook.filter(|_| notification) {
-            self.track_agent_turn(pane, event, hook);
-        }
     }
 
     pub(super) fn agent_control_deadline(&self) -> Option<Duration> {
@@ -2970,6 +3331,7 @@ impl Screen {
                         pending.not_ready_reason(),
                     );
                     pending.abandoned = true;
+                    pending.blocks_steering = true;
                     pending.deadline = None;
                     pending.enter_at = None;
                 }
