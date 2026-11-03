@@ -30,6 +30,7 @@ fn remote_is_global_and_routes_each_live_command_family() {
                 (vec!["plugins", "dir"], Route::Local),
                 (vec!["hooks", "status"], Route::Local),
                 (vec!["skills", "list"], Route::Local),
+                (vec!["update"], Route::Local),
             ] {
                 let before: Vec<_> = ["yinz", "--remote", "host"]
                     .into_iter()

@@ -17,6 +17,12 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+isahc = { workspace = true }
+sha2 = { workspace = true }
+semver = "1"
+flate2 = "1.1.9"
+tar = "0.4"
+yinz-steel-builtins = { workspace = true }
 signal-hook = { workspace = true }
 uuid = { workspace = true }
 url = { workspace = true }
@@ -64,7 +70,6 @@ name = "agent_report"
 path = "src/tests/agent_report.rs"
 
 [dev-dependencies]
-yinz-steel-builtins = { workspace = true }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 insta = "1.48"
 yinz-test-support = { path = "yinz-test-support" }

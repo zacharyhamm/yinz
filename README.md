@@ -138,3 +138,10 @@ permission.
 A failed upload leaves a draft; rerun the workflow to replace its assets and
 finish publishing. Already published releases are never overwritten. Release
 builds do not run the full workspace or integration test suites.
+
+Update an existing installation to the latest stable release with `yinz update`.
+This verifies the release checksum, updates bundled builtin plugins, and replaces
+the executable you invoked (resolving symlinks). Equal or newer versions are left
+unchanged. For a custom data directory, use `yinz --data-dir /path/to/data update`.
+The installation directories must be writable by your account. Existing sessions
+keep running; restart them to use the new binary.

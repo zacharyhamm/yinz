@@ -11,6 +11,7 @@ mod repl;
 mod session_menu;
 #[cfg(test)]
 mod tests;
+mod update;
 
 #[cfg(target_os = "windows")]
 compile_error!("Yinz does not support Windows");
@@ -123,6 +124,13 @@ fn main() {
             eprintln!("Error: {error:#}");
         }
         remote_commands::exit(1);
+    }
+    if matches!(opts.command, Some(Command::Update)) {
+        if let Err(error) = update::run(opts.data_dir.as_deref()) {
+            eprintln!("Error: {error:#}");
+            remote_commands::exit(1);
+        }
+        return;
     }
     if let Some(Command::RemoteSessions {
         recovery,

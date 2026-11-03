@@ -432,6 +432,8 @@ pub enum PtyHosts {
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Command {
+    /// Install the latest stable GitHub release into the current installation.
+    Update,
     /// Internal versioned remote CLI administration.
     #[clap(hide = true)]
     RemoteCommand { request: String },
