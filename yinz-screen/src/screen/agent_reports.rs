@@ -137,10 +137,18 @@ pub(super) fn apply_queued_agent_report(
     if screen.tab_containing_pane(pane_id).is_none() {
         return Ok(false);
     }
-    let hook = report
+    let mut hook = report
         .event
         .as_ref()
         .and_then(|event| serde_json::from_str::<yinz_types::agent::HookEvent>(&event.raw).ok());
+    if report.kind == "claude"
+        && let Some(hook) = hook.as_mut()
+        && report.event.as_ref().is_some_and(|event| {
+            event.kind == "claude" && event.session_id.as_deref() == Some(hook.session_id.as_str())
+        })
+    {
+        screen.correlate_claude_failure(pane_id, hook);
+    }
     // Older installed reporters can still send Idle for an ordinary Claude or Antigravity Stop.
     // Correlate internal confirmations before applying or broadcasting any state.
     if report.kind == "claude"

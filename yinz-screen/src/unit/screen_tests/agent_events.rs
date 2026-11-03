@@ -165,6 +165,68 @@ fn lifecycle_idle_is_not_completion_and_provider_confirmation_is_required() {
 }
 
 #[test]
+fn lifecycle_claude_failures_preserve_other_overlapping_turns() {
+    for target in ["current", "older", "unknown"] {
+        let (mut screen, messages, writes) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        start(&mut screen, &messages, Default::default());
+        screen.agent_control_with_clear(identified_prompt("parent", true), CLIENT, &writes);
+        finish_paste(&writes);
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        deliver_steering(&mut screen, &writes, "next", ClientId::new(2));
+        report_kind(&mut screen, "claude", steering_ack("next"));
+        if target == "unknown" {
+            report_kind(
+                &mut screen,
+                "claude",
+                HookEvent {
+                    prompt_id: None,
+                    ..hook("UserPromptSubmit")
+                },
+            );
+        }
+        events(&mut screen, &messages);
+        report_kind(
+            &mut screen,
+            "claude",
+            HookEvent {
+                prompt_id: (target == "older").then(|| "prompt".into()),
+                ..hook("StopFailure")
+            },
+        );
+        let all = events(&mut screen, &messages);
+        let failures: Vec<_> = all
+            .iter()
+            .filter(|e| e["event_type"] == "turn_failed")
+            .collect();
+        let failed = match target {
+            "current" => Some(("next", "next")),
+            "older" => Some(("parent", "prompt")),
+            _ => None,
+        };
+        assert_eq!(failures.len(), usize::from(failed.is_some()));
+        if let Some((submission, prompt)) = failed {
+            assert_eq!(failures[0]["submission_id"], submission);
+            assert_eq!(failures[0]["provider_prompt_id"], prompt);
+        }
+        for (submission, prompt) in [("parent", "prompt"), ("next", "next")] {
+            if failed == Some((submission, prompt)) {
+                continue;
+            }
+            report_kind(&mut screen, "claude", claude_stop(prompt, "success", &[]));
+            let all = events(&mut screen, &messages);
+            let completed: Vec<_> = all
+                .iter()
+                .filter(|e| e["event_type"] == "turn_completed")
+                .collect();
+            assert_eq!(completed.len(), 1);
+            assert_eq!(completed[0]["submission_id"], submission);
+            assert_eq!(completed[0]["provider_prompt_id"], prompt);
+        }
+    }
+}
+
+#[test]
 fn lifecycle_uncertainty_keeps_observing_and_interrupt_is_definite() {
     let (mut screen, messages, writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));

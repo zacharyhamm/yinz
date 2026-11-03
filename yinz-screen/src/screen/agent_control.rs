@@ -140,11 +140,16 @@ pub(super) struct Submission {
 }
 
 /// Keep the recent admission window independently of older unresolved claims.
-fn prune_submissions(submissions: &mut std::collections::VecDeque<Submission>) {
+fn prune_submissions(
+    submissions: &mut std::collections::VecDeque<Submission>,
+    protected: Option<&BTreeSet<String>>,
+) {
     let old = submissions.len().saturating_sub(SUBMISSION_HISTORY_LIMIT);
     let mut index = 0;
     submissions.retain(|submission| {
-        let keep = index >= old || submission.result.is_none();
+        let keep = index >= old
+            || submission.result.is_none()
+            || protected.is_some_and(|ids| ids.contains(&submission.id));
         index += 1;
         keep
     });
@@ -241,8 +246,27 @@ impl Screen {
         if let Some(result) = result.filter(|_| submission.result.is_none()) {
             submission.result = Some(result);
         }
-        if let Some(submissions) = self.agent_submissions.get_mut(&pending.pane) {
-            prune_submissions(submissions);
+    }
+
+    fn protected_submissions(&self) -> BTreeMap<PaneId, BTreeSet<String>> {
+        let mut protected: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+        for pending in &self.agent_controls {
+            if pending.prompt.is_none()
+                && pending.client.is_some()
+                && let Some(id) = &pending.submission_id
+            {
+                protected
+                    .entry(pending.pane)
+                    .or_default()
+                    .insert(id.clone());
+            }
+        }
+        protected
+    }
+
+    fn prune_agent_submissions(&mut self, protected: &BTreeMap<PaneId, BTreeSet<String>>) {
+        for (pane, submissions) in &mut self.agent_submissions {
+            prune_submissions(submissions, protected.get(pane));
         }
     }
 
@@ -330,16 +354,35 @@ impl Screen {
             })
     }
 
+    /// Native failures omit prompt IDs. Resolve them once before either submission or
+    /// lifecycle-event observers see the hook; older overlapping turns must stay open.
+    pub(super) fn correlate_claude_failure(&self, pane: PaneId, hook: &mut HookEvent) {
+        if hook.hook_event_name == "StopFailure"
+            && !hook.is_worker()
+            && hook.prompt_id.as_deref().is_none_or(str::is_empty)
+            && let Some(lifecycle) = self
+                .agent_lifecycle
+                .get(&pane)
+                .filter(|l| l.kind == "claude" && l.conversation == hook.session_id)
+        {
+            hook.prompt_id = lifecycle
+                .claude_prompt_id
+                .clone()
+                .filter(|id| !id.is_empty());
+        }
+    }
+
     pub(super) fn ignore_claude_worker(&self, pane: PaneId, hook: &HookEvent) -> bool {
         hook.is_worker()
             && !self.agent_lifecycle.get(&pane).is_some_and(|l| {
                 l.kind == "claude"
                     && l.conversation == hook.session_id
                     && !hook.archive_only
-                    && hook
-                        .agent_id
-                        .as_ref()
-                        .is_some_and(|id| !id.is_empty() && !l.claude.stopped_workers.contains(id))
+                    && hook.agent_id.as_ref().is_some_and(|id| {
+                        !id.is_empty()
+                            && (hook.hook_event_name == "SubagentStart"
+                                || !l.claude.stopped_workers.contains(id))
+                    })
             })
     }
 
@@ -365,6 +408,7 @@ impl Screen {
         if let Some(id) = hook.agent_id.as_ref().filter(|id| !id.is_empty()) {
             match hook.hook_event_name.as_str() {
                 "SubagentStart" => {
+                    lifecycle.claude.stopped_workers.remove(id);
                     lifecycle.claude.workers.insert(id.clone());
                 },
                 "SubagentStop" => {
@@ -2000,6 +2044,7 @@ impl Screen {
                         return;
                     },
                 };
+                let protected = self.protected_submissions();
                 let submissions = self.agent_submissions.entry(pane).or_default();
                 submissions.push_back(Submission {
                     id: submission_id.clone(),
@@ -2009,7 +2054,7 @@ impl Screen {
                     turn_id: None,
                     result: None,
                 });
-                prune_submissions(submissions);
+                prune_submissions(submissions, protected.get(&pane));
                 // Claim and observe before input; hooks cannot overtake this screen instruction.
                 let pending = Pending {
                     client: Some(client.clone()),
@@ -2325,11 +2370,9 @@ impl Screen {
                         });
             }
         }
-        if let Some(submissions) = self.agent_submissions.get_mut(&pane) {
-            prune_submissions(submissions);
-        }
         self.agent_controls
             .retain(|pending| pending.pane != pane || pending.prompt.is_none());
+        self.prune_agent_submissions(&self.protected_submissions());
         self.agent_dialog_inputs.remove(&pane);
         self.agent_clear_inputs.remove(&pane);
     }
@@ -2367,10 +2410,14 @@ impl Screen {
                 outcome,
                 AgentOutcome::TargetChanged | AgentOutcome::TargetClosed
             );
-        let background_tasks = self
-            .agent_status(pending.pane, pending_claim)
-            .map(|status| status.background_tasks)
-            .unwrap_or_default();
+        let background_tasks = pending.prompt.as_ref().map_or_else(
+            || {
+                self.agent_status(pending.pane, pending_claim)
+                    .map(|status| status.background_tasks)
+                    .unwrap_or_default()
+            },
+            |prompt| prompt.background_tasks().to_vec(),
+        );
         self.record_submission(
             pending,
             completed.then(|| SubmissionResult {
@@ -2741,6 +2788,7 @@ impl Screen {
         for (pane, from, to) in advances {
             self.advance_claude_observers(pane, from, to);
         }
+        self.prune_agent_submissions(&self.protected_submissions());
     }
 
     fn refresh_claude_permission_waits(&mut self) {
@@ -3232,6 +3280,9 @@ impl Screen {
             })
             .collect();
         let mut keep = Vec::new();
+        // Capture waiters before taking the controls; result recording must not evict
+        // their submissions before refresh_agent_controls delivers the results.
+        let protected = self.protected_submissions();
         for mut pending in std::mem::take(&mut self.agent_controls) {
             if pending.pane != pane {
                 keep.push(pending);
@@ -3374,6 +3425,7 @@ impl Screen {
             }
         }
         self.agent_controls = keep;
+        self.prune_agent_submissions(&protected);
     }
 
     pub(super) fn agent_control_deadline(&self) -> Option<Duration> {
@@ -3439,6 +3491,7 @@ impl Screen {
             }
             self.agent_controls.push(pending);
         }
+        self.prune_agent_submissions(&self.protected_submissions());
     }
 }
 

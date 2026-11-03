@@ -466,6 +466,7 @@ pub struct PromptObservation {
     acknowledged: bool,
     waiting_before_submit: bool,
     turn_id: Option<String>,
+    background_tasks: Vec<String>,
     finished: bool,
 }
 
@@ -508,6 +509,7 @@ impl PromptObservation {
             acknowledged: false,
             waiting_before_submit: false,
             turn_id: None,
+            background_tasks: Vec::new(),
             finished: false,
         }
     }
@@ -554,6 +556,11 @@ impl PromptObservation {
 
     pub fn turn_id(&self) -> Option<&str> {
         self.turn_id.as_deref()
+    }
+
+    /// Tasks launched by this turn's successful confirmation, independent of pane activity.
+    pub fn background_tasks(&self) -> &[String] {
+        &self.background_tasks
     }
 
     /// A caller may submit literal notification XML as ordinary task text. A matching
@@ -745,6 +752,9 @@ impl PromptObservation {
                 }
                 hook.claude_turn_complete.map(|complete| {
                     if complete {
+                        self.background_tasks = hook.claude_background_tasks.clone();
+                        self.background_tasks.sort();
+                        self.background_tasks.dedup();
                         AgentOutcome::Completed
                     } else {
                         AgentOutcome::StatusUnavailable
@@ -764,6 +774,9 @@ impl PromptObservation {
                 })
             },
             "Stop" => Some(AgentOutcome::Completed),
+            "StopFailure" if self.kind == "claude" => (self.prompt_id.is_some()
+                && hook.prompt_id == self.prompt_id)
+                .then_some(AgentOutcome::Failed),
             "StopFailure" => Some(AgentOutcome::Failed),
             "Interrupt" => Some(AgentOutcome::Interrupted),
             _ => None,

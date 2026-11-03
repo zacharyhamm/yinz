@@ -10221,8 +10221,7 @@ fn claude_workers_and_notifications_publish_aggregate_activity_without_idle_edge
             );
             assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
             assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
-            // A completed worker's duplicate start and question cannot resurrect it.
-            report_kind(&mut screen, "claude", claude_worker("SubagentStart", "one"));
+            // A completed worker's stale question cannot resurrect it before another start.
             report_kind(
                 &mut screen,
                 "claude",
@@ -10607,8 +10606,9 @@ fn claude_background_notifications_cannot_acknowledge_steering_or_hide_permissio
     let result = replies(&messages, CLIENT);
     assert_eq!(result[0].outcome, AgentOutcome::Completed);
     assert_eq!(result[0].message.as_deref(), Some("steered answer"));
+    assert_eq!(result[0].background_tasks, ["bash"]);
     assert!(
-        result[0].background_tasks.is_empty(),
+        result[0].agents[0].background_tasks.is_empty(),
         "late confirmations cannot restart completed tasks"
     );
     assert_eq!(result[0].agents[0].agent.state, AgentState::Idle);
@@ -10726,6 +10726,263 @@ fn recent_submission_results_survive_older_unresolved_steering() {
     let before = screen.agent_submissions[&PANE].len();
     report_kind(&mut screen, "claude", claude_stop("old-1", "late", &[]));
     assert_eq!(screen.agent_submissions[&PANE].len(), before - 1);
+}
+
+#[test]
+fn claude_overlapping_failures_only_finish_the_correlated_submission() {
+    for older in [false, true] {
+        let (mut screen, messages, writes) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        screen.agent_control_with_clear(identified_prompt("parent", true), CLIENT, &writes);
+        finish_paste(&writes);
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        deliver_steering(&mut screen, &writes, "next", ClientId::new(2));
+        report_kind(&mut screen, "claude", steering_ack("next"));
+        report_kind(
+            &mut screen,
+            "claude",
+            HookEvent {
+                prompt_id: older.then(|| "prompt".into()),
+                ..hook("StopFailure")
+            },
+        );
+        let (failed, remaining, prompt_id, submission_id) = if older {
+            (CLIENT, ClientId::new(2), "next", "next")
+        } else {
+            (ClientId::new(2), CLIENT, "prompt", "parent")
+        };
+        assert_eq!(replies(&messages, failed)[0].outcome, AgentOutcome::Failed);
+        assert!(replies(&messages, remaining).is_empty());
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_stop(prompt_id, "success", &[]),
+        );
+        let completed = replies(&messages, remaining);
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].outcome, AgentOutcome::Completed);
+        assert_eq!(completed[0].submission_id.as_deref(), Some(submission_id));
+        screen.agent_control(wait_submission(submission_id), remaining);
+        assert_eq!(
+            replies(&messages, remaining)[0].outcome,
+            AgentOutcome::Completed
+        );
+    }
+}
+
+#[test]
+fn claude_uncorrelatable_failure_leaves_older_submissions_unresolved() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    screen.agent_control_with_clear(identified_prompt("parent", true), CLIENT, &writes);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    // An incomplete report of a newer human turn leaves no current prompt identity.
+    for name in ["UserPromptSubmit", "StopFailure"] {
+        report_kind(
+            &mut screen,
+            "claude",
+            HookEvent {
+                prompt_id: None,
+                ..hook(name)
+            },
+        );
+    }
+    assert!(replies(&messages, CLIENT).is_empty());
+    report_kind(&mut screen, "claude", claude_stop("prompt", "success", &[]));
+    assert_eq!(
+        replies(&messages, CLIENT)[0].outcome,
+        AgentOutcome::Completed
+    );
+}
+
+#[test]
+fn claude_stopped_workers_can_resume_and_request_input() {
+    for target in pane_targets() {
+        let (mut screen, messages, _) = setup_on_target("claude", target);
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        let question = HookEvent {
+            tool_name: Some("AskUserQuestion".into()),
+            ..claude_worker("PreToolUse", "worker")
+        };
+        for _ in 0..2 {
+            for _ in 0..2 {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    claude_worker("SubagentStart", "worker"),
+                );
+                assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+            }
+            screen.agent_control(wait(AgentState::Idle), CLIENT);
+            report_kind(&mut screen, "claude", question.clone());
+            assert_eq!(
+                screen.agent_status_for_test().agent.state,
+                AgentState::Waiting
+            );
+            assert_eq!(
+                replies(&messages, CLIENT)[0].outcome,
+                AgentOutcome::NeedsInput
+            );
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_worker("SubagentStart", "worker"),
+            );
+            assert_eq!(
+                screen.agent_status_for_test().agent.state,
+                AgentState::Waiting
+            );
+            for _ in 0..2 {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    claude_worker("SubagentStop", "worker"),
+                );
+                assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+            }
+            for stale in [
+                question.clone(),
+                claude_worker("PostToolUse", "worker"),
+                HookEvent {
+                    archive_only: true,
+                    ..claude_worker("SubagentStart", "worker")
+                },
+                HookEvent {
+                    session_id: "foreign".into(),
+                    ..claude_worker("SubagentStart", "worker")
+                },
+                question.clone(),
+            ] {
+                report_kind(&mut screen, "claude", stale);
+                assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+            }
+        }
+    }
+}
+
+#[test]
+fn old_submission_waiters_survive_completion_and_newer_admissions() {
+    for release in ["complete", "disconnect", "timeout"] {
+        let (mut screen, messages, writes) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        screen.agent_control_with_clear(identified_prompt("parent", false), CLIENT, &writes);
+        finish_paste(&writes);
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        replies(&messages, CLIENT);
+        for client in [2, 3] {
+            screen.agent_control(wait_submission("parent"), ClientId::new(client));
+        }
+        let limit = crate::screen::agent_control::SUBMISSION_HISTORY_LIMIT;
+        for index in 0..=limit {
+            let id = format!("next-{index}");
+            deliver_steering(&mut screen, &writes, &id, CLIENT);
+            report_kind(&mut screen, "claude", steering_ack(&id));
+            report_kind(&mut screen, "claude", claude_stop(&id, "newer", &[]));
+            replies(&messages, CLIENT);
+        }
+        assert_eq!(screen.agent_submissions[&PANE].len(), limit + 1);
+        assert!(replies(&messages, ClientId::new(2)).is_empty());
+        if release == "timeout" {
+            screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(31));
+            for client in [2, 3] {
+                assert_eq!(
+                    replies(&messages, ClientId::new(client))[0].outcome,
+                    AgentOutcome::TimedOut
+                );
+            }
+        }
+        // Separate observation from waiter delivery, as on the screen thread, so an
+        // admission or disconnect can happen while the completed result is protected.
+        let stop = claude_stop("prompt", "old answer", &["old-task"]);
+        let event = AgentEvent::from_hook(
+            "claude",
+            TerminalId::new(7),
+            &stop,
+            serde_json::to_string(&stop).unwrap(),
+        );
+        screen.agent_control_event(&event, Some(&stop));
+        if release == "complete" {
+            deliver_steering(&mut screen, &writes, "after-completion", CLIENT);
+            for client in [2, 3] {
+                let result = replies(&messages, ClientId::new(client));
+                assert_eq!(result.len(), 1);
+                assert_eq!(result[0].outcome, AgentOutcome::Completed);
+                assert_eq!(result[0].submission_id.as_deref(), Some("parent"));
+                assert_eq!(result[0].message.as_deref(), Some("old answer"));
+                assert_eq!(result[0].background_tasks, ["old-task"]);
+            }
+        } else if release == "disconnect" {
+            assert_eq!(screen.agent_submissions[&PANE].len(), limit + 1);
+            screen.detach_agent_controls(ClientId::new(2));
+            assert_eq!(screen.agent_submissions[&PANE].len(), limit + 1);
+            screen.detach_agent_controls(ClientId::new(3));
+            assert!(replies(&messages, ClientId::new(2)).is_empty());
+            assert!(replies(&messages, ClientId::new(3)).is_empty());
+        }
+        assert_eq!(screen.agent_submissions[&PANE].len(), limit);
+        screen.agent_control(wait_submission("parent"), ClientId::new(4));
+        assert_eq!(
+            replies(&messages, ClientId::new(4))[0].outcome,
+            AgentOutcome::StatusUnavailable
+        );
+    }
+}
+
+#[test]
+fn claude_submission_tasks_are_independent_of_the_pane_task_union() {
+    for next_tasks in [vec![], vec!["new-task"]] {
+        let (mut screen, messages, writes) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        screen.agent_control_with_clear(identified_prompt("parent", true), CLIENT, &writes);
+        finish_paste(&writes);
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        deliver_steering(&mut screen, &writes, "next", ClientId::new(2));
+        report_kind(&mut screen, "claude", steering_ack("next"));
+        for (submission, prompt, client, tasks) in [
+            ("parent", "prompt", CLIENT, vec!["old-task"]),
+            ("next", "next", ClientId::new(2), next_tasks.clone()),
+        ] {
+            screen.agent_control(wait_submission(submission), ClientId::new(3));
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_stop(prompt, submission, &tasks),
+            );
+            for recipient in [client, ClientId::new(3)] {
+                let result = replies(&messages, recipient);
+                assert_eq!(result.len(), 1);
+                assert_eq!(result[0].outcome, AgentOutcome::Completed);
+                assert_eq!(result[0].background_tasks, tasks);
+            }
+        }
+        let mut union = vec!["old-task"];
+        union.extend(&next_tasks);
+        union.sort();
+        assert_eq!(screen.agent_status_for_test().background_tasks, union);
+        screen.agent_control(wait(AgentState::Busy), CLIENT);
+        let pane_wait = replies(&messages, CLIENT);
+        assert_eq!(pane_wait[0].outcome, AgentOutcome::Ok);
+        assert_eq!(pane_wait[0].background_tasks, union);
+        report_kind(
+            &mut screen,
+            "claude",
+            task_notification("notification", &union),
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_stop("notification", "finished tasks", &[]),
+        );
+        assert!(screen.agent_status_for_test().background_tasks.is_empty());
+        for (submission, tasks) in [("parent", vec!["old-task"]), ("next", next_tasks)] {
+            screen.agent_control(wait_submission(submission), CLIENT);
+            let retained = replies(&messages, CLIENT);
+            assert_eq!(retained[0].outcome, AgentOutcome::Completed);
+            assert_eq!(retained[0].background_tasks, tasks);
+            assert!(retained[0].agents[0].background_tasks.is_empty());
+        }
+    }
 }
 
 #[test]

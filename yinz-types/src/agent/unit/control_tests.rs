@@ -1677,3 +1677,81 @@ fn claude_steering_observations_keep_their_own_prompt_identity() {
         Some(AgentOutcome::Completed)
     );
 }
+
+#[test]
+fn claude_failure_requires_the_acknowledged_prompt_identity() {
+    for identity in [None, Some(""), Some("older"), Some("current")] {
+        let mut observation = PromptObservation::new("claude", "conversation", "review");
+        assert_eq!(
+            observe(
+                &mut observation,
+                &event(
+                    "claude",
+                    "UserPromptSubmit",
+                    Some("current"),
+                    Some("review")
+                )
+            ),
+            Some(AgentOutcome::Submitted)
+        );
+        let failure = HookEvent {
+            hook_event_name: "StopFailure".into(),
+            session_id: "conversation".into(),
+            prompt_id: identity.map(str::to_owned),
+            ..Default::default()
+        };
+        let failed =
+            observation.observe(&event("claude", "StopFailure", None, None), Some(&failure));
+        assert_eq!(
+            failed,
+            (identity == Some("current")).then_some(AgentOutcome::Failed)
+        );
+        assert_eq!(
+            observe(
+                &mut observation,
+                &event("claude", "Stop", Some("current"), None)
+            ),
+            (identity != Some("current")).then_some(AgentOutcome::Completed)
+        );
+    }
+}
+
+#[test]
+fn claude_observation_keeps_only_its_successfully_confirmed_tasks() {
+    let mut observation = PromptObservation::new("claude", "conversation", "review");
+    observe(
+        &mut observation,
+        &event(
+            "claude",
+            "UserPromptSubmit",
+            Some("current"),
+            Some("review"),
+        ),
+    );
+    for (identity, complete, expected) in [
+        ("other", true, None),
+        ("current", false, Some(AgentOutcome::StatusUnavailable)),
+        ("current", true, Some(AgentOutcome::Completed)),
+    ] {
+        let confirmation = HookEvent {
+            hook_event_name: "Stop".into(),
+            session_id: "conversation".into(),
+            prompt_id: Some(identity.into()),
+            claude_turn_complete: Some(complete),
+            claude_background_tasks: vec!["second".into(), "first".into(), "first".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            observation.observe(
+                &event("claude", "Stop", Some(identity), None),
+                Some(&confirmation)
+            ),
+            expected
+        );
+        if expected == Some(AgentOutcome::Completed) {
+            assert_eq!(observation.background_tasks(), ["first", "second"]);
+        } else {
+            assert!(observation.background_tasks().is_empty());
+        }
+    }
+}
