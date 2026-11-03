@@ -4685,6 +4685,7 @@ dependencies = [
  "url",
  "uuid",
  "vte 0.15.0",
+ "yinz-bus",
  "yinz-cli",
  "yinz-client",
  "yinz-codex",

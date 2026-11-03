@@ -224,6 +224,7 @@ impl Screen {
         // `and` evaluates every cleanup step while retaining the first error.
         let mut result = Ok(());
 
+        self.pending_update_client_ready.remove(&client_id);
         self.notification_mouse_captures.remove(&client_id);
         self.close_notification_browser(client_id);
         // No force-render: the client is going, and the cells its menu occupied belong to a screen

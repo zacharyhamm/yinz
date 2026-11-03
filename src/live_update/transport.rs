@@ -133,14 +133,21 @@ impl Drop for Connection {
 /// Older servers cannot pin their builtin generation across publication. Probe
 /// them with the established message before sending any updater-specific request.
 pub fn preflight_local_sessions() -> Result<()> {
+    preflight_sessions_in(&yinz_runtime::consts::YINZ_SOCK_DIR)
+}
+
+pub(super) fn preflight_sessions_in(directory: &Path) -> Result<()> {
     use std::os::unix::fs::FileTypeExt;
-    let entries = match std::fs::read_dir(&*yinz_runtime::consts::YINZ_SOCK_DIR) {
+    let entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error).context("inspect sessions sharing this installation"),
     };
     for entry in entries {
         let entry = entry.context("inspect session endpoint")?;
+        if !yinz_ipc::consts::is_session_socket_name(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
         if !entry
             .file_type()
             .context("inspect session endpoint type")?

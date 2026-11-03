@@ -1673,6 +1673,152 @@ fn screensaver_repaint_completes_after_full_frame_and_survives_backpressure() {
     }
 }
 
+fn restore_update_client(paced: &mut PacedScreen, source: ClientId, operation: &str) {
+    use yinz_types::session_migration::SessionMigrationMap;
+    let (mut inventory, _, _, _) = paced.screen.migration_inventory(CLIENT).unwrap();
+    let mut focus = inventory
+        .clients
+        .iter()
+        .find(|focus| focus.client_id == CLIENT)
+        .unwrap()
+        .clone();
+    focus.client_id = source;
+    inventory.clients = vec![focus];
+    let mapping = SessionMigrationMap {
+        tabs: inventory
+            .tabs
+            .iter()
+            .map(|tab| (tab.tab_id, tab.tab_id))
+            .collect(),
+        panes: inventory
+            .tabs
+            .iter()
+            .flat_map(|tab| tab.panes.iter().map(|pane| (*pane, *pane)))
+            .collect(),
+    };
+    paced.screen.completed_migration = Some((operation.into(), inventory, mapping));
+    let (reply, result) = crossbeam::channel::bounded(1);
+    paced
+        .screen
+        .session_migration(yinz_bus::migration::ScreenRequest::RestoreClient {
+            operation: operation.into(),
+            source,
+            destination: OTHER_CLIENT,
+            reply,
+        });
+    result.recv().unwrap().unwrap();
+}
+
+#[test]
+fn restored_client_readiness_follows_its_frame_after_pacing_and_supersedes_old_restore() {
+    let mut paced = screen_with_backlog();
+    paced.screen.add_client(OTHER_CLIENT).unwrap();
+    new_tab(&mut paced.screen, 2, TabId::new(1));
+    paced
+        .screen
+        .get_active_tab_mut(CLIENT)
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(2), b"restored-update-tab".to_vec())
+        .unwrap();
+    paced_render(&mut paced.screen);
+    let _ = paced.to_server.try_iter().collect::<Vec<_>>();
+    // The restored tab has both clients as viewers; pacing defers it only when
+    // every viewer is behind.
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, behind())];
+    restore_update_client(&mut paced, CLIENT, "first-operation");
+    assert!(!paced.to_server.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        ServerInstruction::UpdateClientReady { .. }
+    )));
+    paced_render(&mut paced.screen);
+    assert!(paced
+        .screen
+        .pending_update_client_ready
+        .contains_key(&OTHER_CLIENT));
+    assert!(!paced.to_server.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        ServerInstruction::UpdateClientReady { .. }
+    )));
+
+    let source = ClientId::new(9);
+    restore_update_client(&mut paced, source, "second-operation");
+    paced.backlog.lock().unwrap().clear();
+    let ready = paced.ready.lock().unwrap().remove(&OTHER_CLIENT).unwrap();
+    ready();
+    paced.screen.resume_deferred_render();
+    paced_render(&mut paced.screen);
+    let mut saw_frame = false;
+    let mut completed = false;
+    for (instruction, _) in paced.to_server.try_iter() {
+        match instruction {
+            ServerInstruction::Render(Some(output)) => {
+                if let Some(content) = output.get(&OTHER_CLIENT) {
+                    assert!(content.contains("restored-update-tab"));
+                    assert!(content.contains("\x1b[2J"));
+                    saw_frame = true;
+                }
+            },
+            ServerInstruction::UpdateClientReady {
+                client,
+                operation,
+                source_client,
+            } => {
+                assert!(saw_frame, "readiness must follow the restored frame");
+                assert_eq!(client, OTHER_CLIENT);
+                assert_eq!(source_client, source);
+                assert_eq!(operation, "second-operation");
+                assert!(!completed);
+                completed = true;
+            },
+            _ => {},
+        }
+    }
+    assert!(completed);
+    assert!(!paced
+        .screen
+        .pending_update_client_ready
+        .contains_key(&OTHER_CLIENT));
+}
+
+#[test]
+fn restored_client_disconnect_discards_pending_readiness() {
+    let mut paced = screen_with_backlog();
+    paced.screen.add_client(OTHER_CLIENT).unwrap();
+    restore_update_client(&mut paced, CLIENT, "operation");
+    assert!(paced
+        .screen
+        .pending_update_client_ready
+        .contains_key(&OTHER_CLIENT));
+    paced.screen.remove_client(OTHER_CLIENT).unwrap();
+    assert!(!paced
+        .screen
+        .pending_update_client_ready
+        .contains_key(&OTHER_CLIENT));
+    paced_render(&mut paced.screen);
+    assert!(!paced.to_server.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        ServerInstruction::UpdateClientReady { .. }
+    )));
+}
+
+#[test]
+fn restored_client_render_enqueue_failure_propagates_without_completing_readiness() {
+    let mut paced = screen_with_backlog();
+    paced.screen.add_client(OTHER_CLIENT).unwrap();
+    restore_update_client(&mut paced, CLIENT, "operation");
+    drop(paced.to_server);
+    paced.screen.bus.senders.should_silently_fail = false;
+    let error = paced.screen.render_to_clients().unwrap_err();
+    assert!(
+        format!("{error:#}").contains("failed to send message to server"),
+        "{error:#}"
+    );
+    assert!(paced
+        .screen
+        .pending_update_client_ready
+        .contains_key(&OTHER_CLIENT));
+}
+
 #[test]
 fn screensaver_wake_replays_cached_terminal_title() {
     for floating in [false, true] {

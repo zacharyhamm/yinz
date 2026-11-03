@@ -887,6 +887,8 @@ pub(crate) struct Screen {
     pane_subscriber_snapshots_dirty: bool,
     pane_subscriber_dirty_panes: HashSet<PaneId>,
     pending_client_repaints: HashSet<ClientId>,
+    /// Destination client -> (operation, original client), completed after its restored frame.
+    pending_update_client_ready: HashMap<ClientId, (String, ClientId)>,
     deferred_render_tabs: HashSet<TabId>,
     render_writer_ready: OnceCell<yinz_bus::os_input_output::RenderReady>,
     deferred_subscriber_renders: bool,
@@ -1598,6 +1600,7 @@ impl Screen {
             pane_subscriber_snapshots_dirty: true,
             pane_subscriber_dirty_panes: HashSet::new(),
             pending_client_repaints: HashSet::new(),
+            pending_update_client_ready: HashMap::new(),
             deferred_render_tabs: HashSet::new(),
             render_writer_ready: OnceCell::new(),
             deferred_subscriber_renders: false,

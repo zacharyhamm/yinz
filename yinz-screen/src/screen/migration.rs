@@ -1296,17 +1296,10 @@ impl Screen {
                         .find(|client| client.client_id == source)
                         .context("source client was not captured by this migration")?;
                     self.restore_migration_client(focus, destination, &mapping)?;
+                    self.force_client_repaint(destination);
+                    self.pending_update_client_ready
+                        .insert(destination, (operation.clone(), source));
                     self.render().context("render restored migration client")?;
-                    self.bus
-                        .senders
-                        .send_to_server(
-                            yinz_bus::server_instruction::ServerInstruction::UpdateClientReady {
-                                client: destination,
-                                operation: operation.clone(),
-                                source_client: source,
-                            },
-                        )
-                        .context("acknowledge restored migration client after rendering")?;
                     Ok(())
                 })()
                 .map_err(|error| format!("{error:#}"));

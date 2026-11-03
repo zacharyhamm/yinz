@@ -6,6 +6,69 @@ mod client_update_real;
 mod journal_tests;
 
 #[test]
+fn session_preflight_ignores_pty_broker_and_checks_session_capabilities() {
+    use interprocess::local_socket::traits::Listener;
+    use std::os::unix::net::UnixListener;
+    use yinz_ipc::ipc::{ClientToServerMsg, IpcReceiverWithContext, IpcRecv, ServerToClientMsg};
+    for protocol in [yinz_types::session_update::PROTOCOL_VERSION, 0] {
+        let directory = tempfile::tempdir().unwrap();
+        let broker = UnixListener::bind(
+            directory
+                .path()
+                .join(yinz_ipc::consts::pty_broker_socket_name(1)),
+        )
+        .unwrap();
+        broker.set_nonblocking(true).unwrap();
+        let session = yinz_ipc::consts::ipc_bind(&directory.path().join("session")).unwrap();
+        let probed = yinz_test_support::Watched::new(false);
+        std::thread::scope(|scope| {
+            let probed = &probed;
+            scope.spawn(move || {
+                let stream = session.accept().unwrap();
+                let mut receiver = IpcReceiverWithContext::<ClientToServerMsg>::new(stream);
+                receiver
+                    .set_recv_timeout(Some(yinz_test_support::default_timeout()))
+                    .unwrap();
+                assert!(matches!(
+                    receiver.recv_client_msg(),
+                    IpcRecv::Msg(ClientToServerMsg::ConnStatus, _)
+                ));
+                receiver
+                    .get_sender::<ServerToClientMsg>()
+                    .unwrap()
+                    .send_server_msg(ServerToClientMsg::Connected {
+                        warp_companions: false,
+                        warp_held_terminals: false,
+                        signal_quit: false,
+                        update_protocol: protocol,
+                    })
+                    .unwrap();
+                *probed.lock() = true;
+            });
+            let result = transport::preflight_sessions_in(directory.path());
+            if protocol == 0 {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("session session uses an older server"));
+            } else {
+                result.unwrap();
+            }
+            probed.wait_until_described(
+                "session capability probe",
+                yinz_test_support::default_timeout(),
+                |seen| seen.then_some(()),
+                |seen| format!("probed={seen}"),
+            );
+        });
+        assert_eq!(
+            broker.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}
+
+#[test]
 fn occupied_private_update_endpoint_refuses_before_starting_an_executable() {
     use std::io::Read;
     use std::os::unix::net::UnixListener;

@@ -345,6 +345,131 @@ impl Drop for Attached {
 }
 
 #[test]
+fn publication_skips_disconnected_shared_client_but_acknowledges_connected_client() {
+    use crate::live_update::{
+        coordinator,
+        journal::{Participant, Route, Store},
+        transport::Connection,
+    };
+    let fixture = Fixture::new();
+    fixture.start();
+    let disconnected = Attached::start(&fixture);
+    disconnected.wait_for("READY-first");
+    let operation = uuid::Uuid::new_v4().to_string();
+    let mut peer = Peer::connect(&fixture.socket());
+    let before = peer.inventory(&operation);
+    let departed = before
+        .clients
+        .iter()
+        .find(|client| client.supports_update)
+        .unwrap()
+        .id;
+    let installation: Installation = serde_json::from_value(peer.participant(
+        &operation,
+        departed,
+        ParticipantRequest::Inventory,
+    ))
+    .unwrap();
+    let connected = Attached::start(&fixture);
+    connected.wait_for("READY-first");
+    let attached = peer.inventory(&operation);
+    let remaining = attached
+        .clients
+        .iter()
+        .find(|client| client.supports_update && client.id != departed)
+        .unwrap()
+        .id;
+    fixture.prepare(&operation);
+    drop(disconnected);
+    let frozen = Watched::new(None);
+    std::thread::scope(|scope| {
+        let frozen = &frozen;
+        let peer = &mut peer;
+        let operation = &operation;
+        scope.spawn(move || {
+            let deadline = Instant::now() + TIMEOUT;
+            while Instant::now() < deadline {
+                let inventory = peer.inventory(operation);
+                let done = !inventory.clients.iter().any(|client| client.id == departed);
+                *frozen.lock() = Some(inventory);
+                if done {
+                    return;
+                }
+            }
+        });
+        frozen.wait_until_described(
+            "disconnected client absent from frozen inventory",
+            TIMEOUT,
+            |inventory| {
+                inventory
+                    .as_ref()
+                    .filter(|inventory| {
+                        !inventory.clients.iter().any(|client| client.id == departed)
+                    })
+                    .cloned()
+            },
+            |inventory| format!("inventory: {inventory:?}"),
+        );
+    });
+    let mut store = Store::open(&fixture.socket(), &fixture.data, &operation).unwrap();
+    store.journal.disconnected_clients.push(departed);
+    store.journal.participants = [
+        Route::Server,
+        Route::Client(departed),
+        Route::Client(remaining),
+    ]
+    .into_iter()
+    .map(|route| Participant {
+        installation: installation.clone(),
+        route,
+        state: "prepared".into(),
+    })
+    .collect();
+    let mut source = Connection::connect(&fixture.socket()).unwrap();
+    coordinator::publish_participants(&mut store, &mut source).unwrap();
+    assert!(store
+        .journal
+        .participants
+        .iter()
+        .all(|participant| participant.state == "published"));
+    // This validation runs after the client's publication check. It proves the
+    // surviving client acknowledged Publish even though its installation was shared.
+    let error = peer
+        .request(
+            &operation,
+            SessionCommand::Client {
+                client: remaining,
+                request: Request {
+                    token: uuid::Uuid::new_v4().to_string(),
+                    request: ClientRequest::Restart {
+                        operation: operation.clone(),
+                        source_client: remaining,
+                        executable: installation.executable.clone(),
+                        target: SessionConnection::default(),
+                    },
+                },
+            },
+        )
+        .unwrap_err();
+    assert!(error.contains("restart target must name"), "{error}");
+
+    // A disconnected client with its own installation still needs publication.
+    // Skipping its acknowledgement must never label that installation published.
+    let mut separate = installation;
+    separate.data_dir = fixture.root.path().join("separate-data");
+    store.journal.participants.push(Participant {
+        installation: separate,
+        route: Route::Client(departed),
+        state: "prepared".into(),
+    });
+    assert!(coordinator::publish_participants(&mut store, &mut source).is_err());
+    assert_eq!(
+        store.journal.participants.last().unwrap().state,
+        "publishing"
+    );
+}
+
+#[test]
 fn attached_client_update_reexecs_published_inode_preserving_input_focus_and_terminal() {
     let fixture = Fixture::new();
     fixture.start();

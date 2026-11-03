@@ -578,36 +578,7 @@ pub(super) fn execute_release(
         original.clients = frozen.clients;
         original.configuration = frozen.configuration;
         store.save()?;
-        for index in unique_participants(&store.journal) {
-            set_installation_state(&mut store.journal, index, "publishing");
-            store.save()?;
-            participant(
-                source,
-                &store.journal,
-                index,
-                ParticipantRequest::Publish {
-                    operation: operation.clone(),
-                },
-            )?;
-            set_installation_state(&mut store.journal, index, "published");
-            store.save()?;
-        }
-        // Shared installations prepare once, but each client must acknowledge its
-        // own published operation before it accepts a restart request.
-        for index in 0..store.journal.participants.len() {
-            if matches!(store.journal.participants[index].route, Route::Client(_)) {
-                participant(
-                    source,
-                    &store.journal,
-                    index,
-                    ParticipantRequest::Publish {
-                        operation: operation.clone(),
-                    },
-                )?;
-                set_installation_state(&mut store.journal, index, "published");
-                store.save()?;
-            }
-        }
+        publish_participants(store, source)?;
         start_replacement(store)
     })();
     let mut replacement = match publication {
@@ -711,6 +682,43 @@ fn cleanup_remote_helpers(store: &mut Store) -> Result<()> {
         )?;
         store.journal.remote_helpers[index].cleaned = true;
         store.save()?;
+    }
+    Ok(())
+}
+
+pub(super) fn publish_participants(store: &mut Store, source: &mut Connection) -> Result<()> {
+    let operation = store.journal.operation.clone();
+    for index in unique_participants(&store.journal) {
+        set_installation_state(&mut store.journal, index, "publishing");
+        store.save()?;
+        participant(
+            source,
+            &store.journal,
+            index,
+            ParticipantRequest::Publish {
+                operation: operation.clone(),
+            },
+        )?;
+        set_installation_state(&mut store.journal, index, "published");
+        store.save()?;
+    }
+    // Shared installations prepare once, but each client must acknowledge its
+    // own published operation before it accepts a restart request.
+    for index in 0..store.journal.participants.len() {
+        if matches!(store.journal.participants[index].route, Route::Client(id)
+            if !store.journal.disconnected_clients.contains(&id))
+        {
+            participant(
+                source,
+                &store.journal,
+                index,
+                ParticipantRequest::Publish {
+                    operation: operation.clone(),
+                },
+            )?;
+            set_installation_state(&mut store.journal, index, "published");
+            store.save()?;
+        }
     }
     Ok(())
 }

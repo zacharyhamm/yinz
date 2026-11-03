@@ -1,6 +1,60 @@
 use super::super::journal::{Phase, Store};
 
 #[test]
+fn relative_data_directory_and_interrupted_snapshot_become_absolute() {
+    use yinz_types::session_migration::{
+        MigrationPhase, SessionMigrationInventory, SessionMigrationSnapshot,
+        SESSION_MIGRATION_FORMAT,
+    };
+    let cwd = std::env::current_dir().unwrap();
+    let root = tempfile::tempdir_in(&cwd).unwrap();
+    let data = root.path().strip_prefix(&cwd).unwrap().join("data");
+    let socket = root.path().join("session");
+    let operation = uuid::Uuid::new_v4().to_string();
+    let mut store = Store::open(&socket, &data, &operation).unwrap();
+    assert!(store.directory.is_absolute());
+    assert_eq!(
+        store.journal.snapshot,
+        store.directory.join("snapshot.json")
+    );
+    let snapshot = SessionMigrationSnapshot {
+        format: SESSION_MIGRATION_FORMAT,
+        operation: operation.clone(),
+        inventory: SessionMigrationInventory {
+            format: SESSION_MIGRATION_FORMAT,
+            session_name: "session".into(),
+            instance_id: uuid::Uuid::new_v4().to_string(),
+            tabs: vec![],
+            clients: vec![],
+            remote_hosts: vec![],
+            global_last_active_tab: yinz_types::internal_ids::TabId::new(0),
+            tab_group_preferences: vec![],
+            paneless_plugins: vec![],
+        },
+        phase: MigrationPhase::Prepared,
+        tabs: vec![],
+        mapping: Default::default(),
+        errors: vec![],
+        ownership: vec![],
+    };
+    yinz_bus::migration::save_snapshot(&store.journal.snapshot, &snapshot).unwrap();
+    // Model an interrupted journal written before absolute paths were required.
+    store.journal.snapshot = data.join("updates").join(&operation).join("snapshot.json");
+    store.phase(Phase::Prepare).unwrap();
+    drop(store);
+    let store = Store::open(&socket, &data, &uuid::Uuid::new_v4().to_string()).unwrap();
+    assert_eq!(store.journal.operation, operation);
+    assert!(store.directory.is_absolute());
+    assert!(store.journal.snapshot.is_absolute());
+    yinz_bus::migration::save_snapshot(&store.journal.snapshot, &snapshot).unwrap();
+    let persisted: super::super::journal::Journal =
+        serde_json::from_slice(&std::fs::read(store.directory.join("journal.json")).unwrap())
+            .unwrap();
+    assert_eq!(persisted.format, 1);
+    assert_eq!(persisted.snapshot, store.journal.snapshot);
+}
+
+#[test]
 fn interrupted_update_reuses_pinned_operation_and_holds_session_lock() {
     let root = tempfile::tempdir().unwrap();
     let socket = root.path().join("session");

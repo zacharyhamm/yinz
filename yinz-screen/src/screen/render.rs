@@ -19,6 +19,11 @@ const MAX_QUEUED_RENDERS: usize = 1;
 impl Screen {
     pub(super) fn request_client_repaint(&mut self, client: ClientId) -> Result<()> {
         self.pending_client_repaints.insert(client);
+        self.force_client_repaint(client);
+        self.render()
+    }
+
+    pub(super) fn force_client_repaint(&mut self, client: ClientId) {
         self.last_forwarded_osc7.remove(&client);
         // The screensaver removed placements and hid the cursor outside the server render stream.
         if let Some(watcher) = self.watcher_clients.get_mut(&client) {
@@ -27,7 +32,6 @@ impl Screen {
             tab.forget_host_cursor_state(client);
             tab.request_client_repaint(client, true);
         }
-        self.render()
     }
 
     fn complete_client_repaints(&mut self, clients: Vec<ClientId>) -> Result<()> {
@@ -612,18 +616,33 @@ impl Screen {
                         .keys()
                         .copied()
                         .filter(|client| {
-                            self.pending_client_repaints.contains(client)
+                            (self.pending_client_repaints.contains(client)
+                                || self.pending_update_client_ready.contains_key(client))
                                 && self
                                     .active_tab_ids
                                     .get(client)
                                     .is_some_and(|tab| tabs_that_rendered.contains(tab))
                         })
                         .collect();
-                    let _ = self
-                        .bus
+                    self.bus
                         .senders
                         .send_to_server(ServerInstruction::Render(Some(serialized_output)))
-                        .context(err_context);
+                        .context(err_context)?;
+                    for client in &repainted {
+                        if let Some((operation, source_client)) =
+                            self.pending_update_client_ready.get(client)
+                        {
+                            self.bus
+                                .senders
+                                .send_to_server(ServerInstruction::UpdateClientReady {
+                                    client: *client,
+                                    operation: operation.clone(),
+                                    source_client: *source_client,
+                                })
+                                .context("acknowledge restored migration client after rendering")?;
+                            self.pending_update_client_ready.remove(client);
+                        }
+                    }
                     self.complete_client_repaints(repainted)?;
                     if trace_attach {
                         log::info!(
@@ -842,11 +861,10 @@ impl Screen {
         // Send to server for delivery to watcher clients
         if !watcher_render_output.is_empty() {
             let repainted = watcher_render_output.keys().copied().collect();
-            let _ = self
-                .bus
+            self.bus
                 .senders
                 .send_to_server(ServerInstruction::Render(Some(watcher_render_output)))
-                .context(err_context);
+                .context(err_context)?;
             self.complete_client_repaints(repainted)?;
         }
 

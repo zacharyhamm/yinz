@@ -133,10 +133,13 @@ impl Store {
         let directory = root.join(&actual_operation);
         yinz_runtime::shared::ensure_secure_dir(&directory)
             .context("secure operation directory")?;
+        let directory = directory
+            .canonicalize()
+            .context("resolve operation directory")?;
         let path = directory.join("journal.json");
         let journal = match fs::read(&path) {
             Ok(bytes) => {
-                let journal: Journal =
+                let mut journal: Journal =
                     serde_json::from_slice(&bytes).context("decode interrupted update journal")?;
                 anyhow::ensure!(
                     journal.format == 1
@@ -144,6 +147,11 @@ impl Store {
                         && journal.source_socket == socket,
                     "update journal identity or format mismatch"
                 );
+                if journal.snapshot.is_relative() {
+                    journal.snapshot = std::env::current_dir()
+                        .context("resolve interrupted snapshot directory")?
+                        .join(&journal.snapshot);
+                }
                 journal
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Journal {
