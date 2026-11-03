@@ -1,0 +1,33 @@
+id: 4c56fcc7-8291-4671-9783-c54a3348ca30
+name: yinz-issue-merge
+description: Serialize local rebase, full CI and fast-forward through the shared merge coordinator.
+tags: {}
+inputs:
+  type: object
+  required: [issueName]
+  additionalProperties: false
+  properties:
+    issueName:
+      type: string
+    skipCiRequest:
+      type: string
+      default: ""
+jobs:
+  - name: integration
+    steps:
+      - name: rebase-check-merge
+        task:
+          type: behavior
+          behaviorType: "@yinz/merge-coordinator"
+          behaviorName: yinz-main-merge
+          globalArgs: {}
+          methodName: integrate
+          inputs:
+            issueName: ${{ inputs.issueName }}
+            skipCiRequest: ${{ inputs.skipCiRequest }}
+        dependsOn: []
+        weight: 0
+        allowFailure: false
+    dependsOn: []
+    weight: 0
+version: 1

@@ -19,13 +19,17 @@ cargo x run -- -l strider
 cargo x bench                 # render throughput; separate from the gate
 ```
 
-**There is no CI in this fork. Run full test suites only when the user explicitly
-requests them.** This includes `cargo x ci check`, unfiltered workspace tests,
-and unfiltered integration suites. Handing off a branch or opening a PR does not
-authorize a full-suite run. In all other cases, use judgment to select the subset
-of tests that makes sense for the changes in the branch, including affected
-callers and behavior. This test-selection policy also applies when local
-instructions recommend full suites.
+**Local merges require rebasing onto current local `main`, then running
+`cargo x ci check` on the rebased commit before fast-forwarding `main`.** Skip
+the full check only when the user explicitly requests it for that merge, and
+record the request. The issue lifecycle holds a repository-wide merge lock
+across rebase, checks and merge; see [the lifecycle guide](docs/ISSUE_LIFECYCLE.md).
+
+Outside a merge, run full test suites only when the user explicitly requests
+them. This includes unfiltered workspace tests and integration suites. Handing
+off a branch or opening a PR alone does not authorize a full-suite run. Select
+tests for the changed behavior and affected callers during development. This
+test-selection policy also applies when local instructions recommend full suites.
 
 When requested, `cargo x ci check` runs every phase even after failures and uses
 16 integration-test workers. Docker suites run separately:

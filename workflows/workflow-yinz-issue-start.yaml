@@ -1,0 +1,34 @@
+id: 027474de-e202-4f3b-ac7c-9ee9f9c63748
+name: yinz-issue-start
+description: Capture an Agenda task in its own durable local development lifecycle.
+tags: {}
+inputs:
+  type: object
+  required: [workspace, itemId, issueName]
+  additionalProperties: false
+  properties:
+    workspace:
+      type: string
+    itemId:
+      type: integer
+    issueName:
+      type: string
+jobs:
+  - name: capture
+    steps:
+      - name: start
+        task:
+          type: behavior
+          behaviorType: "@yinz/issue-lifecycle"
+          behaviorName: ${{ inputs.issueName }}
+          methodName: start
+          globalArgs:
+            workspace: ${{ inputs.workspace }}
+            itemId: ${{ inputs.itemId }}
+          inputs: {}
+        dependsOn: []
+        weight: 0
+        allowFailure: false
+    dependsOn: []
+    weight: 0
+version: 1

@@ -1,0 +1,67 @@
+id: 0f80865c-3d6d-4ef5-b553-bf3e877b323e
+name: yinz-agent-task
+description: Run a reusable Swamp agent task in a visible Yinz pane, retaining exact submission identity.
+tags: {}
+inputs:
+  type: object
+  required: [agentName, agent, prompt]
+  additionalProperties: false
+  properties:
+    agentName:
+      type: string
+      description: Unique behavior name for this task; reuse it only to observe the original submission.
+    agent:
+      type: object
+      required: [session, kind, cwd]
+      additionalProperties: false
+      properties:
+        session:
+          type: string
+        kind:
+          type: string
+          enum: [claude, codex, muse, pi, agy]
+        cwd:
+          type: string
+        model:
+          type: string
+        effort:
+          type: string
+        permissionMode:
+          type: string
+        startupTimeoutSeconds:
+          type: integer
+        timeoutSeconds:
+          type: integer
+    prompt:
+      type: string
+jobs:
+  - name: pane-task
+    steps:
+      - name: run
+        task:
+          type: behavior
+          behaviorType: "@yinz/agent"
+          behaviorName: ${{ inputs.agentName }}
+          methodName: run
+          globalArgs:
+            session: ${{ inputs.agent.session }}
+            kind: ${{ inputs.agent.kind }}
+            cwd: ${{ inputs.agent.cwd }}
+            model: >-
+              ${{ has(inputs.agent.model) ? inputs.agent.model : '' }}
+            effort: >-
+              ${{ has(inputs.agent.effort) ? inputs.agent.effort : '' }}
+            permissionMode: >-
+              ${{ has(inputs.agent.permissionMode) ? inputs.agent.permissionMode : '' }}
+            startupTimeoutSeconds: >-
+              ${{ has(inputs.agent.startupTimeoutSeconds) ? inputs.agent.startupTimeoutSeconds : 120 }}
+            timeoutSeconds: >-
+              ${{ has(inputs.agent.timeoutSeconds) ? inputs.agent.timeoutSeconds : 600 }}
+          inputs:
+            prompt: ${{ inputs.prompt }}
+        dependsOn: []
+        weight: 0
+        allowFailure: false
+    dependsOn: []
+    weight: 0
+version: 1

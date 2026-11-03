@@ -117,6 +117,10 @@ For development, `cargo x run` installs builtin files into its selected data
 directory. Use `cargo x run --quick-run` for `target/dev-data`. `cargo x build`
 does not install builtin files.
 
+The [local issue lifecycle](docs/ISSUE_LIFECYCLE.md) uses Agenda descriptions,
+Swamp workflows and visible Yinz agent panes to develop, verify and merge locally.
+It also documents the reusable `@yinz/agent` Swamp extension.
+
 ## Publishing a release
 
 After merging the release workflow, update the workspace version in `Cargo.toml`

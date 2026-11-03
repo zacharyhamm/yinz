@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Drive local Swamp issue workflows from one control checkout."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+
+METHODS = (
+    "start", "status", "triage", "plan", "review-plan", "approve", "implement",
+    "review-code", "ready", "merge", "repair", "refresh", "summarize", "agent", "resume-agent", "discard-agent",
+)
+
+
+def issue_name(workspace, item):
+    name = f"issue-{workspace}-{item}"
+    if len(name) <= 64:
+        return name
+    return f"issue-{hashlib.sha256(workspace.encode()).hexdigest()[:24]}-{item}"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--control", type=Path, default=Path(__file__).resolve().parent.parent)
+    parser.add_argument("--workspace", required=True, help="Explicit Agenda workspace")
+    parser.add_argument("--item", required=True, type=int, help="Agenda task ID")
+    parser.add_argument("command", choices=METHODS)
+    parser.add_argument("--input-file", type=Path, help="JSON method arguments; use - for stdin")
+    args = parser.parse_args()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", args.workspace) or not 0 < args.item <= 2**53 - 1:
+        parser.error("invalid Agenda workspace or item ID")
+    control = args.control.resolve(strict=True)
+    if not (control / ".swamp.yaml").is_file():
+        parser.error("control checkout has no .swamp.yaml; select the initialized Yinz checkout")
+    inputs = {}
+    if args.input_file:
+        inputs = json.loads(sys.stdin.read() if str(args.input_file) == "-" else args.input_file.read_text())
+    if not isinstance(inputs, dict):
+        parser.error("input file must contain a JSON object")
+    name = issue_name(args.workspace, args.item)
+    # A shell configured for a remote Swamp server must not redirect local Git.
+    env = {key: value for key, value in os.environ.items() if key not in (
+        "SWAMP_SERVE_URL", "SWAMP_SERVER_URL", "SWAMP_REPO_DIR", "SWAMP_WORKFLOWS_DIR",
+    )}
+    # The shared coordinator may be occupied by a full CI gate for hours.
+    env.setdefault("SWAMP_LOCK_TIMEOUT_MS", "14400000")
+    tail = ["--repo-dir", str(control), "--no-telemetry"]
+    if args.command == "status":
+        if inputs:
+            parser.error("status takes no method inputs")
+        return subprocess.run([
+            "swamp", "data", "query", f"modelName == {json.dumps(name)} && (name == 'state' || name == 'agent-task')",
+            "--select", "content", "--json", *tail,
+        ], cwd=control, env=env).returncode
+    if args.command in ("start", "merge"):
+        workflow = "yinz-issue-" + args.command
+        validation = subprocess.run(["swamp", "workflow", "validate", workflow, "--json", *tail], cwd=control, env=env, text=True, capture_output=True)
+        if validation.returncode:
+            sys.stderr.write(validation.stderr + validation.stdout)
+            return validation.returncode
+        if args.command == "start":
+            if inputs:
+                parser.error("start takes no method inputs")
+            inputs = {"workspace": args.workspace, "itemId": args.item, "issueName": name}
+        else:
+            if set(inputs) - {"skipCiRequest"}:
+                parser.error("merge accepts only skipCiRequest")
+            inputs = {"issueName": name, **inputs}
+        command = ["swamp", "workflow", "run", workflow, "--stdin", *tail]
+    else:
+        method = {"agent": "run_agent", "resume-agent": "resume_agent"}.get(args.command, args.command.replace("-", "_"))
+        command = ["swamp", "behavior", "run", name, method, "--stdin", *tail]
+    return subprocess.run(command, input=json.dumps(inputs), text=True, cwd=control, env=env).returncode
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (OSError, ValueError) as error:
+        print(f"issue-lifecycle: {error}", file=sys.stderr)
+        sys.exit(1)

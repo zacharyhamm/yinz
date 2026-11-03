@@ -1,0 +1,11 @@
+manifestVersion: 1
+name: "@yinz/agents"
+version: 2026.11.03.1
+description: Durable Swamp tasks in visible Yinz agent panes with guarded prompts and correlated outcomes.
+license: MIT
+behaviors:
+  - yinz_agent.ts
+include:
+  - _lib/yinz_agent.ts
+workflows:
+  - workflow-yinz-agent-task.yaml
