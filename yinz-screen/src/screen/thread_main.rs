@@ -2807,6 +2807,7 @@ pub fn screen_thread_main(
                 ScreenInstruction::WarpPane {
                     supports_companions,
                     supports_held,
+                    supports_tracking,
                     pane_id,
                     to_session,
                     placement,
@@ -2817,6 +2818,7 @@ pub fn screen_thread_main(
                     screen.warp_pane(
                         supports_companions,
                         supports_held,
+                        supports_tracking,
                         pane_id,
                         to_session,
                         placement,
@@ -2896,6 +2898,7 @@ pub fn screen_thread_main(
                 ScreenInstruction::WarpTab {
                     supports_companions,
                     supports_held,
+                    supports_tracking,
                     tab_id,
                     client_id,
                     response_channel,
@@ -2904,6 +2907,7 @@ pub fn screen_thread_main(
                     screen.warp_tab(
                         supports_companions,
                         supports_held,
+                        supports_tracking,
                         tab_id,
                         client_id,
                         response_channel,

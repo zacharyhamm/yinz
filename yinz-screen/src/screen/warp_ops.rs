@@ -58,7 +58,10 @@ impl Screen {
     ) -> bool {
         for tab in self.tabs.values_mut() {
             if let Some(pane) = tab.get_pane_with_id_mut(id) {
+                // This restores an already-held snapshot; a newly observed exit uses HoldPane.
+                let agent = pane.agent_info().cloned();
                 pane.hold(held.exit_status, held.first_run, held.command.clone());
+                pane.set_agent_info(agent);
                 return true;
             }
         }
@@ -172,6 +175,7 @@ impl Screen {
                     .take_released_tab_for_warp(tab_index, released, prepared)
                     .map(|group| {
                         Box::new(yinz_types::data::WarpedPane {
+                            agent_tracking: None,
                             held: None,
                             group: Some(group),
                             ..Default::default()
@@ -263,6 +267,7 @@ impl Screen {
         &mut self,
         supports_companions: bool,
         supports_held: bool,
+        supports_tracking: bool,
         tab_id: Option<TabId>,
         client_id: ClientId,
         response_channel: crossbeam::channel::Sender<Result<Box<WarpedTab>, String>>,
@@ -299,6 +304,17 @@ impl Screen {
                 let deadline = deadline
                     .checked_sub(TAB_WARP_SCREEN_RESERVE)
                     .unwrap_or_else(Instant::now);
+                if !supports_tracking
+                    && terminal_ids.iter().any(|id| {
+                        self.get_pane_info(PaneId::Terminal(*id))
+                            .is_some_and(|info| info.agent.is_some())
+                    })
+                {
+                    let _ = response_channel.send(Err(
+                        "destination does not support agent tracking transfers".into(),
+                    ));
+                    return Ok(());
+                }
                 let held = match self.prepare_held_warp(&terminal_ids, supports_held) {
                     Ok(held) => held,
                     Err(reason) => {
@@ -440,6 +456,7 @@ impl Screen {
         &mut self,
         supports_companions: bool,
         supports_held: bool,
+        supports_tracking: bool,
         pane_id: Option<PaneId>,
         to_session: SessionName,
         placement: WarpPlacement,
@@ -468,6 +485,17 @@ impl Screen {
                 let deadline = deadline
                     .checked_sub(TAB_WARP_SCREEN_RESERVE)
                     .unwrap_or_else(Instant::now);
+                if !supports_tracking
+                    && terminal_ids.iter().any(|id| {
+                        self.get_pane_info(PaneId::Terminal(*id))
+                            .is_some_and(|info| info.agent.is_some())
+                    })
+                {
+                    let _ = response_channel.answer(Err(
+                        "destination does not support agent tracking transfers".into(),
+                    ));
+                    return Ok(());
+                }
                 let held = match self.prepare_held_warp(&terminal_ids, supports_held) {
                     Ok(held) => held,
                     Err(reason) => {
@@ -508,6 +536,16 @@ impl Screen {
                 let deadline = deadline
                     .checked_sub(PANE_WARP_SCREEN_RESERVE)
                     .unwrap_or_else(Instant::now);
+                if !supports_tracking
+                    && self
+                        .get_pane_info(PaneId::Terminal(terminal_id))
+                        .is_some_and(|info| info.agent.is_some())
+                {
+                    let _ = response_channel.answer(Err(
+                        "destination does not support agent tracking transfers".into(),
+                    ));
+                    return Ok(());
+                }
                 let held = match self.prepare_held_warp(&[terminal_id], supports_held) {
                     Ok(held) => held,
                     Err(reason) => {
@@ -537,6 +575,7 @@ impl Screen {
 
     fn notify_warp_departure(&mut self, pane_id: PaneId) {
         self.invalidate_agent_lifecycle(pane_id, "warped");
+        self.agent_launches.remove(&pane_id);
         self.bus
             .senders
             .send_to_plugin(PluginInstruction::Update(vec![(
@@ -639,6 +678,12 @@ impl Screen {
             }
             Ok(())
         })();
+        for pane_id in slots {
+            let tab_id = self.tab_containing_pane(*pane_id).map(|tab| tab.id);
+            if let Some(launch) = self.agent_launches.get_mut(pane_id) {
+                launch.tab_id = tab_id;
+            }
+        }
         if let Some(response_channel) = response_channel {
             let _ = response_channel.send(result);
             Ok(())
@@ -852,6 +897,7 @@ impl Screen {
         let address = Self::warp_address(released.pane)?;
         let pane_id = PaneId::Terminal(terminal_id);
         let agent_input = self.warped_agent_input(pane_id);
+        let agent_tracking = self.capture_agent_tracking(pane_id);
         let tab = self
             .tabs
             .values_mut()
@@ -881,6 +927,7 @@ impl Screen {
             borderless: pane.borderless(),
             bracketed_paste: pane.supports_bracketed_paste(),
             agent_input,
+            agent_tracking,
             agent: pane.agent_info().cloned(),
         });
         let removed = tab.extract_warp_panes(&[pane_id]);
@@ -1123,6 +1170,20 @@ impl Screen {
         // many panes are sharing it.
         let budget =
             Self::warp_budget_per_pane(prepared.tiled_panes.len() + prepared.floating_panes.len());
+        let tracking: HashMap<_, _> = prepared
+            .tiled_panes
+            .iter()
+            .chain(&prepared.floating_panes)
+            .map(|id| {
+                (
+                    *id,
+                    (
+                        self.warped_agent_input(*id),
+                        self.capture_agent_tracking(*id),
+                    ),
+                )
+            })
+            .collect();
         let tab = self
             .tabs
             .get(&tab_index)
@@ -1156,7 +1217,10 @@ impl Screen {
                 bracketed_paste: tab
                     .get_pane_with_id(*pane_id)
                     .is_some_and(|pane| pane.supports_bracketed_paste()),
-                agent_input: self.warped_agent_input(*pane_id),
+                agent_input: tracking.get(pane_id).and_then(|(input, _)| input.clone()),
+                agent_tracking: tracking
+                    .get(pane_id)
+                    .and_then(|(_, tracking)| tracking.clone()),
                 borderless: false,
                 // Not gated on `serialize_pane_viewport`: that option governs
                 // automatic session serialization, and a warp is something the
@@ -1331,6 +1395,13 @@ impl Screen {
                 )
             },
         };
+        if payload.agent_tracking.is_some() {
+            payload.agent_input = None;
+        }
+        self.pending_agent_tracking.insert(
+            pane_id,
+            (payload.agent.take(), payload.agent_tracking.take()),
+        );
         self.bus
             .senders
             .send_to_screen(ScreenInstruction::NewPane(
@@ -1383,16 +1454,6 @@ impl Screen {
             .senders
             .send_to_screen(ScreenInstruction::PtyBytes(terminal_id, replay))
             .with_context(err_context)?;
-        // A supervisor's replayed exit must override the agent's pre-handoff state.
-        // Already-held panes instead restore their metadata after held state below.
-        if payload.held.is_none()
-            && let Some(agent) = payload.agent.take()
-        {
-            self.bus
-                .senders
-                .send_to_screen(ScreenInstruction::SetPaneAgent(pane_id, Some(agent), None))
-                .with_context(err_context)?;
-        }
         if let Some(exit_status) = child_exit_status {
             let hold_on_close = cmd.hold_on_close;
             let instruction = if let Some(held) = payload.held {
@@ -1409,12 +1470,6 @@ impl Screen {
             self.bus
                 .senders
                 .send_to_screen(instruction)
-                .with_context(err_context)?;
-        }
-        if let Some(agent) = payload.agent {
-            self.bus
-                .senders
-                .send_to_screen(ScreenInstruction::SetPaneAgent(pane_id, Some(agent), None))
                 .with_context(err_context)?;
         }
         if request_redraw {
@@ -1453,6 +1508,7 @@ impl Screen {
             let _ = placed.send(Ok(()));
             return;
         }
+        self.pending_agent_tracking.remove(&pane_id);
         self.bus
             .senders
             .send_to_pty(PtyInstruction::GiveBackAdoptedTerminal {
@@ -1627,14 +1683,15 @@ impl Screen {
         // same channel — and would otherwise be the tab that got these panes.
         // Sending this first is what rules that out: it is enqueued before the
         // plugin thread has even been asked, so it cannot arrive late.
+        let terminals = (
+            self.adopted_terminals(payload.tiled_panes, adopted.tiled),
+            self.adopted_terminals(payload.floating_panes, adopted.floating),
+        );
         self.bus
             .senders
             .send_to_pty(PtyInstruction::ClaimAdoptedTab {
                 tab_index,
-                terminals: (
-                    Self::adopted_terminals(payload.tiled_panes, adopted.tiled),
-                    Self::adopted_terminals(payload.floating_panes, adopted.floating),
-                ),
+                terminals,
             })
             .with_context(err_context)?;
         self.bus
@@ -1658,6 +1715,8 @@ impl Screen {
                 tab_index,
                 (placement, target, client_id, response_channel, hold),
             );
+        } else if let Some(response) = response_channel {
+            self.pending_tab_adoptions.insert(tab_index, response);
         }
 
         Ok(())
@@ -1670,13 +1729,21 @@ impl Screen {
     /// adopted them in the order they arrived in, and that order is the one the
     /// layout's slots are filled in.
     fn adopted_terminals(
+        &mut self,
         panes: Vec<WarpedPane>,
         adopted: Vec<AdoptedPane>,
     ) -> Vec<AdoptedTabTerminal> {
         panes
             .into_iter()
             .zip(adopted)
-            .map(|(pane, adopted)| {
+            .map(|(mut pane, adopted)| {
+                if pane.agent_tracking.is_some() {
+                    pane.agent_input = None;
+                }
+                self.pending_agent_tracking.insert(
+                    PaneId::Terminal(adopted.terminal_id),
+                    (pane.agent.take(), pane.agent_tracking.take()),
+                );
                 // The transferred screen first, then whatever the supervisor
                 // caught during the hand-off — the same order a single adopted
                 // pane is replayed in, and the same order it happened in.

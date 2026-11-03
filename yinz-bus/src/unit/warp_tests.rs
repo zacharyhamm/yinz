@@ -205,6 +205,7 @@ fn the_capability_probe_reads_its_answer_after_an_older_servers_pushes() {
         .send_server_msg(ServerToClientMsg::Connected {
             warp_companions: true,
             warp_held_terminals: false,
+            warp_agent_tracking: false,
             signal_quit: false,
         })
         .unwrap();
@@ -213,7 +214,7 @@ fn the_capability_probe_reads_its_answer_after_an_older_servers_pushes() {
             .join()
             .unwrap()
             .expect("the probe should receive its answer"),
-        (true, false)
+        (true, false, false)
     );
 }
 
@@ -356,6 +357,7 @@ fn adopting_times_out_rather_than_waiting_on_a_pty_thread_that_never_answers() {
         &harness.senders,
         crate::ClientId::new(1),
         Box::new(WarpedPane {
+            agent_tracking: None,
             agent_theme: None,
             bracketed_paste: false,
             agent_input: None,
@@ -407,6 +409,7 @@ fn a_pty_side_refusal_to_adopt_comes_back_verbatim() {
         &senders,
         crate::ClientId::new(1),
         Box::new(WarpedPane {
+            agent_tracking: None,
             agent_theme: None,
             bracketed_paste: false,
             agent_input: None,
@@ -612,6 +615,7 @@ fn a_pty_side_refusal_to_adopt_a_tab_comes_back_verbatim() {
 
 fn remote_pane(host: &str, pane_token: &str) -> WarpedPane {
     WarpedPane {
+        agent_tracking: None,
         agent_theme: None,
         bracketed_paste: false,
         agent_input: None,
@@ -648,6 +652,7 @@ fn a_remote_pane_is_recovered_through_the_broker_holding_it() {
 fn a_local_pane_is_recovered_by_its_supervisor_id() {
     assert_eq!(
         recovery_command(&WarpedPane {
+            agent_tracking: None,
             agent_theme: None,
             held: None,
             host_id: SupervisorId::new("abc123".to_owned()),
@@ -706,6 +711,7 @@ fn refuse_handoff(listener: interprocess::local_socket::Listener) {
         .send_server_msg(ServerToClientMsg::Connected {
             warp_companions: true,
             warp_held_terminals: true,
+            warp_agent_tracking: true,
             signal_quit: false,
         })
         .unwrap();

@@ -640,6 +640,7 @@ pub enum ScreenInstruction {
     WarpPane {
         supports_companions: bool,
         supports_held: bool,
+        supports_tracking: bool,
         pane_id: Option<PaneId>,
         to_session: SessionName,
         placement: WarpPlacement,
@@ -687,6 +688,7 @@ pub enum ScreenInstruction {
     WarpTab {
         supports_companions: bool,
         supports_held: bool,
+        supports_tracking: bool,
         tab_id: Option<TabId>,
         client_id: ClientId,
         response_channel: crossbeam::channel::Sender<Result<Box<WarpedTab>, String>>,

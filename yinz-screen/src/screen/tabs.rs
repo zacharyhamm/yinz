@@ -1173,6 +1173,9 @@ impl Screen {
                 "the tab for the adopted panes closed before they were placed"
             )));
         }
+        if let Some(response) = self.pending_tab_adoptions.remove(&tab_id) {
+            let _ = response.send(Err(anyhow!("the adopted tab closed before placement")));
+        }
         self.pending_warp_relationships.remove(&tab_id);
         // Overlays keep their placement through the existing overlay relocation path.
         if preserve_guards {

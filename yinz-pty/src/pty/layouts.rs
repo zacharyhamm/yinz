@@ -434,12 +434,14 @@ impl Pty {
                         .context("failed to request redraw for adopted tab pane")
                         .non_fatal();
                 }
-                if terminal.held.is_some() {
+                if terminal.held.is_some()
+                    && let Some(agent) = terminal.agent
+                {
                     self.bus
                         .senders
                         .send_to_screen(ScreenInstruction::SetPaneAgent(
                             PaneId::Terminal(terminal.terminal_id),
-                            terminal.agent,
+                            Some(agent),
                             None,
                         ))
                         .with_context(err_context)?;

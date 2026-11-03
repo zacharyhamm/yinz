@@ -1331,3 +1331,41 @@ fn lifecycle_waits_for_all_requested_projects_and_cancels_pending_subscriptions(
     assert!(events(&mut screen, &messages).is_empty());
     assert!(screen.agent_events.deadline().is_none());
 }
+
+#[test]
+fn lifecycle_warp_preserves_turn_observation_without_migrating_subscribers() {
+    for kind in ["claude", "codex", "agy", "muse", "pi"] {
+        for completed in [false, true] {
+            let (mut source, source_messages, _) = setup(kind);
+            report_kind(&mut source, kind, hook("SessionStart"));
+            start(&mut source, &source_messages, EventSubscription::default());
+            report_kind(&mut source, kind, hook("UserPromptSubmit"));
+            if completed {
+                report_kind(&mut source, kind, hook("Stop"));
+            }
+            let handoff = source.capture_agent_tracking(PANE).unwrap();
+            assert!(!handoff.events.turns.is_empty());
+            let (mut destination, messages, _) = setup(kind);
+            destination
+                .pending_agent_tracking
+                .insert(PANE, (Some(handoff.agent.clone()), Some(handoff)));
+            destination.restore_staged_agent_tracking(PANE);
+            assert!(events(&mut destination, &messages).is_empty());
+            start(&mut destination, &messages, EventSubscription::default());
+            report_kind(&mut destination, kind, hook("Stop"));
+            let observed = events(&mut destination, &messages);
+            assert_eq!(
+                observed
+                    .iter()
+                    .filter(|e| e["event_type"] == "turn_completed")
+                    .count(),
+                usize::from(!completed),
+                "{kind}: {observed:?}"
+            );
+            report_kind(&mut destination, kind, hook("Stop"));
+            assert!(!events(&mut destination, &messages)
+                .iter()
+                .any(|e| e["event_type"] == "turn_completed"));
+        }
+    }
+}

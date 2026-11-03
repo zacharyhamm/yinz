@@ -1211,6 +1211,7 @@ pub fn start_server_impl(
                         ServerToClientMsg::Connected {
                             warp_companions: true,
                             warp_held_terminals: true,
+                            warp_agent_tracking: true,
                             signal_quit: true,
                         },
                     )
@@ -2031,6 +2032,7 @@ pub fn start_server_impl(
                         ServerToClientMsg::Connected {
                             warp_companions: true,
                             warp_held_terminals: true,
+                            warp_agent_tracking: true,
                             signal_quit: true,
                         },
                     );

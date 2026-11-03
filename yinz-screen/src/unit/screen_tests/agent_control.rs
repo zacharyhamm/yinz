@@ -11442,3 +11442,6 @@ fn claude_steering_attempts_replacement_for_full_and_hidden_composers() {
         );
     }
 }
+
+#[path = "agent_tracking_handoff.rs"]
+mod tracking_handoff;

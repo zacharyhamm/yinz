@@ -558,8 +558,13 @@ pub(crate) struct ParkedPaneWarp {
     pub(crate) client_id: ClientId,
 }
 
-/// Where a warped-in group of panes goes once its tab exists: the placement asked for, the tab
-/// it is relative to, the client that asked, and the channel told when the placement is done.
+/// Pane identity and observations staged before asynchronous pane creation.
+type PendingAgentTracking = (
+    Option<yinz_types::agent::AgentInfo>,
+    Option<yinz_types::agent::tracking::AgentTrackingHandoff>,
+);
+
+/// Where a warped-in group goes, and who is told once placement completes.
 type PendingGroupPlacement = (
     yinz_types::data::WarpPlacement,
     Option<TabId>,
@@ -607,7 +612,8 @@ pub(crate) struct Screen {
     agent_draft_clears: HashMap<PaneId, agent_control::DraftClear>,
     agent_submissions: HashMap<PaneId, std::collections::VecDeque<agent_control::Submission>>,
     agent_launches: HashMap<PaneId, yinz_types::agent::SpawnedAgent>,
-    warped_agent_inputs: HashMap<PaneId, (yinz_types::data::WarpedAgentInput, u64)>,
+    pending_agent_tracking: HashMap<PaneId, PendingAgentTracking>,
+    warped_agent_inputs: HashMap<PaneId, agent_control::TransferredInput>,
     agent_lifecycle: HashMap<PaneId, agent_control::Lifecycle>,
     agent_dialog_inputs: HashMap<PaneId, agent_control::DialogInput>,
     agent_clear_inputs: HashMap<PaneId, agent_control::ClearInput>,
@@ -806,6 +812,7 @@ pub(crate) struct Screen {
     /// out.
     pending_pane_groups: HashMap<TabId, (ParkedPaneWarp, PreparedTabWarp, std::time::Instant)>,
     pending_group_placements: HashMap<TabId, PendingGroupPlacement>,
+    pending_tab_adoptions: HashMap<TabId, crossbeam::channel::Sender<Result<()>>>,
     pending_warp_relationships: HashMap<TabId, yinz_types::data::WarpRelationships>,
     /// Connections that left before attaching while a tab's layout was still on its way. A
     /// layout applied with nobody attached registers the client it was opened for, and one of
@@ -1436,6 +1443,7 @@ impl Screen {
             agent_draft_clears: HashMap::new(),
             agent_submissions: HashMap::new(),
             agent_launches: HashMap::new(),
+            pending_agent_tracking: HashMap::new(),
             warped_agent_inputs: HashMap::new(),
             agent_lifecycle: HashMap::new(),
             agent_dialog_inputs: HashMap::new(),
@@ -1544,6 +1552,7 @@ impl Screen {
             departed_before_layout: HashSet::new(),
             pending_pane_groups: HashMap::new(),
             pending_group_placements: HashMap::new(),
+            pending_tab_adoptions: HashMap::new(),
             styled_underlines,
             background_opacity,
             osc8_hyperlinks,
@@ -2186,6 +2195,21 @@ impl Screen {
                     Ok(())
                 })
                 .with_context(err_context)?;
+
+            // Restore observations before group placement can acknowledge adoption or render.
+            let adopted_ids: Vec<_> = self
+                .pending_agent_tracking
+                .keys()
+                .copied()
+                .filter(|id| {
+                    self.tabs
+                        .get(&tab_id)
+                        .is_some_and(|tab| tab.has_pane_with_pid(id))
+                })
+                .collect();
+            for pane_id in adopted_ids {
+                self.restore_staged_agent_tracking(pane_id);
+            }
 
             if let Some(transition) = &mut transition {
                 self.finish_tab_transition(transition, None)
@@ -3007,6 +3031,7 @@ impl Screen {
     }
 
     pub(crate) fn cleanup_closed_pane(&mut self, id: PaneId) {
+        self.pending_agent_tracking.remove(&id);
         self.forget_notification_assemblies(id);
         self.retire_agent_event_pane(id, "pane_closed");
         self.destroyed_panes.insert(id);

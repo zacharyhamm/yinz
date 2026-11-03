@@ -2162,12 +2162,15 @@ pub enum WarpPlacement {
 /// Everything that has to travel with a pane moving between sessions, beyond what
 /// the pane's own supervisor can already report.
 ///
-/// Deliberately small. The running process, its command and its exit status are
+/// The running process, its command and its exit status are
 /// all held by the pty-host, and the adopting server learns them from the
 /// `AttachAck` — so this carries what lives in the *terminal emulator* plus the
 /// server-side agent record attached to that process.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub struct WarpedPane {
+    /// Observed lifecycle state; absent in older transfers.
+    #[serde(default)]
+    pub agent_tracking: Option<crate::agent::tracking::AgentTrackingHandoff>,
     #[serde(default)]
     pub agent_theme: Option<crate::agent::theme::AgentThemeHandoff>,
     /// The emulator mode, restored after the ANSI dump and before buffered output.
@@ -2210,7 +2213,7 @@ pub struct WarpedPane {
     pub agent: Option<AgentInfo>,
 }
 
-/// Input evidence from a managed Codex pane, awaiting a fresh parent report.
+/// Legacy Codex input evidence. New transfers also carry provider-neutral tracking.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct WarpedAgentInput {
     pub kind: String,

@@ -299,6 +299,8 @@ pub enum ServerToClientMsg {
         #[serde(default)]
         warp_held_terminals: bool,
         #[serde(default)]
+        warp_agent_tracking: bool,
+        #[serde(default)]
         signal_quit: bool,
     },
     Log {

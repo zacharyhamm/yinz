@@ -410,23 +410,23 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
             } => {
                 let result = match pty.adopt_tab(&payload) {
                     Ok(adopted) => {
-                        let _ =
-                            pty.bus
-                                .senders
-                                .send_to_screen(ScreenInstruction::AdoptedTabReady {
-                                    is_rollback,
-                                    placement: None,
-                                    response_channel: None,
-                                    hold: None,
-                                    payload,
-                                    adopted: Box::new(adopted),
-                                    client_id,
-                                });
-                        Ok(())
+                        pty.bus
+                            .senders
+                            .send_to_screen(ScreenInstruction::AdoptedTabReady {
+                                is_rollback,
+                                placement: None,
+                                response_channel: Some(response_channel.clone()),
+                                hold: None,
+                                payload,
+                                adopted: Box::new(adopted),
+                                client_id,
+                            })
                     },
                     Err(e) => Err(e),
                 };
-                let _ = response_channel.send(result);
+                if let Err(error) = result {
+                    let _ = response_channel.send(Err(error));
+                }
             },
             PtyInstruction::ClaimAdoptedTab {
                 tab_index,

@@ -393,6 +393,9 @@ impl Screen {
                 false
             };
             self.recover_pending_tab(tab_id).non_fatal();
+            for pane_id in &new_terminal_pane_ids {
+                self.restore_staged_agent_tracking(*pane_id);
+            }
             if let Some((_, _, _, Some(response), _)) =
                 self.pending_group_placements.remove(&tab_id)
             {
@@ -405,7 +408,17 @@ impl Screen {
                 });
             }
             self.pending_warp_relationships.remove(&tab_id);
+            if let Some(response) = self.pending_tab_adoptions.remove(&tab_id) {
+                let _ = response.send(if retained {
+                    Ok(())
+                } else {
+                    Err(anyhow!(message.clone()))
+                });
+            }
             self.report_layout_error(message, client_id, &mut completion_tx);
+        }
+        for pane_id in &new_terminal_pane_ids {
+            self.restore_staged_agent_tracking(*pane_id);
         }
         for (terminal_id, _, agent) in adopted_terminals {
             let Some(agent) = agent else {
@@ -471,6 +484,9 @@ impl Screen {
         }
 
         self.replay_events_waiting_for_layout(pending);
+        if let Some(response) = self.pending_tab_adoptions.remove(&tab_id) {
+            let _ = response.send(Ok(()));
+        }
 
         Ok(())
     }

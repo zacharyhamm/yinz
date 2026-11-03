@@ -610,10 +610,12 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
             ServerToClientMsg::Connected {
                 warp_companions,
                 warp_held_terminals,
+                warp_agent_tracking,
                 signal_quit,
             } => server_to_client_msg::Message::Connected(ConnectedMsg {
                 warp_companions,
                 warp_held_terminals,
+                warp_agent_tracking,
                 signal_quit,
             }),
             ServerToClientMsg::Log { lines } => {
@@ -782,6 +784,7 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
                 Ok(ServerToClientMsg::Connected {
                     warp_companions: msg.warp_companions,
                     warp_held_terminals: msg.warp_held_terminals,
+                    warp_agent_tracking: msg.warp_agent_tracking,
                     signal_quit: msg.signal_quit,
                 })
             },
@@ -1498,6 +1501,10 @@ fn warped_pane_to_protobuf(
     pane: &yinz_types::data::WarpedPane,
 ) -> crate::client_server_contract::client_server_contract::WarpedPane {
     crate::client_server_contract::client_server_contract::WarpedPane {
+        agent_tracking_json: pane
+            .agent_tracking
+            .as_ref()
+            .and_then(|tracking| serde_json::to_string(tracking).ok()),
         bracketed_paste: pane.bracketed_paste,
         agent_input: pane
             .agent_input
@@ -1524,6 +1531,12 @@ fn warped_pane_from_protobuf(
     pane: crate::client_server_contract::client_server_contract::WarpedPane,
 ) -> Result<yinz_types::data::WarpedPane> {
     Ok(yinz_types::data::WarpedPane {
+        agent_tracking: pane
+            .agent_tracking_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .context("invalid agent tracking handoff")?,
         bracketed_paste: pane.bracketed_paste,
         agent_input: pane.agent_input.map(warped_agent_input_from_protobuf),
         held: pane.held.map(held_from_protobuf).transpose()?,
@@ -2395,6 +2408,7 @@ impl TryFrom<yinz_types::input::actions::Action>
             }),
             yinz_types::input::actions::Action::AdoptPane { payload, placement } => {
                 ActionType::AdoptPane(AdoptPaneAction {
+                    agent_tracking_json: payload.agent_tracking.as_ref().and_then(|tracking| serde_json::to_string(tracking).ok()),
                     bracketed_paste: payload.bracketed_paste,
                     agent_input: payload
                         .agent_input
@@ -3524,6 +3538,12 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                 Ok(yinz_types::input::actions::Action::AdoptPane {
                     placement: warp_placement_from_i32(adopt_pane_action.placement)?,
                     payload: Box::new(yinz_types::data::WarpedPane {
+                        agent_tracking: adopt_pane_action
+                            .agent_tracking_json
+                            .as_deref()
+                            .map(serde_json::from_str)
+                            .transpose()
+                            .context("invalid agent tracking handoff")?,
                         bracketed_paste: adopt_pane_action.bracketed_paste,
                         agent_input: adopt_pane_action
                             .agent_input

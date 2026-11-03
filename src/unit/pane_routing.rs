@@ -126,6 +126,7 @@ impl Session {
                 ClientToServerMsg::ConnStatus => ServerToClientMsg::Connected {
                     warp_companions: true,
                     warp_held_terminals: true,
+                    warp_agent_tracking: true,
                     signal_quit: false,
                 },
                 ClientToServerMsg::AgentControl(_) => {

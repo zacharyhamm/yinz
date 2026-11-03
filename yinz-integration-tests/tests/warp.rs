@@ -1797,6 +1797,17 @@ fn agent_response(
 }
 
 fn codex_report(session: &TestSession, pane: &FakePtyHandle, name: &str, turn: &str, prompt: &str) {
+    tracking_report(session, pane, "codex", name, turn, prompt);
+}
+
+fn tracking_report(
+    session: &TestSession,
+    pane: &FakePtyHandle,
+    kind: &str,
+    name: &str,
+    turn: &str,
+    prompt: &str,
+) {
     use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, ServerToClientMsg};
     use yinz_types::agent::{
         hook_outcome,
@@ -1808,6 +1819,9 @@ fn codex_report(session: &TestSession, pane: &FakePtyHandle, name: &str, turn: &
         session_id: "warp-conversation".into(),
         source: (name == "SessionStart").then(|| "startup".into()),
         turn_id: Some(turn.into()),
+        prompt_id: Some(turn.into()),
+        claude_turn_complete: (name == "Stop").then_some(true),
+        agy_turn_complete: (name == "Stop").then_some(true),
         prompt: (name == "UserPromptSubmit").then(|| prompt.into()),
         ..Default::default()
     };
@@ -1817,20 +1831,20 @@ fn codex_report(session: &TestSession, pane: &FakePtyHandle, name: &str, turn: &
         .send_client_msg(ClientToServerMsg::AgentReport(AgentReport {
             report_id: trace.report_id,
             pane_id: yinz_types::pane_id::PaneId::Terminal(pane.terminal_id()),
-            state: match hook_outcome("codex", &hook) {
+            state: match hook_outcome(kind, &hook) {
                 HookOutcome::Reported(agent) => AgentReportState::Set(agent),
                 HookOutcome::Ended => AgentReportState::Clear,
                 HookOutcome::Nothing => AgentReportState::Unchanged,
             },
             event: Some(AgentEvent::from_hook(
-                "codex",
+                kind,
                 pane.terminal_id(),
                 &hook,
                 serde_json::to_string(&hook).unwrap(),
             )),
             trace: false,
             process_id: trace.process_id,
-            kind: "codex".into(),
+            kind: kind.into(),
         }))
         .unwrap();
     assert!(matches!(
@@ -1970,7 +1984,7 @@ fn codex_control_survives_pane_tab_and_failed_adoption_without_reinitialization(
                 expected_session_id: Some("warp-conversation".into()),
             }))
             .unwrap();
-        assert!(!agent_response(&mut replies).agents[0].status_available);
+        assert!(agent_response(&mut replies).agents[0].status_available);
         // No repeated SessionStart or terminal initialization: only completion arrives.
         codex_report(destination, &arrived, "Stop", "turn-1", "");
         control
@@ -2066,6 +2080,7 @@ fn warp_disconnected_destination_restores_the_only_held_pane() {
                     .send_server_msg(ServerToClientMsg::Connected {
                         warp_companions: true,
                         warp_held_terminals: true,
+                        warp_agent_tracking: true,
                         signal_quit: false,
                     })
                     .unwrap();
@@ -2146,4 +2161,176 @@ fn warp_disconnected_destination_restores_the_only_held_pane() {
     let restarted = sender.expect_pty_spawn();
     restarted.wait_for_command("codex");
     assert_eq!(restarted.run_command().cwd, Some("/tmp".into()));
+}
+
+fn exercise_agent_tracking_warps(kind: &str) {
+    use yinz_ipc::ipc::ClientToServerMsg;
+    use yinz_types::agent::{
+        control::{AgentOutcome, AgentPlacement, AgentRequest},
+        AgentSpawnSpec, AgentState,
+    };
+    use yinz_types::pane_id::PaneId;
+    for mode in ["pane", "tab", "rollback", "companion"] {
+        let (receiver, _) = start_with_a_shell();
+        // Keep the CLI connection alive until the destination acknowledges adoption.
+        // Last-tab source shutdown is covered separately by the warp tests above.
+        let sender = if mode == "tab" {
+            let session = start(Some("layout { tab focus=true { pane; }; tab { pane; }; }"));
+            session.expect_pty_spawn().output(PROMPT);
+            session.expect_pty_spawn().output(PROMPT);
+            session.wait_until("source shell is rendered", |grid| grid.contains("$"));
+            session
+        } else {
+            start_with_a_shell().0
+        };
+        let cwd = tempfile::tempdir().unwrap();
+        let (mut control, mut replies) = agent_connection(&sender);
+        control
+            .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Spawn {
+                placement: AgentPlacement::Tab(yinz_types::internal_ids::TabId::new(0)),
+                spec: AgentSpawnSpec {
+                    kind: Some(kind.into()),
+                    allow_outside_worktree: Some(true),
+                    ..Default::default()
+                },
+                cwd: Some(cwd.path().into()),
+                project: None,
+                remote_host: None,
+            }))
+            .unwrap();
+        let spawned = agent_response(&mut replies);
+        assert_eq!(
+            spawned.outcome,
+            AgentOutcome::Ok,
+            "{kind}/{mode}: {spawned:?}"
+        );
+        let travelling = sender.expect_pty_spawn();
+        let command = travelling.run_command();
+        travelling.output(b"\x1b[?2004htracking handoff\r\n");
+        tracking_report(&sender, &travelling, kind, "SessionStart", "", "");
+        tracking_report(
+            &sender,
+            &travelling,
+            kind,
+            "UserPromptSubmit",
+            "turn-1",
+            "review",
+        );
+        if mode == "tab" {
+            // Completion can happen immediately before source capture, too.
+            tracking_report(&sender, &travelling, kind, "Stop", "turn-1", "");
+        }
+        if mode == "rollback" {
+            travelling.fail_warp(WarpFailure::UnadoptableOnce);
+        }
+        let warp_id = if mode == "companion" {
+            sender.run_cli_action(CliAction::FocusPaneId {
+                pane_id: PaneId::Terminal(travelling.terminal_id()).to_string(),
+            });
+            sender.send_stdin(&keys::ctrl('s'));
+            sender.send_stdin(&keys::key('e'));
+            let editor = sender.expect_pty_spawn();
+            sender.wait_until("agent scrollback editor is ready", |grid| {
+                grid.contains("EDITING SCROLLBACK")
+            });
+            editor.terminal_id()
+        } else {
+            travelling.terminal_id()
+        };
+
+        let (code, message) = if mode == "tab" {
+            sender.run_cli_action_reporting(CliAction::WarpTab {
+                to_session: Some(receiver.session_name().into()),
+                from_session: None,
+                tab_id: spawned.spawned.unwrap().tab_id,
+            })
+        } else {
+            warp_pane_by_id(&sender, &receiver, warp_id)
+        };
+        assert_eq!(code == 0, mode != "rollback", "{kind}/{mode}: {message}");
+        let destination = if mode == "rollback" {
+            &sender
+        } else {
+            &receiver
+        };
+        let arrived = (0..if matches!(mode, "tab" | "companion") {
+            2
+        } else {
+            1
+        })
+            .map(|_| destination.expect_adopted_pty())
+            .find(|pane| pane.run_command() == command)
+            .unwrap();
+        let status = |session: &TestSession, pane: &FakePtyHandle| {
+            let (mut control, mut replies) = agent_connection(session);
+            control
+                .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Status {
+                    pane_id: PaneId::Terminal(pane.terminal_id()),
+                    expected_session_id: Some("warp-conversation".into()),
+                }))
+                .unwrap();
+            let response = agent_response(&mut replies);
+            assert!(!response.agents.is_empty(), "{kind}/{mode}: {response:?}");
+            response.agents.into_iter().next().unwrap()
+        };
+        let restored = status(destination, &arrived);
+        assert!(restored.status_available, "{kind}/{mode}: {restored:?}");
+        assert_eq!(
+            restored.agent.state,
+            if mode == "tab" {
+                AgentState::Idle
+            } else {
+                AgentState::Busy
+            },
+            "{kind}/{mode}"
+        );
+        tracking_report(destination, &arrived, kind, "Stop", "turn-1", "");
+        assert_eq!(
+            status(destination, &arrived).agent.state,
+            AgentState::Idle,
+            "{kind}/{mode}"
+        );
+        // Repeated transfer preserves completion checks without another startup hook.
+        if mode == "pane" {
+            let (code, message) = warp_pane_by_id(destination, &sender, arrived.terminal_id());
+            assert_eq!(code, 0, "{kind}: {message}");
+            let returned = sender.expect_adopted_pty();
+            tracking_report(&sender, &returned, kind, "Stop", "turn-1", "");
+            assert_eq!(
+                status(&sender, &returned).agent.state,
+                AgentState::Idle,
+                "{kind}"
+            );
+        }
+    }
+}
+
+#[test]
+fn agent_tracking_survives_claude_warps() {
+    exercise_agent_tracking_warps("claude");
+}
+
+#[test]
+fn agent_tracking_survives_codex_warps() {
+    exercise_agent_tracking_warps("codex");
+}
+
+#[test]
+fn agent_tracking_survives_agy_warps() {
+    exercise_agent_tracking_warps("agy");
+}
+
+#[test]
+fn agent_tracking_survives_muse_warps() {
+    exercise_agent_tracking_warps("muse");
+}
+
+#[test]
+fn agent_tracking_survives_pi_warps() {
+    exercise_agent_tracking_warps("pi");
+}
+
+#[test]
+fn agent_tracking_survives_opencode_warps() {
+    exercise_agent_tracking_warps("opencode");
 }

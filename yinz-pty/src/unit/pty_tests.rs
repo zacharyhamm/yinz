@@ -4345,12 +4345,14 @@ fn warp_adoption_failure_cleans_up_held_reservations() {
     let payload = WarpedTab {
         tiled_panes: vec![
             WarpedPane {
+                agent_tracking: None,
                 agent_theme: None,
                 held: Some(held.clone()),
                 ..Default::default()
             },
             // An invalid handoff fails after the first reservation was acquired.
             WarpedPane {
+                agent_tracking: None,
                 agent_theme: None,
                 held: Some(held),
                 control_socket: "/invalid".into(),

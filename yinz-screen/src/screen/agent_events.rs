@@ -21,13 +21,7 @@ struct Subscriber {
     bytes: usize,
 }
 
-struct Turn {
-    identity: (Option<String>, Option<String>),
-    observation: PromptObservation,
-    submission: Option<String>,
-    last: Option<AgentOutcome>,
-    ended: bool,
-}
+use yinz_types::agent::tracking::{EventTrackingHandoff, ObservedAgentTurn as Turn};
 
 pub(super) struct AgentEvents {
     pub(super) dirty: bool,
@@ -227,6 +221,52 @@ impl AgentEvents {
 }
 
 impl Screen {
+    pub(super) fn agent_event_tracking(&self, pane: PaneId) -> EventTrackingHandoff {
+        let state = self.agent_events.panes.get(&pane);
+        let mut uncertain: Vec<_> = self
+            .agent_events
+            .uncertain
+            .iter()
+            .filter(|((id, _), _)| *id == pane)
+            .map(|((_, submission), outcome)| (submission.clone(), *outcome))
+            .collect();
+        uncertain.sort_by(|a, b| a.0.cmp(&b.0));
+        EventTrackingHandoff {
+            turns: self
+                .agent_events
+                .turns
+                .get(&pane)
+                .cloned()
+                .unwrap_or_default(),
+            uncertain,
+            submission_id: state
+                .and_then(|s| s["submission_id"].as_str())
+                .map(str::to_owned),
+            turn_id: state.and_then(|s| s["turn_id"].as_str()).map(str::to_owned),
+        }
+    }
+
+    pub(super) fn restore_agent_event_tracking(
+        &mut self,
+        pane: PaneId,
+        events: EventTrackingHandoff,
+    ) {
+        // Establish destination identity first; refreshing a changed conversation retires
+        // its old observations. Session epochs and event cursors are never imported.
+        self.refresh_agent_events();
+        self.agent_events.turns.insert(pane, events.turns);
+        self.agent_events.uncertain.extend(
+            events
+                .uncertain
+                .into_iter()
+                .map(|(id, outcome)| ((pane, id), outcome)),
+        );
+        if let Some(state) = self.agent_events.panes.get_mut(&pane) {
+            state["submission_id"] = json!(events.submission_id);
+            state["turn_id"] = json!(events.turn_id);
+        }
+    }
+
     fn lifecycle_owner(&self) -> (Value, String) {
         (
             json!(yinz_runtime::host_identity::host_id()),

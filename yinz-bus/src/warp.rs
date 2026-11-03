@@ -253,7 +253,7 @@ fn connect_to_session(
     Ok(IpcSenderWithContext::new(stream))
 }
 
-fn warp_capabilities(session: &SessionName, timeout: Duration) -> Result<(bool, bool)> {
+fn warp_capabilities(session: &SessionName, timeout: Duration) -> Result<(bool, bool, bool)> {
     let mut probe = connect_to_session(session, timeout)?;
     probe.send_client_msg(ClientToServerMsg::ConnStatus)?;
     let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = probe
@@ -265,10 +265,11 @@ fn warp_capabilities(session: &SessionName, timeout: Duration) -> Result<(bool, 
                 ServerToClientMsg::Connected {
                     warp_companions,
                     warp_held_terminals,
+                    warp_agent_tracking,
                     ..
                 },
                 _,
-            )) => return Ok((warp_companions, warp_held_terminals)),
+            )) => return Ok((warp_companions, warp_held_terminals, warp_agent_tracking)),
             Some((message, _)) if is_older_server_push(&message) => continue,
             _ => {
                 return Err(anyhow!(
@@ -412,7 +413,7 @@ pub fn warp_pane_to_session(
 
         // Reachability first, and the connection is kept: everything after this
         // point has released a supervisor.
-        let (supports_companions, supports_held) =
+        let (supports_companions, supports_held, supports_tracking) =
             warp_capabilities(to_session, timeout).map_err(|e| format!("{e:#}"))?;
         let mut sender = connect_to_session(to_session, timeout).map_err(|e| format!("{e:#}"))?;
 
@@ -426,6 +427,7 @@ pub fn warp_pane_to_session(
             .send_to_screen(ScreenInstruction::WarpPane {
                 supports_companions,
                 supports_held,
+                supports_tracking,
                 pane_id,
                 to_session: to_session.to_owned(),
                 placement,
@@ -595,7 +597,7 @@ pub fn warp_tab_to_session(
         return Err(format!("this tab is already in session '{to_session}'"));
     }
 
-    let (supports_companions, supports_held) =
+    let (supports_companions, supports_held, supports_tracking) =
         warp_capabilities(to_session, timeout).map_err(|e| format!("{e:#}"))?;
     let mut sender = connect_to_session(to_session, timeout).map_err(|e| format!("{e:#}"))?;
 
@@ -608,6 +610,7 @@ pub fn warp_tab_to_session(
         .send_to_screen(ScreenInstruction::WarpTab {
             supports_companions,
             supports_held,
+            supports_tracking,
             tab_id,
             client_id,
             response_channel: response_sender,

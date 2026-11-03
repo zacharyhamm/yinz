@@ -1672,6 +1672,8 @@ pub struct WarpPaneAction {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AdoptPaneAction {
+    #[prost(string, optional, tag="15")]
+    pub agent_tracking_json: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="14")]
     pub agent_theme_json: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, tag="12")]
@@ -1723,6 +1725,8 @@ pub struct WarpedAgentInput {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WarpedPane {
+    #[prost(string, optional, tag="14")]
+    pub agent_tracking_json: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="13")]
     pub agent_theme_json: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, tag="11")]
@@ -4180,6 +4184,8 @@ pub struct ConnectedMsg {
     pub warp_companions: bool,
     #[prost(bool, tag="2")]
     pub warp_held_terminals: bool,
+    #[prost(bool, tag="4")]
+    pub warp_agent_tracking: bool,
     #[prost(bool, tag="3")]
     pub signal_quit: bool,
 }

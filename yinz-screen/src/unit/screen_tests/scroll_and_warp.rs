@@ -757,6 +757,7 @@ fn an_adopted_focused_tab_pane_without_attached_clients_is_placed_without_focus(
         .place_adopted_pane(
             crate::TerminalId::new(50),
             WarpedPane {
+                agent_tracking: None,
                 agent_theme: None,
                 contents: Some("transferred screen".into()),
                 ..Default::default()
@@ -1116,6 +1117,7 @@ fn the_sessions_only_pane_can_be_warped() {
         .warp_pane(
             true,
             true,
+            true,
             Some(PaneId::Terminal(TerminalId::new(1))),
             yinz_types::internal_ids::SessionName::new("destination"),
             yinz_types::data::WarpPlacement::NewTab,
@@ -1179,6 +1181,7 @@ fn a_pane_released_after_its_caller_left_is_taken_back_with_its_hold() {
     let (response_tx, response_rx) = yinz_bus::warp::pane_warp_reply();
     screen
         .warp_pane(
+            true,
             true,
             true,
             Some(PaneId::Terminal(TerminalId::new(1))),
@@ -1505,6 +1508,7 @@ fn a_tab_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
         .send(ScreenInstruction::WarpTab {
             supports_companions: true,
             supports_held: true,
+            supports_tracking: true,
             tab_id: Some(TabId::new(0)),
             client_id,
             response_channel: response_tx,
@@ -1603,6 +1607,7 @@ fn a_tab_is_not_taken_apart_when_its_release_lands_inside_screens_own_reserve() 
         .send(ScreenInstruction::WarpTab {
             supports_companions: true,
             supports_held: true,
+            supports_tracking: true,
             tab_id: Some(TabId::new(0)),
             client_id,
             response_channel: response_tx,
@@ -1689,6 +1694,7 @@ fn a_pane_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
         .send(ScreenInstruction::WarpPane {
             supports_companions: true,
             supports_held: true,
+            supports_tracking: true,
             pane_id: Some(PaneId::Terminal(crate::TerminalId::new(1))),
             to_session: "elsewhere".to_owned().into(),
             placement: yinz_types::data::WarpPlacement::NewTab,
@@ -1774,6 +1780,7 @@ fn a_refused_duplicate_tab_warp_does_not_strand_the_still_attached_panes() {
             .send(ScreenInstruction::WarpTab {
                 supports_companions: true,
                 supports_held: true,
+                supports_tracking: true,
                 tab_id: Some(TabId::new(0)),
                 client_id,
                 response_channel,
@@ -1823,6 +1830,7 @@ fn a_refused_duplicate_tab_warp_does_not_strand_the_still_attached_panes() {
         .send(ScreenInstruction::WarpTab {
             supports_companions: true,
             supports_held: true,
+            supports_tracking: true,
             tab_id: Some(TabId::new(0)),
             client_id,
             response_channel: crossbeam::channel::unbounded().0,
@@ -3722,6 +3730,7 @@ fn companion_capability_refusal_and_expired_group_preserve_every_pane() {
                 .send(ScreenInstruction::WarpTab {
                     supports_companions: false,
                     supports_held: true,
+                    supports_tracking: true,
                     tab_id: Some(TabId::new(0)),
                     client_id,
                     response_channel: tx,
@@ -3739,6 +3748,7 @@ fn companion_capability_refusal_and_expired_group_preserve_every_pane() {
                 .send(ScreenInstruction::WarpPane {
                     supports_companions: scenario == "expired group",
                     supports_held: true,
+                    supports_tracking: true,
                     pane_id: Some(PaneId::Terminal(TerminalId::new(9))),
                     to_session: "elsewhere".to_owned().into(),
                     placement: yinz_types::data::WarpPlacement::FocusedTab,
@@ -4002,6 +4012,7 @@ fn warp_adopted_agent_exit_takes_precedence_over_transferred_state() {
                 .place_adopted_pane(
                     TERMINAL_50,
                     WarpedPane {
+                        agent_tracking: None,
                         agent_theme: None,
                         agent: Some(agent.clone()),
                         held: held.clone(),
@@ -4034,8 +4045,11 @@ fn warp_adopted_agent_exit_takes_precedence_over_transferred_state() {
                     ScreenInstruction::ClosePane(id, _, _, status) => {
                         tab.close_pane(id, false, status);
                     },
-                    ScreenInstruction::NewPane(id, _, Some(cmd), ..) => {
-                        tab.hold_pane(id, None, true, cmd);
+                    ScreenInstruction::NewPane(id, _, hold, ..) => {
+                        if let Some(cmd) = hold {
+                            tab.hold_pane(id, None, true, cmd);
+                        }
+                        screen.restore_staged_agent_tracking(id);
                     },
                     _ => {},
                 }
@@ -4093,6 +4107,7 @@ fn warp_held_state_survives_single_pane_tab_and_companion_transfers() {
                     .warp_pane(
                         true,
                         true,
+                        true,
                         Some(pane_id),
                         "elsewhere".into(),
                         yinz_types::data::WarpPlacement::FocusedTab,
@@ -4134,6 +4149,7 @@ fn warp_held_state_survives_single_pane_tab_and_companion_transfers() {
                         .warp_tab(
                             true,
                             true,
+                            true,
                             Some(TAB_0),
                             ClientId::new(1),
                             tx,
@@ -4169,6 +4185,7 @@ fn warp_held_state_survives_single_pane_tab_and_companion_transfers() {
                     let (tx, rx) = yinz_bus::warp::pane_warp_reply();
                     screen
                         .warp_pane(
+                            true,
                             true,
                             true,
                             Some(PaneId::Terminal(TerminalId::new(9))),
@@ -4295,11 +4312,20 @@ fn warp_held_replacements_resume_only_when_the_pane_stays_in_the_source() {
                     };
                     if kind == "tab" {
                         screen
-                            .warp_tab(true, true, Some(TAB_0), ClientId::new(1), tab_tx, deadline)
+                            .warp_tab(
+                                true,
+                                true,
+                                true,
+                                Some(TAB_0),
+                                ClientId::new(1),
+                                tab_tx,
+                                deadline,
+                            )
                             .unwrap();
                     } else {
                         screen
                             .warp_pane(
+                                true,
                                 true,
                                 true,
                                 Some(if kind == "companion" {
@@ -4460,6 +4486,7 @@ fn warp_old_destination_and_failed_release_leave_held_panes_restartable() {
             .warp_tab(
                 true,
                 supported,
+                true,
                 Some(TAB_0),
                 ClientId::new(1),
                 tx,
@@ -4547,6 +4574,7 @@ fn warp_mixed_tab_keeps_terminal_8_distinct_from_status_bar_plugin_8() {
     let (tx, rx) = crossbeam::channel::bounded(1);
     screen
         .warp_tab(
+            true,
             true,
             true,
             Some(TAB_0),
@@ -4691,6 +4719,7 @@ fn a_pane_warp_keeps_the_last_tab_until_its_hold_drops() {
         .send(ScreenInstruction::WarpPane {
             supports_companions: true,
             supports_held: true,
+            supports_tracking: true,
             pane_id: Some(PaneId::Terminal(TerminalId::new(0))),
             to_session: "destination".into(),
             placement: yinz_types::data::WarpPlacement::FocusedTab,
@@ -4714,6 +4743,7 @@ fn a_pane_warp_keeps_the_last_tab_until_its_hold_drops() {
         .send(ScreenInstruction::WarpPane {
             supports_companions: true,
             supports_held: true,
+            supports_tracking: true,
             pane_id: Some(PaneId::Terminal(TerminalId::new(999))),
             to_session: "destination".into(),
             placement: yinz_types::data::WarpPlacement::FocusedTab,
@@ -4789,6 +4819,7 @@ fn an_adopted_held_pane_restores_its_state_and_scrollback() {
             placed: crossbeam::channel::unbounded().0,
             terminal_id: TERMINAL_50,
             payload: Box::new(WarpedPane {
+                agent_tracking: None,
                 agent_theme: None,
                 held: Some(yinz_types::data::HeldTerminal {
                     command: cmd.clone(),

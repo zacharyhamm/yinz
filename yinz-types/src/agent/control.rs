@@ -454,7 +454,7 @@ mod pane_string {
 /// The caller registers this before writing and verifies pane identity and input ownership.
 /// Codex and Muse require provider turn IDs; Claude requires prompt IDs and transcript
 /// confirmation.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptObservation {
     kind: String,
     conversation_id: String,

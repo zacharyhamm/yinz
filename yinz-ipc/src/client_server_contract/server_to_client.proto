@@ -53,6 +53,7 @@ message ExitMsg {
 message ConnectedMsg {
   bool warp_companions = 1;
   bool warp_held_terminals = 2;
+  bool warp_agent_tracking = 4;
   bool signal_quit = 3;
 }
 

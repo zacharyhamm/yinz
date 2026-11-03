@@ -159,6 +159,7 @@ fn a_remote_handoff_without_a_command_arrives_as_no_remote_pane() {
 
     let adopt_pane = |cmd| ProtoAction {
         action_type: Some(ActionType::AdoptPane(ProtoAdoptPaneAction {
+            agent_tracking_json: None,
             agent_theme_json: None,
             bracketed_paste: false,
             agent_input: None,
@@ -1172,6 +1173,7 @@ fn test_client_messages() {
     });
     for first_run in [true, false] {
         let pane = WarpedPane {
+            agent_tracking: None,
             agent_theme: Some(yinz_types::agent::theme::AgentThemeHandoff {
                 version: 1,
                 snapshots: vec![yinz_types::agent::theme::AgentThemeSnapshot {
@@ -1273,6 +1275,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                agent_tracking: None,
                 agent_theme: None,
                 bracketed_paste: true,
                 agent_input: Some(yinz_types::data::WarpedAgentInput {
@@ -1316,6 +1319,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                agent_tracking: None,
                 agent_theme: None,
                 bracketed_paste: true,
                 agent_input: Some(yinz_types::data::WarpedAgentInput {
@@ -1359,6 +1363,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                agent_tracking: None,
                 agent_theme: None,
                 bracketed_paste: true,
                 agent_input: Some(yinz_types::data::WarpedAgentInput {
@@ -1464,6 +1469,7 @@ fn test_client_messages() {
                 }],
                 tiled_panes: vec![
                     WarpedPane {
+                        agent_tracking: None,
                         agent_theme: None,
                         bracketed_paste: true,
                         agent_input: Some(yinz_types::data::WarpedAgentInput {
@@ -1487,6 +1493,7 @@ fn test_client_messages() {
                     // is warped whole, so both addressing shapes have to survive
                     // the same message.
                     WarpedPane {
+                        agent_tracking: None,
                         agent_theme: None,
                         bracketed_paste: true,
                         agent_input: Some(yinz_types::data::WarpedAgentInput {
@@ -1521,6 +1528,7 @@ fn test_client_messages() {
                     },
                 ],
                 floating_panes: vec![WarpedPane {
+                    agent_tracking: None,
                     agent_theme: None,
                     bracketed_paste: true,
                     agent_input: Some(yinz_types::data::WarpedAgentInput {
@@ -4893,11 +4901,13 @@ fn test_server_messages() {
     test_server_roundtrip!(ServerToClientMsg::Connected {
         warp_companions: true,
         warp_held_terminals: false,
+        warp_agent_tracking: false,
         signal_quit: false,
     });
     test_server_roundtrip!(ServerToClientMsg::Connected {
         warp_companions: true,
         warp_held_terminals: true,
+        warp_agent_tracking: true,
         signal_quit: true,
     });
     test_server_roundtrip!(ServerToClientMsg::QueryTerminalSize);
@@ -5505,6 +5515,7 @@ fn warp_companion_relationships_roundtrip_and_reject_malformed_groups() {
     let message = |payload| ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                agent_tracking: None,
                 agent_theme: None,
                 held: None,
                 group: Some(Box::new(payload)),
@@ -6015,6 +6026,7 @@ fn signal_quit_capability_defaults_to_false_for_older_servers() {
             ServerToClientMsg::try_from(message).unwrap(),
             ServerToClientMsg::Connected {
                 signal_quit: false,
+                warp_agent_tracking: false,
                 ..
             }
         ));
@@ -6027,7 +6039,120 @@ fn signal_quit_capability_defaults_to_false_for_older_servers() {
         message,
         ServerToClientMsg::Connected {
             signal_quit: false,
+            warp_agent_tracking: false,
             ..
         }
     ));
+}
+
+#[test]
+fn warp_agent_tracking_roundtrip_preserves_provider_evidence() {
+    use yinz_types::agent::{control::AgentOutcome, tracking::*};
+    for kind in ["claude", "codex", "agy", "muse", "pi", "opencode"] {
+        let agent = yinz_types::agent::hook_outcome(
+            kind,
+            &yinz_types::agent::HookEvent {
+                hook_event_name: "UserPromptSubmit".into(),
+                session_id: "conversation".into(),
+                ..Default::default()
+            },
+        );
+        let yinz_types::agent::HookOutcome::Reported(agent) = agent else {
+            panic!("reported agent");
+        };
+        let tracking = AgentTrackingHandoff {
+            events: EventTrackingHandoff::default(),
+            agent: agent.clone(),
+            input_revision: 91,
+            input_consumed: None,
+            lifecycle: Some(LifecycleState {
+                kind: kind.into(),
+                conversation: "conversation".into(),
+                input_revision: Some(90),
+                claude: ClaudeActivity {
+                    turns: [(
+                        "prompt".into(),
+                        ClaudeTurn {
+                            confirmation: Some(false),
+                            sequence: 8,
+                        },
+                    )]
+                    .into(),
+                    sequence: 9,
+                    message_sequence: 8,
+                    ..Default::default()
+                },
+                ended_turn: Some("cancelled".into()),
+                claude_prompt_id: Some("prompt".into()),
+                claude_confirmation: Some(false),
+                claude_previous_prompt_id: Some("previous".into()),
+                agy_confirmation: Some(true),
+                background_tasks: ["task".into()].into(),
+                claude_notifications: [(
+                    "notification".into(),
+                    ClaudeNotification {
+                        tasks: vec!["task".into()],
+                        waiting: Some(agent.clone()),
+                        permission_revision: Some(91),
+                    },
+                )]
+                .into(),
+                last_message: Some("completed".into()),
+            }),
+            dialog_input: Some(DialogInput {
+                kind: kind.into(),
+                conversation: Some("conversation".into()),
+                input_revision: 91,
+                startup: false,
+                fresh_waiting: true,
+            }),
+            worker_waits: Some(WorkerWaits {
+                parent: agent.clone(),
+                waits: [("worker".into(), Some("permission".into()))].into(),
+            }),
+            permission_wait: Some(PermissionWait {
+                conversation: "conversation".into(),
+                input_revision: 90,
+            }),
+            launch: None,
+            submissions: [Submission {
+                id: "request".into(),
+                kind: kind.into(),
+                conversation: Some("conversation".into()),
+                acknowledged: true,
+                turn_id: Some("prompt".into()),
+                result: Some(SubmissionResult {
+                    outcome: AgentOutcome::TargetChanged,
+                    message: None,
+                    background_tasks: vec!["task".into()],
+                }),
+            }]
+            .into(),
+        };
+        let pane = WarpedPane {
+            agent: Some(agent),
+            agent_tracking: Some(tracking),
+            ..Default::default()
+        };
+        test_client_roundtrip!(ClientToServerMsg::Action {
+            action: Action::AdoptPane {
+                payload: Box::new(pane.clone()),
+                placement: WarpPlacement::NewTab
+            },
+            terminal_id: None,
+            client_id: None,
+            is_cli_client: true
+        });
+        test_client_roundtrip!(ClientToServerMsg::Action {
+            action: Action::AdoptTab {
+                payload: Box::new(WarpedTab {
+                    tiled_panes: vec![pane],
+                    ..Default::default()
+                })
+            },
+            terminal_id: None,
+            client_id: None,
+            is_cli_client: true
+        });
+    }
 }

@@ -1,4 +1,5 @@
-//! Agent control is serialized with state reports and terminal input on the screen thread.
+mod handoff;
+// Agent control is serialized with state reports and terminal input on the screen thread.
 use super::Screen;
 use crate::ClientId;
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,6 +12,10 @@ use yinz_types::agent::control::{
     validate_submission_id, AgentOutcome, AgentReadiness, AgentRequest, AgentResponse, AgentStatus,
     NotReadyReason, PromptObservation, MAX_PROMPT_BYTES, MAX_TIMEOUT_MS, PASTE_LEAD_IN,
 };
+pub(super) use yinz_types::agent::tracking::{
+    ClaudeActivity, ClaudeNotification, ClaudeTurn, DialogInput, LifecycleState, PermissionWait,
+    Submission, SubmissionResult, WorkerWaits,
+};
 use yinz_types::agent::{AgentEvent, AgentInfo, AgentSource, AgentState, HookEvent};
 use yinz_types::keys::{BareKey, KeyWithModifier};
 use yinz_types::pane_id::PaneId;
@@ -21,16 +26,7 @@ pub(super) enum Reply {
     Host(std::sync::mpsc::Sender<AgentResponse>),
 }
 
-pub(super) struct WorkerWaits {
-    parent: AgentInfo,
-    waits: std::collections::BTreeMap<String, Option<String>>,
-}
-
-pub(super) struct PermissionWait {
-    conversation: String,
-    input_revision: u64,
-}
-
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Lifecycle {
     kind: String,
     conversation: String,
@@ -57,25 +53,6 @@ pub(super) struct Lifecycle {
     last_message: Option<String>,
 }
 
-/// Presentation and result observation have different lifetimes. Keep the parent's
-/// state beneath worker waits/activity, and retain identities after newer prompts arrive.
-#[derive(Clone, Default)]
-struct ClaudeActivity {
-    parent: Option<AgentInfo>,
-    workers: BTreeSet<String>,
-    stopped_workers: BTreeSet<String>,
-    turns: BTreeMap<String, ClaudeTurn>,
-    completed_tasks: BTreeSet<String>,
-    sequence: u64,
-    message_sequence: u64,
-}
-
-#[derive(Clone)]
-struct ClaudeTurn {
-    confirmation: Option<bool>,
-    sequence: u64,
-}
-
 impl Lifecycle {
     pub(super) fn event_background_tasks(&self) -> Vec<String> {
         self.background_tasks.iter().cloned().collect()
@@ -99,20 +76,51 @@ impl Lifecycle {
     }
 }
 
-#[derive(Clone)]
-struct ClaudeNotification {
-    /// The tasks the notification reports finished.
-    tasks: Vec<String>,
-    waiting: Option<AgentInfo>,
-    permission_revision: Option<u64>,
+impl Lifecycle {
+    fn handoff(&self) -> LifecycleState {
+        LifecycleState {
+            kind: self.kind.clone(),
+            conversation: self.conversation.clone(),
+            claude: self.claude.clone(),
+            input_revision: self.input_revision,
+            ended_turn: self.ended_turn.clone(),
+            claude_prompt_id: self.claude_prompt_id.clone(),
+            claude_confirmation: self.claude_confirmation,
+            claude_previous_prompt_id: self.claude_previous_prompt_id.clone(),
+            agy_confirmation: self.agy_confirmation,
+            background_tasks: self.background_tasks.clone(),
+            claude_notifications: self.claude_notifications.clone(),
+            last_message: self.last_message.clone(),
+        }
+    }
+}
+impl From<LifecycleState> for Lifecycle {
+    fn from(state: LifecycleState) -> Self {
+        Self {
+            last_report: Instant::now(),
+            kind: state.kind,
+            conversation: state.conversation,
+            claude: state.claude,
+            input_revision: state.input_revision,
+            ended_turn: state.ended_turn,
+            claude_prompt_id: state.claude_prompt_id,
+            claude_confirmation: state.claude_confirmation,
+            claude_previous_prompt_id: state.claude_previous_prompt_id,
+            agy_confirmation: state.agy_confirmation,
+            background_tasks: state.background_tasks,
+            claude_notifications: state.claude_notifications,
+            last_message: state.last_message,
+        }
+    }
 }
 
-pub(super) struct DialogInput {
+/// Input evidence carried without a lifecycle (including provisional startup).
+/// None records unknown consumption and remains unknown across repeated warps.
+pub(super) struct TransferredInput {
     kind: String,
-    conversation: Option<String>,
+    conversation: String,
     input_revision: u64,
-    startup: bool,
-    fresh_waiting: bool,
+    consumed: Option<bool>,
 }
 
 pub(super) struct ClearInput {
@@ -130,15 +138,6 @@ pub(super) const RECOVER_QUIET: Duration = Duration::from_secs(3);
 /// One conversation retains a small recent result window; replacing it releases its history.
 pub(super) const SUBMISSION_HISTORY_LIMIT: usize = 32;
 
-pub(super) struct Submission {
-    id: String,
-    kind: String,
-    conversation: Option<String>,
-    acknowledged: bool,
-    turn_id: Option<String>,
-    result: Option<SubmissionResult>,
-}
-
 /// Keep the recent admission window independently of older unresolved claims.
 fn prune_submissions(
     submissions: &mut std::collections::VecDeque<Submission>,
@@ -153,13 +152,6 @@ fn prune_submissions(
         index += 1;
         keep
     });
-}
-
-#[derive(Clone)]
-struct SubmissionResult {
-    outcome: AgentOutcome,
-    message: Option<String>,
-    background_tasks: Vec<String>,
 }
 
 pub(super) struct Pending {
@@ -987,11 +979,11 @@ impl Screen {
             }
             lifecycle.input_revision == Some(revision)
         } else {
-            let (input, input_revision) = self.warped_agent_inputs.get(&pane)?;
+            let input = self.warped_agent_inputs.get(&pane)?;
             if input.kind != agent.kind || input.conversation != conversation {
                 return None;
             }
-            input.consumed && *input_revision == revision
+            input.consumed == Some(true) && input.input_revision == revision
         };
         Some(yinz_types::data::WarpedAgentInput {
             kind: agent.kind,
@@ -1031,7 +1023,15 @@ impl Screen {
                     lifecycle.input_revision = input.consumed.then_some(0);
                 }
             } else {
-                self.warped_agent_inputs.insert(pane, (input, 0));
+                self.warped_agent_inputs.insert(
+                    pane,
+                    TransferredInput {
+                        kind: input.kind,
+                        conversation: input.conversation,
+                        input_revision: 0,
+                        consumed: Some(input.consumed),
+                    },
+                );
             }
         }
     }
@@ -3075,6 +3075,13 @@ impl Screen {
                 // The launcher's startup announcement: verified hook wiring, but
                 // unpinned, because Muse speaks no session id until its first turn.
                 // Claimed by the marker alone - a provider hook never carries one.
+                let transferred = self.warped_agent_inputs.remove(&pane).map(|input| {
+                    (input.kind == "muse"
+                        && input.conversation.is_empty()
+                        && input.consumed == Some(true)
+                        && input.input_revision == self.agent_input_revision(pane))
+                    .then_some(input.input_revision)
+                });
                 let previous = self
                     .agent_lifecycle
                     .get(&pane)
@@ -3084,7 +3091,10 @@ impl Screen {
                 }
                 let input_revision = clear_revision.or(dialog_revision).or(previous
                     .map(|previous| previous.input_revision)
-                    .unwrap_or_else(|| (self.agent_input_revision(pane) == 0).then_some(0)));
+                    .unwrap_or_else(|| {
+                        transferred
+                            .unwrap_or_else(|| (self.agent_input_revision(pane) == 0).then_some(0))
+                    }));
                 self.agent_lifecycle.insert(
                     pane,
                     Lifecycle {
@@ -3112,16 +3122,13 @@ impl Screen {
             }) {
                 // Some(None) means a transferred draft: even a startup report cannot
                 // treat the destination's zero input revision as an empty source composer.
-                let transferred =
-                    self.warped_agent_inputs
-                        .remove(&pane)
-                        .map(|(input, revision)| {
-                            (input.kind == event.kind
-                                && input.conversation == *conversation
-                                && input.consumed
-                                && revision == self.agent_input_revision(pane))
-                            .then_some(revision)
-                        });
+                let transferred = self.warped_agent_inputs.remove(&pane).map(|input| {
+                    (input.kind == event.kind
+                        && (input.conversation.is_empty() || input.conversation == *conversation)
+                        && input.consumed == Some(true)
+                        && input.input_revision == self.agent_input_revision(pane))
+                    .then_some(input.input_revision)
+                });
                 let previous = self.agent_lifecycle.get(&pane).filter(|previous| {
                     previous.kind == event.kind && previous.conversation == *conversation
                 });
@@ -3156,6 +3163,7 @@ impl Screen {
                         "UserPromptSubmit" if !notification => {
                             accepted_input_revision.or_else(|| {
                                 (event.kind == "agy"
+                                    && transferred.is_none()
                                     && previous.is_none()
                                     && self.agent_input_revision(pane) == 0)
                                     .then_some(0)
@@ -3166,7 +3174,9 @@ impl Screen {
                                 previous
                                     .map(|previous| previous.input_revision)
                                     .unwrap_or_else(|| {
-                                        (self.agent_input_revision(pane) == 0).then_some(0)
+                                        transferred.unwrap_or_else(|| {
+                                            (self.agent_input_revision(pane) == 0).then_some(0)
+                                        })
                                     })
                             })
                         },

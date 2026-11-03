@@ -520,6 +520,7 @@ fn force_delete_waits_for_completion_and_preserves_checkpoint_on_failure() {
                         .send_server_msg(ServerToClientMsg::Connected {
                             warp_companions: false,
                             warp_held_terminals: false,
+                            warp_agent_tracking: false,
                             signal_quit: false,
                         })
                         .unwrap();

@@ -457,6 +457,7 @@ fn local_resurrection_preserves_terminal_settings_geometry_pane_limit_and_debug(
                     .send_server_msg(ServerToClientMsg::Connected {
                         warp_companions: false,
                         warp_held_terminals: false,
+                        warp_agent_tracking: false,
                         signal_quit: false,
                     })
                     .unwrap();
@@ -719,6 +720,7 @@ fn interrupted_startup(stage: &str, signal: Signal) {
                 .send_server_msg(ServerToClientMsg::Connected {
                     warp_companions: false,
                     warp_held_terminals: false,
+                    warp_agent_tracking: false,
                     signal_quit: false,
                 })
                 .unwrap();
@@ -752,6 +754,7 @@ fn interrupted_startup(stage: &str, signal: Signal) {
                         .send_server_msg(ServerToClientMsg::Connected {
                             warp_companions: false,
                             warp_held_terminals: false,
+                            warp_agent_tracking: false,
                             signal_quit: false,
                         })
                         .unwrap();
