@@ -4208,7 +4208,7 @@ pub struct ConnectedMsg {
     pub warp_agent_tracking: bool,
     #[prost(bool, tag="3")]
     pub signal_quit: bool,
-    #[prost(uint32, tag="4")]
+    #[prost(uint32, tag="5")]
     pub update_protocol: u32,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]

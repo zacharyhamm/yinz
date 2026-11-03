@@ -39,6 +39,7 @@ fn session_preflight_ignores_pty_broker_and_checks_session_capabilities() {
                     .send_server_msg(ServerToClientMsg::Connected {
                         warp_companions: false,
                         warp_held_terminals: false,
+                        warp_agent_tracking: false,
                         signal_quit: false,
                         update_protocol: protocol,
                     })
