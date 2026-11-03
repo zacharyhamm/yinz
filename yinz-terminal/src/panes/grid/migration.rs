@@ -5,7 +5,7 @@ use crate::panes::terminal_character::LinkAnchor;
 use serde::{Deserialize, Serialize};
 use yinz_types::agent::theme::AgentThemeSnapshot;
 
-const FORMAT: u32 = 1;
+const FORMAT: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct Snapshot {
@@ -79,13 +79,36 @@ type PlaceholderState = (usize, Option<u16>, Option<u16>, Option<u16>);
 
 #[derive(Serialize, Deserialize)]
 struct RowState {
-    columns: VecDeque<TerminalCharacter>,
+    columns: Vec<CharacterRun>,
     canonical: bool,
     bg_color: Option<AnsiCode>,
     markers: Vec<row::Osc133Marker>,
     placeholders: Vec<PlaceholderState>,
     palettes: Vec<(std::ops::Range<usize>, usize)>,
     write_palette: Option<usize>,
+}
+// Store text separately from a shared character template, preserving even widths
+// that differ from Unicode's default and implicit versus explicit blanks.
+#[derive(Serialize, Deserialize)]
+struct CharacterRun {
+    template: TerminalCharacter,
+    text: String,
+}
+fn character_runs(columns: &VecDeque<TerminalCharacter>) -> Vec<CharacterRun> {
+    let mut runs: Vec<CharacterRun> = Vec::new();
+    for character in columns {
+        let mut template = character.clone();
+        template.character = '\0';
+        if let Some(run) = runs.last_mut().filter(|run| run.template == template) {
+            run.text.push(character.character);
+        } else {
+            runs.push(CharacterRun {
+                template,
+                text: character.character.to_string(),
+            });
+        }
+    }
+    runs
 }
 fn palette_id(palette: &Rc<SourcePalette>, palettes: &mut Vec<Rc<SourcePalette>>) -> usize {
     if let Some(index) = palettes
@@ -100,7 +123,7 @@ fn palette_id(palette: &Rc<SourcePalette>, palettes: &mut Vec<Rc<SourcePalette>>
 impl RowState {
     fn capture(row: &Row, palettes: &mut Vec<Rc<SourcePalette>>) -> Self {
         Self {
-            columns: row.columns.clone(),
+            columns: character_runs(&row.columns),
             canonical: row.is_canonical,
             bg_color: row.bg_color,
             markers: row.osc133_markers.clone(),
@@ -128,11 +151,17 @@ impl RowState {
         }
     }
     fn restore(mut self, palettes: &[Rc<SourcePalette>], links: &[u32]) -> Result<Row> {
-        for character in &mut self.columns {
-            remap_styles(&mut character.styles, links)?;
+        let mut columns = VecDeque::new();
+        for run in &mut self.columns {
+            remap_styles(&mut run.template.styles, links)?;
+            columns.extend(run.text.chars().map(|character| {
+                let mut cell = run.template.clone();
+                cell.character = character;
+                cell
+            }));
         }
         let mut row = Row::new();
-        row.columns = self.columns;
+        row.columns = columns;
         row.is_canonical = self.canonical;
         row.bg_color = self.bg_color;
         row.osc133_markers = self.markers;
@@ -200,7 +229,7 @@ fn no_graphics(sixel: &SixelGrid, kitty: &KittyGrid) -> bool {
     !sixel.is_parsing() && sixel.image_coordinates().next().is_none() && kitty.is_migration_empty()
 }
 impl Grid {
-    pub fn migration_state(&self) -> Result<serde_json::Value> {
+    pub fn validate_migration(&self) -> Result<()> {
         anyhow::ensure!(
             no_graphics(&self.sixel_grid, &self.kitty_grid)
                 && self
@@ -227,6 +256,10 @@ impl Grid {
                 && self.history_replay.is_none(),
             "terminal has pending effects or host replies; retry after they are delivered"
         );
+        Ok(())
+    }
+    pub fn migration_state(&self) -> Result<serde_json::Value> {
+        self.validate_migration()?;
         let mut palettes = vec![];
         let active_palette = palette_id(&self.agent_theme, &mut palettes);
         let lines_above = rows(&self.lines_above, &mut palettes);

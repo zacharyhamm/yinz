@@ -35,13 +35,17 @@ struct Snapshot {
     invoked_with: Option<Run>,
 }
 impl TerminalPane {
-    pub(super) fn capture_migration(&self) -> Result<serde_json::Value, String> {
+    pub(super) fn check_migration(&self) -> Result<(), String> {
         if !self.parser_boundary.is_ground() || !self.kitty_interceptor.is_in_ground_state() {
             return Err("terminal output ends inside an escape sequence or UTF-8 character; retry when output settles".into());
         }
         if self.forward_paused || !self.pending_pty_input.is_empty() || self.nested_guest {
             return Err("terminal has pending host-query output or a nested session that cannot be transferred".into());
         }
+        self.grid.validate_migration().map_err(|e| format!("{e:#}"))
+    }
+    pub(super) fn capture_migration(&self) -> Result<serde_json::Value, String> {
+        self.check_migration()?;
         let snapshot = Snapshot {
             version: 1,
             grid: self.grid.migration_state().map_err(|e| format!("{e:#}"))?,

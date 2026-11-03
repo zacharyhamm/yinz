@@ -318,3 +318,19 @@ fn replacement_readiness_requires_advertised_server_protocol_and_is_sent_once() 
     );
     assert_eq!(sessions.update(ready).0.unwrap(), ClientReply::Pending);
 }
+
+#[test]
+fn installation_identity_survives_replacement_and_cleanup() {
+    let directory = tempfile::tempdir().unwrap();
+    let installed = directory.path().join("yinz");
+    let displaced = directory.path().join("old-yinz");
+    std::fs::write(&installed, b"old").unwrap();
+    let cache = std::sync::OnceLock::new();
+    let first = installation_path(&cache, || Ok(installed.clone())).unwrap();
+    std::fs::rename(&installed, &displaced).unwrap();
+    std::fs::write(&installed, b"new").unwrap();
+    std::fs::remove_file(&displaced).unwrap();
+    let next = installation_path(&cache, || Ok(displaced.clone())).unwrap();
+    assert_eq!(first, next);
+    assert_eq!(std::fs::read(next).unwrap(), b"new");
+}

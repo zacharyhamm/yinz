@@ -6,7 +6,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-pub const SESSION_MIGRATION_FORMAT: u32 = 1;
+pub const SESSION_MIGRATION_FORMAT: u32 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClientFocus {

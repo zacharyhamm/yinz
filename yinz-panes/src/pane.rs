@@ -130,6 +130,9 @@ pub trait PluginPaneControl {
 }
 
 pub trait Pane {
+    fn validate_migration(&self) -> Result<(), String> {
+        Err("this pane has no terminal migration format".into())
+    }
     fn migration_state(&self) -> Result<serde_json::Value, String> {
         Err("this pane has no terminal migration format".into())
     }

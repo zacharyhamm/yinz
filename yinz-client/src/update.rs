@@ -13,6 +13,21 @@ use std::{
 use yinz_runtime::errors::prelude::*;
 use yinz_types::{data::SessionConnection, update_client::*};
 
+static INSTALLATION_PATH: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
+
+fn installation_path(
+    cache: &std::sync::OnceLock<Result<PathBuf, String>>,
+    resolve: impl FnOnce() -> std::io::Result<PathBuf>,
+) -> Result<PathBuf, String> {
+    cache
+        .get_or_init(|| {
+            resolve()
+                .and_then(std::fs::canonicalize)
+                .map_err(|error| format!("locate client executable: {error}"))
+        })
+        .clone()
+}
+
 const MAX_HELPER_BYTES: u64 = 1024 * 1024;
 const MAX_RESUME_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_REQUESTS: usize = 64;
@@ -35,9 +50,7 @@ pub(crate) struct Updates {
 impl Updates {
     pub fn new(data_dir: Option<PathBuf>) -> Self {
         Self {
-            executable: std::env::current_exe()
-                .and_then(std::fs::canonicalize)
-                .map_err(|error| format!("locate client executable: {error}")),
+            executable: installation_path(&INSTALLATION_PATH, std::env::current_exe),
             data_dir,
             jobs: BTreeMap::new(),
             published: None,

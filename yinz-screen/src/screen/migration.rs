@@ -119,7 +119,7 @@ impl Screen {
                     .get_pane_with_id(*pane_id)
                     .context("missing migration pane")?;
                 if let PaneId::Terminal(terminal) = pane_id {
-                    pane.migration_state()
+                    pane.validate_migration()
                         .map_err(|e| anyhow!("terminal_{terminal} cannot be migrated: {e}"))?;
                     if let Some(state) = pane.held_for_warp() {
                         held.insert(*terminal, state);

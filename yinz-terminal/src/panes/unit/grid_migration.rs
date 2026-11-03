@@ -113,9 +113,11 @@ fn malformed_snapshot_does_not_mutate_destination() {
 fn pending_host_reply_and_incomplete_frame_refuse_before_capture() {
     let mut original = grid(b"content");
     original.lock_renders = true;
+    assert!(original.validate_migration().is_err());
     assert!(original.migration_state().is_err());
     original.lock_renders = false;
     original.pending_messages_to_pty.push(b"reply".to_vec());
+    assert!(original.validate_migration().is_err());
     assert!(original.migration_state().is_err());
 }
 
@@ -151,4 +153,45 @@ fn hyperlinks_merge_without_rebinding_existing_destination_links() {
         .output_osc8(anchor)
         .unwrap()
         .contains("source.example"));
+}
+
+#[test]
+fn colored_scrollback_snapshot_uses_compact_runs() {
+    let mut original = grid(b"\x1b[31mcolored");
+    let character = original.viewport[0].columns[0].clone();
+    original.lines_above.clear();
+    for _ in 0..10_000 {
+        let mut row = Row::new();
+        row.columns = std::iter::repeat_n(character.clone(), 80).collect();
+        original.lines_above.push_back(row);
+    }
+    original.validate_migration().unwrap();
+    let snapshot = original.migration_state().unwrap();
+    assert!(serde_json::to_vec(&snapshot).unwrap().len() < 8_000_000);
+    for row in snapshot["lines_above"].as_array().unwrap() {
+        assert_eq!(row["columns"].as_array().unwrap().len(), 1);
+    }
+    let mut replacement = grid(b"");
+    replacement.restore_migration_state(snapshot).unwrap();
+    assert_eq!(replacement.lines_above.len(), 10_000);
+    assert_eq!(
+        replacement.migration_state().unwrap(),
+        original.migration_state().unwrap()
+    );
+}
+
+#[test]
+fn character_runs_preserve_widths_and_explicit_blanks() {
+    let mut original = grid("\x1b[31m界e\u{301}  \x1b[32mx".as_bytes());
+    original.viewport[0]
+        .columns
+        .push_back(EMPTY_TERMINAL_CHARACTER.clone());
+    original.viewport[0]
+        .columns
+        .push_back(TerminalCharacter::new_singlewidth('界'));
+    let mut replacement = grid(b"");
+    replacement
+        .restore_migration_state(original.migration_state().unwrap())
+        .unwrap();
+    assert!(replacement.viewport[0].columns == original.viewport[0].columns);
 }

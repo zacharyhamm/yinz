@@ -1724,6 +1724,9 @@ impl Pane for TerminalPane {
         self.pane_name = String::from_utf8_lossy(&buf).to_string();
         self.set_should_render(true);
     }
+    fn validate_migration(&self) -> Result<(), String> {
+        self.check_migration()
+    }
     fn migration_state(&self) -> Result<serde_json::Value, String> {
         self.capture_migration()
     }
