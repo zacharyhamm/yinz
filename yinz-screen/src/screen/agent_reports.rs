@@ -147,7 +147,7 @@ pub(super) fn apply_queued_agent_report(
             event.kind == "claude" && event.session_id.as_deref() == Some(hook.session_id.as_str())
         })
     {
-        screen.correlate_claude_failure(pane_id, hook);
+        screen.correlate_claude_terminal_hook(pane_id, hook);
     }
     // Older installed reporters can still send Idle for an ordinary Claude or Antigravity Stop.
     // Correlate internal confirmations before applying or broadcasting any state.

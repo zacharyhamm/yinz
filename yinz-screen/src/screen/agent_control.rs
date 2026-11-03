@@ -354,10 +354,10 @@ impl Screen {
             })
     }
 
-    /// Native failures omit prompt IDs. Resolve them once before either submission or
+    /// Native terminal hooks omit prompt IDs. Resolve them once before either submission or
     /// lifecycle-event observers see the hook; older overlapping turns must stay open.
-    pub(super) fn correlate_claude_failure(&self, pane: PaneId, hook: &mut HookEvent) {
-        if hook.hook_event_name == "StopFailure"
+    pub(super) fn correlate_claude_terminal_hook(&self, pane: PaneId, hook: &mut HookEvent) {
+        if matches!(hook.hook_event_name.as_str(), "StopFailure" | "Interrupt")
             && !hook.is_worker()
             && hook.prompt_id.as_deref().is_none_or(str::is_empty)
             && let Some(lifecycle) = self
@@ -515,6 +515,16 @@ impl Screen {
                             sequence: lifecycle.claude.sequence,
                         },
                     );
+                }
+            } else if matches!(event.hook.as_str(), "StopFailure" | "Interrupt") {
+                if let Some(turn) = hook
+                    .prompt_id
+                    .as_ref()
+                    .and_then(|id| lifecycle.claude.turns.get_mut(id))
+                {
+                    // Retain a terminal tombstone: neither a duplicate acceptance nor a
+                    // detached observer's late confirmation may reopen this prompt.
+                    turn.confirmation = Some(true);
                 }
             } else if let Some(complete) = hook.claude_turn_complete
                 && let Some(turn) = hook
@@ -1878,7 +1888,7 @@ impl Screen {
                 }
             },
             Prompt {
-                preserve_draft: _,
+                preserve_draft,
                 prompt,
                 wait,
                 timeout_ms,
@@ -2026,8 +2036,8 @@ impl Screen {
                     return;
                 }
                 let steering = self.claude_steering(pane, &status.agent);
-                if steering && !self.claude_steering_composer(pane) {
-                    reject(self, AgentOutcome::Rejected, "steering requires a visible empty composer; inspect the draft or dialog before submitting");
+                if steering && preserve_draft && !self.claude_steering_composer(pane) {
+                    reject(self, AgentOutcome::Rejected, "preserving the draft requires a verified empty composer; retry without preserve-draft to replace it");
                     return;
                 }
                 let clear_key = match input
@@ -2108,7 +2118,7 @@ impl Screen {
                 } else {
                     (Vec::new(), prompt.into_bytes())
                 };
-                if steering {
+                if steering && preserve_draft {
                     self.deliver_agent_prompt(pending, prefix, paste);
                     return;
                 }
@@ -2311,10 +2321,8 @@ impl Screen {
 
     fn claude_steering_composer(&self, pane: PaneId) -> bool {
         self.draft_composer(pane, "claude").is_some_and(|c| c.empty)
-            && self.agent_input_at(pane).is_none_or(|input| {
-                self.pane_output_activity
-                    .get(&pane)
-                    .is_some_and(|output| *output > input)
+            && self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
+                lifecycle.input_revision == Some(self.agent_input_revision(pane))
             })
     }
 
@@ -2670,7 +2678,10 @@ impl Screen {
                 },
                 _ => None,
             };
+            // Steering shares the PTY with running work. Its submit delay starts at
+            // paste delivery and must not be extended by unrelated background output.
             if pending.kind == "claude"
+                && !pending.steering
                 && let (Some(enter), Some(output)) = (
                     pending.enter_at,
                     self.pane_output_activity.get(&pending.pane),
@@ -2690,11 +2701,9 @@ impl Screen {
                             && !(pending.kind == "claude"
                                 && !pending.clear
                                 && status.agent.state == AgentState::Busy)
-                    }) || (pending.steering
-                        && self.draft_composer(pending.pane, "claude").is_none())
-                        || (pending.kind == "muse"
-                            && pending.conversation.is_none()
-                            && !self.muse_composer(pending.pane, false))
+                    }) || (pending.kind == "muse"
+                        && pending.conversation.is_none()
+                        && !self.muse_composer(pending.pane, false))
                     {
                         outcome = Some(AgentOutcome::Interrupted);
                     } else {
@@ -3828,6 +3837,7 @@ impl Screen {
         bytes: Vec<u8>,
         now: Instant,
     ) {
+        let previous_revision = operation.revision;
         let (tx, rx) = tokio::sync::oneshot::channel();
         operation.delivery = Some(rx);
         operation.wrote_at = Some(now);
@@ -3845,6 +3855,13 @@ impl Screen {
             operation.failure = Some((AgentOutcome::Failed, error.to_string()));
         }
         operation.revision = self.agent_input_revision(pane);
+        if operation
+            .prompt
+            .as_ref()
+            .is_some_and(|(pending, _, _)| pending.steering)
+        {
+            self.advance_claude_observers(pane, previous_revision, operation.revision);
+        }
     }
 
     fn refresh_draft_clears(&mut self, now: Instant) {
@@ -3869,6 +3886,12 @@ impl Screen {
                 }
             }
             let status = self.agent_status(pane, None);
+            // Prompt preparation is not recovery. Workers and same-conversation
+            // progress may continue while we replace the steering draft.
+            let steering = operation
+                .prompt
+                .as_ref()
+                .is_some_and(|(pending, _, _)| pending.steering);
             let failure = if self.get_pane_info(pane).is_none() {
                 Some((AgentOutcome::TargetClosed, "pane closed"))
             } else if status.as_ref().is_none_or(|status| {
@@ -3884,13 +3907,16 @@ impl Screen {
                 ))
             } else if status.as_ref().is_none_or(|status| {
                 !status.prompt_supported
-                    || self.claude_background_pending(pane)
-                    || status.agent.state != operation.agent.state
-                    || !status.background_tasks.is_empty()
-            }) || self
-                .agent_lifecycle
-                .get(&pane)
-                .is_none_or(|lifecycle| lifecycle.last_report != operation.report)
+                    || (!steering
+                        && (self.claude_background_pending(pane)
+                            || status.agent.state != operation.agent.state
+                            || !status.background_tasks.is_empty()))
+                    || status.agent.state == AgentState::Exited
+            }) || (!steering
+                && self
+                    .agent_lifecycle
+                    .get(&pane)
+                    .is_none_or(|lifecycle| lifecycle.last_report != operation.report))
             {
                 Some((
                     AgentOutcome::Interrupted,

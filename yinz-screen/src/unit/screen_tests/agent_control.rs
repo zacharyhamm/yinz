@@ -4965,7 +4965,11 @@ fn claude_blocking_stop_and_stale_confirmations_cannot_finish_a_prompt() {
             AgentReportState::Set(old_idle),
         );
         assert!(replies(&messages, CLIENT).is_empty());
-        screen.agent_control_with_clear(prompt(true), ClientId::new(2), &writes);
+        let mut preserving = prompt(true);
+        if let AgentRequest::Prompt { preserve_draft, .. } = &mut preserving {
+            *preserve_draft = true;
+        }
+        screen.agent_control_with_clear(preserving, ClientId::new(2), &writes);
         let rejected = replies(&messages, ClientId::new(2)).pop().unwrap();
         assert_eq!(rejected.outcome, AgentOutcome::Rejected);
         assert!(!rejected.agents[0].ready);
@@ -10120,7 +10124,7 @@ fn steering_prompt(id: &str) -> AgentRequest {
     AgentRequest::Prompt {
         submission_id: Some(id.into()),
         prompt: "steer".into(),
-        preserve_draft: true,
+        preserve_draft: false,
         pane_id: PANE,
         expected_session_id: Some("conversation".into()),
         wait: true,
@@ -10143,12 +10147,11 @@ fn deliver_steering(
     client: ClientId,
 ) {
     draft_frame(screen, "claude", "", 0, Instant::now());
-    assert!(screen.agent_status_for_test().ready);
-    screen.agent_control(steering_prompt(id), client);
+    screen.agent_control_with_clear(steering_prompt(id), client, writes);
     assert_eq!(
         finish_paste(writes),
         b"\x1b[200~steer\x1b[201~",
-        "steering must not clear or interrupt"
+        "steering preparation must deliver the requested text"
     );
     let now = Instant::now();
     screen.refresh_agent_controls_at(now);
@@ -10390,7 +10393,7 @@ fn claude_sequential_steering_keeps_each_completion_and_ignores_old_acknowledgem
 }
 
 #[test]
-fn claude_steering_rejects_drafts_dialogs_clear_and_changed_input() {
+fn claude_preserving_steering_rejects_unverified_drafts_and_invalid_targets() {
     for case in [
         "draft",
         "dialog",
@@ -10401,6 +10404,12 @@ fn claude_steering_rejects_drafts_dialogs_clear_and_changed_input() {
     ] {
         let (mut screen, messages, writes) = setup("claude");
         report_kind(&mut screen, "claude", hook("SessionStart"));
+        screen.agent_control_with_clear(
+            identified_prompt("parent", false),
+            ClientId::new(9),
+            &writes,
+        );
+        finish_paste(&writes);
         report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
         draft_frame(
             &mut screen,
@@ -10421,7 +10430,7 @@ fn claude_steering_rejects_drafts_dialogs_clear_and_changed_input() {
             },
             _ => {},
         }
-        let request = if case == "clear" {
+        let mut request = if case == "clear" {
             clear_prompt()
         } else if case == "conversation" {
             let mut request = steering_prompt("one");
@@ -10436,6 +10445,9 @@ fn claude_steering_rejects_drafts_dialogs_clear_and_changed_input() {
         } else {
             steering_prompt("one")
         };
+        if let AgentRequest::Prompt { preserve_draft, .. } = &mut request {
+            *preserve_draft = true;
+        }
         screen.agent_control(request, CLIENT);
         if case == "input" {
             assert_eq!(finish_paste(&writes), b"\x1b[200~steer\x1b[201~");
@@ -10472,7 +10484,7 @@ fn claude_steering_timeout_or_delivery_failure_does_not_finish_the_parent() {
         if let AgentRequest::Prompt { timeout_ms, .. } = &mut request {
             *timeout_ms = 10_000;
         }
-        screen.agent_control(request, ClientId::new(2));
+        screen.agent_control_with_clear(request, ClientId::new(2), &writes);
         if failure {
             for (instruction, _) in writes.try_iter() {
                 if let PtyWriteInstruction::Write(_, _, Some(mut completion)) = instruction {
@@ -10615,12 +10627,12 @@ fn claude_background_notifications_cannot_acknowledge_steering_or_hide_permissio
 }
 
 #[test]
-fn claude_steering_rechecks_the_composer_before_enter() {
+fn claude_steering_attempts_enter_even_if_the_composer_becomes_hidden() {
     let (mut screen, messages, writes) = setup("claude");
     report_kind(&mut screen, "claude", hook("SessionStart"));
     report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
     draft_frame(&mut screen, "claude", "", 0, Instant::now());
-    screen.agent_control(steering_prompt("next"), CLIENT);
+    screen.agent_control_with_clear(steering_prompt("next"), CLIENT, &writes);
     finish_paste(&writes);
     screen
         .tabs
@@ -10634,10 +10646,12 @@ fn claude_steering_rechecks_the_composer_before_enter() {
     let now = Instant::now();
     screen.refresh_agent_controls_at(now);
     screen.refresh_agent_controls_at(now + Duration::from_secs(1));
-    assert!(finish_paste(&writes).is_empty());
+    assert_eq!(finish_paste(&writes), b"\r");
+    assert!(replies(&messages, CLIENT).is_empty());
+    screen.refresh_agent_controls_at(now + Duration::from_secs(31));
     assert_eq!(
         replies(&messages, CLIENT)[0].outcome,
-        AgentOutcome::Interrupted
+        AgentOutcome::TimedOut
     );
 }
 
@@ -11064,5 +11078,280 @@ fn notification_permission_wait_clears_only_after_delivered_enter() {
             claude_stop("notification", "finished", &[]),
         );
         assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+    }
+}
+
+#[test]
+fn claude_steering_delivery_is_bounded_during_continuous_background_output() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    screen.agent_control_with_clear(identified_prompt("parent", true), CLIENT, &writes);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_worker("SubagentStart", "worker"),
+    );
+    screen.agent_control(steering_prompt("next"), ClientId::new(2));
+    assert!(finish_paste(&writes).starts_with(b"\x1b[200~yz"));
+    let now = Instant::now();
+    let mut delivered = Vec::new();
+    // Advance a controlled clock; output is never quiet for the old 100 ms debounce.
+    for tick in 0..=30 {
+        let at = now + Duration::from_millis(tick * 50);
+        screen.pane_output_activity.insert(PANE, at);
+        if tick == 2 {
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_worker("PostToolUse", "worker"),
+            );
+        }
+        screen.refresh_agent_controls_at(at);
+        delivered.extend(finish_paste(&writes));
+    }
+    assert_eq!(delivered, b"\x03\x1b[200~steer\x1b[201~\r");
+    assert!(replies(&messages, CLIENT).is_empty());
+    assert!(replies(&messages, ClientId::new(2)).is_empty());
+    report_kind(&mut screen, "claude", steering_ack("next"));
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("next", "next answer", &[]),
+    );
+    assert_eq!(
+        replies(&messages, ClientId::new(2))[0].outcome,
+        AgentOutcome::Completed
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("prompt", "parent answer", &[]),
+    );
+    assert_eq!(
+        replies(&messages, CLIENT)[0].outcome,
+        AgentOutcome::Completed
+    );
+    assert_eq!(
+        pane_state(&screen),
+        AgentState::Busy,
+        "worker remains active"
+    );
+}
+
+#[test]
+fn claude_steering_replaces_unconsumed_input_despite_unrelated_output() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    screen.agent_control_with_clear(identified_prompt("parent", false), CLIENT, &writes);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    replies(&messages, CLIENT);
+    draft_frame(&mut screen, "claude", "", 0, Instant::now());
+    screen.agent_control(send_keys(vec![BareKey::Char('x')]), ClientId::new(9));
+    assert_eq!(finish_paste(&writes), b"x");
+    // The terminal still shows the old empty editor. A spinner is not an input receipt.
+    screen
+        .pane_output_activity
+        .insert(PANE, Instant::now() + Duration::from_millis(1));
+    assert_eq!(
+        screen.agent_status_for_test().not_ready_reason,
+        Some(NotReadyReason::UnconsumedInput)
+    );
+    let mut preserving = steering_prompt("preserve");
+    if let AgentRequest::Prompt { preserve_draft, .. } = &mut preserving {
+        *preserve_draft = true;
+    }
+    screen.agent_control(preserving, ClientId::new(2));
+    assert_eq!(
+        replies(&messages, ClientId::new(2))[0].outcome,
+        AgentOutcome::Rejected
+    );
+    assert!(finish_paste(&writes).is_empty());
+    screen.agent_control_with_clear(steering_prompt("replace"), ClientId::new(2), &writes);
+    assert_eq!(finish_paste(&writes), b"\x1b[200~steer\x1b[201~");
+    let now = Instant::now();
+    screen.refresh_agent_controls_at(now);
+    screen.refresh_agent_controls_at(now + Duration::from_millis(600));
+    assert_eq!(finish_paste(&writes), b"\r");
+    report_kind(&mut screen, "claude", steering_ack("replace"));
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("replace", "replaced", &[]),
+    );
+    assert_eq!(
+        replies(&messages, ClientId::new(2))[0].outcome,
+        AgentOutcome::Completed
+    );
+}
+
+#[test]
+fn claude_steering_preparation_reports_failures_without_sending_the_prompt() {
+    for failure in ["writer", "input", "conversation", "timeout"] {
+        let (mut screen, messages, writes) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        screen.agent_control(steering_prompt("next"), CLIENT);
+        for (instruction, _) in writes.try_iter() {
+            if let PtyWriteInstruction::Write(bytes, _, Some(mut completion)) = instruction {
+                assert!(bytes.starts_with(b"\x1b[200~yz"));
+                if failure == "writer" {
+                    completion.set_error_message("marker delivery failed".into());
+                }
+            }
+        }
+        match failure {
+            "input" => {
+                screen.agent_control(send_keys(vec![BareKey::Char('x')]), ClientId::new(2));
+                assert_eq!(finish_paste(&writes), b"x");
+            },
+            "conversation" => report_kind(
+                &mut screen,
+                "claude",
+                HookEvent {
+                    session_id: "replacement".into(),
+                    ..hook("SessionStart")
+                },
+            ),
+            _ => {},
+        }
+        screen.refresh_agent_controls_at(
+            Instant::now() + Duration::from_secs(if failure == "timeout" { 31 } else { 1 }),
+        );
+        // Reports drain ready controls before applying their new identity. The clear
+        // can already be queued, but replacement must prevent the prompt and Enter.
+        assert_eq!(
+            finish_paste(&writes),
+            if failure == "conversation" {
+                vec![3]
+            } else {
+                vec![]
+            },
+            "{failure}"
+        );
+        screen.refresh_agent_controls();
+        let result = replies(&messages, CLIENT);
+        assert_eq!(result.len(), 1);
+        assert!(!result[0].acknowledged);
+        assert_eq!(
+            result[0].outcome,
+            match failure {
+                "writer" => AgentOutcome::Failed,
+                "input" => AgentOutcome::Interrupted,
+                "conversation" => AgentOutcome::TargetChanged,
+                _ => AgentOutcome::TimedOut,
+            }
+        );
+        assert!(result[0]
+            .message
+            .as_ref()
+            .unwrap()
+            .contains("prompt was not sent"));
+    }
+}
+
+#[test]
+fn claude_terminal_hooks_retire_detached_confirmations_without_turn_ids() {
+    for terminal_hook in ["StopFailure", "Interrupt"] {
+        for older in [false, true] {
+            let (mut screen, messages, writes) = setup("claude");
+            report_kind(&mut screen, "claude", hook("SessionStart"));
+            screen.agent_control_with_clear(identified_prompt("parent", true), CLIENT, &writes);
+            finish_paste(&writes);
+            report_kind(
+                &mut screen,
+                "claude",
+                HookEvent {
+                    turn_id: None,
+                    ..hook("UserPromptSubmit")
+                },
+            );
+            if older {
+                deliver_steering(&mut screen, &writes, "next", ClientId::new(2));
+                report_kind(&mut screen, "claude", steering_ack("next"));
+            }
+            report_kind(
+                &mut screen,
+                "claude",
+                HookEvent {
+                    prompt_id: older.then(|| "prompt".into()),
+                    turn_id: None,
+                    ..hook(terminal_hook)
+                },
+            );
+            assert_eq!(
+                replies(&messages, CLIENT)[0].outcome,
+                if terminal_hook == "StopFailure" {
+                    AgentOutcome::Failed
+                } else {
+                    AgentOutcome::Interrupted
+                }
+            );
+            for complete in [false, true] {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    HookEvent {
+                        turn_id: None,
+                        claude_turn_complete: Some(complete),
+                        ..claude_stop("prompt", "stale", &["stale-task"])
+                    },
+                );
+                assert_eq!(
+                    pane_state(&screen),
+                    if older {
+                        AgentState::Busy
+                    } else {
+                        AgentState::Idle
+                    }
+                );
+                assert!(screen.agent_status_for_test().background_tasks.is_empty());
+            }
+            if older {
+                assert!(replies(&messages, ClientId::new(2)).is_empty());
+                report_kind(&mut screen, "claude", claude_stop("next", "success", &[]));
+                assert_eq!(
+                    replies(&messages, ClientId::new(2))[0].outcome,
+                    AgentOutcome::Completed
+                );
+            }
+            if terminal_hook == "StopFailure" {
+                screen.agent_control(wait(AgentState::Idle), CLIENT);
+                assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+            }
+        }
+    }
+}
+
+#[test]
+fn claude_steering_attempts_replacement_for_full_and_hidden_composers() {
+    for hidden in [false, true] {
+        let (mut screen, messages, writes) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        draft_frame(&mut screen, "claude", "old draft", 9, Instant::now());
+        if hidden {
+            screen
+                .tabs
+                .get_mut(&TabId::new(0))
+                .unwrap()
+                .handle_pty_bytes(TerminalId::new(7), b"\x1b[?25l".to_vec())
+                .unwrap();
+        }
+        screen.agent_control_with_clear(steering_prompt("next"), CLIENT, &writes);
+        assert_eq!(finish_paste(&writes), b"\x1b[200~steer\x1b[201~");
+        let now = Instant::now();
+        screen.refresh_agent_controls_at(now);
+        screen.refresh_agent_controls_at(now + Duration::from_millis(600));
+        assert_eq!(finish_paste(&writes), b"\r");
+        assert!(replies(&messages, CLIENT).is_empty());
+        report_kind(&mut screen, "claude", steering_ack("next"));
+        report_kind(&mut screen, "claude", claude_stop("next", "delivered", &[]));
+        assert_eq!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::Completed
+        );
     }
 }
