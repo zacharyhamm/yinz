@@ -18,6 +18,7 @@ import {
   AgentResultSchema,
   AgentStateSchema,
   isRejectedLaunch,
+  isTerminalFailure,
   promptDigest,
 } from "./yinz_agent.ts";
 
@@ -439,8 +440,10 @@ export function createAgentMethods(
             return applyResult(context, task, dependencies);
           }
           const outcome = await context.runModel({
-            definition: task.behaviorName,
-            method: "resume",
+            modelType: "@yinz/agent",
+            name: task.behaviorName,
+            method: "recover",
+            arguments: { ...task.config, prompt: task.prompt },
           });
           if (!outcome.ok) throw new Error(outcome.error.message);
           return applyResult(context, task, dependencies);
@@ -449,7 +452,7 @@ export function createAgentMethods(
     discard_agent: {
       kind: "update",
       description:
-        "Discard completed unusable evidence or a launch rejected without resources, with an operator reason and confirmation",
+        "Discard completed unusable evidence, a confirmed stopped terminal failure, or a launch rejected without resources, with an operator reason and confirmation",
       arguments: AgentTaskSchema.shape.discard.unwrap().strip(),
       execute: (
         input: z.infer<ReturnType<typeof AgentTaskSchema.shape.discard.unwrap>>,
@@ -466,9 +469,19 @@ export function createAgentMethods(
               "Pane evidence is already applied; revise the lifecycle instead",
             );
           }
-          const child = await childState(context, task);
+          let child = await childState(context, task);
+          let confirmedFailure = false;
+          if (isTerminalFailure(child)) {
+            const outcome = await context.runModel({
+              definition: task.behaviorName,
+              method: "confirm_failure",
+            });
+            if (!outcome.ok) throw new Error(outcome.error.message);
+            child = await childState(context, task);
+            confirmedFailure = isTerminalFailure(child);
+          }
           if (
-            !isRejectedLaunch(child) &&
+            !confirmedFailure && !isRejectedLaunch(child) &&
             (!["completed", "completed_unusable"].includes(child.phase) ||
               child.outcome !== "completed" ||
               child.backgroundTasks.length || !child.paneId ||

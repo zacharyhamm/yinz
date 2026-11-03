@@ -108,6 +108,22 @@ export function isRejectedLaunch(state: AgentState): boolean {
     return false;
   }
 }
+/** Only a correlated provider failure proves terminality; transport errors do not. */
+export function isTerminalFailure(state: AgentState): boolean {
+  if (
+    !state.paneId || !state.conversationId || !state.submissionId ||
+    !["waiting", "submitting"].includes(state.phase) || !state.rawResponse
+  ) return false;
+  try {
+    const value = AgentResponseSchema.parse(JSON.parse(state.rawResponse));
+    selectedAgent(state, value);
+    return value.outcome === "failed" &&
+      value.submission_id === state.submissionId;
+  } catch {
+    return false;
+  }
+}
+
 export const AgentResultSchema = z.object({
   session: Text,
   kind: Text,
@@ -638,6 +654,73 @@ export async function runAgent(
     dependencies,
     () => launch(context, state, dependencies),
   );
+}
+
+/** Invoked as an action so Swamp holds the child behavior's execution lock. */
+export async function recoverAgent(
+  args: z.infer<typeof RunArgsSchema>,
+  context: AgentContext,
+  dependencies = defaultDependencies,
+) {
+  const prompt = RunArgsSchema.parse(args).prompt;
+  if (await context.readResource("state") == null) {
+    return await runAgent({ prompt }, context, dependencies);
+  }
+  const state = await load(context, dependencies);
+  if (
+    state.prompt !== prompt || state.promptDigest !== await promptDigest(prompt)
+  ) {
+    throw new Error("Recovery prompt does not match the original task");
+  }
+  return await resumeAgent(context, dependencies);
+}
+
+/** Refresh failure evidence and independently prove the original pane has stopped. */
+export async function confirmFailureAgent(
+  context: AgentContext,
+  dependencies = defaultDependencies,
+) {
+  const state = await load(context, dependencies);
+  if (
+    !state.paneId || !state.conversationId || !state.submissionId ||
+    !["waiting", "submitting"].includes(state.phase)
+  ) {
+    throw new Error("Cannot discard an uncertain or active pane task");
+  }
+  return await guarded(context, state, dependencies, async () => {
+    await response(
+      context,
+      state,
+      commandArgs(state, [
+        "wait",
+        state.paneId!,
+        "--submission",
+        state.submissionId!,
+        "--conversation",
+        state.conversationId!,
+        "--timeout",
+        `${state.config.timeoutSeconds}s`,
+      ]),
+      dependencies,
+    );
+    if (!isTerminalFailure(state)) {
+      throw new Error("No confirmed terminal submission failure");
+    }
+    // Status writes a separate observation, preserving the correlated failure response.
+    const observation = await statusAgent(context, dependencies);
+    const raw = AgentObservationSchema.parse(
+      await context.readResource("observation"),
+    );
+    const value = AgentResponseSchema.parse(JSON.parse(raw.rawResponse));
+    const { agent } = selectedAgent(state, value);
+    if (
+      !agent.status_available || agent.agent.state.toLowerCase() !== "idle" ||
+      agent.background_tasks.length || value.background_tasks.length
+    ) {
+      throw new Error("Cannot discard an uncertain or active pane task");
+    }
+    return observation.dataHandles;
+  });
 }
 
 export async function resumeAgent(

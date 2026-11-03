@@ -204,6 +204,10 @@ submissions remain unresolved; inspect the retained pane and state. Background
 tasks require a further observation of the same conversation's final idle answer
 before success. Panes remain visible after completion or failure.
 
+If dispatch stopped before the child saved its initial state, `resume-agent`
+initializes the original task under the child execution lock using the saved
+configuration and prompt. Existing child state is validated and resumed.
+
 If a worker completed but its response is unusable, or its launch was durably
 classified as `launch_rejected`, `discard-agent` accepts
 `{"request": "the operator's actual discard instruction", "confirmedStopped": true}`.
@@ -218,6 +222,10 @@ changes configuration or launches a replacement.
 Malformed responses, transport failures, responses containing resources and
 legacy uncertain launches remain blocked. `discard-agent` cannot discard an
 active or uncertain task, and it does not close panes or undo code changes.
+A correlated terminal provider failure (`failed`, including `StopFailure`) can
+also be explicitly discarded. Discard rechecks the original submission and
+requires a fresh observation of the same pane and conversation, idle with no
+background tasks. The failure response remains separate from that observation.
 Inspect any changes before dispatching replacement work.
 
 If a state-changing transition was saved but the final task-completion write

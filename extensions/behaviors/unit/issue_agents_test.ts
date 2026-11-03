@@ -16,8 +16,9 @@ import {
   AgentConfigSchema,
   type AgentContext,
   AgentStateSchema,
+  confirmFailureAgent,
   promptDigest,
-  resumeAgent,
+  recoverAgent,
   runAgent,
   type YinzRunner,
 } from "../_lib/yinz_agent.ts";
@@ -188,9 +189,15 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
           if (request.method === "run") {
             child.clear();
             await runAgent({ prompt: task.prompt }, agentContext, dependencies);
+          } else if (request.method === "confirm_failure") {
+            await confirmFailureAgent(agentContext, dependencies);
           } else {
-            equal(request.method, "resume");
-            await resumeAgent(agentContext, dependencies);
+            equal(request.method, "recover");
+            await recoverAgent(
+              { prompt: task.prompt },
+              agentContext,
+              dependencies,
+            );
           }
           return { ok: true };
         } catch (error) {
@@ -815,4 +822,107 @@ Deno.test("lifecycle changes during a pane assignment are not overwritten", asyn
       }, h.context),
     "may already be applied",
   );
+});
+
+function recoveryRunner(failed: boolean, calls: string[][]): YinzRunner {
+  return (args) => {
+    calls.push(args);
+    const submission = args.includes("--submission");
+    const value = args[3] === "spawn"
+      ? {
+        outcome: "ok",
+        spawned: {
+          pane_id: "terminal_7",
+          cwd: args[args.indexOf("--cwd") + 1],
+        },
+      }
+      : {
+        outcome: submission ? (failed ? "failed" : "completed") : "ok",
+        submission_id: submission ? "submission-1" : undefined,
+        message: JSON.stringify(triage),
+        agents: [{
+          pane_id: "terminal_7",
+          session: options.session,
+          agent: {
+            kind: "claude",
+            session_id: "conversation-1",
+            state: "idle",
+          },
+          ready: true,
+          status_available: true,
+          prompt_supported: true,
+        }],
+      };
+    return Promise.resolve({
+      code: submission && failed ? 1 : 0,
+      stdout: JSON.stringify(value),
+      stderr: "",
+    });
+  };
+}
+
+Deno.test("recorded dispatch without child state recovers the original task", async () => {
+  const h = harness();
+  h.controls.runError = "Interrupted before initialization";
+  h.controls.afterRun = () => h.child.clear();
+  await rejects(
+    () =>
+      h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+    "Interrupted",
+  );
+  const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const calls: string[][] = [];
+  h.controls.agentRunner = recoveryRunner(false, calls);
+  await h.methods.resume_agent.execute({}, h.context);
+  await h.methods.resume_agent.execute({}, h.context);
+  equal(h.calls[1].name, original.behaviorName);
+  equal(h.calls[1].arguments, { ...original.config, prompt: original.prompt });
+  equal(calls.filter((args) => args[3] === "spawn").length, 1);
+  equal(
+    AgentTaskSchema.parse(h.resources.get("agent-task")).status,
+    "completed",
+  );
+  await assertNoPendingAgent(h.context);
+});
+
+Deno.test("terminal provider failure can be explicitly discarded and unblocks lifecycle", async () => {
+  const h = harness();
+  const calls: string[][] = [];
+  h.controls.agentRunner = recoveryRunner(true, calls);
+  await rejects(
+    () =>
+      h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+    "has not completed",
+  );
+  const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  await rejects(() => assertNoPendingAgent(h.context), "unresolved");
+  await rejects(
+    () =>
+      h.methods.discard_agent.execute({
+        request: "Discard",
+        confirmedStopped: false as true,
+      }, h.context),
+    "true",
+  );
+  const discard = {
+    request: "Discard the stopped provider failure",
+    confirmedStopped: true as const,
+  };
+  h.resources.set("state", transition(original.before, "triage", triage));
+  await rejects(
+    () => h.methods.discard_agent.execute(discard, h.context),
+    "may already be applied",
+  );
+  h.resources.set("state", original.before);
+  await h.methods.discard_agent.execute(discard, h.context);
+  equal(
+    AgentTaskSchema.parse(h.resources.get("agent-task")).status,
+    "discarded",
+  );
+  equal(h.resources.get("state"), original.before);
+  assert(!h.child.has("result"));
+  await assertNoPendingAgent(h.context);
+  h.controls.agentRunner = undefined;
+  await h.methods.run_agent.execute({ ...options, role: "triage" }, h.context);
+  equal((h.resources.get("state") as LifecycleState).phase, "classified");
 });

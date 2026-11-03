@@ -4,7 +4,9 @@ import {
   AgentObservationSchema,
   AgentResultSchema,
   AgentStateSchema,
+  confirmFailureAgent,
   EmptySchema,
+  recoverAgent,
   resumeAgent,
   runAgent,
   RunArgsSchema,
@@ -13,7 +15,7 @@ import {
 
 export const behavior = {
   type: "@yinz/agent",
-  version: "2026.11.03.1",
+  version: "2026.11.03.2",
   globalArguments: AgentConfigSchema,
   resources: {
     state: {
@@ -44,6 +46,21 @@ export const behavior = {
         "Spawn a visible agent and submit one guarded prompt; retains uncertain outcomes",
       arguments: RunArgsSchema,
       execute: runAgent,
+    },
+    recover: {
+      kind: "action",
+      description:
+        "Initialize an unstarted original task or resume its exact submission under the child execution lock",
+      arguments: RunArgsSchema,
+      execute: recoverAgent,
+    },
+    confirm_failure: {
+      kind: "action",
+      description:
+        "Verify the original submission failed and its identity-verified pane is idle without background work",
+      arguments: EmptySchema,
+      execute: (_args: Record<string, never>, context: AgentContext) =>
+        confirmFailureAgent(context),
     },
     resume: {
       kind: "action",

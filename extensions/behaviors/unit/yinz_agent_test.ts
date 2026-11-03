@@ -3,9 +3,12 @@ import {
   type AgentContext,
   AgentStateSchema,
   type CommandResult,
+  confirmFailureAgent,
   type Dependencies,
   EmptySchema,
   hooksReady,
+  isTerminalFailure,
+  recoverAgent,
   resumeAgent,
   runAgent,
   RunArgsSchema,
@@ -617,4 +620,83 @@ Deno.test("cancellation reaches every CLI call and keeps the submission availabl
   equal(h.records.get("state")?.submissionId, "submission-1");
   await resumeAgent(h.context, h.dependencies);
   equal(h.calls.filter((call) => call.args.includes("prompt")).length, 1);
+});
+
+Deno.test("recovery initializes an unstarted task once and validates existing intent", async () => {
+  const h = harness([spawned, ready(), completed()]);
+  await recoverAgent({ prompt: "Fix it" }, h.context, h.dependencies);
+  // Swamp serializes actions on this child; a second caller sees the first write.
+  await recoverAgent({ prompt: "Fix it" }, h.context, h.dependencies);
+  equal(h.calls.length, 3);
+  await rejects(
+    () => recoverAgent({ prompt: "Other" }, h.context, h.dependencies),
+    "prompt does not match",
+  );
+  h.context.globalArgs.session = "other";
+  await rejects(
+    () => recoverAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+    "configuration changed",
+  );
+});
+
+Deno.test("terminal failure requires correlated failure and a fresh stopped observation", async () => {
+  const failure = completed({ outcome: "failed" });
+  const h = harness([spawned, ready(), failure, failure, ready()]);
+  await rejects(
+    () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+    "has not completed",
+  );
+  assert(isTerminalFailure(AgentStateSchema.parse(h.records.get("state"))));
+  await confirmFailureAgent(h.context, h.dependencies);
+  equal(h.records.get("state")?.outcome, "failed");
+  equal(h.records.get("observation")?.outcome, "ok");
+  assert(!h.records.has("result"));
+  equal(
+    h.calls[3].args[h.calls[3].args.indexOf("--submission") + 1],
+    "submission-1",
+  );
+});
+
+Deno.test("failure discard rejects uncertain evidence, replacements and background work", async () => {
+  const failure = completed({ outcome: "failed" });
+  const cases: [Reply, Reply | undefined, string][] = [
+    [completed({ outcome: "timed_out" }), undefined, "No confirmed terminal"],
+    [
+      completed({ outcome: "failed", submission_id: "other" }),
+      undefined,
+      "No confirmed terminal",
+    ],
+    [
+      completed({ outcome: "failed", agents: [agent("replacement")] }),
+      undefined,
+      "No confirmed terminal",
+    ],
+    [new Error("connection lost"), undefined, "connection lost"],
+    [failure, { ...ready(), background_tasks: ["job"] }, "uncertain or active"],
+    [failure, {
+      outcome: "ok",
+      agents: [{ ...agent(), background_tasks: ["job"] }],
+    }, "uncertain or active"],
+    [failure, {
+      outcome: "ok",
+      agents: [{ ...agent(), agent: { ...agent().agent, state: "busy" } }],
+    }, "uncertain or active"],
+    [failure, ready("replacement"), "conversation changed"],
+    [failure, { code: 1, stdout: "broken", stderr: "" }, "no valid response"],
+  ];
+  for (const [recheck, observation, error] of cases) {
+    const h = harness([
+      spawned,
+      ready(),
+      failure,
+      recheck,
+      ...(observation ? [observation] : []),
+    ]);
+    await rejects(
+      () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+      "has not completed",
+    );
+    await rejects(() => confirmFailureAgent(h.context, h.dependencies), error);
+    assert(!h.records.has("result"));
+  }
 });
