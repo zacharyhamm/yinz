@@ -422,10 +422,18 @@ async function observeBackground(
   const { agent } = selectedAgent(state, value);
   if (
     agent.agent.state.toLowerCase() !== "idle" ||
-    agent.background_tasks.length || value.background_tasks.length ||
-    !value.message?.trim()
+    agent.background_tasks.length || value.background_tasks.length
   ) {
     throw new Error("Background work has no confirmed final idle answer");
+  }
+  if (!value.message?.trim()) {
+    // The original conversation is idle and both background lists are empty.
+    state.phase = "completed_unusable";
+    state.outcome = "completed";
+    delete state.message;
+    throw new Error(
+      "Completed task did not return a final message; use discard-agent to discard this unusable completion",
+    );
   }
   return await finish(context, state, dependencies);
 }
@@ -547,6 +555,9 @@ async function launch(
         "status",
         "--agent",
         state.config.kind,
+        ...(state.config.kind === "agy"
+          ? ["--project-dir", state.config.cwd]
+          : []),
       ],
       undefined,
       context.signal,

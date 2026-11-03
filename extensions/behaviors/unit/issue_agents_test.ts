@@ -366,7 +366,11 @@ Deno.test("malformed completed evidence can be explicitly discarded without appl
 });
 
 Deno.test("missing final text can be explicitly discarded before dispatching replacement work", async () => {
-  for (const message of [null, undefined, "", " \n\t"]) {
+  for (
+    const { message, background } of [null, undefined, "", " \n\t"].flatMap((
+      message,
+    ) => [false, true].map((background) => ({ message, background })))
+  ) {
     const h = harness();
     let cliCalls = 0;
     h.controls.agentRunner = (args) => {
@@ -394,7 +398,10 @@ Deno.test("missing final text can be explicitly discarded before dispatching rep
             prompt_supported: true,
           }],
           submission_id: args[3] === "prompt" ? "submission-1" : undefined,
-          message,
+          message: background && args[3] === "prompt" ? "Working" : message,
+          background_tasks: background && args[3] === "prompt"
+            ? ["worker"]
+            : [],
         };
       return Promise.resolve({
         code: 0,
@@ -417,7 +424,7 @@ Deno.test("missing final text can be explicitly discarded before dispatching rep
       () => h.methods.resume_agent.execute({}, h.context),
       "discard-agent",
     );
-    equal(cliCalls, 3);
+    equal(cliCalls, background ? 4 : 3);
     await rejects(() => assertNoPendingAgent(h.context), "unresolved");
     assert(
       !h.methods.discard_agent.arguments.safeParse({

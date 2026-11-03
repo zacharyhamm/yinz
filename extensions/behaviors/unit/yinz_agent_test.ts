@@ -441,6 +441,75 @@ Deno.test("background interim completion waits for the original conversation's f
   equal(h.records.get("result")?.message, "Final answer");
 });
 
+Deno.test("empty background completion is terminal and cannot reuse interim text on resume", async () => {
+  for (const message of [null, undefined, "", " \n\t"]) {
+    for (const recover of [false, true]) {
+      const h = harness([
+        spawned,
+        ready(),
+        completed({ background_tasks: ["worker"], message: "Working" }),
+        ...(recover ? [new Error("Lost observation")] : []),
+        { ...ready(), message },
+      ]);
+      if (recover) {
+        await rejects(
+          () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+          "Lost observation",
+        );
+        equal(h.records.get("state")?.phase, "background");
+      }
+      await rejects(
+        () =>
+          recover
+            ? resumeAgent(h.context, h.dependencies)
+            : runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+        "discard-agent",
+      );
+      const state = AgentStateSchema.parse(h.records.get("state"));
+      equal(state.phase, "completed_unusable");
+      equal(state.outcome, "completed");
+      equal(state.message, undefined);
+      equal(state.backgroundTasks, []);
+      assert(!h.records.has("result"));
+      const count = h.calls.length;
+      await rejects(
+        () => resumeAgent(h.context, h.dependencies),
+        "discard-agent",
+      );
+      equal(h.calls.length, count);
+    }
+  }
+});
+
+Deno.test("empty background observations require matching identity, idle state and no workers", async () => {
+  for (
+    const patch of [
+      { agents: [agent("replacement")] },
+      { agents: [{ ...agent(), pane_id: "terminal_8" }] },
+      { agents: [{ ...agent(), session: "other" }] },
+      { agents: [agent("conversation-1", "muse")] },
+      {
+        agents: [{ ...agent(), agent: { ...agent().agent, state: "working" } }],
+      },
+      { agents: [{ ...agent(), background_tasks: ["worker"] }] },
+      { background_tasks: ["worker"] },
+    ]
+  ) {
+    const h = harness([
+      spawned,
+      ready(),
+      completed({ background_tasks: ["worker"] }),
+      { ...ready(), message: null, ...patch },
+    ]);
+    await rejects(
+      () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+      "",
+    );
+    equal(h.records.get("state")?.phase, "background");
+    assert(!h.records.has("result"));
+  }
+});
+
 Deno.test("background timeout does not turn an interim answer into success", async () => {
   const h = harness([
     spawned,
@@ -519,6 +588,43 @@ Deno.test("Muse first submission can bind its conversation, while other provider
     "conversation to guard",
   );
   equal(missing.calls.length, 2);
+});
+
+Deno.test("AGY preflight checks project hooks while user-only providers omit the project", async () => {
+  for (const kind of ["agy", "codex", "muse"]) {
+    const h = harness([
+      {
+        ...hooks,
+        stdout:
+          `${kind}:\nscript: /hooks/script (current)\nproject: /work/issue/.agents/hooks.json - 12 of 12 events wired\n`,
+      },
+      spawned,
+      ready("conversation-1", kind),
+      completed({ agents: [agent("conversation-1", kind)] }),
+    ], { kind });
+    await runAgent({ prompt: "Fix it" }, h.context, h.dependencies);
+    equal(h.calls[0].args, [
+      "--session",
+      "dev",
+      "hooks",
+      "status",
+      "--agent",
+      kind,
+      ...(kind === "agy" ? ["--project-dir", "/work/issue"] : []),
+    ]);
+    assert(h.records.has("result"));
+  }
+  for (const status of ["missing", "older than this yinz"]) {
+    const h = harness([{
+      ...hooks,
+      stdout: hooks.stdout.replace("(current)", `(${status})`),
+    }], { kind: "agy" });
+    await rejects(
+      () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+      "hooks",
+    );
+    equal(h.calls.length, 1);
+  }
 });
 
 Deno.test("missing or stale hooks fail before launch and are never installed automatically", async () => {
