@@ -220,6 +220,15 @@ impl Screen {
             state.widget.open_picker(EntryKind::Agent);
         }
         self.refresh_command_palettes();
+        if let Some(state) = self.command_palettes.get_mut(&client_id)
+            && let Some(id) = state
+                .widget
+                .agent_presentations
+                .iter()
+                .find_map(|(id, agent)| agent.focused.then(|| id.clone()))
+        {
+            state.widget.select_id(&id);
+        }
         self.refresh_plugin_palette(client_id, false);
     }
 

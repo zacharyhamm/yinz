@@ -4291,6 +4291,13 @@ fn live_agent_focus_marker_tracks_each_client_and_excludes_peer_sessions() {
             let frame = render_frame_into(&mut screen, &renders, client, &mut grid);
             check(&screen, client, expected);
             assert!(frame.contains(&format!("⌖ [{expected}]")), "{frame}");
+            if picker {
+                let widget = screen.command_palettes[&client].widget();
+                let selected = &widget.selected_entry().unwrap().id;
+                assert!(widget.agent_presentations[selected].focused);
+                assert!(widget.agent_picker());
+                assert!(widget.metadata.is_none(), "keep the agent list open");
+            }
         }
         // Refresh uses current focus, rather than the pane captured on opening.
         screen
@@ -4299,6 +4306,20 @@ fn live_agent_focus_marker_tracks_each_client_and_excludes_peer_sessions() {
         render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
         check(&screen, CLIENT, "2");
         check(&screen, other_client, "2");
+        if picker {
+            let widget = screen.command_palettes[&CLIENT].widget();
+            let selected = &widget.selected_entry().unwrap().id;
+            assert_eq!(widget.agent_presentations[selected].pane_id, "1");
+            // Reopening clears the search and selects the newly focused agent.
+            screen.command_palette_handles_input(&None, b"stale search", false, CLIENT);
+            screen.open_agents(CLIENT);
+            let widget = screen.command_palettes[&CLIENT].widget();
+            let selected = &widget.selected_entry().unwrap().id;
+            assert!(widget.query().is_empty());
+            assert!(widget.agent_presentations[selected].focused);
+            assert!(widget.agent_picker());
+            assert!(widget.metadata.is_none());
+        }
         screen
             .tabs
             .get_mut(&TabId::new(0))
@@ -4311,6 +4332,12 @@ fn live_agent_focus_marker_tracks_each_client_and_excludes_peer_sessions() {
             .agent_presentations
             .values()
             .all(|p| !p.focused));
+        if picker {
+            screen.open_agents(CLIENT);
+            let widget = screen.command_palettes[&CLIENT].widget();
+            assert!(widget.agent_picker());
+            assert_eq!(widget.selected_entry().unwrap().id, "agent-filters");
+        }
     }
 }
 
