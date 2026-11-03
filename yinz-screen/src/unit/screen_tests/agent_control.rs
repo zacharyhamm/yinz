@@ -10682,3 +10682,130 @@ fn claude_late_uncertainty_is_retained_when_a_newer_steering_turn_completes() {
     );
     assert!(screen.agent_status_for_test().ready);
 }
+
+#[test]
+fn recent_submission_results_survive_older_unresolved_steering() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    screen.agent_control_with_clear(identified_prompt("parent", true), CLIENT, &writes);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    let limit = crate::screen::agent_control::SUBMISSION_HISTORY_LIMIT;
+    for index in 1..limit {
+        let id = format!("old-{index}");
+        deliver_steering(&mut screen, &writes, &id, CLIENT);
+        report_kind(&mut screen, "claude", steering_ack(&id));
+    }
+    deliver_steering(&mut screen, &writes, "recent", CLIENT);
+    report_kind(&mut screen, "claude", steering_ack("recent"));
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("recent", "recent answer", &[]),
+    );
+    replies(&messages, CLIENT);
+    for index in 0..limit {
+        let id = format!("new-{index}");
+        deliver_steering(&mut screen, &writes, &id, CLIENT);
+        report_kind(&mut screen, "claude", steering_ack(&id));
+        screen.agent_control(wait_submission("recent"), ClientId::new(2));
+        let result = replies(&messages, ClientId::new(2));
+        assert_eq!(
+            result[0].outcome,
+            if index + 1 < limit {
+                AgentOutcome::Completed
+            } else {
+                AgentOutcome::StatusUnavailable
+            }
+        );
+        if index + 1 < limit {
+            assert_eq!(result[0].message.as_deref(), Some("recent answer"));
+        }
+    }
+    // Resolving an older claim prunes it immediately, without waiting for another admission.
+    let before = screen.agent_submissions[&PANE].len();
+    report_kind(&mut screen, "claude", claude_stop("old-1", "late", &[]));
+    assert_eq!(screen.agent_submissions[&PANE].len(), before - 1);
+}
+
+#[test]
+fn notification_permission_wait_clears_only_after_delivered_enter() {
+    for cli in [false, true] {
+        let (mut screen, messages, writes) = setup("claude");
+        complete_with_background(&mut screen, &messages, &writes, &["bash"]);
+        report_kind(
+            &mut screen,
+            "claude",
+            task_notification("notification", &["bash"]),
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            HookEvent {
+                prompt_id: Some("notification".into()),
+                ..claude_permission_prompt()
+            },
+        );
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
+        permission_key(&mut screen, KeyWithModifier::new(BareKey::Down), cli);
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
+        screen
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .get_pane_with_id_mut(PANE)
+            .unwrap()
+            .set_suspended(true);
+        permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
+        screen
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .get_pane_with_id_mut(PANE)
+            .unwrap()
+            .set_suspended(false);
+        let worker = HookEvent {
+            agent_id: Some("worker".into()),
+            tool_name: Some("AskUserQuestion".into()),
+            ..hook("PreToolUse")
+        };
+        if cli {
+            report_kind(&mut screen, "claude", worker.clone());
+        }
+        permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
+        if cli {
+            assert_eq!(
+                screen.agent_status_for_test().agent.state,
+                AgentState::Waiting
+            );
+            report_kind(
+                &mut screen,
+                "claude",
+                HookEvent {
+                    hook_event_name: "PostToolUse".into(),
+                    ..worker
+                },
+            );
+        }
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+        // The notification is still running, and the parent's completion stays intact.
+        assert_eq!(
+            screen.agent_lifecycle[&PANE].last_message_for_test(),
+            Some("Started.")
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_stop("notification", "finished", &[]),
+        );
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+    }
+}

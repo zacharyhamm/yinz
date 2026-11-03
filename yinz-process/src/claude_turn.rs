@@ -470,7 +470,7 @@ fn follow_with_api(observation: &Observation, api: Option<AgyApi>) -> Result<Tur
                 .as_ref()
                 .is_some_and(|status| status.idle(process_id, &turn.session))
         {
-            // Read all records first: a newer prompt invalidates this observation. Recheck
+            // Read all records first, including overlapping prompts. Recheck
             // process/conversation identity and transcript stability after the status read.
             alive(&mut system)?;
             let current =
@@ -531,9 +531,6 @@ impl Turn {
             if record["type"] == "user"
                 && let Some(prompt) = record["promptId"].as_str()
             {
-                if self.found && prompt != self.prompt {
-                    return Err(anyhow!("Claude prompt replaced"));
-                }
                 if prompt == self.prompt {
                     self.found = true;
                 }
@@ -544,7 +541,12 @@ impl Turn {
             let parent_in_turn = record["parentUuid"]
                 .as_str()
                 .is_some_and(|parent| self.ancestors.contains(parent));
-            let linked = record["promptId"].as_str() == Some(&self.prompt) || parent_in_turn;
+            // Explicit prompt identity takes precedence over transcript ancestry: steering
+            // prompts can descend from this turn without belonging to it. Their descendants
+            // must not contribute text, tasks, or completion boundaries to this observation.
+            let linked = record["promptId"]
+                .as_str()
+                .map_or(parent_in_turn, |prompt| prompt == self.prompt);
             if !linked {
                 return Ok(false);
             }

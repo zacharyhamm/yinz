@@ -371,7 +371,7 @@ pub(crate) fn apply_pane_agent_report(
     pane_id: PaneId,
     agent: Option<AgentInfo>,
 ) -> Result<bool> {
-    set_pane_agent_report(screen, pane_id, agent, true)
+    set_pane_agent_report(screen, pane_id, agent, true, true)
 }
 
 pub(super) fn stage_pane_agent_report(
@@ -379,7 +379,16 @@ pub(super) fn stage_pane_agent_report(
     pane_id: PaneId,
     agent: Option<AgentInfo>,
 ) -> Result<bool> {
-    set_pane_agent_report(screen, pane_id, agent, false)
+    set_pane_agent_report(screen, pane_id, agent, false, false)
+}
+
+/// Publish aggregated activity without replacing the underlying parent state or its wait.
+pub(super) fn publish_pane_agent_activity(
+    screen: &mut Screen,
+    pane_id: PaneId,
+    agent: AgentInfo,
+) -> Result<bool> {
+    set_pane_agent_report(screen, pane_id, Some(agent), true, false)
 }
 
 fn set_pane_agent_report(
@@ -387,8 +396,11 @@ fn set_pane_agent_report(
     pane_id: PaneId,
     agent: Option<AgentInfo>,
     publish: bool,
+    remember_parent: bool,
 ) -> Result<bool> {
-    screen.claude_permission_waits.remove(&pane_id);
+    if !publish || remember_parent {
+        screen.claude_permission_waits.remove(&pane_id);
+    }
     // Read before the write: which hooks a change fires is a question about the edge, and the
     // pane only answers whether anything changed.
     let Some(previous) = screen
@@ -408,7 +420,7 @@ fn set_pane_agent_report(
                 .as_ref()
                 .and_then(|previous| previous.run_id.clone());
         }
-        if publish {
+        if remember_parent {
             screen.remember_claude_parent(pane_id, &agent);
         }
         screen.aggregate_claude_state(pane_id, &mut agent);

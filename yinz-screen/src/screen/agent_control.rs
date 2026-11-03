@@ -104,6 +104,7 @@ struct ClaudeNotification {
     /// The tasks the notification reports finished.
     tasks: Vec<String>,
     waiting: Option<AgentInfo>,
+    permission_revision: Option<u64>,
 }
 
 pub(super) struct DialogInput {
@@ -136,6 +137,17 @@ pub(super) struct Submission {
     acknowledged: bool,
     turn_id: Option<String>,
     result: Option<SubmissionResult>,
+}
+
+/// Keep the recent admission window independently of older unresolved claims.
+fn prune_submissions(submissions: &mut std::collections::VecDeque<Submission>) {
+    let old = submissions.len().saturating_sub(SUBMISSION_HISTORY_LIMIT);
+    let mut index = 0;
+    submissions.retain(|submission| {
+        let keep = index >= old || submission.result.is_none();
+        index += 1;
+        keep
+    });
 }
 
 #[derive(Clone)]
@@ -228,6 +240,9 @@ impl Screen {
         }
         if let Some(result) = result.filter(|_| submission.result.is_none()) {
             submission.result = Some(result);
+        }
+        if let Some(submissions) = self.agent_submissions.get_mut(&pending.pane) {
+            prune_submissions(submissions);
         }
     }
 
@@ -478,6 +493,7 @@ impl Screen {
                     ClaudeNotification {
                         tasks,
                         waiting: None,
+                        permission_revision: None,
                     },
                 );
             }
@@ -670,6 +686,8 @@ impl Screen {
         {
             self.agent_clear_inputs.remove(&pane);
         }
+        let input_revision = self.agent_input_revision(pane);
+        let mut notification_report = false;
         let mut workers = self.agent_worker_waits.remove(&pane);
         let agent = if let Some(hook) = hook.filter(|hook| hook.is_worker()) {
             let Some(mut parent) = self
@@ -760,8 +778,18 @@ impl Screen {
                             .as_ref()
                             .and_then(|id| lifecycle.claude_notifications.get_mut(id))
                         {
+                            notification_report = true;
                             notification.waiting =
                                 (agent.state == AgentState::Waiting).then(|| agent.clone());
+                            notification.permission_revision = hook
+                                .filter(|hook| {
+                                    notification.waiting.is_some()
+                                        && hook.hook_event_name == "Notification"
+                                        && hook.notification_type.as_deref()
+                                            == Some("permission_prompt")
+                                        && !hook.archive_only
+                                })
+                                .map(|_| input_revision);
                         }
                         if notification
                             || notification_id.is_some()
@@ -793,7 +821,7 @@ impl Screen {
         if agent.is_none() {
             workers = None;
         }
-        let permission_wait = if hook.is_some_and(HookEvent::is_worker) {
+        let permission_wait = if notification_report || hook.is_some_and(HookEvent::is_worker) {
             self.claude_permission_waits.remove(&pane)
         } else {
             hook.filter(|hook| {
@@ -1973,15 +2001,6 @@ impl Screen {
                     },
                 };
                 let submissions = self.agent_submissions.entry(pane).or_default();
-                while submissions.len() >= SUBMISSION_HISTORY_LIMIT {
-                    let Some(index) = submissions
-                        .iter()
-                        .position(|submission| submission.result.is_some())
-                    else {
-                        break;
-                    };
-                    submissions.remove(index);
-                }
                 submissions.push_back(Submission {
                     id: submission_id.clone(),
                     kind: status.agent.kind.clone(),
@@ -1990,6 +2009,7 @@ impl Screen {
                     turn_id: None,
                     result: None,
                 });
+                prune_submissions(submissions);
                 // Claim and observe before input; hooks cannot overtake this screen instruction.
                 let pending = Pending {
                     client: Some(client.clone()),
@@ -2304,6 +2324,9 @@ impl Screen {
                             background_tasks: Vec::new(),
                         });
             }
+        }
+        if let Some(submissions) = self.agent_submissions.get_mut(&pane) {
+            prune_submissions(submissions);
         }
         self.agent_controls
             .retain(|pending| pending.pane != pane || pending.prompt.is_none());
@@ -2721,6 +2744,55 @@ impl Screen {
     }
 
     fn refresh_claude_permission_waits(&mut self) {
+        let notification_panes: Vec<_> = self
+            .agent_lifecycle
+            .iter()
+            .filter(|(_, lifecycle)| {
+                lifecycle
+                    .claude_notifications
+                    .values()
+                    .any(|notification| notification.permission_revision.is_some())
+            })
+            .map(|(pane, _)| *pane)
+            .collect();
+        for pane in notification_panes {
+            let Some(info) = self.get_pane_info(pane) else {
+                continue;
+            };
+            let enter_revision = self
+                .tab_containing_pane(pane)
+                .and_then(|tab| tab.get_pane_with_id(pane))
+                .map_or(0, |pane| pane.agent_enter_revision());
+            let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) else {
+                continue;
+            };
+            let valid = !info.is_held
+                && !info.exited
+                && info.agent.as_ref().is_some_and(|agent| {
+                    agent.kind == "claude"
+                        && agent.session_id.as_ref() == Some(&lifecycle.conversation)
+                });
+            let mut changed = false;
+            for notification in lifecycle.claude_notifications.values_mut() {
+                if !valid {
+                    notification.permission_revision = None;
+                } else if notification
+                    .permission_revision
+                    .is_some_and(|revision| enter_revision > revision)
+                {
+                    notification.permission_revision = None;
+                    notification.waiting = None;
+                    changed = true;
+                }
+            }
+            if !changed {
+                continue;
+            }
+            let Some(parent) = lifecycle.claude.parent.clone() else {
+                continue;
+            };
+            self.publish_claude_permission_activity(pane, parent);
+        }
         for (pane, wait) in std::mem::take(&mut self.claude_permission_waits) {
             let Some(info) = self.get_pane_info(pane) else {
                 continue;
@@ -2728,7 +2800,13 @@ impl Screen {
             let Some(mut agent) = info.agent else {
                 continue;
             };
-            if let Some(workers) = self.agent_worker_waits.get(&pane) {
+            if let Some(parent) = self
+                .agent_lifecycle
+                .get(&pane)
+                .and_then(|l| l.claude.parent.as_ref())
+            {
+                agent = parent.clone();
+            } else if let Some(workers) = self.agent_worker_waits.get(&pane) {
                 agent = workers.parent.clone();
             }
             if info.is_held
@@ -2756,13 +2834,36 @@ impl Screen {
                 lifecycle.claude.parent = Some(agent.clone());
             }
             if let Some(workers) = self.agent_worker_waits.get_mut(&pane) {
-                workers.parent = agent;
-            } else {
-                super::thread_main::apply_pane_agent_report(self, pane, Some(agent))
-                    .context("clear Claude permission wait after Enter")
-                    .non_fatal();
+                workers.parent = agent.clone();
             }
+            self.publish_claude_permission_activity(pane, agent);
         }
+    }
+
+    fn publish_claude_permission_activity(&mut self, pane: PaneId, mut visible: AgentInfo) {
+        if visible.state != AgentState::Waiting
+            && let Some(workers) = self
+                .agent_worker_waits
+                .get(&pane)
+                .filter(|w| !w.waits.is_empty())
+        {
+            visible.state = AgentState::Waiting;
+            visible.wait_needs_a_person = true;
+            visible.waiting_on = workers.waits.values().next().cloned().flatten();
+        }
+        if visible.state != AgentState::Waiting
+            && let Some(waiting) = self.agent_lifecycle.get(&pane).and_then(|lifecycle| {
+                lifecycle
+                    .claude_notifications
+                    .values()
+                    .find_map(|n| n.waiting.as_ref())
+            })
+        {
+            visible = waiting.clone();
+        }
+        super::agent_reports::publish_pane_agent_activity(self, pane, visible)
+            .context("clear Claude permission wait after Enter")
+            .non_fatal();
     }
 
     pub(super) fn agent_control_event(&mut self, event: &AgentEvent, hook: Option<&HookEvent>) {

@@ -123,7 +123,11 @@ fn interruption_cannot_confirm_a_different_conversation_or_prompt() {
             .as_object_mut()
             .unwrap()
             .extend(change.as_object().unwrap().clone());
-        assert!(turn.record(&record).is_err(), "{change}");
+        if change.get("sessionId").is_some() {
+            assert!(turn.record(&record).is_err(), "{change}");
+        } else {
+            assert!(!turn.record(&record).unwrap(), "{change}");
+        }
     }
     let mut unseen = Turn::new("claude", &hook());
     assert!(!unseen.record(&interruption_record()).unwrap());
@@ -179,16 +183,13 @@ fn a_task_notification_turn_is_followed_by_its_own_prompt_id() {
 }
 
 #[test]
-fn replacement_prompts_and_conversations_never_confirm_the_previous_turn() {
-    for replacement in [
-        json!({"type":"user","promptId":"new"}),
-        json!({"sessionId":"other","type":"system","subtype":"turn_duration"}),
-    ] {
-        let mut turn = Turn::new("claude", &hook());
-        turn.record(&json!({"type":"user","promptId":"prompt","uuid":"user"}))
-            .unwrap();
-        assert!(turn.record(&replacement).is_err());
-    }
+fn replacement_conversations_never_confirm_the_previous_turn() {
+    let mut turn = Turn::new("claude", &hook());
+    turn.record(&json!({"type":"user","promptId":"prompt","uuid":"user"}))
+        .unwrap();
+    assert!(turn
+        .record(&json!({"sessionId":"other","type":"system","subtype":"turn_duration"}))
+        .is_err());
 }
 
 #[test]
@@ -338,10 +339,9 @@ fn claude_early_interruption_uses_idle_registry_without_a_transcript_boundary() 
     let next = json!({"type":"user","sessionId":"conversation",
         "promptId":"next","uuid":"new-user"});
     std::fs::write(&transcript, format!("{prompt}\n{next}\n")).unwrap();
-    assert_eq!(
-        follow(&observation).err().unwrap().to_string(),
-        "Claude prompt replaced"
-    );
+    // Conversation idle can also settle an earlier prompt with no separate boundary.
+    let turn = follow(&observation).unwrap();
+    assert!(turn.last_text.is_none());
 
     // A reused PID cannot be confirmed by a registry left by its previous process.
     std::fs::write(&transcript, format!("{prompt}\n")).unwrap();
@@ -926,4 +926,38 @@ fn agy_missing_identity_process_exit_replacement_and_session_end_are_unavailable
     observation.hook = original;
     observation.process.as_mut().unwrap().1 += 1;
     assert!(follow_with_api(&observation, None).is_err());
+}
+
+#[test]
+fn overlapping_claude_prompts_keep_their_own_results_and_boundaries() {
+    let mut first = Turn::new("claude", &hook());
+    let mut second = Turn::new(
+        "claude",
+        &HookEvent {
+            prompt_id: Some("next".into()),
+            ..hook()
+        },
+    );
+    for record in [
+        json!({"type":"user","promptId":"prompt","uuid":"one"}),
+        json!({"type":"assistant","parentUuid":"one","uuid":"answer-one","message":{"content":[{"type":"text","text":"FIRST"}]}}),
+        // The newer prompt shares ancestry with the first, but has its own ownership.
+        json!({"type":"user","promptId":"next","parentUuid":"answer-one","uuid":"two"}),
+        json!({"type":"assistant","parentUuid":"two","uuid":"answer-two","message":{"content":[{"type":"text","text":"SECOND"}]}}),
+        json!({"type":"user","parentUuid":"answer-two","uuid":"task-two","toolUseResult":{"backgroundTaskId":"second-task"}}),
+        json!({"type":"user","promptId":"prompt","parentUuid":"answer-two","uuid":"task-one","toolUseResult":{"backgroundTaskId":"first-task"}}),
+    ] {
+        assert!(!first.record(&record).unwrap());
+        assert!(!second.record(&record).unwrap());
+    }
+    let first_end = json!({"type":"system","subtype":"turn_duration","parentUuid":"task-one"});
+    assert!(first.record(&first_end).unwrap());
+    assert!(!second.record(&first_end).unwrap());
+    let second_end = json!({"type":"system","subtype":"turn_duration","parentUuid":"task-two"});
+    assert!(!first.record(&second_end).unwrap());
+    assert!(second.record(&second_end).unwrap());
+    assert_eq!(first.last_text.as_deref(), Some("FIRST"));
+    assert_eq!(second.last_text.as_deref(), Some("SECOND"));
+    assert_eq!(first.background_tasks, ["first-task"]);
+    assert_eq!(second.background_tasks, ["second-task"]);
 }

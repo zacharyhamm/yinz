@@ -1634,3 +1634,86 @@ fn weekly_usage_publishes_both_providers_and_throttles_requests() {
         json!({"1":false,"3":false})
     );
 }
+
+#[test]
+fn waiting_manifest_preserves_one_permission_or_question_toast() {
+    for question in [false, true] {
+        let (mut runtime, host) = plugin_with_source(
+            "agent-service",
+            r#"
+            (require "./agent-service/state.scm" "./agent-service/observe.scm")
+            (define (load _)
+              (as-reset!)
+              (for-each (lambda (name) (as-register! name (lambda args (void))))
+                '("record-event" "drain" "persist" "resolve-repositories" "adopt-arrived-runs"
+                  "finish-run" "publish-arrangement")))
+            (define (rebuild manifest) (as-set! "manifest" manifest) (as-rebuild!))
+            (define (hook event)
+              (as-call "hook" 7 "claude" (hash-ref (as-model "HookEvent" (yinz-json-string event)) "Ok")))
+            "#,
+            json!({}),
+            BTreeMap::new(),
+            "",
+        );
+        let pane = yinz_types::data::PaneInfo {
+            id: yinz_types::pane_id::PaneId::from_legacy(7, false),
+            title: "claude".into(),
+            terminal_command: Some("claude".into()),
+            agent: Some(yinz_types::agent::AgentInfo {
+                kind: "claude".into(),
+                state: yinz_types::agent::AgentState::Busy,
+                session_id: Some("conversation".into()),
+                source: yinz_types::agent::AgentSource::Reported,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                run_id: None,
+            }),
+            ..Default::default()
+        };
+        let mut manifest = json!({"panes":{"0":[pane]}});
+        runtime.invoke("rebuild", vec![manifest.clone()]).unwrap();
+        manifest["panes"]["0"][0]["agent"]["state"] = json!("Waiting");
+        manifest["panes"]["0"][0]["agent"]["waiting_on"] = json!(if question {
+            "Which option?"
+        } else {
+            "Allow Bash?"
+        });
+        let event = if question {
+            json!({"hook_event_name":"PreToolUse", "tool_name":"AskUserQuestion", "tool_input":{"questions":[{"question":"Which option?"}]}, "session_id":"conversation"})
+        } else {
+            json!({"hook_event_name":"Notification", "notification_type":"permission_prompt", "message":"Allow Bash?", "session_id":"conversation"})
+        };
+        for _ in 0..2 {
+            runtime.invoke("rebuild", vec![manifest.clone()]).unwrap();
+        }
+        for _ in 0..2 {
+            runtime.invoke("hook", vec![event.clone()]).unwrap();
+            runtime.invoke("rebuild", vec![manifest.clone()]).unwrap();
+        }
+        assert_eq!(
+            host.lock()
+                .unwrap()
+                .commands
+                .iter()
+                .filter(|command| command.get("Notify").is_some())
+                .count(),
+            1
+        );
+        manifest["panes"]["0"][0]["agent"]["state"] = json!("Busy");
+        runtime.invoke("rebuild", vec![manifest.clone()]).unwrap();
+        manifest["panes"]["0"][0]["agent"]["state"] = json!("Waiting");
+        runtime.invoke("rebuild", vec![manifest]).unwrap();
+        runtime.invoke("hook", vec![event]).unwrap();
+        assert_eq!(
+            host.lock()
+                .unwrap()
+                .commands
+                .iter()
+                .filter(|command| command.get("Notify").is_some())
+                .count(),
+            2
+        );
+    }
+}

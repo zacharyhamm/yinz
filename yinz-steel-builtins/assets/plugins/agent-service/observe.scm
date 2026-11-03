@@ -17,7 +17,7 @@
     ;; Recency comes from the host manifest published before this event.
     (if (equal? (hash-ref event "hook_event_name") "SessionEnd")
       (begin
-        (as-map-remove! "prompts" id) (remove-id "event-fed" id)
+        (as-map-remove! "prompts" id) (as-map-remove! "waiting-transitions" id) (remove-id "event-fed" id)
         (when (as-map-get "hooks" id #f) (as-map-remove! "hooks" id)))
       (let* ((phase (as-model "HookPhase" kind event))
           (pane (as-find (lambda (pane) (= id (hash-ref pane "pane_id"))) (as-panes))))
@@ -53,7 +53,9 @@
           (when changed (as-map-set! "hooks" id feed))
           (as-settle-latches!)
           (when moved (as-rejoin! "cwds" "cwd") (as-call "resolve-repositories"))
-          (when (and (equal? phase "Waiting") (or (not previous) (not (equal? (hash-ref previous "phase") "Waiting")))
+          (define waiting-transition (equal? (as-map-get "waiting-transitions" id #f) (hash-ref event "session_id")))
+          (as-map-remove! "waiting-transitions" id)
+          (when (and (equal? phase "Waiting") (or waiting-transition (not previous) (not (equal? (hash-ref previous "phase") "Waiting")))
               (not (equal? (as-get "focused") id)))
             (as-send (hash "Notify" (list (as-model "WaitingToast" id (toast-kind id) feed) (hash "Terminal" id) json-null)))))))
     (as-publish! #f))
