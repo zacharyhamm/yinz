@@ -403,3 +403,20 @@ fn update_transaction_cleans_read_only_backups_without_changing_active_permissio
         fs::set_permissions(private, fs::Permissions::from_mode(0o700)).unwrap();
     }
 }
+
+#[test]
+fn update_transaction_directory_lock_excludes_generation_readers() {
+    let installation = Installation::new(true);
+    let plugins = installation.data.join("plugins");
+    let reader = yinz_runtime::builtin_generation::read_guard(&installation.data).unwrap();
+    assert!(lock_directory(&plugins, std::time::Duration::ZERO).is_err());
+    drop(reader);
+    let transaction = installation.prepare();
+    let reader = File::open(&plugins).unwrap();
+    assert!(matches!(
+        reader.try_lock_shared(),
+        Err(std::fs::TryLockError::WouldBlock)
+    ));
+    drop(transaction);
+    reader.try_lock_shared().unwrap();
+}

@@ -84,7 +84,7 @@ struct Location {
     plugins: PathBuf,
     journal: PathBuf,
     claim: PathBuf,
-    _locks: [File; 2],
+    _locks: [File; 3],
 }
 
 fn sidecar(executable: &Path, suffix: &str) -> Result<PathBuf> {
@@ -113,6 +113,19 @@ fn lock(path: &Path, wait: std::time::Duration) -> Result<File> {
         .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC)
         .open(path)
         .with_context(|| format!("open installation lock {}", path.display()))?;
+    lock_file(file, path, wait)
+}
+
+fn lock_directory(path: &Path, wait: std::time::Duration) -> Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC | nix::libc::O_DIRECTORY)
+        .open(path)
+        .with_context(|| format!("open builtin directory lock {}", path.display()))?;
+    lock_file(file, path, wait)
+}
+
+fn lock_file(file: File, path: &Path, wait: std::time::Duration) -> Result<File> {
     let deadline = std::time::Instant::now() + wait;
     loop {
         match file.try_lock() {
@@ -159,12 +172,15 @@ impl Location {
             std::time::Duration::ZERO,
         )?;
         let data_lock = lock(&plugins.join(".yinz-update.lock"), SHARED_READER_WAIT)?;
+        // Retain the sidecar for older updaters/readers, and synchronize new
+        // readers on the directory they can open without write permissions.
+        let directory_lock = lock_directory(&plugins, SHARED_READER_WAIT)?;
         Ok(Self {
             journal: sidecar(&executable, ".yinz-update.json")?,
             claim: plugins.join(".yinz-update-active.json"),
             executable,
             plugins,
-            _locks: [binary_lock, data_lock],
+            _locks: [binary_lock, data_lock, directory_lock],
         })
     }
 

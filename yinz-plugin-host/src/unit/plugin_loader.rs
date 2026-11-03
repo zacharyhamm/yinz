@@ -21,8 +21,7 @@ fn builtin_prefetch_guard_blocks_publication_until_initializers_release_the_gene
     let worker_guard = guard.clone();
     let publisher = std::fs::OpenOptions::new()
         .read(true)
-        .write(true)
-        .open(data.path().join("plugins/.yinz-update.lock"))
+        .open(data.path().join("plugins"))
         .unwrap();
     assert!(publisher.try_lock().is_err());
     drop(guard);

@@ -75,3 +75,29 @@ fn session_generation_remembers_removed_builtin_entrypoints_and_rejects_escapes(
     );
     assert!(source_path(&root.join("../secret.scm")).is_err());
 }
+
+#[test]
+fn session_generation_reads_read_only_installation_without_sidecar() {
+    use std::os::unix::fs::PermissionsExt;
+    let data = tempfile::tempdir().unwrap();
+    let plugins = data.path().join("plugins");
+    let root = plugins.join("builtins");
+    fs::create_dir_all(&root).unwrap();
+    let entry = root.join("tab-bar.scm");
+    fs::write(&entry, "read-only builtin").unwrap();
+    fs::set_permissions(&entry, fs::Permissions::from_mode(0o444)).unwrap();
+    for directory in [&root, &plugins, data.path()] {
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o555)).unwrap();
+    }
+    // Restore directory permissions even if pinning failed, so cleanup can run.
+    let result = pin_session_generation(data.path()).and_then(|generation| {
+        let contents = fs::read_to_string(builtin_path(data.path(), "tab-bar")?)?;
+        Ok((generation, contents))
+    });
+    for directory in [data.path(), &plugins, &root] {
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let (_generation, contents) = result.unwrap();
+    assert_eq!(contents, "read-only builtin");
+    assert!(!plugins.join(".yinz-update.lock").exists());
+}

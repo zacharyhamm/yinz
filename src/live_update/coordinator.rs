@@ -1371,6 +1371,7 @@ fn release_cold_snapshot(store: &Store) -> Result<()> {
     anyhow::ensure!(!snapshot.ownership.iter().any(|(_,owner)|matches!(owner,MigrationOwnership::Adopting)),
         "destination exited during an unacknowledged adoption; consumed terminal output may not be durable, so automatic cold restoration is unsafe");
     snapshot.phase = MigrationPhase::Released;
+    snapshot.mapping = Default::default();
     snapshot.errors.clear();
     for (_, owner) in &mut snapshot.ownership {
         *owner = MigrationOwnership::Released;
@@ -1989,3 +1990,7 @@ fn read_recovery_snapshot(
     ))
     .context("read recovery snapshot")
 }
+
+#[cfg(test)]
+#[path = "../unit/live_update_cold_recovery.rs"]
+mod cold_recovery_tests;

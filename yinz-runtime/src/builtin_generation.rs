@@ -9,17 +9,13 @@ use std::{
 };
 
 /// Pin installation reads against the updater's directory exchange. The lock inode
-/// lives beside `builtins`, so replacing that directory cannot replace the lock.
+/// is the stable `plugins` directory, so readers need no installation write access.
 pub fn read_guard(data_dir: &Path) -> Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
-    let path = data_dir.join("plugins/.yinz-update.lock");
+    let path = data_dir.join("plugins");
     let file = std::fs::OpenOptions::new()
         .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_DIRECTORY)
         .open(&path)
         .with_context(|| format!("open builtin generation lock {}", path.display()))?;
     file.lock_shared()
