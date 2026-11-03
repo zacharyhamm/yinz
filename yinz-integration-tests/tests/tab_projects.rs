@@ -497,7 +497,12 @@ fn hidden_panes_keep_naming_the_tab_and_follow_cwd_changes() {
         0
     );
     let editor = yinz.expect_pty_spawn();
-    wait_for_tab(&yinz, "EDITING SCROLLBACK", &["hidden-alpha"]);
+    // The tab bar truncates long labels; the pane frame retains the full title.
+    wait_for_tab(&yinz, "hidden-alpha:main: EDITING", &[]);
+    yinz.wait_until(
+        "the editor frame retains its project and full title",
+        |screen| screen.contains("hidden-alpha:main: EDITING SCROLLBACK"),
+    );
     assert_eq!(
         yinz.run_cli_action(CliAction::RenamePane {
             name: String::new(),

@@ -530,10 +530,9 @@ impl Turn {
             }
             if record["type"] == "user"
                 && let Some(prompt) = record["promptId"].as_str()
+                && prompt == self.prompt
             {
-                if prompt == self.prompt {
-                    self.found = true;
-                }
+                self.found = true;
             }
             if !self.found {
                 return Ok(false);
