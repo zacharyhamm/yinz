@@ -394,7 +394,9 @@ impl Screen {
             };
             self.recover_pending_tab(tab_id).non_fatal();
             for pane_id in &new_terminal_pane_ids {
-                self.restore_staged_agent_tracking(*pane_id);
+                if self.restore_staged_agent_tracking(*pane_id) {
+                    self.fire_agent_start_for_new_pane(*pane_id);
+                }
             }
             if let Some((_, _, _, Some(response), _)) =
                 self.pending_group_placements.remove(&tab_id)
@@ -418,7 +420,9 @@ impl Screen {
             self.report_layout_error(message, client_id, &mut completion_tx);
         }
         for pane_id in &new_terminal_pane_ids {
-            self.restore_staged_agent_tracking(*pane_id);
+            if self.restore_staged_agent_tracking(*pane_id) {
+                self.fire_agent_start_for_new_pane(*pane_id);
+            }
         }
         for (terminal_id, _, agent) in adopted_terminals {
             let Some(agent) = agent else {

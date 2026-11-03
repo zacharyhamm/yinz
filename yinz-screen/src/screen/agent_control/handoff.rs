@@ -74,17 +74,25 @@ impl Screen {
     }
 
     /// Called immediately after placement, before queued reports or terminal bytes are drained.
-    pub(in crate::screen) fn restore_staged_agent_tracking(&mut self, pane: PaneId) {
+    /// Returns whether a staged identity was applied, even without a tracking payload.
+    pub(in crate::screen) fn restore_staged_agent_tracking(&mut self, pane: PaneId) -> bool {
         let Some((agent, tracking)) = self.pending_agent_tracking.remove(&pane) else {
-            return;
+            return false;
         };
-        if let Some(agent) = agent {
-            super::super::agent_reports::stage_pane_agent_report(self, pane, Some(agent))
-                .context("restore adopted agent identity")
-                .non_fatal();
+        // Absence is part of the snapshot too: SessionEnd may have cleared the source
+        // record while the destination command synthesized a new Busy record.
+        match super::super::agent_reports::stage_pane_agent_report(self, pane, agent)
+            .context("restore adopted agent identity")
+        {
+            Ok(true) => {},
+            Ok(false) => return false,
+            Err(error) => {
+                Err::<(), _>(error).non_fatal();
+                return false;
+            },
         }
         let Some(mut tracking) = tracking else {
-            return;
+            return true;
         };
         let valid = self
             .get_pane_info(pane)
@@ -101,7 +109,7 @@ impl Screen {
             });
         if !valid {
             log::debug!("agent handoff rejected pane={pane:?} kind={} conversation={:?} reason=identity_or_process_mismatch", tracking.agent.kind, tracking.agent.session_id);
-            return;
+            return true;
         }
         let live = self.get_pane_info(pane).is_some_and(|info| {
             !info.is_held && !info.exited && tracking.agent.state != AgentState::Exited
@@ -167,5 +175,6 @@ impl Screen {
             tracking.agent.kind,
             tracking.agent.session_id
         );
+        true
     }
 }

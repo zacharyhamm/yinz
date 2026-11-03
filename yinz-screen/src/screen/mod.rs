@@ -2208,7 +2208,9 @@ impl Screen {
                 })
                 .collect();
             for pane_id in adopted_ids {
-                self.restore_staged_agent_tracking(pane_id);
+                if self.restore_staged_agent_tracking(pane_id) {
+                    self.fire_agent_start_for_new_pane(pane_id);
+                }
             }
 
             if let Some(transition) = &mut transition {

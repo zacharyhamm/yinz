@@ -1,4 +1,351 @@
 use super::*;
+use yinz_types::input::hooks::HookPoint;
+
+/// Drive the screen side of adoption, including the layout reply and held-state replay.
+fn adopt_tracking(
+    source: &mut Screen,
+    path: &str,
+    fail_layout: bool,
+    include_tracking: bool,
+) -> (Screen, Receiver<(PluginInstruction, ErrorContext)>) {
+    use yinz_types::data::{WarpHiddenPane, WarpPlacement, WarpRelationships, WarpedTab};
+
+    let command = source
+        .tab_containing_pane(PANE)
+        .unwrap()
+        .pane_run_command(PANE)
+        .unwrap();
+    let held = source
+        .tab_containing_pane(PANE)
+        .unwrap()
+        .get_pane_with_id(PANE)
+        .unwrap()
+        .held_for_warp();
+    let payload = WarpedPane {
+        agent: source.get_pane_info(PANE).unwrap().agent,
+        agent_tracking: include_tracking
+            .then(|| source.capture_agent_tracking(PANE))
+            .flatten(),
+        held: held.clone(),
+        ..Default::default()
+    };
+    let (mut destination, _, _) = setup("bash");
+    destination
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .extract_warp_panes(&[PANE]);
+    let (to_plugin, plugins) = channels::unbounded();
+    destination.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    let mut pending = crate::screen::thread_main::PendingEvents::default();
+    if path == "pane" {
+        let (to_screen, instructions) = channels::unbounded();
+        destination.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+        destination
+            .place_adopted_pane(
+                TerminalId::new(7),
+                payload,
+                WarpPlacement::FocusedTab,
+                CLIENT,
+                command,
+                vec![],
+                held.as_ref().map(|held| held.exit_status),
+                &mut None,
+            )
+            .unwrap();
+        for (instruction, _) in instructions.try_iter() {
+            match instruction {
+                ScreenInstruction::NewPane(
+                    id,
+                    title,
+                    hold,
+                    run,
+                    placement,
+                    suppressed,
+                    target,
+                    completion,
+                    first,
+                ) => {
+                    destination
+                        .place_new_pane(
+                            id,
+                            title,
+                            hold,
+                            run,
+                            placement,
+                            suppressed,
+                            target,
+                            completion,
+                            first,
+                            &mut pending,
+                        )
+                        .unwrap();
+                },
+                ScreenInstruction::RestoreHeldPane(id, held) => {
+                    assert!(destination.restore_held_pane(id, &held));
+                },
+                _ => {},
+            }
+        }
+    } else {
+        let companion = path == "companion";
+        let cover = TerminalId::new(8);
+        let cover_command = RunCommand {
+            command: "bash".into(),
+            ..Default::default()
+        };
+        let pane_layout = TiledPaneLayout {
+            run: Some(Run::Command(if companion {
+                cover_command.clone()
+            } else {
+                command.clone()
+            })),
+            ..Default::default()
+        };
+        let floating = if companion {
+            vec![FloatingPaneLayout {
+                run: Some(Run::Command(command.clone())),
+                ..Default::default()
+            }]
+        } else {
+            vec![]
+        };
+        let adopted = crate::pty::AdoptedPane {
+            terminal_id: TerminalId::new(7),
+            cmd: command.clone(),
+            buffered: vec![],
+            child_exit_status: held.as_ref().map(|held| held.exit_status),
+        };
+        let (tiled_panes, floating_panes, tiled, floating_adopted) = if companion {
+            (
+                vec![WarpedPane::default()],
+                vec![payload],
+                vec![crate::pty::AdoptedPane {
+                    terminal_id: cover,
+                    cmd: cover_command.clone(),
+                    buffered: vec![],
+                    child_exit_status: None,
+                }],
+                vec![adopted],
+            )
+        } else {
+            (vec![payload], vec![], vec![adopted], vec![])
+        };
+        let tab_id = destination.get_new_tab_id();
+        let (receipt_tx, receipt) = crossbeam::channel::bounded(1);
+        destination
+            .place_adopted_tab(
+                WarpedTab {
+                    tiled_layout: pane_layout.clone(),
+                    floating_layout: floating.clone(),
+                    tiled_panes,
+                    floating_panes,
+                    relationships: Some(WarpRelationships {
+                        hidden: if companion {
+                            vec![WarpHiddenPane {
+                                pane: 1,
+                                restored_by: Some(0),
+                                is_scrollback_editor: false,
+                            }]
+                        } else {
+                            vec![]
+                        },
+                        stacks: vec![],
+                    }),
+                    ..Default::default()
+                },
+                crate::pty::AdoptedTabPanes {
+                    tiled,
+                    floating: floating_adopted,
+                },
+                CLIENT,
+                false,
+                companion.then_some(WarpPlacement::FocusedTab),
+                Some(receipt_tx),
+                None,
+            )
+            .unwrap();
+        let layout = if fail_layout {
+            TiledPaneLayout {
+                children: vec![
+                    TiledPaneLayout {
+                        split_size: Some(yinz_types::geometry::SplitSize::Fixed(10_000)),
+                        ..Default::default()
+                    },
+                    TiledPaneLayout::default(),
+                ],
+                ..Default::default()
+            }
+        } else {
+            pane_layout
+        };
+        let hold = held.as_ref().map(|_| command.clone());
+        let (tiled_ids, floating_ids, adopted_commands) = if companion {
+            (
+                vec![(cover, None)],
+                vec![(TerminalId::new(7), hold)],
+                vec![
+                    (cover, cover_command, None),
+                    (TerminalId::new(7), command, None),
+                ],
+            )
+        } else {
+            (
+                vec![(TerminalId::new(7), hold)],
+                vec![],
+                vec![(TerminalId::new(7), command, None)],
+            )
+        };
+        let (completion_tx, completion) = tokio::sync::oneshot::channel();
+        destination
+            .land_layout(
+                layout,
+                floating,
+                tiled_ids,
+                floating_ids,
+                adopted_commands,
+                HashMap::new(),
+                tab_id,
+                true,
+                CLIENT,
+                Some(crate::route::NotificationEnd::new(completion_tx)),
+                None,
+                &mut pending,
+            )
+            .unwrap();
+        assert_eq!(
+            completion.blocking_recv().unwrap().exit_status == Some(1),
+            fail_layout
+        );
+        assert!(
+            receipt.try_recv().unwrap().is_ok(),
+            "adoption must acknowledge retained panes"
+        );
+        if let Some(held) = held {
+            assert!(destination.restore_held_pane(PANE, &held));
+        }
+    }
+    assert!(
+        !destination.restore_staged_agent_tracking(PANE),
+        "the staged identity must be consumed exactly once"
+    );
+    (destination, plugins)
+}
+
+fn arrival_hooks(plugins: &Receiver<(PluginInstruction, ErrorContext)>) -> Vec<HookPoint> {
+    plugins
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::RunHook {
+                point,
+                pane_id: Some(PANE),
+                payload,
+                ..
+            } if matches!(point, HookPoint::AgentStart | HookPoint::AgentWaiting) => {
+                let crate::plugins::HookFiring::Headless(yinz_types::data::HookPayload::Agent {
+                    agent,
+                    ..
+                }) = payload
+                else {
+                    panic!("agent hook payload")
+                };
+                assert_eq!(
+                    agent.state,
+                    AgentState::Waiting,
+                    "hooks must see the restored identity"
+                );
+                Some(point)
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn warp_tracking_session_end_stays_absent_in_held_panes_tabs_and_companions() {
+    for path in ["pane", "tab", "companion"] {
+        for fail_layout in [false, true]
+            .into_iter()
+            .filter(|failed| !failed || path != "pane")
+        {
+            let (mut source, _, _) = setup("codex");
+            report(&mut source, hook("SessionStart"));
+            report(&mut source, hook("SessionEnd"));
+            let tab = source.tab_containing_pane_mut(PANE).unwrap();
+            tab.hold_pane(PANE, Some(0), false, tab.pane_run_command(PANE).unwrap());
+            assert!(source.get_pane_info(PANE).unwrap().agent.is_none());
+            assert!(source.capture_agent_tracking(PANE).is_none());
+            let (destination, plugins) = adopt_tracking(&mut source, path, fail_layout, true);
+            let info = destination.get_pane_info(PANE).unwrap();
+            assert!(info.is_held);
+            assert!(info.agent.is_none(), "{path}, recovery={fail_layout}");
+            assert!(arrival_hooks(&plugins).is_empty());
+        }
+    }
+}
+
+#[test]
+fn warp_tracking_arrival_hooks_fire_once_after_restoring_waiting_identity() {
+    for path in ["pane", "tab", "companion"] {
+        for fail_layout in [false, true]
+            .into_iter()
+            .filter(|failed| !failed || path != "pane")
+        {
+            for include_tracking in [false, true] {
+                let (mut source, _, _) = setup("codex");
+                report(&mut source, hook("SessionStart"));
+                report(&mut source, permission_wait("codex"));
+                let expected = source.capture_agent_tracking(PANE).unwrap();
+                let (mut destination, plugins) =
+                    adopt_tracking(&mut source, path, fail_layout, include_tracking);
+                assert_eq!(
+                    destination.get_pane_info(PANE).unwrap().agent.as_ref(),
+                    Some(&expected.agent)
+                );
+                if include_tracking {
+                    assert_eq!(
+                        destination.capture_agent_tracking(PANE).unwrap().lifecycle,
+                        expected.lifecycle
+                    );
+                }
+                assert_eq!(
+                    arrival_hooks(&plugins),
+                    vec![HookPoint::AgentStart, HookPoint::AgentWaiting],
+                    "{path}, recovery={fail_layout}, tracking={include_tracking}"
+                );
+                report(&mut destination, permission_wait("codex"));
+                report(&mut destination, permission_wait("codex"));
+                assert!(!destination.restore_staged_agent_tracking(PANE));
+                assert!(arrival_hooks(&plugins).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn warp_tracking_explicit_held_agent_records_survive_all_adoption_paths() {
+    for path in ["pane", "tab", "companion"] {
+        for fail_layout in [false, true]
+            .into_iter()
+            .filter(|failed| !failed || path != "pane")
+        {
+            let (mut source, _, _) = setup("codex");
+            report(&mut source, hook("SessionStart"));
+            let tab = source.tab_containing_pane_mut(PANE).unwrap();
+            tab.hold_pane(PANE, Some(3), false, tab.pane_run_command(PANE).unwrap());
+            // An explicit record can accompany a held snapshot; restoring it isn't a new exit.
+            report(&mut source, permission_wait("codex"));
+            let expected = source.get_pane_info(PANE).unwrap().agent;
+            let (destination, plugins) = adopt_tracking(&mut source, path, fail_layout, true);
+            let info = destination.get_pane_info(PANE).unwrap();
+            assert!(info.is_held);
+            assert_eq!(info.agent, expected, "{path}, recovery={fail_layout}");
+            assert_eq!(
+                arrival_hooks(&plugins),
+                vec![HookPoint::AgentStart, HookPoint::AgentWaiting]
+            );
+        }
+    }
+}
 
 fn setup_tracking(
     kind: &str,
