@@ -138,8 +138,12 @@ impl Screen {
         }
         if let Some(mut lifecycle) = tracking.lifecycle.filter(|_| live) {
             lifecycle.input_revision = lifecycle.input_revision.map(remap);
+            // Permission revisions are ordered thresholds, not consumption evidence:
+            // input delivered after restoration must exceed them, while earlier
+            // destination input must not clear a transferred wait.
             for notification in lifecycle.claude_notifications.values_mut() {
-                notification.permission_revision = notification.permission_revision.map(remap);
+                notification.permission_revision =
+                    notification.permission_revision.map(|_| destination);
             }
             self.agent_lifecycle.insert(pane, lifecycle.into());
         }
@@ -151,7 +155,7 @@ impl Screen {
             self.agent_worker_waits.insert(pane, workers);
         }
         if let Some(mut permission) = tracking.permission_wait.filter(|_| live) {
-            permission.input_revision = remap(permission.input_revision);
+            permission.input_revision = destination;
             self.claude_permission_waits.insert(pane, permission);
         }
         if let Some(mut launch) = tracking.launch.take() {

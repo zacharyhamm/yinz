@@ -369,18 +369,22 @@ fn setup_tracking(
 }
 
 fn transfer(source: &mut Screen, kind: &str) -> Screen {
+    let (mut destination, _, _) = setup_tracking(kind);
+    transfer_into(source, &mut destination);
+    destination
+}
+
+fn transfer_into(source: &mut Screen, destination: &mut Screen) {
     let handoff = source.capture_agent_tracking(PANE).unwrap();
     // Exercise the wire representation, including the deliberate absence of process clocks.
     let json = serde_json::to_string(&handoff).unwrap();
     assert!(!json.contains("last_report"));
     let decoded = serde_json::from_str(&json).unwrap();
     assert_eq!(handoff, decoded);
-    let (mut destination, _, _) = setup_tracking(kind);
     destination
         .pending_agent_tracking
         .insert(PANE, (Some(handoff.agent.clone()), Some(decoded)));
-    destination.restore_staged_agent_tracking(PANE);
-    destination
+    assert!(destination.restore_staged_agent_tracking(PANE));
 }
 
 #[test]
@@ -577,7 +581,7 @@ fn warp_tracking_rebases_consumed_draft_and_permission_revisions() {
     );
     destination.agent_write_for_test();
     let mut again = transfer(&mut destination, "claude");
-    assert_ne!(
+    assert_eq!(
         again
             .capture_agent_tracking(PANE)
             .unwrap()
@@ -586,6 +590,95 @@ fn warp_tracking_rebases_consumed_draft_and_permission_revisions() {
             .input_revision,
         0
     );
+}
+
+fn permission_wait_survives_transfers(notification: bool) {
+    for cli in [false, true] {
+        for prior_destination_enter in [false, true] {
+            for transfers in [1, 2] {
+                let (mut source, messages, mut writes) = setup_tracking("claude");
+                if notification {
+                    complete_with_background(&mut source, &messages, &writes, &["bash"]);
+                    report_kind(
+                        &mut source,
+                        "claude",
+                        task_notification("notification", &["bash"]),
+                    );
+                } else {
+                    report_kind(&mut source, "claude", hook("SessionStart"));
+                    report_kind(&mut source, "claude", hook("UserPromptSubmit"));
+                }
+                report_kind(
+                    &mut source,
+                    "claude",
+                    HookEvent {
+                        prompt_id: notification.then(|| "notification".into()),
+                        ..claude_permission_prompt()
+                    },
+                );
+                let waiting = source.agent_status_for_test().agent;
+                assert_eq!(waiting.state, AgentState::Waiting);
+                for _ in 0..transfers {
+                    permission_key(&mut source, KeyWithModifier::new(BareKey::Down), cli);
+                    assert_eq!(source.agent_status_for_test().agent, waiting);
+                    let (mut destination, _, destination_writes) = setup_tracking("claude");
+                    if prior_destination_enter {
+                        report_kind(&mut destination, "claude", hook("SessionStart"));
+                        permission_key(&mut destination, KeyWithModifier::new(BareKey::Enter), cli);
+                        assert_eq!(finish_paste(&destination_writes), b"\r");
+                    }
+                    transfer_into(&mut source, &mut destination);
+                    destination.refresh_agent_controls();
+                    assert_eq!(
+                        destination.agent_status_for_test().agent,
+                        waiting,
+                        "earlier destination Enter must not answer a transferred prompt"
+                    );
+                    source = destination;
+                    writes = destination_writes;
+                }
+                permission_key(&mut source, KeyWithModifier::new(BareKey::Down), cli);
+                assert_eq!(source.agent_status_for_test().agent, waiting);
+                source
+                    .tab_containing_pane_mut(PANE)
+                    .unwrap()
+                    .get_pane_with_id_mut(PANE)
+                    .unwrap()
+                    .set_suspended(true);
+                permission_key(&mut source, KeyWithModifier::new(BareKey::Enter), cli);
+                assert_eq!(source.agent_status_for_test().agent, waiting);
+                source
+                    .tab_containing_pane_mut(PANE)
+                    .unwrap()
+                    .get_pane_with_id_mut(PANE)
+                    .unwrap()
+                    .set_suspended(false);
+                finish_paste(&writes);
+                permission_key(&mut source, KeyWithModifier::new(BareKey::Enter), cli);
+                assert_eq!(finish_paste(&writes), b"\r");
+                assert_eq!(source.agent_status_for_test().agent.state, AgentState::Busy);
+                assert!(source.claude_permission_waits.is_empty());
+                assert!(source
+                    .capture_agent_tracking(PANE)
+                    .unwrap()
+                    .lifecycle
+                    .unwrap()
+                    .claude_notifications
+                    .values()
+                    .all(|notification| notification.permission_revision.is_none()));
+            }
+        }
+    }
+}
+
+#[test]
+fn warp_tracking_claude_permission_wait_clears_after_delivered_enter() {
+    permission_wait_survives_transfers(false);
+}
+
+#[test]
+fn warp_tracking_notification_permission_wait_clears_after_delivered_enter() {
+    permission_wait_survives_transfers(true);
 }
 
 #[test]
