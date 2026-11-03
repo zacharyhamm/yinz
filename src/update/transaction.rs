@@ -98,7 +98,12 @@ fn sidecar(executable: &Path, suffix: &str) -> Result<PathBuf> {
     Ok(executable.with_file_name(name))
 }
 
-fn lock(path: &Path) -> Result<File> {
+/// Live servers hold the builtin lock shared while they read installed plugin
+/// sources (`yinz_steel_builtins::read_guard`). Those readers finish, so wait
+/// briefly for them instead of reporting a concurrent update.
+const SHARED_READER_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn lock(path: &Path, wait: std::time::Duration) -> Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -108,13 +113,23 @@ fn lock(path: &Path) -> Result<File> {
         .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC)
         .open(path)
         .with_context(|| format!("open installation lock {}", path.display()))?;
-    file.try_lock().with_context(|| {
-        format!(
-            "installation is busy ({}); another update is running",
-            path.display()
-        )
-    })?;
-    Ok(file)
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::park_timeout(std::time::Duration::from_millis(50));
+            },
+            Err(error) => {
+                return Err(anyhow!("{error}")).with_context(|| {
+                    format!(
+                        "installation is busy ({}); another update or plugin load is running",
+                        path.display()
+                    )
+                })
+            },
+        }
+    }
 }
 
 impl Location {
@@ -139,8 +154,11 @@ impl Location {
             .join("plugins")
             .canonicalize()
             .context("resolve builtin parent directory")?;
-        let binary_lock = lock(&sidecar(&executable, ".yinz-update.lock")?)?;
-        let data_lock = lock(&plugins.join(".yinz-update.lock"))?;
+        let binary_lock = lock(
+            &sidecar(&executable, ".yinz-update.lock")?,
+            std::time::Duration::ZERO,
+        )?;
+        let data_lock = lock(&plugins.join(".yinz-update.lock"), SHARED_READER_WAIT)?;
         Ok(Self {
             journal: sidecar(&executable, ".yinz-update.json")?,
             claim: plugins.join(".yinz-update-active.json"),

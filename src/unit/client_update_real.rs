@@ -806,29 +806,56 @@ fn full_update_coordinator_preserves_two_clients_focus_input_and_terminal_proces
         .stderr(log);
     let mut child = command.spawn().unwrap();
     let completed = Watched::new(None);
-    std::thread::scope(|scope| {
+    let status = std::thread::scope(|scope| {
         let completed = &completed;
         let child = &mut child;
         scope.spawn(move || {
+            // Child::wait has no timeout and holds the child needed for cleanup.
+            // Keep bounded try_wait polling so a stuck worker can be killed and
+            // reaped without leaving a scoped waiter blocked indefinitely.
             let deadline = Instant::now() + Duration::from_secs(180);
-            while Instant::now() < deadline {
-                if let Some(status) = child.try_wait().unwrap() {
-                    *completed.lock() = Some(status);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        *completed.lock() = Some(Ok(status));
+                        return;
+                    },
+                    Ok(None) => {},
+                    Err(error) => {
+                        let killed = child.kill();
+                        let reaped = child.wait();
+                        *completed.lock() = Some(Err(format!(
+                            "failed to observe worker: {error}; kill: {killed:?}; reap: {reaped:?}"
+                        )));
+                        return;
+                    },
+                }
+                if Instant::now() >= deadline {
+                    let killed = child.kill();
+                    let reaped = child.wait();
+                    *completed.lock() = Some(Err(format!(
+                        "timed out after 180s waiting for full update coordinator to finish; kill: {killed:?}; reap: {reaped:?}"
+                    )));
                     return;
                 }
                 std::thread::park_timeout(Duration::from_millis(10));
             }
-            child.kill().unwrap();
-            *completed.lock() = Some(child.wait().unwrap());
         });
-        completed.wait_until(
+        completed.wait_until_described(
             "full update coordinator to finish",
             Duration::from_secs(190),
-            |status| status.map(|_| ()),
-        );
-    });
+            |state| state.clone(),
+            |state| format!(
+                "worker outcome: {state:?}; log: {}",
+                fs::read_to_string(&log_path).unwrap_or_default()
+            ),
+        )
+    }).unwrap_or_else(|error| panic!(
+        "{error}; log: {}",
+        fs::read_to_string(&log_path).unwrap_or_default()
+    ));
     assert!(
-        completed.lock().unwrap().success(),
+        status.success(),
         "coordinator: {}\njournal: {}",
         fs::read_to_string(&log_path).unwrap(),
         fs::read_to_string(
@@ -845,24 +872,40 @@ fn full_update_coordinator_preserves_two_clients_focus_input_and_terminal_proces
     let after = destination.inventory(&operation);
     assert_ne!(after.server_pid, before.server_pid);
     assert_eq!(after.session, SESSION);
-    let source_exited = Watched::new(false);
+    let source_exited = Watched::new(Ok(false));
     std::thread::scope(|scope| {
         let source_exited = &source_exited;
         scope.spawn(move || {
+            // This server is not our child, so waitpid cannot observe its exit.
+            // There is no portable exit notification for an arbitrary PID; poll
+            // liveness within the existing deadline and publish the actual result.
             let deadline = Instant::now() + Duration::from_secs(15);
-            while Instant::now() < deadline {
-                if yinz_process::liveness::has_exited(before.server_pid).unwrap() {
-                    *source_exited.lock() = true;
+            loop {
+                let state = yinz_process::liveness::has_exited(before.server_pid)
+                    .map_err(|error| format!("server PID {}: {error}", before.server_pid));
+                let done = !matches!(state, Ok(false));
+                *source_exited.lock() = state;
+                if done {
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    *source_exited.lock() = Err(format!(
+                        "timed out waiting for server PID {} to exit; last observed alive",
+                        before.server_pid
+                    ));
                     return;
                 }
                 std::thread::park_timeout(Duration::from_millis(10));
             }
         });
-        source_exited.wait_until(
-            "retired source server to exit after completed handoff",
-            Duration::from_secs(15),
-            |exited| exited.then_some(()),
-        );
+        source_exited
+            .wait_until_described(
+                "retired source server to exit after completed handoff",
+                Duration::from_secs(15),
+                |state| (!matches!(state, Ok(false))).then(|| state.clone()),
+                |state| format!("server PID {}: {state:?}", before.server_pid),
+            )
+            .expect("retired source server to exit after completed handoff");
     });
     for source_id in [first_id, second_id] {
         assert!(

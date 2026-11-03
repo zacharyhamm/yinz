@@ -217,10 +217,14 @@ pub(crate) fn participate(invocation: ParticipantInvocation) -> Result<serde_jso
                             transaction.status() != update::transaction::Status::RolledBack,
                             "this operation was rolled back; begin a new update"
                         );
-                        if transaction.status() != update::transaction::Status::Staging {
-                            return serde_json::to_value(transaction.status())
-                                .context("encode existing participant status");
-                        }
+                        // Transaction::prepare refuses an interrupted Staging journal,
+                        // so fail before downloading the release again.
+                        anyhow::ensure!(
+                            transaction.status() != update::transaction::Status::Staging,
+                            "update preparation was interrupted; recover operation {operation} before retrying"
+                        );
+                        return serde_json::to_value(transaction.status())
+                            .context("encode existing participant status");
                     }
                 },
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

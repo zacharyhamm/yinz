@@ -344,6 +344,7 @@ pub(super) fn execute_release(
         for client in &inventory.clients {
             if !client.supports_update {
                 store.journal.restart_required.push(client.id);
+                store.save()?;
                 continue;
             }
             match client_participant(source, &operation, client.id, ParticipantRequest::Inventory) {
@@ -1975,6 +1976,8 @@ fn recover(
 fn read_recovery_snapshot(
     path: &Path,
 ) -> Result<yinz_types::session_migration::SessionMigrationSnapshot> {
-    serde_json::from_reader(std::fs::File::open(path).context("open recovery snapshot")?)
-        .context("read recovery snapshot")
+    serde_json::from_reader(std::io::BufReader::new(
+        std::fs::File::open(path).context("open recovery snapshot")?,
+    ))
+    .context("read recovery snapshot")
 }

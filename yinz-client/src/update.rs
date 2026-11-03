@@ -140,6 +140,13 @@ impl Updates {
                     );
                     return self.poll(token);
                 }
+                if self.jobs.len() >= MAX_REQUESTS {
+                    // Up-to-date checks and failed updates never exec this client.
+                    // Their coordinators already observed these results, so drop
+                    // them rather than refusing every later update.
+                    self.jobs
+                        .retain(|_, job| job.result.is_none() || !job.applied);
+                }
                 anyhow::ensure!(
                     self.jobs.len() < MAX_REQUESTS,
                     "too many client update requests; reconnect before retrying"

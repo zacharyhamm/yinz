@@ -254,7 +254,18 @@ pub fn save_snapshot(path: &Path, snapshot: &SessionMigrationSnapshot) -> Result
         "migration snapshot path must be absolute"
     );
     if path.exists() {
-        let previous = load_snapshot(path, &snapshot.operation)?;
+        // Saves repeat per terminal during release and adoption. Check only the
+        // identity fields instead of rebuilding every serialized terminal grid.
+        let previous = load_snapshot_identity(path)?;
+        anyhow::ensure!(
+            previous.operation == snapshot.operation,
+            "migration snapshot belongs to another operation"
+        );
+        anyhow::ensure!(
+            previous.format == SESSION_MIGRATION_FORMAT,
+            "unsupported migration snapshot format {}",
+            previous.format
+        );
         anyhow::ensure!(
             previous.inventory.instance_id == snapshot.inventory.instance_id,
             "snapshot belongs to a different source server"
@@ -290,16 +301,38 @@ pub fn save_snapshot(path: &Path, snapshot: &SessionMigrationSnapshot) -> Result
     }
     result
 }
-pub fn load_snapshot(path: &Path, operation: &str) -> Result<SessionMigrationSnapshot> {
+#[derive(serde::Deserialize)]
+struct SnapshotIdentity {
+    format: u32,
+    operation: String,
+    inventory: InventoryIdentity,
+}
+
+#[derive(serde::Deserialize)]
+struct InventoryIdentity {
+    instance_id: String,
+}
+
+fn open_private_snapshot(path: &Path) -> Result<BufReader<File>> {
     use std::os::unix::fs::MetadataExt;
     let metadata = fs::symlink_metadata(path).context("inspect migration snapshot")?;
     anyhow::ensure!(
         metadata.is_file() && metadata.mode() & 0o077 == 0,
         "migration snapshot must be a private regular file"
     );
-    let file = File::open(path).context("open migration snapshot")?;
+    Ok(BufReader::new(
+        File::open(path).context("open migration snapshot")?,
+    ))
+}
+
+fn load_snapshot_identity(path: &Path) -> Result<SnapshotIdentity> {
+    serde_json::from_reader(open_private_snapshot(path)?)
+        .context("read migration snapshot identity")
+}
+
+pub fn load_snapshot(path: &Path, operation: &str) -> Result<SessionMigrationSnapshot> {
     let snapshot: SessionMigrationSnapshot =
-        serde_json::from_reader(BufReader::new(file)).context("read migration snapshot")?;
+        serde_json::from_reader(open_private_snapshot(path)?).context("read migration snapshot")?;
     anyhow::ensure!(
         snapshot.operation == operation,
         "migration snapshot belongs to another operation"

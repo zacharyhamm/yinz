@@ -78,38 +78,65 @@ fn setup_with_configuration(configuration: &str) -> (Session, Vec<i32>) {
         NAME,
     ]);
     session.wait_for_panes(false);
-    let observed = yinz_test_support::Watched::new(Vec::new());
-    std::thread::scope(|scope| {
+    let observed = yinz_test_support::Watched::new((
+        [
+            Err(String::from("not read yet")),
+            Err(String::from("not read yet")),
+        ],
+        false,
+    ));
+    let pids = std::thread::scope(|scope| {
         let observed = &observed;
         let root = session.0.path();
         scope.spawn(move || {
+            // The external shell stubs publish PID files, not in-process events.
+            // Portable file notifications would add a separate watcher mechanism;
+            // retain bounded polling and report each file's actual contents/error.
             let deadline = Instant::now() + Duration::from_secs(30);
-            while Instant::now() < deadline {
-                let pids: Vec<i32> = ["pid1", "pid2"]
-                    .iter()
-                    .filter_map(|name| {
-                        fs::read_to_string(root.join(name))
-                            .ok()?
-                            .trim()
-                            .parse()
-                            .ok()
-                    })
-                    .collect();
-                let ready = pids.len() == 2;
-                *observed.lock() = pids;
-                if ready {
+            loop {
+                let pids = ["pid1", "pid2"].map(|name| {
+                    fs::read_to_string(root.join(name))
+                        .map_err(|error| format!("{name}: {error}"))
+                        .and_then(|contents| {
+                            contents
+                                .trim()
+                                .parse::<i32>()
+                                .map_err(|error| format!("{name}: {contents:?}: {error}"))
+                                .and_then(|pid| {
+                                    if pid > 0 {
+                                        Ok(pid)
+                                    } else {
+                                        Err(format!("{name}: invalid PID {pid}"))
+                                    }
+                                })
+                        })
+                });
+                let ready = pids.iter().all(Result::is_ok);
+                let expired = Instant::now() >= deadline;
+                *observed.lock() = (pids, expired);
+                if ready || expired {
                     return;
                 }
                 std::thread::park_timeout(Duration::from_millis(10));
             }
         });
-        observed.wait_until(
-            "both terminal processes to start",
+        let (pids, _) = observed.wait_until_described(
+            "both terminal PID files to contain valid process IDs",
             Duration::from_secs(30),
-            |pids| (pids.len() == 2).then_some(()),
+            |state| (state.0.iter().all(Result::is_ok) || state.1).then(|| state.clone()),
+            |state| {
+                format!(
+                    "pid1: {:?}; pid2: {:?}; deadline expired: {}",
+                    state.0[0], state.0[1], state.1
+                )
+            },
         );
+        assert!(
+            pids.iter().all(Result::is_ok),
+            "timed out after 30s waiting for terminal PID files: {pids:?}"
+        );
+        pids.into_iter().map(Result::unwrap).collect()
     });
-    let pids = observed.lock().clone();
     (session, pids)
 }
 
@@ -139,24 +166,40 @@ fn assert_alive(pids: &[i32]) {
 }
 
 fn assert_server_exited(pid: u32) {
-    let exited = yinz_test_support::Watched::new(false);
+    let exited = yinz_test_support::Watched::new(Ok(false));
     std::thread::scope(|scope| {
         let exited = &exited;
         scope.spawn(move || {
+            // This server is not our child, so waitpid cannot observe its exit.
+            // There is no portable exit notification for an arbitrary PID; poll
+            // liveness within the existing deadline and publish the actual result.
             let deadline = Instant::now() + Duration::from_secs(30);
-            while Instant::now() < deadline {
-                if yinz_process::liveness::has_exited(pid).unwrap() {
-                    *exited.lock() = true;
+            loop {
+                let state = yinz_process::liveness::has_exited(pid)
+                    .map_err(|error| format!("server PID {}: {error}", pid));
+                let done = !matches!(state, Ok(false));
+                *exited.lock() = state;
+                if done {
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    *exited.lock() = Err(format!(
+                        "timed out waiting for server PID {} to exit; last observed alive",
+                        pid
+                    ));
                     return;
                 }
                 std::thread::park_timeout(Duration::from_millis(10));
             }
         });
-        exited.wait_until(
-            "retired migration server to exit",
-            Duration::from_secs(30),
-            |exited| (*exited).then_some(()),
-        );
+        exited
+            .wait_until_described(
+                "retired migration server to exit",
+                Duration::from_secs(30),
+                |state| (!matches!(state, Ok(false))).then(|| state.clone()),
+                |state| format!("server PID {}: {state:?}", pid),
+            )
+            .expect("retired migration server to exit");
     });
 }
 

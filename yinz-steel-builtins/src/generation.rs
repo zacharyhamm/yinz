@@ -18,8 +18,12 @@ struct Generation {
 
 struct State {
     snapshot: tempfile::TempDir,
+    /// Source metadata when `snapshot` was taken; unchanged trees are not copied again.
+    fingerprint: Option<Fingerprint>,
     switched: bool,
 }
+
+type Fingerprint = Vec<(PathBuf, u64, u64, i64, i64, i64, i64)>;
 
 /// Held for the entire plugin-host lifetime, including worker cleanup.
 pub struct SessionGeneration {
@@ -53,6 +57,7 @@ pub fn pin_session_generation(data_dir: &Path) -> Result<SessionGeneration> {
     };
     // Absence is also a generation: an already running binary must never begin
     // loading files first installed by a later release.
+    let fingerprint = identity.map(|_| fingerprint(&root)).transpose()?;
     let snapshot = if identity.is_some() {
         snapshot(&root)?
     } else {
@@ -65,6 +70,7 @@ pub fn pin_session_generation(data_dir: &Path) -> Result<SessionGeneration> {
         identity,
         state: Mutex::new(State {
             snapshot,
+            fingerprint,
             switched: false,
         }),
     });
@@ -124,7 +130,13 @@ pub fn source_path(source: &Path) -> Result<PathBuf> {
         // Refresh on source access so intentional edits reloaded before the
         // update are carried into the old session's retained generation.
         if current.is_some() {
-            state.snapshot = snapshot(root)?;
+            // Fingerprint before copying: an edit racing the copy changes the
+            // next fingerprint, which then refreshes this snapshot again.
+            let fingerprint = Some(fingerprint(root)?);
+            if state.fingerprint != fingerprint {
+                state.snapshot = snapshot(root)?;
+                state.fingerprint = fingerprint;
+            }
         }
         return Ok(source.to_owned());
     }
@@ -134,6 +146,48 @@ pub fn source_path(source: &Path) -> Result<PathBuf> {
         .path()
         .join("plugins/builtins")
         .join(relative))
+}
+
+/// Metadata of every source `copy_sources` would retain, in a stable order.
+fn fingerprint(source: &Path) -> Result<Fingerprint> {
+    let mut pending = vec![(source.to_owned(), 0usize)];
+    let mut entries = Vec::new();
+    let mut files = 0usize;
+    while let Some((directory, depth)) = pending.pop() {
+        anyhow::ensure!(
+            depth <= 64,
+            "builtin source generation exceeds maximum depth"
+        );
+        for entry in fs::read_dir(&directory).context("read builtin source generation")? {
+            let entry = entry.context("read builtin generation entry")?;
+            files += 1;
+            anyhow::ensure!(
+                files <= 4096,
+                "builtin source generation has too many entries"
+            );
+            let kind = entry
+                .file_type()
+                .context("inspect builtin generation entry")?;
+            if kind.is_dir() {
+                pending.push((entry.path(), depth + 1));
+            } else if kind.is_file() {
+                let metadata = entry
+                    .metadata()
+                    .context("inspect builtin source metadata")?;
+                entries.push((
+                    entry.path(),
+                    metadata.ino(),
+                    metadata.len(),
+                    metadata.mtime(),
+                    metadata.mtime_nsec(),
+                    metadata.ctime(),
+                    metadata.ctime_nsec(),
+                ));
+            }
+        }
+    }
+    entries.sort();
+    Ok(entries)
 }
 
 fn snapshot(source: &Path) -> Result<tempfile::TempDir> {

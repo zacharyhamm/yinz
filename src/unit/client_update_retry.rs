@@ -143,24 +143,39 @@ fn failed_readiness_worker() {
         nix::sys::signal::Signal::SIGKILL,
     )
     .unwrap();
-    let dead = Watched::new(false);
+    let dead = Watched::new(Ok(false));
     std::thread::scope(|scope| {
         let dead = &dead;
         scope.spawn(move || {
+            // This server is not our child, so waitpid cannot observe its exit.
+            // There is no portable exit notification for an arbitrary PID; poll
+            // liveness within the existing deadline and publish the actual result.
             let deadline = Instant::now() + TIMEOUT;
-            while Instant::now() < deadline {
-                if yinz_process::liveness::has_exited(source_pid).unwrap() {
-                    *dead.lock() = true;
+            loop {
+                let state = yinz_process::liveness::has_exited(source_pid)
+                    .map_err(|error| format!("server PID {}: {error}", source_pid));
+                let done = !matches!(state, Ok(false));
+                *dead.lock() = state;
+                if done {
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    *dead.lock() = Err(format!(
+                        "timed out waiting for server PID {} to exit; last observed alive",
+                        source_pid
+                    ));
                     return;
                 }
                 std::thread::park_timeout(Duration::from_millis(10));
             }
         });
-        dead.wait_until(
+        dead.wait_until_described(
             "source server death before committed recovery",
             TIMEOUT,
-            |dead| dead.then_some(()),
-        );
+            |state| (!matches!(state, Ok(false))).then(|| state.clone()),
+            |state| format!("server PID {}: {state:?}", source_pid),
+        )
+        .expect("source server death before committed recovery");
     });
     let error = crate::live_update::coordinator::run(
         &coordinator.socket,
@@ -316,29 +331,56 @@ fn coordinator_keeps_backups_after_client_startup_failure_and_repeated_recovery(
         .stderr(log);
     let mut worker = command.spawn().unwrap();
     let completed = Watched::new(None);
-    std::thread::scope(|scope| {
+    let status = std::thread::scope(|scope| {
         let completed = &completed;
         let worker = &mut worker;
         scope.spawn(move || {
+            // Child::wait has no timeout and holds the child needed for cleanup.
+            // Keep bounded try_wait polling so a stuck worker can be killed and
+            // reaped without leaving a scoped waiter blocked indefinitely.
             let deadline = Instant::now() + Duration::from_secs(45);
-            while Instant::now() < deadline {
-                if let Some(status) = worker.try_wait().unwrap() {
-                    *completed.lock() = Some(status);
+            loop {
+                match worker.try_wait() {
+                    Ok(Some(status)) => {
+                        *completed.lock() = Some(Ok(status));
+                        return;
+                    },
+                    Ok(None) => {},
+                    Err(error) => {
+                        let killed = worker.kill();
+                        let reaped = worker.wait();
+                        *completed.lock() = Some(Err(format!(
+                            "failed to observe worker: {error}; kill: {killed:?}; reap: {reaped:?}"
+                        )));
+                        return;
+                    },
+                }
+                if Instant::now() >= deadline {
+                    let killed = worker.kill();
+                    let reaped = worker.wait();
+                    *completed.lock() = Some(Err(format!(
+                        "timed out after 45s waiting for failed client readiness and recovery retry; kill: {killed:?}; reap: {reaped:?}"
+                    )));
                     return;
                 }
                 std::thread::park_timeout(Duration::from_millis(10));
             }
-            worker.kill().unwrap();
-            *completed.lock() = Some(worker.wait().unwrap());
         });
-        completed.wait_until(
+        completed.wait_until_described(
             "failed client readiness and recovery retry",
             Duration::from_secs(50),
-            |status| status.map(|_| ()),
-        );
-    });
+            |state| state.clone(),
+            |state| format!(
+                "worker outcome: {state:?}; log: {}",
+                fs::read_to_string(&log_path).unwrap_or_default()
+            ),
+        )
+    }).unwrap_or_else(|error| panic!(
+        "{error}; log: {}",
+        fs::read_to_string(&log_path).unwrap_or_default()
+    ));
     assert!(
-        completed.lock().unwrap().success(),
+        status.success(),
         "{}",
         fs::read_to_string(log_path).unwrap()
     );
