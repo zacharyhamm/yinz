@@ -147,3 +147,94 @@ fn update_fixture_release_installs_after_verification() {
         b"test"
     );
 }
+
+#[test]
+fn preparation_is_pinned_and_does_not_install() {
+    let temp = tempfile::tempdir().unwrap();
+    let script = temp.path().join("fixture");
+    yinz_test_support::write_warm_script(&script, "#!/bin/sh\necho 'yinz 999.0.0'\n");
+    let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+        Vec::new(),
+        flate2::Compression::default(),
+    ));
+    builder.append_path_with_name(&script, "yinz").unwrap();
+    let builtins = temp.path().join("builtins");
+    fs::create_dir(&builtins).unwrap();
+    fs::write(builtins.join("test.scm"), b"new plugin").unwrap();
+    builder
+        .append_dir_all("plugins/builtins", &builtins)
+        .unwrap();
+    let bytes = builder.into_inner().unwrap().finish().unwrap();
+    let digest = hex(&Sha256::digest(&bytes));
+    let release = Release {
+        tag_name: "v999.0.0".into(),
+        assets: vec![
+            Asset {
+                name: "yinz-test.tar.gz".into(),
+                browser_download_url: "archive".into(),
+            },
+            Asset {
+                name: "SHA256SUMS".into(),
+                browser_download_url: "sums".into(),
+            },
+        ],
+    };
+    let binary = temp.path().join("installed");
+    fs::write(&binary, b"old binary").unwrap();
+    let data = temp.path().join("installed-data");
+    fs::create_dir_all(data.join("plugins/builtins")).unwrap();
+    fs::write(data.join("plugins/builtins/test.scm"), b"old plugin").unwrap();
+    let mut phases = Vec::new();
+    let prepared = prepare(
+        &release,
+        "test",
+        &mut |url, output| {
+            match url {
+                "archive" => output.write_all(&bytes).unwrap(),
+                "sums" => output
+                    .write_all(format!("{digest}  yinz-test.tar.gz\n").as_bytes())
+                    .unwrap(),
+                _ => panic!("preparation must not resolve latest again: {url}"),
+            }
+            Ok(())
+        },
+        &mut |phase| phases.push(phase),
+    )
+    .unwrap();
+    assert_eq!(
+        phases,
+        vec![
+            Progress::Downloading,
+            Progress::Verifying,
+            Progress::Validating
+        ]
+    );
+    assert_eq!(prepared.version, version("999.0.0").unwrap());
+    assert_eq!(fs::read(&binary).unwrap(), b"old binary");
+    assert_eq!(
+        fs::read(data.join("plugins/builtins/test.scm")).unwrap(),
+        b"old plugin"
+    );
+    let staged_source = prepared.source.clone();
+    assert!(staged_source.join("yinz").is_file());
+    drop(prepared);
+    assert!(
+        !staged_source.exists(),
+        "aborted preparation cleans up its assets"
+    );
+}
+
+#[test]
+fn preparation_rejects_prerelease_before_download() {
+    let release = Release {
+        tag_name: "v999.0.0-rc.1".into(),
+        assets: vec![],
+    };
+    let result = prepare(
+        &release,
+        "test",
+        &mut |_, _| panic!("must not download"),
+        &mut |_| {},
+    );
+    assert!(result.err().unwrap().to_string().contains("prerelease"));
+}

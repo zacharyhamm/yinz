@@ -1,4 +1,5 @@
-//! Explicit, local installation of the latest stable release.
+//! Release discovery and preparation, separated from installation.
+//! Preparing a release never modifies the installed binary or builtin plugins.
 use flate2::read::GzDecoder;
 use isahc::{config::RedirectPolicy, prelude::*, HttpClient};
 use serde::Deserialize;
@@ -203,45 +204,57 @@ pub fn run(data_dir: Option<&Path>) -> Result<()> {
     )
 }
 
-fn run_with(
-    data_dir: Option<&Path>,
-    executable: &Path,
-    target: &str,
-    mut download: impl FnMut(&str, &mut dyn std::io::Write) -> Result<()>,
-) -> Result<()> {
-    println!("Checking latest stable Yinz release...");
+/// A validated release whose staging directory stays alive until installation finishes.
+/// Keeping preparation separate lets a session coordinator prepare every participant
+/// before changing any installation or releasing any terminal.
+struct PreparedRelease {
+    _staging: tempfile::TempDir,
+    source: std::path::PathBuf,
+    version: semver::Version,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Progress {
+    Checking,
+    Downloading,
+    Verifying,
+    Validating,
+    Installing,
+}
+
+fn discover(
+    download: &mut impl FnMut(&str, &mut dyn std::io::Write) -> Result<()>,
+) -> Result<Release> {
     let mut metadata = Vec::new();
     download(RELEASE_URL, &mut metadata)?;
     let release: Release = serde_json::from_slice(&metadata).context("parse GitHub release")?;
     let latest = version(&release.tag_name)?;
     anyhow::ensure!(latest.pre.is_empty(), "latest release is a prerelease");
-    if version(yinz_runtime::consts::VERSION)? >= latest {
-        println!(
-            "Yinz {} is up to date (latest stable: {latest}).",
-            yinz_runtime::consts::VERSION
-        );
-        return Ok(());
-    }
+    Ok(release)
+}
+
+/// Uses the already resolved release, never another lookup of `latest`.
+fn prepare(
+    release: &Release,
+    target: &str,
+    download: &mut impl FnMut(&str, &mut dyn std::io::Write) -> Result<()>,
+    progress: &mut impl FnMut(Progress),
+) -> Result<PreparedRelease> {
+    let latest = version(&release.tag_name)?;
+    anyhow::ensure!(latest.pre.is_empty(), "release is a prerelease");
     let name = format!("yinz-{target}.tar.gz");
-    let archive_url = asset(&release, &name)?;
-    let sums_url = asset(&release, "SHA256SUMS")?;
-    let executable = executable.canonicalize().context("resolve executable")?;
-    let data_dir = data_dir
-        .map(Path::to_path_buf)
-        .unwrap_or_else(yinz_runtime::home::get_default_data_dir);
-    println!(
-        "Installing {latest} to {}\nBuiltin data directory: {}",
-        executable.display(),
-        data_dir.display()
-    );
+    let archive_url = asset(release, &name)?;
+    let sums_url = asset(release, "SHA256SUMS")?;
     let temp = tempfile::tempdir().context("create update staging directory")?;
     let archive = temp.path().join(&name);
+    progress(Progress::Downloading);
     download(
         archive_url,
         &mut fs::File::create(&archive).context("create archive download")?,
     )?;
     let mut sums = Vec::new();
     download(sums_url, &mut sums)?;
+    progress(Progress::Verifying);
     verify(
         &archive,
         std::str::from_utf8(&sums).context("decode checksums")?,
@@ -250,6 +263,11 @@ fn run_with(
     let source = temp.path().join("extracted");
     fs::create_dir(&source).context("create extraction directory")?;
     extract(&archive, &source)?;
+    anyhow::ensure!(
+        source.join("yinz").is_file() && source.join("plugins/builtins").is_dir(),
+        "release is missing its executable or builtin plugins"
+    );
+    progress(Progress::Validating);
     let output = std::process::Command::new(source.join("yinz"))
         .arg("--version")
         .output()
@@ -259,7 +277,49 @@ fn run_with(
             && String::from_utf8_lossy(&output.stdout).trim() == format!("yinz {latest}"),
         "downloaded executable did not report expected version {latest}"
     );
-    install(&source, &executable, &data_dir)?;
+    Ok(PreparedRelease {
+        _staging: temp,
+        source,
+        version: latest,
+    })
+}
+
+fn run_with(
+    data_dir: Option<&Path>,
+    executable: &Path,
+    target: &str,
+    mut download: impl FnMut(&str, &mut dyn std::io::Write) -> Result<()>,
+) -> Result<()> {
+    let mut progress = |phase| match phase {
+        Progress::Checking => println!("Checking latest stable Yinz release..."),
+        Progress::Downloading => println!("Downloading release..."),
+        Progress::Verifying => println!("Verifying release checksum..."),
+        Progress::Validating => println!("Validating release..."),
+        Progress::Installing => println!("Installing release..."),
+    };
+    progress(Progress::Checking);
+    let release = discover(&mut download)?;
+    let latest = version(&release.tag_name)?;
+    if version(yinz_runtime::consts::VERSION)? >= latest {
+        println!(
+            "Yinz {} is up to date (latest stable: {latest}).",
+            yinz_runtime::consts::VERSION
+        );
+        return Ok(());
+    }
+    let executable = executable.canonicalize().context("resolve executable")?;
+    let data_dir = data_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(yinz_runtime::home::get_default_data_dir);
+    let prepared = prepare(&release, target, &mut download, &mut progress)?;
+    println!(
+        "Installing {} to {}\nBuiltin data directory: {}",
+        prepared.version,
+        executable.display(),
+        data_dir.display()
+    );
+    progress(Progress::Installing);
+    install(&prepared.source, &executable, &data_dir)?;
     println!("Installed Yinz {latest}. Restart existing sessions to use the new binary.");
     Ok(())
 }
