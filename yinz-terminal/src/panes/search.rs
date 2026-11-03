@@ -69,7 +69,7 @@ impl<'a> SearchSource<'a> {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SearchResult {
     // What we have already found in the viewport
     pub selections: Vec<Selection>,

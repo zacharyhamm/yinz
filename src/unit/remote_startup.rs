@@ -8,6 +8,54 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use yinz_test_support::{default_timeout, Watched};
 
+#[test]
+fn remote_discovery_preserves_legacy_identity_across_different_releases() {
+    let session = Session::new();
+    let output = session.success(&[
+        "remote-sessions",
+        "--client-version",
+        "previous-release",
+        "--contract-version",
+        &yinz_runtime::consts::CLIENT_SERVER_CONTRACT_VERSION.to_string(),
+        "--bootstrap-version",
+        &yinz_runtime::consts::REMOTE_BOOTSTRAP_VERSION.to_string(),
+    ]);
+    // This is the previous release's response shape. It ignores additive fields
+    // and continues to see the exact release identity it requested.
+    #[derive(serde::Deserialize)]
+    struct LegacyList {
+        yinz_version: String,
+        contract_version: usize,
+        bootstrap_version: usize,
+        sessions: Vec<serde_json::Value>,
+    }
+    let legacy: LegacyList = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(legacy.yinz_version, "previous-release");
+    assert_eq!(
+        legacy.contract_version,
+        yinz_runtime::consts::CLIENT_SERVER_CONTRACT_VERSION
+    );
+    assert_eq!(
+        legacy.bootstrap_version,
+        yinz_runtime::consts::REMOTE_BOOTSTRAP_VERSION
+    );
+    assert!(legacy.sessions.is_empty());
+    let modern: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(modern["build_version"], yinz_runtime::consts::VERSION);
+
+    let rejected = session.run(&[
+        "remote-sessions",
+        "--client-version",
+        yinz_runtime::consts::VERSION,
+        "--contract-version",
+        &(yinz_runtime::consts::CLIENT_SERVER_CONTRACT_VERSION + 1).to_string(),
+        "--bootstrap-version",
+        &yinz_runtime::consts::REMOTE_BOOTSTRAP_VERSION.to_string(),
+    ]);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("Yinz compatibility mismatch"));
+}
+
 fn discovery_command(session: &Session, names: &[&str]) -> Command {
     let mut command = fake_ssh_command(session, names);
     command.args(["attach", "--remote", "user@example"]);
@@ -459,6 +507,7 @@ fn local_resurrection_preserves_terminal_settings_geometry_pane_limit_and_debug(
                         warp_held_terminals: false,
                         warp_agent_tracking: false,
                         signal_quit: false,
+                        update_protocol: 0,
                     })
                     .unwrap();
             },
@@ -722,6 +771,7 @@ fn interrupted_startup(stage: &str, signal: Signal) {
                     warp_held_terminals: false,
                     warp_agent_tracking: false,
                     signal_quit: false,
+                    update_protocol: 0,
                 })
                 .unwrap();
             if before_guard {
@@ -756,6 +806,7 @@ fn interrupted_startup(stage: &str, signal: Signal) {
                             warp_held_terminals: false,
                             warp_agent_tracking: false,
                             signal_quit: false,
+                            update_protocol: 0,
                         })
                         .unwrap();
                 } else {

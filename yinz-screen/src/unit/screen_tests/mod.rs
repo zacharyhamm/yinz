@@ -937,6 +937,7 @@ impl MockScreen {
         let session_metadata = MockSession {
             shutdown: Default::default(),
             senders: ThreadSenders {
+                session_update_quiesced: Default::default(),
                 to_screen: Some(to_screen.clone()),
                 to_pty: Some(to_pty.clone()),
                 to_plugin: Some(to_plugin.clone()),
@@ -2103,3 +2104,5 @@ mod tab_projects;
 mod tabs;
 mod theme;
 mod waiting_pulse;
+
+mod migration;

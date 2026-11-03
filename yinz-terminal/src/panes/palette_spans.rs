@@ -12,6 +12,14 @@ struct Span {
 pub(super) struct PaletteSpans(Vec<Span>);
 
 impl PaletteSpans {
+    pub(crate) fn migration_spans(
+        &self,
+    ) -> impl Iterator<Item = (Range<usize>, &Rc<SourcePalette>)> {
+        self.0
+            .iter()
+            .map(|span| (span.range.clone(), &span.palette))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

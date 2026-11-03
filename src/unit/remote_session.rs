@@ -50,6 +50,7 @@ fn endpoint() -> Endpoint {
         session_name: "remote work".to_owned(),
         socket: "/remote/run/cv1/remote work".into(),
         yinz_version: VERSION.to_owned(),
+        build_version: Some(VERSION.to_owned()),
         contract_version: CLIENT_SERVER_CONTRACT_VERSION,
         bootstrap_version: REMOTE_BOOTSTRAP_VERSION,
     }
@@ -61,8 +62,10 @@ fn remote_endpoint_requires_bounded_matching_identity_and_versions() {
     let parse = |e: &Endpoint| parse_endpoint(&serde_json::to_vec(e).unwrap(), Some("remote work"));
     assert!(parse(&e).is_ok());
     e.yinz_version = "different".into();
-    let error = parse(&e).unwrap_err().to_string();
-    assert!(error.contains(VERSION) && error.contains("different"));
+    assert!(
+        parse(&e).is_ok(),
+        "release names do not define wire compatibility"
+    );
     e = endpoint();
     e.contract_version += 1;
     assert!(parse(&e).is_err());
@@ -509,6 +512,7 @@ fn remote_bootstrap_waits_for_a_concurrent_creator_to_initialize() {
 fn discovery_checks_versions_names_and_keeps_unavailable_but_not_exited_sessions() {
     use yinz_cli::sessions::SessionListing;
     let mut response = SessionList {
+        build_version: Some(VERSION.into()),
         yinz_version: VERSION.into(),
         contract_version: CLIENT_SERVER_CONTRACT_VERSION,
         bootstrap_version: REMOTE_BOOTSTRAP_VERSION,

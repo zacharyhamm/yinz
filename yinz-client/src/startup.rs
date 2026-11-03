@@ -128,6 +128,16 @@ impl<'a> StartupContext<'a> {
             host_terminal_env: host_terminal_env_with_overrides(self.env),
             timezone: yinz_runtime::client_time::capture_timezone(),
             supports_session_requests: true,
+            supports_in_place_update: true,
+            update_target: None,
+            update_source_session: None,
+            update_configuration: None,
+            update_layout: None,
+            update_resume: self.cli_args.update_resume.clone().zip(
+                self.cli_args
+                    .update_source_client
+                    .map(yinz_types::data::ClientId::new),
+            ),
         }
     }
 
@@ -167,6 +177,16 @@ impl<'a> StartupContext<'a> {
                             host_terminal_env: host_terminal_env_with_overrides(self.env),
                             timezone: yinz_runtime::client_time::capture_timezone(),
                             supports_session_requests: true,
+                            supports_in_place_update: true,
+                            update_target: None,
+                            update_source_session: None,
+                            update_configuration: None,
+                            update_layout: None,
+                            update_resume: self.cli_args.update_resume.clone().zip(
+                                self.cli_args
+                                    .update_source_client
+                                    .map(yinz_types::data::ClientId::new),
+                            ),
                             ..Default::default()
                         },
                         tab_number_to_focus: focus.tab_number,

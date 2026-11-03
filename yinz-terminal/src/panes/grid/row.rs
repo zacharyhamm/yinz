@@ -38,7 +38,7 @@ pub struct Row {
     pub(super) placeholder_marks: Vec<PlaceholderMark>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) enum Osc133MarkerKind {
     Prompt,
     Input,
@@ -47,7 +47,7 @@ pub(super) enum Osc133MarkerKind {
     End,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Osc133Marker {
     pub(super) column: usize,
     pub(super) kind: Osc133MarkerKind,

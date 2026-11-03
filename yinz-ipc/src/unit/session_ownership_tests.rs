@@ -4,6 +4,41 @@ use std::sync::{mpsc, Arc, Barrier};
 use std::time::Duration;
 
 #[test]
+fn replacement_relocation_preserves_listener_and_transfers_claim() {
+    let root = tempfile::tempdir().unwrap();
+    let private = root.path().join("private");
+    let public = root.path().join("public");
+    let owner = SessionOwnership::acquire(&private).unwrap().unwrap();
+    let _listener = owner.bind().unwrap();
+    owner.relocate(&public).unwrap();
+    assert_eq!(owner.socket_path(), public);
+    assert!(!private.exists());
+    assert!(crate::consts::ipc_connect(&public).is_ok());
+    assert!(SessionOwnership::acquire(&public).unwrap().is_none());
+    assert!(SessionOwnership::acquire(&private).unwrap().is_some());
+    owner.shutdown().unwrap();
+    assert!(!public.exists());
+}
+
+#[test]
+fn replacement_relocation_never_unlinks_an_unrelated_live_endpoint() {
+    for claimed in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let private = root.path().join("private");
+        let public = root.path().join("public");
+        let owner = SessionOwnership::acquire(&private).unwrap().unwrap();
+        let _listener = owner.bind().unwrap();
+        let _other_claim = claimed.then(|| SessionOwnership::acquire(&public).unwrap().unwrap());
+        let _other = UnixListener::bind(&public).unwrap();
+        assert!(owner.relocate(&public).is_err());
+        assert_eq!(owner.socket_path(), private);
+        assert!(crate::consts::ipc_connect(&public).is_ok());
+        assert!(crate::consts::ipc_connect(&private).is_ok());
+        assert!(SessionOwnership::acquire(&private).unwrap().is_none());
+    }
+}
+
+#[test]
 fn session_locks_refuse_symlinks_and_accept_owned_directories() {
     use std::os::unix::fs::{symlink, PermissionsExt};
 

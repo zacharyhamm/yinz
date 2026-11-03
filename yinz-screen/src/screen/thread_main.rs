@@ -120,58 +120,66 @@ pub fn screen_thread_main(
     let mut escape_focus = HashMap::new();
     let mut pending_escape_count = 0;
     'instructions: loop {
-        screen.refresh_agent_controls();
-        if screen.agent_events.dirty {
-            screen.refresh_agent_events();
-            screen.refresh_agent_event_projects();
-        }
-        screen.retry_agent_event_projects(Instant::now());
-        screen.flush_agent_events();
-        if screen.agent_double_escape {
-            // Observe every screen transition, including programmatic focus changes. Keeping the
-            // previous focus/mode catches leaving and returning before the next key arrives.
-            let focus: HashMap<_, _> = screen
-                .connected_clients
-                .borrow()
-                .iter()
-                .map(|client| {
-                    (
-                        *client,
-                        (
-                            screen.get_active_pane_id(client),
-                            screen.get_client_input_mode(*client),
-                        ),
-                    )
-                })
-                .collect();
-            for tab in screen.tabs.values_mut() {
-                tab.agent_double_escape = screen.agent_double_escape;
-                tab.pending_agent_escapes.retain(|(client, _), _| {
-                    focus.contains_key(client) && focus.get(client) == escape_focus.get(client)
-                });
+        if !screen.migration_blocks_normal_work() {
+            screen.refresh_agent_controls();
+            if screen.agent_events.dirty {
+                screen.refresh_agent_events();
+                screen.refresh_agent_event_projects();
             }
-            escape_focus = focus;
+            screen.retry_agent_event_projects(Instant::now());
+            screen.flush_agent_events();
+            if screen.agent_double_escape {
+                // Observe every screen transition, including programmatic focus changes. Keeping the
+                // previous focus/mode catches leaving and returning before the next key arrives.
+                let focus: HashMap<_, _> = screen
+                    .connected_clients
+                    .borrow()
+                    .iter()
+                    .map(|client| {
+                        (
+                            *client,
+                            (
+                                screen.get_active_pane_id(client),
+                                screen.get_client_input_mode(*client),
+                            ),
+                        )
+                    })
+                    .collect();
+                for tab in screen.tabs.values_mut() {
+                    tab.agent_double_escape = screen.agent_double_escape;
+                    tab.pending_agent_escapes.retain(|(client, _), _| {
+                        focus.contains_key(client) && focus.get(client) == escape_focus.get(client)
+                    });
+                }
+                escape_focus = focus;
+            }
+            // Run before receiving, so even input handlers that `continue` repaint cancellations.
+            let pending_now: usize = screen
+                .tabs
+                .values()
+                .map(|tab| tab.pending_agent_escapes.len())
+                .sum();
+            if pending_escape_count != pending_now {
+                pending_escape_count = pending_now;
+                screen.render()?;
+                screen.sync_animation_clock(Instant::now())?;
+            }
+            screen.expire_notification_requests(Instant::now())?;
         }
-        // Run before receiving, so even input handlers that `continue` repaint cancellations.
-        let pending_now: usize = screen
-            .tabs
-            .values()
-            .map(|tab| tab.pending_agent_escapes.len())
-            .sum();
-        if pending_escape_count != pending_now {
-            pending_escape_count = pending_now;
-            screen.render()?;
-            screen.sync_animation_clock(Instant::now())?;
-        }
-        screen.expire_notification_requests(Instant::now())?;
-        let deadline = [
-            screen.agent_control_deadline(),
-            screen.notification_deadline(),
-        ]
-        .into_iter()
-        .flatten()
-        .min();
-        let (event, mut err_ctx) = if let Some(timeout) = deadline {
+        let deadline = if !screen.migration_blocks_normal_work() {
+            [
+                screen.agent_control_deadline(),
+                screen.notification_deadline(),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+        } else {
+            None
+        };
+        let (event, mut err_ctx) = if let Some(event) = screen.next_migration_event() {
+            (event, yinz_runtime::errors::get_current_ctx())
+        } else if let Some(timeout) = deadline {
             match screen.bus.recv_timeout(timeout) {
                 Ok(event) => event,
                 Err(yinz_runtime::channels::RecvTimeoutError::Timeout) => continue,
@@ -182,6 +190,9 @@ pub fn screen_thread_main(
                 .bus
                 .recv()
                 .context("failed to receive event on channel")?
+        };
+        let Some(event) = screen.defer_for_migration(event) else {
+            continue;
         };
         yinz_runtime::errors::add_call(&mut err_ctx, ContextType::Screen((&event).into()));
         // here we start caching resizes, so that we'll send them in bulk at the end of each event
@@ -230,6 +241,7 @@ pub fn screen_thread_main(
                 break 'instruction;
             };
             match event {
+                ScreenInstruction::SessionMigration(request) => screen.session_migration(request),
                 ScreenInstruction::CloseSelf(..) => {
                     unreachable!("close_self is resolved before dispatch")
                 },
@@ -2729,7 +2741,9 @@ pub fn screen_thread_main(
                         .into_iter()
                         .filter(|(_, project)| screen.projects.contains(project))
                         .collect();
-                    screen.reconcile_project_contexts();
+                    if !screen.migration_blocks_normal_work() {
+                        screen.reconcile_project_contexts();
+                    }
                     screen.log_and_report_session_state()?;
                     screen.render()?;
                 },
@@ -4303,7 +4317,9 @@ pub fn screen_thread_main(
             .context("failed to settle tabs after instruction")
             .non_fatal();
         screen.confirm_terminal_placements(&mut terminal_placements, &pending)?;
-        screen.reconcile_project_contexts();
+        if !screen.migration_blocks_normal_work() {
+            screen.reconcile_project_contexts();
+        }
         // Teardown can finish before its queued close notification reaches this thread.
         pending
             .waiting_for_pane

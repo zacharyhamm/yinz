@@ -694,6 +694,7 @@ fn check_query_cleanup(error: ErrorKind, reconnect: bool, quit: bool) {
                     warp_held_terminals: false,
                     warp_agent_tracking: false,
                     signal_quit: true,
+                    update_protocol: 0,
                 });
             }
             os.queue_from_server(ServerToClientMsg::Render {

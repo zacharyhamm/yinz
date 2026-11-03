@@ -961,6 +961,12 @@ message CliAssets {
   // The client handles ServerToClientMsg.session_request_json. Older clients omit it.
   bool supports_session_requests = 13;
   optional string timezone = 14;
+  bool supports_in_place_update = 15;
+  optional string update_target = 16;
+  optional string update_source_session = 17;
+  optional string update_resume_json = 18;
+  optional string update_configuration = 19;
+  optional string update_layout = 20;
 }
 
 message LayoutInfo {

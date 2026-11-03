@@ -103,7 +103,7 @@ fn route(command: Option<&Command>) -> Route {
             | yinz_cli::args::PtyHosts::KillAll => Route::Local,
         },
         Some(
-            Command::Update
+            Command::Update { .. }
             | Command::RemoteCommand { .. }
             | Command::RemoteSessions { .. }
             | Command::RemoteSession { .. }
@@ -462,6 +462,7 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
     );
     let local_config =
         crate::remote_session::read_local_config(opts).context("read SSH configuration")?;
+    let cancellation = StartupCancellation::new().context("watch for remote startup signals")?;
     let mut request = Request {
         version: VERSION.into(),
         contract: CLIENT_SERVER_CONTRACT_VERSION,
@@ -481,9 +482,17 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
         {
             *target_session = target_session.clone().or(opts.session.clone());
         }
-        let cancellation = StartupCancellation::new().context("watch for host command signals")?;
         confirm_all_sessions(&mut request.command, &host, &cancellation)
             .context("confirm host command")?;
+        let negotiated = remote_sessions::negotiate_legacy_version(
+            &host,
+            &local_config.env,
+            &cancellation.cancelled,
+        );
+        if cancellation.is_cancelled() {
+            std::process::exit(yinz_client::INTERRUPTED_EXIT_STATUS);
+        }
+        request.version = negotiated?;
         std::process::exit(
             run_host(
                 &host,
@@ -494,7 +503,6 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
             .context("run host command")?,
         );
     }
-    let cancellation = StartupCancellation::new().context("watch for remote startup signals")?;
     let setup = (|| -> Result<()> {
         let explicit = match &opts.command {
             Some(Command::Sessions(Sessions::Watch { session_name })) => {
@@ -524,6 +532,11 @@ pub(crate) fn dispatch(opts: &mut CliArgs) -> Result<()> {
         // is then checked against defaults and can be refused for that reason, so say why. The
         // logger is not configured yet, so stderr is the only place to say it.
         let config = if reads_session_config(opts.command.as_ref()) {
+            request.version = remote_sessions::negotiate_legacy_version(
+                &host,
+                &local_config.env,
+                &cancellation.cancelled,
+            )?;
             match read_remote_config(&host, &request, &local_config.env, &cancellation.cancelled) {
                 Ok(config) => Some(config),
                 Err(error) => {

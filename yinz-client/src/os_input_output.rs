@@ -604,7 +604,12 @@ impl ServerConnection for ClientOsInputOutput {
         self.recovery.lock().unwrap().clone()
     }
     fn disconnect_session_connection(&self) {
-        self.send_instructions_to_server.lock().unwrap().take();
+        if let Some(sender) = self.send_instructions_to_server.lock().unwrap().take() {
+            sender
+                .shutdown()
+                .context("interrupt retired session reader")
+                .non_fatal();
+        }
         self.receive_instructions_from_server.lock().unwrap().take();
     }
     fn recv_from_server_generation(&self, generation: u64) -> IpcRecv<ServerToClientMsg> {

@@ -121,12 +121,14 @@ struct MockOsApi {
     /// and then break the one after it.
     reservations_to_allow: Arc<Mutex<usize>>,
     adopted_command: Arc<Mutex<Option<RunCommand>>>,
+    migration_owned: Arc<Mutex<std::collections::HashSet<TerminalId>>>,
 }
 
 impl MockOsApi {
     fn new() -> Self {
         MockOsApi {
             cwds: Arc::new(Mutex::new(HashMap::new())),
+            migration_owned: Default::default(),
             cmds: Arc::new(Mutex::new(HashMap::new())),
             cmds_by_ppid: Arc::new(Mutex::new(HashMap::new())),
             local_signals: Arc::new(Mutex::new(Vec::new())),
@@ -434,6 +436,9 @@ impl TerminalProcesses for MockOsApi {
 }
 
 impl TerminalSupervision for MockOsApi {
+    fn owns_terminal_for_migration(&self, terminal_id: TerminalId) -> Result<bool> {
+        Ok(self.migration_owned.lock().unwrap().contains(&terminal_id))
+    }
     fn adopt_terminal(
         &self,
         _: &std::path::Path,
@@ -470,6 +475,7 @@ impl TerminalSupervision for MockOsApi {
                 "the supervisor did not confirm the handoff"
             ));
         }
+        self.migration_owned.lock().unwrap().remove(&terminal_id);
         Ok(ReleasedPane::Local(
             crate::os_input_output::ReleasedPtyHost {
                 host_id: SupervisorId::new(format!("host-{terminal_id}")),
@@ -5228,4 +5234,109 @@ fn remote_detected_theme_changes_are_reported_without_output_and_only_once() {
     mock.set_remote_status(id, RemoteStatus::default());
     pty.update_and_report_cwds();
     assert!(screen_rx.try_iter().any(|(msg, _)| matches!(msg, ScreenInstruction::UpdateDetectedAgentTheme(terminal, None) if terminal == id)));
+}
+
+#[test]
+fn migration_reconciles_partial_source_release_without_killing_or_releasing_absent_owners() {
+    use yinz_bus::migration::{self, PtyRequest, ScreenRequest};
+    use yinz_types::session_migration::*;
+    let mock = MockOsApi::new();
+    let ids = [TerminalId::new(1), TerminalId::new(2), TerminalId::new(3)];
+    mock.migration_owned
+        .lock()
+        .unwrap()
+        .extend([ids[0], ids[2]]);
+    mock.unreleasable.lock().unwrap().insert(ids[2]);
+    let (mut pty, _, screen) = make_pty_with_screen_receiver(mock.clone());
+    let operation = uuid::Uuid::new_v4().to_string();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("migration.json");
+    let source_panes: Vec<_> = ids.iter().copied().map(PaneId::Terminal).collect();
+    let snapshot = SessionMigrationSnapshot {
+        format: SESSION_MIGRATION_FORMAT,
+        operation: operation.clone(),
+        inventory: SessionMigrationInventory {
+            format: SESSION_MIGRATION_FORMAT,
+            session_name: yinz_types::internal_ids::SessionName::new("source"),
+            instance_id: uuid::Uuid::new_v4().to_string(),
+            tabs: vec![],
+            clients: vec![],
+            remote_hosts: vec![],
+            global_last_active_tab: TabId::new(0),
+            tab_group_preferences: vec![],
+            paneless_plugins: vec![],
+        },
+        phase: MigrationPhase::Recovery,
+        tabs: vec![MigrationTab {
+            source_tab_id: TabId::new(0),
+            slots: source_panes.clone(),
+            payload: WarpedTab {
+                tiled_panes: ids
+                    .iter()
+                    .map(|id| WarpedPane {
+                        control_socket: PathBuf::from(format!("/tmp/migration-{id}.sock")),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+            terminal_states: source_panes
+                .iter()
+                .map(|id| (*id, serde_json::Value::Null))
+                .collect(),
+            local_replay: vec![(source_panes[1], b"already consumed output".to_vec())],
+            state: TabState::default(),
+        }],
+        mapping: Default::default(),
+        errors: vec!["interrupted release".into()],
+        ownership: source_panes
+            .iter()
+            .map(|id| (*id, MigrationOwnership::Uncertain))
+            .collect(),
+    };
+    migration::save_snapshot(&path, &snapshot).unwrap();
+    let reconcile = |pty: &mut Pty| {
+        let (reply, _) = crossbeam::channel::bounded(1);
+        pty.session_migration(PtyRequest::ReconcileSource {
+            operation: operation.clone(),
+            path: path.clone(),
+            client: CLIENT_1,
+            reply,
+        });
+        loop {
+            let (event, _) = screen
+                .recv_timeout(yinz_test_support::default_timeout())
+                .unwrap();
+            if let ScreenInstruction::SessionMigration(ScreenRequest::SourceReconciled {
+                result,
+                ..
+            }) = event
+            {
+                break result;
+            }
+        }
+    };
+    assert!(reconcile(&mut pty).is_err());
+    assert_eq!(mock.release_attempts(), vec![ids[0], ids[2]]);
+    let partial = migration::load_snapshot(&path, &operation).unwrap();
+    assert_eq!(
+        partial.ownership,
+        vec![
+            (source_panes[0], MigrationOwnership::Released),
+            (source_panes[1], MigrationOwnership::Released),
+            (source_panes[2], MigrationOwnership::Uncertain)
+        ]
+    );
+    mock.unreleasable.lock().unwrap().clear();
+    let recovered = reconcile(&mut pty).unwrap();
+    assert_eq!(recovered.phase, MigrationPhase::Released);
+    assert!(recovered.errors.is_empty());
+    assert_eq!(
+        recovered.tabs[0].local_replay,
+        snapshot.tabs[0].local_replay
+    );
+    assert_eq!(mock.release_attempts(), vec![ids[0], ids[2], ids[2]]);
+    assert!(mock.local_signals.lock().unwrap().is_empty());
+    assert!(mock.rerun_commands().is_empty());
+    assert!(mock.cleared_terminal_ids.lock().unwrap().is_empty());
 }

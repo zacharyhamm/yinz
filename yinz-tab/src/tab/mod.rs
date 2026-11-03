@@ -4288,3 +4288,80 @@ impl Default for CopyOptions {
         }
     }
 }
+
+impl Tab {
+    pub fn migration_state(&self) -> Result<yinz_types::session_migration::TabState, String> {
+        if !self.pending_command_respawns.is_empty()
+            || !self.pending_instructions.is_empty()
+            || !self.pending_vte_events.is_empty()
+            || self.pane_being_resized_with_mouse.is_some()
+        {
+            return Err(
+                "tab has a pending restart, placement, or mouse resize; retry when it settles"
+                    .into(),
+            );
+        }
+        Ok(yinz_types::session_migration::TabState {
+            previous_name: self.prev_name.clone(),
+            default_name: self.default_name.clone(),
+            previous_user_named: self.prev_user_named,
+            synchronize: self.synchronize_is_active,
+            auto_layout: self.auto_layout,
+            focus_pane: self.focus_pane_id,
+            departed_focus: [
+                self.departed_focus.overlay,
+                self.departed_focus.floating,
+                self.departed_focus.tiled,
+            ],
+            fullscreen: self.fullscreen_pane_id(),
+            fullscreen_covers_ui: self.fullscreen_covers_ui(),
+            agent_worktrees: self
+                .agent_worktrees
+                .iter()
+                .map(|(id, path)| (*id, path.clone()))
+                .collect(),
+            swap: self.swap_layouts.migration_state(),
+        })
+    }
+    pub fn restore_migration_state(
+        &mut self,
+        state: yinz_types::session_migration::TabState,
+        mapping: &[(PaneId, PaneId)],
+    ) -> Result<()> {
+        let mapped = |id: Option<PaneId>| {
+            id.and_then(|id| {
+                mapping
+                    .iter()
+                    .find(|(from, _)| *from == id)
+                    .map(|(_, to)| *to)
+            })
+        };
+        self.prev_name = state.previous_name;
+        self.default_name = state.default_name;
+        self.prev_user_named = state.previous_user_named;
+        self.synchronize_is_active = state.synchronize;
+        self.auto_layout = state.auto_layout;
+        self.focus_pane_id = mapped(state.focus_pane);
+        self.departed_focus = DepartedFocus {
+            overlay: mapped(state.departed_focus[0]),
+            floating: mapped(state.departed_focus[1]),
+            tiled: mapped(state.departed_focus[2]),
+        };
+        self.agent_worktrees = state
+            .agent_worktrees
+            .into_iter()
+            .filter_map(|(id, path)| mapped(Some(id)).map(|id| (id, path)))
+            .collect();
+        self.swap_layouts.restore_migration(state.swap);
+        if let Some(pane) = mapped(state.fullscreen) {
+            self.unset_fullscreen();
+            if state.fullscreen_covers_ui {
+                self.toggle_pane_no_ui_fullscreen(pane);
+            } else {
+                self.toggle_pane_fullscreen(pane);
+            }
+        }
+        self.set_force_render();
+        Ok(())
+    }
+}

@@ -24,3 +24,5 @@ yinz-test-support = { path = "../yinz-test-support" }
 async-trait = { version = "0.1.50", default-features = false }
 crossbeam = { version = "0.8", default-features = false, features = ["crossbeam-channel", "std"] }
 interprocess = { workspace = true }
+tempfile = { workspace = true }
+uuid = { workspace = true }

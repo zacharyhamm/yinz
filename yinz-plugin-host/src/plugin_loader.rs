@@ -33,6 +33,21 @@ fn create_plugin_fs_entries(plugin_own_data_dir: &PathBuf, plugin_own_cache_dir:
     }
 }
 
+pub(crate) fn source_generation_guard(
+    plugin_config: &PluginConfig,
+    data_dir: &Path,
+) -> Result<Option<Arc<std::fs::File>>> {
+    let guard = match &plugin_config.location {
+        RunPluginLocation::Yinz(tag) if plugin_config.is_builtin() => {
+            let path = yinz_steel_builtins::builtin_path(data_dir, &tag.to_string())?;
+            yinz_steel_builtins::source_read_guard(&path)?
+        },
+        RunPluginLocation::File(path) => yinz_steel_builtins::source_read_guard(path)?,
+        _ => None,
+    };
+    Ok(guard.map(Arc::new))
+}
+
 pub(crate) fn script_source(
     plugin_config: &PluginConfig,
     user_plugin_dir: Option<&Path>,
@@ -46,7 +61,21 @@ pub(crate) fn script_source(
             Ok((Some(path), source))
         },
         _ => {
+            if let RunPluginLocation::File(path) = &plugin_config.location {
+                let retained = yinz_steel_builtins::source_path(path)?;
+                if &retained != path {
+                    let source =
+                        yinz_steel::modules::SourceRoot::file(&retained, None)?.read_entry()?;
+                    return Ok((Some(retained), source));
+                }
+            }
             let (path, source) = plugin_config.resolve_source(user_plugin_dir)?;
+            let retained = yinz_steel_builtins::source_path(&path)?;
+            if retained != path {
+                let source =
+                    yinz_steel::modules::SourceRoot::file(&retained, None)?.read_entry()?;
+                return Ok((Some(retained), source));
+            }
             Ok((Some(path.canonicalize().unwrap_or(path)), source))
         },
     }
@@ -88,6 +117,7 @@ pub struct PluginLoader {
     /// evaluated is the one that was scanned. Shared rather than copied: the load evaluates it
     /// once for every connected client.
     prefetched_source: Option<(Option<PathBuf>, Arc<str>)>,
+    prefetched_source_guard: Option<Arc<std::fs::File>>,
     /// The pane declaration the prepare step scanned in `prefetched_source`.
     prefetched_declaration: Option<bool>,
     pick_request: Option<yinz_types::pick::PickRequest>,
@@ -146,6 +176,7 @@ impl PluginLoader {
             yinz_data_dir: loading_context.yinz_data_dir.clone(),
             panes: loading_context.panes,
             prefetched_source: loading_context.prefetched_source,
+            prefetched_source_guard: loading_context.prefetched_source_guard,
             prefetched_declaration: loading_context.prefetched_declaration,
             pick_request: loading_context.pick_request,
             pick_cancelled: loading_context.pick_cancelled,
@@ -239,6 +270,12 @@ impl PluginLoader {
     }
 
     fn start_script_plugin(&mut self) -> Result<()> {
+        // Pin the same installation from pane-declaration prefetch through all
+        // asynchronous parent and named-worker module initialization.
+        let source_guard = match &self.prefetched_source_guard {
+            Some(guard) => Some(guard.clone()),
+            None => source_generation_guard(&self.plugin_config, &self.yinz_data_dir)?,
+        };
         // `/tmp` is shared by every plugin of this user, and by no one else.
         yinz_runtime::shared::ensure_secure_dir(&YINZ_PLUGIN_TMP_DIR)
             .context("failed to secure plugin tmp dir")?;
@@ -307,7 +344,13 @@ impl PluginLoader {
             let workers_started = (|| -> Result<()> {
                 for name in steel.worker_names()? {
                     if let Some(workers) = &steel.env().workers {
-                        workers.spawn(name, &source, &path, self.worker_env(steel.env()))?;
+                        workers.spawn(
+                            name,
+                            &source,
+                            &path,
+                            self.worker_env(steel.env()),
+                            source_guard.clone(),
+                        )?;
                     }
                 }
                 Ok(())

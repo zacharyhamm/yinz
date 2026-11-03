@@ -6,6 +6,7 @@ pub mod hyperlink_tracker;
 pub mod kitty_test_support;
 pub mod link_handler;
 mod palette_spans;
+pub mod parser_boundary;
 mod search;
 pub mod selection;
 pub mod terminal_character;

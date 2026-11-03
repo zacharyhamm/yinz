@@ -1,0 +1,218 @@
+//! Keep old live servers on their builtin generation after installation exchange.
+use std::{
+    collections::HashMap,
+    fs,
+    os::unix::fs::MetadataExt,
+    path::{Component, Path, PathBuf},
+    sync::{Arc, LazyLock, Mutex, Weak},
+};
+use yinz_runtime::errors::prelude::*;
+
+static GENERATIONS: LazyLock<Mutex<HashMap<PathBuf, Weak<Generation>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+struct Generation {
+    identity: Option<(u64, u64)>,
+    state: Mutex<State>,
+}
+
+struct State {
+    snapshot: tempfile::TempDir,
+    switched: bool,
+}
+
+/// Held for the entire plugin-host lifetime, including worker cleanup.
+pub struct SessionGeneration {
+    _generation: Option<Arc<Generation>>,
+}
+
+pub fn pin_session_generation(data_dir: &Path) -> Result<SessionGeneration> {
+    let root = data_dir.join("plugins/builtins");
+    let _lock = super::read_guard(data_dir)?;
+    let data_dir = data_dir
+        .canonicalize()
+        .context("resolve builtin generation data directory")?;
+    let mut registry = GENERATIONS
+        .lock()
+        .map_err(|_| anyhow!("builtin generation registry is poisoned"))?;
+    if let Some(generation) = registry.get(&data_dir).and_then(Weak::upgrade) {
+        return Ok(SessionGeneration {
+            _generation: Some(generation),
+        });
+    }
+    let identity = match fs::symlink_metadata(&root) {
+        Ok(metadata) => {
+            anyhow::ensure!(
+                metadata.is_dir(),
+                "builtin generation is not a regular directory"
+            );
+            Some((metadata.dev(), metadata.ino()))
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).context("inspect builtin generation"),
+    };
+    // Absence is also a generation: an already running binary must never begin
+    // loading files first installed by a later release.
+    let snapshot = if identity.is_some() {
+        snapshot(&root)?
+    } else {
+        tempfile::Builder::new()
+            .prefix("yinz-builtin-generation-")
+            .tempdir()
+            .context("retain missing builtin generation")?
+    };
+    let generation = Arc::new(Generation {
+        identity,
+        state: Mutex::new(State {
+            snapshot,
+            switched: false,
+        }),
+    });
+    registry.insert(data_dir, Arc::downgrade(&generation));
+    Ok(SessionGeneration {
+        _generation: Some(generation),
+    })
+}
+
+/// Preserve normal disk-edit reloads until the installed directory is exchanged.
+/// Subsequent loads by that old server use its private snapshot, including in
+/// supervised compilation subprocesses which cannot share an in-memory registry.
+pub fn source_path(source: &Path) -> Result<PathBuf> {
+    let Some(root) = source.ancestors().find(|ancestor| {
+        ancestor.file_name().is_some_and(|name| name == "builtins")
+            && ancestor
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == "plugins")
+    }) else {
+        return Ok(source.to_owned());
+    };
+    let data_dir = root
+        .parent()
+        .and_then(Path::parent)
+        .context("builtin source has no data directory")?;
+    let Ok(data_dir) = data_dir.canonicalize() else {
+        return Ok(source.to_owned());
+    };
+    let generation = GENERATIONS
+        .lock()
+        .map_err(|_| anyhow!("builtin generation registry is poisoned"))?
+        .get(&data_dir)
+        .and_then(Weak::upgrade);
+    let Some(generation) = generation else {
+        return Ok(source.to_owned());
+    };
+    let relative = source
+        .strip_prefix(root)
+        .context("resolve builtin generation source")?;
+    anyhow::ensure!(
+        relative
+            .components()
+            .all(|component| matches!(component, Component::Normal(_) | Component::CurDir)),
+        "builtin source escapes its generation"
+    );
+    let _lock = super::read_guard(&data_dir)?;
+    let mut state = generation
+        .state
+        .lock()
+        .map_err(|_| anyhow!("builtin generation is poisoned"))?;
+    let current = fs::symlink_metadata(root)
+        .ok()
+        .filter(|metadata| metadata.is_dir())
+        .map(|metadata| (metadata.dev(), metadata.ino()));
+    if !state.switched && current == generation.identity {
+        // Refresh on source access so intentional edits reloaded before the
+        // update are carried into the old session's retained generation.
+        if current.is_some() {
+            state.snapshot = snapshot(root)?;
+        }
+        return Ok(source.to_owned());
+    }
+    state.switched = true;
+    Ok(state
+        .snapshot
+        .path()
+        .join("plugins/builtins")
+        .join(relative))
+}
+
+fn snapshot(source: &Path) -> Result<tempfile::TempDir> {
+    let snapshot = tempfile::Builder::new()
+        .prefix("yinz-builtin-generation-")
+        .tempdir()
+        .context("create private builtin generation snapshot")?;
+    copy_sources(source, &snapshot.path().join("plugins/builtins"))?;
+    Ok(snapshot)
+}
+
+fn copy_sources(source: &Path, destination: &Path) -> Result<()> {
+    let mut pending = vec![(source.to_owned(), destination.to_owned(), 0usize)];
+    let mut bytes = 0u64;
+    let mut files = 0usize;
+    while let Some((source, destination, depth)) = pending.pop() {
+        anyhow::ensure!(
+            depth <= 64,
+            "builtin source generation exceeds maximum depth"
+        );
+        fs::create_dir_all(&destination).context("create builtin generation directory")?;
+        for entry in fs::read_dir(&source).context("read builtin source generation")? {
+            let entry = entry.context("read builtin generation entry")?;
+            files += 1;
+            anyhow::ensure!(
+                files <= 4096,
+                "builtin source generation has too many entries"
+            );
+            let kind = entry
+                .file_type()
+                .context("inspect builtin generation entry")?;
+            if kind.is_dir() {
+                pending.push((entry.path(), destination.join(entry.file_name()), depth + 1));
+            } else if kind.is_file()
+                && matches!(
+                    entry
+                        .path()
+                        .extension()
+                        .and_then(|extension| extension.to_str()),
+                    Some("scm" | "ss" | "sld")
+                )
+            {
+                let size = entry
+                    .metadata()
+                    .context("inspect builtin source size")?
+                    .len();
+                bytes = bytes.saturating_add(size);
+                anyhow::ensure!(
+                    size <= 8 * 1024 * 1024 && bytes <= 64 * 1024 * 1024,
+                    "builtin source generation exceeds source limits"
+                );
+                use std::{io::Read, os::unix::fs::OpenOptionsExt};
+                let input = fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                    .open(entry.path())
+                    .context("open builtin generation source")?;
+                anyhow::ensure!(
+                    input
+                        .metadata()
+                        .context("inspect opened builtin source")?
+                        .is_file(),
+                    "builtin source changed into a special file"
+                );
+                let mut output = fs::File::create(destination.join(entry.file_name()))
+                    .context("create retained builtin source")?;
+                let copied = std::io::copy(&mut input.take(8 * 1024 * 1024 + 1), &mut output)
+                    .context("retain builtin source generation")?;
+                bytes = bytes.saturating_sub(size).saturating_add(copied);
+                anyhow::ensure!(
+                    copied <= 8 * 1024 * 1024 && bytes <= 64 * 1024 * 1024,
+                    "builtin source generation exceeds source limits"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "unit/generation.rs"]
+mod tests;

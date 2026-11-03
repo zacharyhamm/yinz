@@ -41,6 +41,7 @@ fn create_test_dependencies() -> JobDependencies {
         session: Default::default(),
         session_checkpoint: Default::default(),
         session_ownership: None,
+        session_update_quiesced: Default::default(),
         should_silently_fail: false,
     };
 
@@ -82,6 +83,91 @@ fn get_thread_name_for_plugin(executor: &Arc<PinnedExecutor>, plugin_id: PluginI
 fn test_new_creates_one_thread() {
     let executor = create_test_executor(4);
     assert_eq!(executor.thread_count(), 1);
+}
+
+#[test]
+fn update_pause_drains_prior_jobs_and_holds_later_input_and_new_threads() {
+    let executor = create_test_executor(2);
+    let first = PluginId::new(1);
+    let second = PluginId::new(2);
+    executor.register_plugin(first);
+    let (started, start) = channel();
+    let (release, released) = channel();
+    executor.execute_for_plugin(first, move |_, _, _| {
+        started.send(()).unwrap();
+        released.recv().unwrap();
+    });
+    start
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap();
+    let before = Arc::new(AtomicUsize::new(0));
+    for _ in 0..3 {
+        let before = before.clone();
+        executor.execute_for_plugin(first, move |_, _, _| {
+            before.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+    let gate = crate::update_quiescence::PauseGate::default();
+    let arrivals = executor.pause_for_update(&gate).unwrap();
+    let (after, after_rx) = channel();
+    let after_existing = after.clone();
+    executor.execute_for_plugin_tagged(first, "input-after-pause", true, move |_, _, _| {
+        after_existing.send("existing").unwrap();
+    });
+    // Growing the executor pool while paused must not bypass the barrier.
+    executor.register_plugin(second);
+    executor.execute_for_plugin(second, move |_, _, _| {
+        after.send("new").unwrap();
+    });
+    release.send(()).unwrap();
+    for arrival in arrivals {
+        arrival
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap();
+    }
+    assert_eq!(before.load(Ordering::SeqCst), 3);
+    assert!(after_rx.try_recv().is_err());
+    gate.resume();
+    let mut observed = vec![
+        after_rx
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap(),
+        after_rx
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap(),
+    ];
+    observed.sort();
+    assert_eq!(observed, ["existing", "new"]);
+}
+
+#[test]
+fn update_pause_can_be_cancelled_before_reaching_the_barrier() {
+    let executor = create_test_executor(1);
+    let plugin = PluginId::new(1);
+    executor.register_plugin(plugin);
+    let (release, released) = channel();
+    let (started, start) = channel();
+    executor.execute_for_plugin(plugin, move |_, _, _| {
+        started.send(()).unwrap();
+        released.recv().unwrap();
+    });
+    start
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap();
+    let gate = crate::update_quiescence::PauseGate::default();
+    let arrivals = executor.pause_for_update(&gate).unwrap();
+    gate.resume();
+    release.send(()).unwrap();
+    for arrival in arrivals {
+        arrival
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap();
+    }
+    let (reply, received) = channel();
+    executor.execute_for_plugin(plugin, make_signaling_job(reply));
+    received
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap();
 }
 
 #[test]

@@ -358,11 +358,17 @@ fn queued_stale_frames_and_session_switches_do_not_affect_the_replacement() {
     for instruction in [
         ClientInstruction::FromServer(
             1,
-            Box::new(ClientInstruction::Connected { signal_quit: false }),
+            Box::new(ClientInstruction::Connected {
+                signal_quit: false,
+                update_protocol: 0,
+            }),
         ),
         ClientInstruction::FromServer(
             0,
-            Box::new(ClientInstruction::Connected { signal_quit: true }),
+            Box::new(ClientInstruction::Connected {
+                signal_quit: true,
+                update_protocol: 0,
+            }),
         ),
         ClientInstruction::FromServer(0, Box::new(ClientInstruction::Render("STALE".into()))),
         ClientInstruction::FromServer(

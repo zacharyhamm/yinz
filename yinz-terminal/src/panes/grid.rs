@@ -1,5 +1,6 @@
 mod csi;
 mod highlights;
+mod migration;
 mod mouse;
 mod osc;
 mod row;
@@ -90,7 +91,7 @@ use yinz_host_protocol::notifications::action_wants_report;
 use yinz_host_protocol::notifications::Osc99PayloadType;
 pub use yinz_host_protocol::notifications::{namespace_notification_id, PendingNotification};
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 struct NotificationAssembly {
     title: String,
     body: String,
@@ -125,7 +126,7 @@ fn append_dcs_payload(payload: &mut Option<Vec<u8>>, byte: u8) {
 /// What one pane's application said about its OSC 99 notifications: whether each id asked for
 /// an activation report, and the title/body of notifications still being sent in chunks
 /// (`d=0`). Bounded to the last `MAX_TRACKED_NOTIFICATION_IDS` ids.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct NotificationTracker {
     wants_report: HashMap<String, bool>,
     assemblies: HashMap<String, NotificationAssembly>,
@@ -851,7 +852,7 @@ impl Click {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum MouseMode {
     #[default]
     NoEncoding,
@@ -859,7 +860,7 @@ pub enum MouseMode {
     Sgr,
 }
 
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub enum MouseTracking {
     #[default]
     Off,

@@ -9,6 +9,15 @@ use yinz_storage::plugin_data_store::{ApplyOutcome, PluginDataStore};
 use yinz_types::data::CopyDestination;
 use yinz_types::plugin_data::Mutation;
 
+#[derive(Clone)]
+pub(super) enum Message {
+    Record(ClipboardHistoryEntry),
+    Pause(
+        crate::update_quiescence::PauseGate,
+        std::sync::mpsc::Sender<()>,
+    ),
+}
+
 /// Persist in submission order on a store with its own operation lock and backend connection.
 /// Sharing dispatch's store or backend would let SQLite's busy timeout block dispatch's reads.
 /// Dropping the sender drains the queue and releases the host's shutdown token.
@@ -16,12 +25,22 @@ pub(super) fn start_worker(
     data: Arc<PluginDataStore>,
     senders: ThreadSenders,
     shutdown: tokio::sync::mpsc::Sender<()>,
-) -> SenderWithContext<ClipboardHistoryEntry> {
+) -> SenderWithContext<Message> {
     let (sender, receiver) = channels::unbounded();
     yinz_bus::global_async_runtime::get_tokio_runtime().spawn_blocking(move || {
         let _shutdown = shutdown;
-        while let Ok((entry, context)) = receiver.recv() {
+        while let Ok((message, context)) = receiver.recv() {
             yinz_runtime::errors::update_thread_ctx(&context);
+            let entry = match message {
+                Message::Record(entry) => entry,
+                Message::Pause(gate, reply) => {
+                    gate.arrive(reply);
+                    if gate.retired() {
+                        break;
+                    }
+                    continue;
+                },
+            };
             match record(&data, entry) {
                 Ok(outcome) => senders
                     .send_to_plugin(PluginInstruction::RefreshDataWatches {

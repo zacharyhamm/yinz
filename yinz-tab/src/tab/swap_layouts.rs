@@ -21,6 +21,56 @@ pub struct SwapLayouts {
 }
 
 impl SwapLayouts {
+    pub(super) fn migration_state(&self) -> yinz_types::session_migration::SwapState {
+        yinz_types::session_migration::SwapState {
+            tiled: self
+                .swap_tiled_layouts
+                .iter()
+                .map(|(layouts, name)| {
+                    (
+                        layouts
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect(),
+                        name.clone(),
+                    )
+                })
+                .collect(),
+            floating: self
+                .swap_floating_layouts
+                .iter()
+                .map(|(layouts, name)| {
+                    (
+                        layouts
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect(),
+                        name.clone(),
+                    )
+                })
+                .collect(),
+            current_tiled: self.current_tiled_layout_position,
+            current_floating: self.current_floating_layout_position,
+            tiled_damaged: self.is_tiled_damaged,
+            floating_damaged: self.is_floating_damaged,
+        }
+    }
+    pub(super) fn restore_migration(&mut self, state: yinz_types::session_migration::SwapState) {
+        self.swap_tiled_layouts = state
+            .tiled
+            .into_iter()
+            .map(|(layouts, name)| (layouts.into_iter().collect(), name))
+            .collect();
+        self.swap_floating_layouts = state
+            .floating
+            .into_iter()
+            .map(|(layouts, name)| (layouts.into_iter().collect(), name))
+            .collect();
+        self.current_tiled_layout_position = state.current_tiled;
+        self.current_floating_layout_position = state.current_floating;
+        self.is_tiled_damaged = state.tiled_damaged;
+        self.is_floating_damaged = state.floating_damaged;
+    }
     pub fn new(
         swap_layouts: (Vec<SwapTiledLayout>, Vec<SwapFloatingLayout>),
         display_area: Rc<RefCell<Size>>,

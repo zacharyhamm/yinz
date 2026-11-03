@@ -497,6 +497,7 @@ fn blocked_ssh(root: &std::path::Path, phase: &str) -> std::fs::File {
         session_name: "target".into(),
         socket: "/remote/socket".into(),
         yinz_version: yinz_runtime::consts::VERSION.into(),
+        build_version: Some(yinz_runtime::consts::VERSION.into()),
         contract_version: yinz_runtime::consts::CLIENT_SERVER_CONTRACT_VERSION,
         bootstrap_version: yinz_runtime::consts::REMOTE_BOOTSTRAP_VERSION,
     })
@@ -1433,6 +1434,7 @@ fn local_switch_options_exclude_the_source_layout_and_reload_without_losing_cli_
                     warp_held_terminals: false,
                     warp_agent_tracking: false,
                     signal_quit: false,
+                    update_protocol: 0,
                 })
                 .unwrap();
         });

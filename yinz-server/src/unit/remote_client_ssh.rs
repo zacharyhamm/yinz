@@ -14,7 +14,7 @@ struct Output {
     screen: String,
     status: Option<ExitStatus>,
 }
-struct Client {
+pub(super) struct Client {
     child: Arc<Mutex<Child>>,
     master: File,
     slave: File,
@@ -27,17 +27,28 @@ struct Client {
     local_session: Option<String>,
 }
 impl Client {
-    fn start(host: &str, name: &str, create: bool) -> Self {
+    pub(super) fn start(host: &str, name: &str, create: bool) -> Self {
         let mut args = vec!["--remote", host, name];
         if create {
             args.push("--create");
         }
         Self::start_args(&args, None, None)
     }
+    pub(super) fn start_update(host: &str, name: &str, binary: &Path) -> Self {
+        Self::start_args_with_binary(&["--remote", host, name], None, None, Some(binary))
+    }
     fn picker(cache: &std::path::Path) -> Self {
         Self::start_args(&[], Some(cache), None)
     }
     fn start_args(args: &[&str], cache: Option<&Path>, sockets: Option<&Path>) -> Self {
+        Self::start_args_with_binary(args, cache, sockets, None)
+    }
+    fn start_args_with_binary(
+        args: &[&str],
+        cache: Option<&Path>,
+        sockets: Option<&Path>,
+        binary: Option<&Path>,
+    ) -> Self {
         test_env();
         let root = tempfile::Builder::new()
             .prefix("yrc-")
@@ -94,7 +105,11 @@ printf "%s" "$?" > "$YINZ_TEST_CLIENT_STATUS"
 read -r hold < "$YINZ_TEST_CLIENT_HOLD""#,
                 "client",
             ])
-            .arg(repo_root().join("target/debug/yinz"));
+            .arg(
+                binary
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| repo_root().join("target/debug/yinz")),
+            );
         command
             .env("YINZ_TEST_CLIENT_PID", root.path().join("pid"))
             .env("YINZ_TEST_CLIENT_STATUS", &status_path)
@@ -223,8 +238,25 @@ read -r hold < "$YINZ_TEST_CLIENT_HOLD""#,
                 .flatten(),
         }
     }
-    fn send(&mut self, bytes: &[u8]) {
+    pub(super) fn send(&mut self, bytes: &[u8]) {
         self.master.write_all(bytes).unwrap();
+    }
+    pub(super) fn data_dir(&self) -> PathBuf {
+        self.root.path().join("data/yinz")
+    }
+    pub(super) fn pid(&self) -> u32 {
+        std::fs::read_to_string(self.root.path().join("pid"))
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+    pub(super) fn forward_paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<_> = std::fs::read_dir(self.root.path().join("s/client"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        paths.sort();
+        paths
     }
     fn see(&self, text: &str) {
         self.output
@@ -276,7 +308,7 @@ read -r hold < "$YINZ_TEST_CLIENT_HOLD""#,
         );
         String::from_utf8_lossy(&self.output.lock().bytes).into_owned()
     }
-    fn see_screen(&self, text: &str) {
+    pub(super) fn see_screen(&self, text: &str) {
         self.output.wait_until_described(
             text,
             Duration::from_secs(45),
@@ -318,7 +350,7 @@ read -r hold < "$YINZ_TEST_CLIENT_HOLD""#,
         self.see_screen(&selected);
         self.output.lock().bytes.clear();
     }
-    fn detach(&self) {
+    pub(super) fn detach(&self) {
         let pid = std::fs::read_to_string(self.root.path().join("pid"))
             .unwrap()
             .parse()

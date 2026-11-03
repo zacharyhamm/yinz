@@ -1382,6 +1382,41 @@ impl TerminalSupervision for ServerOsInputOutput {
     fn check_terminal_can_be_warped(&self, terminal_id: TerminalId) -> Result<()> {
         self.pty_backend.check_terminal_can_be_warped(terminal_id)
     }
+    fn terminal_migration_address(&self, terminal_id: TerminalId) -> Result<ReleasedPane> {
+        self.pty_backend.terminal_migration_address(terminal_id)
+    }
+    fn owns_terminal_for_migration(&self, terminal_id: TerminalId) -> Result<bool> {
+        self.pty_backend.owns_terminal_for_migration(terminal_id)
+    }
+    fn reserve_terminal_id_for_migration(&self, terminal_id: TerminalId) -> Result<()> {
+        self.pty_backend
+            .reserve_terminal_id_for_migration(terminal_id)
+    }
+    fn adopt_terminal_for_migration(
+        &self,
+        terminal_id: TerminalId,
+        control_socket: &Path,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<AdoptedTerminal> {
+        self.pty_backend
+            .adopt_terminal_for_migration(terminal_id, control_socket, quit_cb)
+    }
+    fn adopt_remote_terminal_for_migration(
+        &self,
+        terminal_id: TerminalId,
+        handoff: &RemotePaneHandoff,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<AdoptedTerminal> {
+        self.pty_backend
+            .reserve_terminal_id_for_migration(terminal_id)?;
+        match self.resume_remote_pane(terminal_id, handoff, quit_cb) {
+            Ok(adopted) => Ok(adopted),
+            Err(error) => {
+                self.pty_backend.forget_reserved_terminal_id(terminal_id);
+                Err(error)
+            },
+        }
+    }
     #[cfg(not(windows))]
     fn adopt_terminal(
         &self,

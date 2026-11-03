@@ -8,14 +8,14 @@ use std::ops::RangeInclusive;
 const MAX_DETECTED_URL_BYTES: usize = 8 * 1024;
 const URL_SCHEMES: [&str; 4] = ["http://", "https://", "ftp://", "mailto:"];
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct DetectedLink {
     url: String,
     start_position: HyperlinkPosition,
     end_position: HyperlinkPosition,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct HyperlinkPosition {
     x: isize,
     y: isize,
@@ -66,7 +66,7 @@ impl HyperlinkPosition {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct HyperlinkTracker {
     buffer: String,
     cursor_positions: Vec<HyperlinkPosition>,

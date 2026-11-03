@@ -178,6 +178,19 @@ pub enum PluginInstruction {
     },
     Update(Vec<(Option<PluginId>, Option<ClientId>, Event)>), // Focused plugin / broadcast, client_id, event data
     InputBarrier(PluginId, NotificationEnd),
+    /// Drain preceding guest/worker/clipboard writes and pause later execution.
+    QuiesceForUpdate {
+        operation: String,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    /// Resume execution and acknowledge after queued plugin loads settle;
+    /// stale operations cannot release another operation's pause.
+    ResumeAfterUpdate {
+        operation: String,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    /// Wake the plugin loop at the bounded migration readiness deadline.
+    UpdateReadiness,
     PluginTick(PluginId, ClientId, u64),
     PluginPalette(crate::command_palette::Delivery),
     PaletteAgent(Box<crate::command_palette::AgentRequest>),
@@ -477,6 +490,9 @@ impl From<&PluginInstruction> for PluginContext {
             PluginInstruction::DataRequest { .. }
             | PluginInstruction::RefreshDataWatches { .. } => PluginContext::Update,
             PluginInstruction::InputBarrier(..) => PluginContext::Update,
+            PluginInstruction::QuiesceForUpdate { .. }
+            | PluginInstruction::ResumeAfterUpdate { .. }
+            | PluginInstruction::UpdateReadiness => PluginContext::Update,
             PluginInstruction::PaletteAgent(..)
             | PluginInstruction::PaletteAgentLabels(..)
             | PluginInstruction::PluginPalette(..) => PluginContext::Update,

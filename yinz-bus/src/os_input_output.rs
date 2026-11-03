@@ -257,6 +257,44 @@ pub trait TerminalSupervision: Send + Sync {
             "this backend does not support moving panes between sessions"
         ))
     }
+    /// Recovery address without releasing ownership. The caller pauses its
+    /// output reader first when it needs a stable remote replay offset.
+    fn terminal_migration_address(&self, _terminal_id: TerminalId) -> Result<ReleasedPane> {
+        Err(anyhow!(
+            "this backend does not support durable session migration"
+        ))
+    }
+    /// Whether this process still holds a supervisor/remote transport. Errors
+    /// are distinct from absence: recovery must never infer release from a
+    /// failed status query or from human-readable error text.
+    fn owns_terminal_for_migration(&self, _terminal_id: TerminalId) -> Result<bool> {
+        Err(anyhow!("this backend cannot reconcile migration ownership"))
+    }
+    fn reserve_terminal_id_for_migration(&self, _terminal_id: TerminalId) -> Result<()> {
+        Err(anyhow!(
+            "this backend cannot preserve migration terminal identities"
+        ))
+    }
+    fn adopt_terminal_for_migration(
+        &self,
+        _terminal_id: TerminalId,
+        _control_socket: &Path,
+        _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<AdoptedTerminal> {
+        Err(anyhow!(
+            "this backend cannot adopt a preserved terminal identity"
+        ))
+    }
+    fn adopt_remote_terminal_for_migration(
+        &self,
+        _terminal_id: TerminalId,
+        _handoff: &RemotePaneHandoff,
+        _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<AdoptedTerminal> {
+        Err(anyhow!(
+            "this backend cannot adopt a preserved remote terminal identity"
+        ))
+    }
     /// Take a detached supervisor over into this session under a fresh terminal id.
     fn adopt_terminal(
         &self,

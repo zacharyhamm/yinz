@@ -1010,6 +1010,34 @@ impl UnixPtyBackend {
             .insert(terminal_id, PaneTransport::Reserved);
     }
 
+    /// Only the quiescent migration PTY thread may request an existing identity.
+    /// Preserve inherited YINZ_PANE_ID and durable plugin/agent references, while
+    /// keeping subsequent ordinary allocation above every restored identifier.
+    pub fn reserve_terminal_id_for_migration(&self, terminal_id: TerminalId) -> Result<()> {
+        let _ownership = self
+            .ownership
+            .lock()
+            .to_anyhow()
+            .context("lock migration terminal reservation")?;
+        let next = terminal_id
+            .get()
+            .checked_add(1)
+            .context("migration terminal ID space exhausted")?;
+        let mut transports = self
+            .terminal_id_to_transport
+            .lock()
+            .to_anyhow()
+            .context("reserve migration terminal identity")?;
+        anyhow::ensure!(
+            !transports.contains_key(&terminal_id),
+            "terminal_{terminal_id} is already reserved or owned by this session"
+        );
+        self.next_terminal_id_counter
+            .fetch_max(next, Ordering::Relaxed);
+        transports.insert(terminal_id, PaneTransport::Reserved);
+        Ok(())
+    }
+
     /// Give a reservation back without terminating anything.
     ///
     /// Deliberately not `clear_terminal_id`, which is the teardown funnel and
@@ -1067,10 +1095,10 @@ impl UnixPtyBackend {
     }
 
     pub fn next_terminal_id(&self) -> Option<TerminalId> {
-        Some(TerminalId::new(
-            self.next_terminal_id_counter
-                .fetch_add(1, Ordering::Relaxed),
-        ))
+        self.next_terminal_id_counter
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .ok()
+            .map(TerminalId::new)
     }
 
     /// Give a pane's supervisor up without killing it, so another server can take
@@ -1179,6 +1207,60 @@ impl UnixPtyBackend {
         Ok(())
     }
 
+    pub fn terminal_migration_address(&self, terminal_id: TerminalId) -> Result<ReleasedPane> {
+        self.check_terminal_can_be_warped(terminal_id)
+            .context("preflight migration address")?;
+        if let Some(conn) = self
+            .terminal_id_to_transport
+            .lock()
+            .to_anyhow()?
+            .get(&terminal_id)
+            .and_then(PaneTransport::remote)
+            .cloned()
+        {
+            return Ok(ReleasedPane::Remote(ReleasedRemotePane {
+                host: conn.host().to_owned(),
+                pane_token: conn.pane_token().to_owned(),
+                received: conn.received(),
+                cmd: conn.cmd().clone(),
+            }));
+        }
+        let hosts = self.terminal_id_to_host.lock().to_anyhow()?;
+        let handle = hosts
+            .get(&terminal_id)
+            .context("terminal supervisor vanished during migration preflight")?;
+        Ok(ReleasedPane::Local(
+            yinz_process::pty_host::client::ReleasedPtyHost {
+                host_id: handle.host_id.clone(),
+                host_pid: handle.host_pid,
+                control_socket: handle.control_socket.clone(),
+            },
+        ))
+    }
+
+    pub fn owns_terminal_for_migration(&self, terminal_id: TerminalId) -> Result<bool> {
+        let _ownership = self
+            .ownership
+            .lock()
+            .to_anyhow()
+            .context("lock migration ownership")?;
+        let local = self
+            .terminal_id_to_host
+            .lock()
+            .to_anyhow()
+            .context("inspect local migration ownership")?
+            .contains_key(&terminal_id);
+        let remote = self
+            .terminal_id_to_transport
+            .lock()
+            .to_anyhow()
+            .context("inspect remote migration ownership")?
+            .get(&terminal_id)
+            .and_then(PaneTransport::remote)
+            .is_some();
+        Ok(local || remote)
+    }
+
     /// Hand a remote pane back to its broker for someone else to resume.
     ///
     /// `received` is sampled *before* the release rather than after, and that
@@ -1238,6 +1320,22 @@ impl UnixPtyBackend {
                 // it running for the next caller.
                 self.forget_reserved_terminal_id(terminal_id);
                 Err(e)
+            },
+        }
+    }
+
+    pub fn adopt_terminal_for_migration(
+        &self,
+        terminal_id: TerminalId,
+        control_socket: &std::path::Path,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<AdoptedTerminal> {
+        self.reserve_terminal_id_for_migration(terminal_id)?;
+        match self.adopt_into_terminal_id(control_socket, terminal_id, quit_cb) {
+            Ok(adopted) => Ok(adopted),
+            Err(error) => {
+                self.forget_reserved_terminal_id(terminal_id);
+                Err(error)
             },
         }
     }

@@ -17,6 +17,10 @@ use crate::thread_bus::Bus;
 // here anyway, so
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PtyWriteInstruction {
+    MigrationBarrier {
+        deadline: std::time::Instant,
+        reply: crossbeam::channel::Sender<Result<(), String>>,
+    },
     /// Drop input from a failed launch before allowing a retry to start.
     CancelWrites {
         terminal_id: TerminalId,
@@ -40,6 +44,12 @@ pub enum PtyWriteInstruction {
 
 impl From<&PtyWriteInstruction> for PtyWriteContext {
     fn from(pty_write_instruction: &PtyWriteInstruction) -> Self {
+        if matches!(
+            pty_write_instruction,
+            PtyWriteInstruction::MigrationBarrier { .. }
+        ) {
+            return PtyWriteContext::Write;
+        }
         // The two enums are kept name-for-name; `instruction_context_tests` fails the test run if
         // a variant is added without either a matching `PtyWriteContext` or an arm here.
         let name: &'static str = pty_write_instruction.into();
@@ -86,11 +96,15 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
     let err_context = || "failed to write to pty".to_string();
     let mut pending: HashMap<TerminalId, VecDeque<PendingWrite>> = HashMap::new();
     let mut placements = Vec::new();
+    let mut migration_barriers: Vec<(
+        std::time::Instant,
+        crossbeam::channel::Sender<Result<(), String>>,
+    )> = Vec::new();
 
     loop {
         // If we have pending writes, use a short timeout so we can keep
         // draining. Otherwise, block until a new instruction arrives.
-        let has_pending = pending.values().any(|q| !q.is_empty());
+        let has_pending = pending.values().any(|q| !q.is_empty()) || !migration_barriers.is_empty();
         let event = if has_pending {
             match bus.recv_timeout(PENDING_DRAIN_TIMEOUT) {
                 Ok(pair) => Some(pair),
@@ -112,6 +126,9 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
         if let Some((event, mut err_ctx)) = event {
             yinz_runtime::errors::add_call(&mut err_ctx, ContextType::PtyWrite((&event).into()));
             match event {
+                PtyWriteInstruction::MigrationBarrier { deadline, reply } => {
+                    migration_barriers.push((deadline, reply))
+                },
                 PtyWriteInstruction::CancelWrites {
                     terminal_id,
                     generation,
@@ -259,6 +276,19 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
             }
         }
         pending.retain(|_, q| !q.is_empty());
+        migration_barriers.retain(|(deadline, reply)| {
+            if pending.is_empty() && placements.is_empty() {
+                let _ = reply.send(Ok(()));
+                false
+            } else if std::time::Instant::now() >= *deadline {
+                let _ = reply.send(Err(
+                    "terminal input is still pending; migration refused before release".into(),
+                ));
+                false
+            } else {
+                true
+            }
+        });
     }
 }
 

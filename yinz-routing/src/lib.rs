@@ -70,6 +70,31 @@ pub fn route_action(
     leaves_clipboard_message: bool,
     is_client_input: bool,
 ) -> Result<(bool, Option<ActionCompletionResult>)> {
+    if senders
+        .session_update_quiesced
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        send_error_to_client(
+            cli_client_id,
+            os_input.as_deref(),
+            "This session is updating Yinz; retry the action after reconnecting.",
+        );
+        return Ok((
+            false,
+            Some(ActionCompletionResult {
+                confirmed: true,
+                agent_tab: None,
+                exit_status: None,
+                affected_pane_id: None,
+                affected_tab_id: None,
+                created_tab_id: None,
+                error_message: Some(
+                    "This session is updating Yinz; retry the action after reconnecting.".into(),
+                ),
+                stdout_message: None,
+            }),
+        ));
+    }
     let mut should_break = false;
     let err_context = || format!("failed to route action for client {client_id}");
     let action_name = action.to_string();

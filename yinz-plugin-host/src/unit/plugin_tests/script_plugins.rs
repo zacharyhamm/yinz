@@ -1941,3 +1941,71 @@ pub fn a_firing_during_the_headless_hooks_load_reaches_the_loading_instance() {
         "one instance serves both firings, got: {instructions:?}"
     );
 }
+
+#[test]
+#[serial(plugin_tests)]
+fn migration_initializes_notification_policy_without_repeating_session_start() {
+    let directory = tempdir().unwrap();
+    let mut bindings = BTreeMap::new();
+    for (point, filename) in [
+        (HookPoint::SessionStart, "startup.scm"),
+        (HookPoint::Notification, "policy.scm"),
+    ] {
+        let path = directory.path().join(filename);
+        std::fs::write(&path, "(yinz-declare-pane)\n(define (load config) #t)\n").unwrap();
+        bindings.insert(
+            point,
+            RunPluginOrAlias::RunPlugin(
+                yinz_runtime::plugin_location::run_plugin_from_url(&format!(
+                    "file:{}",
+                    path.display()
+                ))
+                .unwrap(),
+            ),
+        );
+    }
+    let operation = "migration-bootstrap".to_owned();
+    let (sender, _server, screen, teardown) = create_plugin_thread_with_services_and_update(
+        Some(directory.path().to_owned()),
+        None,
+        None,
+        yinz_types::input::hooks::Hooks::from_data(bindings),
+        None,
+        None,
+        None,
+        Some(operation.clone()),
+    );
+    sender
+        .send(PluginInstruction::AddClient(ClientId::new(1)))
+        .unwrap();
+    sender
+        .send(PluginInstruction::AddClient(ClientId::new(2)))
+        .unwrap();
+    let (reply, receive) = std::sync::mpsc::channel();
+    sender
+        .send(PluginInstruction::ResumeAfterUpdate { operation, reply })
+        .unwrap();
+    receive.recv_timeout(default_timeout()).unwrap().unwrap();
+    teardown();
+    let instructions: Vec<_> = screen
+        .try_iter()
+        .map(|(instruction, _)| instruction)
+        .collect();
+    let policies: Vec<_> = instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            ScreenInstruction::NotificationPolicy(Some(id), None) => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        policies.len(),
+        1,
+        "notification policy must initialize once"
+    );
+    assert_eq!(
+        suppressed_plugins_loaded(&instructions),
+        policies,
+        "only the notification policy should load; startup must not replay after resume"
+    );
+}

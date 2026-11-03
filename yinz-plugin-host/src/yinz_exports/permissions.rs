@@ -276,6 +276,9 @@ pub(super) fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::OpenCommandPaneBackground
         | CommandType::OpenCommandPaneInPlaceOfPaneId
         | CommandType::RunCommand
+        | CommandType::UpdateYinz
+        | CommandType::CancelYinzUpdate
+        | CommandType::YinzUpdateStatus
         | CommandType::AgentControl
         | CommandType::RegisterProjectProvider
         | CommandType::GetProjectProviders

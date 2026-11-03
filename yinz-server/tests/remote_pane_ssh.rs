@@ -2737,6 +2737,9 @@ mod remote_client_ssh;
 #[path = "../src/unit/remote_pane_forward_ssh.rs"]
 mod remote_pane_forward_ssh;
 
+#[path = "../src/unit/session_update_ssh.rs"]
+mod session_update_ssh;
+
 /// Session CLI requests use the far server while their file inputs remain on this machine.
 #[test]
 #[ignore = "requires the Docker SSH fixture"]

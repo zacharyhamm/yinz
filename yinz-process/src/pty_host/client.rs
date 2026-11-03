@@ -660,12 +660,21 @@ fn try_attach(params: &AttachParams<'_>) -> Result<PendingAttach> {
     };
 
     let master = recv_fd(&control).context("failed to take the pty master")?;
-    let buffered = protocol::decode_buffered(&buffered_base64)?;
+    let mut buffered = protocol::decode_buffered(&buffered_base64)?;
     if dropped_bytes > 0 {
         log::warn!(
             "pty-host {host_id} dropped {dropped_bytes} bytes while it was detached; \
              this pane is missing part of its output"
         );
+        // Retain the loss notice with the replay itself, so migration journals
+        // and rollback carry it too. CAN leaves an interrupted escape sequence
+        // before printing the warning; preserve every byte the ring retained.
+        let mut notice = format!(
+            "\x18\x1b[0m\r\n\x1b[33m── {dropped_bytes} bytes of output were lost while this pane was detached ──\x1b[0m\r\n"
+        )
+        .into_bytes();
+        notice.append(&mut buffered);
+        buffered = notice;
     }
 
     // Back to blocking reads now the handshake is done; the reader thread should

@@ -1,13 +1,48 @@
 //! Disk locations and installation of builtin Steel Scheme plugins.
 use std::path::{Path, PathBuf};
 use yinz_runtime::errors::prelude::*;
+mod generation;
+pub use generation::{pin_session_generation, source_path, SessionGeneration};
+
+/// Pin installation reads against the updater's directory exchange. The lock inode
+/// lives beside `builtins`, so replacing that directory cannot replace the lock.
+pub fn read_guard(data_dir: &Path) -> Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = data_dir.join("plugins/.yinz-update.lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&path)
+        .with_context(|| format!("open builtin generation lock {}", path.display()))?;
+    file.lock_shared()
+        .context("pin builtin installation generation")?;
+    Ok(file)
+}
+
+/// File URLs into the installed tree use the same generation protection as builtin tags.
+pub fn source_read_guard(source: &Path) -> Result<Option<std::fs::File>> {
+    let data_dir = source.ancestors().find_map(|ancestor| {
+        (ancestor.file_name().is_some_and(|name| name == "builtins")
+            && ancestor
+                .parent()?
+                .file_name()
+                .is_some_and(|name| name == "plugins"))
+        .then(|| ancestor.parent().and_then(Path::parent))
+        .flatten()
+    });
+    data_dir.map(read_guard).transpose()
+}
 
 pub fn builtin_path(data_dir: &Path, tag: &str) -> Result<PathBuf> {
     anyhow::ensure!(
         yinz_runtime::consts::BUILTIN_PLUGIN_NAMES.contains(&tag),
         "unknown builtin plugin '{tag}'"
     );
-    let path = data_dir.join("plugins/builtins").join(format!("{tag}.scm"));
+    let path = source_path(&data_dir.join("plugins/builtins").join(format!("{tag}.scm")))?;
     anyhow::ensure!(
         path.exists(),
         "builtin plugin is missing at {}; reinstall Yinz with --data-dir {}",

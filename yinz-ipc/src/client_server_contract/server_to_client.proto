@@ -6,6 +6,8 @@ import "common_types.proto";
 message ServerToClientMsg {
   reserved 11, 17, 19;
   oneof message {
+    string update_request_json = 32;
+    string session_update_reply_json = 33;
     string clipboard_update = 31;
     string desktop_notification = 30;
     bool repaint_complete = 29;
@@ -55,6 +57,7 @@ message ConnectedMsg {
   bool warp_held_terminals = 2;
   bool warp_agent_tracking = 4;
   bool signal_quit = 3;
+  uint32 update_protocol = 4;
 }
 
 message LogMsg {

@@ -39,14 +39,18 @@ pub(crate) fn run(
     cancel: Arc<AtomicBool>,
     generation: u64,
     receiver: Receiver<Message>,
+    source_guard: Option<Arc<std::fs::File>>,
 ) -> Result<()> {
     let mut plugin = SteelPlugin::with_generation(source, path, env, cancel, generation)?;
+    // The runtime now owns an immutable source graph, including later REPL imports.
+    drop(source_guard);
     plugin.with_runtime(false, |runtime| {
         runtime.invoke("yinz-worker-bind", vec![Value::String(name.to_owned())])?;
         Ok(())
     })?;
     let mut jobs = VecDeque::new();
     let mut active_reservation = None;
+    let mut pause = None;
     while let Ok(message) = receiver.recv() {
         if plugin.is_disposed() || plugin.env().cancel.load(Ordering::Acquire) {
             break;
@@ -74,6 +78,7 @@ pub(crate) fn run(
                 }
             },
             Message::Exit => break,
+            Message::Pause(gate, reply) => pause = Some((gate, reply)),
             Message::Tick => {
                 plugin.tick()?;
             },
@@ -90,6 +95,13 @@ pub(crate) fn run(
             }
             active_reservation.take();
             let Some((client, name, payload, reservation)) = jobs.pop_front() else {
+                if let Some((gate, reply)) = pause.take() {
+                    gate.arrive(reply);
+                    if gate.retired() {
+                        plugin.dispose_with_cleanup(false);
+                        return Ok(());
+                    }
+                }
                 break;
             };
             active_reservation = Some(reservation);

@@ -1575,6 +1575,18 @@ pub struct CliAssets {
     pub supports_session_requests: bool,
     #[prost(string, optional, tag="14")]
     pub timezone: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, tag="15")]
+    pub supports_in_place_update: bool,
+    #[prost(string, optional, tag="16")]
+    pub update_target: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="17")]
+    pub update_source_session: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="18")]
+    pub update_resume_json: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="19")]
+    pub update_configuration: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="20")]
+    pub update_layout: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3763,7 +3775,7 @@ impl ThemeHue {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientToServerMsg {
-    #[prost(oneof="client_to_server_msg::Message", tags="38, 37, 33, 34, 36, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 35, 11, 39, 12, 32, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29, 30, 31")]
+    #[prost(oneof="client_to_server_msg::Message", tags="40, 41, 38, 37, 33, 34, 36, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 35, 11, 39, 12, 32, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29, 30, 31")]
     pub message: ::core::option::Option<client_to_server_msg::Message>,
 }
 /// Nested message and enum types in `ClientToServerMsg`.
@@ -3771,6 +3783,10 @@ pub mod client_to_server_msg {
     #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Message {
+        #[prost(string, tag="40")]
+        UpdateReplyJson(::prost::alloc::string::String),
+        #[prost(string, tag="41")]
+        SessionUpdateJson(::prost::alloc::string::String),
         #[prost(bool, tag="38")]
         RequestRepaint(bool),
         #[prost(string, tag="37")]
@@ -4092,7 +4108,7 @@ impl HostTerminalThemeIndication {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerToClientMsg {
-    #[prost(oneof="server_to_client_msg::Message", tags="31, 30, 29, 28, 23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 26, 14, 15, 16, 18, 20, 21, 22, 27")]
+    #[prost(oneof="server_to_client_msg::Message", tags="32, 33, 31, 30, 29, 28, 23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 26, 14, 15, 16, 18, 20, 21, 22, 27")]
     pub message: ::core::option::Option<server_to_client_msg::Message>,
 }
 /// Nested message and enum types in `ServerToClientMsg`.
@@ -4100,6 +4116,10 @@ pub mod server_to_client_msg {
     #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Message {
+        #[prost(string, tag="32")]
+        UpdateRequestJson(::prost::alloc::string::String),
+        #[prost(string, tag="33")]
+        SessionUpdateReplyJson(::prost::alloc::string::String),
         #[prost(string, tag="31")]
         ClipboardUpdate(::prost::alloc::string::String),
         #[prost(string, tag="30")]
@@ -4188,6 +4208,8 @@ pub struct ConnectedMsg {
     pub warp_agent_tracking: bool,
     #[prost(bool, tag="3")]
     pub signal_quit: bool,
+    #[prost(uint32, tag="4")]
+    pub update_protocol: u32,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

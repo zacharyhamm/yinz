@@ -26,7 +26,7 @@
 (define (many-sessions) (inventory (map (lambda (i)
         (define value (number->string i)) (live (string-append "session-" (t-repeat "0" (- 3 (string-length value))) value) (= i 0))) (range 0 205))))
 (test "session palette registers every root command and separates running from saved" (lambda ()
-    (harness) (assert-equal (length (p-roots)) 14) (define actions (choices (p-open "switch-session")))
+    (harness) (assert-equal (length (p-roots)) 17) (define actions (choices (p-open "switch-session")))
     (assert-equal (map (lambda (a) (list (hash-ref a "label") (hash-ref a "description"))) actions)
       (map (lambda (row) (map yinz-markdown-escape row))
         '(("Local / current" "Current session") ("Local / other" "Running") ("Local / saved" "Saved"))))

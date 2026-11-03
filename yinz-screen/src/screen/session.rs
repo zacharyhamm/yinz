@@ -24,6 +24,15 @@ impl Screen {
     /// Renames the session, refusing a name another live or resurrectable session holds, and
     /// tells every client the new name.
     pub(super) fn rename_session(&mut self, name: SessionName, client_id: ClientId) -> Result<()> {
+        self.rename_session_with_pty_relabel(name, client_id, true)
+    }
+
+    pub(super) fn rename_session_with_pty_relabel(
+        &mut self,
+        name: SessionName,
+        client_id: ClientId,
+        relabel_supervisors: bool,
+    ) -> Result<()> {
         if name == self.session_name {
             return Ok(());
         }
@@ -56,7 +65,7 @@ impl Screen {
                         "A resurrectable session by this name exists, cannot use this name."
                     ));
                 }
-                if let Some(os_input) = &self.bus.os_input {
+                if relabel_supervisors && let Some(os_input) = &self.bus.os_input {
                     os_input.rename_pty_host_session(&old_session_name, &name)?;
                 }
                 let result = self
@@ -79,7 +88,8 @@ impl Screen {
                                 .non_fatal();
                         })
                     });
-                if result.is_err()
+                if relabel_supervisors
+                    && result.is_err()
                     && let Some(os_input) = &self.bus.os_input
                 {
                     os_input

@@ -642,6 +642,55 @@ fn a_status() -> HostStatus {
 }
 
 #[test]
+fn attach_reports_replay_loss_in_the_pane_and_keeps_retained_output() {
+    for dropped_bytes in [0, 42_000] {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("supervisor.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let retained = b"retained-output\x1b[31mred\x1b[0m";
+        let peer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert!(matches!(
+                read_msg::<ServerToHostMsg, _>(&mut stream).unwrap(),
+                Some(ServerToHostMsg::Attach { .. })
+            ));
+            let pty = openpty(None, &None).unwrap();
+            write_msg(
+                &mut stream,
+                &HostToServerMsg::AttachAck {
+                    protocol_version: PROTOCOL_VERSION,
+                    yinz_version: VERSION.into(),
+                    host_id: SupervisorId::new("replay-gap"),
+                    host_pid: ProcessId::new(4242),
+                    child_pid: ProcessId::new(991),
+                    cmd: sh("/usr/bin/true"),
+                    status: a_status(),
+                    buffered_base64: protocol::encode_buffered(retained),
+                    dropped_bytes,
+                },
+            )
+            .unwrap();
+            send_fd(&stream, pty.master.as_raw_fd()).unwrap();
+        });
+        let pending = attach(AttachParams {
+            control_socket: &socket,
+            terminal_id: TerminalId::new(7),
+            session_name: Some("replay-test".into()),
+        })
+        .unwrap();
+        peer.join().unwrap();
+        assert!(pending.buffered.ends_with(retained));
+        if dropped_bytes == 0 {
+            assert_eq!(pending.buffered, retained);
+        } else {
+            assert!(String::from_utf8_lossy(&pending.buffered)
+                .contains("42000 bytes of output were lost"));
+            assert_eq!(pending.buffered[0], 0x18);
+        }
+    }
+}
+
+#[test]
 fn legacy_supervisor_status_does_not_verify_group_termination() {
     let mut legacy = serde_json::to_value(a_status()).unwrap();
     legacy

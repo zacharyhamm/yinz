@@ -32,3 +32,4 @@ pub use yinz_plugin_location as plugin_location;
 compile_error!("Yinz does not support Windows");
 
 pub mod remote_hosts;
+pub mod session_update;

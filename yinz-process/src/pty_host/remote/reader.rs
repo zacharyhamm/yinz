@@ -94,6 +94,7 @@ pub struct RemoteReader {
     /// Where a coding agent's hook reports from this pane go. One closure for
     /// every pane, registered on the backend; `None` on a reader nobody asked.
     agent_report_cb: Option<AgentReportCb>,
+    migration_pause_safe: tokio::sync::watch::Sender<bool>,
 }
 
 impl RemoteReader {
@@ -111,6 +112,7 @@ impl RemoteReader {
             cmd: RunCommand::default(),
             terminal_id: TerminalId::new(0),
             agent_report_cb: None,
+            migration_pause_safe: tokio::sync::watch::channel(true).0,
         })
     }
 
@@ -187,6 +189,16 @@ impl RemoteReader {
     /// is not, and a pane whose process is running perfectly well on another
     /// machine must not be closed because a packet went missing.
     async fn reconnect(&mut self) -> Result<(), io::Error> {
+        // A cancelled reconnect could leave `pending` and `async_fd` empty,
+        // while its blocking SSH worker continues changing the connection.
+        // Migration must wait for this transition before pausing the reader.
+        self.migration_pause_safe.send_replace(false);
+        let result = self.reconnect_inner().await;
+        self.migration_pause_safe.send_replace(true);
+        result
+    }
+
+    async fn reconnect_inner(&mut self) -> Result<(), io::Error> {
         self.conn.mark_transport_lost();
         if !self.conn.can_reconnect() {
             return Err(io::Error::new(
@@ -398,6 +410,10 @@ impl RemoteReader {
 
 #[async_trait]
 impl AsyncReader for RemoteReader {
+    fn migration_pause_safety(&self) -> Option<tokio::sync::watch::Receiver<bool>> {
+        Some(self.migration_pause_safe.subscribe())
+    }
+
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         let result = self.read_inner(buf).await;
         // Both of `TerminalBytes::listen`'s exits, not just the clean one. A

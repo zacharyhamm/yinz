@@ -3181,6 +3181,10 @@ pub enum PluginCommand {
         context: BTreeMap<String, String>,
     },
     GetSessionList,
+    /// Start a coordinated in-place update of the acting client's session.
+    UpdateYinz,
+    CancelYinzUpdate,
+    YinzUpdateStatus,
     GetSessionInventory(String),
     SwitchSessionDestination(crate::session_destination::SwitchRequest),
     GetDisconnectTargets,

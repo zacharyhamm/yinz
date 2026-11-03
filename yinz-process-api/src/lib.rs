@@ -13,6 +13,13 @@ use yinz_types::internal_ids::{ProcessId, SupervisorId, TerminalId};
 /// The object-safe output reader provided by local and remote process backends.
 #[async_trait]
 pub trait AsyncReader: Send + Sync {
+    /// Readers are normally cancellation safe. A backend with an in-flight
+    /// reconnection can publish `false` until it has restored its socket, so
+    /// migration never cancels the operation halfway through replacing it.
+    fn migration_pause_safety(&self) -> Option<tokio::sync::watch::Receiver<bool>> {
+        None
+    }
+
     #[expect(
         clippy::double_must_use,
         reason = "async_trait adds must_use to an already must-use future"

@@ -51,6 +51,7 @@ struct ExecutorState {
     threads: Vec<Option<ExecutionThread>>,
     // plugin_id -> its pinned thread index.
     assignments: HashMap<PluginId, usize>,
+    update_pause: Option<crate::update_quiescence::PauseGate>,
 }
 
 impl ExecutorState {
@@ -94,6 +95,7 @@ enum Job {
         enqueued_at: Instant,
         work: JobWork,
     },
+    Pause(crate::update_quiescence::PauseGate, Sender<()>),
     Shutdown, // Signal to exit the worker loop
 }
 
@@ -280,6 +282,7 @@ impl PinnedExecutor {
             state: Arc::new(Mutex::new(ExecutorState {
                 threads: vec![Some(thread_0)],
                 assignments: HashMap::new(),
+                update_pause: None,
             })),
             max_threads,
             senders: senders.clone(),
@@ -327,8 +330,10 @@ impl PinnedExecutor {
                     let mut pending: VecDeque<PendingJob> = VecDeque::new();
                     let mut pending_input_jobs: HashMap<PluginId, usize> = HashMap::new();
                     let mut shutting_down = false;
+                    let mut pause = None;
+                    let mut retired = false;
                     loop {
-                        if pending.is_empty() && !shutting_down {
+                        if pending.is_empty() && !shutting_down && pause.is_none() {
                             match receiver.recv() {
                                 Ok(Job::Work {
                                     tag,
@@ -340,12 +345,13 @@ impl PinnedExecutor {
                                     (tag, enqueued_at, work),
                                 ),
                                 Ok(Job::Shutdown) => shutting_down = true,
+                                Ok(Job::Pause(gate, reply)) => pause = Some((gate, reply)),
                                 Err(_) => break,
                             }
                         }
                         // Everything already queued, so an input job that just
                         // arrived is visible to this pick.
-                        while let Ok(job) = receiver.try_recv() {
+                        while pause.is_none() && let Ok(job) = receiver.try_recv() {
                             match job {
                                 Job::Work {
                                     tag,
@@ -357,9 +363,15 @@ impl PinnedExecutor {
                                     (tag, enqueued_at, work),
                                 ),
                                 Job::Shutdown => shutting_down = true,
+                                Job::Pause(gate, reply) => pause = Some((gate, reply)),
                             }
                         }
                         let Some(index) = pick_next_job(&pending, &pending_input_jobs) else {
+                            if let Some((gate, reply)) = pause.take() {
+                                gate.arrive(reply);
+                                retired |= gate.retired();
+                                continue;
+                            }
                             if shutting_down {
                                 break;
                             }
@@ -375,6 +387,13 @@ impl PinnedExecutor {
                                     pending_input_jobs.remove(&tag.plugin_id);
                                 }
                             }
+                        if retired && !matches!(tag.label.as_str(), "unload" | "plugin_dispose") {
+                            // Retiring a replacement whose load never ran must
+                            // not execute that load after releasing the gate.
+                            // Disposal still runs on the owning executor thread.
+                            jobs_in_flight_clone.fetch_sub(1, Ordering::SeqCst);
+                            continue;
+                        }
                         let waited = enqueued_at.elapsed();
                         if tag.is_input && waited >= INPUT_WAIT_WARNING {
                             log::info!(
@@ -454,6 +473,12 @@ impl PinnedExecutor {
                 .position(Option::is_none)
                 .unwrap_or(state.threads.len());
             let new_thread = self.build_thread(idx);
+            if let Some(gate) = &state.update_pause
+                && (!gate.resumed() || gate.retired())
+            {
+                let (reply, _) = channel();
+                let _ = new_thread.sender.send(Job::Pause(gate.clone(), reply));
+            }
             if idx < state.threads.len() {
                 state.threads[idx] = Some(new_thread);
             } else {
@@ -536,6 +561,37 @@ impl PinnedExecutor {
             return false;
         }
         true
+    }
+
+    /// Stops all executors after their preceding jobs, regardless of the
+    /// per-plugin input-priority scheduling within each preceding batch.
+    pub(crate) fn pause_for_update(
+        &self,
+        gate: &crate::update_quiescence::PauseGate,
+    ) -> yinz_runtime::errors::prelude::Result<Vec<std::sync::mpsc::Receiver<()>>> {
+        use yinz_runtime::errors::prelude::*;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("plugin executor is poisoned"))?;
+        anyhow::ensure!(
+            state
+                .update_pause
+                .as_ref()
+                .is_none_or(|previous| previous.resumed()),
+            "plugin executor is already paused for an update"
+        );
+        state.update_pause = Some(gate.clone());
+        let mut arrivals = Vec::new();
+        for thread in state.threads.iter().flatten() {
+            let (reply, arrival) = channel();
+            thread
+                .sender
+                .send(Job::Pause(gate.clone(), reply))
+                .map_err(|_| anyhow!("plugin executor exited before update pause"))?;
+            arrivals.push(arrival);
+        }
+        Ok(arrivals)
     }
 
     /// Load a plugin: register it and execute the load work on its assigned thread
@@ -627,6 +683,10 @@ impl Drop for PinnedExecutor {
     fn drop(&mut self) {
         // Teardown only sends shutdown; poisoned bookkeeping is never reused for jobs.
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+
+        if let Some(gate) = &state.update_pause {
+            gate.resume();
+        }
 
         // Send shutdown to all threads
         for thread in state.threads.iter_mut().flatten() {

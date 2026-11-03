@@ -32,6 +32,10 @@ impl PaneGroups {
     pub fn clone_inner(&self) -> HashMap<ClientId, Vec<PaneId>> {
         self.panes_in_group.clone()
     }
+    /// Restore a migration's marking without opening another group UI plugin.
+    pub fn restore_client_group(&mut self, client: ClientId, panes: Vec<PaneId>) {
+        self.panes_in_group.insert(client, panes);
+    }
     pub fn get_client_pane_group(&self, client_id: &ClientId) -> HashSet<PaneId> {
         self.panes_in_group
             .get(client_id)

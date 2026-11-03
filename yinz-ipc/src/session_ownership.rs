@@ -66,6 +66,36 @@ pub fn lock_creation(socket: &Path, deadline: Instant) -> Result<File> {
 }
 
 impl SessionOwnership {
+    /// The physical endpoint can differ from the logical session name while a
+    /// replacement server is being prepared privately.
+    pub fn socket_path(&self) -> PathBuf {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .path
+            .clone()
+    }
+
+    /// Publish an already initialized replacement without changing its logical
+    /// session identity. Both endpoints remain claimed throughout the rename.
+    pub fn relocate(&self, destination: &Path) -> Result<()> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        anyhow::ensure!(
+            state.bound && !state.shutting_down,
+            "session is shutting down"
+        );
+        if state.path == destination {
+            return Ok(());
+        }
+        let destination_claim =
+            claim(destination)?.context("destination session is already owned")?;
+        remove_stale_socket(destination)?;
+        std::fs::rename(&state.path, destination)
+            .context("publish replacement session endpoint")?;
+        state.path = destination.to_owned();
+        state.claim = destination_claim;
+        Ok(())
+    }
     /// Wait for teardown to release its claim, or yield to a reachable server.
     pub fn acquire_for_startup(path: &Path) -> Result<Option<Self>> {
         Self::acquire_until(

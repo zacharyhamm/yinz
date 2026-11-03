@@ -6,6 +6,8 @@ import "common_types.proto";
 message ClientToServerMsg {
   reserved 14, 15, 21, 26;
   oneof message {
+    string update_reply_json = 40;
+    string session_update_json = 41;
     bool request_repaint = 38;
     string session_reply_json = 37;
     string agent_control_json = 33;

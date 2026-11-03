@@ -12,6 +12,29 @@ fn builtin_plugin(name: &str) -> PluginConfig {
 }
 
 #[test]
+fn builtin_prefetch_guard_blocks_publication_until_initializers_release_the_generation() {
+    let data = tempfile::tempdir().unwrap();
+    yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), data.path()).unwrap();
+    let guard = super::source_generation_guard(&builtin_plugin("agent-exit"), data.path())
+        .unwrap()
+        .unwrap();
+    let worker_guard = guard.clone();
+    let publisher = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(data.path().join("plugins/.yinz-update.lock"))
+        .unwrap();
+    assert!(publisher.try_lock().is_err());
+    drop(guard);
+    assert!(
+        publisher.try_lock().is_err(),
+        "a queued named worker still owns the prefetched generation"
+    );
+    drop(worker_guard);
+    publisher.try_lock().unwrap();
+}
+
+#[test]
 fn builtins_use_only_selected_data_directory_and_reload_disk_edits() {
     let data = tempfile::tempdir().unwrap();
     let user = tempfile::tempdir().unwrap();

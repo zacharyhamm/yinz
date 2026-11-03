@@ -48,6 +48,17 @@ pub struct PluginMap {
     workers: HashMap<(PluginId, ClientId), Arc<crate::background_worker::Workers>>,
 }
 
+impl PluginMap {
+    pub(crate) fn all_workers(&self) -> Vec<Arc<crate::background_worker::Workers>> {
+        let mut seen = HashSet::new();
+        self.workers
+            .values()
+            .filter(|workers| seen.insert(Arc::as_ptr(workers)))
+            .cloned()
+            .collect()
+    }
+}
+
 /// Cloned loading contexts share one registration until their last loader is dropped.
 #[derive(Debug)]
 pub(crate) struct PendingConfiguration {

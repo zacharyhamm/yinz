@@ -841,7 +841,7 @@ impl Screen {
     /// The check has no remote counterpart — a broker is reached by ssh and a
     /// token, and a pane the broker confirmed it released is reachable by
     /// definition.
-    fn warp_address(released: ReleasedPane) -> Result<WarpAddress, String> {
+    pub(super) fn warp_address(released: ReleasedPane) -> Result<WarpAddress, String> {
         match released {
             ReleasedPane::Held(held) => Ok(WarpAddress {
                 held: Some(held),
@@ -1615,9 +1615,36 @@ impl Screen {
         response_channel: Option<crossbeam::channel::Sender<Result<()>>>,
         hold: Option<yinz_bus::warp::PaneWarpHold>,
     ) -> Result<()> {
+        self.place_adopted_tab_at(
+            payload,
+            adopted,
+            client_id,
+            is_rollback,
+            placement,
+            response_channel,
+            hold,
+            None,
+        )
+    }
+
+    pub(super) fn place_adopted_tab_at(
+        &mut self,
+        payload: WarpedTab,
+        adopted: AdoptedTabPanes,
+        client_id: ClientId,
+        is_rollback: bool,
+        placement: Option<WarpPlacement>,
+        response_channel: Option<crossbeam::channel::Sender<Result<()>>>,
+        hold: Option<yinz_bus::warp::PaneWarpHold>,
+        preserved_id: Option<TabId>,
+    ) -> Result<()> {
         let target = self.tab_a_client_is_looking_at(client_id);
         let err_context = || "failed to place an adopted tab".to_string();
-        let tab_index = self.get_new_tab_id();
+        let tab_index = preserved_id.unwrap_or_else(|| self.get_new_tab_id());
+        anyhow::ensure!(
+            !self.tabs.contains_key(&tab_index),
+            "adopted tab ID {tab_index} is occupied"
+        );
         let default_layout = self.default_layout.clone();
         let swap_layouts = (
             default_layout.swap_tiled_layouts.clone(),

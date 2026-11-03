@@ -63,6 +63,7 @@ pub type AgentEventProjectMemberships = BTreeMap<String, Result<Option<Vec<PaneI
 /// that mapping is total.
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum ScreenInstruction {
+    SessionMigration(crate::migration::ScreenRequest),
     SubscribePaneOutput(
         PluginId,
         ClientId,
@@ -1077,6 +1078,7 @@ impl From<&ScreenInstruction> for ScreenContext {
         // here, which is a stronger guarantee than the exhaustive match this replaced: it also
         // catches the two names silently drifting apart.
         match screen_instruction {
+            ScreenInstruction::SessionMigration(..) => ScreenContext::WarpTab,
             ScreenInstruction::RequestRepaint(..) => ScreenContext::Render,
             ScreenInstruction::PaletteThemeSaved { .. } => ScreenContext::ToggleCommandPalette,
             ScreenInstruction::CommandPalette(..) => ScreenContext::ToggleCommandPalette,

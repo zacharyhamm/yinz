@@ -72,6 +72,14 @@ pub struct CliArgs {
     #[clap(long, value_parser, hide = true, overrides_with = "server")]
     pub server: Option<PathBuf>,
 
+    /// Internal: operation whose replacement client is reconnecting.
+    #[clap(long, hide = true)]
+    #[serde(default)]
+    pub update_resume: Option<String>,
+    #[clap(long, hide = true)]
+    #[serde(default)]
+    pub update_source_client: Option<u32>,
+
     /// Internal: original client terminal settings, before raw mode (JSON or null).
     #[clap(long, hide = true, requires = "server")]
     pub server_termios: Option<String>,
@@ -433,7 +441,17 @@ pub enum PtyHosts {
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Command {
     /// Install the latest stable GitHub release into the current installation.
-    Update,
+    Update {
+        /// Retry replacement of this original client in an interrupted session update.
+        #[clap(long, requires_all = ["client", "session"], value_parser = clap::value_parser!(u32).range(1..))]
+        resume_client: Option<u32>,
+        /// Current attached client to replace, from `yinz action list-clients`.
+        #[clap(long, requires_all = ["resume_client", "session"], value_parser = clap::value_parser!(u32).range(1..))]
+        client: Option<u32>,
+        /// Session whose update is being recovered; run this on its server host.
+        #[clap(long, requires_all = ["resume_client", "client"], value_parser = validate_session)]
+        session: Option<String>,
+    },
     /// Internal versioned remote CLI administration.
     #[clap(hide = true)]
     RemoteCommand { request: String },

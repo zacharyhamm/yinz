@@ -10,6 +10,7 @@ pub mod cli_client;
 mod client_loop;
 pub mod repl;
 pub mod session_target;
+pub mod update;
 pub use client_loop::ClientOutcome;
 pub use startup_signals::INTERRUPTED_EXIT_STATUS;
 mod command_is_executing;
@@ -83,11 +84,13 @@ pub(crate) enum ClientInstruction {
     Exit(ExitReason),
     Connected {
         signal_quit: bool,
+        update_protocol: u32,
     },
     Log(Vec<String>),
     LogError(Vec<String>),
     SwitchSession(SessionConnection),
     SessionRequest(yinz_types::session_destination::Request),
+    UpdateRequest(yinz_types::update_client::Request),
     SetSynchronizedOutput(Option<SyncOutput>),
     UnblockCliPipeInput(()), // String -> pipe name
     CliPipeOutput((), ()),   // String -> pipe name, String -> output
@@ -113,11 +116,18 @@ impl From<ServerToClientMsg> for ClientInstruction {
             ServerToClientMsg::Exit { exit_reason } => ClientInstruction::Exit(exit_reason),
             ServerToClientMsg::Render { content } => ClientInstruction::Render(content),
             ServerToClientMsg::UnblockInputThread => ClientInstruction::UnblockInputThread,
-            ServerToClientMsg::Connected { signal_quit, .. } => {
-                ClientInstruction::Connected { signal_quit }
+            ServerToClientMsg::Connected {
+                signal_quit,
+                update_protocol,
+                ..
+            } => ClientInstruction::Connected {
+                signal_quit,
+                update_protocol,
             },
             ServerToClientMsg::Log { lines } => ClientInstruction::Log(lines),
             ServerToClientMsg::LogError { lines } => ClientInstruction::LogError(lines),
+            ServerToClientMsg::UpdateRequest(request) => ClientInstruction::UpdateRequest(request),
+            ServerToClientMsg::SessionUpdateReply(_) => ClientInstruction::UnblockInputThread,
             ServerToClientMsg::SessionRequest(request) => {
                 ClientInstruction::SessionRequest(request)
             },
@@ -179,9 +189,9 @@ impl From<&ClientInstruction> for ClientContext {
             ClientInstruction::Connected { .. } => ClientContext::Connected,
             ClientInstruction::Log(_) => ClientContext::Log,
             ClientInstruction::LogError(_) => ClientContext::LogError,
-            ClientInstruction::SwitchSession(..) | ClientInstruction::SessionRequest(..) => {
-                ClientContext::SwitchSession
-            },
+            ClientInstruction::SwitchSession(..)
+            | ClientInstruction::SessionRequest(..)
+            | ClientInstruction::UpdateRequest(..) => ClientContext::SwitchSession,
             ClientInstruction::SetSynchronizedOutput(..) => ClientContext::SetSynchronisedOutput,
             ClientInstruction::UnblockCliPipeInput(..) => ClientContext::UnblockCliPipeInput,
             ClientInstruction::CliPipeOutput(..) => ClientContext::CliPipeOutput,
@@ -449,7 +459,7 @@ pub(crate) enum InputInstruction {
 #[allow(clippy::too_many_arguments)]
 pub fn start_client(
     os_input: Box<dyn ClientOsApi>,
-    cli_args: CliArgs,
+    mut cli_args: CliArgs,
     config: Config,          // saved to disk (or default?)
     config_options: Options, // CLI options merged into (getting priority over) saved config options
     info: ClientInfo,
@@ -465,7 +475,9 @@ pub fn start_client(
     let mut reconnect = is_a_reconnect;
     let mut prepared = None;
     let mut coordinated = false;
-    let local_config = if is_a_reconnect {
+    // Update resumes already carry the effective local configuration. Reloading
+    // it here could fail after a disk edit, before we use the captured state.
+    let local_config = if is_a_reconnect || cli_args.update_source_client.is_some() {
         Ok(session_switch::LocalConfig {
             config: config.clone(),
             options: config_options.clone(),
@@ -487,6 +499,7 @@ pub fn start_client(
                 exit_status: 1,
                 reconnect_to_session: None,
                 prepared_connection: None,
+                restart: None,
             };
         },
     };
@@ -518,7 +531,30 @@ pub fn start_client(
             &mut local_config,
             cancellation.take(),
         );
+        if let Some(restart) = outcome.restart.take() {
+            remote_sessions::set_forward(None);
+            match restart.exec() {
+                Ok(()) => unreachable!("successful exec replaces the process"),
+                Err(error) => {
+                    log::error!(
+                        "Client replacement failed; reconnecting the existing client: {error:#}"
+                    );
+                    eprintln!("Client replacement failed; reconnecting this client. Restart it manually when convenient: {error:#}");
+                    outcome.exit_status =
+                        match update::run_resume_with_os(restart.resume, false, os_input.clone()) {
+                            Ok(status) => status,
+                            Err(error) => {
+                                outcome.exit_msg = format!("{error:#}");
+                                1
+                            },
+                        };
+                    return outcome;
+                },
+            }
+        }
         if let Some(connection) = outcome.prepared_connection.take() {
+            cli_args.update_resume = None;
+            cli_args.update_source_client = None;
             info = match &connection.machine {
                 yinz_types::session_destination::Destination::Remote(host) => ClientInfo::Remote {
                     host: host.clone(),
@@ -551,6 +587,8 @@ pub fn start_client(
             .expect("reconnect target");
         tab = target.tab_position;
         pane = target.pane_id;
+        cli_args.update_resume = None;
+        cli_args.update_source_client = None;
         reconnect = true;
         if remote_host.is_none() {
             local_config.reload(&cli_args);
@@ -607,6 +645,7 @@ fn run_client(
             exit_status: 0,
             reconnect_to_session: None,
             prepared_connection: None,
+            restart: None,
         };
     }
     crate::terminal_escapes::reset_output_abandonment();
@@ -653,6 +692,7 @@ fn run_client(
             exit_status: INTERRUPTED_EXIT_STATUS,
             reconnect_to_session: None,
             prepared_connection: None,
+            restart: None,
         };
     }
     if startup_signal_guard.is_some() {
@@ -731,6 +771,12 @@ fn run_client(
     let mut command_is_executing = CommandIsExecuting::new();
     let recovery = remote_host.clone().map(|host| {
         remote_recovery::Recovery::new(host, command_is_executing.clone(), &config, &config_options)
+            .with_update_resume(
+                cli_args
+                    .update_resume
+                    .clone()
+                    .zip(cli_args.update_source_client.map(ClientId::new)),
+            )
     });
     if let Err(error) =
         os_input.set_remote_recovery(recovery.as_ref().map(|recovery| recovery.control.clone()))
@@ -892,6 +938,7 @@ fn run_client(
                 },
                 reconnect_to_session: None,
                 prepared_connection: None,
+                restart: None,
             };
         },
     };
@@ -1044,6 +1091,7 @@ fn run_client(
             outcome.exit_status = 1;
             outcome.reconnect_to_session = None;
             outcome.prepared_connection = None;
+            outcome.restart = None;
         }
     }
 
@@ -1063,8 +1111,9 @@ fn run_client(
         say_bye(&*os_input);
     }
 
-    if outcome.prepared_connection.is_none()
-        && (outcome.reconnect_to_session.is_none() || (is_remote && !coordinated))
+    if outcome.restart.is_some()
+        || (outcome.prepared_connection.is_none()
+            && (outcome.reconnect_to_session.is_none() || (is_remote && !coordinated)))
     {
         info!("{}", outcome.exit_msg);
         teardown.restore(&*os_input, &outcome.exit_msg);

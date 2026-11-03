@@ -24,6 +24,8 @@ pub const SYSTEM_DEFAULT_DATA_DIR_PREFIX: &str = system_default_data_dir();
 /// Bump it only for changes an older peer cannot skip: framing, removed or renumbered protobuf
 /// tags, or a changed meaning for an existing message. Gate additive messages on a capability
 /// the peer advertises instead, as `CliAssets::supports_session_requests` does.
+/// Release names are diagnostic information, not compatibility requirements: releasing a new
+/// build must not change this number unless its wire contract actually changes.
 pub const CLIENT_SERVER_CONTRACT_VERSION: usize = 1;
 
 /// Version of the SSH bootstrap: the `remote-session` and `remote-sessions` command lines and

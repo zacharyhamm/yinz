@@ -95,6 +95,8 @@ impl Drop for PluginReplies {
 #[derive(Default, Clone)]
 pub struct ThreadSenders {
     pub session: yinz_runtime::envs::SessionState,
+    /// Reject actions while a session update is capturing or replacing state.
+    pub session_update_quiesced: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub to_screen: Option<SenderWithContext<ScreenInstruction>>,
     pub to_pty: Option<SenderWithContext<PtyInstruction>>,
     pub to_plugin: Option<SenderWithContext<PluginInstruction>>,
@@ -126,7 +128,8 @@ impl ThreadSenders {
             match instruction {
                 // Layout handoffs need failure cleanup; save requests must not acknowledge
                 // success when the screen never received them.
-                ScreenInstruction::ConfirmTerminalPlacement(..)
+                ScreenInstruction::SessionMigration(..)
+                | ScreenInstruction::ConfirmTerminalPlacement(..)
                 | ScreenInstruction::ApplyLayout(..)
                 | ScreenInstruction::OverrideLayoutComplete(..)
                 | ScreenInstruction::SaveSession(..) => sender.send_required(instruction),
@@ -149,7 +152,9 @@ impl ThreadSenders {
             let sender = self.to_pty.as_ref().context("failed to get pty sender")?;
             match instruction {
                 // A failed handoff must let the spawn worker tear down its terminals.
-                PtyInstruction::SpawnResolved(_) => sender.send_required(instruction),
+                PtyInstruction::SessionMigration(_) | PtyInstruction::SpawnResolved(_) => {
+                    sender.send_required(instruction)
+                },
                 _ => sender.send(instruction),
             }
             .to_anyhow()
@@ -416,6 +421,7 @@ impl<T> Bus<T> {
             receivers,
             senders: ThreadSenders {
                 session: Default::default(),
+                session_update_quiesced: Default::default(),
                 to_screen: to_screen.cloned(),
                 to_pty: to_pty.cloned(),
                 to_plugin: to_plugin.cloned(),
@@ -442,6 +448,7 @@ impl<T> Bus<T> {
             receivers: vec![],
             senders: ThreadSenders {
                 session: Default::default(),
+                session_update_quiesced: Default::default(),
                 to_screen: None,
                 to_pty: None,
                 to_plugin: None,

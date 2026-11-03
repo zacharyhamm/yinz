@@ -25,6 +25,7 @@ pub use yinz_plugin_host::plugin_authoring;
 #[cfg(unix)]
 pub use yinz_process::pty_host;
 mod client_router;
+mod update;
 pub(crate) use yinz_bus::pty_writer;
 mod route;
 pub(crate) use yinz_bus::screen;
@@ -162,6 +163,7 @@ pub(crate) struct SessionMetaData {
     pub default_shell: Option<TerminalAction>,
     pub current_input_modes: HashMap<ClientId, InputMode>,
     pub session_configuration: SessionConfiguration,
+    pub effective_layout: Layout,
     pub key_passthrough_clients: HashMap<ClientId, PaneId>,
     pub locked_escapes: HashMap<ClientId, locked_escape::LockedEscape>,
     // Holds Locked through palette note editing; final dismissal resumes notification browsing.
@@ -650,6 +652,24 @@ fn route_session_request(
     session_data: &Arc<RwLock<Option<SessionMetaData>>>,
 ) {
     pending.retain(|_, (_, at)| at.elapsed() < SESSION_REQUEST_RETENTION);
+    if session_data
+        .read()
+        .ok()
+        .and_then(|data| {
+            data.as_ref().map(|session| {
+                session
+                    .senders
+                    .session_update_quiesced
+                    .load(Ordering::Acquire)
+            })
+        })
+        .unwrap_or(false)
+    {
+        let _ = reply.send(Err(
+            "Session update is transferring terminals; retry after it finishes".into(),
+        ));
+        return;
+    }
     let refusal = match session_state.read() {
         Ok(state) if !state.is_interactive(&client) => {
             Some("The requesting client is no longer attached")
@@ -733,6 +753,12 @@ pub(crate) struct SessionState {
     /// Attached clients that advertised `CliAssets::supports_session_requests`. Older clients
     /// share the contract version but cannot decode `ServerToClientMsg::SessionRequest`.
     session_request_clients: HashSet<ClientId>,
+    update_client_assets: HashMap<ClientId, CliAssets>,
+    update_startup_assets: Option<CliAssets>,
+    update_executable: Option<PathBuf>,
+    update_control_socket: Option<PathBuf>,
+    resumed_updates: HashMap<ClientId, (String, ClientId)>,
+    pending_update_clients: HashMap<(String, ClientId), (Config, InputMode)>,
 }
 
 impl SessionState {
@@ -746,6 +772,14 @@ impl SessionState {
             last_active_client: None,
             forwards_in_flight: HashMap::new(),
             session_request_clients: HashSet::new(),
+            update_client_assets: HashMap::new(),
+            update_startup_assets: None,
+            update_control_socket: None,
+            resumed_updates: HashMap::new(),
+            pending_update_clients: HashMap::new(),
+            update_executable: std::env::current_exe()
+                .ok()
+                .and_then(|p| p.canonicalize().ok()),
         }
     }
     /// Number a new connection, from 1 up. `None` once every id has been used: handing one out
@@ -770,6 +804,8 @@ impl SessionState {
         self.clients.remove(&client_id);
         self.interactive_clients.remove(&client_id);
         self.session_request_clients.remove(&client_id);
+        self.update_client_assets.remove(&client_id);
+        self.resumed_updates.remove(&client_id);
         self.pipes.retain(|_p_id, c_id| c_id != &client_id);
         self.clear_last_active_client(client_id);
         let stuck: Vec<u32> = self
@@ -1132,6 +1168,7 @@ pub fn start_server_impl(
     let mut starting_session = None;
     let mut kill_session = false;
     let mut session_requests = PendingSessionRequests::new();
+    let mut update_requests = update::PendingRequests::default();
     let mut kill_completion_client = None;
     let mut kill_progress_client = None;
     // Until a first client has initialised the session, the wait is bounded by
@@ -1199,6 +1236,21 @@ pub fn start_server_impl(
                 ),
                 _ => {},
             }
+            if let ServerInstruction::AttachClient(_, _, _, client)
+            | ServerInstruction::AttachWatcherClient(client, _) = &instruction
+                && with_session(&session_data, |session| {
+                    session
+                        .senders
+                        .session_update_quiesced
+                        .load(Ordering::Acquire)
+                })?
+                .unwrap_or(false)
+            {
+                let client = *client;
+                os_input.send_to_client(client,ServerToClientMsg::Exit { exit_reason:ExitReason::Error("Session update is transferring terminals; retry attachment after it finishes".into()) }).context("refuse attachment during session handoff").non_fatal();
+                remove_client!(client, os_input, session_state, session_data);
+                continue;
+            }
             // Advertise on the attachment itself: ConnStatus probes use a separate,
             // short-lived socket and cannot negotiate a later connection's capabilities.
             if let ServerInstruction::FirstClientConnected(_, client_id)
@@ -1213,6 +1265,7 @@ pub fn start_server_impl(
                             warp_held_terminals: true,
                             warp_agent_tracking: true,
                             signal_quit: true,
+                            update_protocol: yinz_types::session_update::PROTOCOL_VERSION,
                         },
                     )
                     .context("advertise attachment capabilities")
@@ -1220,6 +1273,25 @@ pub fn start_server_impl(
             }
             match instruction {
                 ServerInstruction::FirstClientConnected(cli_assets, client_id) => {
+                    if let Some(operation) = &cli_assets.update_target {
+                        uuid::Uuid::parse_str(operation)
+                            .context("invalid update target operation")?;
+                        let source = cli_assets
+                            .update_source_session
+                            .as_ref()
+                            .context("update target is missing its logical session")?;
+                        anyhow::ensure!(
+                            !source.as_str().is_empty() && !source.as_str().contains('/'),
+                            "invalid logical update session"
+                        );
+                        session_identity.set(source.clone());
+                    }
+                    if let Ok(mut state) = session_state.write() {
+                        state.update_startup_assets = Some(cli_assets.clone());
+                        state
+                            .update_client_assets
+                            .insert(client_id, cli_assets.clone());
+                    }
                     let startup_started = std::time::Instant::now();
                     startup_traces_waiting_for_first_render.insert(client_id, startup_started);
                     log::info!(
@@ -1229,6 +1301,16 @@ pub fn start_server_impl(
                     let timezone = cli_assets.timezone.clone();
                     let supports_session_requests = cli_assets.supports_session_requests;
                     let (config, layout) = match startup_stage("server.config_and_layout", || {
+                        if cli_assets.update_target.is_some() {
+                            let text = cli_assets.update_configuration.as_ref().context(
+                                "replacement server is missing its effective configuration",
+                            )?;
+                            let config = Config::from_kdl(text, None)
+                                .map_err(|error| anyhow!("{error}"))
+                                .context("restore replacement configuration")?;
+                            let layout = update::replacement_layout(&cli_assets)?;
+                            return Ok((config, layout));
+                        }
                         yinz_config::cli_assets::load_config_and_layout(&cli_assets)
                     }) {
                         Ok(config_and_layout) => config_and_layout,
@@ -1253,6 +1335,9 @@ pub fn start_server_impl(
                     // and then there is nothing for the setup wizard to edit.
                     let successfully_written_config =
                         startup_stage("server.write_initial_config", || {
+                            if cli_assets.update_target.is_some() {
+                                return false;
+                            }
                             match config.to_string(true) {
                                 Ok(text) => Config::write_config_to_disk_if_it_does_not_exist(
                                     text,
@@ -1390,7 +1475,10 @@ pub fn start_server_impl(
                         Ok(())
                     };
 
-                    if layout.has_tabs() {
+                    if let Some(operation) = &cli_assets.update_target {
+                        uuid::Uuid::parse_str(operation)
+                            .context("invalid update target operation")?;
+                    } else if layout.has_tabs() {
                         let focused_tab_index =
                             layout.focused_tab_index().unwrap_or(TabPosition::new(0));
                         for (tab_index, (tab_name, tab_layout, floating_panes_layout)) in
@@ -1490,13 +1578,35 @@ pub fn start_server_impl(
                         startup_traces_waiting_for_first_render.remove(&client_id);
                         continue;
                     };
-                    let config = session_data.session_configuration.saved_config.clone();
+                    let restored_update = cli_assets.update_resume.as_ref().and_then(|identity| {
+                        session_state
+                            .read()
+                            .ok()?
+                            .pending_update_clients
+                            .get(identity)
+                            .cloned()
+                    });
+                    let config = restored_update
+                        .as_ref()
+                        .map(|(config, _)| config.clone())
+                        .unwrap_or_else(|| session_data.session_configuration.saved_config.clone());
                     let host_terminal_env = cli_assets.host_terminal_env.clone();
                     let timezone = cli_assets.timezone.clone();
+                    if let Ok(mut state) = session_state.write() {
+                        state
+                            .update_client_assets
+                            .insert(client_id, cli_assets.clone());
+                    }
                     let supports_session_requests = cli_assets.supports_session_requests;
-                    let runtime_config_options = match cli_assets.configuration_options {
-                        Some(configuration_options) => config.options.merge(configuration_options),
-                        None => config.options.clone(),
+                    let runtime_config_options = if restored_update.is_some() {
+                        config.options.clone()
+                    } else {
+                        match cli_assets.configuration_options {
+                            Some(configuration_options) => {
+                                config.options.merge(configuration_options)
+                            },
+                            None => config.options.clone(),
+                        }
                     };
 
                     let client_attributes = ClientAttributes {
@@ -1525,9 +1635,13 @@ pub fn start_server_impl(
                         .session_configuration
                         .get_client_configuration(&client_id);
                     let default_mode = effective.options.default_mode.unwrap_or_default();
+                    let restored_mode = restored_update
+                        .as_ref()
+                        .map(|(_, mode)| *mode)
+                        .unwrap_or(default_mode);
                     session_data
                         .current_input_modes
-                        .insert(client_id, default_mode);
+                        .insert(client_id, restored_mode);
                     // Before the client counts as attached: from then on a CLI action can act for it
                     // and load a plugin for it, which must find its attachment token.
                     session_data
@@ -1588,13 +1702,26 @@ pub fn start_server_impl(
                     session_data
                         .senders
                         .send_to_screen(ScreenInstruction::ChangeMode(
-                            default_mode,
+                            restored_mode,
                             Some(default_mode),
                             client_id,
                             None,
                         ))
                         .context("setting the attaching client's mode")
                         .non_fatal();
+                    if let Some((operation, source_client)) = &cli_assets.update_resume
+                        && restored_update.is_some()
+                    {
+                        yinz_bus::migration::restore_client(
+                            &session_data.senders,
+                            operation,
+                            *source_client,
+                            client_id,
+                            Duration::from_secs(30),
+                        )
+                        .context("restore update client state before readiness")
+                        .non_fatal();
+                    }
                     log::info!(
                     "attach trace: server main client_id={client_id} attach dispatch complete after {:?}",
                     attach_started_at.elapsed()
@@ -2034,6 +2161,7 @@ pub fn start_server_impl(
                             warp_held_terminals: true,
                             warp_agent_tracking: true,
                             signal_quit: true,
+                            update_protocol: yinz_types::session_update::PROTOCOL_VERSION,
                         },
                     );
                     log::info!(
@@ -2095,6 +2223,111 @@ pub fn start_server_impl(
                         &session_state,
                         &session_data,
                     );
+                },
+                ServerInstruction::UpdateClientReady {
+                    client,
+                    operation,
+                    source_client,
+                } => {
+                    if session_state.read().is_ok_and(|state| {
+                        state.is_interactive(&client)
+                            && state
+                                .update_client_assets
+                                .get(&client)
+                                .is_some_and(|a| a.supports_in_place_update)
+                    }) {
+                        send_to_client!(
+                            client,
+                            os_input,
+                            ServerToClientMsg::UpdateRequest(yinz_types::update_client::Request {
+                                token: operation.clone(),
+                                request: yinz_types::update_client::ClientRequest::Ready {
+                                    operation,
+                                    source_client
+                                },
+                            }),
+                            session_state,
+                            session_data
+                        );
+                    }
+                },
+                ServerInstruction::CancelSessionUpdate(client) => {
+                    let text = update::active_control(client, true, &session_state, &session_data)
+                        .unwrap_or_else(|error| format!("Yinz update: {error:#}"));
+                    with_session(&session_data, |session| {
+                        session
+                            .senders
+                            .send_to_screen(ScreenInstruction::Notify(text, None, None, None))
+                            .non_fatal()
+                    })?;
+                },
+                ServerInstruction::SessionUpdateStatus(client) => {
+                    let text = update::active_control(client, false, &session_state, &session_data)
+                        .unwrap_or_else(|error| format!("Yinz update: {error:#}"));
+                    with_session(&session_data, |session| {
+                        session
+                            .senders
+                            .send_to_screen(ScreenInstruction::Notify(text, None, None, None))
+                            .non_fatal()
+                    })?;
+                },
+                ServerInstruction::StartSessionUpdate(client) => {
+                    let request = yinz_types::session_update::Request {
+                        token: uuid::Uuid::new_v4().to_string(),
+                        operation: uuid::Uuid::new_v4().to_string(),
+                        command: yinz_types::session_update::Command::Start,
+                    };
+                    let result = update::handle(request, client, &session_state, &session_data);
+                    let text = match result.result {
+                        Ok(status) => format!(
+                            "Yinz update: {}",
+                            status["phase"].as_str().unwrap_or("starting")
+                        ),
+                        Err(error) => format!("Yinz update: {error}"),
+                    };
+                    with_session(&session_data, |session| {
+                        session
+                            .senders
+                            .send_to_screen(ScreenInstruction::Notify(text, None, None, None))
+                            .non_fatal()
+                    })?;
+                },
+                ServerInstruction::UpdateRequest {
+                    client,
+                    request,
+                    reply,
+                } => {
+                    update::route_client_request(
+                        client,
+                        request,
+                        reply,
+                        &mut update_requests,
+                        &mut os_input,
+                        &session_state,
+                        &session_data,
+                    );
+                },
+                ServerInstruction::UpdateReply(client, reply) => {
+                    if let Ok(yinz_types::update_client::ClientReply::Resumed {
+                        operation,
+                        source_client,
+                    }) = &reply.result
+                        && let Ok(mut state) = session_state.write()
+                        && state.is_interactive(&client)
+                        && state.update_client_assets.get(&client).is_some_and(|a| {
+                            a.supports_in_place_update
+                                && a.update_resume
+                                    .as_ref()
+                                    .is_some_and(|(expected, original)| {
+                                        expected == operation && original == source_client
+                                    })
+                        })
+                    {
+                        state
+                            .resumed_updates
+                            .insert(client, (operation.clone(), *source_client));
+                    }
+                    update_requests.answer(client, reply);
                 },
                 ServerInstruction::SessionReply(client, reply) => {
                     if let Some((sender, _)) = session_requests.remove(&(client, reply.token)) {
@@ -2761,11 +2994,13 @@ fn init_session(
     let default_mode = config_options.default_mode.unwrap_or_default();
     let default_keybinds = config.keybinds.clone();
 
+    let session_update_quiesced = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let session = starting_session.insert(SessionMetaData {
         shutdown: shutdown.clone(),
         data_access: data_access.clone(),
         senders: ThreadSenders {
             session: session_identity.clone(),
+            session_update_quiesced: session_update_quiesced.clone(),
             to_screen: Some(to_screen.clone()),
             to_pty: Some(to_pty.clone()),
             to_plugin: Some(to_plugin.clone()),
@@ -2778,6 +3013,7 @@ fn init_session(
         },
         default_shell: default_shell.clone(),
         session_configuration: Default::default(),
+        effective_layout: layout.clone(),
         current_input_modes: HashMap::new(),
         screen_thread: None,
         pty_thread: None,
@@ -2809,6 +3045,7 @@ fn init_session(
             Some(os_input.clone()),
         );
         bus.senders.session = session_identity.clone();
+        bus.senders.session_update_quiesced = session_update_quiesced.clone();
         bus.senders.session_checkpoint = session_checkpoint.clone();
         let pty = Pty::new(
             bus,
@@ -2837,6 +3074,7 @@ fn init_session(
             Some(os_input.clone()),
         );
         screen_bus.senders.session = session_identity.clone();
+        screen_bus.senders.session_update_quiesced = session_update_quiesced.clone();
         screen_bus.senders.session_checkpoint = session_checkpoint.clone();
         screen_bus.senders.session_ownership = Some(Arc::downgrade(&ownership));
         let max_panes = cli_assets.max_panes;
@@ -2915,6 +3153,7 @@ fn init_session(
             None,
         );
         plugin_bus.senders.session = session_identity.clone();
+        plugin_bus.senders.session_update_quiesced = session_update_quiesced.clone();
         let plugin_session = plugins::ServerSession::Shared(session_identity.clone());
         // A plugin worker can outlive its bounded shutdown wait.
         let ownership = ownership.clone();
@@ -2942,6 +3181,7 @@ fn init_session(
         let context_menu = config.context_menu.clone();
         let session_env_vars = session_env_vars.clone();
         let data_access = data_access.clone();
+        let update_operation = cli_assets.update_target.clone();
         move || {
             let _ownership = ownership;
             plugin_thread_main(
@@ -2965,6 +3205,7 @@ fn init_session(
                 context_menu,
                 client_id,
                 plugin_session,
+                update_operation,
             )
             .fatal()
         }
@@ -2975,7 +3216,7 @@ fn init_session(
         startup_started.elapsed()
     );
     session.pty_writer_thread = Some(spawn_session_worker("pty_writer", {
-        let pty_writer_bus = Bus::new(
+        let mut pty_writer_bus = Bus::new(
             vec![pty_writer_receiver],
             Some(&to_screen),
             Some(&to_pty),
@@ -2985,6 +3226,7 @@ fn init_session(
             Some(&to_background_jobs),
             Some(os_input.clone()),
         );
+        pty_writer_bus.senders.session_update_quiesced = session_update_quiesced.clone();
         || pty_writer_main(pty_writer_bus).fatal()
     })?);
 
@@ -3006,6 +3248,7 @@ fn init_session(
             Some(os_input.clone()),
         );
         background_jobs_bus.senders.session = session_identity.clone();
+        background_jobs_bus.senders.session_update_quiesced = session_update_quiesced.clone();
         background_jobs_bus.senders.session_checkpoint = session_checkpoint.clone();
         move || {
             background_jobs_main(

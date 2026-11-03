@@ -41,3 +41,5 @@ pub use yinz_types::internal_ids::{ClientId, PluginId, TerminalId};
 pub use yinz_types::pane_id::PaneId;
 
 pub mod command_palette;
+
+pub mod migration;

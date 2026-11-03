@@ -1,3 +1,4 @@
+mod migration;
 use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
 use crate::pane::{AdjustedInput, GuestChoiceIndicator, Pane, TerminalPaneIo, TextAroundPosition};
 use crate::panes::kitty_graphics::{KittyApcInterceptor, KittyHostSupport, KittyImageStore, Piece};
@@ -109,6 +110,7 @@ pub struct TerminalPane {
     pub active_at: Instant,
     pub style: Style,
     vte_parser: vte::Parser,
+    parser_boundary: yinz_terminal::panes::parser_boundary::ParserBoundary,
     #[cfg(test)]
     vte_batches: usize,
     selection_scrolled_at: time::Instant,
@@ -318,6 +320,7 @@ impl Pane for TerminalPane {
                         let consumed = self
                             .vte_parser
                             .advance_until_terminated(&mut self.grid, &forwarded);
+                        self.parser_boundary.advance(&forwarded[..consumed]);
                         if !self.grid.pending_forwarded_queries.is_empty() {
                             self.pending_pty_input.extend(&forwarded[consumed..]);
                             // The prefix may have spanned reads, so reconstruct it explicitly.
@@ -349,6 +352,7 @@ impl Pane for TerminalPane {
             let consumed = self
                 .vte_parser
                 .advance_until_terminated(&mut self.grid, &forwarded);
+            self.parser_boundary.advance(&forwarded[..consumed]);
             if !self.grid.pending_forwarded_queries.is_empty() {
                 self.pending_pty_input.extend(&forwarded[consumed..]);
                 self.pending_pty_input
@@ -1720,6 +1724,12 @@ impl Pane for TerminalPane {
         self.pane_name = String::from_utf8_lossy(&buf).to_string();
         self.set_should_render(true);
     }
+    fn migration_state(&self) -> Result<serde_json::Value, String> {
+        self.capture_migration()
+    }
+    fn restore_migration_state(&mut self, state: serde_json::Value) -> Result<(), String> {
+        self.apply_migration(state)
+    }
     fn serialize_handoff(
         &self,
         scrollback: Option<usize>,
@@ -2107,7 +2117,8 @@ impl TerminalPane {
         for &byte in bytes {
             match self.kitty_interceptor.advance(byte) {
                 InterceptorResult::Forward(forward) => {
-                    self.vte_parser.advance(&mut self.grid, forward.as_slice())
+                    self.vte_parser.advance(&mut self.grid, forward.as_slice());
+                    self.parser_boundary.advance(forward.as_slice())
                 },
                 InterceptorResult::Swallow | InterceptorResult::CaptureStarted => {},
                 InterceptorResult::Captured(command) => {
@@ -2237,6 +2248,7 @@ impl TerminalPane {
             geom: position_and_size,
             geom_override: None,
             vte_parser: vte::Parser::new(),
+            parser_boundary: Default::default(),
             #[cfg(test)]
             vte_batches: 0,
             active_at: Instant::now(),

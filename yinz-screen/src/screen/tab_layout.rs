@@ -355,6 +355,11 @@ impl Screen {
         }
         let layout_failed = applied.is_err();
         if let Err(error) = applied {
+            if self.migration_tab_pending(tab_id) {
+                self.fail_migration_adoption(format!(
+                    "migration layout {tab_id} failed: {error:#}"
+                ));
+            }
             let mut message = format!("Failed to apply layout for tab {tab_id}: {error:#}");
             if let Some(completion) = completion_tx.as_mut() {
                 completion.set_exit_status(1);

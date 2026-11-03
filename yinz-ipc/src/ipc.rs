@@ -45,6 +45,10 @@ type SessionId = u64;
 /// A bidirectional byte stream that supports cloning for simultaneous read/write.
 pub trait IpcStream: Read + Write + Send + 'static {
     fn try_clone_stream(&self) -> io::Result<Box<dyn IpcStream>>;
+    /// Wake a reader blocked on another clone when a client deliberately retires a connection.
+    fn shutdown(&self) -> io::Result<()> {
+        Ok(())
+    }
 
     /// Bound every read with `timeout`, or remove the bound with `None`.
     ///
@@ -59,6 +63,16 @@ pub trait IpcStream: Read + Write + Send + 'static {
 }
 
 impl IpcStream for LocalSocketStream {
+    fn shutdown(&self) -> io::Result<()> {
+        use std::os::fd::{AsFd, AsRawFd};
+        let LocalSocketStream::UdSocket(stream) = self;
+        // SAFETY: `stream` owns a live socket descriptor for the duration of this call.
+        if unsafe { libc::shutdown(stream.as_fd().as_raw_fd(), libc::SHUT_RDWR) } == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
     fn try_clone_stream(&self) -> io::Result<Box<dyn IpcStream>> {
         use interprocess::TryClone;
         Ok(Box::new(self.try_clone()?))
@@ -147,6 +161,8 @@ pub struct EventSubscription {
     strum_macros::VariantNames,
 )]
 pub enum ClientToServerMsg {
+    UpdateReply(yinz_types::update_client::Reply),
+    SessionUpdate(yinz_types::session_update::Request),
     SessionReply(yinz_types::session_destination::Reply),
     AgentControl(yinz_types::agent::control::AgentRequest),
     PluginRequest {
@@ -270,6 +286,8 @@ pub enum ClientToServerMsg {
     strum_macros::VariantNames,
 )]
 pub enum ServerToClientMsg {
+    UpdateRequest(yinz_types::update_client::Request),
+    SessionUpdateReply(yinz_types::session_update::Reply),
     SessionRequest(yinz_types::session_destination::Request),
     AgentControl(yinz_types::agent::control::AgentResponse),
     PluginResponse {
@@ -302,6 +320,8 @@ pub enum ServerToClientMsg {
         warp_agent_tracking: bool,
         #[serde(default)]
         signal_quit: bool,
+        #[serde(default)]
+        update_protocol: u32,
     },
     Log {
         lines: Vec<String>,
@@ -443,6 +463,9 @@ pub struct IpcSenderWithContext<T: Serialize> {
 }
 
 impl<T: Serialize> IpcSenderWithContext<T> {
+    pub fn shutdown(&self) -> io::Result<()> {
+        self.sender.shutdown()
+    }
     /// Returns a sender to the given [LocalSocketStream](interprocess::local_socket::LocalSocketStream).
     pub fn new(sender: LocalSocketStream) -> Self {
         Self::from_boxed(Box::new(sender))

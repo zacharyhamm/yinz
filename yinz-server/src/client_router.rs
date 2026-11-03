@@ -452,7 +452,29 @@ pub(crate) fn route_thread_main(
                     else {
                         return Ok(false);
                     };
+                    if senders.as_ref().is_some_and(|senders| {
+                        senders
+                            .session_update_quiesced
+                            .load(std::sync::atomic::Ordering::Acquire)
+                    }) && matches!(
+                        &instruction,
+                        ClientToServerMsg::Key { .. }
+                            | ClientToServerMsg::Paste(_)
+                            | ClientToServerMsg::AgentControl(_)
+                            | ClientToServerMsg::PluginRequest { .. }
+                    ) {
+                        os_input.send_to_client(client_id,ServerToClientMsg::LogError {lines:vec!["Session update is transferring terminals; retry after it finishes".into()]}).context("refuse input during session handoff")?;
+                        return Ok(false);
+                    }
                     match instruction {
+                        ClientToServerMsg::UpdateReply(reply) => {
+                            to_server.send(ServerInstruction::UpdateReply(client_id, reply)).context("route client update reply")?;
+                        },
+                        ClientToServerMsg::SessionUpdate(request) => {
+                            if senders.is_none() && !matches!(request.command, yinz_types::session_update::Command::Identity) { wait_for_session_to_be_ready(&session_data); }
+                            let reply = crate::update::handle(request, client_id, &session_state, &session_data);
+                            os_input.send_to_client(client_id, ServerToClientMsg::SessionUpdateReply(reply)).context("answer update coordinator")?;
+                        },
                         ClientToServerMsg::SessionReply(reply) => {
                             to_server.send(ServerInstruction::SessionReply(client_id, reply)).context("route client session reply")?;
                         },
@@ -487,7 +509,10 @@ pub(crate) fn route_thread_main(
                             os_input.send_to_client(client_id, ServerToClientMsg::PluginResponse { request_id, result }).context("reply to CLI plugin request")?;
                         },
                         ClientToServerMsg::DataRequest { request_id, request } => {
-                            let result = if let Some(senders) = &senders {
+                            let quiesced = senders.as_ref().is_some_and(|senders| senders.session_update_quiesced.load(std::sync::atomic::Ordering::Acquire));
+                            let result = if quiesced && matches!(&request, yinz_types::cli::DataRequest::Apply {..}) {
+                                Err("Session update has paused persisted writes; retry after it finishes".into())
+                            } else if let Some(senders) = &senders {
                                 let (reply, receiver) = std::sync::mpsc::channel();
                                 senders.send_to_plugin(PluginInstruction::DataRequest { request, reply }).context("route CLI data request")?;
                                 receiver.recv_timeout(std::time::Duration::from_secs(30))

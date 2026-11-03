@@ -17,6 +17,20 @@ use yinz_types::pane_size::Size;
 /// Instructions related to server-side application
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum ServerInstruction {
+    UpdateClientReady {
+        client: ClientId,
+        operation: String,
+        source_client: ClientId,
+    },
+    StartSessionUpdate(ClientId),
+    CancelSessionUpdate(ClientId),
+    SessionUpdateStatus(ClientId),
+    UpdateRequest {
+        client: ClientId,
+        request: yinz_types::update_client::Request,
+        reply: std::sync::mpsc::Sender<Result<yinz_types::update_client::ClientReply, String>>,
+    },
+    UpdateReply(ClientId, yinz_types::update_client::Reply),
     SessionRequest {
         client: ClientId,
         request: yinz_types::session_destination::Request,
@@ -135,6 +149,12 @@ impl From<&ServerInstruction> for ServerContext {
         // The two enums are kept name-for-name; `instruction_context_tests` fails the test run if
         // a variant is added without either a matching `ServerContext` or an arm here.
         match server_instruction {
+            ServerInstruction::UpdateClientReady { .. }
+            | ServerInstruction::UpdateRequest { .. }
+            | ServerInstruction::UpdateReply(..)
+            | ServerInstruction::StartSessionUpdate(..)
+            | ServerInstruction::CancelSessionUpdate(..)
+            | ServerInstruction::SessionUpdateStatus(..) => ServerContext::ConnStatus,
             ServerInstruction::ClipboardUpdate(..) => ServerContext::Render,
             ServerInstruction::DesktopNotification(..) => ServerContext::Render,
             ServerInstruction::RepaintComplete(..) => ServerContext::Render,

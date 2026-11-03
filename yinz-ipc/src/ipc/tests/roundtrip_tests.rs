@@ -740,6 +740,12 @@ fn test_client_messages() {
                 .collect(),
             timezone: Some("America/Chicago".into()),
             supports_session_requests: true,
+            supports_in_place_update: true,
+            update_target: None,
+            update_source_session: None,
+            update_configuration: None,
+            update_layout: None,
+            update_resume: None,
         },
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
@@ -760,6 +766,12 @@ fn test_client_messages() {
                 .collect(),
             timezone: Some("America/Chicago".into()),
             supports_session_requests: true,
+            supports_in_place_update: true,
+            update_target: None,
+            update_source_session: None,
+            update_configuration: None,
+            update_layout: None,
+            update_resume: None,
         },
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
@@ -850,6 +862,12 @@ fn test_client_messages() {
                 .collect(),
             timezone: Some("America/Chicago".into()),
             supports_session_requests: true,
+            supports_in_place_update: true,
+            update_target: None,
+            update_source_session: None,
+            update_configuration: None,
+            update_layout: None,
+            update_resume: None,
         },
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
@@ -4903,12 +4921,14 @@ fn test_server_messages() {
         warp_held_terminals: false,
         warp_agent_tracking: false,
         signal_quit: false,
+        update_protocol: 0,
     });
     test_server_roundtrip!(ServerToClientMsg::Connected {
         warp_companions: true,
         warp_held_terminals: true,
         warp_agent_tracking: true,
         signal_quit: true,
+        update_protocol: 0,
     });
     test_server_roundtrip!(ServerToClientMsg::QueryTerminalSize);
     test_server_roundtrip!(ServerToClientMsg::ConfigFileUpdated);
@@ -5969,6 +5989,12 @@ fn attach_without_session_request_capability_decodes_as_unsupported() {
     let first = ProtoClientToServerMsg::try_from(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             supports_session_requests: true,
+            supports_in_place_update: true,
+            update_target: None,
+            update_source_session: None,
+            update_configuration: None,
+            update_layout: None,
+            update_resume: None,
             ..Default::default()
         },
     })
@@ -5990,7 +6016,73 @@ fn attach_without_session_request_capability_decodes_as_unsupported() {
     )
     .unwrap();
     assert!(!json.supports_session_requests);
+    assert!(!json.supports_in_place_update);
+    assert!(json.update_target.is_none() && json.update_source_session.is_none());
+    assert!(json.update_resume.is_none() && json.update_configuration.is_none());
     assert!(json.timezone.is_none());
+}
+
+#[test]
+fn update_wire_messages_preserve_operation_correlation_and_restart_source() {
+    use yinz_types::update_client::{ClientReply, ClientRequest, Reply, Request};
+    let request = ServerToClientMsg::UpdateRequest(Request {
+        token: "request-token".into(),
+        request: ClientRequest::Restart {
+            operation: "operation".into(),
+            source_client: ClientId::new(42),
+            executable: "/opt/yinz".into(),
+            target: SessionConnection {
+                name: Some("logical-session".into()),
+                ..Default::default()
+            },
+        },
+    });
+    let wire: crate::ipc::ProtoServerToClientMsg = request.clone().into();
+    assert_eq!(
+        ServerToClientMsg::try_from(
+            crate::ipc::ProtoServerToClientMsg::decode(wire.encode_to_vec().as_slice()).unwrap()
+        )
+        .unwrap(),
+        request
+    );
+    let reply = ClientToServerMsg::UpdateReply(Reply {
+        token: "operation".into(),
+        result: Ok(ClientReply::Resumed {
+            operation: "operation".into(),
+            source_client: ClientId::new(42),
+        }),
+    });
+    let wire = crate::ipc::ProtoClientToServerMsg::try_from(reply.clone()).unwrap();
+    assert_eq!(
+        ClientToServerMsg::try_from(
+            crate::ipc::ProtoClientToServerMsg::decode(wire.encode_to_vec().as_slice()).unwrap()
+        )
+        .unwrap(),
+        reply
+    );
+    let attached = ClientToServerMsg::AttachClient {
+        cli_assets: CliAssets {
+            config_file_path: Some("/user/config.kdl".into()),
+            update_target: Some("operation".into()),
+            update_source_session: Some("logical-session".into()),
+            update_resume: Some(("operation".into(), ClientId::new(42))),
+            update_layout: Some(
+                serde_json::to_string(&yinz_types::input::layout::Layout::default()).unwrap(),
+            ),
+            update_configuration: Some("default_mode \"locked\"\n".into()),
+            ..Default::default()
+        },
+        tab_number_to_focus: None,
+        pane_to_focus: None,
+    };
+    let wire = crate::ipc::ProtoClientToServerMsg::try_from(attached.clone()).unwrap();
+    assert_eq!(
+        ClientToServerMsg::try_from(
+            crate::ipc::ProtoClientToServerMsg::decode(wire.encode_to_vec().as_slice()).unwrap()
+        )
+        .unwrap(),
+        attached
+    );
 }
 
 #[test]
@@ -6027,6 +6119,7 @@ fn signal_quit_capability_defaults_to_false_for_older_servers() {
             ServerToClientMsg::Connected {
                 signal_quit: false,
                 warp_agent_tracking: false,
+                update_protocol: 0,
                 ..
             }
         ));
@@ -6040,6 +6133,7 @@ fn signal_quit_capability_defaults_to_false_for_older_servers() {
         ServerToClientMsg::Connected {
             signal_quit: false,
             warp_agent_tracking: false,
+            update_protocol: 0,
             ..
         }
     ));

@@ -216,6 +216,7 @@ pin_context_to_instruction! {
     context: ScreenContext;
     // `Resize` picks its context from the payload; the rest are named differently
     special: [
+        "SessionMigration",
         "Resize",
         "PaletteThemeSaved",
         "RequestRepaint",
@@ -243,6 +244,7 @@ pin_context_to_instruction! {
         "ResizeDecreaseRight",
     ];
     targets: [
+        ("SessionMigration", ScreenInstruction::SessionMigration(crate::migration::ScreenRequest::Abort { operation: uuid::Uuid::nil().to_string(), reply: crossbeam::channel::bounded(1).0 }), "WarpTab"),
         ("RequestRepaint", ScreenInstruction::RequestRepaint(ClientId::new(1)), "Render"),
         ("UpdateDetectedAgentTheme", ScreenInstruction::UpdateDetectedAgentTheme(TerminalId::new(1), None), "HandlePtyBytes"),
         ("PaletteThemeSaved", ScreenInstruction::PaletteThemeSaved { client: ClientId::new(1), request: uuid::Uuid::nil(), result: Ok(()) }, "ToggleCommandPalette"),
@@ -375,9 +377,21 @@ pin_context_to_instruction! {
     mod plugin;
     instruction: PluginInstruction;
     context: PluginContext;
-    special: ["DataRequest", "RefreshDataWatches", "PostMessagesToPluginWorker", "PluginTick", "PluginPalette", "PaletteAgent", "PaletteAgentLabels", "PluginEvent", "PluginReply", "PluginDispose", "ReleasePluginInstancePipes", "PipeCompleted", "InputBarrier"];
+    special: ["DataRequest", "RefreshDataWatches", "PostMessagesToPluginWorker", "PluginTick", "PluginPalette", "PaletteAgent", "PaletteAgentLabels", "PluginEvent", "PluginReply", "PluginDispose", "ReleasePluginInstancePipes", "PipeCompleted", "InputBarrier", "QuiesceForUpdate", "ResumeAfterUpdate", "UpdateReadiness"];
     only_special: ["PostMessageToPluginWorker", "UnblockCliPipes"];
     targets: [(
+        "QuiesceForUpdate",
+        PluginInstruction::QuiesceForUpdate { operation: "test".into(), reply: std::sync::mpsc::channel().0 },
+        "Update"
+    ), (
+        "ResumeAfterUpdate",
+        PluginInstruction::ResumeAfterUpdate { operation: "test".into(), reply: std::sync::mpsc::channel().0 },
+        "Update"
+    ), (
+        "UpdateReadiness",
+        PluginInstruction::UpdateReadiness,
+        "Update"
+    ), (
         "RefreshDataWatches",
         PluginInstruction::RefreshDataWatches { namespace: "shared:agents".into(), entities: Default::default() },
         "Update"
@@ -469,18 +483,24 @@ pin_context_to_instruction! {
     mod pty;
     instruction: PtyInstruction;
     context: PtyContext;
-    special: [];
+    special: ["SessionMigration"];
     only_special: [];
-    targets: [];
+    targets: [("SessionMigration", PtyInstruction::SessionMigration(crate::migration::PtyRequest::Resume), "ReleaseTerminalsForWarp")];
 }
 
 pin_context_to_instruction! {
     mod server;
     instruction: ServerInstruction;
     context: ServerContext;
-    special: ["ClipboardUpdate", "DesktopNotification", "RepaintComplete", "ConfigurationEditor", "SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError", "SignalQuit", "ClientAttachFailed"];
+    special: ["UpdateClientReady", "StartSessionUpdate", "CancelSessionUpdate", "SessionUpdateStatus", "UpdateRequest", "UpdateReply", "ClipboardUpdate", "DesktopNotification", "RepaintComplete", "ConfigurationEditor", "SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError", "SignalQuit", "ClientAttachFailed"];
     only_special: ["NewClient", "AttachClient"];
     targets: [
+        ("UpdateClientReady", ServerInstruction::UpdateClientReady { client: ClientId::new(1), operation: "operation".into(), source_client: ClientId::new(1) }, "ConnStatus"),
+        ("StartSessionUpdate", ServerInstruction::StartSessionUpdate(ClientId::new(1)), "ConnStatus"),
+        ("CancelSessionUpdate", ServerInstruction::CancelSessionUpdate(ClientId::new(1)), "ConnStatus"),
+        ("SessionUpdateStatus", ServerInstruction::SessionUpdateStatus(ClientId::new(1)), "ConnStatus"),
+        ("UpdateRequest", ServerInstruction::UpdateRequest { client: ClientId::new(1), request: yinz_types::update_client::Request { token: "request".into(), request: yinz_types::update_client::ClientRequest::Participant(yinz_types::update_client::ParticipantRequest::Inventory) }, reply: std::sync::mpsc::channel().0 }, "ConnStatus"),
+        ("UpdateReply", ServerInstruction::UpdateReply(ClientId::new(1), yinz_types::update_client::Reply { token: "request".into(), result: Ok(yinz_types::update_client::ClientReply::Pending) }), "ConnStatus"),
         ("ClipboardUpdate", ServerInstruction::ClipboardUpdate(Default::default()), "Render"),
         ("DesktopNotification", ServerInstruction::DesktopNotification(Default::default()), "Render"),
         ("RepaintComplete", ServerInstruction::RepaintComplete(ClientId::new(1)), "Render"),
@@ -558,7 +578,7 @@ pin_context_to_instruction! {
     mod pty_write;
     instruction: PtyWriteInstruction;
     context: PtyWriteContext;
-    special: [];
+    special: ["MigrationBarrier"];
     only_special: [];
-    targets: [];
+    targets: [("MigrationBarrier", PtyWriteInstruction::MigrationBarrier { deadline: std::time::Instant::now(), reply: crossbeam::channel::bounded(1).0 }, "Write")];
 }

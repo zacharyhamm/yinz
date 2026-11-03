@@ -15,6 +15,7 @@ pub struct LoadingContext {
     /// declaration the step scanned in it: the loader checks the evaluated module against the
     /// scan of the very source it evaluated.
     pub(crate) prefetched_source: Option<(Option<PathBuf>, Arc<str>)>,
+    pub(crate) prefetched_source_guard: Option<Arc<std::fs::File>>,
     pub(crate) prefetched_declaration: Option<bool>,
     pub pick_request: Option<yinz_types::pick::PickRequest>,
     pub pick_cancelled: Option<Arc<AtomicBool>>,
@@ -227,6 +228,10 @@ impl LoadingContext {
         {
             return Ok(true);
         }
+        let source_guard = crate::plugin_loader::source_generation_guard(
+            &self.plugin_config,
+            &self.yinz_data_dir,
+        )?;
         let scanned = script_source(
             &self.plugin_config,
             self.user_plugin_dir.as_deref(),
@@ -244,6 +249,7 @@ impl LoadingContext {
             )
         })?;
         self.prefetched_source = Some((path, source.into()));
+        self.prefetched_source_guard = source_guard;
         // Preserve reload slots; answer new launches now so evaluation cannot block their opener.
         let Some(declaration) = declaration else {
             if !ticket.reload {
@@ -340,6 +346,7 @@ impl LoadingContext {
             panes: plugin_bridge.panes.clone(),
             pane_ticket: None,
             prefetched_source: None,
+            prefetched_source_guard: None,
             prefetched_declaration: None,
             pick_opening: plugin_bridge
                 .picks

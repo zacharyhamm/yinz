@@ -250,6 +250,7 @@ impl Drop for Attempt {
 pub(crate) struct Recovery {
     pub control: RecoveryControl,
     host: String,
+    update_resume: Option<(String, yinz_types::data::ClientId)>,
     env: yinz_types::envs::EnvironmentVariables,
     style: StyleDeclaration,
     host_styles: Option<(StyleDeclaration, StyleDeclaration)>,
@@ -274,6 +275,7 @@ impl Recovery {
         Self {
             control: RecoveryControl::new(command),
             host,
+            update_resume: None,
             env: config.env.clone(),
             style: config
                 .theme_config(options.theme.as_ref())
@@ -301,6 +303,13 @@ impl Recovery {
             status_started: None,
             routers: Vec::new(),
         }
+    }
+    pub fn with_update_resume(
+        mut self,
+        resume: Option<(String, yinz_types::data::ClientId)>,
+    ) -> Self {
+        self.update_resume = resume;
+        self
     }
     pub fn first_render(&mut self, os: &dyn ClientOsApi, name: &str, now: Instant) {
         self.rendered = true;
@@ -404,6 +413,8 @@ impl Recovery {
             let assets = CliAssets {
                 terminal_window_size: os.get_terminal_size(),
                 supports_session_requests: true,
+                supports_in_place_update: true,
+                update_resume: self.update_resume.clone(),
                 host_terminal_env:
                     yinz_runtime::host_terminal_env::host_terminal_env_with_overrides(&self.env),
                 timezone: yinz_runtime::client_time::capture_timezone(),

@@ -23,4 +23,21 @@ pub struct CliAssets {
     /// it, which share the same client/server contract version.
     #[serde(default)]
     pub supports_session_requests: bool,
+    /// Client update requests are sent only after this independent capability is advertised.
+    #[serde(default)]
+    pub supports_in_place_update: bool,
+    /// Private replacement server bootstrap; ordinary clients must leave this absent.
+    #[serde(default)]
+    pub update_target: Option<String>,
+    #[serde(default)]
+    pub update_source_session: Option<crate::internal_ids::SessionName>,
+    /// Restores server-side client configuration before the first replacement render.
+    #[serde(default)]
+    pub update_resume: Option<(String, crate::data::ClientId)>,
+    /// Effective configuration for a private replacement without changing the user's file path.
+    #[serde(default)]
+    pub update_configuration: Option<String>,
+    /// Serialized effective layout for private replacement bootstrap, including tab templates.
+    #[serde(default)]
+    pub update_layout: Option<String>,
 }

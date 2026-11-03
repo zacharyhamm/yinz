@@ -217,6 +217,7 @@ fn paused_session() -> (SessionMetaData, PausedThreads) {
             session: Default::default(),
             session_checkpoint: Default::default(),
             session_ownership: None,
+            session_update_quiesced: Default::default(),
             should_silently_fail: true,
         },
         data_access: std::sync::Arc::new(yinz_storage::data_access::DataAccess::sqlite(
@@ -225,6 +226,7 @@ fn paused_session() -> (SessionMetaData, PausedThreads) {
         default_shell: None,
         current_input_modes: HashMap::new(),
         session_configuration: Default::default(),
+        effective_layout: Default::default(),
         key_passthrough_clients: HashMap::new(),
         locked_escapes: HashMap::new(),
         command_palette_restore_modes: HashMap::new(),

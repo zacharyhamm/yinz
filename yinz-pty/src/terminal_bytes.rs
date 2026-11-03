@@ -4,6 +4,7 @@ use std::sync::{
     Arc,
 };
 use std::time::{Duration, Instant};
+use tokio::sync::watch;
 use tokio::task;
 use yinz_runtime::errors::get_current_ctx;
 use yinz_runtime::errors::prelude::*;
@@ -17,6 +18,41 @@ pub(crate) struct TerminalBytes {
     async_reader: Box<dyn AsyncReader>,
     debug: bool,
     activity_flag: Arc<AtomicBool>,
+    pause: watch::Receiver<bool>,
+    paused: watch::Sender<bool>,
+    pause_safe: Option<watch::Receiver<bool>>,
+    control: ReaderControl,
+}
+
+/// Pausing is cooperative: the acknowledgement follows the last completed
+/// screen send. Aborting a task cannot provide that guarantee because its
+/// `spawn_blocking` send may still be running after the task is gone.
+#[derive(Clone)]
+pub(crate) struct ReaderControl {
+    pause: watch::Sender<bool>,
+    paused: watch::Receiver<bool>,
+}
+
+impl ReaderControl {
+    pub(crate) fn pause(&self) {
+        self.pause.send_replace(true);
+    }
+
+    pub(crate) fn resume(&self) {
+        self.pause.send_replace(false);
+    }
+
+    pub(crate) async fn wait_until_paused(&mut self) -> Result<()> {
+        loop {
+            if *self.paused.borrow_and_update() {
+                return Ok(());
+            }
+            // A completed reader has already sent its final output too.
+            if self.paused.changed().await.is_err() {
+                return Ok(());
+            }
+        }
+    }
 }
 
 impl TerminalBytes {
@@ -27,13 +63,26 @@ impl TerminalBytes {
         debug: bool,
         activity_flag: Arc<AtomicBool>,
     ) -> Self {
+        let (pause_tx, pause) = watch::channel(false);
+        let (paused, paused_rx) = watch::channel(false);
+        let pause_safe = async_reader.migration_pause_safety();
         TerminalBytes {
             terminal_id,
             senders,
             debug,
             async_reader,
             activity_flag,
+            pause,
+            paused,
+            pause_safe,
+            control: ReaderControl {
+                pause: pause_tx,
+                paused: paused_rx,
+            },
         }
+    }
+    pub(crate) fn control(&self) -> ReaderControl {
+        self.control.clone()
     }
     pub async fn listen(&mut self) -> Result<()> {
         // This function reads bytes from the pty and then sends them as
@@ -53,7 +102,25 @@ impl TerminalBytes {
         yinz_runtime::errors::add_call(&mut err_ctx, ContextType::AsyncTask);
         let mut buf = [0u8; 65536];
         loop {
-            match self.async_reader.read(&mut buf).await {
+            while *self.pause.borrow_and_update() {
+                self.paused.send_replace(true);
+                if self.pause.changed().await.is_err() {
+                    return Ok(());
+                }
+            }
+            let was_paused = *self.paused.borrow();
+            if was_paused {
+                self.paused.send_replace(false);
+            }
+            let read = tokio::select! {
+                biased;
+                requested = wait_for_safe_pause(&mut self.pause, &mut self.pause_safe) => {
+                    if !requested { return Ok(()); }
+                    continue;
+                }
+                read = self.async_reader.read(&mut buf) => read,
+            };
+            match read {
                 Ok(0) => break, // EOF
                 Err(err) => {
                     log::error!("{}", err);
@@ -101,6 +168,32 @@ impl TerminalBytes {
             .context("failed to async-send to screen")?
             .context("failed to block on sending message to screen")?;
         Ok(sent_at.elapsed())
+    }
+}
+
+/// Poll this alongside `read`, rather than testing safety in a select guard:
+/// a read can enter an unsafe transition after the guard was evaluated.
+async fn wait_for_safe_pause(
+    pause: &mut watch::Receiver<bool>,
+    safe: &mut Option<watch::Receiver<bool>>,
+) -> bool {
+    loop {
+        if !*pause.borrow_and_update() {
+            if pause.changed().await.is_err() {
+                return false;
+            }
+            continue;
+        }
+        let Some(safe) = safe.as_mut() else {
+            return true;
+        };
+        if *safe.borrow_and_update() {
+            return true;
+        }
+        tokio::select! {
+            changed = pause.changed() => if changed.is_err() { return false; },
+            changed = safe.changed() => if changed.is_err() { return false; },
+        }
     }
 }
 

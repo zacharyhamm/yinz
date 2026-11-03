@@ -200,7 +200,7 @@ fn external_plugin_logs_are_isolated_through_cli_and_host() {
         worker_env.resolved_source_path = env.resolved_source_path.clone();
         let workers = Workers::new(0);
         workers
-            .spawn("task".into(), &source, &path, worker_env)
+            .spawn("task".into(), &source, &path, worker_env, None)
             .unwrap();
         workers
             .post("task", env.client_id, "job".into(), "".into())

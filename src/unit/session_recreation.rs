@@ -17,6 +17,8 @@ const MARKER: &str = "floating-plugin-marker";
 
 #[path = "remote_startup.rs"]
 mod remote_startup;
+#[path = "session_update_real.rs"]
+mod session_update_real;
 
 struct Session(tempfile::TempDir);
 impl Session {
@@ -522,6 +524,7 @@ fn force_delete_waits_for_completion_and_preserves_checkpoint_on_failure() {
                             warp_held_terminals: false,
                             warp_agent_tracking: false,
                             signal_quit: false,
+                            update_protocol: 0,
                         })
                         .unwrap();
                 },
@@ -1296,6 +1299,7 @@ fn watcher_signal_quit_preserves_the_live_session_and_recovery_state() {
             IpcRecv::Msg(
                 ServerToClientMsg::Connected {
                     signal_quit: supported,
+                    update_protocol: 0,
                     ..
                 },
                 _,

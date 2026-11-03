@@ -13,6 +13,17 @@ use std::{
 };
 use yinz_runtime::errors::prelude::*;
 use yinz_types::authoring::{PluginCheckMode, PluginCheckReport};
+mod generation_identity;
+
+/// Call while holding the installation's shared data lock, before snapshotting
+/// builtin sources or pinning workers. Explicit test executables are independent
+/// of the native test launcher and are validated by their fixture instead.
+pub fn verify_server_generation() -> Result<()> {
+    if std::env::var_os("YINZ_COMPILATION_WORKER").is_some() {
+        return Ok(());
+    }
+    generation_identity::verify(&unpinned_server_executable()?)
+}
 
 /// The first argument that turns the server binary into a compilation worker.
 pub const ARG: &str = "--plugin-compilation-worker";
@@ -92,6 +103,18 @@ fn inside_worker() -> bool {
 
 /// The production executable used by compiler and plugin runtime workers.
 pub fn server_executable() -> Result<PathBuf> {
+    if let Some(pinned) = PINNED_EXECUTABLE
+        .lock()
+        .to_anyhow()
+        .context("read worker executable generation")?
+        .upgrade()
+    {
+        return Ok(pinned.path.clone());
+    }
+    unpinned_server_executable()
+}
+
+fn unpinned_server_executable() -> Result<PathBuf> {
     let binary = std::env::var_os("YINZ_COMPILATION_WORKER")
         .map(PathBuf::from)
         .or_else(|| {
@@ -107,6 +130,70 @@ pub fn server_executable() -> Result<PathBuf> {
         bail!("test launcher must supply YINZ_COMPILATION_WORKER; use cargo x test");
     }
     Ok(binary)
+}
+
+static PINNED_EXECUTABLE: std::sync::Mutex<std::sync::Weak<PinnedExecutable>> =
+    std::sync::Mutex::new(std::sync::Weak::new());
+
+/// Keeps future worker launches on the live server's build after installation
+/// publication. The plugin thread retains this guard through worker shutdown.
+pub struct PinnedExecutable {
+    path: PathBuf,
+    _directory: Option<tempfile::TempDir>,
+}
+
+pub fn pin_server_executable() -> Result<std::sync::Arc<PinnedExecutable>> {
+    let mut existing = PINNED_EXECUTABLE
+        .lock()
+        .to_anyhow()
+        .context("lock worker executable generation")?;
+    if let Some(pinned) = existing.upgrade() {
+        return Ok(pinned);
+    }
+    let binary = unpinned_server_executable()?;
+    #[cfg(target_os = "linux")]
+    let binary = if std::env::var_os("YINZ_COMPILATION_WORKER").is_none() {
+        PathBuf::from("/proc/self/exe")
+    } else {
+        binary
+    };
+    let pinned = std::sync::Arc::new(pin_executable(&binary)?);
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("YINZ_COMPILATION_WORKER").is_none() {
+        // Validate the copied inode too: another installation sharing this
+        // executable may publish while locking a different builtin directory.
+        generation_identity::verify(&pinned.path)?;
+    }
+    *existing = std::sync::Arc::downgrade(&pinned);
+    Ok(pinned)
+}
+
+fn pin_executable(binary: &Path) -> Result<PinnedExecutable> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let source = std::fs::metadata(binary).context("inspect worker executable")?;
+        let running =
+            std::fs::metadata("/proc/self/exe").context("inspect running server executable")?;
+        if source.dev() == running.dev() && source.ino() == running.ino() {
+            // This resolves the running inode, even after its installed path is
+            // replaced. The parent outlives every supervised worker.
+            return Ok(PinnedExecutable {
+                path: format!("/proc/{}/exe", std::process::id()).into(),
+                _directory: None,
+            });
+        }
+    }
+    let directory = tempfile::Builder::new()
+        .prefix("yinz-worker-generation-")
+        .tempdir()
+        .context("create private worker generation")?;
+    let path = directory.path().join("yinz");
+    std::fs::copy(binary, &path).context("retain worker executable generation")?;
+    Ok(PinnedExecutable {
+        path,
+        _directory: Some(directory),
+    })
 }
 
 fn request(path: &Path, source: &str, operation: Operation, root: Option<&Path>) -> Result<Output> {

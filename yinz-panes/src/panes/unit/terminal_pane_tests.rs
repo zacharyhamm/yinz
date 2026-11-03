@@ -756,6 +756,74 @@ fn make_terminal_pane_for_bell() -> TerminalPane {
 }
 
 #[test]
+fn migration_refuses_partial_parser_and_resumes_exact_terminal_state() {
+    let mut source = make_terminal_pane_for_bell();
+    source.handle_pty_bytes(b"hello\x1b[31".to_vec());
+    assert!(source
+        .migration_state()
+        .unwrap_err()
+        .contains("escape sequence"));
+    source.handle_pty_bytes(b"mred\x1b[?2004h".to_vec());
+    let mut target = make_terminal_pane_for_bell();
+    target
+        .restore_migration_state(source.migration_state().unwrap())
+        .unwrap();
+    assert_eq!(
+        target.dump_screen_with_ansi(true, None),
+        source.dump_screen_with_ansi(true, None)
+    );
+    assert!(target.grid.bracketed_paste_mode);
+    source.handle_pty_bytes(b"\r\nnext".to_vec());
+    target.handle_pty_bytes(b"\r\nnext".to_vec());
+    assert_eq!(
+        target.dump_screen_with_ansi(true, None),
+        source.dump_screen_with_ansi(true, None)
+    );
+}
+
+#[test]
+fn migration_retains_held_terminal_exit_status_and_command() {
+    let mut source = make_terminal_pane_for_bell();
+    let command = RunCommand {
+        command: "/usr/bin/true".into(),
+        args: vec!["saved-argument".into()],
+        cwd: Some("/tmp".into()),
+        originating_plugin: Some(yinz_types::data::OriginatingPlugin::new(
+            yinz_types::internal_ids::PluginId::new(2),
+            ClientId::new(1),
+            Default::default(),
+        )),
+        ..Default::default()
+    };
+    source.invoked_with = Some(super::Run::Command(command.clone()));
+    source.hold(Some(23), false, command.clone());
+    let mut target = make_terminal_pane_for_bell();
+    target
+        .restore_migration_state(source.migration_state().unwrap())
+        .unwrap();
+    assert!(target.is_held() && target.exited());
+    assert_eq!(target.exit_status(), Some(23));
+    assert_eq!(
+        target.dump_screen(true, None),
+        source.dump_screen(true, None)
+    );
+    let mut restored_command = command.clone();
+    restored_command.originating_plugin = None;
+    assert_eq!(
+        target.invoked_with(),
+        &Some(super::Run::Command(restored_command.clone()))
+    );
+    assert_eq!(
+        target.respawn(None, false),
+        None,
+        "input stays blocked until migration commit"
+    );
+    target.set_warp_pending(false);
+    assert_eq!(target.respawn(None, false), Some(restored_command));
+    assert_eq!(source.invoked_with(), &Some(super::Run::Command(command)));
+}
+
+#[test]
 pub fn bell_notification_state_set_and_cleared() {
     let mut terminal_pane = make_terminal_pane_for_bell();
 

@@ -307,6 +307,7 @@ fn session(
         default_shell: None,
         current_input_modes: Default::default(),
         session_configuration: Default::default(),
+        effective_layout: Default::default(),
         key_passthrough_clients: Default::default(),
         locked_escapes: Default::default(),
         command_palette_restore_modes: Default::default(),

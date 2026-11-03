@@ -61,7 +61,7 @@ thread_local! {
         RcCharacterStyles::Rc(Rc::new(DEFAULT_STYLES));
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AnsiCode {
     On,
     Reset,
@@ -71,7 +71,7 @@ pub enum AnsiCode {
     Underline(Option<AnsiStyledUnderline>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AnsiStyledUnderline {
     Double,
     Undercurl,
@@ -88,7 +88,7 @@ impl From<PaletteColor> for AnsiCode {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum NamedColor {
     Black,
     Red,
@@ -157,7 +157,7 @@ impl NamedColor {
 
 // This enum carefully only has two variants so
 // enum niche optimisations can keep it at the same byte size as pointers
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RcCharacterStyles {
     Reset,
     Rc(Rc<CharacterStyles>),
@@ -222,7 +222,7 @@ impl RcCharacterStyles {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CharacterStyles {
     pub foreground: Option<AnsiCode>,
     pub background: Option<AnsiCode>,
@@ -789,13 +789,13 @@ impl From<StyleDeclaration> for CharacterStyles {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum LinkAnchor {
     Start(u32),
     End,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum CharsetIndex {
     #[default]
     G0,
@@ -804,7 +804,7 @@ pub enum CharsetIndex {
     G3,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub enum StandardCharset {
     #[default]
     Ascii,
@@ -861,7 +861,7 @@ impl StandardCharset {
     }
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Charsets([StandardCharset; 4]);
 
 impl Index<CharsetIndex> for Charsets {
@@ -878,7 +878,7 @@ impl IndexMut<CharsetIndex> for Charsets {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub enum CursorShape {
     Initial,
     Block,
@@ -903,7 +903,7 @@ impl CursorShape {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Cursor {
     pub x: usize,
     pub y: usize,
@@ -932,7 +932,7 @@ impl Cursor {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TerminalCharacter {
     pub character: char,
     pub styles: RcCharacterStyles,

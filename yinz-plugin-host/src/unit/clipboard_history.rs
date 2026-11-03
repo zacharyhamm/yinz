@@ -106,10 +106,12 @@ fn clipboard_worker_drains_in_order_and_continues_after_a_storage_error() {
     );
     // Text attributes reject NUL, exercising a failed write before successful writes.
     writer
-        .send(entry("rejected", "bad\0host", "session"))
+        .send(Message::Record(entry("rejected", "bad\0host", "session")))
         .unwrap();
     for content in ["first", "first", "last"] {
-        writer.send(entry(content, "host", "session")).unwrap();
+        writer
+            .send(Message::Record(entry(content, "host", "session")))
+            .unwrap();
     }
     drop(writer);
     yinz_bus::global_async_runtime::get_tokio_runtime().block_on(async {
@@ -145,4 +147,48 @@ fn clipboard_worker_drains_in_order_and_continues_after_a_storage_error() {
             if namespace == store::SHARED && entities == ["clipboard_history".into()].into())
         );
     }
+}
+
+#[test]
+fn clipboard_update_pause_flushes_preceding_writes_and_holds_following_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = PluginDataStore::new(dir.path());
+    let (shutdown, mut finished) = tokio::sync::mpsc::channel(1);
+    let writer = start_worker(
+        Arc::new(PluginDataStore::new(dir.path())),
+        ThreadSenders::default(),
+        shutdown,
+    );
+    writer
+        .send(Message::Record(entry("before", "host", "session")))
+        .unwrap();
+    let gate = crate::update_quiescence::PauseGate::default();
+    let (reply, arrival) = std::sync::mpsc::channel();
+    writer.send(Message::Pause(gate.clone(), reply)).unwrap();
+    writer
+        .send(Message::Record(entry("after", "host", "session")))
+        .unwrap();
+    arrival
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap();
+    assert_eq!(
+        data.count(store::SHARED, &FetchRequest::entity("clipboard_history"))
+            .unwrap(),
+        1
+    );
+    gate.resume();
+    drop(writer);
+    yinz_bus::global_async_runtime::get_tokio_runtime().block_on(async {
+        assert_eq!(
+            tokio::time::timeout(yinz_test_support::default_timeout(), finished.recv())
+                .await
+                .unwrap(),
+            None
+        );
+    });
+    assert_eq!(
+        data.count(store::SHARED, &FetchRequest::entity("clipboard_history"))
+            .unwrap(),
+        2
+    );
 }

@@ -36,6 +36,7 @@ fn session() -> SessionMetaData {
             (ClientId::new(2), InputMode::Locked),
         ]),
         session_configuration: Default::default(),
+        effective_layout: Default::default(),
         key_passthrough_clients: HashMap::new(),
         locked_escapes: HashMap::new(),
         command_palette_restore_modes: HashMap::new(),

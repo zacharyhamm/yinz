@@ -2082,6 +2082,7 @@ fn warp_disconnected_destination_restores_the_only_held_pane() {
                         warp_held_terminals: true,
                         warp_agent_tracking: true,
                         signal_quit: false,
+                        update_protocol: 0,
                     })
                     .unwrap();
             },

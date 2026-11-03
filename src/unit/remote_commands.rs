@@ -81,10 +81,16 @@ fn remote_selection_never_uses_local_session_context() {
 
 #[test]
 fn remote_helper_rejects_incompatible_and_non_host_requests_before_dispatch() {
-    for (version, command) in [("old", None), (VERSION, Some(Command::Repl { eval: None }))] {
+    for (contract, command) in [
+        (CLIENT_SERVER_CONTRACT_VERSION + 1, None),
+        (
+            CLIENT_SERVER_CONTRACT_VERSION,
+            Some(Command::Repl { eval: None }),
+        ),
+    ] {
         let request = Request {
-            version: version.into(),
-            contract: CLIENT_SERVER_CONTRACT_VERSION,
+            version: VERSION.into(),
+            contract,
             bootstrap: REMOTE_BOOTSTRAP_VERSION,
             command,
             session: None,
@@ -98,7 +104,7 @@ fn remote_helper_rejects_incompatible_and_non_host_requests_before_dispatch() {
 }
 
 #[test]
-fn remote_helper_reports_a_peers_undecodable_command_as_a_mismatch() {
+fn remote_helper_rejects_unknown_commands_with_matching_contracts() {
     let request = serde_json::json!({
         "version": "other",
         "contract": CLIENT_SERVER_CONTRACT_VERSION,
@@ -109,7 +115,7 @@ fn remote_helper_reports_a_peers_undecodable_command_as_a_mismatch() {
     .to_string();
     let error = handle(&request, &mut CliArgs::default()).unwrap_err();
     assert!(
-        format!("{error:#}").contains("Yinz compatibility mismatch"),
+        format!("{error:#}").contains("decode remote CLI request"),
         "{error:#}"
     );
 }

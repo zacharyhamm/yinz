@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn worker_generation_survives_installed_executable_replacement_and_cleans_up() {
+    let root = tempfile::tempdir().unwrap();
+    let binary = root.path().join("yinz");
+    yinz_test_support::write_warm_script(&binary, "#!/bin/sh\nprintf old-worker\n");
+    let pinned = pin_executable(&binary).unwrap();
+    let retained = pinned.path.clone();
+    let replacement = root.path().join("replacement");
+    yinz_test_support::write_warm_script(&replacement, "#!/bin/sh\nprintf new-worker\n");
+    std::fs::rename(&replacement, &binary).unwrap();
+    assert_eq!(
+        Command::new(&retained).output().unwrap().stdout,
+        b"old-worker"
+    );
+    assert_eq!(
+        Command::new(&binary).output().unwrap().stdout,
+        b"new-worker"
+    );
+    drop(pinned);
+    assert!(!retained.exists());
+}
+
+#[test]
 fn worker_transport_rejects_abnormal_exit_and_invalid_output() {
     for script in [
         "printf garbage",

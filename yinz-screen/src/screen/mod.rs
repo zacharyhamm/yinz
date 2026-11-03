@@ -129,6 +129,7 @@ mod headless_targets;
 mod hooks;
 mod host_query;
 mod input_modes;
+mod migration;
 mod mouse;
 mod nested;
 mod notification_browser;
@@ -796,6 +797,13 @@ pub(crate) struct Screen {
     /// listening, the pane is already gone and its process unwatched. Comparing
     /// against this before starting is the only chance to notice in time.
     pending_warps: HashMap<TerminalId, (ParkedPaneWarp, std::time::Instant)>,
+    migration: Option<migration::MigrationState>,
+    completed_migration: Option<(
+        String,
+        yinz_types::session_migration::SessionMigrationInventory,
+        yinz_types::session_migration::SessionMigrationMap,
+    )>,
+    migration_deferred: std::collections::VecDeque<ScreenInstruction>,
     /// Live `PaneWarpHold`s. While any exists, an emptied session keeps its last
     /// tab and clients, because the pane may still come back.
     in_flight_pane_warps: usize,
@@ -1546,6 +1554,9 @@ impl Screen {
             serialize_pane_viewport,
             scrollback_lines_to_serialize,
             in_flight_pane_warps: 0,
+            migration: None,
+            completed_migration: None,
+            migration_deferred: Default::default(),
             pending_warps: HashMap::new(),
             pending_tab_warps: HashMap::new(),
             pending_warp_relationships: HashMap::new(),
@@ -2053,7 +2064,9 @@ impl Screen {
             };
             let err_context = || format!("failed to apply layout for tab {tab_id:?}",);
 
-            let warp_slots = if self.pending_warp_relationships.contains_key(&tab_id) {
+            let warp_slots = if self.pending_warp_relationships.contains_key(&tab_id)
+                || self.migration_tab_pending(tab_id)
+            {
                 let mut plugins = new_plugin_ids.clone();
                 let mut tiled = new_terminal_ids.iter();
                 let mut floating = new_floating_terminal_ids.iter();
@@ -2246,11 +2259,15 @@ impl Screen {
                     .non_fatal();
             }
 
-            if let (Some(slots), Some(relationships)) =
-                (warp_slots, self.pending_warp_relationships.remove(&tab_id))
-            {
-                self.finish_warp_group(tab_id, &slots, &relationships)
+            if let (Some(slots), Some(relationships)) = (
+                warp_slots.as_ref(),
+                self.pending_warp_relationships.remove(&tab_id),
+            ) {
+                self.finish_warp_group(tab_id, slots, &relationships)
                     .non_fatal();
+            }
+            if let Some(slots) = &warp_slots {
+                self.finish_migration_tab(tab_id, slots);
             }
             self.recompute_tab_size(tab_id)
                 .with_context(err_context)

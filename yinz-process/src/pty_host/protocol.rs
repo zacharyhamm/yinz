@@ -160,9 +160,9 @@ pub enum HostToServerMsg {
     /// command pane has no shell above the child to `fg` it, so without this the
     /// pane is unrecoverable.
     ///
-    /// This needs no `PROTOCOL_VERSION` bump. The handshake already requires an
-    /// exact match (`client.rs`), so a supervisor is never a different build
-    /// than the server talking to it.
+    /// This message is part of protocol v2. The handshake checks the protocol,
+    /// not the release string: supervisors can outlive the server build that
+    /// spawned them and be adopted by a compatible newer build.
     ChildStopped {
         signal: i32,
     },

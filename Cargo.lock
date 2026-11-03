@@ -4958,6 +4958,8 @@ dependencies = [
  "log",
  "nucleo-matcher",
  "png",
+ "serde",
+ "serde_json",
  "unicode-width 0.2.2",
  "vte 0.15.0",
  "yinz-bus",
@@ -4999,6 +5001,7 @@ dependencies = [
  "yinz-config",
  "yinz-plugin-api",
  "yinz-runtime",
+ "yinz-steel-builtins",
  "yinz-test-support",
  "yinz-types",
 ]
@@ -5114,6 +5117,7 @@ dependencies = [
  "async-trait",
  "serde",
  "serde_json",
+ "tokio",
  "yinz-types",
 ]
 
@@ -5142,7 +5146,9 @@ dependencies = [
  "interprocess",
  "log",
  "serde_json",
+ "tempfile",
  "tokio",
+ "uuid",
  "yinz-bus",
  "yinz-ipc",
  "yinz-runtime",
@@ -5186,6 +5192,7 @@ dependencies = [
  "nix",
  "serde",
  "serde_json",
+ "sha2",
  "shellexpand",
  "tempfile",
  "thiserror 2.0.19",
@@ -5235,6 +5242,7 @@ dependencies = [
 name = "yinz-server"
 version = "0.1.1"
 dependencies = [
+ "anyhow",
  "base64 0.22.1",
  "criterion",
  "daemonix",
@@ -5242,6 +5250,7 @@ dependencies = [
  "libc",
  "log",
  "nix",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -5256,6 +5265,7 @@ dependencies = [
  "yinz-routing",
  "yinz-runtime",
  "yinz-screen",
+ "yinz-steel-builtins",
  "yinz-storage",
  "yinz-terminal",
  "yinz-test-support",
@@ -5327,6 +5337,7 @@ dependencies = [
  "unicode-width 0.2.2",
  "url",
  "yinz-config",
+ "yinz-steel-builtins",
  "yinz-tile",
  "yinz-tile-markdown",
  "yinz-types",
@@ -5337,6 +5348,7 @@ name = "yinz-steel-builtins"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
@@ -5395,12 +5407,14 @@ dependencies = [
 name = "yinz-terminal"
 version = "0.1.1"
 dependencies = [
+ "anyhow",
  "base64 0.22.1",
  "hegeltest",
  "insta",
  "lazy_static",
  "log",
  "regex",
+ "serde",
  "serde_json",
  "tempfile",
  "unicode-width 0.2.2",

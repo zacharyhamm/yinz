@@ -4,7 +4,7 @@ use yinz_types::position::Position;
 
 // The selection is empty when start == end
 // it includes the character at start, and everything before end.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Selection {
     pub start: Position,
     pub end: Position,

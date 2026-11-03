@@ -259,6 +259,15 @@ fn relative_error(command: &KittyCommand, code: KittyErrorCode, message: &str) -
 }
 
 impl KittyGrid {
+    /// Whether a text-only migration can discard this graphics context without losing state.
+    pub fn is_migration_empty(&self) -> bool {
+        self.image_ids.is_empty()
+            && self.anonymous_image_ids.is_empty()
+            && self.image_numbers.is_empty()
+            && self.placements.is_empty()
+            && self.virtual_placements.is_empty()
+    }
+
     pub fn new(
         character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
         kitty_image_store: Rc<RefCell<KittyImageStore>>,

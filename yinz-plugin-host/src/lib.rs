@@ -62,6 +62,7 @@ use plugin_bridge::PluginBridge;
 use plugin_panes::{PaneRequest, ShowPane};
 mod cli_data;
 mod clipboard_history;
+mod update_quiescence;
 
 use yinz_runtime::errors::prelude::*;
 use yinz_types::diagnostics::ContextType;
@@ -111,9 +112,21 @@ pub fn plugin_thread_main(
     // How plugins learn the session's name. The server passes `ServerSession::Shared`, so a
     // rename reaches plugins loaded after it.
     server_session: ServerSession,
+    update_operation: Option<String>,
 ) -> Result<()> {
     info!("Plugin main thread starts");
     let mut notification_policy = None;
+    std::fs::create_dir_all(data_dir.join("plugins"))
+        .context("create builtin generation parent")?;
+    let startup_generation = yinz_steel_builtins::read_guard(&data_dir)
+        .context("pin installation while this server starts")?;
+    plugin_authoring::worker::verify_server_generation()
+        .context("validate matching server and builtin generation")?;
+    let _builtin_generation = yinz_steel_builtins::pin_session_generation(&data_dir)
+        .context("retain this server's builtin generation")?;
+    let _worker_generation = plugin_authoring::worker::pin_server_executable()
+        .context("retain this server's worker executable")?;
+    drop(startup_generation);
     let yinz_data_dir = data_dir.clone();
     layout.populate_plugin_aliases_in_layout(&plugin_aliases);
 
@@ -148,6 +161,18 @@ pub fn plugin_thread_main(
         bus.senders.clone(),
         shutdown_send.clone(),
     );
+    // Migration resumes an existing session; its startup side effects already ran.
+    // Notification policy is local to this plugin thread and still needs initialization.
+    let mut session_started = update_operation.is_some();
+    let mut notification_policy_initialized = false;
+    let mut update_pause = update_operation
+        .map(|operation| {
+            update_quiescence::Quiescence::initial(operation, &plugin_bridge, &clipboard_writer)
+        })
+        .transpose()?;
+    let native_tasks = update_quiescence::NativeTasks::default();
+    let mut update_readiness: Option<update_quiescence::Readiness> = None;
+    let mut update_reports = update_quiescence::DeferredReports::default();
 
     let host_required: Vec<_> = background_plugins
         .iter()
@@ -168,16 +193,16 @@ pub fn plugin_thread_main(
             .with_context(|| format!("start host-required plugin {declaration:?}"))
             .non_fatal();
     }
-    // A session starts once. The hook fires for its first client, below, not here: a plugin
-    // loaded before any client is connected is loaded again for the first one that is
-    // (`PluginBridge::add_client`), and an event handed to the first instance would be lost with
-    // it.
-    let mut session_started = false;
-
     // The one message `drain_updates` pulled off the bus that was not an `Update`; it is
     // handled by the next iteration, in the order it arrived.
     let mut queued: Option<(PluginInstruction, ErrorContext)> = None;
     loop {
+        if update_readiness
+            .as_mut()
+            .is_some_and(|readiness| readiness.poll(&plugin_bridge))
+        {
+            update_readiness = None;
+        }
         let (event, mut err_ctx) = match queued.take() {
             Some(next) => next,
             None => bus.recv().expect("failed to receive event on channel"),
@@ -357,24 +382,94 @@ pub fn plugin_thread_main(
                     client_id,
                 );
             },
-            PluginInstruction::Update(updates) => {
+            PluginInstruction::Update(mut updates) => {
+                if update_pause.is_some() {
+                    update_reports.retain(&mut updates);
+                }
                 plugin_bridge.update_plugins(updates, shutdown_send.clone())?;
             },
             PluginInstruction::RecordClipboard(entry) => {
                 clipboard_writer
-                    .send(entry)
+                    .send(clipboard_history::Message::Record(entry))
                     .context("enqueue clipboard history entry")
                     .non_fatal();
             },
             PluginInstruction::InputBarrier(plugin_id, completion) => {
                 plugin_bridge.input_barrier(plugin_id, completion);
             },
+            PluginInstruction::QuiesceForUpdate { operation, reply } => {
+                if let Some(pause) = &update_pause {
+                    if pause.operation == operation {
+                        pause.reply_when_ready(reply);
+                    } else {
+                        let _ = reply.send(Err(format!(
+                            "plugins are paused for update {}",
+                            pause.operation
+                        )));
+                    }
+                } else {
+                    match update_quiescence::Quiescence::begin(
+                        operation,
+                        &plugin_bridge,
+                        &clipboard_writer,
+                        &native_tasks,
+                    ) {
+                        Ok(pause) => {
+                            pause.reply_when_ready(reply);
+                            update_pause = Some(pause);
+                        },
+                        Err(error) => {
+                            let _ = reply.send(Err(format!("{error:#}")));
+                        },
+                    }
+                }
+            },
+            PluginInstruction::ResumeAfterUpdate { operation, reply } => {
+                if update_pause
+                    .as_ref()
+                    .is_some_and(|pause| pause.operation != operation)
+                {
+                    let _ = reply.send(Err("plugins are paused for a different update".into()));
+                } else if let Some(readiness) = &mut update_readiness {
+                    if readiness.operation == operation {
+                        readiness.add_reply(reply);
+                    } else {
+                        let _ =
+                            reply.send(Err("plugins are resuming for a different update".into()));
+                    }
+                } else {
+                    plugin_bridge.update_plugins(update_reports.take(), shutdown_send.clone())?;
+                    update_readiness = Some(update_quiescence::Readiness::new(
+                        operation,
+                        &plugin_bridge,
+                        reply,
+                    ));
+                    if let Some(pause) = update_pause.take() {
+                        pause.resume();
+                    }
+                    let senders = bus.senders.clone();
+                    yinz_bus::global_async_runtime::get_tokio_runtime().spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        let _ = senders.send_to_plugin(PluginInstruction::UpdateReadiness);
+                    });
+                }
+            },
+            PluginInstruction::UpdateReadiness => {},
             PluginInstruction::PaletteAgent(request) => {
+                if update_pause.is_some() {
+                    bus.senders.send_to_screen(ScreenInstruction::CommandPalette(yinz_bus::command_palette::Instruction::AgentReply {
+                        client: request.client, opening: request.opening, step: request.step,
+                        reply: Err("session update has paused agent actions; retry after reconnect".into()),
+                    })).non_fatal();
+                    continue;
+                }
+                let native_task = native_tasks.start();
                 let senders = bus.senders.clone();
                 let data = palette_data.clone();
                 let shutdown = shutdown_send.clone();
                 yinz_bus::global_async_runtime::get_tokio_runtime().spawn_blocking(move || {
                     let _shutdown = shutdown;
+                    let _native_task = native_task;
                     yinz_exports::palette_agents::handle(*request, &senders, &data);
                 });
             },
@@ -557,11 +652,12 @@ pub fn plugin_thread_main(
                     started_at.elapsed(),
                     if result.is_ok() { "ok" } else { "error" }
                 );
-                // The client is attached either way; its session start still runs.
+                // Run first-client initialization even if plugin attachment reports an error.
                 result
                     .with_context(|| format!("add client {client_id} to plugins"))
                     .non_fatal();
-                if !session_started {
+                if !notification_policy_initialized {
+                    notification_policy_initialized = true;
                     if hooks.get(HookPoint::Notification).is_some() {
                         notification_policy = load_notification_policy(
                             &hooks,
@@ -571,6 +667,8 @@ pub fn plugin_thread_main(
                             &plugin_aliases,
                         );
                     }
+                }
+                if !session_started {
                     session_started = true;
                     // The session is up, in the sense that matters to a plugin: the thread
                     // exists, its background plugins are loading, and there is a client to
@@ -1108,6 +1206,15 @@ pub fn plugin_thread_main(
                     .non_fatal();
             },
             PluginInstruction::DataRequest { request, reply } => {
+                if update_pause.is_some()
+                    && matches!(request, yinz_types::cli::DataRequest::Apply { .. })
+                {
+                    let _ = reply.send(Err(
+                        "session update has paused plugin data mutations; retry after reconnect"
+                            .into(),
+                    ));
+                    continue;
+                }
                 let _ = reply.send(
                     plugin_bridge
                         .cli_data(request)
@@ -1759,6 +1866,16 @@ pub fn plugin_thread_main(
                 plugin_bridge.update_plugins(updates, shutdown_send.clone())?;
             },
             PluginInstruction::Exit => {
+                if update_pause.is_some() {
+                    // The destination has already restored persisted state.
+                    // Retiring source instances must not run deferred callbacks
+                    // or BeforeClose writes after that handoff.
+                    plugin_bridge.cancel_all_plugins();
+                    if let Some(pause) = &update_pause {
+                        pause.retire(&plugin_bridge).non_fatal();
+                    }
+                    update_pause.take();
+                }
                 break;
             },
         }

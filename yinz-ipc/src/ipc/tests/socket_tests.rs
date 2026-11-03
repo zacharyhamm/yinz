@@ -49,6 +49,31 @@ fn flush_failing_sender<T: serde::Serialize>() -> IpcSenderWithContext<T> {
 static IPC_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 #[test]
+fn sender_shutdown_wakes_its_cloned_reader_without_waiting_for_peer() {
+    let (_guard, name) = new_ipc();
+    let listener = bind_listener(&name);
+    let sender = IpcSenderWithContext::<ClientToServerMsg>::new(connect_stream(&name));
+    let _still_connected_peer = listener.accept().unwrap();
+    let mut receiver = sender.get_receiver::<ServerToClientMsg>().unwrap();
+    let (started, ready) = std::sync::mpsc::channel();
+    let (completed, done) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        completed
+            .send(matches!(receiver.recv_server_msg(), IpcRecv::Eof))
+            .unwrap();
+    });
+    ready
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap();
+    sender.shutdown().unwrap();
+    assert!(done
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap());
+    worker.join().unwrap();
+}
+
+#[test]
 fn splitting_an_ipc_connection_reports_descriptor_exhaustion() {
     struct CloneFailingStream;
     impl std::io::Read for CloneFailingStream {
@@ -142,6 +167,7 @@ fn send_apis_propagate_flush_failures() {
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
                 signal_quit: false,
+                update_protocol: 0,
             })
             .unwrap_err(),
         send_protobuf_client_to_server(&mut flush_failing_sender(), ClientToServerMsg::ConnStatus)
@@ -153,6 +179,7 @@ fn send_apis_propagate_flush_failures() {
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
                 signal_quit: false,
+                update_protocol: 0,
             },
         )
         .unwrap_err(),
@@ -279,6 +306,7 @@ fn server_to_client_message_over_socket() {
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
                 signal_quit: false,
+                update_protocol: 0,
             })
             .expect("send failed");
     });
@@ -298,6 +326,7 @@ fn server_to_client_message_over_socket() {
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
                 signal_quit: false,
+                update_protocol: 0,
             }
         ),
         "should be Connected, got: {:?}",
@@ -324,6 +353,7 @@ fn bidirectional_communication_via_fd_duplication() {
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
                 signal_quit: false,
+                update_protocol: 0,
             })
             .expect("send failed");
 
@@ -352,6 +382,7 @@ fn bidirectional_communication_via_fd_duplication() {
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
                 signal_quit: false,
+                update_protocol: 0,
             }
         ),
         "should be Connected"
@@ -494,6 +525,7 @@ fn session_probe_accepts_responding_socket() {
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
                 signal_quit: false,
+                update_protocol: 0,
             })
             .expect("send failed");
     });
@@ -515,6 +547,7 @@ fn session_probe_accepts_responding_socket() {
                     warp_held_terminals: false,
                     warp_agent_tracking: false,
                     signal_quit: false,
+                    update_protocol: 0,
                 },
                 _
             ))
@@ -897,6 +930,7 @@ fn a_probe_timeout_is_an_unresponsive_server_not_an_absent_one() {
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
                 signal_quit: false,
+                update_protocol: 0,
             },
             ErrorContext::new()
         )),

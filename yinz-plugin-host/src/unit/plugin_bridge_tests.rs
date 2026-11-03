@@ -35,6 +35,99 @@ use yinz_types::data::PluginTag;
 #[path = "plugin_loader_tests.rs"]
 mod loader_tests;
 
+#[test]
+fn update_readiness_waits_for_queued_loads_and_reports_failure_to_every_waiter() {
+    let mut test = TestBridge::new();
+    let plugin = PluginId::new(400);
+    test.bridge
+        .loading_plugins
+        .insert((plugin, RunPlugin::default()));
+    let (reply, receiver) = std::sync::mpsc::channel();
+    let mut readiness =
+        crate::update_quiescence::Readiness::new("operation".into(), &test.bridge, reply);
+    let (duplicate, repeated) = std::sync::mpsc::channel();
+    readiness.add_reply(duplicate);
+    assert!(!readiness.poll(&test.bridge));
+    assert!(receiver.try_recv().is_err());
+    // A dependent load started by the first plugin must also settle.
+    let dependent = PluginId::new(401);
+    test.bridge
+        .loading_plugins
+        .insert((dependent, RunPlugin::default()));
+    test.bridge.loading_plugins.retain(|(id, _)| *id != plugin);
+    assert!(!readiness.poll(&test.bridge));
+    test.bridge.loading_plugins.clear();
+    test.bridge
+        .latest_plugin_errors
+        .insert(dependent, "startup failed".into());
+    assert!(readiness.poll(&test.bridge));
+    for receiver in [receiver, repeated] {
+        assert!(receiver
+            .recv()
+            .unwrap()
+            .unwrap_err()
+            .contains("startup failed"));
+    }
+}
+
+#[test]
+fn update_readiness_acknowledges_success_without_waiting_for_recurring_jobs() {
+    let mut test = TestBridge::new();
+    let plugin = PluginId::new(402);
+    test.bridge
+        .loading_plugins
+        .insert((plugin, RunPlugin::default()));
+    let (reply, receiver) = std::sync::mpsc::channel();
+    let mut readiness =
+        crate::update_quiescence::Readiness::new("operation".into(), &test.bridge, reply);
+    assert!(!readiness.poll(&test.bridge));
+    test.bridge.loading_plugins.clear();
+    assert!(readiness.poll(&test.bridge));
+    assert_eq!(receiver.recv().unwrap(), Ok(()));
+}
+
+#[test]
+fn update_readiness_retry_retains_permission_obligation_then_accepts_repaired_load() {
+    let mut test = TestBridge::new();
+    let plugin = PluginId::new(403);
+    test.bridge
+        .loading_plugins
+        .insert((plugin, RunPlugin::default()));
+    test.bridge
+        .plugin_ids_waiting_for_permission_request
+        .insert(plugin);
+    for _ in 0..2 {
+        let (reply, receiver) = std::sync::mpsc::channel();
+        let mut readiness =
+            crate::update_quiescence::Readiness::new("operation".into(), &test.bridge, reply);
+        assert!(
+            readiness.poll(&test.bridge),
+            "permission repair must not wait for the load it blocks"
+        );
+        assert!(receiver
+            .recv()
+            .unwrap()
+            .unwrap_err()
+            .contains("requires permissions"));
+        // A later Finish must still see this pending request even after the
+        // loader has changed state while the user repairs the destination.
+        test.bridge.loading_plugins.clear();
+    }
+    test.bridge
+        .plugin_ids_waiting_for_permission_request
+        .remove(&plugin);
+    test.bridge
+        .loading_plugins
+        .insert((plugin, RunPlugin::default()));
+    let (reply, receiver) = std::sync::mpsc::channel();
+    let mut readiness =
+        crate::update_quiescence::Readiness::new("operation".into(), &test.bridge, reply);
+    assert!(!readiness.poll(&test.bridge));
+    test.bridge.loading_plugins.clear();
+    assert!(readiness.poll(&test.bridge));
+    assert_eq!(receiver.recv().unwrap(), Ok(()));
+}
+
 thread_local! {
     pub(super) static FAIL_AGENT_PROJECT_SPAWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -260,6 +353,7 @@ impl TestBridge {
             session: Default::default(),
             session_checkpoint: Default::default(),
             session_ownership: None,
+            session_update_quiesced: Default::default(),
             should_silently_fail: false,
         };
         let data_dir = tempdir().unwrap();

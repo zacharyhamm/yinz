@@ -186,7 +186,10 @@ pub(crate) fn bootstrap(
     let endpoint = Endpoint {
         session_name: name.into_string(),
         socket,
-        yinz_version: VERSION.to_owned(),
+        // Echo the negotiated identity for clients whose bootstrap still checks it.
+        // Wire compatibility was checked above using the two protocol versions.
+        yinz_version: client_version.to_owned(),
+        build_version: Some(VERSION.to_owned()),
         contract_version: CLIENT_SERVER_CONTRACT_VERSION,
         bootstrap_version: REMOTE_BOOTSTRAP_VERSION,
     };
@@ -615,6 +618,7 @@ mod tests;
 #[derive(Debug, Serialize, Deserialize)]
 struct SessionList {
     yinz_version: String,
+    build_version: Option<String>,
     contract_version: usize,
     bootstrap_version: usize,
     sessions: Vec<(SessionName, Duration, yinz_cli::sessions::SessionListing)>,
@@ -648,7 +652,10 @@ pub(crate) fn list(
         .context("collect remote sessions")?;
     yinz_cli::sessions::sort_sessions(&mut sessions, true);
     let response = SessionList {
-        yinz_version: VERSION.to_owned(),
+        // Echo the negotiated identity for clients whose bootstrap still checks it.
+        // Wire compatibility was checked above using the two protocol versions.
+        yinz_version: client_version.to_owned(),
+        build_version: Some(VERSION.to_owned()),
         contract_version: CLIENT_SERVER_CONTRACT_VERSION,
         bootstrap_version: REMOTE_BOOTSTRAP_VERSION,
         sessions,

@@ -4,18 +4,44 @@ const TERMINATOR: &str = "\u{1b}\\";
 const MAX_LINKS: usize = 64 * 1024;
 const MAX_LINK_BYTES: usize = 8 * 1024 * 1024;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LinkHandler {
     links: Vec<Link>,
     link_bytes: usize,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Link {
     pub id: Option<String>,
     pub uri: String,
 }
 
 impl LinkHandler {
+    /// Merge source indices into the destination's shared link table, preserving existing panes.
+    pub(crate) fn merge_migration(&mut self, source: &Self) -> Result<Vec<u32>, String> {
+        let mut merged = self.clone();
+        let mut indices = Vec::with_capacity(source.links.len());
+        for link in &source.links {
+            if let Some(index) = merged
+                .links
+                .iter()
+                .position(|existing| existing.id == link.id && existing.uri == link.uri)
+            {
+                indices.push(index as u32);
+            } else {
+                match merged.insert_link(link.clone()) {
+                    LinkAnchor::Start(index) => indices.push(index),
+                    LinkAnchor::End => {
+                        return Err(
+                            "terminal hyperlink table cannot fit the migrating session".into()
+                        )
+                    },
+                }
+            }
+        }
+        *self = merged;
+        Ok(indices)
+    }
+
     pub fn new() -> Self {
         Self {
             links: Vec::new(),

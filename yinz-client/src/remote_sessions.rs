@@ -58,7 +58,11 @@ const ENDPOINT_LIMIT: usize = 8192;
 pub struct Endpoint {
     pub session_name: String,
     pub socket: PathBuf,
+    /// Legacy bootstrap identity, echoed for peers that require exact release names.
     pub yinz_version: String,
+    /// Actual remote build; absent on peers predating protocol-based compatibility.
+    #[serde(default)]
+    pub build_version: Option<String>,
     pub contract_version: usize,
     /// Absent, and so 0, from remotes that predate bootstrap versioning.
     #[serde(default)]
@@ -75,16 +79,13 @@ fn versions(version: &str, contract: usize, bootstrap: usize) -> String {
 
 fn mismatch(peer: &str) -> anyhow::Error {
     anyhow!(
-        "Yinz compatibility mismatch: this machine has {}; peer has {peer}. Install matching Yinz versions on both machines.",
+        "Yinz compatibility mismatch: this machine has {}; peer has {peer}. Use Yinz builds with matching client/server and SSH bootstrap contracts.",
         versions(VERSION, CLIENT_SERVER_CONTRACT_VERSION, REMOTE_BOOTSTRAP_VERSION)
     )
 }
 
 pub fn check_versions(version: &str, contract: usize, bootstrap: usize) -> Result<()> {
-    if version == VERSION
-        && contract == CLIENT_SERVER_CONTRACT_VERSION
-        && bootstrap == REMOTE_BOOTSTRAP_VERSION
-    {
+    if contract == CLIENT_SERVER_CONTRACT_VERSION && bootstrap == REMOTE_BOOTSTRAP_VERSION {
         return Ok(());
     }
     Err(mismatch(&versions(version, contract, bootstrap)))
@@ -160,7 +161,10 @@ pub fn parse_endpoint(bytes: &[u8], name: Option<&str>) -> Result<Endpoint> {
         "invalid remote endpoint response; the SSH command must print only Yinz's JSON response",
     )?;
     check_versions(
-        &endpoint.yinz_version,
+        endpoint
+            .build_version
+            .as_deref()
+            .unwrap_or(&endpoint.yinz_version),
         endpoint.contract_version,
         endpoint.bootstrap_version,
     )?;
@@ -320,6 +324,124 @@ pub fn ssh_command(
     Ok(command)
 }
 
+/// Older SSH bootstraps checked the release string before checking either wire
+/// contract. Retry only their explicit compatibility refusal, using their build
+/// identity in that legacy field. Both protocol numbers still have to match;
+/// ordinary SSH or startup failures must never cause a second startup attempt.
+fn compatible_bootstrap(
+    host: &str,
+    args: &[impl AsRef<str>],
+    env: &EnvironmentVariables,
+    cancelled: &AtomicBool,
+    deadline: Instant,
+) -> Result<std::process::Output> {
+    compatible_bootstrap_with_version(host, args, env, cancelled, deadline)
+        .map(|(output, _)| output)
+}
+
+/// Negotiate using a read-only operation before streaming a command. Never retry
+/// a mutating remote command: a lost response does not mean it failed to run.
+pub fn negotiate_legacy_version(
+    host: &str,
+    env: &EnvironmentVariables,
+    cancelled: &AtomicBool,
+) -> Result<String> {
+    let args = [
+        "yinz",
+        "remote-sessions",
+        "--client-version",
+        VERSION,
+        "--contract-version",
+        &CLIENT_SERVER_CONTRACT_VERSION.to_string(),
+        "--bootstrap-version",
+        &REMOTE_BOOTSTRAP_VERSION.to_string(),
+    ];
+    let (output, version) = compatible_bootstrap_with_version(
+        host,
+        &args,
+        env,
+        cancelled,
+        Instant::now() + Duration::from_secs(25),
+    )?;
+    anyhow::ensure!(
+        output.status.success(),
+        "negotiate remote wire contracts: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    parse_sessions(host, &output.stdout).context("validate remote wire contracts")?;
+    Ok(version)
+}
+
+fn compatible_bootstrap_with_version(
+    host: &str,
+    args: &[impl AsRef<str>],
+    env: &EnvironmentVariables,
+    cancelled: &AtomicBool,
+    deadline: Instant,
+) -> Result<(std::process::Output, String)> {
+    let mut args: Vec<String> = args.iter().map(|arg| arg.as_ref().to_owned()).collect();
+    let index = args
+        .iter()
+        .position(|arg| arg == "--client-version")
+        .context("bootstrap has no legacy version argument")?
+        + 1;
+    let original = args
+        .get(index)
+        .context("bootstrap has no version value")?
+        .clone();
+    let output = ssh::bootstrap_output(
+        &mut ssh_command(host, &args, env)?,
+        remaining(deadline)?,
+        Some(cancelled),
+    )
+    .context("run versioned SSH bootstrap")?;
+    if output.status.success()
+        || !String::from_utf8_lossy(&output.stderr).contains("Yinz compatibility mismatch")
+    {
+        return Ok((output, original));
+    }
+    let peer = ssh::bootstrap_output(
+        &mut ssh_command(host, &["yinz", "--version"], env)?,
+        remaining(deadline)?,
+        Some(cancelled),
+    )
+    .context("read legacy bootstrap build identity")?;
+    if !peer.status.success() {
+        return Ok((output, original));
+    }
+    let peer_version = legacy_build_identity(&peer.stdout)?;
+    let advertised = args
+        .get_mut(index)
+        .context("bootstrap has no legacy version value")?;
+    if *advertised == peer_version {
+        return Ok((output, original));
+    }
+    *advertised = peer_version.to_owned();
+    let output = ssh::bootstrap_output(
+        &mut ssh_command(host, &args, env)?,
+        remaining(deadline)?,
+        Some(cancelled),
+    )
+    .context("retry legacy SSH bootstrap with unchanged wire contracts")?;
+    Ok((output, peer_version.to_owned()))
+}
+
+fn legacy_build_identity(bytes: &[u8]) -> Result<&str> {
+    anyhow::ensure!(bytes.len() <= 256, "oversized remote build identity");
+    let version = std::str::from_utf8(bytes)
+        .context("decode remote build identity")?
+        .trim()
+        .strip_prefix("yinz ")
+        .context("unexpected remote build identity")?;
+    anyhow::ensure!(
+        !version.is_empty()
+            && !version.chars().any(char::is_whitespace)
+            && !version.chars().any(char::is_control),
+        "invalid remote build identity"
+    );
+    Ok(version)
+}
+
 fn bootstrap_until(
     host: &str,
     request: Request,
@@ -347,10 +469,12 @@ fn bootstrap_until(
         args.extend(["--".to_owned(), name.to_owned()]);
     }
     let options = SshOptions::default();
-    let output = ssh::bootstrap_output(
-        &mut ssh_command(host, &args, env).context("build the remote session bootstrap")?,
-        remaining(deadline)?.min(Duration::from_secs(60)),
-        Some(cancelled),
+    let output = compatible_bootstrap(
+        host,
+        &args,
+        env,
+        cancelled,
+        deadline.min(Instant::now() + Duration::from_secs(60)),
     )
     .with_context(|| format!("run remote session bootstrap on {host}"))?;
     if !output.status.success()
@@ -416,7 +540,11 @@ pub fn client_socket(session_directory: &Path) -> Result<PathBuf> {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SessionList {
+    /// Legacy bootstrap identity, echoed for peers that require exact release names.
     pub yinz_version: String,
+    /// Actual remote build; absent on peers predating protocol-based compatibility.
+    #[serde(default)]
+    pub build_version: Option<String>,
     pub contract_version: usize,
     #[serde(default)]
     pub bootstrap_version: usize,
@@ -438,10 +566,12 @@ pub fn discover(
         "--bootstrap-version",
         &REMOTE_BOOTSTRAP_VERSION.to_string(),
     ];
-    let output = ssh::bootstrap_output(
-        &mut ssh_command(host, &args, env).context("build the session discovery")?,
-        Duration::from_secs(10),
-        Some(cancelled),
+    let output = compatible_bootstrap(
+        host,
+        &args,
+        env,
+        cancelled,
+        Instant::now() + Duration::from_secs(10),
     )
     .with_context(|| format!("discover sessions on {host}"))?;
     if !output.status.success()
@@ -464,7 +594,10 @@ pub fn parse_sessions(
     use yinz_cli::session_picker::{Destination, PickerRow};
     let response: SessionList = serde_json::from_slice(bytes).context("decode remote sessions")?;
     check_versions(
-        &response.yinz_version,
+        response
+            .build_version
+            .as_deref()
+            .unwrap_or(&response.yinz_version),
         response.contract_version,
         response.bootstrap_version,
     )?;
@@ -600,10 +733,12 @@ pub fn recovery_request(
     if let Some(dismiss) = dismiss {
         args.extend(["--dismiss-recovery", dismiss]);
     }
-    let output = ssh::bootstrap_output(
-        &mut ssh_command(host, &args, env).context("build recovery request")?,
-        Duration::from_secs(10),
-        Some(cancelled),
+    let output = compatible_bootstrap(
+        host,
+        &args,
+        env,
+        cancelled,
+        Instant::now() + Duration::from_secs(10),
     )
     .context("request remote recovery")?;
     anyhow::ensure!(
@@ -621,3 +756,7 @@ pub fn recovery_request(
     }
     Ok(candidates)
 }
+
+#[cfg(test)]
+#[path = "unit/remote_compatibility.rs"]
+mod compatibility_tests;

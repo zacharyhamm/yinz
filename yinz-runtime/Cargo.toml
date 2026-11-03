@@ -9,6 +9,7 @@ description = "Host facilities for Yinz"
 workspace = true
 
 [dependencies]
+sha2 = { workspace = true }
 jiff = { workspace = true }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 serde_json = { workspace = true }

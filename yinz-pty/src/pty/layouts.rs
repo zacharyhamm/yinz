@@ -1,12 +1,10 @@
 //! Layout spawn preparation, placement and rollback.
 
 use super::{pane_start_failure, send_pane_error_to_screen, Pty, SpawnJob};
-use crate::global_async_runtime::get_tokio_runtime as async_runtime;
 use crate::os_input_output::AsyncReader;
 use crate::plugins::{PluginId, PluginInstruction};
 use crate::route::NotificationEnd;
 use crate::screen::{ScreenInstruction, TabOverrideResult};
-use crate::terminal_bytes::TerminalBytes;
 use crate::{ClientId, ServerInstruction};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -377,6 +375,10 @@ impl Pty {
         // then held, showing the status it exited with, or closed if it would
         // not have been held in its old session either.
         if let Some((tiled, floating)) = adopted_panes {
+            let migration_operation = self
+                .migration_owned
+                .as_ref()
+                .map(|(operation, _)| operation.clone());
             for terminal in tiled.into_iter().chain(floating) {
                 if !terminal.replay.is_empty() {
                     self.bus
@@ -408,7 +410,10 @@ impl Pty {
                         ))
                         .with_context(err_context)?;
                 }
-                if let Some(exit_status) = terminal.child_exit_status {
+                if let Some(exit_status) = terminal
+                    .child_exit_status
+                    .filter(|_| migration_operation.is_none() || terminal.held.is_none())
+                {
                     let pane_id = PaneId::Terminal(terminal.terminal_id);
                     let hold_on_close = terminal.cmd.hold_on_close;
                     let instruction = if let Some(held) = &terminal.held {
@@ -427,7 +432,10 @@ impl Pty {
                         .send_to_screen(instruction)
                         .with_context(err_context)?;
                 }
-                if terminal.held.is_none() && terminal.child_exit_status.is_none() {
+                if migration_operation.is_none()
+                    && terminal.held.is_none()
+                    && terminal.child_exit_status.is_none()
+                {
                     self.bus
                         .senders
                         .send_to_screen(ScreenInstruction::RequestPaneRedraw(terminal.terminal_id))
@@ -446,6 +454,17 @@ impl Pty {
                         ))
                         .with_context(err_context)?;
                 }
+            }
+            if let Some(operation) = migration_operation {
+                self.bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::SessionMigration(
+                        yinz_bus::migration::ScreenRequest::TabReplayed {
+                            operation,
+                            tab: tab_index,
+                        },
+                    ))
+                    .context("acknowledge complete migrated tab replay")?;
             }
         }
 
@@ -541,28 +560,7 @@ impl Pty {
             };
             match reader_result {
                 Ok(reader) => {
-                    let activity_flag =
-                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                    let terminal_bytes = async_runtime().spawn({
-                        let senders = self.bus.senders.clone();
-                        let debug_to_file = self.debug_to_file;
-                        let activity_flag = activity_flag.clone();
-                        async move {
-                            TerminalBytes::new(
-                                terminal_id,
-                                reader,
-                                senders,
-                                debug_to_file,
-                                activity_flag,
-                            )
-                            .listen()
-                            .await
-                            .context("failed to spawn terminals for layout")
-                            .fatal();
-                        }
-                    });
-                    self.task_handles.insert(terminal_id, terminal_bytes);
-                    self.pane_activity_flags.insert(terminal_id, activity_flag);
+                    self.start_terminal_reader(terminal_id, reader);
                     self.report_terminal_host(terminal_id);
                 },
                 Err(err) => match run_command {

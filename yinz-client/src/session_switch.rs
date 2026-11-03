@@ -114,6 +114,11 @@ pub(crate) struct Sessions<'a> {
     inventory: Option<(String, Discovery)>,
     preparation: Option<Preparation>,
     workers: Vec<JoinHandle<()>>,
+    updates: crate::update::Updates,
+    update_protocol: u32,
+    update_render_received: bool,
+    update_ready_granted: bool,
+    update_ready_sent: bool,
 }
 impl<'a> Sessions<'a> {
     pub fn new(
@@ -130,6 +135,11 @@ impl<'a> Sessions<'a> {
             inventory: None,
             preparation: None,
             workers: Vec::new(),
+            updates: crate::update::Updates::new(cli_args.data_dir.clone()),
+            update_protocol: 0,
+            update_render_received: false,
+            update_ready_granted: false,
+            update_ready_sent: false,
         }
     }
 
@@ -148,6 +158,111 @@ impl<'a> Sessions<'a> {
     fn reap_finished_workers(&mut self) {
         for worker in self.workers.extract_if(.., |worker| worker.is_finished()) {
             join_worker(worker);
+        }
+    }
+
+    pub fn set_update_protocol(&mut self, protocol: u32) {
+        self.update_protocol = protocol;
+        self.update_render_received = false;
+        self.update_ready_granted = false;
+        self.update_ready_sent = false;
+    }
+
+    pub fn update_rendered(&mut self, os: &dyn ClientOsApi) {
+        self.update_render_received = true;
+        if self.update_protocol == yinz_types::update_client::PROTOCOL_VERSION
+            && self.update_ready_granted
+            && !self.update_ready_sent
+            && let (Some(operation), Some(source)) = (
+                &self.cli_args.update_resume,
+                self.cli_args.update_source_client,
+            )
+        {
+            os.send_to_server(ClientToServerMsg::UpdateReply(
+                yinz_types::update_client::Reply {
+                    token: operation.clone(),
+                    result: Ok(yinz_types::update_client::ClientReply::Resumed {
+                        operation: operation.clone(),
+                        source_client: yinz_types::data::ClientId::new(source),
+                    }),
+                },
+            ));
+            self.update_ready_sent = true;
+        }
+    }
+
+    pub fn update(
+        &mut self,
+        request: yinz_types::update_client::Request,
+    ) -> (
+        Result<yinz_types::update_client::ClientReply>,
+        Option<crate::update::Restart>,
+    ) {
+        use yinz_types::update_client::{ClientReply, ClientRequest};
+        if request.token.is_empty() || request.token.len() > 256 {
+            return (Err(anyhow!("invalid client update request token")), None);
+        }
+        if let ClientRequest::Ready {
+            operation,
+            source_client,
+        } = &request.request
+        {
+            if self.update_protocol != yinz_types::update_client::PROTOCOL_VERSION
+                || self.cli_args.update_resume.as_deref() != Some(operation)
+                || self.cli_args.update_source_client != Some(source_client.get())
+            {
+                return (
+                    Err(anyhow!(
+                        "replacement readiness does not match this resumed client"
+                    )),
+                    None,
+                );
+            }
+            self.update_ready_granted = true;
+            if self.update_render_received && !self.update_ready_sent {
+                self.update_ready_sent = true;
+                return (
+                    Ok(ClientReply::Resumed {
+                        operation: operation.clone(),
+                        source_client: *source_client,
+                    }),
+                    None,
+                );
+            }
+            return (Ok(ClientReply::Pending), None);
+        }
+        if let ClientRequest::Restart {
+            operation,
+            source_client,
+            executable,
+            target,
+        } = request.request
+        {
+            if let Err(error) = self
+                .updates
+                .validate_restart(&operation, &executable, &target)
+            {
+                return (Err(error), None);
+            }
+            let remote_host = match &self.machine {
+                Destination::Remote(host) => Some(host.clone()),
+                _ => None,
+            };
+            let resume = crate::update::Resume {
+                operation,
+                source_client,
+                cli_args: self.cli_args.clone(),
+                config: self.local_config.config.clone(),
+                options: self.local_config.options.clone(),
+                remote_host,
+                target,
+            };
+            (
+                Ok(ClientReply::Restarting),
+                Some(crate::update::Restart { executable, resume }),
+            )
+        } else {
+            (self.updates.handle(&request.token, request.request), None)
         }
     }
 
@@ -328,6 +443,7 @@ impl<'a> Sessions<'a> {
                 } else {
                     CliAssets {
                         supports_session_requests: true,
+                        supports_in_place_update: true,
                         ..Default::default()
                     }
                 };
@@ -705,6 +821,7 @@ pub(crate) fn legacy_reconnect(
                 exit_msg,
                 reconnect_to_session: None,
                 prepared_connection: None,
+                restart: None,
             })
         },
     }

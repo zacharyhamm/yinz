@@ -83,6 +83,16 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
 
     fn try_from(msg: ClientToServerMsg) -> Result<Self> {
         let message = match msg {
+            ClientToServerMsg::UpdateReply(reply) => {
+                client_to_server_msg::Message::UpdateReplyJson(
+                    serde_json::to_string(&reply).context("encode client update reply")?,
+                )
+            },
+            ClientToServerMsg::SessionUpdate(request) => {
+                client_to_server_msg::Message::SessionUpdateJson(
+                    serde_json::to_string(&request).context("encode session update request")?,
+                )
+            },
             ClientToServerMsg::SessionReply(reply) => {
                 client_to_server_msg::Message::SessionReplyJson(
                     serde_json::to_string(&reply).context("encode session reply")?,
@@ -305,6 +315,16 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
             Some(client_to_server_msg::Message::AgentControlJson(json)) => {
                 Ok(ClientToServerMsg::AgentControl(
                     serde_json::from_str(&json).context("decode agent request")?,
+                ))
+            },
+            Some(client_to_server_msg::Message::UpdateReplyJson(json)) => {
+                Ok(ClientToServerMsg::UpdateReply(
+                    serde_json::from_str(&json).context("decode client update reply")?,
+                ))
+            },
+            Some(client_to_server_msg::Message::SessionUpdateJson(json)) => {
+                Ok(ClientToServerMsg::SessionUpdate(
+                    serde_json::from_str(&json).context("decode session update request")?,
                 ))
             },
             Some(client_to_server_msg::Message::SessionReplyJson(json)) => {
@@ -536,6 +556,18 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
 impl From<ServerToClientMsg> for ProtoServerToClientMsg {
     fn from(msg: ServerToClientMsg) -> Self {
         let message = match msg {
+            ServerToClientMsg::UpdateRequest(request) => {
+                server_to_client_msg::Message::UpdateRequestJson(
+                    serde_json::to_string(&request)
+                        .expect("client update request contains only serializable fields"),
+                )
+            },
+            ServerToClientMsg::SessionUpdateReply(reply) => {
+                server_to_client_msg::Message::SessionUpdateReplyJson(
+                    serde_json::to_string(&reply)
+                        .expect("session update reply contains only serializable fields"),
+                )
+            },
             ServerToClientMsg::SessionRequest(request) => {
                 server_to_client_msg::Message::SessionRequestJson(
                     serde_json::to_string(&request)
@@ -612,11 +644,13 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
                 warp_held_terminals,
                 warp_agent_tracking,
                 signal_quit,
+                update_protocol,
             } => server_to_client_msg::Message::Connected(ConnectedMsg {
                 warp_companions,
                 warp_held_terminals,
                 warp_agent_tracking,
                 signal_quit,
+                update_protocol,
             }),
             ServerToClientMsg::Log { lines } => {
                 server_to_client_msg::Message::Log(LogMsg { lines })
@@ -723,6 +757,16 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
                     serde_json::from_str(&json).context("decode agent response")?,
                 ))
             },
+            Some(server_to_client_msg::Message::UpdateRequestJson(json)) => {
+                Ok(ServerToClientMsg::UpdateRequest(
+                    serde_json::from_str(&json).context("decode client update request")?,
+                ))
+            },
+            Some(server_to_client_msg::Message::SessionUpdateReplyJson(json)) => {
+                Ok(ServerToClientMsg::SessionUpdateReply(
+                    serde_json::from_str(&json).context("decode session update reply")?,
+                ))
+            },
             Some(server_to_client_msg::Message::SessionRequestJson(json)) => {
                 Ok(ServerToClientMsg::SessionRequest(
                     serde_json::from_str(&json).context("decode session request")?,
@@ -786,6 +830,7 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
                     warp_held_terminals: msg.warp_held_terminals,
                     warp_agent_tracking: msg.warp_agent_tracking,
                     signal_quit: msg.signal_quit,
+                    update_protocol: msg.update_protocol,
                 })
             },
             Some(server_to_client_msg::Message::Log(log)) => {
@@ -1017,6 +1062,16 @@ impl From<yinz_types::input::cli_assets::CliAssets>
             cwd: cli_assets.cwd.map(|p| p.to_string_lossy().to_string()),
             host_terminal_env: cli_assets.host_terminal_env.into_iter().collect(),
             supports_session_requests: cli_assets.supports_session_requests,
+            supports_in_place_update: cli_assets.supports_in_place_update,
+            update_target: cli_assets.update_target,
+            update_source_session: cli_assets
+                .update_source_session
+                .map(|name| name.into_string()),
+            update_resume_json: cli_assets.update_resume.map(|resume| {
+                serde_json::to_string(&resume).expect("client resume identity is serializable")
+            }),
+            update_configuration: cli_assets.update_configuration,
+            update_layout: cli_assets.update_layout,
             timezone: cli_assets.timezone,
         }
     }
@@ -1049,6 +1104,16 @@ impl TryFrom<crate::client_server_contract::client_server_contract::CliAssets>
             cwd: cli_assets.cwd.map(PathBuf::from),
             host_terminal_env: cli_assets.host_terminal_env.into_iter().collect(),
             supports_session_requests: cli_assets.supports_session_requests,
+            supports_in_place_update: cli_assets.supports_in_place_update,
+            update_target: cli_assets.update_target,
+            update_source_session: cli_assets.update_source_session.map(Into::into),
+            update_resume: cli_assets
+                .update_resume_json
+                .map(|resume| serde_json::from_str(&resume))
+                .transpose()
+                .context("decode client update resume identity")?,
+            update_configuration: cli_assets.update_configuration,
+            update_layout: cli_assets.update_layout,
             timezone: cli_assets.timezone,
         })
     }

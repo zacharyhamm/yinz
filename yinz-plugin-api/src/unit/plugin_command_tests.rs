@@ -867,6 +867,9 @@ mod props {
             | PluginCommand::OpenPluginPaneFloating { .. }
             | PluginCommand::GetSessionInventory(_)
             | PluginCommand::SwitchSessionDestination(_)
+            | PluginCommand::UpdateYinz
+            | PluginCommand::CancelYinzUpdate
+            | PluginCommand::YinzUpdateStatus
             | PluginCommand::GetSessionList
             | PluginCommand::GetDisconnectTargets
             | PluginCommand::KillSessionsAndReply(_)

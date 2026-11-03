@@ -4,7 +4,6 @@ use super::{send_pane_error_to_screen, Pty};
 use crate::global_async_runtime::get_tokio_runtime as async_runtime;
 use crate::os_input_output::ReleasedPane;
 use crate::screen::ScreenInstruction;
-use crate::terminal_bytes::TerminalBytes;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -43,6 +42,7 @@ impl Pty {
                 .block_on(async { tokio::time::timeout_at(deadline.into(), handle).await })
                 .with_context(|| format!("terminal_{id} output is still draining; retry"))?;
             self.task_handles.remove(&id);
+            self.reader_controls.remove(&id);
             joined
                 .with_context(|| format!("terminal_{id} output reader failed during transfer"))?;
         }
@@ -138,7 +138,8 @@ impl Pty {
     /// Forget everything this session knew about a pane it has handed away.
     ///
     /// Removed, emphatically not killed: the process is the point.
-    fn forget_released_terminal(&mut self, terminal_id: TerminalId) {
+    pub(super) fn forget_released_terminal(&mut self, terminal_id: TerminalId) {
+        self.reader_controls.remove(&terminal_id);
         let _ = self.id_to_child_pid.remove(&terminal_id);
         self.pane_activity_flags.remove(&terminal_id);
         self.forget_terminal_cwd(terminal_id);
@@ -164,6 +165,14 @@ impl Pty {
     /// calls is identical, which is the point — the pane that arrives is an
     /// ordinary pane either way.
     pub(crate) fn adopt_terminal(&mut self, pane: &WarpedPane) -> Result<AdoptedPane> {
+        self.adopt_terminal_with_id(pane, None)
+    }
+
+    pub(super) fn adopt_terminal_with_id(
+        &mut self,
+        pane: &WarpedPane,
+        requested: Option<TerminalId>,
+    ) -> Result<AdoptedPane> {
         if let Some(held) = &pane.held {
             if pane.remote.is_some()
                 || !pane.control_socket.as_os_str().is_empty()
@@ -171,7 +180,16 @@ impl Pty {
             {
                 return Err(anyhow!("held terminal also specifies a process handoff"));
             }
-            let terminal_id = self.reserve_terminal_id()?;
+            let terminal_id = if let Some(id) = requested {
+                self.bus
+                    .os_input
+                    .as_ref()
+                    .context("missing migration terminal backend")?
+                    .reserve_terminal_id_for_migration(id)?;
+                id
+            } else {
+                self.reserve_terminal_id()?
+            };
             let mut cmd = held.command.clone();
             cmd.originating_plugin = None;
             self.bus
@@ -222,35 +240,22 @@ impl Pty {
             .os_input
             .as_ref()
             .context("no OS I/O interface found")
-            .and_then(|os_input| match &pane.remote {
-                Some(remote) => os_input.adopt_remote_terminal(remote, quit_cb),
-                None => os_input.adopt_terminal(&pane.control_socket, quit_cb),
+            .and_then(|os_input| match (requested, &pane.remote) {
+                (Some(id), Some(remote)) => {
+                    os_input.adopt_remote_terminal_for_migration(id, remote, quit_cb)
+                },
+                (Some(id), None) => {
+                    os_input.adopt_terminal_for_migration(id, &pane.control_socket, quit_cb)
+                },
+                (None, Some(remote)) => os_input.adopt_remote_terminal(remote, quit_cb),
+                (None, None) => os_input.adopt_terminal(&pane.control_socket, quit_cb),
             })
             .with_context(err_context)?;
 
         let terminal_id = adopted.terminal_id;
         let child_pid = adopted.child_pid;
         self.track_launch(terminal_id, &adopted.cmd);
-        let activity_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let terminal_bytes = async_runtime().spawn({
-            let err_context = |terminal_id: TerminalId| {
-                format!("failed to run async task for terminal {terminal_id}")
-            };
-            let senders = self.bus.senders.clone();
-            let debug_to_file = self.debug_to_file;
-            let activity_flag = activity_flag.clone();
-            let reader = adopted.reader;
-            async move {
-                TerminalBytes::new(terminal_id, reader, senders, debug_to_file, activity_flag)
-                    .listen()
-                    .await
-                    .with_context(|| err_context(terminal_id))
-                    .fatal();
-            }
-        });
-
-        self.task_handles.insert(terminal_id, terminal_bytes);
-        self.pane_activity_flags.insert(terminal_id, activity_flag);
+        self.start_terminal_reader(terminal_id, adopted.reader);
         self.report_terminal_host(terminal_id);
         // `None` for a pane adopted from another machine, and it must stay out
         // of both maps rather than be given a placeholder. A pid from there

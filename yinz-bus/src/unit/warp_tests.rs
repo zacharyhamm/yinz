@@ -207,6 +207,7 @@ fn the_capability_probe_reads_its_answer_after_an_older_servers_pushes() {
             warp_held_terminals: false,
             warp_agent_tracking: false,
             signal_quit: false,
+            update_protocol: 0,
         })
         .unwrap();
     assert_eq!(
@@ -713,6 +714,7 @@ fn refuse_handoff(listener: interprocess::local_socket::Listener) {
             warp_held_terminals: true,
             warp_agent_tracking: true,
             signal_quit: false,
+            update_protocol: 0,
         })
         .unwrap();
     let mut adoption: IpcReceiverWithContext<ClientToServerMsg> =

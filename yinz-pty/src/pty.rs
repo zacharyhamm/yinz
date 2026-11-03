@@ -24,6 +24,7 @@ use yinz_types::pane_size::TerminalSize;
 
 mod layouts;
 mod metadata;
+mod migration;
 mod thread_main;
 mod warp;
 pub use thread_main::pty_thread_main;
@@ -551,6 +552,13 @@ pub struct Pty {
     terminal_launch_commands: HashMap<TerminalId, RunCommand>,
     debug_to_file: bool,
     task_handles: HashMap<TerminalId, JoinHandle<()>>, // terminal_id to join-handle
+    reader_controls: HashMap<TerminalId, crate::terminal_bytes::ReaderControl>,
+    migration_readers_paused: bool,
+    migration_owned: Option<(String, Vec<(TerminalId, bool)>)>,
+    migration_recovery_snapshot: Option<(
+        PathBuf,
+        yinz_types::session_migration::SessionMigrationSnapshot,
+    )>,
     default_editor: Option<PathBuf>,
     post_command_discovery_hook: Option<String>,
     plugin_cwds: HashMap<PluginId, PathBuf>, // plugin_id -> cwd
@@ -596,6 +604,35 @@ pub struct Pty {
 }
 
 impl Pty {
+    fn start_terminal_reader(
+        &mut self,
+        terminal_id: TerminalId,
+        reader: Box<dyn crate::os_input_output::AsyncReader>,
+    ) {
+        let activity_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut bytes = TerminalBytes::new(
+            terminal_id,
+            reader,
+            self.bus.senders.clone(),
+            self.debug_to_file,
+            activity_flag.clone(),
+        );
+        let control = bytes.control();
+        if self.migration_readers_paused {
+            control.pause();
+        }
+        self.reader_controls.insert(terminal_id, control);
+        let handle = async_runtime().spawn(async move {
+            bytes
+                .listen()
+                .await
+                .with_context(|| format!("read terminal {terminal_id} output"))
+                .fatal();
+        });
+        self.task_handles.insert(terminal_id, handle);
+        self.pane_activity_flags.insert(terminal_id, activity_flag);
+    }
+
     pub fn new(
         bus: Bus<PtyInstruction>,
         debug_to_file: bool,
@@ -608,6 +645,10 @@ impl Pty {
             id_to_child_pid: HashMap::new(),
             debug_to_file,
             task_handles: HashMap::new(),
+            reader_controls: HashMap::new(),
+            migration_readers_paused: false,
+            migration_owned: None,
+            migration_recovery_snapshot: None,
             default_editor,
             originating_plugins: HashMap::new(),
             terminal_launch_commands: HashMap::new(),
@@ -845,6 +886,7 @@ impl Pty {
         }
         self.track_launch(terminal_id, &run_command);
         let _ = self.task_handles.remove(&terminal_id);
+        self.reader_controls.remove(&terminal_id);
         let _ = self.id_to_child_pid.remove(&terminal_id);
         let generation = self.next_rerun_generation;
         self.next_rerun_generation = self.next_rerun_generation.wrapping_add(1);
@@ -1220,25 +1262,7 @@ impl Pty {
         if let TerminalAction::RunCommand(command) = terminal_action {
             self.track_launch(terminal_id, command);
         }
-        let activity_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let terminal_bytes = async_runtime().spawn({
-            let err_context = |terminal_id: TerminalId| {
-                format!("failed to run async task for terminal {terminal_id}")
-            };
-            let senders = self.bus.senders.clone();
-            let debug_to_file = self.debug_to_file;
-            let activity_flag = activity_flag.clone();
-            async move {
-                TerminalBytes::new(terminal_id, reader, senders, debug_to_file, activity_flag)
-                    .listen()
-                    .await
-                    .with_context(|| err_context(terminal_id))
-                    .fatal();
-            }
-        });
-
-        self.task_handles.insert(terminal_id, terminal_bytes);
-        self.pane_activity_flags.insert(terminal_id, activity_flag);
+        self.start_terminal_reader(terminal_id, reader);
         self.report_terminal_host(terminal_id);
         if let Some(child_pid) = child_pid {
             self.id_to_child_pid.insert(terminal_id, child_pid);
@@ -1440,6 +1464,7 @@ impl Pty {
                 if let Some(handle) = self.task_handles.remove(&id) {
                     handle.abort();
                 }
+                self.reader_controls.remove(&id);
                 // Signal before forgetting the pid: the helper needs it, and for
                 // a remote pane there is no pid to forget in the first place.
                 self.signal_pane_child(id, ChildSignal::Hup);
@@ -1508,6 +1533,7 @@ impl Pty {
                 }
                 self.track_launch(id, &run_command);
                 let _ = self.task_handles.remove(&id); // if all is well, this shouldn't be here
+                self.reader_controls.remove(&id);
                 let _ = self.id_to_child_pid.remove(&id); // if all is wlel, this shouldn't be here
                 let previous_host = self.host_of_pane(&PaneId::Terminal(id));
                 let requested_cwd = run_command.cwd.clone();
@@ -1549,21 +1575,7 @@ impl Pty {
         }
         self.re_report_terminal_host(id);
         let SpawnedRerun { reader, child_pid } = spawned?;
-        let activity_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let terminal_bytes = async_runtime().spawn({
-            let senders = self.bus.senders.clone();
-            let debug_to_file = self.debug_to_file;
-            let activity_flag = activity_flag.clone();
-            async move {
-                TerminalBytes::new(id, reader, senders, debug_to_file, activity_flag)
-                    .listen()
-                    .await
-                    .with_context(|| format!("failed to run async task for pane {pane_id:?}"))
-                    .fatal();
-            }
-        });
-        self.task_handles.insert(id, terminal_bytes);
-        self.pane_activity_flags.insert(id, activity_flag);
+        self.start_terminal_reader(id, reader);
         if let Some(child_pid) = child_pid {
             self.id_to_child_pid.insert(id, child_pid);
             self.capture_initial_cwd(id, child_pid, requested_cwd);

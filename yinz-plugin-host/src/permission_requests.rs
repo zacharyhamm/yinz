@@ -7,6 +7,10 @@ pub(super) struct PendingPermission {
 }
 
 impl PendingPermission {
+    pub(super) fn plugin_ids(&self) -> impl Iterator<Item = PluginId> + '_ {
+        self.recipients.iter().map(|(id, _, _)| *id)
+    }
+
     pub(super) fn contains_plugin(&self, plugin: PluginId) -> bool {
         self.recipients.iter().any(|(id, _, _)| *id == plugin)
     }

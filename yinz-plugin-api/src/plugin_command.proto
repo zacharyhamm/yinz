@@ -292,6 +292,9 @@ enum CommandName {
   ResolveProject = 315;
   GetSessionInventory = 316;
   SwitchSessionDestination = 317;
+  UpdateYinz = 319;
+  CancelYinzUpdate = 320;
+  YinzUpdateStatus = 321;
 }
 
 message PluginCommand {

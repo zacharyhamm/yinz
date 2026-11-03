@@ -2,12 +2,11 @@
 //! Preparing a release never modifies the installed binary or builtin plugins.
 use flate2::read::GzDecoder;
 use isahc::{config::RedirectPolicy, prelude::*, HttpClient};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::Read,
-    os::unix::fs::PermissionsExt,
     path::{Component, Path},
     time::Duration,
 };
@@ -15,18 +14,18 @@ use yinz_runtime::errors::prelude::*;
 
 const RELEASE_URL: &str = "https://api.github.com/repos/zacharyhamm/yinz/releases/latest";
 
-#[derive(Deserialize)]
-struct Release {
-    tag_name: String,
-    assets: Vec<Asset>,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct Release {
+    pub(crate) tag_name: String,
+    pub(crate) assets: Vec<Asset>,
 }
-#[derive(Deserialize)]
-struct Asset {
-    name: String,
-    browser_download_url: String,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct Asset {
+    pub(crate) name: String,
+    pub(crate) browser_download_url: String,
 }
 
-fn target(os: &str, arch: &str) -> Result<&'static str> {
+pub(crate) fn target(os: &str, arch: &str) -> Result<&'static str> {
     match (os, arch) {
         ("linux", "x86_64") => Ok("x86_64-unknown-linux-gnu"),
         ("linux", "aarch64") => Ok("aarch64-unknown-linux-gnu"),
@@ -34,7 +33,7 @@ fn target(os: &str, arch: &str) -> Result<&'static str> {
         _ => Err(anyhow!("no Yinz release available for {os}/{arch}")),
     }
 }
-fn version(value: &str) -> Result<semver::Version> {
+pub(crate) fn version(value: &str) -> Result<semver::Version> {
     semver::Version::parse(value.strip_prefix('v').unwrap_or(value))
         .context("parse release version")
 }
@@ -46,7 +45,11 @@ fn asset<'a>(release: &'a Release, name: &str) -> Result<&'a str> {
         .map(|a| a.browser_download_url.as_str())
         .with_context(|| format!("release {} is missing {name}", release.tag_name))
 }
-fn download(client: &HttpClient, url: &str, output: &mut dyn std::io::Write) -> Result<()> {
+pub(crate) fn download(
+    client: &HttpClient,
+    url: &str,
+    output: &mut dyn std::io::Write,
+) -> Result<()> {
     anyhow::ensure!(url.starts_with("https://"), "release URL must use HTTPS");
     let request = isahc::Request::get(url)
         .header("User-Agent", concat!("yinz/", env!("CARGO_PKG_VERSION")))
@@ -63,7 +66,7 @@ fn download(client: &HttpClient, url: &str, output: &mut dyn std::io::Write) -> 
     std::io::copy(response.body_mut(), output).context("download release content")?;
     Ok(())
 }
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8] = b"0123456789abcdef";
     bytes
         .iter()
@@ -139,53 +142,49 @@ fn extract(archive: &Path, destination: &Path) -> Result<()> {
     }
     Ok(())
 }
+pub(crate) mod transaction;
+
+#[cfg(test)]
 fn install(source: &Path, executable: &Path, data_dir: &Path) -> Result<()> {
-    let executable = executable
-        .canonicalize()
-        .context("resolve current executable")?;
-    let parent = executable
-        .parent()
-        .context("executable has no parent directory")?;
-    let builtins = source.join("plugins/builtins");
-    anyhow::ensure!(
-        source.join("yinz").is_file() && builtins.is_dir(),
-        "release is missing its executable or builtin plugins"
-    );
-    for path in [
-        data_dir.to_path_buf(),
-        data_dir.join("plugins"),
-        data_dir.join("plugins/builtins"),
-    ] {
-        anyhow::ensure!(
-            !path.is_symlink(),
-            "builtin installation directory is a symlink: {}",
-            path.display()
-        );
+    install_with_target(source, executable, data_dir, None)
+}
+
+fn install_with_target(
+    source: &Path,
+    executable: &Path,
+    data_dir: &Path,
+    target: Option<&semver::Version>,
+) -> Result<()> {
+    transaction::recover_standalone(executable, data_dir)?;
+    let operation = format!("standalone-{}", uuid::Uuid::new_v4());
+    let mut transaction =
+        transaction::Transaction::prepare(source, executable, data_dir, &operation)?;
+    if let Some(target) = target {
+        let validation = (|| {
+            let installed = installed_version(executable)
+                .context("recheck installed version under the installation lock")?;
+            anyhow::ensure!(
+                &installed <= target,
+                "another update installed newer Yinz {installed}; refusing downgrade to {target}"
+            );
+            Ok::<_, anyhow::Error>(())
+        })();
+        if let Err(error) = validation {
+            transaction
+                .rollback()
+                .context("discard superseded standalone update preparation")?;
+            return Err(error);
+        }
     }
-    let staged = tempfile::NamedTempFile::new_in(parent).with_context(|| {
-        format!(
-            "cannot write {}; install with an account that owns this installation",
-            parent.display()
-        )
-    })?;
-    fs::copy(source.join("yinz"), staged.path()).context("stage new executable")?;
-    staged
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(0o755))
-        .context("set executable permissions")?;
-    fs::create_dir_all(data_dir).context("create builtin data directory")?;
-    let _probe = tempfile::NamedTempFile::new_in(data_dir)
-        .context("builtin data directory is not writable")?;
-    yinz_steel_builtins::install(&builtins, data_dir).context(
-        "install builtins (some files may have been updated; executable was not replaced)",
-    )?;
-    staged.persist(&executable).with_context(|| {
-        format!(
-            "replace {} (builtins have been updated)",
-            executable.display()
-        )
-    })?;
-    Ok(())
+    if let Err(error) = transaction.publish() {
+        return match transaction.rollback() {
+            Ok(()) => Err(error.context("installation failed; restored the previous generation")),
+            Err(recovery) => Err(error.context(format!(
+                "installation failed and recovery is incomplete: {recovery:#}; retry yinz update"
+            ))),
+        };
+    }
+    transaction.commit()
 }
 
 pub fn run(data_dir: Option<&Path>) -> Result<()> {
@@ -207,14 +206,14 @@ pub fn run(data_dir: Option<&Path>) -> Result<()> {
 /// A validated release whose staging directory stays alive until installation finishes.
 /// Keeping preparation separate lets a session coordinator prepare every participant
 /// before changing any installation or releasing any terminal.
-struct PreparedRelease {
+pub(crate) struct PreparedRelease {
     _staging: tempfile::TempDir,
-    source: std::path::PathBuf,
-    version: semver::Version,
+    pub(crate) source: std::path::PathBuf,
+    pub(crate) version: semver::Version,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Progress {
+pub(crate) enum Progress {
     Checking,
     Downloading,
     Verifying,
@@ -222,7 +221,7 @@ enum Progress {
     Installing,
 }
 
-fn discover(
+pub(crate) fn discover(
     download: &mut impl FnMut(&str, &mut dyn std::io::Write) -> Result<()>,
 ) -> Result<Release> {
     let mut metadata = Vec::new();
@@ -234,7 +233,33 @@ fn discover(
 }
 
 /// Uses the already resolved release, never another lookup of `latest`.
-fn prepare(
+pub(crate) fn prepare(
+    release: &Release,
+    target: &str,
+    download: &mut impl FnMut(&str, &mut dyn std::io::Write) -> Result<()>,
+    progress: &mut impl FnMut(Progress),
+) -> Result<PreparedRelease> {
+    let prepared = prepare_artifact(release, target, download, progress)?;
+    progress(Progress::Validating);
+    let output = yinz_process::ssh::bootstrap_output(
+        std::process::Command::new(prepared.source.join("yinz")).arg("--version"),
+        Duration::from_secs(20),
+        None,
+    )
+    .context("validate downloaded executable compatibility")?;
+    anyhow::ensure!(
+        output.status.success()
+            && String::from_utf8_lossy(&output.stdout).trim()
+                == format!("yinz {}", prepared.version),
+        "downloaded executable did not report expected version {}",
+        prepared.version
+    );
+    Ok(prepared)
+}
+
+/// Prepare a foreign platform's artifact without executing it on this host.
+/// Its executable and capabilities must be validated on the destination machine.
+pub(crate) fn prepare_artifact(
     release: &Release,
     target: &str,
     download: &mut impl FnMut(&str, &mut dyn std::io::Write) -> Result<()>,
@@ -267,21 +292,31 @@ fn prepare(
         source.join("yinz").is_file() && source.join("plugins/builtins").is_dir(),
         "release is missing its executable or builtin plugins"
     );
-    progress(Progress::Validating);
-    let output = std::process::Command::new(source.join("yinz"))
-        .arg("--version")
-        .output()
-        .context("validate downloaded executable compatibility")?;
-    anyhow::ensure!(
-        output.status.success()
-            && String::from_utf8_lossy(&output.stdout).trim() == format!("yinz {latest}"),
-        "downloaded executable did not report expected version {latest}"
-    );
     Ok(PreparedRelease {
         _staging: temp,
         source,
         version: latest,
     })
+}
+
+fn installed_version(executable: &Path) -> Result<semver::Version> {
+    let output = yinz_process::ssh::bootstrap_output(
+        std::process::Command::new(executable).arg("--version"),
+        Duration::from_secs(20),
+        None,
+    )
+    .context("query installed executable version")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "installed executable version query failed"
+    );
+    let stdout = std::str::from_utf8(&output.stdout).context("decode installed version")?;
+    version(
+        stdout
+            .trim()
+            .strip_prefix("yinz ")
+            .context("invalid installed version response")?,
+    )
 }
 
 fn run_with(
@@ -297,20 +332,19 @@ fn run_with(
         Progress::Validating => println!("Validating release..."),
         Progress::Installing => println!("Installing release..."),
     };
-    progress(Progress::Checking);
-    let release = discover(&mut download)?;
-    let latest = version(&release.tag_name)?;
-    if version(yinz_runtime::consts::VERSION)? >= latest {
-        println!(
-            "Yinz {} is up to date (latest stable: {latest}).",
-            yinz_runtime::consts::VERSION
-        );
-        return Ok(());
-    }
     let executable = executable.canonicalize().context("resolve executable")?;
     let data_dir = data_dir
         .map(Path::to_path_buf)
         .unwrap_or_else(yinz_runtime::home::get_default_data_dir);
+    transaction::recover_standalone(&executable, &data_dir)?;
+    progress(Progress::Checking);
+    let release = discover(&mut download)?;
+    let latest = version(&release.tag_name)?;
+    let installed = installed_version(&executable)?;
+    if installed >= latest {
+        println!("Yinz {installed} is up to date (latest stable: {latest}).");
+        return Ok(());
+    }
     let prepared = prepare(&release, target, &mut download, &mut progress)?;
     println!(
         "Installing {} to {}\nBuiltin data directory: {}",
@@ -319,7 +353,12 @@ fn run_with(
         data_dir.display()
     );
     progress(Progress::Installing);
-    install(&prepared.source, &executable, &data_dir)?;
+    install_with_target(
+        &prepared.source,
+        &executable,
+        &data_dir,
+        Some(&prepared.version),
+    )?;
     println!("Installed Yinz {latest}. Restart existing sessions to use the new binary.");
     Ok(())
 }

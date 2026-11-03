@@ -128,6 +128,7 @@ impl Session {
                     warp_held_terminals: true,
                     warp_agent_tracking: true,
                     signal_quit: false,
+                    update_protocol: 0,
                 },
                 ClientToServerMsg::AgentControl(_) => {
                     ServerToClientMsg::AgentControl(yinz_types::agent::control::AgentResponse::new(

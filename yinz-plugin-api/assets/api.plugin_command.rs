@@ -3475,6 +3475,9 @@ pub enum CommandName {
     ResolveProject = 315,
     GetSessionInventory = 316,
     SwitchSessionDestination = 317,
+    UpdateYinz = 319,
+    CancelYinzUpdate = 320,
+    YinzUpdateStatus = 321,
 }
 impl CommandName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -3752,6 +3755,9 @@ impl CommandName {
             CommandName::ResolveProject => "ResolveProject",
             CommandName::GetSessionInventory => "GetSessionInventory",
             CommandName::SwitchSessionDestination => "SwitchSessionDestination",
+            CommandName::UpdateYinz => "UpdateYinz",
+            CommandName::CancelYinzUpdate => "CancelYinzUpdate",
+            CommandName::YinzUpdateStatus => "YinzUpdateStatus",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -4026,6 +4032,9 @@ impl CommandName {
             "ResolveProject" => Some(Self::ResolveProject),
             "GetSessionInventory" => Some(Self::GetSessionInventory),
             "SwitchSessionDestination" => Some(Self::SwitchSessionDestination),
+            "UpdateYinz" => Some(Self::UpdateYinz),
+            "CancelYinzUpdate" => Some(Self::CancelYinzUpdate),
+            "YinzUpdateStatus" => Some(Self::YinzUpdateStatus),
             _ => None,
         }
     }

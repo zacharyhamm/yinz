@@ -131,7 +131,7 @@ pub struct PluginBridge {
     data_access: Arc<DataAccess>,
     watch_generations: super::plugin_map::WatchGenerations,
     pub(super) plugin_map: Arc<Mutex<PluginMap>>,
-    plugin_executor: Arc<PinnedExecutor>,
+    pub(super) plugin_executor: Arc<PinnedExecutor>,
     next_plugin_id: u32,
     next_load_id: u64,
     // Last scheduled attempt: a delayed load result must not settle a replacement cache.
@@ -222,6 +222,56 @@ pub(crate) fn executor_threads() -> usize {
 }
 
 impl PluginBridge {
+    pub(super) fn update_pending_loads(&self) -> HashSet<PluginId> {
+        self.loading_plugins
+            .iter()
+            .map(|(id, _)| *id)
+            .chain(self.latest_plugin_errors.keys().copied())
+            .chain(
+                self.plugin_ids_waiting_for_permission_request
+                    .iter()
+                    .copied(),
+            )
+            .chain(
+                self.permission_requests
+                    .values()
+                    .flat_map(|pending| pending.plugin_ids()),
+            )
+            .collect()
+    }
+
+    pub(super) fn update_load_readiness(
+        &self,
+        plugins: &HashSet<PluginId>,
+    ) -> Option<Result<(), String>> {
+        for id in plugins {
+            if let Some(error) = self.latest_plugin_errors.get(id) {
+                return Some(Err(format!(
+                    "plugin {id} failed during session update: {error}"
+                )));
+            }
+        }
+        if let Some(id) = plugins.iter().find(|id| {
+            self.plugin_ids_waiting_for_permission_request.contains(id)
+                || self
+                    .permission_requests
+                    .values()
+                    .any(|pending| pending.contains_plugin(**id))
+        }) {
+            return Some(Err(format!(
+                "plugin {id} requires permissions before update can commit"
+            )));
+        }
+        if self
+            .loading_plugins
+            .iter()
+            .any(|(id, _)| plugins.contains(id))
+        {
+            return None;
+        }
+        Some(Ok(()))
+    }
+
     pub fn new(
         senders: ThreadSenders,
         yinz_data_dir: PathBuf,

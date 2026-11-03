@@ -939,6 +939,9 @@ impl Screen {
     /// Hidden-only tabs survive beside a usable tab; only quit guards require a replacement.
     /// Keep replacement identity after loading so natural exits hold instead of respawning.
     pub(crate) fn settle_tabs(&mut self) -> Result<()> {
+        if self.migration_blocks_normal_work() {
+            return Ok(());
+        }
         let err_context = "failed to settle tabs";
         for (client, tab_id) in &self.active_tab_ids {
             if let Some(tab) = self.tabs.get_mut(tab_id) {
@@ -1298,6 +1301,9 @@ impl Screen {
         if self.tabs.is_empty() {
             self.prune_tab_groups();
             self.active_tab_ids.clear();
+            if self.migration_blocks_normal_work() {
+                return Ok(());
+            }
             self.bus
                 .senders
                 .send_to_server(ServerInstruction::Render(None))

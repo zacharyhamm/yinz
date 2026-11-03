@@ -609,6 +609,28 @@ fn create_plugin_thread_with_services(
     data_access: Option<DataAccess>,
     repository_data_dir: Option<PathBuf>,
 ) -> PluginThreadHarnessWith<ServerInstruction> {
+    create_plugin_thread_with_services_and_update(
+        yinz_cwd,
+        session_env_vars,
+        user_plugin_dir,
+        hooks,
+        event_sender,
+        data_access,
+        repository_data_dir,
+        None,
+    )
+}
+
+fn create_plugin_thread_with_services_and_update(
+    yinz_cwd: Option<PathBuf>,
+    session_env_vars: Option<std::collections::BTreeMap<String, String>>,
+    user_plugin_dir: Option<PathBuf>,
+    hooks: yinz_types::input::hooks::Hooks,
+    event_sender: Option<SenderWithContext<PluginInstruction>>,
+    data_access: Option<DataAccess>,
+    repository_data_dir: Option<PathBuf>,
+    update_operation: Option<String>,
+) -> PluginThreadHarnessWith<ServerInstruction> {
     let yinz_cwd = yinz_cwd.unwrap_or_else(|| PathBuf::from("."));
     let session_env_vars = session_env_vars.unwrap_or_else(|| std::env::vars().collect());
     let initiating_client_id = ClientId::new(1);
@@ -690,6 +712,7 @@ fn create_plugin_thread_with_services(
                 Default::default(), // context_menu
                 initiating_client_id,
                 crate::ServerSession::Fixed("yinz-test".into()),
+                update_operation,
             )
             .expect("TEST")
         })
@@ -779,6 +802,7 @@ fn create_plugin_thread_with_server_receiver(
                 Default::default(), // context_menu
                 initiating_client_id,
                 crate::ServerSession::Fixed("yinz-test".into()),
+                None,
             )
             .expect("TEST");
         })
@@ -886,6 +910,7 @@ fn create_plugin_thread_with_pty_receiver_and_layout(
                 Default::default(), // context_menu
                 initiating_client_id,
                 crate::ServerSession::Fixed("yinz-test".into()),
+                None,
             )
             .expect("TEST")
         })
@@ -971,6 +996,7 @@ fn create_plugin_thread_with_background_jobs_receiver(
                 Default::default(), // context_menu
                 initiating_client_id,
                 crate::ServerSession::Fixed("yinz-test".into()),
+                None,
             )
             .expect("TEST")
         })

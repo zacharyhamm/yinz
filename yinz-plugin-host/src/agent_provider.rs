@@ -4,6 +4,12 @@ use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::provider::AgentProvider;
 /// Read metadata from the same source entrypoint used by the live plugin host.
 pub fn inspect_agent_provider(location: &str, data_dir: &Path) -> Result<AgentProvider> {
+    let _source_generation = if let Some(tag) = location.strip_prefix("yinz:") {
+        let path = yinz_steel_builtins::builtin_path(data_dir, tag)?;
+        yinz_steel_builtins::source_read_guard(&path)?
+    } else {
+        yinz_steel_builtins::source_read_guard(Path::new(location))?
+    };
     let (path, source) = if let Some(tag) = location.strip_prefix("yinz:") {
         let path = yinz_steel_builtins::builtin_path(data_dir, tag)?;
         let source = yinz_steel::modules::SourceRoot::file(&path, None)?.read_entry()?;

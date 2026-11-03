@@ -35,6 +35,7 @@ pub struct ClientOutcome {
     /// Set when the client should reconnect to a different session rather
     /// than exiting.
     pub reconnect_to_session: Option<SessionConnection>,
+    pub(crate) restart: Option<crate::update::Restart>,
     pub(crate) prepared_connection: Option<crate::session_switch::PreparedConnection>,
 }
 
@@ -78,6 +79,7 @@ impl ClientLoop<'_, '_> {
             exit_status: 0,
             reconnect_to_session: None,
             prepared_connection: None,
+            restart: None,
         };
         let started_at = Instant::now();
         let mut waiting_for_first_render = true;
@@ -370,6 +372,24 @@ impl ClientLoop<'_, '_> {
                 outcome.exit_msg = reason.message(Some(self.sessions.name()));
                 return true;
             },
+            ClientInstruction::UpdateRequest(request) => {
+                let token = request.token.clone();
+                let (result, restart) = self.sessions.update(request);
+                self.os_input.send_to_server(ClientToServerMsg::UpdateReply(
+                    yinz_types::update_client::Reply {
+                        token,
+                        result: result.map_err(|error| format!("{error:#}")),
+                    },
+                ));
+                if let Some(restart) = restart {
+                    outcome.restart = Some(restart);
+                    self.os_input
+                        .send_to_server(ClientToServerMsg::ClientExited);
+                    // Interrupt the router's pending read before joining it during teardown.
+                    self.os_input.disconnect_session_connection();
+                    return true;
+                }
+            },
             ClientInstruction::SessionRequest(request) => {
                 use yinz_types::session_destination::{
                     ClientReply, ClientRequest, Reply, SwitchRequest,
@@ -438,6 +458,7 @@ impl ClientLoop<'_, '_> {
                     outcome.exit_status = 1;
                     return true;
                 }
+                self.sessions.update_rendered(self.os_input);
                 if let Some(recovery) = self.recovery {
                     recovery.first_render(self.os_input, self.sessions.name(), Instant::now());
                 }
@@ -500,7 +521,11 @@ impl ClientLoop<'_, '_> {
             ClientInstruction::RenamedSession(name) => {
                 self.sessions.rename(name.into_string());
             },
-            ClientInstruction::Connected { signal_quit } => {
+            ClientInstruction::Connected {
+                signal_quit,
+                update_protocol,
+            } => {
+                self.sessions.set_update_protocol(update_protocol);
                 self.signal_quit_supported
                     .store(signal_quit, std::sync::atomic::Ordering::Release);
             },

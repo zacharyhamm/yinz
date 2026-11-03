@@ -860,6 +860,33 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::WatchFilesystem => env.watch_filesystem(),
             PluginCommand::GetDisconnectTargets => get_disconnect_targets(env),
             PluginCommand::GetSessionList => get_session_list(env),
+            PluginCommand::UpdateYinz => {
+                env.senders
+                    .send_to_server(
+                        yinz_bus::server_instruction::ServerInstruction::StartSessionUpdate(
+                            env.client_id,
+                        ),
+                    )
+                    .context("start session update")?;
+            },
+            PluginCommand::CancelYinzUpdate => {
+                env.senders
+                    .send_to_server(
+                        yinz_bus::server_instruction::ServerInstruction::CancelSessionUpdate(
+                            env.client_id,
+                        ),
+                    )
+                    .context("cancel session update")?;
+            },
+            PluginCommand::YinzUpdateStatus => {
+                env.senders
+                    .send_to_server(
+                        yinz_bus::server_instruction::ServerInstruction::SessionUpdateStatus(
+                            env.client_id,
+                        ),
+                    )
+                    .context("show session update status")?;
+            },
             PluginCommand::GetSessionInventory(id) => {
                 crate::session_destinations::inventory(env, id)?
             },

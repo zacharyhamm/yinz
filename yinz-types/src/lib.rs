@@ -34,6 +34,7 @@ pub mod tab_bar;
 pub mod agent;
 pub mod command;
 pub mod command_palette;
+pub mod update_client;
 
 #[cfg(test)]
 #[path = "unit/model_contracts.rs"]
@@ -57,3 +58,7 @@ pub mod configuration;
 pub mod project_provider;
 
 pub mod session_destination;
+
+pub mod session_update;
+
+pub mod session_migration;

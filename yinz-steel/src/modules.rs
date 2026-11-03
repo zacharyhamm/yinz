@@ -7,6 +7,7 @@ use std::{
     fs::{self, File},
     io::Read,
     path::{Component, Path, PathBuf},
+    sync::Arc,
 };
 use steel::parser::{ast::ExprKind, parser::Parser, tokens::TokenType};
 
@@ -21,8 +22,15 @@ pub struct ModuleSource {
 }
 
 enum Root {
-    File { directory: PathBuf, handle: File },
+    File {
+        directory: PathBuf,
+        handle: File,
+    },
     Embedded(BTreeMap<PathBuf, String>),
+    Frozen {
+        directory: PathBuf,
+        sources: Arc<BTreeMap<PathBuf, String>>,
+    },
 }
 
 pub struct SourceRoot {
@@ -34,9 +42,54 @@ pub struct SourceRoot {
     bytes: usize,
 }
 
+/// Keep the complete installed Scheme generation alive after the updater removes
+/// its displaced directory. Guest parsing still happens only in a worker.
+fn freeze_sources(directory: &Path, handle: &File) -> Result<BTreeMap<PathBuf, String>> {
+    let mut pending = vec![PathBuf::new()];
+    let mut sources = BTreeMap::new();
+    let mut bytes = 0usize;
+    let mut visited = 0usize;
+    while let Some(relative) = pending.pop() {
+        anyhow::ensure!(
+            relative.components().count() <= MAX_IMPORT_DEPTH,
+            "builtin source tree is too deep"
+        );
+        for entry in
+            fs::read_dir(directory.join(&relative)).context("read builtin source generation")?
+        {
+            let entry = entry.context("read builtin source entry")?;
+            visited += 1;
+            anyhow::ensure!(
+                visited <= MAX_MODULES * 4,
+                "builtin source tree has too many entries"
+            );
+            let path = relative.join(entry.file_name());
+            let kind = entry.file_type().context("inspect builtin source entry")?;
+            if kind.is_dir() {
+                pending.push(path);
+            } else if kind.is_file() && extension(&path).is_ok() {
+                let source = read_source(handle, &path)?;
+                bytes = bytes.saturating_add(source.len());
+                anyhow::ensure!(
+                    bytes <= MAX_GRAPH_BYTES && sources.len() < MAX_MODULES,
+                    "builtin source tree exceeds 64 MiB or 1024 modules"
+                );
+                sources.insert(path, source);
+            }
+            // Symlinks and special files cannot enter a pinned source generation.
+        }
+    }
+    Ok(sources)
+}
+
 impl SourceRoot {
     /// An absent entry leaf is allowed for editor checks; its parent must exist inside the root.
     pub fn file(entry: &Path, root: Option<&Path>) -> Result<Self> {
+        let entry = yinz_steel_builtins::source_path(entry)?;
+        let entry = entry.as_path();
+        let root = root.map(yinz_steel_builtins::source_path).transpose()?;
+        let root = root.as_deref();
+        let generation = yinz_steel_builtins::source_read_guard(entry)?;
         extension(entry)?;
         let absolute = if entry.is_absolute() {
             entry.to_owned()
@@ -80,11 +133,19 @@ impl SourceRoot {
                 .is_dir(),
             "plugin source root is not a directory"
         );
-        Ok(Self {
-            root: Root::File {
+        let root = if generation.is_some() {
+            Root::Frozen {
+                sources: Arc::new(freeze_sources(&root, &handle)?),
+                directory: root,
+            }
+        } else {
+            Root::File {
                 directory: root,
                 handle,
-            },
+            }
+        };
+        Ok(Self {
+            root,
             entry: id.clone(),
             location: None,
             paths: BTreeMap::from([(id, relative)]),
@@ -143,6 +204,10 @@ impl SourceRoot {
                     handle: handle.try_clone().context("retain plugin source root")?,
                 },
                 Root::Embedded(sources) => Root::Embedded(sources.clone()),
+                Root::Frozen { directory, sources } => Root::Frozen {
+                    directory: directory.clone(),
+                    sources: sources.clone(),
+                },
             },
             entry: self.entry.clone(),
             location: self.location.clone(),
@@ -168,9 +233,11 @@ impl SourceRoot {
             return Ok(repository.descriptor());
         }
         match &self.root {
-            Root::File { directory, .. } => Ok(url::Url::from_file_path(directory.join(relative))
-                .map_err(|_| anyhow!("invalid plugin file path"))?
-                .to_string()),
+            Root::File { directory, .. } | Root::Frozen { directory, .. } => {
+                Ok(url::Url::from_file_path(directory.join(relative))
+                    .map_err(|_| anyhow!("invalid plugin file path"))?
+                    .to_string())
+            },
             Root::Embedded(_) => {
                 anyhow::ensure!(
                     relative
@@ -226,6 +293,10 @@ impl SourceRoot {
             Root::Embedded(sources) => anyhow::ensure!(
                 sources.contains_key(relative),
                 "embedded plugin target is unavailable"
+            ),
+            Root::Frozen { sources, .. } => anyhow::ensure!(
+                sources.contains_key(relative),
+                "pinned plugin target is unavailable"
             ),
         }
         Ok(())
@@ -322,6 +393,10 @@ impl SourceRoot {
                 .get(path)
                 .cloned()
                 .context("embedded entrypoint is unavailable"),
+            Root::Frozen { sources, .. } => sources
+                .get(path)
+                .cloned()
+                .context("pinned entrypoint is unavailable"),
         }
     }
 
@@ -365,6 +440,13 @@ impl SourceRoot {
                 sources
                     .get(&relative)
                     .context("embedded module is unavailable")?
+                    .clone(),
+            ),
+            Root::Frozen { sources, .. } => (
+                relative.clone(),
+                sources
+                    .get(&relative)
+                    .context("pinned module is unavailable")?
                     .clone(),
             ),
         };

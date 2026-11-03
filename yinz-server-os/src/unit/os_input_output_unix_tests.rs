@@ -725,3 +725,30 @@ fn transport_registration_applies_the_latest_resize_and_close_forgets_it() {
     backend.clear_terminal_id(id).unwrap();
     assert!(backend.terminal_size(id).unwrap().is_none());
 }
+
+#[test]
+fn migration_terminal_reservations_preserve_sparse_ids_and_prevent_allocator_reuse() {
+    let backend = UnixPtyBackend::with_termios(None).unwrap();
+    backend
+        .reserve_terminal_id_for_migration(TerminalId::new(41))
+        .unwrap();
+    backend
+        .reserve_terminal_id_for_migration(TerminalId::new(7))
+        .unwrap();
+    assert!(backend
+        .reserve_terminal_id_for_migration(TerminalId::new(41))
+        .is_err());
+    assert_eq!(backend.next_terminal_id(), Some(TerminalId::new(42)));
+    backend.forget_reserved_terminal_id(TerminalId::new(7));
+    backend
+        .reserve_terminal_id_for_migration(TerminalId::new(7))
+        .unwrap();
+    assert_eq!(backend.next_terminal_id(), Some(TerminalId::new(43)));
+    assert!(backend
+        .reserve_terminal_id_for_migration(TerminalId::new(u32::MAX))
+        .is_err());
+    backend
+        .next_terminal_id_counter
+        .store(u32::MAX, Ordering::Relaxed);
+    assert_eq!(backend.next_terminal_id(), None);
+}

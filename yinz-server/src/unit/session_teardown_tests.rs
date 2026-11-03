@@ -25,6 +25,7 @@ fn session_with(
         default_shell: None,
         current_input_modes: HashMap::new(),
         session_configuration: Default::default(),
+        effective_layout: Default::default(),
         key_passthrough_clients: HashMap::new(),
         locked_escapes: HashMap::new(),
         command_palette_restore_modes: HashMap::new(),

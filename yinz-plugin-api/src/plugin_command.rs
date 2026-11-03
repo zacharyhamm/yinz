@@ -1873,6 +1873,18 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for SwitchSessionDestination"),
             },
+            Some(CommandName::UpdateYinz) => match protobuf_plugin_command.payload {
+                None => Ok(PluginCommand::UpdateYinz),
+                _ => Err("Mismatched payload for UpdateYinz"),
+            },
+            Some(CommandName::CancelYinzUpdate) => match protobuf_plugin_command.payload {
+                None => Ok(PluginCommand::CancelYinzUpdate),
+                _ => Err("Mismatched payload for CancelYinzUpdate"),
+            },
+            Some(CommandName::YinzUpdateStatus) => match protobuf_plugin_command.payload {
+                None => Ok(PluginCommand::YinzUpdateStatus),
+                _ => Err("Mismatched payload for YinzUpdateStatus"),
+            },
             Some(CommandName::GetSessionList) => match protobuf_plugin_command.payload {
                 Some(Payload::GetSessionListPayload(_)) => Ok(PluginCommand::GetSessionList),
                 None => Ok(PluginCommand::GetSessionList),
@@ -4536,6 +4548,18 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 payload: Some(Payload::SwitchSessionDestinationPayload(
                     serde_json::to_string(&request).map_err(|_| "Invalid session destination")?,
                 )),
+            }),
+            PluginCommand::UpdateYinz => Ok(ProtobufPluginCommand {
+                name: CommandName::UpdateYinz as i32,
+                payload: None,
+            }),
+            PluginCommand::CancelYinzUpdate => Ok(ProtobufPluginCommand {
+                name: CommandName::CancelYinzUpdate as i32,
+                payload: None,
+            }),
+            PluginCommand::YinzUpdateStatus => Ok(ProtobufPluginCommand {
+                name: CommandName::YinzUpdateStatus as i32,
+                payload: None,
             }),
             PluginCommand::GetSessionList => Ok(ProtobufPluginCommand {
                 name: CommandName::GetSessionList as i32,

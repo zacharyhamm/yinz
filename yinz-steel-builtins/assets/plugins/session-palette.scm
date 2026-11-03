@@ -383,4 +383,16 @@
                         (unless now (error "Session no longer exists"))
                         (details now)))))
                 (by-name (hash-ref (snapshot) "live_sessions")))) 0 ""))))
-    (action "notifications" "Notifications…" (defer notifications))))
+    (action "notifications" "Notifications…" (defer notifications))
+    (action "update-yinz" "Update Yinz…"
+      (defer (lambda ()
+          (require-success (yinz-command "UpdateYinz"))
+          (complete "Update requested. Progress will appear in session notifications."))))
+    (action "update-status" "Yinz update status"
+      (defer (lambda ()
+          (require-success (yinz-command "YinzUpdateStatus"))
+          (complete "Update status will appear in session notifications."))))
+    (action "cancel-update" "Cancel Yinz update"
+      (defer (lambda ()
+          (require-success (yinz-command "CancelYinzUpdate"))
+          (complete "Cancellation requested. Progress will appear in session notifications."))))))

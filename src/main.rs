@@ -3,6 +3,7 @@ mod agent;
 mod agent_hooks;
 mod agent_report;
 mod commands;
+mod live_update;
 mod portable_skills;
 mod recovery;
 mod remote_commands;
@@ -26,6 +27,53 @@ use {
 
 fn main() {
     let process_started = std::time::Instant::now();
+    if std::env::args().nth(1).as_deref() == Some(yinz_types::session_update::COORDINATOR_ARG) {
+        yinz_runtime::logging::configure_logger();
+        let result = (|| {
+            let args: Vec<_> = std::env::args_os().skip(2).collect();
+            let [socket, data_dir, operation] = args.as_slice() else {
+                anyhow::bail!("invalid session update invocation");
+            };
+            live_update::coordinator_main(
+                std::path::Path::new(socket),
+                std::path::Path::new(data_dir),
+                operation.to_str().context("invalid update operation id")?,
+            )
+        })();
+        if let Err(error) = result {
+            eprintln!("Error: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some(yinz_types::update_client::RESUME_ARG) {
+        yinz_runtime::logging::configure_logger();
+        let result = std::env::args_os()
+            .nth(2)
+            .context("missing client resume path")
+            .and_then(|path| yinz_client::update::resume_client(std::path::Path::new(&path)));
+        match result {
+            Ok(status) => std::process::exit(status),
+            Err(error) => {
+                eprintln!("Error: {error:#}");
+                std::process::exit(1);
+            },
+        }
+    }
+    if std::env::args().nth(1).as_deref() == Some(yinz_types::session_update::CAPABILITIES_ARG) {
+        if let Err(error) = serde_json::to_writer(std::io::stdout(), &live_update::capabilities()) {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some(yinz_types::update_client::PARTICIPANT_ARG) {
+        if let Err(error) = live_update::participant_main() {
+            eprintln!("Error: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(yinz_steel::worker::ARG))
     {
         if let Err(error) = yinz_steel::worker::run_worker() {
@@ -125,8 +173,25 @@ fn main() {
         }
         remote_commands::exit(1);
     }
-    if matches!(opts.command, Some(Command::Update)) {
-        if let Err(error) = update::run(opts.data_dir.as_deref()) {
+    if let Some(Command::Update {
+        resume_client,
+        client,
+        session,
+    }) = &opts.command
+    {
+        let result = match (resume_client, client, session) {
+            (Some(original), Some(current), Some(session)) => live_update::resume_client_update(
+                session,
+                opts.data_dir.as_deref(),
+                *original,
+                *current,
+            ),
+            (None, None, None) => update::run(opts.data_dir.as_deref()),
+            _ => Err(anyhow::anyhow!(
+                "--resume-client, --client, and --session must be supplied together"
+            )),
+        };
+        if let Err(error) = result {
             eprintln!("Error: {error:#}");
             remote_commands::exit(1);
         }

@@ -60,6 +60,7 @@ pub(crate) enum Message {
     Job(ClientId, String, String, PostReservation),
     Event(ClientId, Event, Option<yinz_bus::thread_bus::PluginReplyId>),
     Permission(super::permissions::Completion),
+    Pause(crate::update_quiescence::PauseGate, Sender<()>),
     Tick,
     Exit,
 }
@@ -79,6 +80,38 @@ pub(crate) struct Workers {
 }
 
 impl Workers {
+    pub(crate) fn generations(&self) -> Result<Vec<u64>> {
+        let mut generations: Vec<_> = self
+            .workers
+            .lock()
+            .map_err(|_| anyhow!("plugin workers are poisoned"))?
+            .values()
+            .map(|worker| worker.generation)
+            .collect();
+        generations.sort_unstable();
+        Ok(generations)
+    }
+
+    pub(crate) fn pause_for_update(
+        &self,
+        gate: &crate::update_quiescence::PauseGate,
+    ) -> Result<Vec<mpsc::Receiver<()>>> {
+        let workers = self
+            .workers
+            .lock()
+            .map_err(|_| anyhow!("plugin workers are poisoned"))?;
+        let mut arrivals = Vec::new();
+        for worker in workers.values() {
+            let (reply, arrival) = mpsc::channel();
+            worker
+                .sender
+                .send(Message::Pause(gate.clone(), reply))
+                .map_err(|_| anyhow!("plugin worker exited before update pause"))?;
+            arrivals.push(arrival);
+        }
+        Ok(arrivals)
+    }
+
     pub fn new(parent_generation: u64) -> Self {
         Self {
             parent_generation,
@@ -87,7 +120,14 @@ impl Workers {
         }
     }
 
-    pub fn spawn(&self, name: String, source: &str, path: &Path, env: PluginEnv) -> Result<()> {
+    pub fn spawn(
+        &self,
+        name: String,
+        source: &str,
+        path: &Path,
+        env: PluginEnv,
+        source_guard: Option<Arc<std::fs::File>>,
+    ) -> Result<()> {
         let generation = next_generation()?;
         let (sender, receiver) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -109,6 +149,7 @@ impl Workers {
                         worker_cancel,
                         generation,
                         receiver,
+                        source_guard,
                     )
                 };
                 if let Err(error) =

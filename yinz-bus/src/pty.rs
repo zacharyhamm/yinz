@@ -289,6 +289,7 @@ pub enum PendingSpawn {
 /// Instructions related to PTYs (pseudoterminals).
 #[derive(Clone, Debug, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PtyInstruction {
+    SessionMigration(crate::migration::PtyRequest),
     SpawnTerminal(
         Option<TerminalAction>,
         Option<String>,
@@ -551,6 +552,9 @@ pub enum PtyInstruction {
 
 impl From<&PtyInstruction> for PtyContext {
     fn from(pty_instruction: &PtyInstruction) -> Self {
+        if matches!(pty_instruction, PtyInstruction::SessionMigration(_)) {
+            return PtyContext::ReleaseTerminalsForWarp;
+        }
         // The two enums are kept name-for-name; `instruction_context_tests` fails the test run if
         // a variant is added without either a matching `PtyContext` or an arm here.
         let name: &'static str = pty_instruction.into();

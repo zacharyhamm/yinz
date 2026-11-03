@@ -1,4 +1,38 @@
 use super::*;
+
+#[test]
+fn builtin_generation_keeps_entry_and_imports_after_publication_and_backup_cleanup() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("plugins/builtins");
+    fs::create_dir_all(&root).unwrap();
+    let entry = root.join("main.scm");
+    fs::write(&entry, "(require \"./dependency.scm\")\n; old main").unwrap();
+    fs::write(
+        root.join("dependency.scm"),
+        "(provide value) (define value \"old dependency\")",
+    )
+    .unwrap();
+    let mut pinned = SourceRoot::file(&entry, None).unwrap();
+    let old = directory.path().join("plugins/displaced");
+    fs::rename(&root, &old).unwrap();
+    fs::create_dir(&root).unwrap();
+    fs::write(&entry, "; new main").unwrap();
+    fs::write(root.join("dependency.scm"), "new dependency").unwrap();
+    fs::remove_dir_all(&old).unwrap();
+    assert!(pinned.read_entry().unwrap().contains("old main"));
+    let origin = pinned.entry_id().to_owned();
+    assert!(pinned
+        .load(&origin, "./dependency.scm")
+        .unwrap()
+        .source
+        .contains("old dependency"));
+    assert!(pinned
+        .location()
+        .unwrap()
+        .ends_with("plugins/builtins/main.scm"));
+    let replacement = SourceRoot::file(&entry, None).unwrap();
+    assert_eq!(replacement.read_entry().unwrap(), "; new main");
+}
 use crate::Runtime;
 
 #[test]

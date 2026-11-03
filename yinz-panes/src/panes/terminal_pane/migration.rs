@@ -1,0 +1,135 @@
+//! Pane metadata carried beside its exact semantic terminal state.
+use super::*;
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Snapshot {
+    version: u32,
+    grid: serde_json::Value,
+    selectable: bool,
+    geom: PaneGeom,
+    geom_override: Option<PaneGeom>,
+    content_offset: Offset,
+    max_content_width: usize,
+    subtitle: Option<String>,
+    subtitle_enabled: bool,
+    pane_title: String,
+    pane_name: String,
+    prev_pane_name: String,
+    remote_host: Option<String>,
+    title_prefix: Option<String>,
+    running_program: Option<String>,
+    agent: Option<AgentInfo>,
+    agent_input_revision: u64,
+    agent_enter_revision: u64,
+    was_an_agent: bool,
+    last_agent_kind: Option<String>,
+    last_agent_cwd: Option<String>,
+    last_agent_session_id: Option<String>,
+    last_hook_at_ms: Option<i64>,
+    borderless: bool,
+    exclude_from_sync: bool,
+    search_term: String,
+    is_held: Option<(Option<i32>, bool, RunCommand)>,
+    suspended: bool,
+    banner: Option<String>,
+    has_bell_notification: bool,
+    invoked_with: Option<Run>,
+}
+impl TerminalPane {
+    pub(super) fn capture_migration(&self) -> Result<serde_json::Value, String> {
+        if !self.parser_boundary.is_ground() || !self.kitty_interceptor.is_in_ground_state() {
+            return Err("terminal output ends inside an escape sequence or UTF-8 character; retry when output settles".into());
+        }
+        if self.forward_paused || !self.pending_pty_input.is_empty() || self.nested_guest {
+            return Err("terminal has pending host-query output or a nested session that cannot be transferred".into());
+        }
+        let snapshot = Snapshot {
+            version: 1,
+            grid: self.grid.migration_state().map_err(|e| format!("{e:#}"))?,
+            selectable: self.selectable,
+            geom: self.geom,
+            geom_override: self.geom_override,
+            content_offset: self.content_offset,
+            max_content_width: self.max_content_width,
+            subtitle: self.subtitle.clone(),
+            subtitle_enabled: self.subtitle_enabled,
+            pane_title: self.pane_title.clone(),
+            pane_name: self.pane_name.clone(),
+            prev_pane_name: self.prev_pane_name.clone(),
+            remote_host: self.remote_host.clone(),
+            title_prefix: self.title_prefix.clone(),
+            running_program: self.running_program.clone(),
+            agent: self.agent.clone(),
+            agent_input_revision: self.agent_input_revision,
+            agent_enter_revision: self.agent_enter_revision,
+            was_an_agent: self.was_an_agent,
+            last_agent_kind: self.last_agent_kind.clone(),
+            last_agent_cwd: self.last_agent_cwd.clone(),
+            last_agent_session_id: self.last_agent_session_id.clone(),
+            last_hook_at_ms: self.last_hook_at_ms,
+            borderless: self.borderless,
+            exclude_from_sync: self.exclude_from_sync,
+            search_term: self.search_term.clone(),
+            is_held: self.is_held.clone(),
+            suspended: self.suspended,
+            banner: self.banner.clone(),
+            has_bell_notification: self.has_bell_notification,
+            invoked_with: self.invoked_with.clone(),
+        };
+        serde_json::to_value(snapshot)
+            .map_err(|error| format!("encode pane migration snapshot: {error}"))
+    }
+    pub(super) fn apply_migration(&mut self, value: serde_json::Value) -> Result<(), String> {
+        let mut state: Snapshot = serde_json::from_value(value)
+            .map_err(|error| format!("decode pane migration snapshot: {error}"))?;
+        if state.version != 1 {
+            return Err("unsupported pane migration snapshot version".into());
+        }
+        // A callback belongs to the source plugin's interpreter generation. Recreated plugins
+        // have no corresponding pending invocation, even if their numeric IDs happen to match.
+        if let Some((_, _, command)) = &mut state.is_held {
+            command.originating_plugin = None;
+        }
+        if let Some(Run::Command(command)) = &mut state.invoked_with {
+            command.originating_plugin = None;
+        }
+        self.grid
+            .restore_migration_state(state.grid)
+            .map_err(|error| format!("restore pane terminal state: {error:#}"))?;
+        self.selectable = state.selectable;
+        self.geom = state.geom;
+        self.geom_override = state.geom_override;
+        self.content_offset = state.content_offset;
+        self.max_content_width = state.max_content_width;
+        self.subtitle = state.subtitle;
+        self.subtitle_enabled = state.subtitle_enabled;
+        self.pane_title = state.pane_title;
+        self.pane_name = state.pane_name;
+        self.prev_pane_name = state.prev_pane_name;
+        self.remote_host = state.remote_host;
+        self.title_prefix = state.title_prefix;
+        self.running_program = state.running_program;
+        self.agent = state.agent;
+        self.agent_input_revision = state.agent_input_revision;
+        self.agent_enter_revision = state.agent_enter_revision;
+        self.was_an_agent = state.was_an_agent;
+        self.last_agent_kind = state.last_agent_kind;
+        self.last_agent_cwd = state.last_agent_cwd;
+        self.last_agent_session_id = state.last_agent_session_id;
+        self.last_hook_at_ms = state.last_hook_at_ms;
+        self.borderless = state.borderless;
+        self.exclude_from_sync = state.exclude_from_sync;
+        self.search_term = state.search_term;
+        self.is_held = state.is_held;
+        self.suspended = state.suspended;
+        self.banner = state.banner;
+        self.has_bell_notification = state.has_bell_notification;
+        self.invoked_with = state.invoked_with;
+        self.frame.clear();
+        self.fake_cursor_locations.clear();
+        self.render_width = None;
+        self.vte_parser = vte::Parser::new();
+        self.parser_boundary = Default::default();
+        self.warp_pending = true;
+        Ok(())
+    }
+}

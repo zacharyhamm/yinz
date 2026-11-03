@@ -154,10 +154,12 @@ impl Screen {
                 }
             }
         }
-        self.bus
-            .senders
-            .send_to_plugin(PluginInstruction::Update(plugin_updates))
-            .context("failed to update tabs")?;
+        if !self.migration_reports_suspended() {
+            self.bus
+                .senders
+                .send_to_plugin(PluginInstruction::Update(plugin_updates))
+                .context("failed to update tabs")?;
+        }
         Ok(tab_infos)
     }
     pub(super) fn generate_and_report_pane_state(&mut self) -> Result<PaneManifest> {
@@ -209,7 +211,7 @@ impl Screen {
                 Event::PaneUpdate(pane_manifest.clone()),
             ));
         }
-        if !plugin_updates.is_empty() {
+        if !plugin_updates.is_empty() && !self.migration_reports_suspended() {
             self.bus
                 .senders
                 .send_to_plugin(PluginInstruction::Update(plugin_updates))
@@ -471,6 +473,9 @@ impl Screen {
     }
 
     fn report_session_info(&mut self, session_info: SessionInfo) -> Result<()> {
+        if self.migration_reports_suspended() {
+            return Ok(());
+        }
         let err_context = || "Failed to report session info".to_string();
 
         self.bus
