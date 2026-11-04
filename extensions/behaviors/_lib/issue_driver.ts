@@ -1,0 +1,490 @@
+/** Foreground orchestration up to a human decision, with durable pane recovery. */
+import { z } from "npm:zod@4.6.7";
+import {
+  AgentInputSchema,
+  AgentTaskSchema,
+  childState,
+  defaultDependencies,
+  ImplementationResult,
+  type IssueAgentContext,
+  type IssueAgentDependencies,
+  prepareTask,
+  RecoverySchema,
+  resumeTask,
+  runTask,
+} from "./issue_agents.ts";
+import { FindingSchema, StateSchema } from "./lifecycle.ts";
+import { type Handle, loadState } from "./runtime.ts";
+import { AgentResponseSchema } from "./yinz_agent.ts";
+
+const Settings = AgentInputSchema.omit({ role: true });
+export const DriveInputSchema = z.object({ agent: Settings.optional() })
+  .strip();
+export const DriverSchema = z.object({
+  agent: Settings.optional(),
+  assignmentId: z.uuid().optional(),
+  implementation: AgentTaskSchema.optional(),
+}).strict();
+export const HandoffSchema = z.object({
+  id: z.uuid(),
+  status: z.enum(["current", "invalidated"]),
+  decision: z.enum([
+    "approve_plan",
+    "prepare_worktree",
+    "authorize_merge",
+    "integrate",
+    "summarize",
+    "complete",
+    "blocked",
+  ]),
+  reason: z.string().min(1),
+  createdAt: z.iso.datetime(),
+  state: StateSchema,
+  assignment: AgentTaskSchema.optional(),
+  implementation: AgentTaskSchema.optional(),
+  recoveryId: z.uuid().optional(),
+  planVersion: z.number().int().positive().optional(),
+  commit: z.string().optional(),
+  presentation: z.string().min(1),
+}).strict();
+type Handoff = z.infer<typeof HandoffSchema>;
+type Task = z.infer<typeof AgentTaskSchema>;
+
+function blockedFindings(findings: z.infer<typeof FindingSchema>[] = []) {
+  return findings.some((finding) =>
+    ["high", "critical"].includes(finding.severity) && !finding.resolution
+  );
+}
+
+function present(handoff: Omit<Handoff, "presentation">) {
+  const state = handoff.state;
+  const lines = [
+    `Issue ${state.issue.workspace}/${state.issue.itemId}: ${state.issue.text}`,
+    `Handoff ${handoff.id}: ${handoff.decision}`,
+    handoff.reason,
+    ...(handoff.planVersion ? [`Plan version: ${handoff.planVersion}`] : []),
+    ...(handoff.commit ? [`Commit: ${handoff.commit}`] : []),
+    `Requirements: ${state.issue.note}`,
+  ];
+  if (state.classification) {
+    lines.push(`Investigation: ${state.classification.summary}`);
+  }
+  if (state.plan) {
+    lines.push(
+      `Proposed behavior: ${state.plan.summary}`,
+      "Implementation steps:",
+    );
+    for (const step of state.plan.steps) {
+      lines.push(
+        `- ${step.id}: ${step.description} (${step.files.join(", ")})`,
+      );
+    }
+    lines.push(`Tests: ${state.plan.testingStrategy}`, "Assumptions:");
+    lines.push(
+      ...(state.plan.assumptions?.length
+        ? state.plan.assumptions.map((value) => `- ${value}`)
+        : [
+          "- No assumptions recorded; assess the investigation and plan risks.",
+        ]),
+    );
+  }
+  for (
+    const [label, review] of [
+      ["Plan review", state.planReview],
+      ["Code review", state.codeReview],
+    ] as const
+  ) {
+    if (!review) continue;
+    lines.push(`${label} findings:`);
+    lines.push(
+      ...(review.findings.length
+        ? review.findings.map((finding) =>
+          `- ${finding.severity} ${finding.id}: ${finding.description}${
+            finding.resolution ? ` Resolution: ${finding.resolution}` : ""
+          }`
+        )
+        : ["- No findings."]),
+    );
+  }
+  if (handoff.implementation?.message) {
+    lines.push(
+      `Delivered change: ${
+        ImplementationResult.parse(JSON.parse(handoff.implementation.message))
+          .summary
+      }`,
+    );
+  }
+  if (state.codeReview) {
+    lines.push("Delivered change coverage:");
+    for (const step of state.codeReview.steps) {
+      lines.push(
+        `- ${step.id}: ${step.status}${
+          step.justification ? ` (${step.justification})` : ""
+        }`,
+      );
+    }
+    lines.push("Verification results:");
+    lines.push(
+      ...(state.codeReview.preliminaryChecks?.length
+        ? state.codeReview.preliminaryChecks.map((check) =>
+          `- ${check.command}: ${check.result}. ${check.summary}`
+        )
+        : ["- No preliminary checks recorded."]),
+    );
+    lines.push(
+      "The full CI gate runs during authorized integration unless the user explicitly waives it.",
+    );
+  }
+  if (handoff.assignment) {
+    lines.push(
+      `Worker: ${handoff.assignment.role}, task ${handoff.assignment.id}, behavior ${handoff.assignment.behaviorName}`,
+    );
+  }
+  lines.push(
+    "The controlling agent must collect and present this result before ending its turn.",
+  );
+  return lines.join("\n");
+}
+
+/** Continue only a correlated, acknowledged ordinary timeout, never a dialog or uncertain delivery. */
+async function ordinaryTimeout(
+  context: IssueAgentContext,
+  task: Task,
+  error: unknown,
+) {
+  const child = await childState(context, task);
+  const expected = child.phase === "background"
+    ? "Background work has not completed: timed_out"
+    : child.phase === "spawned"
+    ? "Agent startup is not ready: timed_out"
+    : "Agent task has not completed: timed_out";
+  if (
+    !["spawned", "waiting", "background"].includes(child.phase) ||
+    child.outcome !== "timed_out" || !child.paneId ||
+    !child.rawResponse || child.lastError !== expected ||
+    !(error instanceof Error && error.message.includes(expected)) ||
+    (child.phase !== "spawned" &&
+      (!child.conversationId || !child.submissionId))
+  ) return false;
+  const parsed = AgentResponseSchema.safeParse(JSON.parse(child.rawResponse));
+  if (!parsed.success) return false;
+  const response = parsed.data;
+  const matches = response.agents.filter((agent) =>
+    agent.pane_id === child.paneId
+  );
+  if (matches.length !== 1) return false;
+  const agent = matches[0];
+  return response.outcome === "timed_out" &&
+    response.prompt_delivery !== "not_sent" &&
+    (child.phase === "spawned" || response.acknowledged || !!response.turn_id ||
+      (child.phase === "background" && !!child.turnId)) &&
+    (child.phase === "spawned" ||
+      response.submission_id === child.submissionId ||
+      (child.phase === "background" && response.submission_id == null)) &&
+    agent.session === task.config.session &&
+    agent.agent.kind === task.config.kind &&
+    (child.conversationId == null ||
+      agent.agent.session_id === child.conversationId) &&
+    agent.agent.state.toLowerCase() === "busy" &&
+    (agent.not_ready_reason == null ||
+      ["not_idle", "unresolved_turn"].includes(agent.not_ready_reason));
+}
+
+/** The caller owns the issue lock. Helpers here deliberately do not acquire it again. */
+async function drive(
+  input: z.infer<typeof DriveInputSchema>,
+  context: IssueAgentContext,
+  dependencies: IssueAgentDependencies,
+) {
+  const handles: Handle[] = [];
+  const rawDriver = await context.readResource("driver");
+  let driver = DriverSchema.parse(rawDriver ?? {});
+  let revisions = 0;
+
+  async function task() {
+    const raw = await context.readResource("agent-task");
+    return raw == null ? undefined : AgentTaskSchema.parse(raw);
+  }
+  async function handoff(decision: Handoff["decision"], reason: string) {
+    const state = await loadState(context);
+    const assignment = await task();
+    const rawRecovery = await context.readResource("recovery");
+    const recovery = rawRecovery == null
+      ? undefined
+      : RecoverySchema.parse(rawRecovery);
+    const raw = await context.readResource("handoff");
+    const cached = raw == null ? undefined : HandoffSchema.parse(raw);
+    let result: Handoff;
+    if (
+      decision !== "blocked" && cached?.status === "current" &&
+      cached.decision === decision && cached.reason === reason &&
+      JSON.stringify(cached.state) === JSON.stringify(state) &&
+      cached.assignment?.id === assignment?.id &&
+      cached.recoveryId === recovery?.id
+    ) {
+      result = cached;
+    } else {
+      const value = {
+        id: dependencies.id(),
+        status: "current" as const,
+        decision,
+        reason,
+        createdAt: dependencies.now(),
+        state,
+        ...(assignment ? { assignment } : {}),
+        ...(driver.implementation?.next?.plan?.version ===
+              state.plan?.version &&
+            driver.implementation?.next?.rollbackId === state.rollbackId &&
+            driver.implementation?.next?.issue.digest === state.issue.digest &&
+            driver.implementation?.next?.implementation?.worktree ===
+              state.implementation?.worktree
+          ? { implementation: driver.implementation }
+          : {}),
+        ...(recovery ? { recoveryId: recovery.id } : {}),
+        ...(state.plan ? { planVersion: state.plan.version } : {}),
+        ...(state.codeReview ? { commit: state.codeReview.commit } : {}),
+      };
+      result = HandoffSchema.parse({ ...value, presentation: present(value) });
+    }
+    // Publish the handle even when cached so this invocation returns a concrete result.
+    handles.push(await context.writeResource("handoff", "handoff", result));
+    context.logger.info("{handoff}", { handoff: result.presentation });
+    // Swamp requires unique output names even when a foreground invocation has
+    // written several versions of state, driver and agent-task along the way.
+    return {
+      dataHandles: [
+        ...new Map(handles.map((handle) => [handle.name, handle])).values(),
+      ],
+    };
+  }
+
+  try {
+    const pendingRecovery = await context.readResource("recovery");
+    if (
+      pendingRecovery != null &&
+      RecoverySchema.parse(pendingRecovery).status === "pending"
+    ) {
+      throw new Error(
+        "Rollback is incomplete; use resume-rollback to finish its recorded intent, then drive",
+      );
+    }
+    const currentTask = await task();
+    if (input.agent) {
+      if (currentTask && ["running", "applying"].includes(currentTask.status)) {
+        const { cwd: _cwd, ...original } = currentTask.config;
+        if (
+          JSON.stringify(Settings.parse(original)) !==
+            JSON.stringify(input.agent)
+        ) {
+          throw new Error(
+            "Unresolved work must resume with its original session/provider settings; use an explicitly requested restart to replace it",
+          );
+        }
+      }
+      driver.agent = input.agent;
+    } else if (
+      currentTask && (!driver.agent || currentTask.id !== driver.assignmentId)
+    ) {
+      const { cwd: _cwd, ...original } = currentTask.config;
+      driver.agent = Settings.parse(original);
+    }
+    handles.push(await context.writeResource("driver", "driver", driver));
+
+    while (true) {
+      context.signal.throwIfAborted();
+      const assignment = await task();
+      if (assignment && ["running", "applying"].includes(assignment.status)) {
+        driver = { ...driver, assignmentId: assignment.id };
+        handles.push(await context.writeResource("driver", "driver", driver));
+        try {
+          handles.push(
+            ...(await resumeTask(context, dependencies)).dataHandles,
+          );
+        } catch (error) {
+          context.signal.throwIfAborted();
+          if (
+            !await ordinaryTimeout(context, assignment, error).catch(() =>
+              false
+            )
+          ) throw error;
+          context.logger.info(
+            "Continuing original pane task {task} after an ordinary wait timeout",
+            { task: assignment.id },
+          );
+        }
+        continue;
+      }
+
+      const state = await loadState(context);
+      const fresh = await dependencies.readAgenda(
+        state.issue.workspace,
+        state.issue.itemId,
+        state.phase === "done",
+      );
+      if (fresh.digest !== state.issue.digest) {
+        throw new Error(
+          "Agenda requirements changed; refresh before continuing or presenting an approval handoff",
+        );
+      }
+      let role: z.infer<typeof AgentInputSchema>["role"];
+      if (state.phase === "triaging") role = "triage";
+      else if (state.phase === "classified") role = "plan";
+      else if (state.phase === "planning") {
+        if (!state.plan) throw new Error("Planning has no persisted plan");
+        if (
+          !state.planReview ||
+          state.planReview.planVersion !== state.plan.version
+        ) role = "review_plan";
+        else if (blockedFindings(state.planReview.findings)) {
+          if (revisions === 3) {
+            return await handoff(
+              "blocked",
+              "Plan review still has unresolved high/critical findings after three revision attempts in this invocation",
+            );
+          }
+          revisions++;
+          role = "plan";
+        } else {
+          return await handoff(
+            "approve_plan",
+            "Explicit approval of this reviewed plan is required before implementation",
+          );
+        }
+      } else if (state.phase === "approved") {
+        return await handoff(
+          "prepare_worktree",
+          "Prepare or adopt the issue worktree with implement, then drive the approved plan",
+        );
+      } else if (state.phase === "implementing") {
+        if (
+          !state.plan || state.approval?.planVersion !== state.plan.version ||
+          !state.implementation
+        ) {
+          throw new Error(
+            "Implementation requires explicit approval of the current plan and a prepared worktree",
+          );
+        }
+        const repo = await dependencies.inspect(
+          context,
+          state.implementation.worktree,
+        );
+        if (repo.branch !== state.implementation.branch) {
+          throw new Error("Issue worktree branch changed");
+        }
+        if (state.codeReview) {
+          if (
+            !repo.clean || repo.head !== state.codeReview.commit ||
+            state.codeReview.planVersion !== state.plan.version
+          ) {
+            throw new Error(
+              "Code review evidence is stale for the current worktree commit",
+            );
+          }
+          if (
+            blockedFindings(state.codeReview.findings) ||
+            state.codeReview.preliminaryChecks?.some((check) =>
+              check.result === "failed"
+            )
+          ) {
+            return await handoff(
+              "blocked",
+              "Resolve code review blockers or failed verification, then obtain fresh review evidence",
+            );
+          }
+          return await handoff(
+            "authorize_merge",
+            "Explicit merge authorization for this reviewed commit is required; plan approval does not authorize merging",
+          );
+        }
+        // A discarded review launch does not erase the completed implementation.
+        const implementation = assignment?.role === "implement"
+          ? assignment
+          : driver.implementation;
+        if (
+          implementation?.status === "completed" &&
+          JSON.stringify(implementation.next) === JSON.stringify(state)
+        ) {
+          const evidence = ImplementationResult.parse(
+            JSON.parse(implementation.message!),
+          );
+          if (!repo.clean || repo.head !== evidence.commit) {
+            throw new Error(
+              "Implementation evidence is stale for the current worktree commit",
+            );
+          }
+          driver = { ...driver, implementation };
+          handles.push(await context.writeResource("driver", "driver", driver));
+          role = "review_code";
+        } else role = "implement";
+      } else if (state.phase === "ready") {
+        return await handoff(
+          "integrate",
+          "Merge authorization is recorded; run merge with the required CI gate (a waiver requires its own explicit user request)",
+        );
+      } else if (state.phase === "merged") {
+        return await handoff(
+          "summarize",
+          "Compare the merge receipt with the requirements and record the delivered outcome before Agenda close-out",
+        );
+      } else {
+        return await handoff(
+          "complete",
+          "The issue is merged and its outcome is recorded",
+        );
+      }
+
+      if (!driver.agent) {
+        throw new Error(
+          "Select a running session and provider with drive {agent: {session, kind, ...}} before dispatching workers",
+        );
+      }
+      const next = await prepareTask(
+        context,
+        { ...driver.agent, role },
+        state,
+        dependencies,
+      );
+      driver = { ...driver, assignmentId: next.id };
+      handles.push(await context.writeResource("driver", "driver", driver));
+      try {
+        handles.push(
+          ...(await runTask(context, next, dependencies)).dataHandles,
+        );
+      } catch (error) {
+        context.signal.throwIfAborted();
+        if (!await ordinaryTimeout(context, next, error).catch(() => false)) {
+          throw error;
+        }
+        context.logger.info(
+          "Continuing original pane task {task} after an ordinary wait timeout",
+          { task: next.id },
+        );
+      }
+    }
+  } catch (error) {
+    context.signal.throwIfAborted();
+    return await handoff(
+      "blocked",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
+export function createDriveMethod(
+  dependencies: IssueAgentDependencies = defaultDependencies,
+) {
+  return {
+    kind: "action" as const,
+    description:
+      "Advance persisted pane work in the foreground until a human decision or blocker, without granting authorization",
+    arguments: DriveInputSchema,
+    execute: (
+      input: z.infer<typeof DriveInputSchema>,
+      context: IssueAgentContext,
+    ) =>
+      dependencies.withIssue(
+        context,
+        () => drive(DriveInputSchema.parse(input), context, dependencies),
+      ),
+  };
+}

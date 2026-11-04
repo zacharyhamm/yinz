@@ -299,6 +299,7 @@ export async function saveState(
   eventName = `event-${crypto.randomUUID()}`,
 ): Promise<{ dataHandles: Handle[] }> {
   const state = StateSchema.parse(value);
+  await invalidateHandoff(context);
   const event = EventSchema.parse({
     action,
     at: new Date().toISOString(),
@@ -316,6 +317,20 @@ export async function saveState(
     phase: state.phase,
   });
   return { dataHandles: [eventHandle, stateHandle] };
+}
+
+/** Old handoffs remain evidence, but cannot authorize a superseding attempt. */
+export async function invalidateHandoff(context: Context) {
+  const raw = await context.readResource("handoff");
+  if (raw != null) {
+    const handoff = z.object({ status: z.string() }).loose().parse(raw);
+    if (handoff.status === "current") {
+      await context.writeResource("handoff", "handoff", {
+        ...handoff,
+        status: "invalidated",
+      });
+    }
+  }
 }
 
 export function normalizeReceipt(raw: unknown, state: LifecycleState) {

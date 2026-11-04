@@ -5,6 +5,7 @@ import {
   type IssueAgentContext,
   type IssueAgentDependencies,
 } from "../_lib/issue_agents.ts";
+import { createDriveMethod, HandoffSchema } from "../_lib/issue_driver.ts";
 import {
   createState,
   type LifecycleState,
@@ -101,8 +102,12 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
   const calls: Parameters<IssueAgentContext["runModel"]>[0][] = [];
   let serial = 0;
   let childBehavior: string | undefined;
+  let issueLocked = false;
   const controls = {
     evidence,
+    evidenceForRole: undefined as
+      | ((task: ReturnType<typeof AgentTaskSchema.parse>) => unknown)
+      | undefined,
     agenda: issue,
     failEventOnce: false,
     failTaskCompletionOnce: false,
@@ -232,9 +237,10 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
         assert(typeof prompt === "string");
         const config = AgentConfigSchema.parse(rawConfig);
         const digest = await promptDigest(prompt);
-        const message = typeof controls.evidence === "string"
-          ? controls.evidence
-          : JSON.stringify(controls.evidence);
+        const evidence = controls.evidenceForRole?.(task) ?? controls.evidence;
+        const message = typeof evidence === "string"
+          ? evidence
+          : JSON.stringify(evidence);
         child.set("state", {
           config,
           prompt,
@@ -273,7 +279,15 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
     },
   };
   const dependencies: IssueAgentDependencies = {
-    withIssue: (_context, operation) => operation(),
+    withIssue: async (_context, operation) => {
+      assert(!issueLocked, "Nested issue lock");
+      issueLocked = true;
+      try {
+        return await operation();
+      } finally {
+        issueLocked = false;
+      }
+    },
     readAgenda: () => {
       controls.agendaReads++;
       return Promise.resolve(controls.agenda);
@@ -298,6 +312,7 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
     calls,
     child,
     methods: createAgentMethods(dependencies),
+    drive: createDriveMethod(dependencies),
   };
 }
 
@@ -1485,4 +1500,445 @@ Deno.test("a new restart can change options while an earlier restart has not sav
     "superseded",
   );
   equal(h.calls.length, 2);
+});
+
+const driverPlan = {
+  summary: "Repair issue behavior",
+  steps: [{ id: "fix", description: "Repair and test", files: ["src/lib.rs"] }],
+  testingStrategy: "Focused regression and affected caller tests",
+  assumptions: ["The recorded reproduction covers the affected caller"],
+};
+function driverEvidence(
+  task: ReturnType<typeof AgentTaskSchema.parse>,
+): unknown {
+  switch (task.role) {
+    case "triage":
+      return triage;
+    case "plan":
+      return driverPlan;
+    case "review_plan":
+      return { planVersion: task.before.plan!.version, findings: [] };
+    case "implement":
+      return {
+        summary: "Repaired the affected caller and added a regression",
+        commit: head,
+      };
+    case "review_code":
+      return {
+        planVersion: task.before.plan!.version,
+        commit: head,
+        steps: [{ id: "fix", status: "implemented" }],
+        findings: [],
+        preliminaryChecks: [{
+          command: "focused regression",
+          result: "passed",
+          summary: "Affected caller regression passes",
+        }],
+      };
+  }
+}
+function dispatchedRoles(h: ReturnType<typeof harness>) {
+  return h.writes.filter((write) =>
+    write.spec === "agent-task" && write.value.status === "running" &&
+    !write.value.lastError
+  )
+    .map((write) => write.value.role);
+}
+function result(h: ReturnType<typeof harness>) {
+  return HandoffSchema.parse(h.resources.get("handoff"));
+}
+
+Deno.test("driver takes planning through fresh review to a reusable approval handoff without implementing", async () => {
+  const h = harness();
+  h.controls.evidenceForRole = driverEvidence;
+  const output = await h.drive.execute({ agent: options }, h.context);
+  equal(
+    new Set(output.dataHandles.map((handle) => handle.name)).size,
+    output.dataHandles.length,
+  );
+  equal(dispatchedRoles(h), ["triage", "plan", "review_plan"]);
+  const handoff = result(h);
+  equal(handoff.decision, "approve_plan");
+  equal(handoff.planVersion, 1);
+  equal(handoff.state.plan?.assumptions, driverPlan.assumptions);
+  for (
+    const text of [
+      "Proposed behavior",
+      "Implementation steps",
+      "Tests:",
+      "Assumptions:",
+      "Plan review findings",
+      "controlling agent must collect and present",
+    ]
+  ) {
+    assert(handoff.presentation.includes(text));
+  }
+  equal((h.resources.get("driver") as { agent: unknown }).agent, options);
+  await h.drive.execute({}, h.context);
+  equal(h.calls.length, 3);
+  equal(result(h).id, handoff.id);
+  equal((await loadState(h.context)).approval, undefined);
+});
+
+Deno.test("driver revises unresolved plan findings and always obtains a fresh versioned review", async () => {
+  const h = harness();
+  h.controls.evidenceForRole = (task) =>
+    task.role === "review_plan" && task.before.plan!.version === 1
+      ? {
+        planVersion: 1,
+        findings: [{
+          id: "gap",
+          severity: "high",
+          description: "Cover the caller",
+        }],
+      }
+      : driverEvidence(task);
+  await h.drive.execute({ agent: options }, h.context);
+  equal(dispatchedRoles(h), [
+    "triage",
+    "plan",
+    "review_plan",
+    "plan",
+    "review_plan",
+  ]);
+  equal(result(h).decision, "approve_plan");
+  equal(result(h).planVersion, 2);
+  assert(h.calls[3].arguments!.prompt!.toString().includes("Cover the caller"));
+});
+
+Deno.test("driver allows three plan revisions per invocation before returning the unresolved evidence", async () => {
+  const h = harness();
+  h.controls.evidenceForRole = (task) =>
+    task.role === "review_plan"
+      ? {
+        planVersion: task.before.plan!.version,
+        findings: [{
+          id: "gap",
+          severity: "critical",
+          description: "Still missing coverage",
+        }],
+      }
+      : driverEvidence(task);
+  await h.drive.execute({ agent: options }, h.context);
+  equal(dispatchedRoles(h), [
+    "triage",
+    "plan",
+    "review_plan",
+    "plan",
+    "review_plan",
+    "plan",
+    "review_plan",
+    "plan",
+    "review_plan",
+  ]);
+  equal(result(h).decision, "blocked");
+  equal(result(h).planVersion, 4);
+  assert(result(h).reason.includes("three revision attempts"));
+  assert(result(h).presentation.includes("Still missing coverage"));
+  h.controls.evidenceForRole = driverEvidence;
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "approve_plan");
+  equal(result(h).planVersion, 5);
+});
+
+Deno.test("driver requires worktree preparation after explicit approval, then implements and reviews to merge authorization", async () => {
+  const initial = implementing();
+  const approved = {
+    ...initial,
+    phase: "approved" as const,
+    implementation: undefined,
+  };
+  const h = harness(approved);
+  h.controls.evidenceForRole = driverEvidence;
+  await h.drive.execute({ agent: options }, h.context);
+  equal(result(h).decision, "prepare_worktree");
+  equal(h.calls.length, 0);
+  h.resources.set("state", initial);
+  await h.drive.execute({}, h.context);
+  equal(dispatchedRoles(h), ["implement", "review_code"]);
+  equal(result(h).decision, "authorize_merge");
+  equal(result(h).commit, head);
+  assert(result(h).presentation.includes("Repaired the affected caller"));
+  assert(result(h).presentation.includes("focused regression: passed"));
+  equal((await loadState(h.context)).mergeAuthorization, undefined);
+  const id = result(h).id;
+  await h.drive.execute({}, h.context);
+  equal(result(h).id, id);
+  equal(h.calls.length, 2);
+});
+
+Deno.test("driver returns code blockers and failed verification instead of requesting merge authorization", async () => {
+  for (const failedCheck of [false, true]) {
+    const h = harness(implementing());
+    h.controls.evidenceForRole = (task) =>
+      task.role === "review_code"
+        ? {
+          ...driverEvidence(task) as object,
+          findings: failedCheck
+            ? []
+            : [{ id: "bug", severity: "high", description: "Race remains" }],
+          preliminaryChecks: [{
+            command: "regression",
+            result: failedCheck ? "failed" : "passed",
+            summary: "Recorded result",
+          }],
+        }
+        : driverEvidence(task);
+    await h.drive.execute({ agent: options }, h.context);
+    equal(result(h).decision, "blocked");
+    assert(
+      result(h).reason.includes("code review blockers or failed verification"),
+    );
+  }
+});
+
+Deno.test("driver reconciles an interrupted result write and continues to review without repeating completed workers", async () => {
+  const h = harness(transition(createState(issue), "triage", triage));
+  h.controls.evidenceForRole = driverEvidence;
+  h.controls.failTaskCompletionOnce = true;
+  await h.drive.execute({ agent: options }, h.context);
+  equal(result(h).decision, "blocked");
+  equal(
+    AgentTaskSchema.parse(h.resources.get("agent-task")).status,
+    "applying",
+  );
+  equal((await loadState(h.context)).plan?.version, 1);
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "approve_plan");
+  equal(h.calls.length, 2);
+  equal(h.calls.map((call) => call.method), ["run", "run"]);
+  equal(result(h).planVersion, 1);
+});
+
+Deno.test("driver stops on stale requirements, invalid evidence and changed worktree commits", async () => {
+  for (const scenario of ["requirements", "evidence", "commit"]) {
+    const h = harness(
+      scenario === "commit" ? implementing() : createState(issue),
+    );
+    h.controls.evidenceForRole = driverEvidence;
+    if (scenario === "requirements") {
+      h.controls.afterRun = () => {
+        h.controls.agenda = { ...issue, digest: "e".repeat(64) };
+      };
+    }
+    if (scenario === "evidence") {
+      h.controls.evidenceForRole = () => "bad evidence";
+    }
+    if (scenario === "commit") h.controls.repo.head = "c".repeat(40);
+    await h.drive.execute({ agent: options }, h.context);
+    equal(result(h).decision, "blocked");
+    equal(h.calls.length, 1);
+    await h.drive.execute({}, h.context);
+    equal(result(h).decision, "blocked");
+    assert(h.calls.every((call) => call.name === h.calls[0].name));
+  }
+  const h = harness();
+  h.controls.evidenceForRole = driverEvidence;
+  await h.drive.execute({ agent: options }, h.context);
+  h.controls.agenda = { ...issue, digest: "e".repeat(64) };
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "blocked");
+  assert(result(h).reason.includes("requirements changed"));
+  equal(h.calls.length, 3);
+});
+
+Deno.test("restart invalidates an old approval handoff and driver follows the replacement session without duplicates", async () => {
+  const h = harness();
+  h.controls.evidenceForRole = driverEvidence;
+  await h.drive.execute({ agent: options }, h.context);
+  const previous = result(h);
+  await h.methods.restart_agent.execute({
+    ...options,
+    session: "replacement",
+    role: "plan",
+    taskId: previous.assignment!.id,
+    request: "Restart planning in the replacement session",
+  }, h.context);
+  equal(result(h).status, "invalidated");
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "approve_plan");
+  assert(result(h).id !== previous.id);
+  equal(result(h).planVersion, 2);
+  equal(result(h).assignment?.config.session, "replacement");
+  equal(h.calls.length, 5);
+  await h.drive.execute({}, h.context);
+  equal(h.calls.length, 5);
+});
+
+Deno.test("driver waits on the original acknowledged submission across timeouts and blocks dialogs, uncertain delivery and provider failures", async () => {
+  for (
+    const scenario of [
+      "timeouts",
+      "startup",
+      "dialog",
+      "uncertain",
+      "failure",
+      "transport-after-timeout",
+    ]
+  ) {
+    const h = harness();
+    const cli: string[][] = [];
+    let waits = 0;
+    h.controls.agentRunner = (args) => {
+      cli.push(args);
+      const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+      const agent = {
+        pane_id: "terminal_7",
+        session: options.session,
+        agent: { kind: "claude", session_id: "conversation-1", state: "idle" },
+        cwd: task.config.cwd,
+        ready: true,
+        status_available: true,
+        prompt_supported: true,
+      };
+      let value: Record<string, unknown>;
+      if (args[3] === "spawn") {
+        value = {
+          outcome: "ok",
+          spawned: { pane_id: "terminal_7", cwd: task.config.cwd },
+        };
+      } else if (args.includes("--until")) {
+        value = scenario === "startup" && cli.length === 2
+          ? {
+            outcome: "timed_out",
+            agents: [{
+              ...agent,
+              agent: { ...agent.agent, state: "Busy" },
+              not_ready_reason: "not_idle",
+            }],
+          }
+          : { outcome: "ok", agents: [agent] };
+      } else {
+        const shouldTimeout = task.role === "triage" &&
+          (args[3] === "prompt" || ++waits < 3);
+        if (scenario === "transport-after-timeout" && args[3] === "wait") {
+          return Promise.reject(new Error("Session disappeared"));
+        }
+        value = shouldTimeout
+          ? {
+            outcome: scenario === "failure" ? "failed" : "timed_out",
+            submission_id: "submission-1",
+            acknowledged: scenario !== "uncertain",
+            agents: [{
+              ...agent,
+              agent: {
+                ...agent.agent,
+                state: scenario === "dialog" ? "Waiting" : "Busy",
+              },
+              not_ready_reason: "unresolved_turn",
+            }],
+          }
+          : {
+            outcome: "completed",
+            submission_id: "submission-1",
+            acknowledged: true,
+            agents: [agent],
+            message: JSON.stringify(driverEvidence(task)),
+          };
+      }
+      return Promise.resolve({
+        code: 0,
+        stdout: JSON.stringify(value),
+        stderr: "",
+      });
+    };
+    await h.drive.execute({ agent: options }, h.context);
+    if (["timeouts", "startup"].includes(scenario)) {
+      equal(result(h).decision, "approve_plan");
+      equal(cli.filter((args) => args[3] === "spawn").length, 3);
+      equal(cli.filter((args) => args[3] === "prompt").length, 3);
+      const observations = cli.filter((args) =>
+        args[3] === "wait" && args.includes("--submission")
+      );
+      equal(observations.length, 3);
+      for (const args of observations) {
+        equal(args[args.indexOf("--submission") + 1], "submission-1");
+        equal(args[args.indexOf("--conversation") + 1], "conversation-1");
+      }
+      await h.drive.execute({}, h.context);
+      equal(cli.filter((args) => args[3] === "prompt").length, 3);
+    } else {
+      equal(result(h).decision, "blocked");
+      equal(cli.filter((args) => args[3] === "spawn").length, 1);
+      equal(cli.filter((args) => args[3] === "prompt").length, 1);
+      const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+      await h.drive.execute({}, h.context);
+      equal(result(h).decision, "blocked");
+      equal(
+        AgentTaskSchema.parse(h.resources.get("agent-task")).id,
+        original.id,
+      );
+      equal(cli.filter((args) => args[3] === "prompt").length, 1);
+    }
+  }
+});
+
+Deno.test("driver reuses implementation after explicitly discarding unusable review evidence", async () => {
+  const h = harness(implementing());
+  h.controls.evidenceForRole = (task) =>
+    task.role === "review_code" ? "bad review evidence" : driverEvidence(task);
+  await h.drive.execute({ agent: options }, h.context);
+  equal(result(h).decision, "blocked");
+  await h.methods.discard_agent.execute({
+    request: "Discard the malformed completed review",
+    confirmedStopped: true,
+  }, h.context);
+  h.controls.evidenceForRole = driverEvidence;
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "authorize_merge");
+  equal(dispatchedRoles(h), ["implement", "review_code", "review_code"]);
+  assert(result(h).presentation.includes("Repaired the affected caller"));
+  h.controls.repo.head = "c".repeat(40);
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "blocked");
+  assert(result(h).reason.includes("review evidence is stale"));
+  equal(h.calls.length, 3);
+});
+
+Deno.test("driver survives controller interruption and resumes its saved assignment with no second submission", async () => {
+  const h = harness();
+  h.controls.evidenceForRole = driverEvidence;
+  const abort = new AbortController();
+  h.context.signal = abort.signal;
+  const run = h.context.runModel;
+  h.context.runModel = () => {
+    abort.abort(new Error("Controller interrupted before child launch"));
+    return Promise.reject(abort.signal.reason);
+  };
+  await rejects(
+    () => h.drive.execute({ agent: options }, h.context),
+    "Controller interrupted",
+  );
+  const saved = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  equal(saved.role, "triage");
+  equal(saved.status, "running");
+  equal(h.calls.length, 0);
+  h.context.signal = new AbortController().signal;
+  h.context.runModel = run;
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "approve_plan");
+  equal(h.calls[0].name, saved.behaviorName);
+  equal(h.calls[0].method, "recover");
+  equal(h.calls.length, 3);
+});
+
+Deno.test("driver blocks a pending rollback and missing configuration without dispatch", async () => {
+  const h = harness();
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "blocked");
+  assert(result(h).reason.includes("Select a running session"));
+  h.controls.reopenError = "Agenda unavailable";
+  await rejects(
+    () =>
+      h.methods.rollback.execute({
+        step: "triage",
+        request: "Restart investigation",
+      }, h.context),
+    "Agenda unavailable",
+  );
+  equal(result(h).status, "invalidated");
+  await h.drive.execute({ agent: options }, h.context);
+  equal(result(h).decision, "blocked");
+  assert(result(h).reason.includes("Rollback is incomplete"));
+  equal(h.calls.length, 0);
 });

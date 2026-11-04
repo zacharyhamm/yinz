@@ -1,0 +1,51 @@
+id: bbb39e5e-47f8-45d7-9fa5-3f97c08bf1c8
+name: yinz-issue-drive
+description: Drive foreground pane work to a concrete human handoff or blocker.
+tags: {}
+inputs:
+  type: object
+  required: [issueName]
+  additionalProperties: false
+  properties:
+    issueName:
+      type: string
+    drive:
+      type: object
+      default: {}
+      additionalProperties: false
+      properties:
+        agent:
+          type: object
+          required: [session, kind]
+          additionalProperties: false
+          properties:
+            session:
+              type: string
+            kind:
+              type: string
+              enum: [claude, codex, muse, pi, agy]
+            model:
+              type: string
+            effort:
+              type: string
+            permissionMode:
+              type: string
+            startupTimeoutSeconds:
+              type: integer
+            timeoutSeconds:
+              type: integer
+jobs:
+  - name: foreground
+    steps:
+      - name: drive-to-handoff
+        task:
+          type: behavior
+          behavior: ${{ inputs.issueName }}
+          methodName: drive
+          inputs: ${{ inputs.drive }}
+        dependsOn: []
+        weight: 0
+        allowFailure: false
+    dependsOn: []
+    weight: 0
+version: 1

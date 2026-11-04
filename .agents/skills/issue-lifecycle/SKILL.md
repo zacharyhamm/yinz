@@ -13,7 +13,7 @@ Use Agenda for issue descriptions, Swamp for durable lifecycle state and
 evidence, and local Git worktrees for development and merging. All agent work
 runs in visible Yinz panes through the reusable `@yinz/agent` behavior. The
 lifecycle implementation is `@yinz/issue-lifecycle`; its entry workflows are
-`yinz-issue-start` and `yinz-issue-merge`. Read
+`yinz-issue-start`, `yinz-issue-drive` and `yinz-issue-merge`. Read
 [the operating guide](../../../docs/ISSUE_LIFECYCLE.md) for commands, evidence
 inputs, the reusable agent extension and recovery.
 
@@ -45,17 +45,35 @@ changed, use `refresh` and review the revised requirements before proceeding.
 
 ## Drive the work
 
-Dispatch worker tasks with the launcher's `agent` command and JSON input
-`{role, session, kind, model?, effort?, permissionMode?, startupTimeoutSeconds?, timeoutSeconds?}`.
-Use the intended running Yinz session and provider. Omitting model, effort and
-permission mode preserves provider defaults. The workflow supplies the prompt
-and existing worktree. Never replace this with headless provider execution or
-inline agent work. Use the local Yinz agents skill for deliberate pane
-inspection and dialog handling when needed.
+After `start`, use the launcher's `drive` command with JSON input
+`{agent: {session, kind, model?, effort?, permissionMode?, startupTimeoutSeconds?, timeoutSeconds?}}`.
+Use the intended running Yinz session and provider. Omitted options preserve
+provider defaults. Settings persist; ordinary resume uses `drive` with no input.
+After approval and worktree preparation, use `drive` again. After an explicitly
+requested restart or completed rollback recovery, continue through `drive` to
+the next handoff. The driver supplies prompts and uses visible pane workers;
+never replace them with headless provider execution or inline agent work.
+Single-role `agent` and `resume-agent` remain lower-level diagnostic operations.
+Use the local Yinz agents skill for deliberate pane inspection and dialogs.
 
-1. **Triage:** dispatch role `triage` to investigate the problem, acceptance
+**Wait for the driver, collect its structured handoff, and present its readable
+result before ending the controlling turn.** If a shell command yields, keep
+waiting on that same command. A launched pane, workflow ID, or progress report
+does not complete the request. Present the issue, plan version or commit,
+decision required and supporting evidence (plan behavior, steps, tests,
+assumptions and review; or delivered change, code review and verification).
+For a blocker, explain the recorded cause and the recovery needed. Do not promise
+to wake the controller after its turn or session ends; that is outside this flow.
+
+The driver automatically runs missing triage, planning and review, revising
+unresolved high/critical plan findings up to three times per invocation with a
+fresh review each time. It stops for explicit plan approval and worktree
+preparation, then runs implementation and code review up to merge authorization.
+It never records approval, merge authorization or a CI waiver on its own.
+
+1. **Triage:** the driver runs role `triage` to investigate the problem, acceptance
    criteria, scope and reproduction evidence against the affected source.
-2. **Plan:** dispatch role `plan` for concrete steps, affected files, risks and
+2. **Plan:** the driver runs role `plan` for concrete steps, affected files, risks and
    development test selection, then role `review_plan` for adversarial review.
    Resolve blockers through revised worker results. A revised plan needs a fresh
    review.
@@ -63,11 +81,11 @@ inspection and dialog handling when needed.
    create or adopt a local issue worktree. Existing approval in this session is
    sufficient; do not ask again. If authorization is missing, present the
    concrete reviewed plan and explain the decision needed before proceeding.
-4. **Develop:** dispatch role `implement` in the prepared issue worktree. The
+4. **Develop:** the driver runs role `implement` in the prepared issue worktree. The
    worker implements and commits the plan and runs targeted tests. Fix defects
    and flakes in this branch through the worker. Keep each worktree's real
    `target/` isolated; never set `CARGO_TARGET_DIR` or share build artifacts.
-5. **Review code:** dispatch role `review_code` against the committed worktree.
+5. **Review code:** the driver runs role `review_code` against the committed worktree.
    Swamp imports the role-specific structured result only after validating the
    original task, plan and commit. Repairs require fresh review evidence.
 6. **Prepare to merge:** show the resulting change and verification evidence.
@@ -107,8 +125,13 @@ silently abort a rebase, reset changes, delete branches, force a merge or remove
 a lock file held by another process.
 
 An unresolved pane task blocks ordinary lifecycle mutations and replacement
-workers. Use `resume-agent` to observe its original submission after a timeout,
-dialog or lost response. Do not rerun `agent` to retry the prompt automatically.
+workers. `drive` resumes its original task and submission, including partially
+applied results. It continues observing ordinary acknowledged wait timeouts and
+returns a blocker for dialogs, uncertain delivery, missing sessions, provider
+failures or invalid evidence. Resolve the blocker deliberately, then `drive`
+again; use `resume-agent` for lower-level observation. Do not rerun `agent` to
+retry the prompt automatically. Completed handoffs persist, so resume does not
+repeat workers; rollback and restart invalidate superseded handoffs.
 Panes stay visible. Missing or stale Codex, Muse or AGY hooks fail preflight and
 are not installed automatically.
 

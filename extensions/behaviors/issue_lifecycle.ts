@@ -1,6 +1,11 @@
 /** Agenda-backed issue development with local Git integration and durable evidence. */
 import { z } from "npm:zod@4.6.7";
 import {
+  createDriveMethod,
+  DriverSchema,
+  HandoffSchema,
+} from "./_lib/issue_driver.ts";
+import {
   agentMethods,
   AgentTaskSchema,
   assertNoPendingAgent,
@@ -95,9 +100,23 @@ function recordedTransition<K extends keyof typeof ActionSchemas>(
 /** Local behavior; the issue's state and every decision are versioned Swamp data. */
 export const behavior = {
   type: "@yinz/issue-lifecycle",
-  version: "2026.11.03.2",
+  version: "2026.11.03.3",
   globalArguments: GlobalArgsSchema,
   resources: {
+    driver: {
+      description:
+        "Selected pane settings and the foreground driver's current assignment",
+      schema: DriverSchema,
+      lifetime: "infinite",
+      garbageCollection: 1000,
+    },
+    handoff: {
+      description:
+        "Human decision or blocker with its exact lifecycle and worker evidence",
+      schema: HandoffSchema,
+      lifetime: "infinite",
+      garbageCollection: 1000,
+    },
     recovery: {
       description:
         "Requested rollback, previous state and assignment, and resumable replacement intent",
@@ -135,6 +154,7 @@ export const behavior = {
     },
   },
   methods: {
+    drive: createDriveMethod(),
     ...agentMethods,
     start: {
       kind: "create",

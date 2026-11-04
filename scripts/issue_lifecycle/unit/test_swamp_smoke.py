@@ -92,13 +92,31 @@ else:
     response["agents"] = [{"pane_id":"terminal_17","session":"smoke","host_id":"smoke-host","tab_id":3,"is_suppressed":False,"target":"Local","agent":{"kind":"claude","session_id":"smoke-conversation","state":"Idle","source":"Reported"},"cwd":state["cwd"],"branch":"main","ready":True,"status_available":True,"prompt_supported":True,"not_ready_reason":None,"readiness":None,"input_revision":None,"clear_draft_supported":False,"background_tasks":[]}]
     assert args[4] == "terminal_17", args
     if operation == "wait":
-        assert args[args.index("--until")+1] == "idle", args
+        if "--until" in args:
+            assert args[args.index("--until")+1] == "idle", args
+        else:
+            assert args[args.index("--submission")+1] == state["submission"], args
+            assert args[args.index("--conversation")+1] == "smoke-conversation"
+            response.update(outcome="completed", acknowledged=True, submission_id=state["submission"], turn_id="smoke-turn", message=json.dumps(state["evidence"]))
     elif operation == "prompt":
         assert args[args.index("--file")+1] == "-"
         assert args[args.index("--conversation")+1] == "smoke-conversation"
         assert "--wait" in args
-        assert "triage" in stdin.lower() or "Investigate the issue" in stdin
-        response.update(outcome="completed", acknowledged=True, submission_id=args[args.index("--submission")+1], turn_id="smoke-turn", message=json.dumps({"classification":"maintenance","summary":"Add a smoke marker; acceptance requires the marker on local main."}))
+        snapshot = json.loads(stdin.split("Current lifecycle snapshot (issue requirements and recorded evidence):\\n\\n", 1)[1])
+        if "Adversarially review the current plan" in stdin:
+            evidence = {"planVersion":snapshot["plan"]["version"], "findings":[]}
+        elif "Develop or revise a concrete implementation plan" in stdin:
+            evidence = {"summary":"Add the disposable fixture marker.","steps":[{"id":"marker","description":"Create marker.txt","files":["marker.txt"]}],"testingStrategy":"Inspect marker contents with focused fixture checks.","assumptions":["The marker is the complete fixture requirement."]}
+        else:
+            assert "Investigate the issue" in stdin
+            evidence = {"classification":"maintenance","summary":"Add a smoke marker; acceptance requires the marker on local main."}
+        state.update(submission=args[args.index("--submission")+1], evidence=evidence)
+        state_file.write_text(json.dumps(state))
+        response.update(outcome="completed", acknowledged=True, submission_id=state["submission"], turn_id="smoke-turn", message=json.dumps(evidence))
+        if os.environ.get("YINZ_SMOKE_TIMEOUT") and "classification" in evidence:
+            response.update(outcome="timed_out", message=None)
+            response["agents"][0]["agent"]["state"] = "Busy"
+            response["agents"][0]["not_ready_reason"] = "unresolved_turn"
     else:
         raise AssertionError("Unexpected Yinz operation: " + operation)
 print(json.dumps(response))
@@ -163,6 +181,32 @@ print(json.dumps(response))
         states = [record for record in records if "issue" in record and "phase" in record]
         self.assertEqual(len(states), 1, document)
         return states[0]
+
+    def test_installed_foreground_planning_handoff_and_resume(self):
+        self.command(["swamp", "workflow", "validate", "yinz-issue-drive", "--json"])
+        self.lifecycle("start")
+        self.env["YINZ_SMOKE_TIMEOUT"] = "1"
+        handoff = json.loads(self.lifecycle("drive", {"agent": {"session": "smoke", "kind": "claude"}}))
+        self.assertEqual(handoff["decision"], "approve_plan")
+        self.assertEqual(handoff["planVersion"], 1)
+        self.assertEqual(handoff["state"]["planReview"], {"planVersion": 1, "findings": []})
+        for label in ("Proposed behavior", "Implementation steps", "Tests:", "Assumptions:", "Plan review findings", "controlling agent must collect and present"):
+            self.assertIn(label, handoff["presentation"])
+        self.assertNotIn("approval", self.state())
+        self.assertNotIn("implementation", self.state())
+        calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
+        self.assertEqual([call["args"][3] for call in calls], ["spawn", "wait", "prompt", "wait", "spawn", "wait", "prompt", "spawn", "wait", "prompt"])
+        prompts = [call for call in calls if call["args"][3] == "prompt"]
+        observed = calls[3]["args"]
+        submitted = prompts[0]["args"]
+        self.assertEqual(observed[observed.index("--submission") + 1], submitted[submitted.index("--submission") + 1])
+        resumed = json.loads(self.lifecycle("drive"))
+        self.assertEqual(resumed["id"], handoff["id"])
+        self.assertEqual(len(self.yinz_log.read_text().splitlines()), len(calls))
+        self.lifecycle("approve", {"planVersion": 1, "request": "Approve this disposable fixture plan"})
+        prepared = json.loads(self.lifecycle("drive"))
+        self.assertEqual(prepared["decision"], "prepare_worktree")
+        self.assertEqual(len(self.yinz_log.read_text().splitlines()), len(calls))
 
     def test_installed_dispatch_agents_rebase_ci_merge_and_agenda_completion(self):
         self.command(["swamp", "workflow", "validate", "yinz-issue-start", "--json"])

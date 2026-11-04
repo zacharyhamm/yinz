@@ -116,19 +116,19 @@ Start and inspect it:
   --item "$AGENDA_ITEM_ID" status
 ```
 
-Start triage in a pane with a JSON input file like this:
+Drive triage, planning and review to the plan-approval handoff with an input file:
 
 ```json
-{ "role": "triage", "session": "your-running-session", "kind": "claude" }
+{ "agent": { "session": "your-running-session", "kind": "claude" } }
 ```
 
 Replace the example session and provider with the intended ones. Pass the file
-to `agent`:
+to `drive`:
 
 ```sh
 "$LIFECYCLE_REPO/scripts/issue-lifecycle" \
   --item "$AGENDA_ITEM_ID" \
-  agent --input-file /absolute/path/to/triage-agent.json
+  drive --input-file /absolute/path/to/drive-settings.json
 ```
 
 Keep evidence files issue-scoped so concurrent work cannot overwrite another
@@ -143,16 +143,49 @@ run` or `swamp help workflow run` and always supply
 
 The repository skill at
 [`.agents/skills/issue-lifecycle/SKILL.md`](../.agents/skills/issue-lifecycle/SKILL.md)
-drives the lifecycle. Use `agent` for triage, planning, plan review,
-implementation and code review. Each task runs in a visible Yinz pane and
+drives the lifecycle. Use `drive` for ordinary start/resume flows and after
+restart or rollback recovery. Each task runs in a visible Yinz pane and
 returns a role-specific JSON object. Swamp validates that result against the
 current issue, plan and commit before importing it as evidence. The controller
 records human authorization and performs deterministic lifecycle operations; it
 does not replace pane workers with headless agents or inline agent work.
 
+`drive` runs in the foreground until it publishes a concrete handoff or blocker.
+The controlling agent must wait for that command, collect the handoff and present
+it before ending its turn. A yielded command, launched pane or workflow ID is
+progress. Waking a controller after its turn or session ends is outside this
+change. The launcher prints readable evidence on stderr and one handoff JSON
+object on stdout. The behavior also logs the readable result and publishes the
+`handoff` resource, including the issue snapshot, plan version or commit,
+assignment identity, decision and supporting evidence.
+
+Before approval, the driver fills in missing triage, planning and plan review.
+Unresolved high/critical plan findings trigger up to three revision attempts per
+invocation, each followed by a fresh review. It then returns `approve_plan` or a
+`blocked` result containing the findings. Approval must be recorded explicitly
+with `approve`. The `prepare_worktree` handoff requires `implement` to create or
+adopt the worktree. After preparation, `drive` runs implementation and code
+review and returns `authorize_merge` with the delivered change, review coverage
+and actual verification results. Code blockers or failed checks return `blocked`
+for repair and fresh review. `ready`, `merge` and `summarize` remain explicit
+operator operations. The driver never infers approval, merge authorization or
+a CI waiver.
+
+Resume with `drive` and no input: the selected session and provider settings and
+current assignment are durable. Pending work resumes its original task and
+submission; ordinary acknowledged wait timeouts keep observing it. Dialogs,
+uncertain delivery, missing sessions, invalid evidence and provider failures
+produce blockers without replacement submissions. Interrupted evidence imports
+reconcile before new work is dispatched. Completed handoffs retain their identity
+across resume; changed state or assignments invalidate them, including restarts
+and rollbacks. A pending rollback must finish through `resume-rollback` first.
+Single-role `agent` and `resume-agent` remain available for deliberate low-level
+control and diagnostics, using their existing inputs.
+
 | Launcher command                | Evidence and effect                                                                                                   |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `start`                         | Read the Agenda issue and establish its workspace/item identity and description snapshot through `yinz-issue-start`.  |
+| `drive`                         | Run missing workers or resume their original submissions through `yinz-issue-drive`, returning a human handoff or blocker. |
 | `status`                        | Inspect the current state before deciding what to do next.                                                            |
 | `refresh`                       | Re-read a changed Agenda description and invalidate planning evidence that no longer covers it.                       |
 | `agent` with role `triage`      | Investigate the issue in a pane and import classification, acceptance criteria and reproduction evidence.             |
@@ -366,7 +399,7 @@ hash.
 | Command               | Input fields                                                                                                                                                                       |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Triage result         | `classification`: `bug`, `feature`, `maintenance`, or `security`; `summary`: investigation and acceptance criteria.                                                                |
-| Plan result           | `summary`; nonempty `steps`, each with unique `id`, `description`, and `files`; `testingStrategy`. Include risks in the relevant description.                                      |
+| Plan result           | `summary`; nonempty `steps`, each with unique `id`, `description`, and `files`; `testingStrategy`; optional `assumptions`. Include risks in the relevant description.              |
 | Plan review result    | `planVersion`; `findings`, each with unique `id`, `severity`, `description`, and optional `resolution`.                                                                            |
 | `approve`             | `planVersion`; `request`: the user's authorization in its actual scope.                                                                                                            |
 | `implement`           | Absolute `worktree` path; `branch`. An existing matching worktree is adopted.                                                                                                      |
@@ -524,7 +557,7 @@ history.
 | A session ends during planning or implementation                          | Resume the recorded phase and existing worktree.                                                                                      |
 | The user requests restart or rollback                                     | Use `rollback` for any step or `restart-agent` for a fresh worker; the request supersedes the old attempt without terminal-outcome proof. |
 | Rollback is interrupted                                                   | Use `resume-rollback`, or supersede the pending recovery with a new explicitly requested rollback.                                     |
-| A pane task timed out or needs input                                      | Inspect its pane, address authorized dialogs deliberately, then use `resume-agent` for the original submission.                       |
+| A pane task timed out or needs input                                      | `drive` observes ordinary acknowledged timeouts; address dialogs deliberately, then `drive` resumes the original submission.            |
 | Launch was rejected without resources, such as for unsupported effort     | Use `discard-agent` with the operator's reason and confirmation, then dispatch a new task with corrected configuration.               |
 | Launch has an uncertain outcome, malformed response or retained resources | Inspect the session and saved response; automatic relaunch and discard remain blocked.                                                |
 | A worker's completed response fails schema validation                     | Inspect the response and worktree; discard only that completed evidence with explicit confirmation before assigning replacement work. |
@@ -558,9 +591,14 @@ python3 -m unittest discover -s scripts/issue_lifecycle/unit -p 'test_swamp_smok
 The latter requires installed Swamp and Agenda commands and uses a disposable
 repository and Agenda data directory.
 
-The focused tests exercise state transitions, Agenda and Yinz adapters, prompt
-correlation, local Git locking and recovery. Agent adapter tests use an injected
-Yinz runner. Integration smoke tests use a fake `cargo` executable to exercise
+The focused tests exercise state transitions, automatic role dispatch and plan
+revisions, human handoffs, timeout observation, interrupted imports, stale
+evidence, restart invalidation, Agenda and Yinz adapters, prompt correlation,
+local Git locking and recovery. Agent adapter tests use an injected Yinz runner.
+The installed Swamp smoke test drives planning through review to a handoff,
+resumes an ordinary timeout on its original submission, and proves that resuming
+the handoff does not submit duplicate prompts. Integration smoke tests use a
+fake `cargo` executable to exercise
 gate ordering and failure recovery without running Yinz's full Rust suites.
 These checks do not establish that a live provider launched or that the full CI
 gate passed for this feature. A separate live smoke check exercised the

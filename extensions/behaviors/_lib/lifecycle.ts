@@ -37,6 +37,7 @@ const PlanContentSchema = z.object({
     "Plan step IDs must be unique",
   ),
   testingStrategy: Text,
+  assumptions: z.array(Text).optional(),
 }).strict();
 export const PlanSchema = PlanContentSchema.extend({
   version: z.number().int().positive(),

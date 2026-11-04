@@ -13,6 +13,7 @@ import {
   type Context,
   gitOperation,
   inspect,
+  invalidateHandoff,
   loadState,
   normalizeReceipt,
   saveState,
@@ -34,7 +35,7 @@ const Role = z.enum([
   "implement",
   "review_code",
 ]);
-const Input = z.object({
+export const AgentInputSchema = z.object({
   role: Role,
   session: z.string().trim().min(1),
   kind: z.enum(["claude", "codex", "muse", "pi", "agy"]),
@@ -44,6 +45,7 @@ const Input = z.object({
   startupTimeoutSeconds: z.number().int().positive().max(3600).default(120),
   timeoutSeconds: z.number().int().positive().max(86400).default(600),
 }).strict();
+const Input = AgentInputSchema;
 
 export const AgentTaskSchema = z.object({
   id: z.uuid(),
@@ -118,7 +120,7 @@ export interface IssueAgentDependencies {
   id: () => string;
   now: () => string;
 }
-const defaultDependencies: IssueAgentDependencies = {
+export const defaultDependencies: IssueAgentDependencies = {
   withIssue,
   readAgenda,
   inspect,
@@ -129,7 +131,7 @@ const defaultDependencies: IssueAgentDependencies = {
   now: () => new Date().toISOString(),
 };
 
-const ImplementationResult = z.object({
+export const ImplementationResult = z.object({
   summary: z.string().trim().min(1),
   commit: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/),
 }).strict();
@@ -163,7 +165,8 @@ async function assertNoPendingRecovery(context: Context) {
   }
 }
 
-function saveTask(context: Context, task: Task) {
+async function saveTask(context: Context, task: Task) {
+  await invalidateHandoff(context);
   return context.writeResource(
     "agent-task",
     "agent-task",
@@ -181,7 +184,7 @@ function taskPrompt(
     triage:
       "Investigate the issue against the source. Reproduce a bug when practical. Return its classification and an evidence-based summary, including acceptance criteria and uncertainties.",
     plan:
-      "Develop or revise a concrete implementation plan from the issue and investigation. Include affected files, risks in step descriptions, and focused development checks. Full cargo x ci check is mandatory later in the merge gate unless the user explicitly waives it.",
+      "Develop or revise a concrete implementation plan from the issue and investigation. Address existing review findings. Include affected files, risks in step descriptions, assumptions, and focused development checks. Full cargo x ci check is mandatory later in the merge gate unless the user explicitly waives it.",
     review_plan:
       "Adversarially review the current plan against the actual code. Return planVersion and every actionable finding. Do not approve the plan or invent resolutions. An empty findings array is appropriate only after a real review found none.",
     implement:
@@ -206,7 +209,7 @@ function taskPrompt(
   ].join("\n\n");
 }
 
-async function childState(context: IssueAgentContext, task: Task) {
+export async function childState(context: IssueAgentContext, task: Task) {
   const bytes = await context.dataRepository.getContent(
     "@yinz/agent",
     task.behaviorName,
@@ -360,7 +363,7 @@ async function applyResult(
   return handles;
 }
 
-async function prepareTask(
+export async function prepareTask(
   context: IssueAgentContext,
   args: z.infer<typeof Input>,
   state: z.infer<typeof StateSchema>,
@@ -445,7 +448,7 @@ async function prepareTask(
   return task;
 }
 
-async function runTask(
+export async function runTask(
   context: IssueAgentContext,
   task: Task,
   dependencies: IssueAgentDependencies,
@@ -624,6 +627,7 @@ async function beginRecovery(
   });
   // Save intent before reopening Agenda or superseding assignments. A failed write
   // is resumed through resume-rollback, never by fabricating successful evidence.
+  await invalidateHandoff(context);
   if (previous?.status === "pending") {
     // A new explicit rollback can replace even an interrupted recovery (for
     // example, requirements changed while Agenda was unavailable).
@@ -637,7 +641,7 @@ async function beginRecovery(
   return finishRecovery(context, recovery, dependencies);
 }
 
-async function resumeTask(
+export async function resumeTask(
   context: IssueAgentContext,
   dependencies: IssueAgentDependencies,
 ) {

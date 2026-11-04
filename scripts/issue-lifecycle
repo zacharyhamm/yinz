@@ -15,7 +15,7 @@ from issue_lifecycle.workspace import agenda_workspace, local_environment
 METHODS = (
     "start", "status", "triage", "plan", "review-plan", "approve", "implement",
     "review-code", "ready", "merge", "repair", "refresh", "summarize", "agent", "resume-agent", "discard-agent",
-    "rollback", "resume-rollback", "restart-agent",
+    "rollback", "resume-rollback", "restart-agent", "drive",
 )
 
 
@@ -55,10 +55,10 @@ def main():
         if inputs:
             parser.error("status takes no method inputs")
         return subprocess.run([
-            "swamp", "data", "query", f"modelName == {json.dumps(name)} && (name == 'state' || name == 'agent-task' || name == 'recovery')",
+            "swamp", "data", "query", f"modelName == {json.dumps(name)} && (name == 'state' || name == 'agent-task' || name == 'recovery' || name == 'driver' || name == 'handoff')",
             "--select", "content", "--json", *tail,
         ], cwd=control, env=env).returncode
-    if args.command in ("start", "merge"):
+    if args.command in ("start", "merge", "drive"):
         workflow = "yinz-issue-" + args.command
         validation = subprocess.run(["swamp", "workflow", "validate", workflow, "--json", *tail], cwd=control, env=env, text=True, capture_output=True)
         if validation.returncode:
@@ -68,15 +68,39 @@ def main():
             if inputs:
                 parser.error("start takes no method inputs")
             inputs = {"workspace": workspace, "itemId": args.item, "issueName": name}
-        else:
+        elif args.command == "merge":
             if set(inputs) - {"skipCiRequest"}:
                 parser.error("merge accepts only skipCiRequest")
             inputs = {"issueName": name, **inputs}
+        else:
+            if set(inputs) - {"agent"}:
+                parser.error("drive accepts only agent settings; omit them to resume")
+            inputs = {"issueName": name, "drive": inputs}
         command = ["swamp", "workflow", "run", workflow, "--stdin", *tail]
     else:
         method = {"agent": "run_agent", "resume-agent": "resume_agent"}.get(args.command, args.command.replace("-", "_"))
         command = ["swamp", "behavior", "run", name, method, "--stdin", *tail]
-    return subprocess.run(command, input=json.dumps(inputs), text=True, cwd=control, env=env).returncode
+    if args.command != "drive":
+        return subprocess.run(command, input=json.dumps(inputs), text=True, cwd=control, env=env).returncode
+    # Keep the controller attached until it has the concrete handoff. Workflow
+    # progress belongs on stderr; stdout is exactly the machine-readable result.
+    result = subprocess.run(command, input=json.dumps(inputs), text=True, cwd=control, env=env, stdout=sys.stderr)
+    if result.returncode:
+        return result.returncode
+    query = subprocess.run([
+        "swamp", "data", "query", f"modelName == {json.dumps(name)} && name == 'handoff'",
+        "--select", "content", "--json", *tail,
+    ], text=True, cwd=control, env=env, capture_output=True)
+    if query.returncode:
+        sys.stderr.write(query.stderr + query.stdout)
+        return query.returncode
+    records = json.loads(query.stdout)["results"]
+    if len(records) != 1 or records[0].get("status") != "current":
+        raise ValueError("drive did not return a current handoff; inspect the exact workflow run")
+    handoff = records[0]
+    print(handoff["presentation"], file=sys.stderr)
+    print(json.dumps(handoff))
+    return 0
 
 
 if __name__ == "__main__":
