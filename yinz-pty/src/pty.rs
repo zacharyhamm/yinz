@@ -551,6 +551,8 @@ pub struct Pty {
     /// Retained for restart commands and for reading argv inside Bubblewrap sandboxes.
     terminal_launch_commands: HashMap<TerminalId, RunCommand>,
     debug_to_file: bool,
+    /// Supplied by the server so snapshot decoding stays outside the PTY dependency boundary.
+    validate_terminal_states: fn(&[&str]) -> Result<()>,
     task_handles: HashMap<TerminalId, JoinHandle<()>>, // terminal_id to join-handle
     reader_controls: HashMap<TerminalId, crate::terminal_bytes::ReaderControl>,
     migration_readers_paused: bool,
@@ -648,12 +650,14 @@ impl Pty {
         debug_to_file: bool,
         default_editor: Option<PathBuf>,
         post_command_discovery_hook: Option<String>,
+        validate_terminal_states: fn(&[&str]) -> Result<()>,
     ) -> Self {
         Pty {
             active_panes: HashMap::new(),
             bus,
             id_to_child_pid: HashMap::new(),
             debug_to_file,
+            validate_terminal_states,
             task_handles: HashMap::new(),
             reader_controls: HashMap::new(),
             migration_readers_paused: false,

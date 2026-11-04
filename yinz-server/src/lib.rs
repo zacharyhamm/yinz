@@ -3075,6 +3075,9 @@ fn init_session(
             cli_assets.is_debug,
             config_options.scrollback_editor.clone(),
             config_options.post_command_discovery_hook.clone(),
+            |states| {
+                yinz_terminal::panes::grid::Grid::validate_terminal_states(states.iter().copied())
+            },
         );
 
         move || pty_thread_main(pty, layout.clone()).fatal()

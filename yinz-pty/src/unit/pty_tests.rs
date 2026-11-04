@@ -601,7 +601,9 @@ fn make_pty_with_plugin_receiver(mock: MockOsApi) -> (Pty, PluginReceiver) {
     let mut bus: Bus<PtyInstruction> = Bus::empty().should_silently_fail();
     bus.os_input = Some(Box::new(mock));
     bus.senders.to_plugin = Some(plugin_sender);
-    let pty = Pty::new(bus, false, None, None);
+    let pty = Pty::new(bus, false, None, None, |states| {
+        yinz_terminal::panes::grid::Grid::validate_terminal_states(states.iter().copied())
+    });
     (pty, plugin_rx)
 }
 
@@ -612,7 +614,9 @@ fn make_pty_with_screen_receiver(mock: MockOsApi) -> (Pty, PluginReceiver, Scree
     bus.os_input = Some(Box::new(mock));
     bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
     bus.senders.to_screen = Some(SenderWithContext::new(screen_tx));
-    let pty = Pty::new(bus, false, None, None);
+    let pty = Pty::new(bus, false, None, None, |states| {
+        yinz_terminal::panes::grid::Grid::validate_terminal_states(states.iter().copied())
+    });
     (pty, plugin_rx, screen_rx)
 }
 
@@ -3952,8 +3956,10 @@ fn a_layout_marks_all_adopted_terminals_even_without_agent_records() {
                 [
                     ScreenInstruction::ApplyLayout(..),
                     ScreenInstruction::PtyBytes(TERMINAL_3, _),
+                    ScreenInstruction::WarpReplayFinished(TERMINAL_3),
                     ScreenInstruction::RequestPaneRedraw(TERMINAL_3),
                     ScreenInstruction::PtyBytes(TERMINAL_41, _),
+                    ScreenInstruction::WarpReplayFinished(TERMINAL_41),
                     ScreenInstruction::RequestPaneRedraw(TERMINAL_41),
                 ]
             ));
@@ -3961,6 +3967,13 @@ fn a_layout_marks_all_adopted_terminals_even_without_agent_records() {
             assert!(!instructions
                 .iter()
                 .any(|instruction| matches!(instruction, ScreenInstruction::RequestPaneRedraw(_))));
+        }
+        for terminal_id in [TERMINAL_3, TERMINAL_41] {
+            assert!(instructions.windows(2).any(|pair| matches!(
+                pair,
+                [ScreenInstruction::PtyBytes(replayed, _), ScreenInstruction::WarpReplayFinished(finished)]
+                    if *replayed == terminal_id && *finished == terminal_id
+            )), "{state} pane must finish replay after its bytes");
         }
         let (tiled, floating, adopted) = instructions
             .into_iter()
@@ -5388,7 +5401,14 @@ fn warp_rejects_invalid_snapshot_before_adopting_any_terminal() {
         .contains("invalid transferred terminal snapshot"));
     assert!(mock.adopted_command.lock().unwrap().is_some());
     assert!(pty.reader_controls.is_empty());
-    assert!(pty.adopt_terminal(&payload.tiled_panes.remove(1)).is_err());
+    assert!(format!(
+        "{:#}",
+        pty.adopt_terminal(&payload.tiled_panes.remove(1))
+            .unwrap_err()
+    )
+    .contains("invalid transferred terminal snapshot"));
+    assert!(mock.adopted_command.lock().unwrap().is_some());
+    assert!(pty.reader_controls.is_empty());
 }
 
 #[test]

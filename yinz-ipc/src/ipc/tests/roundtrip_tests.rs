@@ -4861,6 +4861,15 @@ fn test_client_messages() {
 
 fn test_server_messages() {
     use yinz_types::{session_update, update_client};
+    test_server_roundtrip!(ServerToClientMsg::WarpAdoptionFailed(
+        yinz_types::data::WarpAdoptionFailure {
+            message: "adoption failed".into(),
+            replay: vec![yinz_types::data::WarpReplay {
+                control_socket: "/tmp/pane.sock".into(),
+                buffered: vec![0, 255, 27]
+            }],
+        }
+    ));
     for request in [
         update_client::ClientRequest::Participant(update_client::ParticipantRequest::Prepare {
             operation: "operation".into(),
@@ -6386,15 +6395,6 @@ fn warp_agent_tracking_roundtrip_preserves_provider_evidence() {
 
 #[test]
 fn warp_terminal_state_and_recovery_roundtrip() {
-    test_server_roundtrip!(ServerToClientMsg::WarpAdoptionFailed(
-        yinz_types::data::WarpAdoptionFailure {
-            message: "adoption failed".into(),
-            replay: vec![yinz_types::data::WarpReplay {
-                control_socket: "/tmp/pane.sock".into(),
-                buffered: vec![0, 255, 27]
-            }],
-        }
-    ));
     let pane = yinz_types::data::WarpedPane {
         terminal_state: Some(r#"{"format":2,"state":"alternate"}"#.into()),
         ..Default::default()

@@ -244,6 +244,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "yinz-session",
             "yinz-bus",
             "yinz-test-support",
+            "yinz-terminal",
         ],
     ),
     ("project-data", &["yinz-tile", "yinz-storage"]),
@@ -254,6 +255,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
 /// generated code to build. The screen's tests drive it with parsed CLI actions and the pty's tests
 /// assert on IPC messages and recorded events and wait with test-support's timeouts, but neither
 /// thread names those crates otherwise.
+/// The PTY tests construct snapshots and exercise the injected real terminal validator.
 /// The tab's tests parse KDL layouts, stand up client IPC channels, and warm clipboard helpers.
 /// Builtin disk lookup uses the runtime name list; only its evaluator and config tests
 /// need the interpreter and configuration crates.
@@ -265,7 +267,12 @@ const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("yinz-screen", &["yinz-cli", "yinz-test-support"]),
     (
         "yinz-pty",
-        &["yinz-ipc", "yinz-storage", "yinz-test-support"],
+        &[
+            "yinz-ipc",
+            "yinz-storage",
+            "yinz-test-support",
+            "yinz-terminal",
+        ],
     ),
     (
         "yinz-tab",

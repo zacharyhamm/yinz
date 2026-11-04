@@ -186,7 +186,10 @@ impl Pty {
     /// calls is identical, which is the point — the pane that arrives is an
     /// ordinary pane either way.
     pub(crate) fn adopt_terminal(&mut self, pane: &WarpedPane) -> Result<AdoptedPane> {
-        validate_terminal_state(pane)?;
+        if let Some(state) = pane.terminal_state.as_deref() {
+            (self.validate_terminal_states)(&[state])
+                .context("invalid transferred terminal snapshot; adoption refused")?;
+        }
         self.adopt_terminal_with_id(pane, None)
     }
 
@@ -329,12 +332,13 @@ impl Pty {
         payload
             .validate_relationships()
             .map_err(|e| anyhow!("{e}"))?;
-        yinz_terminal::panes::grid::Grid::validate_terminal_states(
-            payload
+        (self.validate_terminal_states)(
+            &payload
                 .tiled_panes
                 .iter()
                 .chain(&payload.floating_panes)
-                .filter_map(|pane| pane.terminal_state.as_deref()),
+                .filter_map(|pane| pane.terminal_state.as_deref())
+                .collect::<Vec<_>>(),
         )
         .context("invalid transferred terminal snapshot; adoption refused")?;
         let mut tiled = vec![];
@@ -781,12 +785,4 @@ pub(super) fn warp_restart_command(pty: &Pty, terminal_id: TerminalId) -> RunCom
         cwd: pty.terminal_cwds.get(&terminal_id).cloned(),
         ..Default::default()
     }
-}
-
-fn validate_terminal_state(pane: &WarpedPane) -> Result<()> {
-    if let Some(state) = &pane.terminal_state {
-        yinz_terminal::panes::grid::Grid::validate_terminal_state(state)
-            .context("invalid transferred terminal snapshot; adoption refused")?;
-    }
-    Ok(())
 }
