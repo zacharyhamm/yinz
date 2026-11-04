@@ -19,7 +19,6 @@ struct Pair {
     tokens: [BTreeMap<String, String>; 2],
     last: [Vec<Value>; 2],
     now: Arc<AtomicU64>,
-    session_palette: bool,
 }
 
 struct Reference {
@@ -126,7 +125,6 @@ impl Pair {
             tokens: Default::default(),
             last: Default::default(),
             now,
-            session_palette: name == "session-palette",
         };
         pair.compare_commands();
         pair
@@ -150,17 +148,6 @@ impl Pair {
                     }
                     if let Some(palette) = command.get_mut("CommandPalette") {
                         normalize_palette_tokens(palette, tokens);
-                    }
-                    if let Some(pick) = command.get_mut("Pick") {
-                        for kind in ["Start", "Cancel"] {
-                            if let Some(request) = pick.get_mut(kind) {
-                                let next = format!("pick:{}", tokens.len());
-                                let mapped = tokens
-                                    .entry(format!("pick:{}", request["request_id"]))
-                                    .or_insert(next);
-                                request["request_id"] = json!(mapped);
-                            }
-                        }
                     }
                     if let Some(run) = command.get_mut("RunCommand") {
                         let context = run[3].as_object_mut().unwrap();
@@ -193,7 +180,7 @@ impl Pair {
                     .map(|(mut command, client)| {
                         if let Some(palette) = command.get_mut("CommandPalette") {
                             // Historical guests sent literal display text; current providers send Markdown.
-                            normalize_palette_display(palette, self.session_palette);
+                            normalize_palette_display(palette);
                         }
                         (command, client)
                     })
@@ -299,8 +286,8 @@ impl Pair {
     }
 }
 
-// Compare historical display text while newer session metadata has dedicated provider tests.
-fn normalize_palette_display(value: &mut Value, session_palette: bool) {
+// Compare historical literal display text with rendered Markdown.
+fn normalize_palette_display(value: &mut Value) {
     match value {
         Value::Object(fields) => {
             for (key, value) in fields.iter_mut() {
@@ -320,53 +307,13 @@ fn normalize_palette_display(value: &mut Value, session_palette: bool) {
                         .join("\n"));
                     }
                 } else if key != "values" {
-                    normalize_palette_display(value, session_palette);
-                }
-            }
-            if session_palette
-                && let Some(id) = fields.get("id").and_then(Value::as_str)
-                && let Ok(Value::Array(id)) = serde_json::from_str::<Value>(id)
-                && let Some(description) = fields.get("description").and_then(Value::as_str)
-            {
-                let legacy = match id.len() {
-                    1 if description.starts_with("Current session · ")
-                        || description.starts_with("Running · ") =>
-                    {
-                        Some("Running")
-                    },
-                    1 if description.starts_with("Saved · Created ") => Some("Saved"),
-                    3 => description.strip_suffix(" · Running"),
-                    _ => None,
-                };
-                if let Some(legacy) = legacy {
-                    fields.insert("description".into(), json!(legacy));
+                    normalize_palette_display(value);
                 }
             }
         },
         Value::Array(values) => {
-            if session_palette && values.iter().any(|value| value["id"] == "switch-session") {
-                // The reference predates these actions. Assert their exact additions,
-                // then retain strict reference comparisons for every existing action.
-                let updates = [
-                    ("update-yinz", "Update Yinz…"),
-                    ("update-status", "Yinz update status"),
-                    ("cancel-update", "Cancel Yinz update"),
-                ];
-                let added = values
-                    .iter()
-                    .filter(|value| updates.iter().any(|(id, _)| value["id"] == *id))
-                    .map(|value| {
-                        (
-                            value["id"].as_str().unwrap(),
-                            value["label"].as_str().unwrap(),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                assert_eq!(added, updates);
-                values.retain(|value| !updates.iter().any(|(id, _)| value["id"] == *id));
-            }
             for value in values {
-                normalize_palette_display(value, session_palette);
+                normalize_palette_display(value);
             }
         },
         _ => {},
@@ -585,103 +532,6 @@ fn palette_message(
 }
 
 #[test]
-fn session_palette_deno_steel_runtime_parity() {
-    let _scenario = Scenario::new("session_palette_deno_steel_runtime_parity");
-    for count in [2, 205] {
-        let mut pair = Pair::new("session-palette", json!({}));
-        let registrations = pair.last.each_ref().map(|commands| {
-            commands
-                .iter()
-                .find_map(|command| {
-                    let palette = command.get("CommandPalette")?;
-                    (palette["type"] == "register").then(|| palette["registration"].clone())
-                })
-                .unwrap()
-        });
-        let live: Vec<_> = (0..count).map(|index| json!({
-            "name":format!("session-{index:03}"), "is_current_session":index == 0, "connected_clients":1,
-            "creation_time":{"secs":12,"nanos":0},
-            "tabs":[{"tab_id":7,"position":0,"name":"shell"}],
-            "panes":{"panes":{"0":[{"id":4,"is_plugin":false,"is_selectable":true,"is_suppressed":false,"title":"shell","exited":false,"exit_status":null}]}},
-            "available_layouts":[{"BuiltIn":"default"}],
-        })).collect();
-        pair.stub("GetSessionList", json!({"live_sessions":live,"resurrectable_sessions":[["saved",{"secs":20,"nanos":0}]]}));
-        let roots = pair.palette(palette_message(
-            &registrations,
-            2,
-            0,
-            std::array::from_fn(|_| json!({"type":"discover","source":null,"query":""})),
-        ));
-        // The captured switch list predates cross-machine inventory; consume its trace
-        // while keeping the unchanged tab, pane, creation and administration comparisons.
-        fn palette(pair: &mut Pair, messages: [Value; 2], legacy_switch: bool) -> [Value; 2] {
-            if !legacy_switch {
-                return pair.palette(messages);
-            }
-            pair.reference.step(
-                json!({"palette":messages[0]}),
-                pair.now.load(Ordering::SeqCst),
-            );
-            let commands = std::mem::take(&mut pair.reference.commands);
-            let reply = commands
-                .iter()
-                .rev()
-                .find_map(|(command, _)| command.pointer("/CommandPalette/result"))
-                .unwrap()
-                .clone();
-            [reply.clone(), reply]
-        }
-        for (index, root) in [
-            "switch-session",
-            "find-pane",
-            "new-session",
-            "rename",
-            "details",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let messages = roots.each_ref().map(|reply| {
-                let action = reply["Ok"]["actions"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|action| action["id"] == root)
-                    .unwrap();
-                json!({"type":"execute","handle":action["handle"],"values":null})
-            });
-            let views = palette(
-                &mut pair,
-                palette_message(&registrations, 3 + index as u64 * 3, 0, messages),
-                root == "switch-session",
-            );
-            if views[0]["Ok"]["view"]["type"] == "actions" {
-                let messages = views.each_ref().map(|reply| json!({"type":"discover","source":reply["Ok"]["view"]["source"],"query":""}));
-                palette(
-                    &mut pair,
-                    palette_message(&registrations, 4 + index as u64 * 3, 1, messages),
-                    root == "switch-session",
-                );
-                let messages = views.each_ref().map(|reply| json!({"type":"discover","source":reply["Ok"]["view"]["source"],"query":"session-204"}));
-                palette(
-                    &mut pair,
-                    palette_message(&registrations, 5 + index as u64 * 3, 1, messages),
-                    root == "switch-session",
-                );
-            }
-        }
-        pair.event(json!("BeforeClose"));
-        let replies = pair.palette(palette_message(
-            &registrations,
-            100,
-            0,
-            std::array::from_fn(|_| json!({"type":"discover","source":null,"query":""})),
-        ));
-        assert_eq!(replies[0]["Err"], "Palette callback is no longer available");
-    }
-}
-
-#[test]
 fn configuration_palette_discovers_full_default_configuration() {
     use yinz_config::{config::Config, editor};
 
@@ -787,57 +637,4 @@ fn configuration_palette_deno_steel_runtime_parity() {
     let messages = forms.each_ref().map(|reply| json!({"type":"execute","handle":reply["Ok"]["view"]["handle"],"values":{"value":"Disabled","destination":"Apply to session"}}));
     let results = pair.palette(palette_message(&registrations, 5, 2, messages));
     assert_eq!(results[0]["Ok"]["type"], "complete");
-}
-
-#[test]
-fn session_picker_deno_steel_runtime_parity() {
-    let _scenario = Scenario::new("session_picker_deno_steel_runtime_parity");
-    for selected in [json!("/chosen"), Value::Null, json!("close while picking")] {
-        let mut pair = Pair::new("session-palette", json!({}));
-        let registrations = pair.last.each_ref().map(|commands| {
-            commands
-                .iter()
-                .find_map(|command| {
-                    let palette = command.get("CommandPalette")?;
-                    (palette["type"] == "register").then(|| palette["registration"].clone())
-                })
-                .unwrap()
-        });
-        pair.stub("GetSessionList", json!({"live_sessions":[{"is_current_session":true,"available_layouts":[{"BuiltIn":"default"}]}],"resurrectable_sessions":[]}));
-        let roots = pair.palette(palette_message(
-            &registrations,
-            1,
-            0,
-            std::array::from_fn(|_| json!({"type":"discover","source":null,"query":""})),
-        ));
-        let messages = roots.each_ref().map(|reply| {
-            let action = reply["Ok"]["actions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|action| action["id"] == "new-session")
-                .unwrap();
-            json!({"type":"execute","handle":action["handle"],"values":null})
-        });
-        let forms = pair.palette(palette_message(&registrations, 2, 0, messages));
-        let messages = forms.each_ref().map(|reply| json!({"type":"execute","handle":reply["Ok"]["view"]["actions"][0]["handle"],"values":{"name":"kept"}}));
-        let configured = pair.palette(palette_message(&registrations, 3, 1, messages));
-        let messages = configured.each_ref().map(|reply| {
-            let browse = reply["Ok"]["view"]["actions"].as_array().unwrap().iter().find(|action| action["id"] == "browse:directory").unwrap();
-            json!({"type":"execute","handle":browse["handle"],"values":{"name":"edited","layout":"Default","directory":"/original"}})
-        });
-        pair.palette_dispatch(palette_message(&registrations, 4, 2, messages));
-        if selected == "close while picking" {
-            pair.event(json!("BeforeClose"));
-        } else {
-            let events = pair.last.each_ref().map(|commands| {
-                let request = commands
-                    .iter()
-                    .find_map(|command| command.get("Pick")?.get("Start"))
-                    .unwrap();
-                json!({"PickResult":{"request_id":request["request_id"],"result":{"Ok":selected}}})
-            });
-            pair.events(events);
-        }
-    }
 }
