@@ -1587,6 +1587,8 @@ pub struct CliAssets {
     pub update_configuration: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="20")]
     pub update_layout: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, tag="21")]
+    pub supports_source_update: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

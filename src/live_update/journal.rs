@@ -49,6 +49,8 @@ pub struct RemoteHelper {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Journal {
     pub format: u32,
+    #[serde(default)]
+    pub source_build: bool,
     pub operation: String,
     pub phase: Phase,
     pub source_socket: PathBuf,
@@ -91,6 +93,15 @@ pub struct Store {
 
 impl Store {
     pub fn open(socket: &Path, data_dir: &Path, operation: &str) -> Result<Self> {
+        Self::open_with_source(socket, data_dir, operation, false)
+    }
+
+    pub fn open_with_source(
+        socket: &Path,
+        data_dir: &Path,
+        operation: &str,
+        source_build: bool,
+    ) -> Result<Self> {
         use std::os::unix::fs::OpenOptionsExt;
         uuid::Uuid::parse_str(operation).context("invalid update operation id")?;
         let root = data_dir.join("updates");
@@ -162,6 +173,7 @@ impl Store {
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Journal {
                 format: 1,
+                source_build,
                 operation: actual_operation.clone(),
                 phase: Phase::Discover,
                 source_socket: socket.clone(),

@@ -444,6 +444,7 @@ impl<'a> Sessions<'a> {
                     CliAssets {
                         supports_session_requests: true,
                         supports_in_place_update: true,
+                        supports_source_update: true,
                         ..Default::default()
                     }
                 };

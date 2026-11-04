@@ -132,3 +132,35 @@ fn cancellation_is_durable_but_does_not_change_the_recorded_ownership_phase() {
     assert!(retry.phase(Phase::Transfer).is_err());
     assert_eq!(retry.journal.phase, Phase::Prepare);
 }
+
+#[test]
+fn retry_before_inventory_preserves_the_original_release_or_source_mode() {
+    for source_build in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("session");
+        let data = root.path().join("data");
+        let operation = uuid::Uuid::new_v4().to_string();
+        let original = Store::open_with_source(&socket, &data, &operation, source_build).unwrap();
+        assert_eq!(original.journal.phase, Phase::Discover);
+        assert!(original.journal.source.is_none());
+        drop(original);
+        // Simulate a coordinator crash before the first server inventory. The
+        // opposite palette action must resume this operation without changing
+        // its artifact source, even though no release or inventory exists yet.
+        let retry = Store::open_with_source(
+            &socket,
+            &data,
+            &uuid::Uuid::new_v4().to_string(),
+            !source_build,
+        )
+        .unwrap();
+        assert_eq!(retry.journal.operation, operation);
+        assert_eq!(retry.journal.source_build, source_build);
+        assert!(retry.journal.release.is_none());
+        assert!(retry.journal.source.is_none());
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(retry.directory.join("journal.json")).unwrap())
+                .unwrap();
+        assert_eq!(stored["source_build"], source_build);
+    }
+}

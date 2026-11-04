@@ -284,11 +284,30 @@ pub fn remote_participant(
     .map_err(anyhow::Error::msg)
 }
 
+pub fn remote_target(host: &str, env: &yinz_types::envs::EnvironmentVariables) -> Result<String> {
+    let mut command =
+        yinz_client::remote_sessions::ssh_command(host, &["sh", "-c", "uname -s; uname -m"], env)?;
+    let output = yinz_process::ssh::bootstrap_output(&mut command, Duration::from_secs(30), None)
+        .context("inventory source-update SSH platform")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "could not inventory source-update host {host}"
+    );
+    let text = std::str::from_utf8(&output.stdout).context("decode SSH platform")?;
+    let fields: Vec<_> = text.lines().collect();
+    match fields.as_slice() {
+        ["Linux", "x86_64"] => Ok("x86_64-unknown-linux-gnu".into()),
+        ["Linux", "aarch64"] => Ok("aarch64-unknown-linux-gnu".into()),
+        _ => bail!("source updates require Linux x86_64 or aarch64 on SSH host {host}"),
+    }
+}
+
 pub fn bootstrap_remote(
     host: &str,
     release: &update::Release,
     env: &yinz_types::envs::EnvironmentVariables,
     operation: &str,
+    source_directory: Option<&Path>,
     mut record: impl FnMut(&Path) -> Result<()>,
 ) -> Result<(PathBuf, PathBuf, PathBuf)> {
     uuid::Uuid::parse_str(operation).context("invalid remote update operation")?;
@@ -325,13 +344,22 @@ pub fn bootstrap_remote(
         "invalid SSH update paths"
     );
     record(&directory)?;
-    let client = http_client()?;
-    let prepared = update::prepare_artifact(
-        release,
-        update::target(os, arch)?,
-        &mut |url, output| update::download(&client, url, output),
-        &mut |_| {},
-    )?;
+    let prepared = if release.source.is_some() {
+        let directory = source_directory.context("missing pinned source artifact directory")?;
+        let data_dir = directory
+            .parent()
+            .and_then(Path::parent)
+            .context("source artifact data directory")?;
+        artifacts::prepare_artifact(release, update::target(os, arch)?, data_dir, operation)?
+    } else {
+        let client = http_client()?;
+        update::prepare_artifact(
+            release,
+            update::target(os, arch)?,
+            &mut |url, output| update::download(&client, url, output),
+            &mut |_| {},
+        )?
+    };
     let mut archive = tempfile::tempfile().context("stage SSH update helper")?;
     {
         let mut builder = tar::Builder::new(&mut archive);
@@ -376,6 +404,18 @@ pub fn bootstrap_remote(
             && caps.migration == capabilities().migration,
         "incompatible remote update helper"
     );
+    if let Some(source) = &release.source {
+        let artifact = source
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.target == update::target(os, arch).unwrap_or(""))
+            .context("missing remote source artifact")?;
+        anyhow::ensure!(
+            caps.source_update
+                && caps.source_binary_sha256.as_deref() == Some(&artifact.binary_sha256),
+            "remote helper cannot attest the pinned source identity"
+        );
+    }
     Ok((executable, directory, helper))
 }
 

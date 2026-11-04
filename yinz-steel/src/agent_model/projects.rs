@@ -116,6 +116,10 @@ pub(super) fn run(op: &str, input: Value) -> Result<Value> {
                 json!({"is_checkout": repository.is_checkout(), "checkout_name": repository.checkout_name()}),
             )
         },
+        "SourceUpdateProject" => {
+            let (project,): (projects::Project,) = args(input)?;
+            value(projects::source_update_project(&project))
+        },
         "OriginIdentity" => {
             let (origin,): (String,) = args(input)?;
             value(projects::origin_identity(&origin))

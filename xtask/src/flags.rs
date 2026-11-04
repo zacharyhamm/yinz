@@ -41,6 +41,11 @@ xflags::xflags! {
 
         cmd proto {}
 
+        /// Build a Linux source-update archive with Zig (requires installed toolchains).
+        cmd source-build {
+            required target: String
+        }
+
         /// Sequentially call: format, build, test
         cmd make {
             /// Build in release mode without debug symbols
@@ -149,6 +154,7 @@ pub enum XtaskCmd {
     Deprecated(Deprecated),
     Ci(Ci),
     Proto(Proto),
+    SourceBuild(SourceBuild),
     Make(Make),
     Install(Install),
     Run(Run),
@@ -202,6 +208,11 @@ pub struct BuildRelease;
 pub struct Proto;
 
 #[derive(Debug)]
+pub struct SourceBuild {
+    pub target: String,
+}
+
+#[derive(Debug)]
 pub struct Make {
     pub release: bool,
     pub clean: bool,
@@ -209,10 +220,10 @@ pub struct Make {
 
 #[derive(Debug)]
 pub struct Install {
-    pub data_dir: Option<PathBuf>,
     pub destination: PathBuf,
     pub args: Vec<OsString>,
 
+    pub data_dir: Option<PathBuf>,
     pub profile: Option<String>,
     pub low_memory: bool,
 }

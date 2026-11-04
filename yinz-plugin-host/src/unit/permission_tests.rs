@@ -32,6 +32,21 @@ use yinz_types::input::layout::{Layout, Run, RunPluginOrAlias};
 use yinz_types::internal_ids::{PluginId, TerminalId};
 
 #[test]
+fn source_session_update_requires_run_commands_permission() {
+    let env = crate::test_env::test_env();
+    let command = PluginCommand::UpdateYinzFromSource;
+    assert_eq!(
+        check_command_permission(&env, &command),
+        (PermissionStatus::Denied, Some(PermissionType::RunCommands))
+    );
+    *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::RunCommands]));
+    assert_eq!(
+        check_command_permission(&env, &command),
+        (PermissionStatus::Granted, None)
+    );
+}
+
+#[test]
 fn provider_usage_requires_agent_control_permission() {
     let env = crate::test_env::test_env();
     let command = PluginCommand::AgentControl {

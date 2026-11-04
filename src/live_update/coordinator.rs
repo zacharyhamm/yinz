@@ -114,7 +114,11 @@ pub(super) fn resume_client(
             )
             .context("decode pinned recovery release")?;
             anyhow::ensure!(update::version(&actual.installed_version)? == update::version(&release.tag_name)?, "selected client's installed executable is not the pinned release; repair that installation before retrying");
-            anyhow::ensure!(update::version(&actual.running_version)? <= update::version(&release.tag_name)?, "selected client is running a newer release; refusing to downgrade it during recovery");
+            anyhow::ensure!(release.source.is_some() || update::version(&actual.running_version)? <= update::version(&release.tag_name)?, "selected client is running a newer release; refusing to downgrade it during recovery");
+            anyhow::ensure!(
+                release.source.is_none() || attached.supports_source_update,
+                "selected recovery client does not support source updates"
+            );
             let migration = store
                 .journal
                 .migration
@@ -222,8 +226,18 @@ pub(super) fn resume_client(
     result
 }
 
+#[cfg(test)]
 pub fn run(socket: &Path, data_dir: &Path, operation: &str) -> Result<()> {
-    let mut store = Store::open(socket, data_dir, operation)?;
+    run_with_source(socket, data_dir, operation, false)
+}
+
+pub fn run_with_source(
+    socket: &Path,
+    data_dir: &Path,
+    operation: &str,
+    source_build: bool,
+) -> Result<()> {
+    let mut store = Store::open_with_source(socket, data_dir, operation, source_build)?;
     if matches!(
         store.journal.phase,
         Phase::Complete | Phase::Failed | Phase::Cancelled
@@ -301,12 +315,199 @@ fn execute(store: &mut Store, source: &mut Connection) -> Result<()> {
     source.request(
         &operation,
         Command::Notify {
-            text: "Checking the latest stable Yinz release…".into(),
+            text: if store.journal.source_build {
+                "Preparing a pinned build of local main…"
+            } else {
+                "Checking the latest stable Yinz release…"
+            }
+            .into(),
         },
     )?;
+    if store.journal.source_build {
+        let release = match build_source_release(store, source, &inventory) {
+            Ok(release) => release,
+            Err(error) => {
+                let build = store.directory.join("source");
+                let failed = std::fs::read(build.join("result.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                    .is_some_and(|result| result["success"] == false);
+                if store.cancel_requested() {
+                    store.phase(Phase::Cancelled)?;
+                } else if failed || !build.join("launch.json").exists() {
+                    store.phase(Phase::Failed)?;
+                }
+                return Err(error);
+            },
+        };
+        let inventory: Inventory =
+            serde_json::from_value(source.request(&operation, Command::Inventory)?)
+                .context("refresh participants after source compilation")?;
+        return execute_release(store, source, inventory, release);
+    }
     let http = http_client()?;
     let release = update::discover(&mut |url, out| update::download(&http, url, out))?;
     execute_release(store, source, inventory, release)
+}
+
+fn build_source_release(
+    store: &mut Store,
+    source: &mut Connection,
+    inventory: &Inventory,
+) -> Result<update::Release> {
+    use yinz_types::update_client::SourceArtifact;
+    let operation = store.journal.operation.clone();
+    let mut targets = std::collections::BTreeSet::new();
+    let server = self::inventory(
+        &inventory.executable,
+        inventory
+            .assets
+            .data_dir
+            .as_deref()
+            .unwrap_or(&yinz_runtime::home::get_default_data_dir()),
+    )?;
+    targets.insert(server.target);
+    for client in &inventory.clients {
+        anyhow::ensure!(
+            client.supports_update && client.supports_source_update,
+            "client {} must be upgraded before a source update",
+            client.id
+        );
+        let installation: Installation = serde_json::from_value(client_participant(
+            source,
+            &operation,
+            client.id,
+            ParticipantRequest::Inventory,
+        )?)
+        .context("inventory source-update client")?;
+        anyhow::ensure!(
+            installation.capabilities.source_update,
+            "client {} does not support source artifacts; upgrade it first",
+            client.id
+        );
+        targets.insert(installation.target);
+    }
+    let migration: yinz_types::session_migration::SessionMigrationInventory =
+        serde_json::from_value(source.request(&operation, Command::PrepareMigration)?)
+            .context("preflight source update terminals")?;
+    let config = decode_configuration(&inventory.configuration)?;
+    for host in &migration.remote_hosts {
+        targets.insert(transport::remote_target(host, &config.env)?);
+    }
+    anyhow::ensure!(
+        targets.iter().all(|target| matches!(
+            target.as_str(),
+            "x86_64-unknown-linux-gnu" | "aarch64-unknown-linux-gnu"
+        )),
+        "source updates require Linux x86_64 or aarch64 on every participant"
+    );
+    check_cancel(store)?;
+    let build = source_build::build(store, inventory, &targets.into_iter().collect::<Vec<_>>())?;
+    let data_dir = store
+        .directory
+        .parent()
+        .and_then(Path::parent)
+        .context("update data directory")?;
+    let mut artifacts = Vec::new();
+    for (target, path) in &build.artifacts {
+        check_cancel(store)?;
+        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(
+            std::fs::File::open(path).context("open source package")?,
+        ));
+        let mut binary_hash = None;
+        for entry in archive.entries().context("read source package")? {
+            let mut entry = entry.context("read source package entry")?;
+            if entry.path().context("read source package path")? == Path::new("yinz") {
+                use sha2::{Digest, Sha256};
+                let mut hash = Sha256::new();
+                let mut bytes = [0; 65536];
+                loop {
+                    let count = entry.read(&mut bytes).context("hash source executable")?;
+                    if count == 0 {
+                        break;
+                    }
+                    hash.update(&bytes[..count]);
+                }
+                anyhow::ensure!(binary_hash.is_none(), "duplicate source executable");
+                binary_hash = Some(update::hex(&hash.finalize()));
+            }
+        }
+        let archive_hash = artifacts::digest_file(path)?;
+        anyhow::ensure!(
+            build.sha256.get(target) == Some(&archive_hash),
+            "pinned source archive changed after build completion"
+        );
+        let artifact = SourceArtifact {
+            target: target.clone(),
+            sha256: archive_hash,
+            size: std::fs::metadata(path)
+                .context("measure source archive")?
+                .len(),
+            binary_sha256: binary_hash.context("source archive has no executable")?,
+        };
+        let mut input = std::fs::File::open(path).context("open pinned source archive")?;
+        artifacts::stage_local(data_dir, &operation, &artifact, &mut input)?;
+        artifacts.push(artifact);
+    }
+    Ok(update::Release {
+        tag_name: build.version,
+        assets: Vec::new(),
+        source: Some(update::SourceRelease {
+            commit: build.commit,
+            artifacts,
+        }),
+    })
+}
+
+fn transfer_source_artifact(
+    store: &Store,
+    source: &mut Connection,
+    index: usize,
+    artifact: &yinz_types::update_client::SourceArtifact,
+) -> Result<()> {
+    let path = store
+        .directory
+        .join("source-artifacts")
+        .join(format!("{}.tar.gz", artifact.target));
+    anyhow::ensure!(
+        artifacts::digest_file(&path)? == artifact.sha256,
+        "pinned source artifact changed"
+    );
+    let mut file = std::fs::File::open(path).context("open source artifact for transfer")?;
+    let mut offset = 0;
+    let mut buffer = [0; 65536];
+    loop {
+        check_cancel(store)?;
+        let count = file
+            .read(&mut buffer)
+            .context("read source artifact chunk")?;
+        if count == 0 {
+            break;
+        }
+        let reply = participant(
+            source,
+            &store.journal,
+            index,
+            ParticipantRequest::SourceChunk {
+                operation: store.journal.operation.clone(),
+                artifact: artifact.clone(),
+                offset,
+                bytes: buffer[..count].to_vec(),
+            },
+        )?;
+        let acknowledged = reply["offset"]
+            .as_u64()
+            .context("missing source transfer offset")?;
+        anyhow::ensure!(
+            acknowledged >= offset + count as u64 && acknowledged <= artifact.size,
+            "source artifact acknowledgement offset mismatch"
+        );
+        std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(acknowledged))
+            .context("resume source transfer")?;
+        offset = acknowledged;
+    }
+    anyhow::ensure!(offset == artifact.size, "source artifact length changed");
+    Ok(())
 }
 
 /// The release is resolved exactly once, before any participant is prepared.
@@ -321,7 +522,7 @@ pub(super) fn execute_release(
     store.save()?;
     let target = update::version(&release.tag_name)?;
     anyhow::ensure!(
-        update::version(&inventory.running_version)? <= target,
+        release.source.is_some() || update::version(&inventory.running_version)? <= target,
         "source server is newer than the selected stable release; refusing downgrade"
     );
     store.journal.release = Some(serde_json::to_value(&release).context("record pinned release")?);
@@ -348,6 +549,11 @@ pub(super) fn execute_release(
         });
         store.save()?;
         for client in &inventory.clients {
+            anyhow::ensure!(
+                release.source.is_none() || client.supports_source_update,
+                "client {} does not support source updates; no installation was published",
+                client.id
+            );
             if !client.supports_update {
                 store.journal.restart_required.push(client.id);
                 store.save()?;
@@ -383,12 +589,13 @@ pub(super) fn execute_release(
             .context("missing migration inventory")?
             .remote_hosts
             .clone();
-        let mut already_current = store.journal.participants.iter().all(|participant| {
-            update::version(&participant.installation.running_version)
-                .is_ok_and(|running| running >= target)
-                && update::version(&participant.installation.installed_version)
-                    .is_ok_and(|installed| installed >= target)
-        });
+        let mut already_current = release.source.is_none()
+            && store.journal.participants.iter().all(|participant| {
+                update::version(&participant.installation.running_version)
+                    .is_ok_and(|running| running >= target)
+                    && update::version(&participant.installation.installed_version)
+                        .is_ok_and(|installed| installed >= target)
+            });
         if already_current {
             for host in &hosts {
                 let mut command = yinz_client::remote_sessions::ssh_command(
@@ -426,6 +633,7 @@ pub(super) fn execute_release(
                 &release,
                 &config.env,
                 &operation,
+                Some(&store.directory.clone()),
                 |directory| {
                     store.journal.remote_helpers.push(journal::RemoteHelper {
                         host: host.clone(),
@@ -469,6 +677,25 @@ pub(super) fn execute_release(
         )?;
         for index in unique_participants(&store.journal) {
             check_cancel(store)?;
+            if let Some(source_release) = &release.source {
+                anyhow::ensure!(
+                    store.journal.participants[index]
+                        .installation
+                        .capabilities
+                        .source_update,
+                    "participant does not support source artifacts; update it first"
+                );
+                let artifact = source_release
+                    .artifacts
+                    .iter()
+                    .find(|artifact| {
+                        artifact.target == store.journal.participants[index].installation.target
+                    })
+                    .context(
+                        "a participant requires an unbuilt source target; retry a new update",
+                    )?;
+                transfer_source_artifact(store, source, index, artifact)?;
+            }
             set_installation_state(&mut store.journal, index, "preparing");
             store.save()?;
             participant(
@@ -960,6 +1187,7 @@ fn initialize_replacement(store: &Store, connection: &mut Connection) -> Result<
     assets.update_target = Some(store.journal.operation.clone());
     assets.update_source_session = Some(source.session.clone().into());
     assets.supports_in_place_update = false;
+    assets.supports_source_update = false;
     connection.initialize(assets)?;
     let ready: Inventory =
         serde_json::from_value(connection.request(&store.journal.operation, Command::Inventory)?)
@@ -1220,6 +1448,7 @@ fn initialize_recovery_source(store: &Store, source: &mut Connection) -> Result<
         assets.update_target = Some(operation.clone());
         assets.update_source_session = Some(original.session.clone().into());
         assets.supports_in_place_update = false;
+        assets.supports_source_update = false;
         source.initialize(assets)?;
     }
     let initialized: Inventory =
@@ -1503,20 +1732,57 @@ fn same_installation(a: &Installation, b: &Installation) -> bool {
 }
 
 pub(super) fn manual_commit_matches(
-    target: &semver::Version,
+    release: &update::Release,
     expected: &Installation,
     attached: &Installation,
+    supports_source_update: bool,
 ) -> Result<bool> {
     if !same_installation(expected, attached) {
         return Ok(false);
     }
+    if let Some(source) = &release.source {
+        anyhow::ensure!(
+            supports_source_update && attached.capabilities.source_update,
+            "an attached client of {} cannot attest its source identity; its installation backup is retained",
+            attached.executable.display()
+        );
+        let artifact = source
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.target == attached.target)
+            .context("manually attached client has no pinned source artifact")?;
+        anyhow::ensure!(
+            attached.capabilities.source_binary_sha256.as_deref() == Some(&artifact.binary_sha256),
+            "an attached client of {} is not running the pinned source executable; its installation backup is retained",
+            attached.executable.display()
+        );
+        return Ok(true);
+    }
+    let target = update::version(&release.tag_name)?;
     anyhow::ensure!(
-        update::version(&attached.running_version)? >= *target
-            && update::version(&attached.installed_version)? >= *target,
+        update::version(&attached.running_version)? >= target
+            && update::version(&attached.installed_version)? >= target,
         "an attached client of {} still runs an older release; its installation backup is retained",
         attached.executable.display()
     );
     Ok(true)
+}
+
+pub(super) fn manual_commit_candidates(
+    release: &update::Release,
+    expected: &Installation,
+    clients: &[yinz_types::session_update::Client],
+    mut inspect: impl FnMut(ClientId) -> Result<Installation>,
+) -> Result<Vec<ClientId>> {
+    let mut candidates = Vec::new();
+    // Validate every matching attachment before issuing any cleanup request.
+    for client in clients.iter().filter(|client| client.supports_update) {
+        let identity = inspect(client.id)?;
+        if manual_commit_matches(release, expected, &identity, client.supports_source_update)? {
+            candidates.push(client.id);
+        }
+    }
+    Ok(candidates)
 }
 
 fn commit_participant(
@@ -1596,29 +1862,22 @@ fn commit_participant(
                         .context("missing selected release")?,
                 )
                 .context("decode selected release for manual client commitment")?;
-                let target = update::version(&release.tag_name)?;
-                let mut candidates = Vec::new();
-                // A manual attachment may service installation cleanup without
-                // claiming that its original client/configuration was replaced.
-                // Inspect every capable attachment before selecting a helper so
-                // an old exec-failure fallback cannot be hidden by a newer peer.
-                for client in current
-                    .clients
-                    .iter()
-                    .filter(|client| client.supports_update)
-                {
-                    let identity: Installation = serde_json::from_value(client_participant(
-                        replacement,
-                        operation,
-                        client.id,
-                        ParticipantRequest::Inventory,
-                    )?)
-                    .context("inspect manually attached installation")?;
-                    if manual_commit_matches(&target, &participant_record.installation, &identity)?
-                    {
-                        candidates.push(client.id);
-                    }
-                }
+                // Manual attachments can service installation cleanup without
+                // claiming their original client/configuration was replaced.
+                let candidates = manual_commit_candidates(
+                    &release,
+                    &participant_record.installation,
+                    &current.clients,
+                    |id| {
+                        serde_json::from_value(client_participant(
+                            replacement,
+                            operation,
+                            id,
+                            ParticipantRequest::Inventory,
+                        )?)
+                        .context("inspect manually attached installation")
+                    },
+                )?;
                 for client in candidates {
                     match client_participant(replacement, operation, client, request.clone()) {
                         Ok(value) => return Ok(value),
@@ -1654,6 +1913,64 @@ fn commit_participant(
     }
 }
 
+fn verify_source_readiness(store: &Store, replacement: &mut Connection) -> Result<()> {
+    let release: update::Release = serde_json::from_value(
+        store
+            .journal
+            .release
+            .clone()
+            .context("missing pinned release")?,
+    )
+    .context("decode pinned source identity")?;
+    let Some(source) = release.source else {
+        return Ok(());
+    };
+    let expected = |target: &str| -> Result<&str> {
+        Ok(source
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.target == target)
+            .context("participant has no pinned source artifact")?
+            .binary_sha256
+            .as_str())
+    };
+    let inventory: Inventory =
+        serde_json::from_value(replacement.request(&store.journal.operation, Command::Inventory)?)
+            .context("verify running source server")?;
+    let target = update::target(std::env::consts::OS, std::env::consts::ARCH)?;
+    anyhow::ensure!(
+        inventory.running_binary_sha256.as_deref() == Some(expected(target)?),
+        "replacement server is not running the pinned source executable; backups retained"
+    );
+    for client in &inventory.clients {
+        if !client
+            .resumed
+            .as_ref()
+            .is_some_and(|(operation, _)| operation == &store.journal.operation)
+        {
+            continue;
+        }
+        anyhow::ensure!(
+            client.supports_source_update,
+            "replacement client cannot attest its source identity; backups retained"
+        );
+        let installed: Installation = serde_json::from_value(client_participant(
+            replacement,
+            &store.journal.operation,
+            client.id,
+            ParticipantRequest::Inventory,
+        )?)
+        .context("verify running source client")?;
+        anyhow::ensure!(
+            installed.capabilities.source_binary_sha256.as_deref()
+                == Some(expected(&installed.target)?),
+            "replacement client {} is not running the pinned source executable; backups retained",
+            client.id
+        );
+    }
+    Ok(())
+}
+
 fn commit(
     store: &mut Store,
     mut source: Option<&mut Connection>,
@@ -1673,6 +1990,7 @@ fn commit(
             .as_ref()
             .context("replacement incarnation was not recorded")?,
     )?;
+    verify_source_readiness(store, replacement)?;
     store.phase(Phase::Commit)?;
     let mut failures = Vec::new();
     for index in unique_participants(&store.journal) {
@@ -1695,6 +2013,18 @@ fn commit(
         source.kill()?;
     }
     cleanup_remote_helpers(store)?;
+    if store.journal.source_build {
+        for path in [
+            store.directory.join("source").join("checkout"),
+            store.directory.join("source-artifacts"),
+        ] {
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => {},
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(error) => return Err(error).context("clean committed source build artifacts"),
+            }
+        }
+    }
     store.phase(Phase::Complete)?;
     let release: update::Release =
         serde_json::from_value(store.journal.release.clone().context("missing release")?)

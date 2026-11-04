@@ -868,6 +868,7 @@ mod props {
             | PluginCommand::GetSessionInventory(_)
             | PluginCommand::SwitchSessionDestination(_)
             | PluginCommand::UpdateYinz
+            | PluginCommand::UpdateYinzFromSource
             | PluginCommand::CancelYinzUpdate
             | PluginCommand::YinzUpdateStatus
             | PluginCommand::GetSessionList
@@ -976,4 +977,18 @@ fn local_time_command_round_trips() {
     };
     let encoded = ProtobufPluginCommand::try_from(command.clone()).unwrap();
     assert_eq!(PluginCommand::try_from(encoded).unwrap(), command);
+}
+
+#[test]
+fn source_and_release_update_commands_remain_distinct_on_the_wire() {
+    for original in [
+        PluginCommand::UpdateYinz,
+        PluginCommand::UpdateYinzFromSource,
+        PluginCommand::CancelYinzUpdate,
+        PluginCommand::YinzUpdateStatus,
+    ] {
+        let proto = ProtobufPluginCommand::try_from(original.clone()).unwrap();
+        assert!(proto.payload.is_none());
+        assert_eq!(PluginCommand::try_from(proto).unwrap(), original);
+    }
 }

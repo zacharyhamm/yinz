@@ -114,19 +114,23 @@ fn manual_client_commit_requires_exact_installation_and_current_running_image() 
         target: "x86_64-unknown-linux-gnu".into(),
         capabilities: capabilities(),
     };
-    let target = update::version("2.0.0").unwrap();
-    assert!(coordinator::manual_commit_matches(&target, &expected, &expected).is_err());
+    let target = update::Release {
+        tag_name: "2.0.0".into(),
+        assets: vec![],
+        source: None,
+    };
+    assert!(coordinator::manual_commit_matches(&target, &expected, &expected, false).is_err());
     let mut current = expected.clone();
     current.running_version = "2.0.0".into();
-    assert!(coordinator::manual_commit_matches(&target, &expected, &current).unwrap());
+    assert!(coordinator::manual_commit_matches(&target, &expected, &current, false).unwrap());
     current.host = "different-host".into();
-    assert!(!coordinator::manual_commit_matches(&target, &expected, &current).unwrap());
+    assert!(!coordinator::manual_commit_matches(&target, &expected, &current, false).unwrap());
     current.host = expected.host.clone();
     current.data_dir = "/another/data".into();
-    assert!(!coordinator::manual_commit_matches(&target, &expected, &current).unwrap());
+    assert!(!coordinator::manual_commit_matches(&target, &expected, &current, false).unwrap());
     current.data_dir = expected.data_dir.clone();
     current.installed_version = "1.0.0".into();
-    assert!(coordinator::manual_commit_matches(&target, &expected, &current).is_err());
+    assert!(coordinator::manual_commit_matches(&target, &expected, &current, false).is_err());
 }
 
 #[test]
@@ -165,4 +169,88 @@ fn staged_update_contracts_allow_different_release_labels() {
     );
     yinz_test_support::write_warm_script(&executable, &script);
     validate_capabilities(&executable).unwrap();
+}
+
+#[test]
+fn manual_source_commit_requires_pinned_digest_and_source_identity_capability() {
+    let mut attached = Installation {
+        host: "host".into(),
+        executable: "/installed/yinz".into(),
+        data_dir: "/installed/data".into(),
+        running_version: "2.0.0".into(),
+        installed_version: "2.0.0".into(),
+        target: "x86_64-unknown-linux-gnu".into(),
+        capabilities: capabilities(),
+    };
+    let expected = attached.clone();
+    let release = update::Release {
+        tag_name: "2.0.0".into(),
+        assets: vec![],
+        source: Some(update::SourceRelease {
+            commit: "a".repeat(40),
+            artifacts: vec![yinz_types::update_client::SourceArtifact {
+                target: attached.target.clone(),
+                size: 1,
+                sha256: "b".repeat(64),
+                binary_sha256: "c".repeat(64),
+            }],
+        }),
+    };
+    attached.capabilities.source_update = true;
+    for digest in [None, Some("d".repeat(64)), Some("b".repeat(64))] {
+        attached.capabilities.source_binary_sha256 = digest;
+        assert!(
+            coordinator::manual_commit_matches(&release, &expected, &attached, true)
+                .unwrap_err()
+                .to_string()
+                .contains("pinned source executable")
+        );
+    }
+    attached.capabilities.source_binary_sha256 = Some("c".repeat(64));
+    assert!(coordinator::manual_commit_matches(&release, &expected, &attached, true).unwrap());
+    assert!(coordinator::manual_commit_matches(&release, &expected, &attached, false).is_err());
+    attached.capabilities.source_update = false;
+    assert!(coordinator::manual_commit_matches(&release, &expected, &attached, true).is_err());
+    attached.capabilities.source_update = true;
+    attached.target = "aarch64-unknown-linux-gnu".into();
+    assert!(
+        coordinator::manual_commit_matches(&release, &expected, &attached, true)
+            .unwrap_err()
+            .to_string()
+            .contains("no pinned source artifact")
+    );
+    attached.target = expected.target.clone();
+    let client = |id: u32| yinz_types::session_update::Client {
+        id: id.into(),
+        supports_update: true,
+        supports_source_update: true,
+        resumed: None,
+        configuration: String::new(),
+        mode: Default::default(),
+    };
+    for clients in [[client(1), client(2)], [client(2), client(1)]] {
+        for bad_digest in [None, Some("d".repeat(64))] {
+            let candidates =
+                coordinator::manual_commit_candidates(&release, &expected, &clients, |id| {
+                    let mut identity = attached.clone();
+                    if id == 2.into() {
+                        identity.capabilities.source_binary_sha256 = bad_digest.clone();
+                    }
+                    Ok(identity)
+                });
+            assert!(
+                candidates.is_err(),
+                "a valid peer must never hide an old executable"
+            );
+        }
+        assert_eq!(
+            coordinator::manual_commit_candidates(&release, &expected, &clients, |_| Ok(
+                attached.clone()
+            ))
+            .unwrap(),
+            clients.iter().map(|client| client.id).collect::<Vec<_>>()
+        );
+    }
+    attached.host = "unrelated".into();
+    assert!(!coordinator::manual_commit_matches(&release, &expected, &attached, false).unwrap());
 }

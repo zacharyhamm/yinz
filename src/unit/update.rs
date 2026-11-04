@@ -65,6 +65,7 @@ fn update_platforms_versions_and_cli() {
     assert!(version("1.2.3").unwrap() > version("1.2.3-dev").unwrap());
     assert!(version("bad").is_err());
     let release = Release {
+        source: None,
         tag_name: "v1.2.3".into(),
         assets: vec![],
     };
@@ -224,6 +225,7 @@ fn preparation_is_pinned_and_does_not_install() {
     let bytes = builder.into_inner().unwrap().finish().unwrap();
     let digest = hex(&Sha256::digest(&bytes));
     let release = Release {
+        source: None,
         tag_name: "v999.0.0".into(),
         assets: vec![
             Asset {
@@ -284,6 +286,7 @@ fn preparation_is_pinned_and_does_not_install() {
 #[test]
 fn preparation_rejects_prerelease_before_download() {
     let release = Release {
+        source: None,
         tag_name: "v999.0.0-rc.1".into(),
         assets: vec![],
     };

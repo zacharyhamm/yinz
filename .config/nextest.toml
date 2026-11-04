@@ -46,3 +46,9 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 [[profile.unit.overrides]]
 filter = 'binary(portable_cli) & test(=plugin_check_targets_have_text_json_parity)'
 slow-timeout = { period = "60s", terminate-after = 3 }
+
+# Streams the full debug executable to a separate client installation through bounded chunks.
+# Archive compression, per-chunk helper processes, and real re-exec dominate this regression.
+[[profile.unit.overrides]]
+filter = 'test(same_version_source_update_streams_to_client_and_preserves_processes)'
+slow-timeout = { period = "60s", terminate-after = 5 }

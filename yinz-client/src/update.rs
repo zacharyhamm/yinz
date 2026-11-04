@@ -307,6 +307,15 @@ fn stamp_running_version(inventory: &mut serde_json::Value) -> Result<()> {
         "running_version".into(),
         serde_json::Value::String(yinz_runtime::consts::VERSION.into()),
     );
+    let capabilities = inventory
+        .get_mut("capabilities")
+        .and_then(serde_json::Value::as_object_mut)
+        .context("participant inventory is missing capabilities")?;
+    capabilities.insert(
+        "source_binary_sha256".into(),
+        serde_json::to_value(yinz_runtime::session_update::running_executable_digest().ok())
+            .context("encode running client executable identity")?,
+    );
     Ok(())
 }
 

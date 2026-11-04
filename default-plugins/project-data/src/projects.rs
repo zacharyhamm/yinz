@@ -95,6 +95,17 @@ pub struct Project {
     pub replaced_ids: Vec<DataRowId>,
 }
 
+/// Source updates are offered only for the named canonical Git project.
+/// This checks registry identity; the coordinator also validates the live checkout.
+pub fn source_update_project(project: &Project) -> bool {
+    project.name == "yinz"
+        && project.provider_identity.is_none()
+        && project
+            .remote
+            .as_deref()
+            .is_some_and(|remote| origin_identity(remote) == "repo:github.com/zacharyhamm/yinz")
+}
+
 impl Project {
     /// True when this project carries a provider or Git checkout identity.
     ///

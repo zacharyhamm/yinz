@@ -27,6 +27,13 @@ use yinz_types::{
 const SESSION: &str = "client-update";
 const TIMEOUT: Duration = Duration::from_secs(60);
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[path = "source_build_real.rs"]
+mod source_build_real;
+
 #[path = "client_update_cold.rs"]
 mod cold;
 
@@ -72,7 +79,10 @@ impl Fixture {
         Self { root, binary, data }
     }
     fn command(&self) -> Command {
-        let mut command = Command::new(&self.binary);
+        self.command_for(&self.binary, &self.data)
+    }
+    fn command_for(&self, binary: &Path, data: &Path) -> Command {
+        let mut command = Command::new(binary);
         command
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default());
@@ -96,7 +106,7 @@ impl Fixture {
             .arg("--config-dir")
             .arg(self.root.path().join("config"))
             .arg("--data-dir")
-            .arg(&self.data)
+            .arg(data)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -803,10 +813,11 @@ fn coordinator_test_worker() {
     let path =
         std::env::var_os("YINZ_TEST_UPDATE_COORDINATOR").expect("coordinator fixture request");
     let request: CoordinatorFixture = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-    let mut store = crate::live_update::journal::Store::open(
+    let mut store = crate::live_update::journal::Store::open_with_source(
         &request.socket,
         &request.data,
         &request.operation,
+        request.release.source.is_some(),
     )
     .unwrap();
     let mut source = crate::live_update::transport::Connection::connect(&request.socket).unwrap();
@@ -818,7 +829,9 @@ fn coordinator_test_worker() {
     .unwrap();
     // The staged candidate is this worktree's actual executable. Only the test's
     // discovery label is older, so the complete same-version handoff is exercised.
-    inventory.running_version = "0.0.0".into();
+    if request.release.source.is_none() {
+        inventory.running_version = "0.0.0".into();
+    }
     crate::live_update::coordinator::execute_release(
         &mut store,
         &mut source,
@@ -830,6 +843,16 @@ fn coordinator_test_worker() {
 
 #[test]
 fn full_update_coordinator_preserves_two_clients_focus_input_and_terminal_processes() {
+    check_full_update_coordinator(false);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn same_version_source_update_streams_to_client_and_preserves_processes() {
+    check_full_update_coordinator(true);
+}
+
+fn check_full_update_coordinator(from_source: bool) {
     use sha2::{Digest, Sha256};
     let fixture = Fixture::new();
     fs::write(fixture.root.path().join("config.kdl"), "detachable_panes true\nmirror_session false\nload_plugins clear-defaults=true\ndefault_mode \"locked\"\n").unwrap();
@@ -845,7 +868,25 @@ fn full_update_coordinator_preserves_two_clients_focus_input_and_terminal_proces
         .find(|client| client.supports_update)
         .unwrap()
         .id;
-    let mut second = Attached::start(&fixture);
+    // Source updates must stream to a separate client installation, so this
+    // client cannot satisfy preparation by reading the server's staging files.
+    let second_binary = if from_source {
+        let binary = fixture.root.path().join("second-client-yinz");
+        fs::copy(&fixture.binary, &binary).unwrap();
+        binary
+    } else {
+        fixture.binary.clone()
+    };
+    let second_data = if from_source {
+        let data = fixture.root.path().join("second-client-data");
+        yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), &data).unwrap();
+        data
+    } else {
+        fixture.data.clone()
+    };
+    let mut second_command = fixture.command_for(&second_binary, &second_data);
+    second_command.args(["attach", SESSION]);
+    let mut second = Attached::start_command(second_command);
     second.wait_for("READY-first");
     let second_id = source
         .inventory(&operation)
@@ -877,24 +918,31 @@ fn full_update_coordinator_preserves_two_clients_focus_input_and_terminal_proces
         })
         .collect();
     let old_inode = fs::metadata(&fixture.binary).unwrap().ino();
-    fixture.prepare(&operation);
-    let release = crate::update::Release {
-        tag_name: yinz_runtime::consts::VERSION.into(),
-        assets: vec![],
+    let release = if from_source {
+        source_fixture_release(&fixture, &operation)
+    } else {
+        fixture.prepare(&operation);
+        let release = crate::update::Release {
+            source: None,
+            tag_name: yinz_runtime::consts::VERSION.into(),
+            assets: vec![],
+        };
+        let receipts = fixture
+            .data
+            .join("updates")
+            .join(&operation)
+            .join("participants");
+        fs::create_dir_all(&receipts).unwrap();
+        let executable = fixture.binary.canonicalize().unwrap();
+        let key = crate::update::hex(&Sha256::digest(executable.as_os_str().as_encoded_bytes()));
+        fs::write(
+            receipts.join(format!("{key}.json")),
+            serde_json::to_vec(&release).unwrap(),
+        )
+        .unwrap();
+        release
     };
-    let receipts = fixture
-        .data
-        .join("updates")
-        .join(&operation)
-        .join("participants");
-    fs::create_dir_all(&receipts).unwrap();
-    let executable = fixture.binary.canonicalize().unwrap();
-    let key = crate::update::hex(&Sha256::digest(executable.as_os_str().as_encoded_bytes()));
-    fs::write(
-        receipts.join(format!("{key}.json")),
-        serde_json::to_vec(&release).unwrap(),
-    )
-    .unwrap();
+    let source_identity = release.source.clone();
     let request_path = fixture.root.path().join("coordinator.json");
     fs::write(
         &request_path,
@@ -931,6 +979,9 @@ fn full_update_coordinator_preserves_two_clients_focus_input_and_terminal_proces
         .stderr(log);
     let mut child = command.spawn().unwrap();
     let completed = Watched::new(None);
+    // Source transfer carries the much larger debug executable through the
+    // production bounded request path; this test measures correctness, not speed.
+    let worker_timeout = Duration::from_secs(if from_source { 240 } else { 180 });
     let status = std::thread::scope(|scope| {
         let completed = &completed;
         let child = &mut child;
@@ -938,7 +989,7 @@ fn full_update_coordinator_preserves_two_clients_focus_input_and_terminal_proces
             // Child::wait has no timeout and holds the child needed for cleanup.
             // Keep bounded try_wait polling so a stuck worker can be killed and
             // reaped without leaving a scoped waiter blocked indefinitely.
-            let deadline = Instant::now() + Duration::from_secs(180);
+            let deadline = Instant::now() + worker_timeout;
             loop {
                 match child.try_wait() {
                     Ok(Some(status)) => {
@@ -959,7 +1010,7 @@ fn full_update_coordinator_preserves_two_clients_focus_input_and_terminal_proces
                     let killed = child.kill();
                     let reaped = child.wait();
                     *completed.lock() = Some(Err(format!(
-                        "timed out after 180s waiting for full update coordinator to finish; kill: {killed:?}; reap: {reaped:?}"
+                        "timed out after {worker_timeout:?} waiting for full update coordinator to finish; kill: {killed:?}; reap: {reaped:?}"
                     )));
                     return;
                 }
@@ -968,7 +1019,7 @@ fn full_update_coordinator_preserves_two_clients_focus_input_and_terminal_proces
         });
         completed.wait_until_described(
             "full update coordinator to finish",
-            Duration::from_secs(190),
+            worker_timeout + Duration::from_secs(10),
             |state| state.clone(),
             |state| format!(
                 "worker outcome: {state:?}; log: {}",
@@ -1044,10 +1095,14 @@ fn full_update_coordinator_preserves_two_clients_focus_input_and_terminal_proces
     let new_inode = fs::metadata(&fixture.binary).unwrap().ino();
     assert_ne!(new_inode, old_inode);
     #[cfg(target_os = "linux")]
-    for process in [first.child.id(), second.child.id(), after.server_pid] {
+    for (process, binary) in [
+        (first.child.id(), &fixture.binary),
+        (second.child.id(), &second_binary),
+        (after.server_pid, &fixture.binary),
+    ] {
         assert_eq!(
             fs::metadata(format!("/proc/{process}/exe")).unwrap().ino(),
-            new_inode
+            fs::metadata(binary).unwrap().ino()
         );
     }
     for pid in pids {
@@ -1085,4 +1140,69 @@ fn full_update_coordinator_preserves_two_clients_focus_input_and_terminal_proces
     .unwrap();
     assert_eq!(journal["phase"], "Complete");
     assert!(journal["restart_required"].as_array().unwrap().is_empty());
+    if let Some(identity) = source_identity {
+        assert_eq!(after.running_version, before.running_version);
+        assert!(!fixture
+            .data
+            .join("updates")
+            .join(&operation)
+            .join("source-artifacts")
+            .exists());
+        assert_eq!(journal["release"]["source"]["commit"], identity.commit);
+        for binary in [&fixture.binary, &second_binary] {
+            assert_eq!(
+                crate::live_update::artifacts::digest_file(binary).unwrap(),
+                identity.artifacts[0].binary_sha256
+            );
+        }
+        let received = crate::live_update::artifacts::archive_path(
+            &second_data,
+            &operation,
+            &identity.artifacts[0].target,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::live_update::artifacts::digest_file(&received).unwrap(),
+            identity.artifacts[0].sha256
+        );
+    }
+}
+
+fn source_fixture_release(fixture: &Fixture, operation: &str) -> crate::update::Release {
+    use crate::live_update::artifacts;
+    let target = crate::update::target(std::env::consts::OS, std::env::consts::ARCH).unwrap();
+    let binary = fixture.root.path().join("source-yinz");
+    fs::copy(&fixture.binary, &binary).unwrap();
+    // A changed executable with the same Cargo version makes a version-only
+    // no-op or readiness check observable without building a second workspace.
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&binary)
+        .unwrap()
+        .write_all(b"\nsource-update-same-version-fixture\n")
+        .unwrap();
+    let archive = artifacts::archive_path(&fixture.data, operation, target).unwrap();
+    fs::create_dir_all(archive.parent().unwrap()).unwrap();
+    let encoder =
+        flate2::write::GzEncoder::new(File::create(&archive).unwrap(), flate2::Compression::fast());
+    let mut bundle = tar::Builder::new(encoder);
+    bundle.append_path_with_name(&binary, "yinz").unwrap();
+    bundle
+        .append_dir_all("plugins/builtins", fixture.data.join("plugins/builtins"))
+        .unwrap();
+    bundle.into_inner().unwrap().finish().unwrap();
+    let artifact = yinz_types::update_client::SourceArtifact {
+        target: target.into(),
+        sha256: artifacts::digest_file(&archive).unwrap(),
+        size: fs::metadata(&archive).unwrap().len(),
+        binary_sha256: artifacts::digest_file(&binary).unwrap(),
+    };
+    crate::update::Release {
+        source: Some(crate::update::SourceRelease {
+            commit: "a".repeat(40),
+            artifacts: vec![artifact],
+        }),
+        tag_name: yinz_runtime::consts::VERSION.into(),
+        assets: vec![],
+    }
 }

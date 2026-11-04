@@ -272,11 +272,20 @@ fn acknowledged_failure_does_not_block_a_later_successfully_published_operation(
 
 #[test]
 fn inventory_reports_running_client_separately_from_installed_helper() {
-    let mut inventory =
-        serde_json::json!({"running_version":"new-helper", "installed_version":"new-helper"});
+    let mut inventory = serde_json::json!({"running_version":"new-helper", "installed_version":"new-helper",
+            "capabilities": {"source_binary_sha256":"new-helper-hash"}});
     stamp_running_version(&mut inventory).unwrap();
     assert_eq!(inventory["running_version"], yinz_runtime::consts::VERSION);
     assert_eq!(inventory["installed_version"], "new-helper");
+    assert_eq!(
+        inventory["capabilities"]["source_binary_sha256"],
+        serde_json::to_value(yinz_runtime::session_update::running_executable_digest().ok())
+            .unwrap()
+    );
+    assert_ne!(
+        inventory["capabilities"]["source_binary_sha256"],
+        "new-helper-hash"
+    );
 }
 
 #[test]

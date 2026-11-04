@@ -26,6 +26,9 @@ pub struct CliAssets {
     /// Client update requests are sent only after this independent capability is advertised.
     #[serde(default)]
     pub supports_in_place_update: bool,
+    /// Source artifact transfers and running-image identity are supported by this client.
+    #[serde(default)]
+    pub supports_source_update: bool,
     /// Private replacement server bootstrap; ordinary clients must leave this absent.
     #[serde(default)]
     pub update_target: Option<String>,

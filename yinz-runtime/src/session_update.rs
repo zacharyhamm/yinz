@@ -54,3 +54,42 @@ pub fn read_active(data_dir: &Path, socket: &Path) -> Result<Option<serde_json::
     .context("decode active update journal")?;
     Ok(Some(value))
 }
+
+/// Hash the image executing in this process, even after its installed path is replaced.
+/// Call from an update worker, never from a client render callback.
+pub fn running_executable_digest() -> Result<String> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Read;
+        static DIGEST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        if let Some(digest) = DIGEST.get() {
+            return Ok(digest.clone());
+        }
+        // current_exe() resolves the install path, which may already point to the
+        // next generation. Linux's process-image link retains the actual inode.
+        let mut file =
+            std::fs::File::open("/proc/self/exe").context("open running executable image")?;
+        let mut hash = Sha256::new();
+        let mut buffer = [0u8; 65536];
+        loop {
+            let size = file
+                .read(&mut buffer)
+                .context("hash running executable image")?;
+            if size == 0 {
+                break;
+            }
+            hash.update(&buffer[..size]);
+        }
+        let digest: String = hash
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let _ = DIGEST.set(digest.clone());
+        Ok(digest)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        bail!("source-update image identity is supported only on Linux")
+    }
+}

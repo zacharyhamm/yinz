@@ -492,11 +492,12 @@ pin_context_to_instruction! {
     mod server;
     instruction: ServerInstruction;
     context: ServerContext;
-    special: ["UpdateClientReady", "StartSessionUpdate", "CancelSessionUpdate", "SessionUpdateStatus", "UpdateRequest", "UpdateReply", "ClipboardUpdate", "DesktopNotification", "RepaintComplete", "ConfigurationEditor", "SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError", "SignalQuit", "ClientAttachFailed"];
+    special: ["UpdateClientReady", "StartSessionUpdate", "StartSourceSessionUpdate", "CancelSessionUpdate", "SessionUpdateStatus", "UpdateRequest", "UpdateReply", "ClipboardUpdate", "DesktopNotification", "RepaintComplete", "ConfigurationEditor", "SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError", "SignalQuit", "ClientAttachFailed"];
     only_special: ["NewClient", "AttachClient"];
     targets: [
         ("UpdateClientReady", ServerInstruction::UpdateClientReady { client: ClientId::new(1), operation: "operation".into(), source_client: ClientId::new(1) }, "ConnStatus"),
         ("StartSessionUpdate", ServerInstruction::StartSessionUpdate(ClientId::new(1)), "ConnStatus"),
+        ("StartSourceSessionUpdate", ServerInstruction::StartSourceSessionUpdate(ClientId::new(1)), "ConnStatus"),
         ("CancelSessionUpdate", ServerInstruction::CancelSessionUpdate(ClientId::new(1)), "ConnStatus"),
         ("SessionUpdateStatus", ServerInstruction::SessionUpdateStatus(ClientId::new(1)), "ConnStatus"),
         ("UpdateRequest", ServerInstruction::UpdateRequest { client: ClientId::new(1), request: yinz_types::update_client::Request { token: "request".into(), request: yinz_types::update_client::ClientRequest::Participant(yinz_types::update_client::ParticipantRequest::Inventory) }, reply: std::sync::mpsc::channel().0 }, "ConnStatus"),

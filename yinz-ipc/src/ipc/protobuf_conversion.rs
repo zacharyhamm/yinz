@@ -1063,6 +1063,7 @@ impl From<yinz_types::input::cli_assets::CliAssets>
             host_terminal_env: cli_assets.host_terminal_env.into_iter().collect(),
             supports_session_requests: cli_assets.supports_session_requests,
             supports_in_place_update: cli_assets.supports_in_place_update,
+            supports_source_update: cli_assets.supports_source_update,
             update_target: cli_assets.update_target,
             update_source_session: cli_assets
                 .update_source_session
@@ -1105,6 +1106,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::CliAssets>
             host_terminal_env: cli_assets.host_terminal_env.into_iter().collect(),
             supports_session_requests: cli_assets.supports_session_requests,
             supports_in_place_update: cli_assets.supports_in_place_update,
+            supports_source_update: cli_assets.supports_source_update,
             update_target: cli_assets.update_target,
             update_source_session: cli_assets.update_source_session.map(Into::into),
             update_resume: cli_assets

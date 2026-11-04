@@ -3183,6 +3183,8 @@ pub enum PluginCommand {
     GetSessionList,
     /// Start a coordinated in-place update of the acting client's session.
     UpdateYinz,
+    /// Build the registered Yinz repository's clean local main and update this session.
+    UpdateYinzFromSource,
     CancelYinzUpdate,
     YinzUpdateStatus,
     GetSessionInventory(String),

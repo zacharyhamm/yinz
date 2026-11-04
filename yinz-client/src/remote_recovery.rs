@@ -414,6 +414,7 @@ impl Recovery {
                 terminal_window_size: os.get_terminal_size(),
                 supports_session_requests: true,
                 supports_in_place_update: true,
+                supports_source_update: true,
                 update_resume: self.update_resume.clone(),
                 host_terminal_env:
                     yinz_runtime::host_terminal_env::host_terminal_env_with_overrides(&self.env),

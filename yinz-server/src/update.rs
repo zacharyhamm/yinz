@@ -105,6 +105,10 @@ fn inventory(
                     .update_client_assets
                     .get(&id)
                     .is_some_and(|a| a.supports_in_place_update),
+                supports_source_update: state
+                    .update_client_assets
+                    .get(&id)
+                    .is_some_and(|a| a.supports_source_update),
                 resumed: state.resumed_updates.get(&id).cloned(),
                 configuration: String::new(),
                 mode: Default::default(),
@@ -146,6 +150,7 @@ fn inventory(
         server_instance: identity().server_instance,
         executable,
         running_version: yinz_runtime::consts::VERSION.into(),
+        running_binary_sha256: yinz_runtime::session_update::running_executable_digest().ok(),
         assets,
         clients,
         configuration: serde_json::Value::String(
@@ -212,7 +217,7 @@ fn dispatch(
         return serde_json::to_value(inventory(state, data, client)?)
             .context("encode session inventory");
     }
-    if let Command::Start = request.command {
+    if matches!(request.command, Command::Start | Command::StartSource) {
         return start(request, client, state, data);
     }
     let senders = data
@@ -354,7 +359,9 @@ fn dispatch(
             )?;
             Ok(serde_json::Value::Null)
         },
-        Command::Identity | Command::Inventory | Command::Start => unreachable!(),
+        Command::Identity | Command::Inventory | Command::Start | Command::StartSource => {
+            unreachable!()
+        },
         Command::Status | Command::Cancel => {
             let inventory = inventory(state, data, client)?;
             let directory = inventory
@@ -473,11 +480,16 @@ fn start(
             }
         }
     }
-    let mut child = std::process::Command::new(&inventory.executable)
+    let mut launch_command = std::process::Command::new(&inventory.executable);
+    launch_command
         .arg(session_update::COORDINATOR_ARG)
         .arg(&socket)
         .arg(&data_dir)
-        .arg(&operation)
+        .arg(&operation);
+    if matches!(request.command, session_update::Command::StartSource) {
+        launch_command.arg("--source-build");
+    }
+    let mut child = launch_command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -547,6 +559,51 @@ fn control_socket(
     Ok(yinz_runtime::consts::YINZ_SOCK_DIR.join(session))
 }
 
+fn source_build_status(active: &serde_json::Value, data_dir: &std::path::Path) -> Result<String> {
+    if active["source_build"] != true {
+        return Ok(String::new());
+    }
+    let operation = active["operation"]
+        .as_str()
+        .context("update journal has no operation")?;
+    uuid::Uuid::parse_str(operation).context("invalid source update operation")?;
+    let path = data_dir
+        .join("updates")
+        .join(operation)
+        .join("source/build.json");
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(". Source: waiting to pin local main".into());
+        },
+        Err(error) => return Err(error).context("read source build status"),
+    };
+    let build: serde_json::Value =
+        serde_json::from_slice(&bytes).context("decode source build status")?;
+    let targets = build["targets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok(format!(
+        ". {} {}; targets: {}; build log: {}",
+        if active["phase"] == "Discover" {
+            "Building local main"
+        } else {
+            "Local main"
+        },
+        build["commit"].as_str().unwrap_or("unknown"),
+        if targets.is_empty() {
+            "pending"
+        } else {
+            &targets
+        },
+        build["log"].as_str().unwrap_or("unavailable")
+    ))
+}
+
 pub(crate) fn active_control(
     client: ClientId,
     cancel: bool,
@@ -588,9 +645,10 @@ pub(crate) fn active_control(
         .map(|id| id.to_string())
         .collect::<Vec<_>>();
     Ok(format!(
-        "Yinz update {}: {}{}{}",
+        "Yinz update {}: {}{}{}{}",
         operation,
         active["phase"].as_str().unwrap_or("unknown"),
+        source_build_status(&active, &data_dir)?,
         active["errors"]
             .as_array()
             .and_then(|errors| errors.last())
@@ -673,3 +731,7 @@ impl MigrationLayout {
         self.layout
     }
 }
+
+#[cfg(test)]
+#[path = "unit/source_update_status.rs"]
+mod source_update_status_tests;

@@ -3478,6 +3478,7 @@ pub enum CommandName {
     UpdateYinz = 319,
     CancelYinzUpdate = 320,
     YinzUpdateStatus = 321,
+    UpdateYinzFromSource = 322,
 }
 impl CommandName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -3758,6 +3759,7 @@ impl CommandName {
             CommandName::UpdateYinz => "UpdateYinz",
             CommandName::CancelYinzUpdate => "CancelYinzUpdate",
             CommandName::YinzUpdateStatus => "YinzUpdateStatus",
+            CommandName::UpdateYinzFromSource => "UpdateYinzFromSource",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -4035,6 +4037,7 @@ impl CommandName {
             "UpdateYinz" => Some(Self::UpdateYinz),
             "CancelYinzUpdate" => Some(Self::CancelYinzUpdate),
             "YinzUpdateStatus" => Some(Self::YinzUpdateStatus),
+            "UpdateYinzFromSource" => Some(Self::UpdateYinzFromSource),
             _ => None,
         }
     }

@@ -825,3 +825,50 @@ fn session_palette_update_dispatches_to_the_session_coordinator() {
         assert!(h.execute(h.root(action), Value::Null).is_err());
     }
 }
+
+#[test]
+fn session_palette_source_update_visibility_and_invocation_revalidate_registry() {
+    let mut palette = Palette::new(state());
+    assert!(!palette
+        .roots
+        .iter()
+        .any(|action| action["id"] == "update-yinz-source"));
+    let rows = |name: &str, remote: &str| {
+        json!({
+            "columns": ["name", "root", "remote"],
+            "rows": [[{"Text": name}, {"Text": "/repo"}, {"Text": remote}]],
+            "truncated": false, "next_cursor": null,
+        })
+    };
+    for origin in [
+        "https://github.com/zacharyhamm/yinz",
+        "git@github.com:zacharyhamm/yinz.git",
+        "ssh://git@GITHUB.COM:22/zacharyhamm/yinz.git/",
+    ] {
+        palette.stub("DataFetch", rows("yinz", origin));
+        palette.roots = palette.discover(Value::Null, "");
+        let handle = palette.root("update-yinz-source");
+        palette.stub("UpdateYinzFromSource", json!(true));
+        let result = palette.execute(handle, Value::Null).unwrap();
+        assert_eq!(result["type"], "complete");
+        assert!(palette.issued(json!("UpdateYinzFromSource")));
+    }
+    let handle = palette.root("update-yinz-source");
+    palette.stub("DataFetch", rows("yinz", "https://github.com/someone/yinz"));
+    let commands_before = palette.host.lock().unwrap().commands.len();
+    assert!(palette.execute(handle, Value::Null).is_err());
+    assert!(!palette.host.lock().unwrap().commands[commands_before..]
+        .contains(&json!("UpdateYinzFromSource")));
+    for (name, origin) in [
+        ("yinz", "https://github.com/someone/yinz"),
+        ("renamed", "https://github.com/zacharyhamm/yinz"),
+        ("yinz", "https://github.com:8443/zacharyhamm/yinz"),
+    ] {
+        palette.stub("DataFetch", rows(name, origin));
+        let roots = palette.discover(Value::Null, "");
+        assert!(!roots
+            .iter()
+            .any(|action| action["id"] == "update-yinz-source"));
+        assert!(roots.iter().any(|action| action["id"] == "update-yinz"));
+    }
+}

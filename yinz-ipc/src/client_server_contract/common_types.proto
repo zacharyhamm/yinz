@@ -967,6 +967,7 @@ message CliAssets {
   optional string update_resume_json = 18;
   optional string update_configuration = 19;
   optional string update_layout = 20;
+  bool supports_source_update = 21;
 }
 
 message LayoutInfo {

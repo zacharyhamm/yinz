@@ -17,6 +17,7 @@ mod lint;
 mod metadata;
 mod pipelines;
 mod remote_test;
+mod source_build;
 mod test;
 mod test_run;
 // Keep the build driver independent of the host runtime's dependency graph.
@@ -99,6 +100,7 @@ fn main() -> anyhow::Result<()> {
 
     match flags.subcommand {
         flags::XtaskCmd::Deprecated(_flags) => deprecation_notice(),
+        flags::XtaskCmd::SourceBuild(flags) => source_build::build(shell, &flags.target),
         flags::XtaskCmd::Build(flags) => build::build(shell, flags),
         flags::XtaskCmd::Format(flags) => format::format(shell, flags),
         flags::XtaskCmd::Lint(flags) => lint::lint(shell, flags),

@@ -11,10 +11,12 @@ use yinz_types::{
     session_update::{Capabilities, Installation},
     update_client::{ParticipantInvocation, ParticipantRequest},
 };
+mod artifacts;
 mod coordinator;
 mod journal;
+mod source_build;
 mod transport;
-pub(crate) use coordinator::run as coordinator_main;
+pub(crate) use coordinator::run_with_source as coordinator_main;
 
 pub(crate) fn resume_client_update(
     session: &str,
@@ -38,6 +40,8 @@ pub(crate) fn resume_client_update(
 
 pub(crate) fn capabilities() -> Capabilities {
     Capabilities {
+        source_binary_sha256: yinz_runtime::session_update::running_executable_digest().ok(),
+        source_update: true,
         build_version: yinz_runtime::consts::VERSION.into(),
         client_server: yinz_runtime::consts::CLIENT_SERVER_CONTRACT_VERSION,
         ssh_bootstrap: yinz_runtime::consts::REMOTE_BOOTSTRAP_VERSION,
@@ -86,7 +90,7 @@ fn executable_version(executable: &Path) -> Result<String> {
     Ok(version.to_owned())
 }
 
-fn validate_capabilities(executable: &Path) -> Result<()> {
+fn validate_capabilities(executable: &Path) -> Result<Capabilities> {
     let output = yinz_process::ssh::bootstrap_output(
         std::process::Command::new(executable).arg(yinz_types::session_update::CAPABILITIES_ARG),
         Duration::from_secs(20),
@@ -107,7 +111,7 @@ fn validate_capabilities(executable: &Path) -> Result<()> {
             && peer.migration == ours.migration,
         "staged executable has incompatible update or migration contracts"
     );
-    Ok(())
+    Ok(peer)
 }
 
 fn inventory(executable: &Path, data_dir: &Path) -> Result<Installation> {
@@ -174,6 +178,12 @@ pub(crate) fn participate(invocation: ParticipantInvocation) -> Result<serde_jso
     match invocation.request {
         ParticipantRequest::Inventory => serde_json::to_value(inventory(&executable, &data_dir)?)
             .context("encode installation inventory"),
+        ParticipantRequest::SourceChunk {
+            operation,
+            artifact,
+            offset,
+            bytes,
+        } => artifacts::receive(&data_dir, &operation, &artifact, offset, &bytes),
         ParticipantRequest::Prepare { operation, release } => {
             uuid::Uuid::parse_str(&operation).context("invalid update operation id")?;
             transport::preflight_local_sessions()?;
@@ -237,18 +247,32 @@ pub(crate) fn participate(invocation: ParticipantInvocation) -> Result<serde_jso
             let identity = inventory(&executable, &data_dir)?;
             let target = update::version(&release.tag_name)?;
             anyhow::ensure!(
-                update::version(&identity.installed_version)? <= target
-                    && update::version(&identity.running_version)? <= target,
+                release.source.is_some()
+                    || (update::version(&identity.installed_version)? <= target
+                        && update::version(&identity.running_version)? <= target),
                 "refusing to downgrade a newer update participant"
             );
-            let client = http_client()?;
-            let prepared = update::prepare(
-                &release,
-                &identity.target,
-                &mut |url, output| update::download(&client, url, output),
-                &mut |_| {},
-            )?;
-            validate_capabilities(&prepared.source.join("yinz"))?;
+            let prepared = if release.source.is_some() {
+                artifacts::prepare(&release, &identity.target, &data_dir, &operation)?
+            } else {
+                let client = http_client()?;
+                update::prepare(
+                    &release,
+                    &identity.target,
+                    &mut |url, output| update::download(&client, url, output),
+                    &mut |_| {},
+                )?
+            };
+            let staged = validate_capabilities(&prepared.source.join("yinz"))?;
+            if let Some(source) = &release.source {
+                let artifact = source
+                    .artifacts
+                    .iter()
+                    .find(|artifact| artifact.target == identity.target)
+                    .context("source artifact missing for staged participant")?;
+                anyhow::ensure!(staged.source_update && staged.source_binary_sha256.as_deref() == Some(&artifact.binary_sha256),
+                    "staged executable lacks source update support or reports the wrong source identity");
+            }
             let mut transaction = update::transaction::Transaction::prepare(
                 &prepared.source,
                 &executable,
@@ -257,7 +281,9 @@ pub(crate) fn participate(invocation: ParticipantInvocation) -> Result<serde_jso
             )?;
             // Downloads happen without installation locks. A different operation
             // may have finished meanwhile; check again while both locks are held.
-            if update::version(&executable_version(&executable)?)? > target {
+            if release.source.is_none()
+                && update::version(&executable_version(&executable)?)? > target
+            {
                 transaction.rollback().context("discard staged downgrade")?;
                 bail!("installation became newer during preparation; refusing downgrade");
             }
@@ -284,7 +310,9 @@ pub(crate) fn participate(invocation: ParticipantInvocation) -> Result<serde_jso
                 ParticipantRequest::Rollback { .. } => transaction.rollback()?,
                 ParticipantRequest::Commit { .. } => transaction.commit()?,
                 ParticipantRequest::Status { .. } => {},
-                ParticipantRequest::Inventory | ParticipantRequest::Prepare { .. } => {
+                ParticipantRequest::Inventory
+                | ParticipantRequest::SourceChunk { .. }
+                | ParticipantRequest::Prepare { .. } => {
                     unreachable!()
                 },
             }

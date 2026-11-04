@@ -233,6 +233,7 @@ fn test_client_messages() {
     for command in [
         session_update::Command::Identity,
         session_update::Command::Start,
+        session_update::Command::StartSource,
         session_update::Command::ReleaseMigration {
             snapshot: "/tmp/session snapshot.json".into(),
         },
@@ -240,6 +241,7 @@ fn test_client_messages() {
             clients: vec![session_update::Client {
                 id: ClientId::new(42),
                 supports_update: true,
+                supports_source_update: true,
                 resumed: Some(("operation".into(), ClientId::new(7))),
                 configuration: "default_mode \"locked\"\n".into(),
                 mode: InputMode::Locked,
@@ -796,6 +798,7 @@ fn test_client_messages() {
             timezone: Some("America/Chicago".into()),
             supports_session_requests: true,
             supports_in_place_update: true,
+            supports_source_update: true,
             update_target: None,
             update_source_session: None,
             update_configuration: None,
@@ -822,6 +825,7 @@ fn test_client_messages() {
             timezone: Some("America/Chicago".into()),
             supports_session_requests: true,
             supports_in_place_update: true,
+            supports_source_update: true,
             update_target: None,
             update_source_session: None,
             update_configuration: None,
@@ -918,6 +922,7 @@ fn test_client_messages() {
             timezone: Some("America/Chicago".into()),
             supports_session_requests: true,
             supports_in_place_update: true,
+            supports_source_update: true,
             update_target: None,
             update_source_session: None,
             update_configuration: None,
@@ -6078,15 +6083,14 @@ fn attach_without_session_request_capability_decodes_as_unsupported() {
         ..Default::default()
     };
     let decoded = WireCliAssets::decode(older.encode_to_vec().as_slice()).unwrap();
-    assert!(
-        !CliAssets::try_from(decoded)
-            .unwrap()
-            .supports_session_requests
-    );
+    let older = CliAssets::try_from(decoded).unwrap();
+    assert!(!older.supports_session_requests);
+    assert!(!older.supports_source_update);
     let first = ProtoClientToServerMsg::try_from(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             supports_session_requests: true,
             supports_in_place_update: true,
+            supports_source_update: true,
             update_target: None,
             update_source_session: None,
             update_configuration: None,
@@ -6105,6 +6109,7 @@ fn attach_without_session_request_capability_decodes_as_unsupported() {
         panic!("expected first client message");
     };
     assert!(cli_assets.supports_session_requests);
+    assert!(cli_assets.supports_source_update);
     let json: CliAssets = serde_json::from_str(
         r#"{"config_file_path":null,"config_dir":null,"should_ignore_config":false,
         "configuration_options":null,"layout":null,"terminal_window_size":{"rows":24,"cols":80},
@@ -6114,6 +6119,7 @@ fn attach_without_session_request_capability_decodes_as_unsupported() {
     .unwrap();
     assert!(!json.supports_session_requests);
     assert!(!json.supports_in_place_update);
+    assert!(!json.supports_source_update);
     assert!(json.update_target.is_none() && json.update_source_session.is_none());
     assert!(json.update_resume.is_none() && json.update_configuration.is_none());
     assert!(json.timezone.is_none());

@@ -2292,6 +2292,27 @@ pub fn start_server_impl(
                             .non_fatal()
                     })?;
                 },
+                ServerInstruction::StartSourceSessionUpdate(client) => {
+                    let request = yinz_types::session_update::Request {
+                        token: uuid::Uuid::new_v4().to_string(),
+                        operation: uuid::Uuid::new_v4().to_string(),
+                        command: yinz_types::session_update::Command::StartSource,
+                    };
+                    let result = update::handle(request, client, &session_state, &session_data);
+                    let text = match result.result {
+                        Ok(status) => format!(
+                            "Yinz update: {}",
+                            status["phase"].as_str().unwrap_or("starting")
+                        ),
+                        Err(error) => format!("Yinz update: {error}"),
+                    };
+                    with_session(&session_data, |session| {
+                        session
+                            .senders
+                            .send_to_screen(ScreenInstruction::Notify(text, None, None, None))
+                            .non_fatal()
+                    })?;
+                },
                 ServerInstruction::UpdateRequest {
                     client,
                     request,

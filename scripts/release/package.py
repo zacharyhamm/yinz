@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package and smoke-test a native release; run from the repository root."""
+"""Package a release; native packages also execute a smoke test. Run from the repository root."""
 import argparse
 import os
 from pathlib import Path
@@ -20,16 +20,21 @@ def run(*args):
     return subprocess.check_output(args, text=True).strip()
 
 
-def package(target):
-    if (platform.system(), platform.machine()) != TARGETS[target]:
+def package(target, cross=False):
+    if cross and target not in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"):
+        raise RuntimeError("Cross packaging supports only Linux x86_64 and aarch64")
+    if not cross and (platform.system(), platform.machine()) != TARGETS[target]:
         raise RuntimeError("Release target does not match native runner")
-    binary = Path("target/release/yinz").resolve()
+    binary = (Path("target") / target / "release/yinz" if cross else Path("target/release/yinz")).resolve()
     binary_type = run("file", str(binary))
-    expected_arch = {"x86_64": "x86-64", "aarch64": "ARM aarch64", "arm64": "arm64"}[platform.machine()]
-    if expected_arch not in binary_type:
+    expected_arch = {"x86_64": "x86-64", "aarch64": "ARM aarch64", "arm64": "arm64"}[TARGETS[target][1]]
+    expected_format = "ELF 64-bit" if TARGETS[target][0] == "Linux" else "Mach-O"
+    if expected_arch not in binary_type or expected_format not in binary_type:
         raise RuntimeError(f"Incorrect executable architecture: {binary_type}")
     print(binary_type)
-    if platform.system() == "Darwin":
+    if cross:
+        dependencies = run("readelf", "-d", str(binary))
+    elif platform.system() == "Darwin":
         dependencies = run("otool", "-L", str(binary))
         for line in dependencies.splitlines()[1:]:
             dependency = line.strip().split(" (", 1)[0]
@@ -43,8 +48,11 @@ def package(target):
     output = Path("dist")
     output.mkdir(exist_ok=True)
     archive = output / f"yinz-{target}.tar.gz"
-    with tempfile.TemporaryDirectory() as temp:
+    # Keep the previous artifact intact until all validation succeeds. The
+    # temporary archive shares its filesystem, so publication is one rename.
+    with tempfile.TemporaryDirectory(dir=output, prefix=".package-") as temp:
         root = Path(temp)
+        staged_archive = root / archive.name
         stage = root / "stage"
         stage.mkdir()
         shutil.copy2(binary, stage / "yinz")
@@ -53,11 +61,11 @@ def package(target):
         shutil.copy2("LICENSE", stage / "LICENSE")
         shutil.copy2("README.md", stage / "README.md")
         (stage / "DEPENDENCIES.txt").write_text(dependencies + "\n")
-        with tarfile.open(archive, "w:gz") as bundle:
+        with tarfile.open(staged_archive, "w:gz") as bundle:
             for path in sorted(stage.iterdir()):
                 bundle.add(path, arcname=path.name)
         extracted = root / "extracted"
-        with tarfile.open(archive) as bundle:
+        with tarfile.open(staged_archive) as bundle:
             bundle.extractall(extracted, filter="data")
         destination = root / "installed with spaces"
         subprocess.run([str(extracted / "install.sh"), "--bin-dir", str(destination / "bin"),
@@ -67,15 +75,19 @@ def package(target):
                 installed = destination / "data/plugins/builtins" / source.relative_to(stage / "plugins/builtins")
                 if installed.read_bytes() != source.read_bytes():
                     raise RuntimeError(f"Incorrect installed plugin: {installed}")
-        version = run(str(destination / "bin/yinz"), "--version")
-        expected = os.environ.get("RELEASE_TAG", "").removeprefix("v")
-        if expected and version != f"yinz {expected}":
-            raise RuntimeError(f"Unexpected version: {version}")
-        print(version)
+        if not cross:
+            version = run(str(destination / "bin/yinz"), "--version")
+            expected = os.environ.get("RELEASE_TAG", "").removeprefix("v")
+            if expected and version != f"yinz {expected}":
+                raise RuntimeError(f"Unexpected version: {version}")
+            print(version)
+        os.replace(staged_archive, archive)
     print(archive)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("target", choices=TARGETS)
-    package(parser.parse_args().target)
+    parser.add_argument("--cross", action="store_true", help="Package a target-specific binary without executing it")
+    args = parser.parse_args()
+    package(args.target, cross=args.cross)

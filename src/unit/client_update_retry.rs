@@ -261,6 +261,7 @@ fn coordinator_keeps_backups_after_client_startup_failure_and_repeated_recovery(
         .id;
     fixture.prepare(&operation);
     let release = crate::update::Release {
+        source: None,
         tag_name: yinz_runtime::consts::VERSION.into(),
         assets: vec![],
     };

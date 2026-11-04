@@ -4669,6 +4669,7 @@ dependencies = [
  "names",
  "nix",
  "openssl-sys",
+ "project-data",
  "rand 0.10.2",
  "regex",
  "semver",

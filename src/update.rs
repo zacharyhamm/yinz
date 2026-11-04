@@ -18,6 +18,13 @@ const RELEASE_URL: &str = "https://api.github.com/repos/zacharyhamm/yinz/release
 pub(crate) struct Release {
     pub(crate) tag_name: String,
     pub(crate) assets: Vec<Asset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source: Option<SourceRelease>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct SourceRelease {
+    pub(crate) commit: String,
+    pub(crate) artifacts: Vec<yinz_types::update_client::SourceArtifact>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct Asset {
@@ -227,6 +234,10 @@ pub(crate) fn discover(
     let mut metadata = Vec::new();
     download(RELEASE_URL, &mut metadata)?;
     let release: Release = serde_json::from_slice(&metadata).context("parse GitHub release")?;
+    anyhow::ensure!(
+        release.source.is_none(),
+        "stable release metadata cannot select source artifacts"
+    );
     let latest = version(&release.tag_name)?;
     anyhow::ensure!(latest.pre.is_empty(), "latest release is a prerelease");
     Ok(release)
@@ -266,7 +277,10 @@ pub(crate) fn prepare_artifact(
     progress: &mut impl FnMut(Progress),
 ) -> Result<PreparedRelease> {
     let latest = version(&release.tag_name)?;
-    anyhow::ensure!(latest.pre.is_empty(), "release is a prerelease");
+    anyhow::ensure!(
+        release.source.is_some() || latest.pre.is_empty(),
+        "release is a prerelease"
+    );
     let name = format!("yinz-{target}.tar.gz");
     let archive_url = asset(release, &name)?;
     let sums_url = asset(release, "SHA256SUMS")?;

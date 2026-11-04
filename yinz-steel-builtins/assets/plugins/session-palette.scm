@@ -19,7 +19,27 @@
 (define (describe item description) (hash-insert (display-description item description) "search" (string-append (get item "search" "") " " description)))
 
 (define (load configuration)
-  (yinz-palette-register "sessions" "Sessions" root-actions))
+  (yinz-palette-register "sessions" "Sessions"
+    (lambda (query context)
+      (append root-actions
+        (if (source-update-eligible?)
+          (list (action "update-yinz-source" "Update Yinz from local main…"
+              (defer (lambda ()
+                  (unless (source-update-eligible?) (error "The canonical yinz project is no longer registered"))
+                  (require-success (yinz-command "UpdateYinzFromSource"))
+                  (complete "Source update requested. Compilation and progress will appear in this session.")))))
+          '())))))
+
+(define (source-update-eligible?)
+  ;; A missing registry or unavailable data permission should not hide ordinary actions.
+  (with-handler (lambda (failure) #f)
+    (define request (yinz-agent-model "store" "EntityRequest" "project"))
+    (define rows (yinz-data-fetch "shared:yinz"
+        (hash-insert (hash-insert request "filter" (hash "Eq" (list "name" (hash "Text" "yinz")))) "limit" 2)))
+    (define registry (yinz-agent-model "projects" "FromRows" (list rows)))
+    (define project (get registry "yinz" #f))
+    (and project (not (get rows "truncated" #t))
+      (yinz-agent-model "projects" "SourceUpdateProject" (list project)))))
 
 (define (snapshot) (yinz-command "GetSessionList"))
 (define (current state)

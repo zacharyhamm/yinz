@@ -1214,3 +1214,33 @@ fn a_remote_folder_is_not_labelled_by_a_local_project_at_the_same_path() {
         "named by its own repository, never by the local project at that path",
     );
 }
+
+#[test]
+fn source_update_project_requires_named_canonical_git_repository() {
+    let mut project = validated("yinz", "/repo");
+    for origin in [
+        "https://github.com/zacharyhamm/yinz",
+        "git@github.com:zacharyhamm/yinz.git",
+        "ssh://git@GITHUB.COM:22/zacharyhamm/yinz.git/",
+    ] {
+        project.remote = Some(origin.into());
+        assert!(source_update_project(&project), "{origin}");
+    }
+    for origin in [
+        "https://github.com/other/yinz",
+        "https://github.com/zacharyhamm/yinz-fork",
+        "https://github.com:8443/zacharyhamm/yinz",
+        "https://github.com/zacharyhamm/../yinz",
+        "/local/yinz",
+        "",
+    ] {
+        project.remote = Some(origin.into());
+        assert!(!source_update_project(&project), "{origin}");
+    }
+    project.remote = Some("https://github.com/zacharyhamm/yinz".into());
+    project.name = "other".into();
+    assert!(!source_update_project(&project));
+    project.name = "yinz".into();
+    project.provider_identity = Some("provider:repo".into());
+    assert!(!source_update_project(&project));
+}

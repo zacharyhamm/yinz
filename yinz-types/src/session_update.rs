@@ -19,6 +19,7 @@ pub enum Command {
     Identity,
     Inventory,
     Start,
+    StartSource,
     Status,
     Cancel,
     PrepareMigration,
@@ -66,6 +67,8 @@ pub struct Reply {
 pub struct Client {
     pub id: ClientId,
     pub supports_update: bool,
+    #[serde(default)]
+    pub supports_source_update: bool,
     pub resumed: Option<(String, ClientId)>,
     pub configuration: String,
     pub mode: crate::data::InputMode,
@@ -79,6 +82,8 @@ pub struct Inventory {
     pub server_instance: String,
     pub executable: PathBuf,
     pub running_version: String,
+    #[serde(default)]
+    pub running_binary_sha256: Option<String>,
     pub assets: CliAssets,
     pub configuration: serde_json::Value,
     pub clients: Vec<Client>,
@@ -86,6 +91,10 @@ pub struct Inventory {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capabilities {
+    #[serde(default)]
+    pub source_binary_sha256: Option<String>,
+    #[serde(default)]
+    pub source_update: bool,
     pub build_version: String,
     pub client_server: usize,
     pub ssh_bootstrap: usize,

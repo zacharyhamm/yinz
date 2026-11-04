@@ -277,6 +277,7 @@ pub(super) fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::OpenCommandPaneInPlaceOfPaneId
         | CommandType::RunCommand
         | CommandType::UpdateYinz
+        | CommandType::UpdateYinzFromSource
         | CommandType::CancelYinzUpdate
         | CommandType::YinzUpdateStatus
         | CommandType::AgentControl

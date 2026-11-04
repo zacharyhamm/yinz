@@ -31,13 +31,20 @@ fn main() {
         yinz_runtime::logging::configure_logger();
         let result = (|| {
             let args: Vec<_> = std::env::args_os().skip(2).collect();
-            let [socket, data_dir, operation] = args.as_slice() else {
+            let source_build = args.last().is_some_and(|arg| arg == "--source-build");
+            let args = if source_build {
+                &args[..args.len() - 1]
+            } else {
+                &args[..]
+            };
+            let [socket, data_dir, operation] = args else {
                 anyhow::bail!("invalid session update invocation");
             };
             live_update::coordinator_main(
                 std::path::Path::new(socket),
                 std::path::Path::new(data_dir),
                 operation.to_str().context("invalid update operation id")?,
+                source_build,
             )
         })();
         if let Err(error) = result {

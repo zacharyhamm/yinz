@@ -9,10 +9,25 @@ pub const UNSUPPORTED_CLIENT: &str =
 pub const PARTICIPANT_ARG: &str = "--update-participant";
 pub const RESUME_ARG: &str = "--resume-client";
 
+/// Immutable identity of one server-built archive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceArtifact {
+    pub target: String,
+    pub sha256: String,
+    pub size: u64,
+    pub binary_sha256: String,
+}
+
 /// Each helper invocation acts on one durable, operation-scoped installation journal.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ParticipantRequest {
     Inventory,
+    SourceChunk {
+        operation: String,
+        artifact: SourceArtifact,
+        offset: u64,
+        bytes: Vec<u8>,
+    },
     Prepare {
         operation: String,
         release: serde_json::Value,
@@ -35,7 +50,8 @@ impl ParticipantRequest {
     pub fn operation(&self) -> Option<&str> {
         match self {
             Self::Inventory => None,
-            Self::Prepare { operation, .. }
+            Self::SourceChunk { operation, .. }
+            | Self::Prepare { operation, .. }
             | Self::Status { operation }
             | Self::Publish { operation }
             | Self::Rollback { operation }
