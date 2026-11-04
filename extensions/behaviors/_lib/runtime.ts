@@ -296,6 +296,7 @@ export async function saveState(
   context: Context,
   action: string,
   value: LifecycleState,
+  eventName = `event-${crypto.randomUUID()}`,
 ): Promise<{ dataHandles: Handle[] }> {
   const state = StateSchema.parse(value);
   const event = EventSchema.parse({
@@ -305,7 +306,7 @@ export async function saveState(
   });
   const eventHandle = await context.writeResource(
     "event",
-    `event-${crypto.randomUUID()}`,
+    eventName,
     event,
   );
   const stateHandle = await context.writeResource("state", "state", state);

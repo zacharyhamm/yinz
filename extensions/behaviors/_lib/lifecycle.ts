@@ -105,6 +105,8 @@ export const StateSchema = z.object({
     "done",
   ]),
   planVersion: z.number().int().nonnegative(),
+  // Fences evidence from an earlier attempt even when rollback restores the same phase.
+  rollbackId: z.uuid().optional(),
   classification: z.object({
     classification: z.enum(["bug", "feature", "maintenance", "security"]),
     summary: Text,
@@ -125,6 +127,88 @@ export const StateSchema = z.object({
   lastFailure: Text.optional(),
 });
 export type LifecycleState = z.infer<typeof StateSchema>;
+
+export const LifecycleStepSchema = z.enum([
+  "triage",
+  "plan",
+  "review_plan",
+  "approve",
+  "implement",
+  "review_code",
+  "ready",
+  "merge",
+  "summarize",
+]);
+export const RollbackInputSchema = z.object({
+  step: LifecycleStepSchema,
+  request: Text,
+}).strict();
+
+/** Rewind decisions, not source files or Git refs. Earlier evidence remains required. */
+export function rollbackState(
+  current: LifecycleState,
+  step: z.infer<typeof LifecycleStepSchema>,
+  id: string,
+): LifecycleState {
+  const state = StateSchema.parse(current);
+  const index = LifecycleStepSchema.options.indexOf(
+    LifecycleStepSchema.parse(step),
+  );
+  const required = [
+    state.classification,
+    state.plan,
+    state.planReview,
+    state.approval,
+    state.implementation,
+    state.codeReview,
+    state.mergeAuthorization,
+    state.receipt,
+  ];
+  for (let previous = 0; previous < index; previous++) {
+    if (!required[previous]) {
+      throw new Error(
+        `Cannot restart ${step}: missing ${
+          LifecycleStepSchema.options[previous]
+        } evidence`,
+      );
+    }
+  }
+  state.rollbackId = z.uuid().parse(id);
+  delete state.outcome;
+  delete state.lastFailure;
+  delete state.attempt;
+  // A merge which already landed is a fact. Retrying merge/close-out reuses its receipt.
+  if (index >= 7 && state.receipt) {
+    state.phase = "merged";
+    return state;
+  }
+  delete state.receipt;
+  if (index <= 6) delete state.mergeAuthorization;
+  if (index <= 5) {
+    delete state.codeReview;
+    if (state.implementation) delete state.implementation.head;
+  }
+  if (index <= 3) delete state.approval;
+  if (index <= 2) delete state.planReview;
+  if (index <= 1) delete state.plan;
+  if (index === 0) delete state.classification;
+  // Keep the worktree/branch binding, including dirty work, for subsequent attempts.
+  const phases = [
+    "triaging",
+    "classified",
+    "planning",
+    "planning",
+    "approved",
+    "implementing",
+    "implementing",
+    "ready",
+    "merged",
+  ] as const;
+  state.phase = step === "implement" && state.implementation
+    ? "implementing"
+    : phases[index];
+  return StateSchema.parse(state);
+}
 
 /** The behavior adapter and pure transition layer share the same public input contract. */
 export const ActionSchemas = {
@@ -566,6 +650,41 @@ export async function readAgenda(
   validateAgendaItem(item, allowCompleted);
   const issue = { workspace, itemId, text: item.text, note: item.note };
   return IssueSchema.parse({ ...issue, digest: await digestIssue(issue) });
+}
+
+/** Rollback reopens a completed task without changing its requirements. Safe to retry. */
+export async function reopenAgenda(
+  issue: Issue,
+  command: AgendaCommand = agendaCommand,
+): Promise<void> {
+  const item = await agendaRecord(issue.workspace, issue.itemId, command);
+  validateAgendaItem(item, true);
+  const digest = await digestIssue({
+    ...issue,
+    text: item.text,
+    note: item.note,
+  });
+  if (digest !== issue.digest) {
+    throw new Error(
+      "Agenda description changed during rollback; inspect the recovery record",
+    );
+  }
+  if (item.completed) {
+    await command([
+      "--workspace",
+      issue.workspace,
+      "--json",
+      "item",
+      "reopen",
+      String(issue.itemId),
+    ]);
+  }
+  const after = await readAgenda(issue.workspace, issue.itemId, false, command);
+  if (after.digest !== issue.digest) {
+    throw new Error(
+      "Agenda description changed during rollback; inspect the recovery record",
+    );
+  }
 }
 
 /** Complete only the captured issue; retries preserve its description and verify the result. */

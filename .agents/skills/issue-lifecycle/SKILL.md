@@ -106,12 +106,34 @@ the repair and refresh review evidence before retrying integration. Do not
 silently abort a rebase, reset changes, delete branches, force a merge or remove
 a lock file held by another process.
 
-An unresolved pane task blocks lifecycle mutations and replacement workers. Use
-`resume-agent` to observe its original submission after a timeout, dialog or
-lost response. Do not rerun `agent` to retry the prompt. Unknown submissions and
-uncertain launches require inspection; no automatic respawn or resubmission is
-safe. Panes stay visible. Missing or stale Codex, Muse or AGY hooks fail
-preflight and are not installed automatically.
+An unresolved pane task blocks ordinary lifecycle mutations and replacement
+workers. Use `resume-agent` to observe its original submission after a timeout,
+dialog or lost response. Do not rerun `agent` to retry the prompt automatically.
+Panes stay visible. Missing or stale Codex, Muse or AGY hooks fail preflight and
+are not installed automatically.
+
+When the user asks to restart or roll back, that request authorizes superseding
+the previous attempt regardless of its outcome. Do not require successful
+resume, proof of non-delivery, `confirmedStopped`, or another permission question.
+Use `rollback` with `{step, request}` to return to any lifecycle step, retaining
+its prerequisites and invalidating downstream decisions. Supported steps are
+`triage`, `plan`, `review_plan`, `approve`, `implement`, `review_code`, `ready`,
+`merge` and `summarize`. Use `restart-agent` with the current `taskId`, actual
+`request`, and ordinary agent inputs to roll back to a worker step and start a
+fresh assignment. Select the intended running session; the old session may be
+gone. Repeating identical restart inputs resumes the replacement, while a new
+restart must target its new task ID.
+
+Rollback preserves history, Git changes and worktree ownership, reopens completed
+Agenda tasks, and keeps plan versions increasing. A landed merge is never undone;
+merge and close-out retries reuse its receipt. Changed requirements require
+rollback to triage. Old panes remain visible: inspect and stop surviving workers
+before replacement work edits the same checkout. Superseding their assignment
+does not prove their processes stopped. After an interrupted rollback, use
+`resume-rollback` to finish its recorded intent and resume its replacement; do
+not ask again for authorization already recorded on that operation. A new explicit
+rollback request may also supersede a pending recovery; it preserves the old intent
+in history and does not require completing that recovery first.
 
 If a worker completed but returned unusable evidence, `discard-agent` requires
 the operator's actual `request` and `confirmedStopped: true`. It accepts a
@@ -121,8 +143,9 @@ submission, background work or other resources. Lifecycle state must still match
 the task's original snapshot. After discarding a rejected launch, correct the
 configuration in a new `agent` request. No configuration change or relaunch is
 automatic. Malformed responses, transport failures and legacy uncertain launches
-remain blocked. Discard cannot end active work or undo source changes; inspect
-any changes before assigning replacement work.
+remain blocked for discard; an explicit rollback or restart can supersede them.
+Discard cannot end active work or undo source changes; inspect any changes before
+assigning replacement work.
 
 If a state-changing transition was saved but its final task-completion write
 failed, `resume-agent` validates the completed result and reconciles the task

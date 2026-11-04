@@ -100,17 +100,28 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
   }[] = [];
   const calls: Parameters<IssueAgentContext["runModel"]>[0][] = [];
   let serial = 0;
+  let childBehavior: string | undefined;
   const controls = {
     evidence,
     agenda: issue,
     failEventOnce: false,
     failTaskCompletionOnce: false,
+    failWrite: undefined as
+      | ((
+        spec: string,
+        name: string,
+        value: Record<string, unknown>,
+      ) => boolean)
+      | undefined,
     childPhase: "completed",
     childOutcome: "completed",
     childBackground: [] as string[],
     childPatch: {} as Record<string, unknown>,
     resultPatch: {} as Record<string, unknown>,
     runError: undefined as string | undefined,
+    reopenError: undefined as string | undefined,
+    reopened: 0,
+    receipt: { status: "missing" } as unknown,
     agentRunner: undefined as YinzRunner | undefined,
     agendaReads: 0,
     afterRun: () => {},
@@ -133,6 +144,10 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
     readResource: (name) =>
       Promise.resolve(structuredClone(resources.get(name) ?? null)),
     writeResource: (spec, name, value) => {
+      if (controls.failWrite?.(spec, name, value)) {
+        controls.failWrite = undefined;
+        return Promise.reject(new Error("Interrupted recovery write"));
+      }
       if (spec === "event" && controls.failEventOnce) {
         controls.failEventOnce = false;
         return Promise.reject(new Error("Fixture event write failed"));
@@ -168,6 +183,12 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
     },
     runModel: async (request) => {
       calls.push(request);
+      const fresh = request.name !== undefined &&
+        request.name !== childBehavior;
+      if (fresh) {
+        child.clear();
+        childBehavior = request.name;
+      }
       if (controls.agentRunner) {
         const task = AgentTaskSchema.parse(resources.get("agent-task"));
         const agentContext: AgentContext = {
@@ -204,7 +225,7 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
           return { ok: false, error: { message: String(error) } };
         }
       }
-      if (request.method === "run") {
+      if (request.method === "run" || (request.method === "recover" && fresh)) {
         const task = AgentTaskSchema.parse(resources.get("agent-task"));
         equal(request.name, task.behaviorName);
         const { prompt, ...rawConfig } = request.arguments!;
@@ -258,6 +279,13 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
       return Promise.resolve(controls.agenda);
     },
     inspect: () => Promise.resolve(controls.repo),
+    gitOperation: () => Promise.resolve(controls.receipt),
+    reopenAgenda: () => {
+      controls.reopened++;
+      return controls.reopenError
+        ? Promise.reject(new Error(controls.reopenError))
+        : Promise.resolve();
+    },
     realPath: (path) => Promise.resolve(path),
     id: () => `a6da10b0-c980-4b82-b920-${String(++serial).padStart(12, "0")}`,
     now: () => timestamp,
@@ -1041,4 +1069,420 @@ Deno.test("legacy stopped preparation failures remain blocked without server non
     equal(h.resources.get("agent-task"), original);
     await rejects(() => assertNoPendingAgent(h.context), "unresolved");
   }
+});
+
+Deno.test("explicit restart supersedes every worker outcome without querying or discarding the old child", async () => {
+  for (
+    const failure of [
+      "timed_out",
+      "failed",
+      "target_changed",
+      "transport_error",
+      "rejected",
+      "completed",
+      "missing",
+    ]
+  ) {
+    const initial = transition(createState(issue), "triage", triage);
+    const evidence = {
+      summary: "New plan",
+      steps: [{ id: "fix", description: "Fix it", files: [] }],
+      testingStrategy: "Focused tests",
+    };
+    const h = harness(initial, evidence);
+    h.controls.childPhase = "waiting";
+    h.controls.childOutcome = failure;
+    h.controls.runError = "Old attempt failed";
+    await rejects(
+      () =>
+        h.methods.run_agent.execute({ ...options, role: "plan" }, h.context),
+      "Old attempt failed",
+    );
+    const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    if (failure === "missing") h.child.clear();
+    h.controls.childPhase = "completed";
+    h.controls.childOutcome = "completed";
+    h.controls.runError = undefined;
+    const args = {
+      ...options,
+      role: "plan" as const,
+      session: "replacement-session",
+      taskId: old.id,
+      request: "Restart planning",
+    };
+    await h.methods.restart_agent.execute(args, h.context);
+    const next = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    assert(next.id !== old.id && next.behaviorName !== old.behaviorName);
+    equal(next.config.session, "replacement-session");
+    equal(next.status, "completed");
+    equal(h.calls.length, 2);
+    equal(h.calls[1].method, "recover");
+    equal((await loadState(h.context)).plan?.version, 1);
+    equal(
+      AgentTaskSchema.parse(h.resources.get(`agent-task-${old.id}`)).status,
+      "superseded",
+    );
+    const recovery = h.resources.get("recovery") as {
+      task: unknown;
+      before: unknown;
+    };
+    equal(recovery.task, old);
+    equal(recovery.before, initial);
+    // Retrying a request after a lost response observes the replacement, never spawns a third worker.
+    await h.methods.restart_agent.execute(args, h.context);
+    equal(h.calls.length, 2);
+    equal((await loadState(h.context)).plan?.version, 1);
+    await rejects(
+      () =>
+        h.methods.restart_agent.execute(
+          { ...args, session: "changed" },
+          h.context,
+        ),
+      "current assignment",
+    );
+  }
+});
+
+Deno.test("rollback fences old results even when returning to the same lifecycle phase", async () => {
+  const h = harness();
+  h.controls.runError = "lost response";
+  await rejects(
+    () =>
+      h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+    "lost response",
+  );
+  const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  await h.methods.rollback.execute({
+    step: "triage",
+    request: "Restart triage",
+  }, h.context);
+  const state = await loadState(h.context);
+  equal(state.phase, "triaging");
+  assert(state.rollbackId !== undefined);
+  await h.methods.resume_agent.execute({}, h.context);
+  equal(h.calls.length, 1);
+  equal(await loadState(h.context), state);
+  // Even if an old task snapshot is accidentally restored, the generation fence rejects its result.
+  h.resources.set("agent-task", old);
+  h.controls.runError = undefined;
+  await rejects(
+    () => h.methods.resume_agent.execute({}, h.context),
+    "Lifecycle changed",
+  );
+  equal(await loadState(h.context), state);
+});
+
+Deno.test("rollback keeps applied evidence in its history and reopens close-out", async () => {
+  const h = harness();
+  h.controls.failTaskCompletionOnce = true;
+  await rejects(
+    () =>
+      h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+    "completion write failed",
+  );
+  const applied = await loadState(h.context);
+  await h.methods.rollback.execute(
+    { step: "triage", request: "Start again" },
+    h.context,
+  );
+  equal((h.resources.get("recovery") as { before: unknown }).before, applied);
+  equal((await loadState(h.context)).classification, undefined);
+  equal(h.controls.reopened, 1);
+  await assertNoPendingAgent(h.context);
+});
+
+Deno.test("interrupted rollback blocks other mutations and resumes without requiring the old worker", async () => {
+  const h = harness();
+  h.controls.runError = "session disappeared";
+  await rejects(
+    () =>
+      h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+    "session disappeared",
+  );
+  const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const args = {
+    ...options,
+    role: "triage" as const,
+    taskId: old.id,
+    request: "Restart",
+  };
+  h.controls.reopenError = "Agenda unavailable";
+  await rejects(
+    () => h.methods.restart_agent.execute(args, h.context),
+    "Agenda unavailable",
+  );
+  equal(h.calls.length, 1);
+  await rejects(
+    () => h.methods.resume_agent.execute({}, h.context),
+    "resume-rollback",
+  );
+  await rejects(() => assertNoPendingAgent(h.context), "resume-rollback");
+  h.child.clear();
+  h.controls.reopenError = undefined;
+  h.controls.runError = undefined;
+  h.controls.failEventOnce = true;
+  await rejects(
+    () => h.methods.resume_rollback.execute({}, h.context),
+    "event write failed",
+  );
+  await h.methods.resume_rollback.execute({}, h.context);
+  equal(h.calls.length, 2);
+  equal(
+    AgentTaskSchema.parse(h.resources.get("agent-task")).status,
+    "completed",
+  );
+  await h.methods.resume_rollback.execute({}, h.context);
+  equal(h.calls.length, 2);
+});
+
+Deno.test("replacement failure remains resumable and a stale restart request cannot replace a newer assignment", async () => {
+  const h = harness();
+  h.controls.runError = "provider unavailable";
+  await rejects(
+    () =>
+      h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+    "provider unavailable",
+  );
+  const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const args = {
+    ...options,
+    role: "triage" as const,
+    taskId: old.id,
+    request: "Restart",
+  };
+  await rejects(
+    () => h.methods.restart_agent.execute(args, h.context),
+    "provider unavailable",
+  );
+  const replacement = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  assert(replacement.id !== old.id);
+  equal(replacement.lastError, "provider unavailable");
+  h.controls.runError = undefined;
+  await h.methods.restart_agent.execute(args, h.context);
+  equal(
+    AgentTaskSchema.parse(h.resources.get("agent-task")).id,
+    replacement.id,
+  );
+  await h.methods.run_agent.execute({ ...options, role: "triage" }, h.context);
+  const calls = h.calls.length;
+  await rejects(
+    () => h.methods.restart_agent.execute(args, h.context),
+    "superseded",
+  );
+  equal(h.calls.length, calls);
+});
+
+Deno.test("rollback validates prerequisites and refreshed requirements before superseding a task", async () => {
+  const h = harness();
+  await h.methods.run_agent.execute({ ...options, role: "triage" }, h.context);
+  const before = structuredClone([...h.resources]);
+  await rejects(
+    () =>
+      h.methods.rollback.execute(
+        { step: "merge", request: "Retry" },
+        h.context,
+      ),
+    "missing plan evidence",
+  );
+  equal([...h.resources], before);
+  h.controls.agenda = {
+    ...issue,
+    note: "New requirements",
+    digest: "e".repeat(64),
+  };
+  await rejects(
+    () =>
+      h.methods.rollback.execute({ step: "plan", request: "Retry" }, h.context),
+    "roll back to triage",
+  );
+  equal([...h.resources], before);
+  await h.methods.rollback.execute({
+    step: "triage",
+    request: "Start with the new requirements",
+  }, h.context);
+  equal((await loadState(h.context)).issue, h.controls.agenda);
+  assert(
+    !h.methods.rollback.arguments.safeParse({ step: "plan", request: " " })
+      .success,
+  );
+});
+
+Deno.test("every rollback persistence boundary can be resumed without duplicate dispatch", async () => {
+  for (
+    const boundary of [
+      "archive",
+      "state",
+      "replacement",
+      "history",
+      "completion",
+    ]
+  ) {
+    const h = harness();
+    h.controls.runError = "lost old worker";
+    await rejects(
+      () =>
+        h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+      "lost old worker",
+    );
+    const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    h.controls.runError = undefined;
+    h.controls.failWrite = (spec, name, value) => {
+      switch (boundary) {
+        case "archive":
+          return name === `agent-task-${old.id}`;
+        case "state":
+          return spec === "state";
+        case "replacement":
+          return name === "agent-task" && value.id !== old.id;
+        case "history":
+          return spec === "recovery" && name !== "recovery";
+        case "completion":
+          return name === "recovery" && value.status === "completed";
+        default:
+          return false;
+      }
+    };
+    const args = {
+      ...options,
+      role: "triage" as const,
+      taskId: old.id,
+      request: "Restart",
+    };
+    await rejects(
+      () => h.methods.restart_agent.execute(args, h.context),
+      "Interrupted recovery write",
+    );
+    equal(h.calls.length, 1);
+    await rejects(() => assertNoPendingAgent(h.context), "resume-rollback");
+    await h.methods.restart_agent.execute(args, h.context);
+    await h.methods.resume_rollback.execute({}, h.context);
+    equal(h.calls.length, 2);
+    equal((await loadState(h.context)).phase, "classified");
+    equal(
+      AgentTaskSchema.parse(h.resources.get("agent-task")).status,
+      "completed",
+    );
+  }
+});
+
+Deno.test("rollback reconciles a landed merge before clearing an interrupted attempt", async () => {
+  let state = transition(implementing(), "review_code", {
+    planVersion: 1,
+    commit: head,
+    steps: [{ id: "fix", status: "implemented" }],
+    findings: [],
+  });
+  state = transition(state, "ready", { commit: head, mergeRequest: "Merge" });
+  const attempt = {
+    id: "a6da10b0-c980-4b82-b920-640238095f1b",
+    originalHead: head,
+    startedAt: timestamp,
+  };
+  state = transition(state, "begin_merge", { attempt });
+  for (const step of ["triage", "plan", "merge", "summarize"] as const) {
+    const h = harness(state);
+    h.controls.receipt = {
+      status: "merged",
+      attemptId: attempt.id,
+      originalCommit: head,
+      rebasedCommit: "c".repeat(40),
+      mergedCommit: "c".repeat(40),
+      baseCommit: "b".repeat(40),
+      worktree: "/repo/issue",
+      branch: "issue-85",
+      mergedAt: timestamp,
+      issueKey: "default/85",
+      issueDigest: issue.digest,
+      ci: { status: "passed", command: ["cargo", "x", "ci", "check"] },
+    };
+    await h.methods.rollback.execute(
+      { step, request: "Restart this step" },
+      h.context,
+    );
+    const next = await loadState(h.context);
+    assert(!next.attempt);
+    if (step === "merge" || step === "summarize") {
+      equal(next.phase, "merged");
+      equal(next.receipt?.attemptId, attempt.id);
+    } else {
+      assert(!next.receipt);
+    }
+    const history = h.resources.get("recovery") as {
+      reconciled: LifecycleState;
+    };
+    equal(history.reconciled.receipt?.attemptId, attempt.id);
+  }
+});
+
+Deno.test("a new explicit rollback supersedes an interrupted recovery including stale requirements", async () => {
+  const h = harness(transition(createState(issue), "triage", triage));
+  h.controls.reopenError = "Agenda offline";
+  await rejects(
+    () =>
+      h.methods.rollback.execute(
+        { step: "plan", request: "Retry planning" },
+        h.context,
+      ),
+    "Agenda offline",
+  );
+  const pending = h.resources.get("recovery") as { id: string };
+  h.controls.agenda = {
+    ...issue,
+    note: "Changed while offline",
+    digest: "e".repeat(64),
+  };
+  h.controls.reopenError = undefined;
+  await h.methods.rollback.execute({
+    step: "triage",
+    request: "Start over with the new requirements",
+  }, h.context);
+  const archived = h.resources.get(`recovery-${pending.id}`) as {
+    status: string;
+    supersededBy: string;
+  };
+  equal(archived.status, "superseded");
+  equal(archived.supersededBy, (await loadState(h.context)).rollbackId);
+  equal((await loadState(h.context)).issue, h.controls.agenda);
+  await assertNoPendingAgent(h.context);
+  await h.methods.resume_rollback.execute({}, h.context);
+  equal(h.calls.length, 0);
+});
+
+Deno.test("a new restart can change options while an earlier restart has not saved its replacement", async () => {
+  const h = harness();
+  h.controls.runError = "missing session";
+  await rejects(
+    () =>
+      h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+    "missing session",
+  );
+  const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const args = {
+    ...options,
+    role: "triage" as const,
+    taskId: old.id,
+    request: "Restart",
+  };
+  h.controls.reopenError = "Agenda offline";
+  await rejects(
+    () => h.methods.restart_agent.execute(args, h.context),
+    "Agenda offline",
+  );
+  const pending = h.resources.get("recovery") as { id: string };
+  h.controls.reopenError = undefined;
+  h.controls.runError = undefined;
+  await h.methods.restart_agent.execute({
+    ...args,
+    session: "new-session",
+    request: "Restart in the new session",
+  }, h.context);
+  equal(
+    AgentTaskSchema.parse(h.resources.get("agent-task")).config.session,
+    "new-session",
+  );
+  equal(
+    (h.resources.get(`recovery-${pending.id}`) as { status: string }).status,
+    "superseded",
+  );
+  equal(h.calls.length, 2);
 });

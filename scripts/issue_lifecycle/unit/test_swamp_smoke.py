@@ -184,6 +184,15 @@ print(json.dumps(response))
         calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
         self.assertEqual([call["args"][3] for call in calls], ["spawn", "wait", "prompt"])
         self.assertIn("Return exactly one JSON object", calls[-1]["stdin"])
+        records = json.loads(self.lifecycle("status"))["results"]
+        task = next(record for record in records if "behaviorName" in record)
+        restart = {"taskId": task["id"], "role": "triage", "session": "smoke",
+                   "kind": "claude", "request": "Restart triage in the disposable fixture"}
+        self.lifecycle("restart-agent", restart)
+        self.lifecycle("restart-agent", restart)
+        self.lifecycle("resume-rollback")
+        calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
+        self.assertEqual([call["args"][3] for call in calls], ["spawn", "wait", "prompt"] * 2)
         self.lifecycle("plan", {
             "summary": "Add the disposable fixture's marker.",
             "steps": [{"id": "marker", "description": "Create marker.txt", "files": ["marker.txt"]}],
@@ -224,6 +233,20 @@ print(json.dumps(response))
         self.lifecycle("summarize", {"outcomeMet": True, "summary": "The disposable marker reached local main; dispatch and Cargo/Yinz stub protocols passed."})
         self.assertEqual(self.state()["phase"], "done")
         self.assertTrue(self.agenda("item", "show", str(self.item_id))["item"]["completed"])
+        receipt = self.state()["receipt"]
+        self.lifecycle("rollback", {"step": "summarize", "request": "Repeat close-out in the fixture"})
+        self.assertEqual(self.state()["phase"], "merged")
+        self.assertEqual(self.state()["receipt"], receipt)
+        self.assertFalse(self.agenda("item", "show", str(self.item_id))["item"]["completed"])
+        self.lifecycle("merge")
+        self.assertEqual(len(self.cargo_log.read_text().splitlines()), 1)
+        self.lifecycle("summarize", {"outcomeMet": True, "summary": "Close-out replay verified."})
+        self.lifecycle("rollback", {"step": "plan", "request": "Replan the fixture after completion"})
+        self.assertEqual(self.state()["phase"], "classified")
+        self.assertEqual(self.state()["planVersion"], 1)
+        self.assertNotIn("plan", self.state())
+        self.assertFalse(self.agenda("item", "show", str(self.item_id))["item"]["completed"])
+        self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), receipt["mergedCommit"])
         self.assertEqual(self.git(self.repo, "status", "--short"), "")
 
 

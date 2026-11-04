@@ -4,8 +4,11 @@ import {
   digestIssue,
   type Issue,
   type LifecycleState,
+  LifecycleStepSchema,
   readAgenda,
   refreshIssue,
+  reopenAgenda,
+  rollbackState,
   transition,
 } from "../_lib/lifecycle.ts";
 
@@ -104,6 +107,126 @@ function ready(): LifecycleState {
     { commit: head, mergeRequest: "Merge this issue" },
   );
 }
+
+function done(): LifecycleState {
+  const attempt = {
+    id: "a6da10b0-c980-4b82-b920-640238095f1a",
+    originalHead: head,
+    startedAt: "2026-11-03T12:00:00.000Z",
+  };
+  const state = transition(ready(), "begin_merge", { attempt });
+  return transition(
+    transition(state, "merged", {
+      receipt: {
+        attemptId: attempt.id,
+        originalCommit: head,
+        rebasedCommit: changedHead,
+        baseCommit: "d".repeat(40),
+        mergedCommit: changedHead,
+        worktree: state.implementation!.worktree,
+        branch: state.implementation!.branch,
+        ciStatus: "passed",
+        mergedAt: "2026-11-03T12:10:00.000Z",
+      },
+    }),
+    "done",
+    { outcomeMet: true, summary: "Delivered" },
+  );
+}
+
+Deno.test("every lifecycle step can be restarted while retaining only prerequisite evidence", () => {
+  const original = done();
+  const snapshot = structuredClone(original);
+  const id = "a6da10b0-c980-4b82-b920-640238095f1b";
+  const fields = [
+    "classification",
+    "plan",
+    "planReview",
+    "approval",
+    "implementation",
+    "codeReview",
+    "mergeAuthorization",
+    "receipt",
+  ] as const;
+  for (const [index, step] of LifecycleStepSchema.options.entries()) {
+    const state = rollbackState(original, step, id);
+    equal(state.planVersion, original.planVersion);
+    equal(state.rollbackId, id);
+    equal(state.implementation?.worktree, original.implementation?.worktree);
+    equal(state.implementation?.branch, original.implementation?.branch);
+    assert(!state.outcome && !state.attempt && !state.lastFailure);
+    for (const [fieldIndex, field] of fields.entries()) {
+      // Worktree ownership survives rollback; already-landed merges are retained for retries.
+      if (field === "implementation" || (field === "receipt" && index >= 7)) {
+        continue;
+      }
+      equal(Boolean(state[field]), fieldIndex < index);
+    }
+    if (index <= 5) assert(!state.implementation?.head);
+    if (index >= 7) equal(state.receipt, original.receipt);
+  }
+  equal(original, snapshot);
+  // Plan numbers never rewind: evidence for an abandoned version cannot authorize a new plan.
+  const replanned = transition(
+    rollbackState(original, "plan", id),
+    "plan",
+    plan,
+  );
+  equal(replanned.plan?.version, 2);
+  rejects(
+    () =>
+      transition(replanned, "approve", {
+        planVersion: 1,
+        request: "Implement",
+      }),
+    "current plan",
+  );
+});
+
+Deno.test("rollback cannot skip missing prerequisites and permits retrying the initial step", () => {
+  const initial = createState(issue);
+  const id = "a6da10b0-c980-4b82-b920-640238095f1b";
+  equal(rollbackState(initial, "triage", id).phase, "triaging");
+  for (const step of LifecycleStepSchema.options.slice(1)) {
+    rejects(() => rollbackState(initial, step, id), "missing triage evidence");
+  }
+  equal(rollbackState(ready(), "merge", id).phase, "ready");
+  rejects(
+    () => rollbackState(ready(), "summarize", id),
+    "missing merge evidence",
+  );
+});
+
+Deno.test("rollback reopens a completed Agenda task idempotently and verifies its description", async () => {
+  let completed = true;
+  let reopenCount = 0;
+  const expected = { ...issue, digest: await digestIssue(issue) };
+  const command = (args: string[]) => {
+    if (args.includes("reopen")) {
+      equal(args.at(-1), String(issue.itemId));
+      completed = false;
+      reopenCount++;
+      return Promise.resolve({});
+    }
+    return Promise.resolve({
+      schema_version: 0,
+      item: {
+        ...agendaItem(),
+        text: issue.text,
+        note: issue.note,
+        completed,
+      },
+    });
+  };
+  await reopenAgenda(expected, command);
+  await reopenAgenda(expected, command);
+  equal(reopenCount, 1);
+  await rejectsAsync(
+    () => reopenAgenda({ ...expected, digest: "f".repeat(64) }, command),
+    "description changed",
+  );
+  equal(reopenCount, 1);
+});
 
 Deno.test("plan revision invalidates approval, code review and merge authorization", () => {
   const previous = ready();

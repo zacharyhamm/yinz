@@ -4,6 +4,7 @@ import {
   agentMethods,
   AgentTaskSchema,
   assertNoPendingAgent,
+  RecoverySchema,
 } from "./_lib/issue_agents.ts";
 import {
   ActionSchemas,
@@ -94,9 +95,16 @@ function recordedTransition<K extends keyof typeof ActionSchemas>(
 /** Local behavior; the issue's state and every decision are versioned Swamp data. */
 export const behavior = {
   type: "@yinz/issue-lifecycle",
-  version: "2026.11.03.1",
+  version: "2026.11.03.2",
   globalArguments: GlobalArgsSchema,
   resources: {
+    recovery: {
+      description:
+        "Requested rollback, previous state and assignment, and resumable replacement intent",
+      schema: RecoverySchema,
+      lifetime: "infinite",
+      garbageCollection: 1000,
+    },
     "agent-task": {
       description:
         "Current pane assignment and its imported lifecycle evidence",

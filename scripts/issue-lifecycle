@@ -15,6 +15,7 @@ from issue_lifecycle.workspace import agenda_workspace, local_environment
 METHODS = (
     "start", "status", "triage", "plan", "review-plan", "approve", "implement",
     "review-code", "ready", "merge", "repair", "refresh", "summarize", "agent", "resume-agent", "discard-agent",
+    "rollback", "resume-rollback", "restart-agent",
 )
 
 
@@ -54,7 +55,7 @@ def main():
         if inputs:
             parser.error("status takes no method inputs")
         return subprocess.run([
-            "swamp", "data", "query", f"modelName == {json.dumps(name)} && (name == 'state' || name == 'agent-task')",
+            "swamp", "data", "query", f"modelName == {json.dumps(name)} && (name == 'state' || name == 'agent-task' || name == 'recovery')",
             "--select", "content", "--json", *tail,
         ], cwd=control, env=env).returncode
     if args.command in ("start", "merge"):

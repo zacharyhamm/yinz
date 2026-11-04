@@ -3,13 +3,18 @@ import { z } from "npm:zod@4.6.7";
 import {
   ActionSchemas,
   readAgenda,
+  reopenAgenda,
+  RollbackInputSchema,
+  rollbackState,
   StateSchema,
   transition,
 } from "./lifecycle.ts";
 import {
   type Context,
+  gitOperation,
   inspect,
   loadState,
+  normalizeReceipt,
   saveState,
   withIssue,
 } from "./runtime.ts";
@@ -51,7 +56,14 @@ export const AgentTaskSchema = z.object({
   next: StateSchema.optional(),
   createdAt: z.iso.datetime(),
   reviewCommit: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/).optional(),
-  status: z.enum(["running", "applying", "completed", "discarded"]),
+  status: z.enum([
+    "running",
+    "applying",
+    "completed",
+    "discarded",
+    "superseded",
+  ]),
+  supersededBy: z.uuid().optional(),
   discard: z.object({
     request: z.string().trim().min(1),
     confirmedStopped: z.literal(true),
@@ -60,6 +72,25 @@ export const AgentTaskSchema = z.object({
   lastError: z.string().optional(),
 }).strict();
 type Task = z.infer<typeof AgentTaskSchema>;
+const RestartInput = Input.extend({
+  taskId: z.uuid(),
+  request: z.string().trim().min(1),
+});
+export const RecoverySchema = z.object({
+  id: z.uuid(),
+  step: RollbackInputSchema.shape.step,
+  request: RollbackInputSchema.shape.request,
+  createdAt: z.iso.datetime(),
+  status: z.enum(["pending", "completed", "superseded"]),
+  supersededBy: z.uuid().optional(),
+  before: StateSchema,
+  next: StateSchema,
+  reconciled: StateSchema.optional(),
+  task: AgentTaskSchema.optional(),
+  replacement: AgentTaskSchema.optional(),
+  restart: RestartInput.optional(),
+}).strict();
+type Recovery = z.infer<typeof RecoverySchema>;
 export type IssueAgentContext = Context & {
   runModel: (args: {
     definition?: string;
@@ -81,6 +112,8 @@ export interface IssueAgentDependencies {
   withIssue: typeof withIssue;
   readAgenda: typeof readAgenda;
   inspect: typeof inspect;
+  gitOperation: typeof gitOperation;
+  reopenAgenda: typeof reopenAgenda;
   realPath: (path: string) => Promise<string>;
   id: () => string;
   now: () => string;
@@ -89,6 +122,8 @@ const defaultDependencies: IssueAgentDependencies = {
   withIssue,
   readAgenda,
   inspect,
+  gitOperation,
+  reopenAgenda,
   realPath: (path) => Deno.realPath(path),
   id: () => crypto.randomUUID(),
   now: () => new Date().toISOString(),
@@ -107,14 +142,24 @@ const RoleSchemas = {
 };
 
 export async function assertNoPendingAgent(context: Context) {
+  await assertNoPendingRecovery(context);
   const raw = await context.readResource("agent-task");
   if (raw !== null && raw !== undefined) {
     const task = AgentTaskSchema.parse(raw);
-    if (!["completed", "discarded"].includes(task.status)) {
+    if (!["completed", "discarded", "superseded"].includes(task.status)) {
       throw new Error(
-        `Pane task ${task.behaviorName} is unresolved; use resume-agent and inspect its pane before changing lifecycle state`,
+        `Pane task ${task.behaviorName} is unresolved; use resume-agent, or an explicitly requested rollback/restart-agent`,
       );
     }
+  }
+}
+
+async function assertNoPendingRecovery(context: Context) {
+  const raw = await context.readResource("recovery");
+  if (raw != null && RecoverySchema.parse(raw).status === "pending") {
+    throw new Error(
+      "Rollback is incomplete; use resume-rollback before other lifecycle operations",
+    );
   }
 }
 
@@ -230,7 +275,7 @@ async function applyResult(
   dependencies: IssueAgentDependencies,
 ) {
   const current = await loadState(context);
-  if (["completed", "discarded"].includes(task.status)) {
+  if (["completed", "discarded", "superseded"].includes(task.status)) {
     return { dataHandles: [] };
   }
   const result = await completedResult(context, task);
@@ -315,10 +360,378 @@ async function applyResult(
   return handles;
 }
 
+async function prepareTask(
+  context: IssueAgentContext,
+  args: z.infer<typeof Input>,
+  state: z.infer<typeof StateSchema>,
+  dependencies: IssueAgentDependencies,
+  allowCompleted = false,
+): Promise<Task> {
+  const fresh = await dependencies.readAgenda(
+    state.issue.workspace,
+    state.issue.itemId,
+    allowCompleted,
+  );
+  if (fresh.digest !== state.issue.digest) {
+    throw new Error(
+      "Refresh changed Agenda requirements before dispatching an agent",
+    );
+  }
+  const phases = {
+    triage: ["triaging", "classified"],
+    plan: [
+      "classified",
+      "planning",
+      "approved",
+      "implementing",
+      "ready",
+    ],
+    review_plan: ["planning"],
+    implement: ["implementing"],
+    review_code: ["implementing", "ready"],
+  };
+  if (!phases[args.role].includes(state.phase)) {
+    throw new Error(`Cannot run ${args.role} in ${state.phase}`);
+  }
+  if (state.attempt) {
+    throw new Error(
+      "Finish or repair the active merge attempt before dispatching an agent",
+    );
+  }
+  const cwd = await dependencies.realPath(
+    state.implementation?.worktree ?? context.repoDir,
+  );
+  let commit: string | undefined;
+  if (args.role === "implement" || args.role === "review_code") {
+    if (
+      !state.implementation || !state.plan ||
+      state.approval?.planVersion !== state.plan.version
+    ) {
+      throw new Error(
+        "Implementation and code review require the current approved plan and issue worktree",
+      );
+    }
+    const repo = await dependencies.inspect(context, cwd);
+    if (
+      repo.branch !== state.implementation.branch ||
+      (args.role === "review_code" && !repo.clean)
+    ) {
+      throw new Error(
+        "Commit implementation changes before requesting code review",
+      );
+    }
+    if (args.role === "review_code") commit = repo.head;
+  }
+  // The dispatched commit belongs to task evidence, not prior code review.
+  const promptState = structuredClone(state);
+  if (commit && promptState.implementation) {
+    promptState.implementation.head = commit;
+  }
+  const prompt = taskPrompt(args.role, promptState, cwd, commit);
+  const { role: _role, ...options } = args;
+  const config = AgentConfigSchema.parse({ ...options, cwd });
+  const task: Task = {
+    id: dependencies.id(),
+    behaviorName: `issue-agent-${dependencies.id()}`,
+    role: args.role,
+    config,
+    prompt,
+    promptDigest: await promptDigest(prompt),
+    before: state,
+    createdAt: dependencies.now(),
+    status: "running",
+    ...(commit ? { reviewCommit: commit } : {}),
+  };
+  return task;
+}
+
+async function runTask(
+  context: IssueAgentContext,
+  task: Task,
+  dependencies: IssueAgentDependencies,
+  recover = false,
+) {
+  await saveTask(context, task);
+  try {
+    const outcome = await context.runModel({
+      modelType: "@yinz/agent",
+      name: task.behaviorName,
+      method: recover ? "recover" : "run",
+      arguments: { ...task.config, prompt: task.prompt },
+    });
+    if (!outcome.ok) throw new Error(outcome.error.message);
+    return await applyResult(context, task, dependencies);
+  } catch (error) {
+    const saved = AgentTaskSchema.parse(
+      await context.readResource("agent-task"),
+    );
+    await saveTask(context, {
+      ...saved,
+      lastError: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
+
+async function finishRecovery(
+  context: IssueAgentContext,
+  recovery: Recovery,
+  dependencies: IssueAgentDependencies,
+) {
+  if (recovery.status !== "pending") return { dataHandles: [] };
+  const current = await loadState(context);
+  if (
+    JSON.stringify(current) !== JSON.stringify(recovery.before) &&
+    JSON.stringify(current) !== JSON.stringify(recovery.next)
+  ) {
+    throw new Error(
+      "Lifecycle changed during rollback; inspect the saved recovery before continuing",
+    );
+  }
+  const rawTask = await context.readResource("agent-task");
+  const task = rawTask == null ? undefined : AgentTaskSchema.parse(rawTask);
+  if (task?.id !== recovery.task?.id && task?.id !== recovery.replacement?.id) {
+    throw new Error(
+      "Pane assignment changed during rollback; refusing to supersede a different task",
+    );
+  }
+  const handles = [];
+  if (recovery.task) {
+    // Archive under a stable name before replacing the current assignment. Retrying
+    // a partial write does not depend on the old pane, submission or child behavior.
+    handles.push(
+      await context.writeResource(
+        "agent-task",
+        `agent-task-${recovery.task.id}`,
+        {
+          ...recovery.task,
+          status: "superseded",
+          supersededBy: recovery.id,
+        },
+      ),
+    );
+  }
+  await dependencies.reopenAgenda(recovery.next.issue);
+  handles.push(
+    ...(await saveState(
+      context,
+      `rollback_${recovery.step}`,
+      recovery.next,
+      `event-rollback-${recovery.id}`,
+    )).dataHandles,
+  );
+  if (recovery.replacement) {
+    // A pending recovery prevents all dispatch until this exact replacement is saved.
+    handles.push(await saveTask(context, recovery.replacement));
+  } else if (recovery.task) {
+    handles.push(
+      await saveTask(context, {
+        ...recovery.task,
+        status: "superseded",
+        supersededBy: recovery.id,
+      }),
+    );
+  }
+  const completed: Recovery = { ...recovery, status: "completed" };
+  handles.push(
+    await context.writeResource(
+      "recovery",
+      `recovery-${recovery.id}`,
+      completed,
+    ),
+  );
+  handles.push(await context.writeResource("recovery", "recovery", completed));
+  return { dataHandles: handles };
+}
+
+async function beginRecovery(
+  context: IssueAgentContext,
+  input: z.infer<typeof RollbackInputSchema>,
+  dependencies: IssueAgentDependencies,
+  restart?: z.infer<typeof RestartInput>,
+) {
+  const rawRecovery = await context.readResource("recovery");
+  const previous = rawRecovery == null
+    ? undefined
+    : RecoverySchema.parse(rawRecovery);
+  const before = await loadState(context);
+  const rawTask = await context.readResource("agent-task");
+  const task = rawTask == null ? undefined : AgentTaskSchema.parse(rawTask);
+  if (restart && restart.taskId !== task?.id) {
+    throw new Error(
+      "Restart taskId does not match the current assignment; inspect status before restarting",
+    );
+  }
+  let source = before;
+  // Receipt lookup takes the shared Git lock, so an in-flight merge settles before
+  // rollback records a new attempt. Never erase a merge that landed before a crash.
+  if (source.attempt || source.receipt) {
+    const raw = await dependencies.gitOperation(context, {
+      action: "receipt",
+      attemptId: source.attempt?.id ?? source.receipt!.attemptId,
+    });
+    const { status } = z.object({ status: z.string() }).parse(raw);
+    if (status === "merged") {
+      const receipt = normalizeReceipt(raw, source);
+      source = source.attempt
+        ? transition(source, "merged", { receipt })
+        : source;
+    } else if (source.receipt) {
+      throw new Error(
+        "Recorded merge receipt is unavailable; inspect Git before rolling back",
+      );
+    } else if (!["missing", "failed", "verified"].includes(status)) {
+      throw new Error(`Unknown merge receipt status: ${status}`);
+    }
+  }
+  const fresh = await dependencies.readAgenda(
+    before.issue.workspace,
+    before.issue.itemId,
+    true,
+  );
+  const id = dependencies.id();
+  const next = rollbackState(source, input.step, id);
+  if (fresh.digest !== before.issue.digest) {
+    if (input.step !== "triage") {
+      throw new Error(
+        "Agenda requirements changed; roll back to triage to replace stale prerequisite evidence",
+      );
+    }
+    next.issue = fresh;
+  }
+  let replacement: Task | undefined;
+  if (restart) {
+    const { taskId: _taskId, request: _request, ...options } = restart;
+    replacement = await prepareTask(
+      context,
+      Input.parse(options),
+      next,
+      dependencies,
+      true,
+    );
+  }
+  const recovery = RecoverySchema.parse({
+    id,
+    ...input,
+    createdAt: dependencies.now(),
+    status: "pending",
+    before,
+    next,
+    task,
+    replacement,
+    restart,
+    ...(source !== before ? { reconciled: source } : {}),
+  });
+  // Save intent before reopening Agenda or superseding assignments. A failed write
+  // is resumed through resume-rollback, never by fabricating successful evidence.
+  if (previous?.status === "pending") {
+    // A new explicit rollback can replace even an interrupted recovery (for
+    // example, requirements changed while Agenda was unavailable).
+    await context.writeResource("recovery", `recovery-${previous.id}`, {
+      ...previous,
+      status: "superseded",
+      supersededBy: id,
+    });
+  }
+  await context.writeResource("recovery", "recovery", recovery);
+  return finishRecovery(context, recovery, dependencies);
+}
+
+async function resumeTask(
+  context: IssueAgentContext,
+  dependencies: IssueAgentDependencies,
+) {
+  const task = AgentTaskSchema.parse(await context.readResource("agent-task"));
+  if (
+    ["completed", "discarded", "superseded", "applying"].includes(task.status)
+  ) {
+    return applyResult(context, task, dependencies);
+  }
+  return runTask(context, task, dependencies, true);
+}
+
 export function createAgentMethods(
   dependencies: IssueAgentDependencies = defaultDependencies,
 ) {
   return {
+    rollback: {
+      kind: "action",
+      description:
+        "Explicitly roll back to any lifecycle step, superseding old work while preserving history and Git",
+      arguments: RollbackInputSchema.strip(),
+      execute: (
+        input: z.infer<typeof RollbackInputSchema>,
+        context: IssueAgentContext,
+      ) =>
+        dependencies.withIssue(
+          context,
+          () =>
+            beginRecovery(
+              context,
+              RollbackInputSchema.parse(input),
+              dependencies,
+            ),
+        ),
+    },
+    resume_rollback: {
+      kind: "action",
+      description:
+        "Finish a partially recorded rollback and resume its exact replacement, if requested",
+      arguments: z.object({}).strip(),
+      execute: (_args: Record<string, never>, context: IssueAgentContext) =>
+        dependencies.withIssue(context, async () => {
+          const recovery = RecoverySchema.parse(
+            await context.readResource("recovery"),
+          );
+          const result = await finishRecovery(context, recovery, dependencies);
+          if (recovery.replacement) {
+            const task = AgentTaskSchema.parse(
+              await context.readResource("agent-task"),
+            );
+            if (task.id === recovery.replacement.id) {
+              return resumeTask(context, dependencies);
+            }
+          }
+          return result;
+        }),
+    },
+    restart_agent: {
+      kind: "action",
+      description:
+        "Explicitly roll back to a worker step and start a fresh assignment, independent of the old outcome",
+      arguments: RestartInput.strip(),
+      execute: (
+        input: z.infer<typeof RestartInput>,
+        context: IssueAgentContext,
+      ) =>
+        dependencies.withIssue(context, async () => {
+          const args = RestartInput.parse(input);
+          const raw = await context.readResource("recovery");
+          const previous = raw == null ? undefined : RecoverySchema.parse(raw);
+          if (
+            previous?.restart?.taskId === args.taskId &&
+            JSON.stringify(previous.restart) === JSON.stringify(args)
+          ) {
+            await finishRecovery(context, previous, dependencies);
+            const task = AgentTaskSchema.parse(
+              await context.readResource("agent-task"),
+            );
+            if (task.id !== previous.replacement?.id) {
+              throw new Error(
+                "Restart has already been superseded; inspect the current assignment",
+              );
+            }
+          } else {
+            await beginRecovery(
+              context,
+              { step: args.role, request: args.request },
+              dependencies,
+              args,
+            );
+          }
+          return resumeTask(context, dependencies);
+        }),
+    },
     run_agent: {
       kind: "action",
       description:
@@ -329,124 +742,24 @@ export function createAgentMethods(
         dependencies.withIssue(context, async () => {
           const args = Input.parse(input);
           await assertNoPendingAgent(context);
-          const state = await loadState(context);
-          const fresh = await dependencies.readAgenda(
-            state.issue.workspace,
-            state.issue.itemId,
+          const task = await prepareTask(
+            context,
+            args,
+            await loadState(context),
+            dependencies,
           );
-          if (fresh.digest !== state.issue.digest) {
-            throw new Error(
-              "Refresh changed Agenda requirements before dispatching an agent",
-            );
-          }
-          const phases = {
-            triage: ["triaging", "classified"],
-            plan: [
-              "classified",
-              "planning",
-              "approved",
-              "implementing",
-              "ready",
-            ],
-            review_plan: ["planning"],
-            implement: ["implementing"],
-            review_code: ["implementing", "ready"],
-          };
-          if (!phases[args.role].includes(state.phase)) {
-            throw new Error(`Cannot run ${args.role} in ${state.phase}`);
-          }
-          if (state.attempt) {
-            throw new Error(
-              "Finish or repair the active merge attempt before dispatching an agent",
-            );
-          }
-          const cwd = await dependencies.realPath(
-            state.implementation?.worktree ?? context.repoDir,
-          );
-          let commit: string | undefined;
-          if (args.role === "implement" || args.role === "review_code") {
-            if (
-              !state.implementation || !state.plan ||
-              state.approval?.planVersion !== state.plan.version
-            ) {
-              throw new Error(
-                "Implementation and code review require the current approved plan and issue worktree",
-              );
-            }
-            const repo = await dependencies.inspect(context, cwd);
-            if (
-              repo.branch !== state.implementation.branch ||
-              (args.role === "review_code" && !repo.clean)
-            ) {
-              throw new Error(
-                "Commit implementation changes before requesting code review",
-              );
-            }
-            if (args.role === "review_code") commit = repo.head;
-          }
-          // The dispatched commit belongs to task evidence, not prior code review.
-          const promptState = structuredClone(state);
-          if (commit && promptState.implementation) {
-            promptState.implementation.head = commit;
-          }
-          const prompt = taskPrompt(args.role, promptState, cwd, commit);
-          const { role: _role, ...options } = args;
-          const config = AgentConfigSchema.parse({ ...options, cwd });
-          const task: Task = {
-            id: dependencies.id(),
-            behaviorName: `issue-agent-${dependencies.id()}`,
-            role: args.role,
-            config,
-            prompt,
-            promptDigest: await promptDigest(prompt),
-            before: state,
-            createdAt: dependencies.now(),
-            status: "running",
-            ...(commit ? { reviewCommit: commit } : {}),
-          };
-          await saveTask(context, task);
-          try {
-            const outcome = await context.runModel({
-              modelType: "@yinz/agent",
-              name: task.behaviorName,
-              method: "run",
-              arguments: { ...config, cwd, prompt },
-            });
-            if (!outcome.ok) throw new Error(outcome.error.message);
-            return await applyResult(context, task, dependencies);
-          } catch (error) {
-            const saved = AgentTaskSchema.parse(
-              await context.readResource("agent-task"),
-            );
-            await saveTask(context, {
-              ...saved,
-              lastError: error instanceof Error ? error.message : String(error),
-            });
-            throw error;
-          }
+          return runTask(context, task, dependencies);
         }),
     },
     resume_agent: {
       kind: "action",
       description:
-        "Observe the original submission or reconcile applied evidence; rejected launches require discard-agent before a new task",
+        "Observe the original submission or reconcile applied evidence; use explicit rollback/restart for a replacement",
       arguments: z.object({}),
       execute: (_args: Record<string, never>, context: IssueAgentContext) =>
         dependencies.withIssue(context, async () => {
-          const task = AgentTaskSchema.parse(
-            await context.readResource("agent-task"),
-          );
-          if (["completed", "discarded", "applying"].includes(task.status)) {
-            return applyResult(context, task, dependencies);
-          }
-          const outcome = await context.runModel({
-            modelType: "@yinz/agent",
-            name: task.behaviorName,
-            method: "recover",
-            arguments: { ...task.config, prompt: task.prompt },
-          });
-          if (!outcome.ok) throw new Error(outcome.error.message);
-          return applyResult(context, task, dependencies);
+          await assertNoPendingRecovery(context);
+          return resumeTask(context, dependencies);
         }),
     },
     discard_agent: {
@@ -459,6 +772,7 @@ export function createAgentMethods(
         context: IssueAgentContext,
       ) =>
         dependencies.withIssue(context, async () => {
+          await assertNoPendingRecovery(context);
           const discard = AgentTaskSchema.shape.discard.unwrap().parse(input);
           const task = AgentTaskSchema.parse(
             await context.readResource("agent-task"),
