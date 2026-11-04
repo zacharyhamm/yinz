@@ -214,13 +214,26 @@ async function drive(
       : RecoverySchema.parse(rawRecovery);
     const raw = await context.readResource("handoff");
     const cached = raw == null ? undefined : HandoffSchema.parse(raw);
+    const candidate = driver.implementation;
+    const implementation = candidate?.status === "completed" &&
+        candidate.next?.plan?.version === state.plan?.version &&
+        candidate.next?.rollbackId === state.rollbackId &&
+        candidate.next?.issue.digest === state.issue.digest &&
+        candidate.next?.implementation?.worktree ===
+          state.implementation?.worktree &&
+        (!state.codeReview ||
+          ImplementationResult.parse(JSON.parse(candidate.message!)).commit ===
+            state.codeReview.commit)
+      ? candidate
+      : undefined;
     let result: Handoff;
     if (
       decision !== "blocked" && cached?.status === "current" &&
       cached.decision === decision && cached.reason === reason &&
       JSON.stringify(cached.state) === JSON.stringify(state) &&
       cached.assignment?.id === assignment?.id &&
-      cached.recoveryId === recovery?.id
+      cached.recoveryId === recovery?.id &&
+      JSON.stringify(cached.implementation) === JSON.stringify(implementation)
     ) {
       result = cached;
     } else {
@@ -232,14 +245,7 @@ async function drive(
         createdAt: dependencies.now(),
         state,
         ...(assignment ? { assignment } : {}),
-        ...(driver.implementation?.next?.plan?.version ===
-              state.plan?.version &&
-            driver.implementation?.next?.rollbackId === state.rollbackId &&
-            driver.implementation?.next?.issue.digest === state.issue.digest &&
-            driver.implementation?.next?.implementation?.worktree ===
-              state.implementation?.worktree
-          ? { implementation: driver.implementation }
-          : {}),
+        ...(implementation ? { implementation } : {}),
         ...(recovery ? { recoveryId: recovery.id } : {}),
         ...(state.plan ? { planVersion: state.plan.version } : {}),
         ...(state.codeReview ? { commit: state.codeReview.commit } : {}),
@@ -259,11 +265,11 @@ async function drive(
   }
 
   try {
-    const pendingRecovery = await context.readResource("recovery");
-    if (
-      pendingRecovery != null &&
-      RecoverySchema.parse(pendingRecovery).status === "pending"
-    ) {
+    const rawRecovery = await context.readResource("recovery");
+    const recovery = rawRecovery == null
+      ? undefined
+      : RecoverySchema.parse(rawRecovery);
+    if (recovery?.status === "pending") {
       throw new Error(
         "Rollback is incomplete; use resume-rollback to finish its recorded intent, then drive",
       );
@@ -401,6 +407,12 @@ async function drive(
           ? assignment
           : driver.implementation;
         if (
+          recovery?.status === "completed" &&
+          recovery.id === state.rollbackId &&
+          recovery.step === "review_code"
+        ) {
+          role = "review_code";
+        } else if (
           implementation?.status === "completed" &&
           JSON.stringify(implementation.next) === JSON.stringify(state)
         ) {

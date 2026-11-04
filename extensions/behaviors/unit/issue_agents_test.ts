@@ -1942,3 +1942,90 @@ Deno.test("driver blocks a pending rollback and missing configuration without di
   assert(result(h).reason.includes("Rollback is incomplete"));
   equal(h.calls.length, 0);
 });
+
+Deno.test("driver honors a completed review-only rollback without repeating implementation", async () => {
+  const h = harness(implementing());
+  h.controls.evidenceForRole = driverEvidence;
+  await h.drive.execute({ agent: options }, h.context);
+  await h.methods.rollback.execute({
+    step: "review_code",
+    request: "Repeat code review",
+  }, h.context);
+  await h.drive.execute({}, h.context);
+  equal(dispatchedRoles(h), ["implement", "review_code", "review_code"]);
+  equal(result(h).decision, "authorize_merge");
+  equal(result(h).commit, head);
+});
+
+Deno.test("driver ignores unrelated or superseded review rollback records", async () => {
+  for (
+    const patch of [
+      { id: "00000000-0000-4000-8000-999999999999" },
+      { status: "superseded" },
+    ]
+  ) {
+    const h = harness(implementing());
+    h.controls.evidenceForRole = driverEvidence;
+    await h.drive.execute({ agent: options }, h.context);
+    await h.methods.rollback.execute({
+      step: "review_code",
+      request: "Repeat code review",
+    }, h.context);
+    h.resources.set("recovery", {
+      ...h.resources.get("recovery") as object,
+      ...patch,
+    });
+    await h.drive.execute({}, h.context);
+    equal(dispatchedRoles(h), [
+      "implement",
+      "review_code",
+      "implement",
+      "review_code",
+    ]);
+    equal(result(h).decision, "authorize_merge");
+  }
+});
+
+Deno.test("driver omits obsolete implementation summaries for replacement reviewed commits and cached handoffs", async () => {
+  const h = harness(implementing());
+  h.controls.evidenceForRole = driverEvidence;
+  await h.drive.execute({ agent: options }, h.context);
+  const original = result(h);
+  assert(original.implementation);
+  const replacement = "c".repeat(40);
+  h.controls.repo.head = replacement;
+  h.controls.evidenceForRole = (task) => ({
+    ...driverEvidence(task) as object,
+    commit: replacement,
+    ...(task.role === "implement"
+      ? { summary: "Replacement implementation" }
+      : {}),
+  });
+  await h.methods.run_agent.execute(
+    { ...options, role: "implement" },
+    h.context,
+  );
+  await h.methods.run_agent.execute(
+    { ...options, role: "review_code" },
+    h.context,
+  );
+  await h.drive.execute({}, h.context);
+  const fresh = result(h);
+  equal(fresh.decision, "authorize_merge");
+  equal(fresh.commit, replacement);
+  equal(fresh.implementation, undefined);
+  assert(!fresh.presentation.includes("Repaired the affected caller"));
+  await h.drive.execute({}, h.context);
+  equal(result(h).id, fresh.id);
+
+  // Simulate a handoff cached by the old driver for the same reviewed state.
+  h.resources.set("handoff", {
+    ...fresh,
+    implementation: original.implementation,
+    presentation: original.presentation,
+  });
+  await h.drive.execute({}, h.context);
+  assert(result(h).id !== fresh.id);
+  equal(result(h).implementation, undefined);
+  assert(!result(h).presentation.includes("Repaired the affected caller"));
+});
