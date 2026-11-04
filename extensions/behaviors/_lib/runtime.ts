@@ -218,6 +218,10 @@ export async function withIssue<T>(
   work: () => Promise<T>,
 ): Promise<T> {
   const args = GlobalArgsSchema.parse(context.globalArgs);
+  await gitOperation(context, {
+    action: "agenda-workspace",
+    expectedWorkspace: args.workspace,
+  });
   const expectedName = await issueName(args.workspace, args.itemId);
   if (context.definition.name !== expectedName) {
     throw new Error(`Use behavior ${expectedName} for this Agenda issue`);

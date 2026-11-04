@@ -66,8 +66,31 @@ AGENDA_WORKSPACE=your-existing-workspace
 AGENDA_ITEM_ID=123
 ```
 
-Replace the example workspace and item ID with values returned by Agenda. Keep
-`LIFECYCLE_REPO` unchanged when working in another checkout. The installed Swamp
+Replace the example workspace and item ID with values returned by Agenda. Store
+the workspace once in the control checkout's Swamp vault:
+
+```sh
+printf '%s\n' "$AGENDA_WORKSPACE" | swamp vault put default AGENDA_WORKSPACE \
+  --repo-dir "$LIFECYCLE_REPO" --json
+```
+
+The checked-in `default` vault definition uses local encryption. If the control
+checkout has no vault definition, create it first with `swamp vault create
+local_encryption default --repo-dir "$LIFECYCLE_REPO" --json`. Values and the
+encryption key remain in ignored local Swamp storage; configure the value again
+in a fresh clone. The workspace is an identifier, not a credential: it remains
+visible in issue identity, state and events.
+
+The launcher reads `default/AGENDA_WORKSPACE` for every operation. It does not
+use Agenda's current selection or fall back when the vault value is missing or
+invalid. `--workspace` is optional and only asserts that a supplied name matches
+the vault. Lifecycle methods independently verify the setting before proceeding,
+including direct workflow execution, and the Git integration helper checks it
+before rebase and again before merging. Changing the configured workspace does
+not migrate existing issues; restore the original setting to resume those issues.
+After setup, the shell `AGENDA_WORKSPACE` variable is only for manual Agenda commands.
+
+Keep `LIFECYCLE_REPO` unchanged when working in another checkout. The installed Swamp
 binary loads the local `@yinz/issue-lifecycle` and `@yinz/agent` behaviors.
 Python 3.11 or later, Agenda and Git must also be on `PATH`; verification
 requires Yinz's normal build prerequisites. Agent tasks require the installed
@@ -88,9 +111,9 @@ Start and inspect it:
 
 ```sh
 "$LIFECYCLE_REPO/scripts/issue-lifecycle" \
-  --workspace "$AGENDA_WORKSPACE" --item "$AGENDA_ITEM_ID" start
+  --item "$AGENDA_ITEM_ID" start
 "$LIFECYCLE_REPO/scripts/issue-lifecycle" \
-  --workspace "$AGENDA_WORKSPACE" --item "$AGENDA_ITEM_ID" status
+  --item "$AGENDA_ITEM_ID" status
 ```
 
 Start triage in a pane with a JSON input file like this:
@@ -104,7 +127,7 @@ to `agent`:
 
 ```sh
 "$LIFECYCLE_REPO/scripts/issue-lifecycle" \
-  --workspace "$AGENDA_WORKSPACE" --item "$AGENDA_ITEM_ID" \
+  --item "$AGENDA_ITEM_ID" \
   agent --input-file /absolute/path/to/triage-agent.json
 ```
 
@@ -194,7 +217,7 @@ worker. Inspect `status`, then retrieve the original task:
 
 ```sh
 "$LIFECYCLE_REPO/scripts/issue-lifecycle" \
-  --workspace "$AGENDA_WORKSPACE" --item "$AGENDA_ITEM_ID" resume-agent
+  --item "$AGENDA_ITEM_ID" resume-agent
 ```
 
 `needs_input`, timeouts, interruptions and target replacement are failures to
@@ -370,7 +393,7 @@ omit that input:
 
 ```sh
 "$LIFECYCLE_REPO/scripts/issue-lifecycle" \
-  --workspace "$AGENDA_WORKSPACE" --item "$AGENDA_ITEM_ID" merge
+  --item "$AGENDA_ITEM_ID" merge
 ```
 
 ## Parallel development and serialized integration
@@ -430,6 +453,7 @@ separately:
 
 ```sh
 python3 -m unittest discover -s scripts/issue_lifecycle/unit -p 'test_git_ops.py'
+python3 -m unittest discover -s scripts/issue_lifecycle/unit -p 'test_workspace.py'
 python3 -m unittest discover -s scripts/issue_lifecycle/unit -p 'test_swamp_smoke.py'
 ```
 

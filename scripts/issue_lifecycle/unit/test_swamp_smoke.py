@@ -36,7 +36,7 @@ class InstalledSwampSmokeTest(unittest.TestCase):
         for name in (".swamp.yaml", ".gitignore"):
             shutil.copy2(SOURCE / name, self.repo / name)
         (self.repo / "scripts" / "issue_lifecycle").mkdir(parents=True)
-        for name in ("issue-lifecycle", "issue_lifecycle/git_ops.py"):
+        for name in ("issue-lifecycle", "issue_lifecycle/git_ops.py", "issue_lifecycle/workspace.py"):
             shutil.copy2(SOURCE / "scripts" / name, self.repo / "scripts" / name)
         self.bin = self.root / "bin"
         self.bin.mkdir()
@@ -109,6 +109,10 @@ print(json.dumps(response))
         self.git(self.repo, "add", ".")
         self.git(self.repo, "commit", "-m", "smoke fixture")
         self.agenda("workspace", "create", "lifecycle-test", workspace=False)
+        self.command(["swamp", "vault", "create", "local_encryption", "default", "--json"])
+        self.command(["swamp", "vault", "put", "default", "AGENDA_WORKSPACE", "--json"], stdin="lifecycle-test\n")
+        self.git(self.repo, "add", "vaults")
+        self.git(self.repo, "commit", "-m", "configure fixture vault")
         category = self.agenda("category", "add", "yinz", "--matching", "false")
         self.category_id = category["category"]["id"]
         captured = self.agenda("item", "add", "Add lifecycle smoke marker", "--note", "Acceptance: marker.txt exists on local main. No production issue is involved.")
@@ -148,7 +152,7 @@ print(json.dumps(response))
         return json.loads(self.command(["agenda", "--json", *selection, *args]))
 
     def lifecycle(self, method, inputs=None):
-        command = [sys.executable, str(self.repo / "scripts" / "issue-lifecycle"), "--control", str(self.repo), "--workspace", "lifecycle-test", "--item", str(self.item_id), method]
+        command = [sys.executable, str(self.repo / "scripts" / "issue-lifecycle"), "--control", str(self.repo), "--item", str(self.item_id), method]
         if inputs is not None:
             command.extend(["--input-file", "-"])
         return self.command(command, stdin=json.dumps(inputs) if inputs is not None else None)
@@ -161,6 +165,16 @@ print(json.dumps(response))
         return states[0]
 
     def test_installed_dispatch_agents_rebase_ci_merge_and_agenda_completion(self):
+        self.command(["swamp", "workflow", "validate", "yinz-issue-start", "--json"])
+        # A direct workflow call cannot bypass the configured vault workspace.
+        rejected = subprocess.run(
+            ["swamp", "workflow", "run", "yinz-issue-start", "--stdin"],
+            input=json.dumps({"workspace": "other", "itemId": self.item_id,
+                              "issueName": f"issue-other-{self.item_id}"}),
+            cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=30,
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("Vault Agenda workspace does not match", rejected.stdout + rejected.stderr)
         self.lifecycle("start")
         self.assertEqual(self.state()["phase"], "triaging")
         self.lifecycle("agent", {"role": "triage", "session": "smoke", "kind": "claude"})

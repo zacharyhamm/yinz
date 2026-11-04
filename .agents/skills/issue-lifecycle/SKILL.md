@@ -25,10 +25,18 @@ an issue worktree. Pass `--control` when invoking a different copy of the
 launcher. Do not initialize separate lifecycle stores in each worktree.
 
 Use the installed `swamp` and `agenda` commands. Check their help before using
-unfamiliar flags. Use JSON for machine reads. Read the Agenda workspace identity
-and item before changing it; identify the issue by the explicit workspace and
-returned item ID. Let the launcher compute the behavior name; it hashes long
-workspace names to stay within Swamp's name limit.
+unfamiliar flags. Use JSON for machine reads. The control checkout's Swamp vault
+`default` stores the workspace under `AGENDA_WORKSPACE`; the launcher reads it
+automatically. Configure a missing value with `swamp vault put default
+AGENDA_WORKSPACE --repo-dir <control-checkout>` using the intended existing
+workspace. Do not infer it from Agenda's current selection. `--workspace` is an
+optional assertion against the vault value, not an override. Workflow execution
+and integration also verify the vault value against the issue's recorded
+workspace. A mismatch requires inspecting the configuration, not recreating the
+issue. The workspace is a public issue identifier and remains in lifecycle state.
+Read the Agenda workspace identity and item before changing it; identify the
+issue by the configured workspace and returned item ID. Let the launcher compute
+the behavior name; it hashes long workspace names to stay within Swamp's name limit.
 
 Inspect persisted state before starting or resuming. Resume its current phase;
 do not recreate the behavior, reset its history, or infer success from a

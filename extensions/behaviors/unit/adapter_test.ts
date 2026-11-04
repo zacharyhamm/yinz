@@ -116,7 +116,41 @@ async function tempRepo(): Promise<string> {
     await Deno.mkdir(helper, { recursive: true });
     await Deno.copyFile(
       new URL("../../../scripts/issue_lifecycle/git_ops.py", import.meta.url),
+      join(helper, "git_backend.py"),
+    );
+    await Deno.copyFile(
+      new URL("../../../scripts/issue_lifecycle/workspace.py", import.meta.url),
+      join(helper, "workspace.py"),
+    );
+    // Stub only the external vault command; exercise the real resolver and Git helper.
+    const bin = join(repo, "vault-bin");
+    await Deno.mkdir(bin);
+    await Deno.writeTextFile(join(repo, "vault-workspace"), "default");
+    await Deno.writeTextFile(
+      join(bin, "swamp"),
+      `#!/usr/bin/env python3\nimport json, pathlib, sys\nassert sys.argv[1:6] == ["vault", "read-secret", "default", "AGENDA_WORKSPACE", "--force"]\nprint(json.dumps({"value": pathlib.Path(${
+        JSON.stringify(join(repo, "vault-workspace"))
+      }).read_text()}))\n`,
+    );
+    await Deno.chmod(join(bin, "swamp"), 0o755);
+    await Deno.writeTextFile(
       join(helper, "git_ops.py"),
+      `import os, runpy\nos.environ["PATH"] = ${
+        JSON.stringify(bin)
+      } + os.pathsep + os.environ["PATH"]\nrunpy.run_path(${
+        JSON.stringify(join(helper, "git_backend.py"))
+      }, run_name="__main__")\n`,
+    );
+    await git(repo, "add", ".");
+    await git(
+      repo,
+      "-c",
+      "user.name=Lifecycle Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "Fixture helpers",
     );
     return repo;
   } catch (error) {
@@ -178,6 +212,21 @@ Deno.test("issue ownership rejects a second behavior before invoking its operati
       "already belongs",
     );
     assert(!invoked);
+  } finally {
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("vault workspace mismatch blocks lifecycle work before Agenda or state writes", async () => {
+  const repo = await tempRepo();
+  try {
+    const fixture = fakeContext(repo, createState(issue));
+    await Deno.writeTextFile(join(repo, "vault-workspace"), "other");
+    await rejects(
+      () => behavior.methods.start.execute({}, fixture.context),
+      "does not match",
+    );
+    equal(fixture.writes, []);
   } finally {
     await Deno.remove(repo, { recursive: true });
   }

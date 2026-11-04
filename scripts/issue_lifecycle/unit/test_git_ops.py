@@ -59,6 +59,14 @@ assert sys.argv[1:6] == ["--workspace", "default", "--json", "item", "show"]
 assert sys.argv[6] == "7"
 print(pathlib.Path(os.environ["YINZ_TEST_AGENDA"]).read_text())
 ''')
+        self.vault_workspace = self.root / "vault-workspace"
+        self.vault_workspace.write_text("default")
+        self.env["YINZ_TEST_VAULT_WORKSPACE"] = str(self.vault_workspace)
+        self.stub("swamp", '''import json, os, pathlib, sys
+assert sys.argv[1:6] == ["vault", "read-secret", "default", "AGENDA_WORKSPACE", "--force"]
+assert not any(name in os.environ for name in ("SWAMP_SERVER_URL", "SWAMP_SERVE_URL", "SWAMP_REPO_DIR", "SWAMP_WORKFLOWS_DIR"))
+print(json.dumps({"value": pathlib.Path(os.environ["YINZ_TEST_VAULT_WORKSPACE"]).read_text()}))
+''')
         self.stub("cargo", '''import json, os, pathlib, subprocess, sys, time
 assert sys.argv[1:] == ["x", "ci", "check"]
 root = pathlib.Path(os.environ["YINZ_TEST_CONTROL"])
@@ -89,6 +97,8 @@ if os.environ.get("YINZ_TEST_EDIT_ISSUE"):
     item = json.loads(agenda.read_text())
     item["item"]["note"] = "New requirements"
     agenda.write_text(json.dumps(item))
+if os.environ.get("YINZ_TEST_EDIT_WORKSPACE"):
+    pathlib.Path(os.environ["YINZ_TEST_VAULT_WORKSPACE"]).write_text("other")
 if os.environ.get("YINZ_TEST_RECURRING_ISSUE"):
     agenda = pathlib.Path(os.environ["YINZ_TEST_AGENDA"])
     item = json.loads(agenda.read_text())
@@ -343,6 +353,20 @@ sys.exit(int(os.environ.get("YINZ_TEST_CI_EXIT", "0")))
         result = self.run_request(self.request(worktree), env={"YINZ_TEST_EDIT_ISSUE": "1"}, success=False)
         self.assertIn("description changed", result["error"])
         self.assertFalse((self.repo / "issue-a.txt").exists())
+
+    def test_vault_workspace_changed_during_ci_cannot_merge(self):
+        worktree = self.branch("issue-a")
+        base = self.git(self.repo, "rev-parse", "HEAD")
+        result = self.run_request(self.request(worktree), env={"YINZ_TEST_EDIT_WORKSPACE": "1"}, success=False)
+        self.assertIn("Vault Agenda workspace does not match", result["error"])
+        self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), base)
+
+    def test_vault_workspace_mismatch_blocks_ci(self):
+        worktree = self.branch("issue-a")
+        self.vault_workspace.write_text("other")
+        result = self.run_request(self.request(worktree), success=False)
+        self.assertIn("Vault Agenda workspace does not match", result["error"])
+        self.assertEqual(self.event_rows(), [])
 
     def test_recurrence_added_during_ci_cannot_merge(self):
         worktree = self.branch("issue-a")

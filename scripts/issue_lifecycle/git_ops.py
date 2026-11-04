@@ -24,6 +24,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import uuid
 
+from workspace import agenda_workspace, local_environment
+
 
 class LifecycleError(Exception):
     """An operation failed without discarding the user's work."""
@@ -74,7 +76,7 @@ def stop_process(process):
 
 def command(args, cwd, *, check=True, capture=True):
     check_cancelled()
-    environment = {**os.environ, "GIT_EDITOR": "/usr/bin/true", "GIT_SEQUENCE_EDITOR": "/usr/bin/true"}
+    environment = {**local_environment(), "GIT_EDITOR": "/usr/bin/true", "GIT_SEQUENCE_EDITOR": "/usr/bin/true"}
     for variable in (
         "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
         "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE",
@@ -244,6 +246,7 @@ def digest_issue(workspace, item):
 
 def check_issue(request, repo):
     workspace = text_field(request, "agendaWorkspace")
+    agenda_workspace(repo, workspace, run=lambda args: command(args, repo)[1])
     item_id = request.get("agendaItemId")
     if isinstance(item_id, bool) or not isinstance(item_id, int) or item_id <= 0:
         raise LifecycleError("agendaItemId must be a positive integer")
@@ -283,6 +286,12 @@ def check_issue(request, repo):
             raise LifecycleError("Agenda issue description changed; reassess the plan before merging")
     except (KeyError, TypeError, ValueError) as error:
         raise LifecycleError(f"Invalid Agenda response: {error}") from error
+
+
+def configured_workspace(request):
+    repo = text_field(request, "repoPath")
+    return {"workspace": agenda_workspace(
+        repo, request.get("expectedWorkspace"), run=lambda args: command(args, repo)[1])}
 
 
 def isolated_target(worktree):
@@ -534,7 +543,8 @@ def main():
         request = json.load(sys.stdin)
         if not isinstance(request, dict):
             raise LifecycleError("Request must be a JSON object")
-        actions = {"inspect": inspect, "prepare": prepare, "integrate": integrate, "receipt": receipt_action}
+        actions = {"inspect": inspect, "prepare": prepare, "integrate": integrate,
+                   "receipt": receipt_action, "agenda-workspace": configured_workspace}
         action = request.get("action")
         if not isinstance(action, str) or action not in actions:
             raise LifecycleError(f"Unknown action: {action}")
