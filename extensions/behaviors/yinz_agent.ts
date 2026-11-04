@@ -15,7 +15,7 @@ import {
 
 export const behavior = {
   type: "@yinz/agent",
-  version: "2026.11.03.2",
+  version: "2026.11.04.1",
   globalArguments: AgentConfigSchema,
   resources: {
     state: {

@@ -15,10 +15,13 @@ import {
 } from "./issue_agents.ts";
 import { FindingSchema, StateSchema } from "./lifecycle.ts";
 import { type Handle, loadState } from "./runtime.ts";
-import { AgentResponseSchema } from "./yinz_agent.ts";
+import { AgentResponseSchema, ControlIdentitySchema } from "./yinz_agent.ts";
 
 const Settings = AgentInputSchema.omit({ role: true });
-export const DriveInputSchema = z.object({ agent: Settings.optional() })
+export const DriveInputSchema = z.object({
+  agent: Settings.optional(),
+  control: ControlIdentitySchema.optional(),
+})
   .strip();
 export const DriverSchema = z.object({
   agent: Settings.optional(),
@@ -277,22 +280,35 @@ async function drive(
     const currentTask = await task();
     if (input.agent) {
       if (currentTask && ["running", "applying"].includes(currentTask.status)) {
-        const { cwd: _cwd, ...original } = currentTask.config;
+        const { cwd: _cwd, control: _control, ...original } =
+          currentTask.config;
+        const { control: _inputControl, ...requested } = input.agent;
         if (
           JSON.stringify(Settings.parse(original)) !==
-            JSON.stringify(input.agent)
+            JSON.stringify(requested)
         ) {
           throw new Error(
             "Unresolved work must resume with its original session/provider settings; use an explicitly requested restart to replace it",
           );
         }
       }
-      driver.agent = input.agent;
+      const control = input.agent.control ?? driver.agent?.control ??
+        currentTask?.config.control;
+      driver.agent = {
+        ...input.agent,
+        ...(control ? { control } : {}),
+      };
+      if (currentTask) driver.assignmentId = currentTask.id;
     } else if (
       currentTask && (!driver.agent || currentTask.id !== driver.assignmentId)
     ) {
       const { cwd: _cwd, ...original } = currentTask.config;
       driver.agent = Settings.parse(original);
+      driver.assignmentId = currentTask.id;
+    }
+    // Placement applies only to future launches; never rewrite an active task.
+    if (driver.agent && input.control) {
+      driver.agent = { ...driver.agent, control: input.control };
     }
     handles.push(await context.writeResource("driver", "driver", driver));
 

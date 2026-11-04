@@ -23,6 +23,7 @@ import {
   AgentConfigSchema,
   AgentResultSchema,
   AgentStateSchema,
+  ControlIdentitySchema,
   isRejectedLaunch,
   isTerminalFailure,
   promptDigest,
@@ -38,6 +39,8 @@ const Role = z.enum([
 export const AgentInputSchema = z.object({
   role: Role,
   session: z.string().trim().min(1),
+  // Optional while decoding saved settings and tasks from older lifecycles.
+  control: ControlIdentitySchema.optional(),
   kind: z.enum(["claude", "codex", "muse", "pi", "agy"]),
   model: z.string().trim().min(1).optional(),
   effort: z.string().trim().min(1).optional(),
@@ -370,6 +373,16 @@ export async function prepareTask(
   dependencies: IssueAgentDependencies,
   allowCompleted = false,
 ): Promise<Task> {
+  if (!args.control) {
+    throw new Error(
+      "Lifecycle workers require control identity (session and paneId) before launching",
+    );
+  }
+  if (args.control.session !== args.session) {
+    throw new Error(
+      "Control pane belongs to a different session than the worker",
+    );
+  }
   const fresh = await dependencies.readAgenda(
     state.issue.workspace,
     state.issue.itemId,
@@ -456,6 +469,14 @@ export async function runTask(
 ) {
   await saveTask(context, task);
   try {
+    if (!task.config.control) {
+      const child = recover ? await childState(context, task) : undefined;
+      if (!child || child.phase === "preflight") {
+        throw new Error(
+          "Legacy unlaunched lifecycle worker requires a restart with control identity",
+        );
+      }
+    }
     const outcome = await context.runModel({
       modelType: "@yinz/agent",
       name: task.behaviorName,

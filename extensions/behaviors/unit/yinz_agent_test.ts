@@ -75,7 +75,7 @@ const hooks = {
     "Codex:\nscript: /hooks/script (current)\nuser: /hooks/config - 12 of 12 events wired\n",
   stderr: "",
 };
-type Reply = Record<string, unknown> | Error;
+type Reply = Record<string, unknown> | Record<string, unknown>[] | Error;
 
 function harness(replies: Reply[], overrides: Record<string, unknown> = {}) {
   const records = new Map<string, Record<string, unknown>>();
@@ -934,4 +934,88 @@ Deno.test("unsent discard requires fresh idle identity and drained writers but p
     equal(JSON.parse(String(h.records.get("state")?.rawResponse)), unsent());
     assert(!h.records.has("result"));
   }
+});
+
+Deno.test("control placement resolves tab zero and current tab before each launch, with no lookup on resume", async () => {
+  for (const tab of [0, 9]) {
+    const h = harness([
+      [{ id: 1, is_plugin: true, tab_id: 77 }, {
+        id: 1,
+        is_plugin: false,
+        tab_id: tab,
+      }],
+      spawned,
+      ready(),
+      completed(),
+    ], { control: { session: "dev", paneId: "terminal_1" } });
+    await runAgent({ prompt: "Fix it" }, h.context, h.dependencies);
+    equal(h.calls[0].args, [
+      "--session",
+      "dev",
+      "action",
+      "list-panes",
+      "--json",
+    ]);
+    const spawn = h.calls[1].args;
+    equal(spawn[spawn.indexOf("--tab") + 1], String(tab));
+    const count = h.calls.length;
+    await resumeAgent(h.context, h.dependencies);
+    equal(h.calls.length, count);
+  }
+});
+
+Deno.test("unresolved control panes reject launches without falling back to automatic placement", async () => {
+  for (
+    const reply of [
+      [],
+      [{ id: 1, is_plugin: true, tab_id: 0 }],
+      [{ id: 2, is_plugin: false, tab_id: 0 }],
+      { code: 1, stdout: "", stderr: "session missing" },
+      { code: 0, stdout: "invalid JSON", stderr: "" },
+      [{ id: 1, is_plugin: false, tab_id: null }],
+    ]
+  ) {
+    const h = harness([reply], {
+      control: { session: "dev", paneId: "terminal_1" },
+    });
+    await rejects(
+      () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+      "",
+    );
+    assert(h.calls.every((call) => !call.args.includes("spawn")));
+    equal(h.records.get("state")?.phase, "preflight");
+  }
+  const mismatch = harness([], {
+    control: { session: "other", paneId: "terminal_1" },
+  });
+  await rejects(
+    () =>
+      runAgent({ prompt: "Fix it" }, mismatch.context, mismatch.dependencies),
+    "different session",
+  );
+  equal(mismatch.calls.length, 0);
+});
+
+Deno.test("a controlled worker resumes its original submission without resolving or spawning again", async () => {
+  const h = harness([
+    [{ id: 1, is_plugin: false, tab_id: 0 }],
+    spawned,
+    ready(),
+    new Error("connection lost"),
+    completed(),
+  ], { control: { session: "dev", paneId: "terminal_1" } });
+  await rejects(
+    () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+    "connection lost",
+  );
+  await resumeAgent(h.context, h.dependencies);
+  equal(h.calls.map((call) => call.args[3]), [
+    "list-panes",
+    "spawn",
+    "wait",
+    "prompt",
+    "wait",
+  ]);
+  const wait = h.calls[4].args;
+  equal(wait[wait.indexOf("--submission") + 1], "submission-1");
 });

@@ -3,8 +3,13 @@ import { isAbsolute } from "node:path";
 
 const Text = z.string().trim().min(1);
 const Pane = z.string().regex(/^terminal_[0-9]+$/);
+export const ControlIdentitySchema = z.object({
+  session: Text,
+  paneId: Pane,
+}).strict();
 export const AgentConfigSchema = z.object({
   session: Text,
+  control: ControlIdentitySchema.optional(),
   kind: z.enum(["claude", "codex", "muse", "pi", "agy"]),
   cwd: Text.refine(isAbsolute, "cwd must be an absolute path"),
   model: z.string().trim().optional(),
@@ -600,6 +605,38 @@ async function launch(
   if (state.config.effort) args.push("--effort", state.config.effort);
   if (state.config.permissionMode) {
     args.push("--permission-mode", state.config.permissionMode);
+  }
+  if (state.config.control) {
+    const control = state.config.control;
+    if (control.session !== state.config.session) {
+      throw new Error(
+        "Control pane belongs to a different session than the worker",
+      );
+    }
+    const result = await dependencies.run(
+      ["--session", control.session, "action", "list-panes", "--json"],
+      undefined,
+      context.signal,
+    );
+    if (result.code !== 0) {
+      throw new Error(
+        `Cannot resolve control pane: ${result.stderr || result.stdout}`,
+      );
+    }
+    const panes = z.array(z.object({
+      id: z.number().int().nonnegative(),
+      is_plugin: z.boolean(),
+      tab_id: z.number().int().nonnegative(),
+    })).parse(JSON.parse(result.stdout));
+    const matches = panes.filter((pane) =>
+      !pane.is_plugin && `terminal_${pane.id}` === control.paneId
+    );
+    if (matches.length !== 1) {
+      throw new Error(
+        `Cannot resolve control pane ${control.paneId} in session ${control.session}`,
+      );
+    }
+    args.push("--tab", String(matches[0].tab_id));
   }
   state.phase = "launching";
   await save(context, state, dependencies);

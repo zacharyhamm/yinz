@@ -5,7 +5,11 @@ import {
   type IssueAgentContext,
   type IssueAgentDependencies,
 } from "../_lib/issue_agents.ts";
-import { createDriveMethod, HandoffSchema } from "../_lib/issue_driver.ts";
+import {
+  createDriveMethod,
+  DriverSchema,
+  HandoffSchema,
+} from "../_lib/issue_driver.ts";
 import {
   createState,
   type LifecycleState,
@@ -63,6 +67,7 @@ const triage = {
 };
 const options = {
   session: "development",
+  control: { session: "development", paneId: "terminal_1" },
   kind: "claude" as const,
   startupTimeoutSeconds: 120,
   timeoutSeconds: 600,
@@ -129,6 +134,8 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
     receipt: { status: "missing" } as unknown,
     agentRunner: undefined as YinzRunner | undefined,
     agendaReads: 0,
+    controlTab: 0,
+    placementCalls: [] as string[][],
     afterRun: () => {},
     repo: {
       commonDir: "/repo/.git",
@@ -206,7 +213,21 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
           },
         };
         const dependencies = {
-          run: controls.agentRunner,
+          run: (args: string[], stdin?: string, signal?: AbortSignal) => {
+            if (args[3] === "list-panes") {
+              controls.placementCalls.push(args);
+              return Promise.resolve({
+                code: 0,
+                stdout: JSON.stringify([{
+                  id: 1,
+                  is_plugin: false,
+                  tab_id: controls.controlTab,
+                }]),
+                stderr: "",
+              });
+            }
+            return controls.agentRunner!(args, stdin, signal);
+          },
           realPath: (path: string) => Promise.resolve(path),
           id: () => "submission-1",
           now: () => timestamp,
@@ -1122,6 +1143,7 @@ Deno.test("explicit restart supersedes every worker outcome without querying or 
       ...options,
       role: "plan" as const,
       session: "replacement-session",
+      control: { session: "replacement-session", paneId: "terminal_1" },
       taskId: old.id,
       request: "Restart planning",
     };
@@ -1489,6 +1511,7 @@ Deno.test("a new restart can change options while an earlier restart has not sav
   await h.methods.restart_agent.execute({
     ...args,
     session: "new-session",
+    control: { session: "new-session", paneId: "terminal_1" },
     request: "Restart in the new session",
   }, h.context);
   equal(
@@ -1750,6 +1773,7 @@ Deno.test("restart invalidates an old approval handoff and driver follows the re
   await h.methods.restart_agent.execute({
     ...options,
     session: "replacement",
+    control: { session: "replacement", paneId: "terminal_1" },
     role: "plan",
     taskId: previous.assignment!.id,
     request: "Restart planning in the replacement session",
@@ -2028,4 +2052,263 @@ Deno.test("driver omits obsolete implementation summaries for replacement review
   assert(result(h).id !== fresh.id);
   equal(result(h).implementation, undefined);
   assert(!result(h).presentation.includes("Repaired the affected caller"));
+});
+
+// Exercise the real adapter under the lifecycle, including new tasks created by
+// revisions and recovery. Moving the control pane after every prompt ensures a
+// cached tab cannot satisfy the next spawn.
+Deno.test("every lifecycle role, plan revision, repair and restart resolves the control pane anew", async () => {
+  const h = harness();
+  const launched: { role: string; tab: string }[] = [];
+  let firstReview = true;
+  h.controls.agentRunner = (args) => {
+    const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    let value: Record<string, unknown>;
+    if (args[3] === "spawn") {
+      equal(task.config.control, options.control);
+      const tab = args[args.indexOf("--tab") + 1];
+      equal(tab, String(h.controls.controlTab));
+      launched.push({ role: task.role, tab });
+      value = {
+        outcome: "ok",
+        spawned: { pane_id: "terminal_7", cwd: task.config.cwd },
+      };
+    } else {
+      const prompt = args[3] === "prompt";
+      let evidence = driverEvidence(task);
+      if (prompt && task.role === "review_plan" && firstReview) {
+        firstReview = false;
+        evidence = {
+          planVersion: 1,
+          findings: [{
+            id: "coverage",
+            severity: "high",
+            description: "Add missing coverage",
+          }],
+        };
+      }
+      if (prompt) h.controls.controlTab++;
+      value = {
+        outcome: prompt ? "completed" : "ok",
+        agents: [{
+          pane_id: "terminal_7",
+          session: options.session,
+          agent: {
+            kind: "claude",
+            session_id: "conversation-1",
+            state: "idle",
+          },
+          ready: true,
+          status_available: true,
+          prompt_supported: true,
+        }],
+        submission_id: prompt ? "submission-1" : undefined,
+        message: prompt ? JSON.stringify(evidence) : undefined,
+      };
+    }
+    return Promise.resolve({
+      code: 0,
+      stdout: JSON.stringify(value),
+      stderr: "",
+    });
+  };
+  await h.drive.execute({ agent: options }, h.context);
+  equal(result(h).decision, "approve_plan");
+  equal(launched.map((launch) => launch.role), [
+    "triage",
+    "plan",
+    "review_plan",
+    "plan",
+    "review_plan",
+  ]);
+  let state = transition(await loadState(h.context), "approve", {
+    planVersion: 2,
+    request: "Implement",
+  });
+  state = transition(state, "implement", {
+    worktree: "/repo/issue",
+    branch: "issue-85",
+  });
+  h.resources.set("state", state);
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "authorize_merge");
+  // Explicitly roll back for a repair, then use the same foreground driver.
+  await h.methods.rollback.execute({
+    step: "implement",
+    request: "Repair implementation",
+  }, h.context);
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "authorize_merge");
+  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const restart = {
+    ...options,
+    role: "review_code" as const,
+    taskId: task.id,
+    request: "Restart code review",
+  };
+  await h.methods.restart_agent.execute(restart, h.context);
+  const count = launched.length;
+  await h.methods.restart_agent.execute(restart, h.context);
+  await h.drive.execute({}, h.context);
+  equal(launched.length, count);
+  equal(launched.map((launch) => launch.role), [
+    "triage",
+    "plan",
+    "review_plan",
+    "plan",
+    "review_plan",
+    "implement",
+    "review_code",
+    "implement",
+    "review_code",
+    "review_code",
+  ]);
+  equal(
+    launched.map((launch) => launch.tab),
+    Array.from({ length: count }, (_, index) => String(index)),
+  );
+  equal(h.controls.placementCalls.length, count);
+});
+
+for (const legacy of [false, true]) {
+  for (const explicit of [false, true]) {
+    Deno.test(`driver retains updated control after adopting a completed ${legacy ? "legacy" : "standalone"} task with ${explicit ? "explicit" : "implicit"} settings`, async () => {
+      const h = harness();
+      h.controls.evidenceForRole = driverEvidence;
+      await h.drive.execute({ agent: options }, h.context);
+      equal(result(h).decision, "approve_plan");
+      const previous = DriverSchema.parse(h.resources.get("driver"));
+      await h.methods.run_agent.execute(
+        { ...options, role: "review_plan" },
+        h.context,
+      );
+      const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+      equal(task.status, "completed");
+      assert(task.id !== previous.assignmentId);
+      if (legacy) {
+        delete task.config.control;
+        h.resources.set("agent-task", task);
+      }
+
+      const control = { ...options.control, paneId: "terminal_2" };
+      await h.drive.execute({
+        ...(explicit ? { agent: options } : {}),
+        control,
+      }, h.context);
+      equal(result(h).decision, "approve_plan");
+      // Direct driver invocations provide no environment-derived control input.
+      await h.drive.execute({}, h.context);
+      equal(result(h).decision, "approve_plan");
+      const saved = DriverSchema.parse(h.resources.get("driver"));
+      equal(saved.agent?.control, control);
+      equal(saved.assignmentId, task.id);
+      equal(h.resources.get("agent-task"), task);
+
+      let state = transition(await loadState(h.context), "approve", {
+        planVersion: 1,
+        request: "Implement",
+      });
+      state = transition(state, "implement", {
+        worktree: "/repo/issue",
+        branch: "issue-85",
+      });
+      h.resources.set("state", state);
+      const count = h.calls.length;
+      await h.drive.execute({}, h.context);
+      equal(result(h).decision, "authorize_merge");
+      equal(h.calls.slice(count).map((call) => call.arguments?.control), [
+        control,
+        control,
+      ]);
+    });
+  }
+}
+
+Deno.test("legacy driver settings require control identity for new workers", async () => {
+  const h = harness();
+  const { control: _control, ...legacy } = options;
+  h.resources.set("driver", { agent: legacy });
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "blocked");
+  assert(result(h).reason.includes("require control identity"));
+  equal(h.calls.length, 0);
+  h.controls.evidenceForRole = driverEvidence;
+  await h.drive.execute({ control: options.control }, h.context);
+  equal(result(h).decision, "approve_plan");
+  assert(
+    h.calls.every((call) =>
+      (call.arguments as { control: unknown }).control != null
+    ),
+  );
+});
+
+Deno.test("legacy existing submissions resume unchanged while future workers acquire control identity", async () => {
+  const h = harness();
+  h.controls.runError = "Interrupted observation";
+  await rejects(
+    () =>
+      h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+    "Interrupted observation",
+  );
+  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  delete task.config.control;
+  h.resources.set("agent-task", task);
+  const child = AgentStateSchema.parse(h.child.get("state"));
+  delete child.config.control;
+  h.child.set("state", child);
+  h.controls.runError = undefined;
+  h.controls.evidenceForRole = driverEvidence;
+  const control = { ...options.control, paneId: "terminal_2" };
+  await h.drive.execute({ control }, h.context);
+  equal(result(h).decision, "approve_plan");
+  equal(h.calls[1].method, "recover");
+  equal(h.calls[1].arguments?.control, undefined);
+  equal(h.calls.slice(2).map((call) => call.arguments?.control), [
+    control,
+    control,
+  ]);
+});
+
+Deno.test("lifecycle refuses mismatched control sessions before creating a worker", async () => {
+  const h = harness();
+  await rejects(
+    () =>
+      h.methods.run_agent.execute({
+        ...options,
+        role: "triage",
+        control: { ...options.control, session: "other" },
+      }, h.context),
+    "different session",
+  );
+  equal(h.calls.length, 0);
+  assert(!h.resources.has("agent-task"));
+});
+
+Deno.test("legacy unlaunched workers cannot recover through automatic placement", async () => {
+  for (const missing of [false, true]) {
+    const h = harness();
+    h.controls.childPhase = "preflight";
+    h.controls.runError = "Interrupted launch";
+    await rejects(
+      () =>
+        h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+      "Interrupted launch",
+    );
+    const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    delete task.config.control;
+    h.resources.set("agent-task", task);
+    if (missing) h.child.clear();
+    else {
+      const child = AgentStateSchema.parse(h.child.get("state"));
+      delete child.config.control;
+      h.child.set("state", child);
+    }
+    await rejects(
+      () => h.methods.resume_agent.execute({}, h.context),
+      missing
+        ? "no durable agent state"
+        : "requires a restart with control identity",
+    );
+    equal(h.calls.length, 1);
+  }
 });

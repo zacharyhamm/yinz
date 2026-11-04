@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -44,6 +45,11 @@ def main():
         inputs = json.loads(sys.stdin.read() if str(args.input_file) == "-" else args.input_file.read_text())
     if not isinstance(inputs, dict):
         parser.error("input file must contain a JSON object")
+    if args.command in ("drive", "agent", "restart-agent"):
+        session = os.environ.get("YINZ_SESSION_NAME", "").strip()
+        pane = os.environ.get("YINZ_PANE_ID", "")
+        if session and re.fullmatch(r"[0-9]+", pane):
+            inputs["control"] = {"session": session, "paneId": f"terminal_{int(pane)}"}
     workspace = agenda_workspace(control, args.workspace)
     name = issue_name(workspace, args.item)
     # A shell configured for a remote Swamp server must not redirect local Git.
@@ -73,8 +79,8 @@ def main():
                 parser.error("merge accepts only skipCiRequest")
             inputs = {"issueName": name, **inputs}
         else:
-            if set(inputs) - {"agent"}:
-                parser.error("drive accepts only agent settings; omit them to resume")
+            if set(inputs) - {"agent", "control"}:
+                parser.error("drive accepts only agent settings and control identity; omit them to resume")
             inputs = {"issueName": name, "drive": inputs}
         command = ["swamp", "workflow", "run", workflow, "--stdin", *tail]
     else:

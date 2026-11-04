@@ -14,11 +14,29 @@ inputs:
       default: {}
       additionalProperties: false
       properties:
+        control:
+          type: object
+          required: [session, paneId]
+          additionalProperties: false
+          properties:
+            session:
+              type: string
+            paneId:
+              type: string
         agent:
           type: object
           required: [session, kind]
           additionalProperties: false
           properties:
+            control:
+              type: object
+              required: [session, paneId]
+              additionalProperties: false
+              properties:
+                session:
+                  type: string
+                paneId:
+                  type: string
             session:
               type: string
             kind:

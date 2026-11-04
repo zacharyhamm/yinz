@@ -49,6 +49,17 @@ After `start`, use the launcher's `drive` command with JSON input
 `{agent: {session, kind, model?, effort?, permissionMode?, startupTimeoutSeconds?, timeoutSeconds?}}`.
 Use the intended running Yinz session and provider. Omitted options preserve
 provider defaults. Settings persist; ordinary resume uses `drive` with no input.
+The launcher captures the invoking control pane's session and ID. Every new
+worker resolves that pane's current tab and spawns there explicitly, including
+revisions, repairs and restarts. Existing workers stay in their original tabs
+and resume their original submissions. The selected worker session must match
+the control pane's session; missing panes and lookup failures block launches.
+Outside the pane environment, supply `control: {session, paneId}` explicitly
+(alongside `agent` for `drive`, or alongside role options for `agent` and
+`restart-agent`), or resume with saved identity. Older saved driver settings
+must acquire control identity before launching another worker; an unlaunched
+legacy task requires an explicit restart. Never bypass placement with automatic
+tab selection.
 After approval and worktree preparation, use `drive` again. After an explicitly
 requested restart or completed rollback recovery, continue through `drive` to
 the next handoff. The driver supplies prompts and uses visible pane workers;

@@ -224,6 +224,23 @@ missing decision. Approval to implement does not itself authorize merging.
 
 ## Pane tasks
 
+The launcher captures the invoking control agent's `YINZ_SESSION_NAME` and
+`YINZ_PANE_ID` for `drive`, `agent` and `restart-agent`. Each new worker queries
+that pane's current tab immediately before spawning and passes the explicit
+`--tab` to Yinz. This includes plan revisions, repairs and restarts. Workers
+follow the control pane when it moves between tabs; already running workers
+stay where they are. Explicit-tab spawning preserves keyboard focus.
+
+Control identity is stored as `control: {session, paneId}` (for example,
+`{"session":"dev","paneId":"terminal_0"}`). Direct behavior callers must
+supply it for lifecycle launches. `drive` accepts it alongside `agent` so an
+older saved driver can acquire identity without replacing provider settings.
+Without a pane environment, the launcher preserves saved identity or accepts
+explicit `control` input. A missing pane, failed lookup or session mismatch
+blocks new launches; there is no automatic-placement fallback. Existing tasks
+and submissions resume with their original configuration. A legacy task that
+has not launched needs an explicit restart with control identity.
+
 `agent` accepts `role`, `session` and `kind`, plus optional `model`, `effort`,
 `permissionMode`, `startupTimeoutSeconds` and `timeoutSeconds`. Supported kinds
 are `claude`, `codex`, `muse`, `pi` and `agy`. Defaults are 120 seconds for
@@ -460,7 +477,9 @@ this issue lifecycle. The behavior methods are `run {prompt}`, `resume {}` and
 `status {}`. Global arguments are `session`, `kind`, absolute `cwd`, and the
 optional model, effort, permission and timeout settings described above. Omitted
 or empty optional model, effort and permission strings preserve provider
-defaults. A behavior represents one prompt task; use a new behavior name for a
+defaults. Standalone behavior callers may optionally pass
+`control: {session, paneId}` to use the same tab resolution; lifecycle workers
+require it. A behavior represents one prompt task; use a new behavior name for a
 new task. Repeating `run` is refused, even with the same prompt. After
 submission, `resume` observes its saved ID rather than sending again. It can
 continue known startup progress before submission, but refuses an uncertain

@@ -60,6 +60,8 @@ class InstalledSwampSmokeTest(unittest.TestCase):
             "YINZ_SMOKE_CARGO_LOG": str(self.cargo_log),
             "YINZ_SMOKE_AGENT_LOG": str(self.yinz_log),
             "YINZ_SMOKE_AGENT_STATE": str(self.yinz_state),
+            "YINZ_SESSION_NAME": "smoke",
+            "YINZ_PANE_ID": "0",
         }
         for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"):
             self.env.pop(name, None)
@@ -73,17 +75,23 @@ with pathlib.Path(os.environ["YINZ_SMOKE_CARGO_LOG"]).open("a") as log:
             self.stub(program, 'import sys\nraise SystemExit("A coding CLI must be launched through Yinz, never headlessly, in this smoke test")\n')
         self.stub("yinz", '''import json, os, pathlib, sys
 args = sys.argv[1:]
-assert args[:3] == ["--session", "smoke", "agent"], args
+assert args[:2] == ["--session", "smoke"], args
 assert args[-1] == "--json", args
 operation = args[3]
 stdin = sys.stdin.read() if operation == "prompt" else None
 with pathlib.Path(os.environ["YINZ_SMOKE_AGENT_LOG"]).open("a") as log:
     log.write(json.dumps({"args":args,"stdin":stdin,"stub":True}) + "\\n")
+if operation == "list-panes":
+    assert args == ["--session", "smoke", "action", "list-panes", "--json"], args
+    print(json.dumps([{"id":0,"is_plugin":False,"tab_id":int(os.environ.get("YINZ_SMOKE_CONTROL_TAB", "0"))}]))
+    sys.exit(0)
+assert args[2] == "agent", args
 state_file = pathlib.Path(os.environ["YINZ_SMOKE_AGENT_STATE"])
 response = {"outcome":"ok","agents":[],"spawned":None,"output":None,"message":None,"acknowledged":False,"turn_id":None}
 if operation == "spawn":
     assert args[args.index("--kind")+1] == "claude"
     assert "--allow-outside-worktree" in args
+    assert args[args.index("--tab")+1] == os.environ.get("YINZ_SMOKE_CONTROL_TAB", "0")
     state = {"cwd":args[args.index("--cwd")+1]}
     state_file.write_text(json.dumps(state))
     response["spawned"] = {"pane_id":"terminal_17","tab_id":3,"branch":None,"cwd":state["cwd"]}
@@ -195,9 +203,9 @@ print(json.dumps(response))
         self.assertNotIn("approval", self.state())
         self.assertNotIn("implementation", self.state())
         calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
-        self.assertEqual([call["args"][3] for call in calls], ["spawn", "wait", "prompt", "wait", "spawn", "wait", "prompt", "spawn", "wait", "prompt"])
+        self.assertEqual([call["args"][3] for call in calls], ["list-panes", "spawn", "wait", "prompt", "wait", "list-panes", "spawn", "wait", "prompt", "list-panes", "spawn", "wait", "prompt"])
         prompts = [call for call in calls if call["args"][3] == "prompt"]
-        observed = calls[3]["args"]
+        observed = calls[4]["args"]
         submitted = prompts[0]["args"]
         self.assertEqual(observed[observed.index("--submission") + 1], submitted[submitted.index("--submission") + 1])
         resumed = json.loads(self.lifecycle("drive"))
@@ -226,17 +234,18 @@ print(json.dumps(response))
         self.assertEqual(state["phase"], "classified")
         self.assertEqual(state["classification"]["classification"], "maintenance")
         calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
-        self.assertEqual([call["args"][3] for call in calls], ["spawn", "wait", "prompt"])
+        self.assertEqual([call["args"][3] for call in calls], ["list-panes", "spawn", "wait", "prompt"])
         self.assertIn("Return exactly one JSON object", calls[-1]["stdin"])
         records = json.loads(self.lifecycle("status"))["results"]
         task = next(record for record in records if "behaviorName" in record)
         restart = {"taskId": task["id"], "role": "triage", "session": "smoke",
                    "kind": "claude", "request": "Restart triage in the disposable fixture"}
+        self.env["YINZ_SMOKE_CONTROL_TAB"] = "8"
         self.lifecycle("restart-agent", restart)
         self.lifecycle("restart-agent", restart)
         self.lifecycle("resume-rollback")
         calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
-        self.assertEqual([call["args"][3] for call in calls], ["spawn", "wait", "prompt"] * 2)
+        self.assertEqual([call["args"][3] for call in calls], ["list-panes", "spawn", "wait", "prompt"] * 2)
         self.lifecycle("plan", {
             "summary": "Add the disposable fixture's marker.",
             "steps": [{"id": "marker", "description": "Create marker.txt", "files": ["marker.txt"]}],

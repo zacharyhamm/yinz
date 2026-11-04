@@ -38,6 +38,8 @@ with pathlib.Path(os.environ["TEST_VAULT_LOG"]).open("a") as log:
 if args[:2] == ["vault", "read-secret"]:
     assert args[2:4] == ["default", "AGENDA_WORKSPACE"]
     print(pathlib.Path(os.environ["TEST_VAULT_VALUE"]).read_text())
+elif args[:2] == ["data", "query"]:
+    print(json.dumps({{"results": [{{"status": "current", "presentation": "Fixture handoff"}}]}}))
 else:
     print("{{}}")
 ''')
@@ -90,3 +92,22 @@ else:
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("swamp vault put default AGENDA_WORKSPACE", result.stderr)
         self.assertEqual(len(self.calls()), 1)
+
+    def test_worker_commands_capture_invoking_control_identity(self):
+        self.env.update(YINZ_SESSION_NAME="dev", YINZ_PANE_ID="0")
+        for command in ("drive", "agent", "restart-agent"):
+            with self.subTest(command=command):
+                result = self.launch(command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                dispatched = next(call["input"] for call in reversed(self.calls()) if "input" in call)
+                if command == "drive":
+                    dispatched = dispatched["drive"]
+                self.assertEqual(dispatched["control"], {"session": "dev", "paneId": "terminal_0"})
+
+    def test_drive_without_pane_environment_preserves_saved_settings(self):
+        self.env.pop("YINZ_SESSION_NAME", None)
+        self.env.pop("YINZ_PANE_ID", None)
+        result = self.launch("drive")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        dispatched = next(call["input"] for call in self.calls() if "input" in call)
+        self.assertEqual(dispatched["drive"], {})
