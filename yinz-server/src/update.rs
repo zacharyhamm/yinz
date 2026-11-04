@@ -217,7 +217,10 @@ fn dispatch(
         return serde_json::to_value(inventory(state, data, client)?)
             .context("encode session inventory");
     }
-    if matches!(request.command, Command::Start | Command::StartSource) {
+    if matches!(
+        request.command,
+        Command::Start | Command::StartPrerelease | Command::StartSource
+    ) {
         return start(request, client, state, data);
     }
     let senders = data
@@ -359,7 +362,11 @@ fn dispatch(
             )?;
             Ok(serde_json::Value::Null)
         },
-        Command::Identity | Command::Inventory | Command::Start | Command::StartSource => {
+        Command::Identity
+        | Command::Inventory
+        | Command::Start
+        | Command::StartPrerelease
+        | Command::StartSource => {
             unreachable!()
         },
         Command::Status | Command::Cancel => {
@@ -488,6 +495,8 @@ fn start(
         .arg(&operation);
     if matches!(request.command, session_update::Command::StartSource) {
         launch_command.arg("--source-build");
+    } else if matches!(request.command, session_update::Command::StartPrerelease) {
+        launch_command.arg("--prerelease");
     }
     let mut child = launch_command
         .stdin(std::process::Stdio::null())
@@ -561,7 +570,18 @@ fn control_socket(
 
 fn source_build_status(active: &serde_json::Value, data_dir: &std::path::Path) -> Result<String> {
     if active["source_build"] != true {
-        return Ok(String::new());
+        let channel: session_update::ReleaseChannel = serde_json::from_value(
+            active
+                .get("channel")
+                .cloned()
+                .unwrap_or(serde_json::json!("Stable")),
+        )
+        .context("decode update release channel")?;
+        return Ok(format!(
+            ". Channel: {}; version: {}",
+            channel.label(),
+            active["release"]["tag_name"].as_str().unwrap_or("pending")
+        ));
     }
     let operation = active["operation"]
         .as_str()

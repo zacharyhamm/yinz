@@ -164,3 +164,28 @@ fn retry_before_inventory_preserves_the_original_release_or_source_mode() {
         assert_eq!(stored["source_build"], source_build);
     }
 }
+
+#[test]
+fn old_journals_default_to_stable_even_when_retried_with_prereleases() {
+    use yinz_types::session_update::ReleaseChannel;
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("session");
+    let data = root.path().join("data");
+    let operation = uuid::Uuid::new_v4().to_string();
+    let store = Store::open(&socket, &data, &operation).unwrap();
+    let path = store.directory.join("journal.json");
+    let mut old = serde_json::to_value(&store.journal).unwrap();
+    old.as_object_mut().unwrap().remove("channel");
+    std::fs::write(path, serde_json::to_vec(&old).unwrap()).unwrap();
+    drop(store);
+    let resumed = Store::open_with_channel(
+        &socket,
+        &data,
+        &uuid::Uuid::new_v4().to_string(),
+        false,
+        ReleaseChannel::Prerelease,
+    )
+    .unwrap();
+    assert_eq!(resumed.journal.channel, ReleaseChannel::Stable);
+    assert_eq!(resumed.journal.operation, operation);
+}

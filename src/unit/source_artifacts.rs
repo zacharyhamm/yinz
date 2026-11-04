@@ -134,6 +134,7 @@ fn stage_bundle(data: &Path, operation: &str, machine: u16) -> update::Release {
     artifact.binary_sha256 = update::hex(&Sha256::digest(&binary));
     receive(data, operation, &artifact, 0, &bytes).unwrap();
     update::Release {
+        channel: Default::default(),
         tag_name: "0.1.1".into(),
         assets: vec![],
         source: Some(update::SourceRelease {

@@ -252,6 +252,7 @@ fn plugin_readiness_failure_reconnects_clients_for_interactive_repair_and_retry(
         .collect();
     fixture.prepare(&operation);
     let release = crate::update::Release {
+        channel: yinz_types::session_update::ReleaseChannel::Prerelease,
         source: None,
         tag_name: yinz_runtime::consts::VERSION.into(),
         assets: vec![],

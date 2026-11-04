@@ -14,9 +14,13 @@ fn update_cli_recovery_requires_all_explicit_targets() {
         Some(Command::Update {
             resume_client: None,
             client: None,
+            prerelease: false,
             session: None
         })
     ));
+    let opted_in = CliArgs::try_parse_from(["yinz", "update", "--prerelease"]).unwrap();
+    assert!(matches!(opted_in.command, Some(Command::Update { prerelease: true, .. })));
+    assert!(CliArgs::try_parse_from(["yinz", "update", "--prerelease", "--resume-client", "3", "--client", "9", "--session", "work"]).is_err());
     let recovery = CliArgs::try_parse_from([
         "yinz",
         "--data-dir",
@@ -31,7 +35,7 @@ fn update_cli_recovery_requires_all_explicit_targets() {
     ])
     .unwrap();
     assert!(
-        matches!(recovery.command, Some(Command::Update { resume_client: Some(3), client: Some(9), session: Some(ref name) }) if name == "work")
+        matches!(recovery.command, Some(Command::Update { resume_client: Some(3), client: Some(9), session: Some(ref name), prerelease: false }) if name == "work")
     );
     for arguments in [
         vec!["yinz", "update", "--resume-client", "3"],
@@ -65,6 +69,7 @@ fn update_platforms_versions_and_cli() {
     assert!(version("1.2.3").unwrap() > version("1.2.3-dev").unwrap());
     assert!(version("bad").is_err());
     let release = Release {
+        channel: Default::default(),
         source: None,
         tag_name: "v1.2.3".into(),
         assets: vec![],
@@ -147,51 +152,79 @@ fn update_fetch_failures_and_current_versions_do_not_install() {
     yinz_test_support::write_warm_script(&binary, "#!/bin/sh\necho 'yinz 0.0.1'\n");
     let original = fs::read(&binary).unwrap();
     let data = temp.path().join("data");
-    let error = run_with(Some(&data), &binary, "test", |_, _| {
-        Err(anyhow!("HTTP 403"))
-    })
+    let error = run_with(
+        Some(&data),
+        &binary,
+        "test",
+        ReleaseChannel::Stable,
+        |_, _| Err(anyhow!("HTTP 403")),
+    )
     .unwrap_err();
     assert!(error.to_string().contains("403"));
-    run_with(Some(&data), &binary, "test", |url, output| {
-        assert_eq!(url, RELEASE_URL);
-        output
-            .write_all(br#"{"tag_name":"v0.0.0","assets":[]}"#)
-            .unwrap();
-        Ok(())
-    })
+    run_with(
+        Some(&data),
+        &binary,
+        "test",
+        ReleaseChannel::Stable,
+        |url, output| {
+            assert_eq!(url, RELEASE_URL);
+            output
+                .write_all(br#"{"tag_name":"v0.0.0","assets":[]}"#)
+                .unwrap();
+            Ok(())
+        },
+    )
     .unwrap();
-    assert!(run_with(Some(&data), &binary, "test", |_, output| {
-        output.write_all(b"invalid JSON").unwrap();
-        Ok(())
-    })
+    assert!(run_with(
+        Some(&data),
+        &binary,
+        "test",
+        ReleaseChannel::Stable,
+        |_, output| {
+            output.write_all(b"invalid JSON").unwrap();
+            Ok(())
+        }
+    )
     .is_err());
     assert_eq!(fs::read(binary).unwrap(), original);
 }
 
 #[test]
 fn update_fixture_release_installs_after_verification() {
-    let temp = tempfile::tempdir().unwrap();
-    let script = temp.path().join("fixture");
-    yinz_test_support::write_warm_script(&script, "#!/bin/sh\necho 'yinz 999.0.0'\n");
-    let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
-        Vec::new(),
-        flate2::Compression::default(),
-    ));
-    builder.append_path_with_name(&script, "yinz").unwrap();
-    let builtins = temp.path().join("builtins");
-    fs::create_dir(&builtins).unwrap();
-    fs::write(builtins.join("test.scm"), b"test").unwrap();
-    builder
-        .append_dir_all("plugins/builtins", &builtins)
-        .unwrap();
-    let bytes = builder.into_inner().unwrap().finish().unwrap();
-    let digest = hex(&Sha256::digest(&bytes));
-    let binary = temp.path().join("installed");
-    yinz_test_support::write_warm_script(&binary, "#!/bin/sh\necho 'yinz 0.0.1'\n");
-    let data = temp.path().join("data");
-    run_with(Some(&data), &binary, "test", |url, output| {
+    for channel in [ReleaseChannel::Stable, ReleaseChannel::Prerelease] {
+        let selected = if channel == ReleaseChannel::Stable {
+            "999.0.0"
+        } else {
+            "999.0.0-alpha.1"
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("fixture");
+        yinz_test_support::write_warm_script(
+            &script,
+            &format!("#!/bin/sh\necho 'yinz {selected}'\n"),
+        );
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::default(),
+        ));
+        builder.append_path_with_name(&script, "yinz").unwrap();
+        let builtins = temp.path().join("builtins");
+        fs::create_dir(&builtins).unwrap();
+        fs::write(builtins.join("test.scm"), b"test").unwrap();
+        builder
+            .append_dir_all("plugins/builtins", &builtins)
+            .unwrap();
+        let bytes = builder.into_inner().unwrap().finish().unwrap();
+        let digest = hex(&Sha256::digest(&bytes));
+        let binary = temp.path().join("installed");
+        yinz_test_support::write_warm_script(&binary, "#!/bin/sh\necho 'yinz 0.0.1'\n");
+        let data = temp.path().join("data");
+        run_with(Some(&data), &binary, "test", channel, |url, output| {
+        let metadata = serde_json::json!({"tag_name":format!("v{selected}"),"assets":[{"name":"yinz-test.tar.gz","browser_download_url":"archive"},{"name":"SHA256SUMS","browser_download_url":"sums"}]});
         let content = match url {
-            RELEASE_URL => br#"{"tag_name":"v999.0.0","assets":[{"name":"yinz-test.tar.gz","browser_download_url":"archive"},{"name":"SHA256SUMS","browser_download_url":"sums"}]}"#.to_vec(),
+            RELEASE_URL => serde_json::to_vec(&metadata).unwrap(),
+            url if url.ends_with("page=1") => serde_json::to_vec(&vec![metadata]).unwrap(),
+            url if url.ends_with("page=2") => b"[]".to_vec(),
             "archive" => bytes.clone(),
             "sums" => format!("{digest}  yinz-test.tar.gz\n").into_bytes(),
             _ => panic!("unexpected URL"),
@@ -199,55 +232,58 @@ fn update_fixture_release_installs_after_verification() {
         output.write_all(&content).unwrap();
         Ok(())
     }).unwrap();
-    assert_eq!(fs::read(binary).unwrap(), fs::read(script).unwrap());
-    assert_eq!(
-        fs::read(data.join("plugins/builtins/test.scm")).unwrap(),
-        b"test"
-    );
+        assert_eq!(fs::read(binary).unwrap(), fs::read(script).unwrap());
+        assert_eq!(
+            fs::read(data.join("plugins/builtins/test.scm")).unwrap(),
+            b"test"
+        );
+    }
 }
 
 #[test]
 fn preparation_is_pinned_and_does_not_install() {
-    let temp = tempfile::tempdir().unwrap();
-    let script = temp.path().join("fixture");
-    yinz_test_support::write_warm_script(&script, "#!/bin/sh\necho 'yinz 999.0.0'\n");
-    let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
-        Vec::new(),
-        flate2::Compression::default(),
-    ));
-    builder.append_path_with_name(&script, "yinz").unwrap();
-    let builtins = temp.path().join("builtins");
-    fs::create_dir(&builtins).unwrap();
-    fs::write(builtins.join("test.scm"), b"new plugin").unwrap();
-    builder
-        .append_dir_all("plugins/builtins", &builtins)
-        .unwrap();
-    let bytes = builder.into_inner().unwrap().finish().unwrap();
-    let digest = hex(&Sha256::digest(&bytes));
-    let release = Release {
-        source: None,
-        tag_name: "v999.0.0".into(),
-        assets: vec![
-            Asset {
-                name: "yinz-test.tar.gz".into(),
-                browser_download_url: "archive".into(),
-            },
-            Asset {
-                name: "SHA256SUMS".into(),
-                browser_download_url: "sums".into(),
-            },
-        ],
-    };
-    let binary = temp.path().join("installed");
-    fs::write(&binary, b"old binary").unwrap();
-    let data = temp.path().join("installed-data");
-    fs::create_dir_all(data.join("plugins/builtins")).unwrap();
-    fs::write(data.join("plugins/builtins/test.scm"), b"old plugin").unwrap();
-    let mut phases = Vec::new();
-    let prepared = prepare(
-        &release,
-        "test",
-        &mut |url, output| {
+    for selected in ["999.0.0", "999.0.0-alpha.1"] {
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("fixture");
+        yinz_test_support::write_warm_script(
+            &script,
+            &format!("#!/bin/sh\necho 'yinz {selected}'\n"),
+        );
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::default(),
+        ));
+        builder.append_path_with_name(&script, "yinz").unwrap();
+        let builtins = temp.path().join("builtins");
+        fs::create_dir(&builtins).unwrap();
+        fs::write(builtins.join("test.scm"), b"new plugin").unwrap();
+        builder
+            .append_dir_all("plugins/builtins", &builtins)
+            .unwrap();
+        let bytes = builder.into_inner().unwrap().finish().unwrap();
+        let digest = hex(&Sha256::digest(&bytes));
+        let release = Release {
+            channel: ReleaseChannel::Prerelease,
+            source: None,
+            tag_name: format!("v{selected}"),
+            assets: vec![
+                Asset {
+                    name: "yinz-test.tar.gz".into(),
+                    browser_download_url: "archive".into(),
+                },
+                Asset {
+                    name: "SHA256SUMS".into(),
+                    browser_download_url: "sums".into(),
+                },
+            ],
+        };
+        let binary = temp.path().join("installed");
+        fs::write(&binary, b"old binary").unwrap();
+        let data = temp.path().join("installed-data");
+        fs::create_dir_all(data.join("plugins/builtins")).unwrap();
+        fs::write(data.join("plugins/builtins/test.scm"), b"old plugin").unwrap();
+        let mut phases = Vec::new();
+        let mut download = |url: &str, output: &mut dyn std::io::Write| {
             match url {
                 "archive" => output.write_all(&bytes).unwrap(),
                 "sums" => output
@@ -256,36 +292,74 @@ fn preparation_is_pinned_and_does_not_install() {
                 _ => panic!("preparation must not resolve latest again: {url}"),
             }
             Ok(())
-        },
-        &mut |phase| phases.push(phase),
-    )
-    .unwrap();
-    assert_eq!(
-        phases,
-        vec![
-            Progress::Downloading,
-            Progress::Verifying,
-            Progress::Validating
-        ]
-    );
-    assert_eq!(prepared.version, version("999.0.0").unwrap());
-    assert_eq!(fs::read(&binary).unwrap(), b"old binary");
-    assert_eq!(
-        fs::read(data.join("plugins/builtins/test.scm")).unwrap(),
-        b"old plugin"
-    );
-    let staged_source = prepared.source.clone();
-    assert!(staged_source.join("yinz").is_file());
-    drop(prepared);
-    assert!(
-        !staged_source.exists(),
-        "aborted preparation cleans up its assets"
-    );
+        };
+        let prepared = prepare(&release, "test", &mut download, &mut |phase| {
+            phases.push(phase)
+        })
+        .unwrap();
+        assert_eq!(
+            phases,
+            vec![
+                Progress::Downloading,
+                Progress::Verifying,
+                Progress::Validating
+            ]
+        );
+        assert_eq!(prepared.version, version(selected).unwrap());
+        assert_eq!(fs::read(&binary).unwrap(), b"old binary");
+        assert_eq!(
+            fs::read(data.join("plugins/builtins/test.scm")).unwrap(),
+            b"old plugin"
+        );
+        // SSH bootstrap uses this same path for foreign artifacts. It must allow
+        // the pinned prerelease without executing the foreign binary on this host.
+        phases.clear();
+        let foreign = prepare_artifact(&release, "test", &mut download, &mut |phase| {
+            phases.push(phase)
+        })
+        .unwrap();
+        assert_eq!(foreign.version, version(selected).unwrap());
+        assert_eq!(phases, vec![Progress::Downloading, Progress::Verifying]);
+        let mismatch = prepare(
+            &release,
+            "test",
+            &mut |url, output| {
+                if url == "sums" {
+                    output
+                        .write_all(format!("{}  yinz-test.tar.gz\n", "0".repeat(64)).as_bytes())
+                        .unwrap();
+                    Ok(())
+                } else {
+                    download(url, output)
+                }
+            },
+            &mut |_| {},
+        )
+        .err()
+        .unwrap();
+        assert!(mismatch.to_string().contains("SHA-256 mismatch"));
+        let mut wrong_version = release.clone();
+        wrong_version.tag_name = "999.0.1-alpha.1".into();
+        let mismatch = prepare(&wrong_version, "test", &mut download, &mut |_| {})
+            .err()
+            .unwrap();
+        assert!(mismatch
+            .to_string()
+            .contains("did not report expected version"));
+        let staged_source = prepared.source.clone();
+        assert!(staged_source.join("yinz").is_file());
+        drop(prepared);
+        assert!(
+            !staged_source.exists(),
+            "aborted preparation cleans up its assets"
+        );
+    }
 }
 
 #[test]
 fn preparation_rejects_prerelease_before_download() {
     let release = Release {
+        channel: Default::default(),
         source: None,
         tag_name: "v999.0.0-rc.1".into(),
         assets: vec![],
@@ -358,6 +432,7 @@ fn standalone_update_recovers_before_the_up_to_date_return() {
             Some(&installation.data),
             &installation.binary,
             "test",
+            ReleaseChannel::Stable,
             |url, output| {
                 assert_eq!(url, RELEASE_URL);
                 output
@@ -402,6 +477,7 @@ fn standalone_update_compares_the_generation_restored_by_recovery() {
         Some(&installation.data),
         &installation.binary,
         "test",
+        ReleaseChannel::Stable,
         |url, output| {
             assert_eq!(url, RELEASE_URL);
             output
@@ -418,4 +494,110 @@ fn standalone_update_compares_the_generation_restored_by_recovery() {
     );
     let mut next = installation.prepare();
     next.rollback().unwrap();
+}
+
+#[test]
+fn release_discovery_keeps_stable_default_and_rejects_unpublished_metadata() {
+    for metadata in [
+        serde_json::json!({"tag_name":"v2.0.0","assets":[]}),
+        serde_json::json!({"tag_name":"v2.0.0-alpha.1","assets":[]}),
+        serde_json::json!({"tag_name":"v2.0.0","assets":[],"draft":true}),
+        serde_json::json!({"tag_name":"v2.0.0","assets":[],"prerelease":true}),
+        serde_json::json!({"tag_name":"bad","assets":[]}),
+        serde_json::json!({"tag_name":"v2.0.0","assets":[],"source":{"commit":"x","artifacts":[]}}),
+    ] {
+        let result = discover(ReleaseChannel::Stable, &mut |url, out| {
+            assert_eq!(url, RELEASE_URL);
+            out.write_all(&serde_json::to_vec(&metadata).unwrap())
+                .unwrap();
+            Ok(())
+        });
+        assert_eq!(
+            result.is_ok(),
+            metadata == serde_json::json!({"tag_name":"v2.0.0","assets":[]})
+        );
+        if let Ok(release) = result {
+            assert_eq!(release.channel, ReleaseChannel::Stable);
+        }
+    }
+}
+
+#[test]
+fn prerelease_discovery_paginates_and_uses_semver_instead_of_release_dates() {
+    for (last, expected) in [("v1.0.0", "v2.0.0-alpha.10"), ("v2.0.0", "v2.0.0")] {
+        let pages = [
+            serde_json::json!([
+                {"tag_name":"v2.0.0-alpha.9","assets":[],"created_at":"2030-01-01"},
+                {"tag_name":"v99.0.0","assets":[],"draft":true}
+            ]),
+            serde_json::json!([
+                {"tag_name":"malformed","assets":[]},
+                {"tag_name":"v90.0.0","assets":[],"draft":true}
+            ]),
+            serde_json::json!([
+                {"tag_name":"v2.0.0-alpha.10","assets":[],"created_at":"2020-01-01"},
+                {"tag_name":last,"assets":[]}
+            ]),
+            serde_json::json!([]),
+        ];
+        let mut requested = 0;
+        let release = discover(ReleaseChannel::Prerelease, &mut |url, out| {
+            assert_eq!(
+                url,
+                format!("{RELEASES_URL}?per_page=100&page={}", requested + 1)
+            );
+            out.write_all(&serde_json::to_vec(&pages[requested]).unwrap())
+                .unwrap();
+            requested += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(requested, 4);
+        assert_eq!(release.tag_name, expected);
+        assert_eq!(release.channel, ReleaseChannel::Prerelease);
+    }
+}
+
+#[test]
+fn prerelease_discovery_fails_on_empty_catalog_or_failed_later_page() {
+    assert!(discover(ReleaseChannel::Prerelease, &mut |_, out| {
+        out.write_all(b"[]").unwrap();
+        Ok(())
+    })
+    .unwrap_err()
+    .to_string()
+    .contains("no published"));
+    let mut page = 0;
+    let error = discover(ReleaseChannel::Prerelease, &mut |_, out| {
+        page += 1;
+        if page == 1 {
+            out.write_all(br#"[{"tag_name":"v2.0.0-alpha.1","assets":[]}]"#)
+                .unwrap();
+            Ok(())
+        } else {
+            Err(anyhow!("rate limited"))
+        }
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("rate limited"));
+}
+
+#[test]
+fn prerelease_installation_rechecks_downgrades_under_lock() {
+    let installation = StandaloneInstallation::new();
+    yinz_test_support::write_warm_script(&installation.binary, "#!/bin/sh\necho 'yinz 2.0.0'\n");
+    yinz_test_support::write_warm_script(
+        &installation.source.join("yinz"),
+        "#!/bin/sh\necho 'yinz 2.0.0-alpha.1'\n",
+    );
+    let original = fs::read(&installation.binary).unwrap();
+    let error = install_with_target(
+        &installation.source,
+        &installation.binary,
+        &installation.data,
+        Some(&version("2.0.0-alpha.1").unwrap()),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("refusing downgrade"));
+    assert_eq!(fs::read(&installation.binary).unwrap(), original);
 }

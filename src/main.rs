@@ -25,6 +25,14 @@ use {
     yinz_runtime::consts::create_config_and_cache_folders, yinz_types::data::UnblockCondition,
 };
 
+fn release_channel(prerelease: bool) -> yinz_types::session_update::ReleaseChannel {
+    if prerelease {
+        yinz_types::session_update::ReleaseChannel::Prerelease
+    } else {
+        yinz_types::session_update::ReleaseChannel::Stable
+    }
+}
+
 fn main() {
     let process_started = std::time::Instant::now();
     if std::env::args().nth(1).as_deref() == Some(yinz_types::session_update::COORDINATOR_ARG) {
@@ -32,7 +40,8 @@ fn main() {
         let result = (|| {
             let args: Vec<_> = std::env::args_os().skip(2).collect();
             let source_build = args.last().is_some_and(|arg| arg == "--source-build");
-            let args = if source_build {
+            let prerelease = args.last().is_some_and(|arg| arg == "--prerelease");
+            let args = if source_build || prerelease {
                 &args[..args.len() - 1]
             } else {
                 &args[..]
@@ -45,6 +54,7 @@ fn main() {
                 std::path::Path::new(data_dir),
                 operation.to_str().context("invalid update operation id")?,
                 source_build,
+                release_channel(prerelease),
             )
         })();
         if let Err(error) = result {
@@ -181,6 +191,7 @@ fn main() {
         remote_commands::exit(1);
     }
     if let Some(Command::Update {
+        prerelease,
         resume_client,
         client,
         session,
@@ -193,7 +204,9 @@ fn main() {
                 *original,
                 *current,
             ),
-            (None, None, None) => update::run(opts.data_dir.as_deref()),
+            (None, None, None) => {
+                update::run(opts.data_dir.as_deref(), release_channel(*prerelease))
+            },
             _ => Err(anyhow::anyhow!(
                 "--resume-client, --client, and --session must be supplied together"
             )),

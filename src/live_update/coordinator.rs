@@ -6,7 +6,7 @@ use super::{
 use std::{process::Command as Process, time::Instant};
 use yinz_types::{
     data::{ClientId, SessionConnection},
-    session_update::{Command, Inventory},
+    session_update::{Command, Inventory, ReleaseChannel},
     update_client::{ClientReply, ClientRequest, Request},
 };
 
@@ -231,13 +231,30 @@ pub fn run(socket: &Path, data_dir: &Path, operation: &str) -> Result<()> {
     run_with_source(socket, data_dir, operation, false)
 }
 
+#[cfg(test)]
 pub fn run_with_source(
     socket: &Path,
     data_dir: &Path,
     operation: &str,
     source_build: bool,
 ) -> Result<()> {
-    let mut store = Store::open_with_source(socket, data_dir, operation, source_build)?;
+    run_with_channel(
+        socket,
+        data_dir,
+        operation,
+        source_build,
+        ReleaseChannel::Stable,
+    )
+}
+
+pub fn run_with_channel(
+    socket: &Path,
+    data_dir: &Path,
+    operation: &str,
+    source_build: bool,
+    channel: ReleaseChannel,
+) -> Result<()> {
+    let mut store = Store::open_with_channel(socket, data_dir, operation, source_build, channel)?;
     if matches!(
         store.journal.phase,
         Phase::Complete | Phase::Failed | Phase::Cancelled
@@ -316,11 +333,13 @@ fn execute(store: &mut Store, source: &mut Connection) -> Result<()> {
         &operation,
         Command::Notify {
             text: if store.journal.source_build {
-                "Preparing a pinned build of local main…"
+                "Preparing a pinned build of local main…".into()
             } else {
-                "Checking the latest stable Yinz release…"
-            }
-            .into(),
+                format!(
+                    "Checking the latest Yinz release ({})…",
+                    store.journal.channel.label()
+                )
+            },
         },
     )?;
     if store.journal.source_build {
@@ -337,8 +356,22 @@ fn execute(store: &mut Store, source: &mut Connection) -> Result<()> {
         return execute_release(store, source, inventory, release);
     }
     let http = http_client()?;
-    let release = update::discover(&mut |url, out| update::download(&http, url, out))?;
+    let release = resolve_release(store, &mut |url, out| update::download(&http, url, out))?;
     execute_release(store, source, inventory, release)
+}
+
+/// A crash after pinning but before preparation must not rediscover a newer tag.
+fn resolve_release(
+    store: &mut Store,
+    download: &mut impl FnMut(&str, &mut dyn std::io::Write) -> Result<()>,
+) -> Result<update::Release> {
+    if let Some(pinned) = &store.journal.release {
+        return serde_json::from_value(pinned.clone()).context("decode pinned update release");
+    }
+    let release = update::discover(store.journal.channel, download)?;
+    store.journal.release = Some(serde_json::to_value(&release).context("pin selected release")?);
+    store.save()?;
+    Ok(release)
 }
 
 fn record_source_build_failure(store: &mut Store, error: &anyhow::Error) -> Result<()> {
@@ -458,6 +491,7 @@ fn build_source_release(
         artifacts.push(artifact);
     }
     Ok(update::Release {
+        channel: Default::default(),
         tag_name: build.version,
         assets: Vec::new(),
         source: Some(update::SourceRelease {
@@ -518,6 +552,20 @@ fn transfer_source_artifact(
     Ok(())
 }
 
+fn require_prerelease_support(
+    release: &update::Release,
+    installation: &Installation,
+) -> Result<()> {
+    anyhow::ensure!(
+        release.source.is_some()
+            || update::version(&release.tag_name)?.pre.is_empty()
+            || installation.capabilities.prerelease_update,
+        "participant {} does not support prerelease updates; update it manually first",
+        installation.executable.display()
+    );
+    Ok(())
+}
+
 /// The release is resolved exactly once, before any participant is prepared.
 pub(super) fn execute_release(
     store: &mut Store,
@@ -531,7 +579,7 @@ pub(super) fn execute_release(
     let target = update::version(&release.tag_name)?;
     anyhow::ensure!(
         release.source.is_some() || update::version(&inventory.running_version)? <= target,
-        "source server is newer than the selected stable release; refusing downgrade"
+        "source server is newer than the selected release; refusing downgrade"
     );
     store.journal.release = Some(serde_json::to_value(&release).context("record pinned release")?);
     store.phase(Phase::Prepare)?;
@@ -558,6 +606,11 @@ pub(super) fn execute_release(
         store.save()?;
         for client in &inventory.clients {
             anyhow::ensure!(
+                target.pre.is_empty() || release.source.is_some() || client.supports_update,
+                "client {} does not support prerelease updates; update it manually first",
+                client.id
+            );
+            anyhow::ensure!(
                 release.source.is_none() || client.supports_source_update,
                 "client {} does not support source updates; no installation was published",
                 client.id
@@ -569,8 +622,9 @@ pub(super) fn execute_release(
             }
             match client_participant(source, &operation, client.id, ParticipantRequest::Inventory) {
                 Ok(value) => {
-                    let installation =
+                    let installation: Installation =
                         serde_json::from_value(value).context("decode client installation")?;
+                    require_prerelease_support(&release, &installation)?;
                     store.journal.participants.push(Participant {
                         installation,
                         route: Route::Client(client.id),
@@ -631,7 +685,7 @@ pub(super) fn execute_release(
         }
         if already_current {
             store.phase(Phase::Complete)?;
-            source.request(&operation,Command::Notify{text:format!("Yinz {target} is up to date. {} legacy clients need a manual update/restart on their host to verify their running version.",store.journal.restart_required.len())})?;
+            source.request(&operation,Command::Notify{text:format!("Yinz {target} ({}) is up to date. {} legacy clients need a manual update/restart on their host to verify their running version.",release.channel.label(),store.journal.restart_required.len())})?;
             return Ok(());
         }
         for host in hosts {
@@ -678,13 +732,19 @@ pub(super) fn execute_release(
             &operation,
             Command::Notify {
                 text: format!(
-                    "Preparing Yinz {target} on {} participating installations…",
+                    "Preparing Yinz {target} ({}) on {} participating installations…",
+                    if release.source.is_some() {
+                        "local source"
+                    } else {
+                        release.channel.label()
+                    },
                     unique_participants(&store.journal).len()
                 ),
             },
         )?;
         for index in unique_participants(&store.journal) {
             check_cancel(store)?;
+            require_prerelease_support(&release, &store.journal.participants[index].installation)?;
             if let Some(source_release) = &release.source {
                 anyhow::ensure!(
                     store.journal.participants[index]
@@ -2349,3 +2409,7 @@ mod cold_recovery_tests;
 ))]
 #[path = "../unit/source_build_coordinator.rs"]
 mod source_build_tests;
+
+#[cfg(test)]
+#[path = "../unit/prerelease_coordinator.rs"]
+mod prerelease_tests;

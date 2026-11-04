@@ -813,11 +813,12 @@ fn coordinator_test_worker() {
     let path =
         std::env::var_os("YINZ_TEST_UPDATE_COORDINATOR").expect("coordinator fixture request");
     let request: CoordinatorFixture = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-    let mut store = crate::live_update::journal::Store::open_with_source(
+    let mut store = crate::live_update::journal::Store::open_with_channel(
         &request.socket,
         &request.data,
         &request.operation,
         request.release.source.is_some(),
+        request.release.channel,
     )
     .unwrap();
     let mut source = crate::live_update::transport::Connection::connect(&request.socket).unwrap();
@@ -923,6 +924,7 @@ fn check_full_update_coordinator(from_source: bool) {
     } else {
         fixture.prepare(&operation);
         let release = crate::update::Release {
+            channel: yinz_types::session_update::ReleaseChannel::Prerelease,
             source: None,
             tag_name: yinz_runtime::consts::VERSION.into(),
             assets: vec![],
@@ -1198,6 +1200,7 @@ fn source_fixture_release(fixture: &Fixture, operation: &str) -> crate::update::
         binary_sha256: artifacts::digest_file(&binary).unwrap(),
     };
     crate::update::Release {
+        channel: Default::default(),
         source: Some(crate::update::SourceRelease {
             commit: "a".repeat(40),
             artifacts: vec![artifact],

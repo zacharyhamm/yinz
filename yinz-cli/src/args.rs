@@ -442,6 +442,10 @@ pub enum PtyHosts {
 pub enum Command {
     /// Install the latest stable GitHub release into the current installation.
     Update {
+        /// Include prereleases when selecting the highest published SemVer release.
+        #[clap(long, conflicts_with_all = ["resume_client", "client", "session"])]
+        #[serde(default)]
+        prerelease: bool,
         /// Retry replacement of this original client in an interrupted session update.
         #[clap(long, requires_all = ["client", "session"], value_parser = clap::value_parser!(u32).range(1..))]
         resume_client: Option<u32>,

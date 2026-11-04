@@ -408,6 +408,10 @@
       (defer (lambda ()
           (require-success (yinz-command "UpdateYinz"))
           (complete "Update requested. Progress will appear in session notifications."))))
+    (action "update-yinz-prerelease" "Update Yinz including prereleases…"
+      (defer (lambda ()
+          (require-success (yinz-command "UpdateYinzPrerelease"))
+          (complete "Update including prereleases requested. Progress will appear in session notifications."))))
     (action "update-status" "Yinz update status"
       (defer (lambda ()
           (require-success (yinz-command "YinzUpdateStatus"))

@@ -1877,6 +1877,10 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 None => Ok(PluginCommand::UpdateYinz),
                 _ => Err("Mismatched payload for UpdateYinz"),
             },
+            Some(CommandName::UpdateYinzPrerelease) => match protobuf_plugin_command.payload {
+                None => Ok(PluginCommand::UpdateYinzPrerelease),
+                _ => Err("Mismatched payload for UpdateYinzPrerelease"),
+            },
             Some(CommandName::UpdateYinzFromSource) => match protobuf_plugin_command.payload {
                 None => Ok(PluginCommand::UpdateYinzFromSource),
                 _ => Err("Mismatched payload for UpdateYinzFromSource"),
@@ -4555,6 +4559,10 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             }),
             PluginCommand::UpdateYinz => Ok(ProtobufPluginCommand {
                 name: CommandName::UpdateYinz as i32,
+                payload: None,
+            }),
+            PluginCommand::UpdateYinzPrerelease => Ok(ProtobufPluginCommand {
+                name: CommandName::UpdateYinzPrerelease as i32,
                 payload: None,
             }),
             PluginCommand::UpdateYinzFromSource => Ok(ProtobufPluginCommand {

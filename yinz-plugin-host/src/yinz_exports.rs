@@ -869,6 +869,15 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     )
                     .context("start session update")?;
             },
+            PluginCommand::UpdateYinzPrerelease => {
+                env.senders
+                    .send_to_server(
+                        yinz_bus::server_instruction::ServerInstruction::StartPrereleaseSessionUpdate(
+                            env.client_id,
+                        ),
+                    )
+                    .context("start session update")?;
+            },
             PluginCommand::UpdateYinzFromSource => {
                 env.senders
                     .send_to_server(

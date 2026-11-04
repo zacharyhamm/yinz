@@ -2341,6 +2341,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             yinz_types::session_destination::SwitchRequest::Status("switch".into()),
         ),
         CommandType::UpdateYinz => PluginCommand::UpdateYinz,
+        CommandType::UpdateYinzPrerelease => PluginCommand::UpdateYinzPrerelease,
         CommandType::UpdateYinzFromSource => PluginCommand::UpdateYinzFromSource,
         CommandType::CancelYinzUpdate => PluginCommand::CancelYinzUpdate,
         CommandType::YinzUpdateStatus => PluginCommand::YinzUpdateStatus,

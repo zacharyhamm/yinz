@@ -23,6 +23,7 @@ pub enum ServerInstruction {
         source_client: ClientId,
     },
     StartSessionUpdate(ClientId),
+    StartPrereleaseSessionUpdate(ClientId),
     StartSourceSessionUpdate(ClientId),
     CancelSessionUpdate(ClientId),
     SessionUpdateStatus(ClientId),
@@ -154,6 +155,7 @@ impl From<&ServerInstruction> for ServerContext {
             | ServerInstruction::UpdateRequest { .. }
             | ServerInstruction::UpdateReply(..)
             | ServerInstruction::StartSessionUpdate(..)
+            | ServerInstruction::StartPrereleaseSessionUpdate(..)
             | ServerInstruction::StartSourceSessionUpdate(..)
             | ServerInstruction::CancelSessionUpdate(..)
             | ServerInstruction::SessionUpdateStatus(..) => ServerContext::ConnStatus,

@@ -296,6 +296,7 @@ enum CommandName {
   CancelYinzUpdate = 320;
   YinzUpdateStatus = 321;
   UpdateYinzFromSource = 322;
+  UpdateYinzPrerelease = 323;
 }
 
 message PluginCommand {

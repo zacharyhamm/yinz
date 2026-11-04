@@ -234,6 +234,7 @@ fn test_client_messages() {
     for command in [
         session_update::Command::Identity,
         session_update::Command::Start,
+        session_update::Command::StartPrerelease,
         session_update::Command::StartSource,
         session_update::Command::ReleaseMigration {
             snapshot: "/tmp/session snapshot.json".into(),

@@ -50,6 +50,8 @@ pub struct RemoteHelper {
 pub struct Journal {
     pub format: u32,
     #[serde(default)]
+    pub channel: yinz_types::session_update::ReleaseChannel,
+    #[serde(default)]
     pub source_build: bool,
     pub operation: String,
     pub phase: Phase,
@@ -101,6 +103,22 @@ impl Store {
         data_dir: &Path,
         operation: &str,
         source_build: bool,
+    ) -> Result<Self> {
+        Self::open_with_channel(
+            socket,
+            data_dir,
+            operation,
+            source_build,
+            Default::default(),
+        )
+    }
+
+    pub fn open_with_channel(
+        socket: &Path,
+        data_dir: &Path,
+        operation: &str,
+        source_build: bool,
+        channel: yinz_types::session_update::ReleaseChannel,
     ) -> Result<Self> {
         use std::os::unix::fs::OpenOptionsExt;
         uuid::Uuid::parse_str(operation).context("invalid update operation id")?;
@@ -173,6 +191,7 @@ impl Store {
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Journal {
                 format: 1,
+                channel,
                 source_build,
                 operation: actual_operation.clone(),
                 phase: Phase::Discover,

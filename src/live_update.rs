@@ -16,7 +16,7 @@ mod coordinator;
 mod journal;
 mod source_build;
 mod transport;
-pub(crate) use coordinator::run_with_source as coordinator_main;
+pub(crate) use coordinator::run_with_channel as coordinator_main;
 
 pub(crate) fn resume_client_update(
     session: &str,
@@ -40,6 +40,7 @@ pub(crate) fn resume_client_update(
 
 pub(crate) fn capabilities() -> Capabilities {
     Capabilities {
+        prerelease_update: true,
         source_binary_sha256: yinz_runtime::session_update::running_executable_digest().ok(),
         source_update: true,
         build_version: yinz_runtime::consts::VERSION.into(),

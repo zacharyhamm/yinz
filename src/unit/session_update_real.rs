@@ -648,7 +648,7 @@ fn retired_source_duplicate_update_returns_the_original_active_operation() {
     fs::write(&active, serde_json::to_vec(&operation).unwrap()).unwrap();
     fs::write(
         directory.join("journal.json"),
-        serde_json::to_vec(&serde_json::json!({"operation": operation, "phase": "Transfer"}))
+        serde_json::to_vec(&serde_json::json!({"operation": operation, "phase": "Transfer", "channel":"Prerelease", "release":{"tag_name":"v0.1.2-alpha.1"}}))
             .unwrap(),
     )
     .unwrap();
@@ -709,11 +709,19 @@ fn retired_source_duplicate_update_returns_the_original_active_operation() {
             },
         )
         .unwrap();
-    let status = source
-        .request(&uuid::Uuid::new_v4().to_string(), UpdateCommand::Start)
-        .unwrap();
-    assert_eq!(status["operation"], operation);
-    assert_eq!(status["phase"], "Transfer");
+    for command in [
+        UpdateCommand::Start,
+        UpdateCommand::StartPrerelease,
+        UpdateCommand::StartSource,
+    ] {
+        let status = source
+            .request(&uuid::Uuid::new_v4().to_string(), command)
+            .unwrap();
+        assert_eq!(status["operation"], operation);
+        assert_eq!(status["phase"], "Transfer");
+        assert_eq!(status["channel"], "Prerelease");
+        assert_eq!(status["release"]["tag_name"], "v0.1.2-alpha.1");
+    }
     source
         .request(&operation, UpdateCommand::AdoptMigration { snapshot })
         .unwrap();

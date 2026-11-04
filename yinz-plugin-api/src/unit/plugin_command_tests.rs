@@ -868,6 +868,7 @@ mod props {
             | PluginCommand::GetSessionInventory(_)
             | PluginCommand::SwitchSessionDestination(_)
             | PluginCommand::UpdateYinz
+            | PluginCommand::UpdateYinzPrerelease
             | PluginCommand::UpdateYinzFromSource
             | PluginCommand::CancelYinzUpdate
             | PluginCommand::YinzUpdateStatus
@@ -983,6 +984,7 @@ fn local_time_command_round_trips() {
 fn source_and_release_update_commands_remain_distinct_on_the_wire() {
     for original in [
         PluginCommand::UpdateYinz,
+        PluginCommand::UpdateYinzPrerelease,
         PluginCommand::UpdateYinzFromSource,
         PluginCommand::CancelYinzUpdate,
         PluginCommand::YinzUpdateStatus,

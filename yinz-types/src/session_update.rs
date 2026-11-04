@@ -7,6 +7,23 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const COORDINATOR_ARG: &str = "--session-update";
 pub const CAPABILITIES_ARG: &str = "--update-capabilities";
 
+/// Applies to one update operation, including its recovery attempts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReleaseChannel {
+    #[default]
+    Stable,
+    Prerelease,
+}
+
+impl ReleaseChannel {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Prerelease => "including prereleases",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Request {
     pub token: String,
@@ -19,6 +36,7 @@ pub enum Command {
     Identity,
     Inventory,
     Start,
+    StartPrerelease,
     StartSource,
     Status,
     Cancel,
@@ -91,6 +109,8 @@ pub struct Inventory {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capabilities {
+    #[serde(default)]
+    pub prerelease_update: bool,
     #[serde(default)]
     pub source_binary_sha256: Option<String>,
     #[serde(default)]

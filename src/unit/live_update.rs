@@ -116,6 +116,7 @@ fn manual_client_commit_requires_exact_installation_and_current_running_image() 
         capabilities: capabilities(),
     };
     let target = update::Release {
+        channel: Default::default(),
         tag_name: "2.0.0".into(),
         assets: vec![],
         source: None,
@@ -185,6 +186,7 @@ fn manual_source_commit_requires_pinned_digest_and_source_identity_capability() 
     };
     let expected = attached.clone();
     let release = update::Release {
+        channel: Default::default(),
         tag_name: "2.0.0".into(),
         assets: vec![],
         source: Some(update::SourceRelease {

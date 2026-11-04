@@ -32,6 +32,16 @@ fn source_update_status_keeps_pinned_identity_and_build_log_visible() {
     }
     assert_eq!(
         source_build_status(&serde_json::json!({"source_build":false}), root.path()).unwrap(),
-        ""
+        ". Channel: stable; version: pending"
     );
+}
+
+#[test]
+fn prerelease_update_status_names_the_pinned_version_and_channel() {
+    let root = tempfile::tempdir().unwrap();
+    let active =
+        serde_json::json!({"channel":"Prerelease", "release":{"tag_name":"v0.1.2-alpha.1"}});
+    let status = source_build_status(&active, root.path()).unwrap();
+    assert!(status.contains("including prereleases"));
+    assert!(status.contains("v0.1.2-alpha.1"));
 }

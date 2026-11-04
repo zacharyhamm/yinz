@@ -897,3 +897,19 @@ Copy those marker files to another checkout to group both roots together. The
 example searches upward for the nearest marker directory and has no Git dependency.
 It passes the host path as an argument and runs from `/`; command working directories
 otherwise apply the SDK’s special `/tmp`, `/host`, `/cache`, and `/data` mappings.
+
+## Session release updates
+
+`(yinz-command "UpdateYinz")` starts a coordinated stable update of the acting
+client's session. `(yinz-command "UpdateYinzPrerelease")` opts that operation into
+the highest published SemVer release, including stable releases and prereleases.
+Both require `RunCommands`. The session protocol commands are `Start` and
+`StartPrerelease`, respectively. `UpdateYinzFromSource` / `StartSource` still
+select the registered repository's local main build.
+
+`YinzUpdateStatus` reports the channel, pinned version, and progress;
+`CancelYinzUpdate` requests cancellation before terminal transfer. Retrying an
+interrupted update preserves its channel and selected version, including when a
+different update action is used. Missing channel fields in older journals mean
+stable. Participants without prerelease support fail with instructions to update
+manually. This opt-in never changes the installation's future default channel.

@@ -11,11 +11,15 @@ use std::{
     time::Duration,
 };
 use yinz_runtime::errors::prelude::*;
+use yinz_types::session_update::ReleaseChannel;
 
 const RELEASE_URL: &str = "https://api.github.com/repos/zacharyhamm/yinz/releases/latest";
+const RELEASES_URL: &str = "https://api.github.com/repos/zacharyhamm/yinz/releases";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct Release {
+    #[serde(default)]
+    pub(crate) channel: ReleaseChannel,
     pub(crate) tag_name: String,
     pub(crate) assets: Vec<Asset>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -194,7 +198,7 @@ fn install_with_target(
     transaction.commit()
 }
 
-pub fn run(data_dir: Option<&Path>) -> Result<()> {
+pub fn run(data_dir: Option<&Path>, channel: ReleaseChannel) -> Result<()> {
     let target = target(std::env::consts::OS, std::env::consts::ARCH)?;
     let client = HttpClient::builder()
         .connect_timeout(Duration::from_secs(20))
@@ -206,6 +210,7 @@ pub fn run(data_dir: Option<&Path>) -> Result<()> {
         data_dir,
         &std::env::current_exe().context("locate current executable")?,
         target,
+        channel,
         |url, output| download(&client, url, output),
     )
 }
@@ -221,7 +226,6 @@ pub(crate) struct PreparedRelease {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Progress {
-    Checking,
     Downloading,
     Verifying,
     Validating,
@@ -229,11 +233,64 @@ pub(crate) enum Progress {
 }
 
 pub(crate) fn discover(
+    channel: ReleaseChannel,
     download: &mut impl FnMut(&str, &mut dyn std::io::Write) -> Result<()>,
 ) -> Result<Release> {
+    #[derive(Deserialize)]
+    struct PublishedRelease {
+        #[serde(flatten)]
+        release: Release,
+        #[serde(default)]
+        draft: bool,
+        #[serde(default)]
+        prerelease: bool,
+    }
+    if channel == ReleaseChannel::Prerelease {
+        let mut selected: Option<(semver::Version, Release)> = None;
+        // GitHub orders releases by creation date, not SemVer. Inspect every
+        // page, including pages containing only drafts or invalid version tags.
+        for page in 1.. {
+            let mut metadata = Vec::new();
+            download(
+                &format!("{RELEASES_URL}?per_page=100&page={page}"),
+                &mut metadata,
+            )?;
+            let releases: Vec<PublishedRelease> =
+                serde_json::from_slice(&metadata).context("parse GitHub releases page")?;
+            if releases.is_empty() {
+                break;
+            }
+            for published in releases {
+                let mut release = published.release;
+                if published.draft || release.source.is_some() {
+                    continue;
+                }
+                let Ok(candidate) = version(&release.tag_name) else {
+                    continue;
+                };
+                if selected
+                    .as_ref()
+                    .is_none_or(|(best, _)| candidate.cmp_precedence(best).is_gt())
+                {
+                    release.channel = channel;
+                    selected = Some((candidate, release));
+                }
+            }
+        }
+        return selected
+            .map(|(_, release)| release)
+            .context("no published Yinz version found");
+    }
     let mut metadata = Vec::new();
     download(RELEASE_URL, &mut metadata)?;
-    let release: Release = serde_json::from_slice(&metadata).context("parse GitHub release")?;
+    let published: PublishedRelease =
+        serde_json::from_slice(&metadata).context("parse GitHub release")?;
+    anyhow::ensure!(
+        !published.draft && !published.prerelease,
+        "latest release is unpublished or a prerelease"
+    );
+    let mut release = published.release;
+    release.channel = channel;
     anyhow::ensure!(
         release.source.is_none(),
         "stable release metadata cannot select source artifacts"
@@ -278,7 +335,9 @@ pub(crate) fn prepare_artifact(
 ) -> Result<PreparedRelease> {
     let latest = version(&release.tag_name)?;
     anyhow::ensure!(
-        release.source.is_some() || latest.pre.is_empty(),
+        release.source.is_some()
+            || release.channel == ReleaseChannel::Prerelease
+            || latest.pre.is_empty(),
         "release is a prerelease"
     );
     let name = format!("yinz-{target}.tar.gz");
@@ -337,26 +396,33 @@ fn run_with(
     data_dir: Option<&Path>,
     executable: &Path,
     target: &str,
+    channel: ReleaseChannel,
     mut download: impl FnMut(&str, &mut dyn std::io::Write) -> Result<()>,
 ) -> Result<()> {
-    let mut progress = |phase| match phase {
-        Progress::Checking => println!("Checking latest stable Yinz release..."),
-        Progress::Downloading => println!("Downloading release..."),
-        Progress::Verifying => println!("Verifying release checksum..."),
-        Progress::Validating => println!("Validating release..."),
-        Progress::Installing => println!("Installing release..."),
-    };
     let executable = executable.canonicalize().context("resolve executable")?;
     let data_dir = data_dir
         .map(Path::to_path_buf)
         .unwrap_or_else(yinz_runtime::home::get_default_data_dir);
     transaction::recover_standalone(&executable, &data_dir)?;
-    progress(Progress::Checking);
-    let release = discover(&mut download)?;
+    println!("Checking latest Yinz release ({})...", channel.label());
+    let release = discover(channel, &mut download)?;
     let latest = version(&release.tag_name)?;
+    println!("Selected Yinz {latest} ({}).", channel.label());
+    let mut progress = |phase| {
+        let action = match phase {
+            Progress::Downloading => "Downloading",
+            Progress::Verifying => "Verifying checksum for",
+            Progress::Validating => "Validating",
+            Progress::Installing => "Installing",
+        };
+        println!("{action} Yinz {latest} ({})...", channel.label());
+    };
     let installed = installed_version(&executable)?;
     if installed >= latest {
-        println!("Yinz {installed} is up to date (latest stable: {latest}).");
+        println!(
+            "Yinz {installed} is up to date (latest {}: {latest}).",
+            channel.label()
+        );
         return Ok(());
     }
     let prepared = prepare(&release, target, &mut download, &mut progress)?;

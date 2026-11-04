@@ -149,3 +149,15 @@ the executable you invoked (resolving symlinks). Equal or newer versions are lef
 unchanged. For a custom data directory, use `yinz --data-dir /path/to/data update`.
 The installation directories must be writable by your account. Existing sessions
 keep running; restart them to use the new binary.
+
+Use `yinz update --prerelease` to select the highest published semantic version,
+including prereleases and stable releases. The Sessions palette offers
+**Update Yinz including prereleases…** for a coordinated update of the running
+session. The existing **Update Yinz…** action remains stable-only. Opt-in applies
+to that request; it does not change a persistent installation channel. Interrupted
+session updates keep their original channel and pinned release when retried.
+
+Install a build containing this option before using it. Older live-session
+participants that cannot prepare prereleases must be updated manually first.
+Checksums, executable-version checks, compatibility checks, rollback, and downgrade
+protection apply to prereleases too. Local-source updates are unchanged.

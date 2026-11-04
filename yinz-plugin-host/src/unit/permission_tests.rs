@@ -1843,3 +1843,22 @@ fn the_porcelain_listing_reads_a_path_and_a_branch_per_checkout() {
         ]
     );
 }
+
+#[test]
+fn prerelease_update_is_permission_gated_and_routes_the_acting_client() {
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    let mut env = crate::test_env::test_env();
+    let (sender, server) = unbounded();
+    env.senders.to_server = Some(SenderWithContext::new(sender));
+    let command = PluginCommand::UpdateYinzPrerelease;
+    assert_eq!(
+        check_command_permission(&env, &command),
+        (PermissionStatus::Denied, Some(PermissionType::RunCommands))
+    );
+    run_plugin_command(&mut env, command.clone()).unwrap();
+    assert!(server.try_recv().is_err());
+    *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::RunCommands]));
+    run_plugin_command(&mut env, command).unwrap();
+    assert!(matches!(server.try_recv().unwrap().0,
+        ServerInstruction::StartPrereleaseSessionUpdate(client) if client == env.client_id));
+}
