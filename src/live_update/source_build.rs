@@ -13,6 +13,15 @@ use std::{
 use yinz_runtime::errors::prelude::*;
 use yinz_types::session_update::Inventory;
 
+/// Only returned after a confirmed worker exit or pane closure and successful cleanup.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum TerminalFailure {
+    #[error("source build pane was closed; compilation stopped before installation")]
+    PaneClosed,
+    #[error("source build worker exited without a result; compilation stopped before installation; inspect the retained pane and log at {}", log.display())]
+    WorkerExited { log: PathBuf },
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct BuildRecord {
     pub operation: String,
@@ -419,7 +428,7 @@ pub(super) fn build(
             match pane_state(inventory, pane)? {
                 PaneState::Missing => {
                     stop(&directory)?;
-                    bail!("source build pane was closed; compilation stopped before installation");
+                    return Err(TerminalFailure::PaneClosed.into());
                 },
                 PaneState::Exited => {
                     // The worker can publish its receipt between our read and
@@ -430,10 +439,7 @@ pub(super) fn build(
                         Err(error) => return Err(error).context("recheck source build result"),
                     }
                     stop(&directory)?;
-                    bail!(
-                        "source build worker exited without a result; compilation stopped before installation; inspect the retained pane and log at {}",
-                        record.log.display()
-                    );
+                    return Err(TerminalFailure::WorkerExited { log: record.log }.into());
                 },
                 PaneState::Running => {},
             }
@@ -457,10 +463,11 @@ pub(super) fn build(
 }
 
 fn validate_result(result: &serde_json::Value, pane_present: bool, log: &Path) -> Result<()> {
-    anyhow::ensure!(
-        pane_present,
-        "source build pane was closed; source update stopped before installation"
-    );
+    if !pane_present {
+        // The caller has successfully stopped compilation before validating a
+        // receipt whose pane disappeared.
+        return Err(TerminalFailure::PaneClosed.into());
+    }
     anyhow::ensure!(
         result["success"] == true,
         "source build failed: {}; pane and log retained at {}",

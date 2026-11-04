@@ -327,16 +327,7 @@ fn execute(store: &mut Store, source: &mut Connection) -> Result<()> {
         let release = match build_source_release(store, source, &inventory) {
             Ok(release) => release,
             Err(error) => {
-                let build = store.directory.join("source");
-                let failed = std::fs::read(build.join("result.json"))
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                    .is_some_and(|result| result["success"] == false);
-                if store.cancel_requested() {
-                    store.phase(Phase::Cancelled)?;
-                } else if failed || !build.join("launch.json").exists() {
-                    store.phase(Phase::Failed)?;
-                }
+                record_source_build_failure(store, &error)?;
                 return Err(error);
             },
         };
@@ -348,6 +339,23 @@ fn execute(store: &mut Store, source: &mut Connection) -> Result<()> {
     let http = http_client()?;
     let release = update::discover(&mut |url, out| update::download(&http, url, out))?;
     execute_release(store, source, inventory, release)
+}
+
+fn record_source_build_failure(store: &mut Store, error: &anyhow::Error) -> Result<()> {
+    let build = store.directory.join("source");
+    let failed = std::fs::read(build.join("result.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|result| result["success"] == false);
+    if store.cancel_requested() {
+        store.phase(Phase::Cancelled)?;
+    } else if error.is::<source_build::TerminalFailure>()
+        || failed
+        || !build.join("launch.json").exists()
+    {
+        store.phase(Phase::Failed)?;
+    }
+    Ok(())
 }
 
 fn build_source_release(
@@ -2333,3 +2341,11 @@ fn read_recovery_snapshot(
 #[cfg(test)]
 #[path = "../unit/live_update_cold_recovery.rs"]
 mod cold_recovery_tests;
+
+#[cfg(all(
+    test,
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[path = "../unit/source_build_coordinator.rs"]
+mod source_build_tests;
