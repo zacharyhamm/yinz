@@ -180,6 +180,19 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
         | Agent::Register { .. } => {
             bail!("archive and registration use background services")
         },
+        Agent::CloseCompleted {
+            target,
+            conversation,
+            submission,
+            json,
+        } => (
+            AgentRequest::CloseCompleted {
+                submission_id: submission,
+                pane_id: target,
+                expected_session_id: Some(conversation),
+            },
+            json,
+        ),
         Agent::Status {
             target,
             conversation,
@@ -214,6 +227,7 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             json,
         ),
         Agent::Spawn {
+            stack_for,
             tab,
             new_tab,
             suppressed,
@@ -313,6 +327,15 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
                 &input["suppressed"],
             )
             .map_err(|error| anyhow!(error))?;
+            if stack_for.is_some()
+                && placement != yinz_types::agent::control::AgentPlacement::Automatic
+            {
+                bail!("stack-for conflicts with launch-file placement");
+            }
+            let placement = stack_for.map_or(
+                placement,
+                yinz_types::agent::control::AgentPlacement::ControllerStack,
+            );
             let mut spec: AgentSpawnSpec =
                 serde_json::from_value(spec_fields.into()).context("parse launch options")?;
             if allow_yinz {
@@ -646,6 +669,15 @@ fn exchange_on_socket(
     } = &request
     {
         for (required, probe, feature, token) in [
+            (
+                matches!(
+                    placement,
+                    yinz_types::agent::control::AgentPlacement::ControllerStack(_)
+                ),
+                AgentRequest::SpawnStackSupport,
+                "controller stack",
+                "agent-controller-stack-v1",
+            ),
             (
                 matches!(
                     placement,

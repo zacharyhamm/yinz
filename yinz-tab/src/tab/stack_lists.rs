@@ -27,6 +27,17 @@ impl Tab {
     pub fn pane_is_stack_list_member(&self, pane_id: &PaneId) -> bool {
         self.stack_list_of_member.contains_key(pane_id)
     }
+    /// Includes hidden list members restored to the tiled grid before stack insertion.
+    pub fn can_anchor_tiled_stack(&self, pane_id: PaneId) -> bool {
+        self.tiled_panes.panes_contain(&pane_id)
+            || (self.stacked_pane_list_is_active()
+                && self.has_pane_with_pid(&pane_id)
+                && self
+                    .stack_list_id_of_member(&pane_id)
+                    .and_then(|id| self.stack_lists.get(&id))
+                    .is_some_and(|list| self.tiled_panes.panes_contain(&list.visible)))
+    }
+
     pub fn has_stack_lists(&self) -> bool {
         !self.stack_lists.is_empty()
     }

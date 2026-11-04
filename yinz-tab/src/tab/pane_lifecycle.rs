@@ -427,6 +427,21 @@ impl Tab {
             .senders
             .send_to_screen(ScreenInstruction::NotifyPaneClosedToSubscribers { pane_id: id });
     }
+    /// Whether explicit close is confined to this pane, without closing related work.
+    pub fn explicit_close_is_single_pane(&self, id: PaneId) -> bool {
+        self.has_pane_with_pid(&id)
+            && self.pane_tabs_of(id).is_none()
+            && self.multipane_info(id).is_none()
+            && !self.suppressed_panes.iter().any(|(subject, suppressed)| {
+                suppressed.restored_by.is_some_and(|stand_in| {
+                    (*subject == id && self.has_pane_with_pid(&stand_in.pane_id))
+                        || (stand_in.pane_id == id
+                            && !stand_in.lent
+                            && self.has_pane_with_pid(subject))
+                })
+            })
+    }
+
     /// Explicit close destroys the replacement chain. Natural exits and `close_self`
     /// still use `close_pane`, which restores the pane behind an editor or exit view.
     ///
@@ -842,10 +857,20 @@ impl Tab {
     }
     pub fn add_tiled_pane(
         &mut self,
+        pane: Box<dyn Pane>,
+        pane_id: PaneId,
+        without_relayout: bool,
+        client_id: Option<ClientId>,
+    ) -> Result<()> {
+        self.add_tiled_pane_with_policy(pane, pane_id, without_relayout, client_id, false)
+    }
+    pub(super) fn add_tiled_pane_with_policy(
+        &mut self,
         mut pane: Box<dyn Pane>,
         pane_id: PaneId,
         without_relayout: bool,
         client_id: Option<ClientId>,
+        separate: bool,
     ) -> Result<()> {
         self.agent_tab_cleanup_allowed = false;
         self.retain_pane_tabs_transfer(&mut pane);
@@ -853,15 +878,19 @@ impl Tab {
             self.tiled_panes.unset_fullscreen();
         }
         self.dissolve_stack_lists_for_classic_mutation();
-        let should_auto_layout =
-            self.auto_layout && !self.swap_layouts.is_tiled_damaged() && !without_relayout;
+        let should_auto_layout = self.auto_layout
+            && !self.swap_layouts.is_tiled_damaged()
+            && !without_relayout
+            && !separate;
         if self.is_pending && self.tiled_panes.get_panes().next().is_none() {
             // Later arrivals need usable geometry to split before the initial layout lands.
             pane.set_geom(PaneGeom::from(&*self.display_area.borrow()));
         }
         if self.tiled_panes.has_room_for_new_pane() {
             pane.set_active_at(Instant::now());
-            let not_placed = if should_auto_layout {
+            let not_placed = if separate {
+                self.tiled_panes.insert_pane_separate(pane_id, pane)
+            } else if should_auto_layout {
                 // no need to relayout here, we'll do it when reapplying the swap layout
                 // below
                 self.tiled_panes
@@ -892,7 +921,7 @@ impl Tab {
             if let Some(client_id) = client_id {
                 self.tiled_panes.focus_pane(pane_id, client_id);
             }
-        } else if self.is_pending {
+        } else if self.is_pending || separate {
             self.park_pane(pane);
         }
         // Wait for the initial layout before applying swap layouts.
@@ -1005,9 +1034,24 @@ impl Tab {
             self.tiled_panes.unset_fullscreen();
         }
         self.dissolve_stack_lists_for_classic_mutation();
+        let focused_member = if should_focus || !*self.stacked_pane_list.borrow() {
+            None
+        } else {
+            let mut members = self.tiled_panes.pane_ids_in_stack_of_pane_id(&root_pane_id);
+            members.push(root_pane_id);
+            members
+                .into_iter()
+                .find(|id| self.tiled_panes.pane_id_is_focused(id))
+        };
         let not_placed = self
             .tiled_panes
             .add_pane_to_stack_of_pane_id(pane_id, pane, root_pane_id);
+        // Keep keyboard focus visible before list conversion suppresses collapsed members.
+        if not_placed.is_none()
+            && let Some(focused_member) = focused_member
+        {
+            self.tiled_panes.expand_pane_in_stack(focused_member);
+        }
         self.set_should_clear_display_before_rendering();
         // Groupify BEFORE the focus/frame re-application so the just-collapsed
         // in-grid stack member is moved to `suppressed_panes` before

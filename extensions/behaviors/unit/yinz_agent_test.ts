@@ -2,6 +2,7 @@ import {
   AgentConfigSchema,
   type AgentContext,
   AgentStateSchema,
+  cleanupAgent,
   type CommandResult,
   confirmFailureAgent,
   type Dependencies,
@@ -1018,4 +1019,58 @@ Deno.test("a controlled worker resumes its original submission without resolving
   ]);
   const wait = h.calls[4].args;
   equal(wait[wait.indexOf("--submission") + 1], "submission-1");
+});
+
+Deno.test("controller stack launch uses the owner rather than a tab snapshot", async () => {
+  const h = harness([
+    [{ id: 1, is_plugin: false, tab_id: 0 }],
+    spawned,
+    ready(),
+    completed(),
+  ], { control: { session: "dev", paneId: "terminal_1" }, stackWorkers: true });
+  await runAgent({ prompt: "Fix it" }, h.context, h.dependencies);
+  const args = h.calls.find((c) => c.args.includes("spawn"))!.args;
+  equal(args[args.indexOf("--stack-for") + 1], "terminal_1");
+  assert(!args.includes("--tab"));
+});
+
+Deno.test("cleanup preserves evidence and retries guarded close failures", async () => {
+  const h = harness([spawned, ready(), completed()]);
+  await runAgent({ prompt: "Fix it" }, h.context, h.dependencies);
+  const result = structuredClone(h.records.get("result"));
+  h.replies.push([{ id: 7, is_plugin: false }], { outcome: "target_changed" });
+  await rejects(
+    () => cleanupAgent(h.context, h.dependencies),
+    "cleanup blocked",
+  );
+  assert(!h.records.get("state")!.cleanedUp);
+  equal(h.records.get("result"), result);
+  h.replies.push([{ id: 7, is_plugin: false }], { outcome: "ok" });
+  await cleanupAgent(h.context, h.dependencies);
+  const args = h.calls.at(-1)!.args;
+  equal(args[args.indexOf("--submission") + 1], "submission-1");
+  equal(args[args.indexOf("--conversation") + 1], "conversation-1");
+  const count = h.calls.length;
+  await cleanupAgent(h.context, h.dependencies);
+  equal(h.calls.length, count);
+});
+
+Deno.test("cleanup reconciles an already absent worker without closing another pane", async () => {
+  const h = harness([spawned, ready(), completed(), [{
+    id: 8,
+    is_plugin: false,
+  }]]);
+  await runAgent({ prompt: "Fix it" }, h.context, h.dependencies);
+  await cleanupAgent(h.context, h.dependencies);
+  assert(h.records.get("state")!.cleanedUp);
+  assert(!h.calls.some((c) => c.args.includes("close-completed")));
+});
+
+Deno.test("stack placement never silently falls back without a controller", async () => {
+  const h = harness([], { stackWorkers: true });
+  await rejects(
+    () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+    "require a control pane",
+  );
+  equal(h.calls.length, 0);
 });

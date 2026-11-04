@@ -22,6 +22,7 @@ use yinz_types::internal_ids::TerminalId;
 fn cli_agent_spawn_preserves_keyboard_focus_in_current_existing_and_new_tabs() {
     use yinz_types::internal_ids::TabId;
     let cases = [
+        ("", "layout { tab name=\"original\" { pane; }; }", 1, 0, AgentPlacement::ControllerStack(yinz_types::pane_id::PaneId::Terminal(TerminalId::new(0))), false),
         ("agent_pane_min_columns 0", "layout { tab name=\"original\" { pane; } }", 1, 0, AgentPlacement::Automatic, false),
         ("agent_pane_min_columns 50\nagent_pane_min_rows 20", "layout { tab name=\"original\" focus=true { pane; pane; }; tab name=\"spare\" { pane; }; }", 3, 1, AgentPlacement::Automatic, false),
         ("", "layout { tab name=\"original\" { pane; } }", 1, 1, AgentPlacement::Automatic, true),

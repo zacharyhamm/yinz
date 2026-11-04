@@ -100,7 +100,7 @@ function recordedTransition<K extends keyof typeof ActionSchemas>(
 /** Local behavior; the issue's state and every decision are versioned Swamp data. */
 export const behavior = {
   type: "@yinz/issue-lifecycle",
-  version: "2026.11.04.1",
+  version: "2026.11.04.2",
   globalArguments: GlobalArgsSchema,
   resources: {
     driver: {

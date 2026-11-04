@@ -54,7 +54,22 @@ fn setup_with_placement(
     CapturedClientMessages,
     Receiver<(PtyWriteInstruction, ErrorContext)>,
 ) {
+    setup_with_pane_limit(command, target, size, placement, None)
+}
+
+fn setup_with_pane_limit(
+    command: &str,
+    target: PaneTarget,
+    size: Size,
+    placement: NewPanePlacement,
+    max_panes: Option<usize>,
+) -> (
+    Screen,
+    CapturedClientMessages,
+    Receiver<(PtyWriteInstruction, ErrorContext)>,
+) {
     let mut screen = create_non_mirrored_screen(size);
+    screen.max_panes = max_panes;
     let os = FakeInputOutput::default();
     let messages = os.server_to_client_messages.clone();
     screen.bus.os_input = Some(Box::new(os));
@@ -86,6 +101,9 @@ fn setup_with_placement(
     .unwrap();
     tab.handle_pty_bytes(TerminalId::new(7), b"\x1b[?2004h".to_vec())
         .unwrap();
+    if max_panes.is_some() {
+        screen.close_pane_explicitly(PaneId::Terminal(TerminalId::new(1)), None);
+    }
     (screen, messages, writes)
 }
 
@@ -11695,5 +11713,637 @@ fn attempted_prompt_writes_never_gain_unsent_evidence() {
         screen.refresh_agent_controls_at(now + Duration::from_secs(3));
         let retained = replies(&messages, CLIENT).pop().unwrap();
         assert_eq!(retained.prompt_delivery, Some(PromptDelivery::Started));
+    }
+}
+
+#[test]
+fn controller_worker_stack_shares_region_and_survives_root_close() {
+    use yinz_types::agent::control::AgentPlacement;
+    let (mut screen, _, _) = setup("bash");
+    let owner = PANE;
+    let tab_id = screen.tab_id_containing_pane(owner).unwrap();
+    let mut workers = vec![];
+    for id in [88, 89, 90] {
+        let pane = PaneId::Terminal(TerminalId::new(id));
+        let destination = screen
+            .resolve_agent_tab(AgentPlacement::ControllerStack(owner), None, CLIENT)
+            .unwrap();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        let mut completion = crate::route::NotificationEnd::new(tx);
+        completion.agent_tab = Some(destination);
+        screen
+            .place_new_pane(
+                pane,
+                None,
+                None,
+                None,
+                NewPanePlacement::default(),
+                false,
+                crate::pty::ClientTabIndexOrPaneId::TabIndexNoFocus(tab_id),
+                Some(completion),
+                false,
+                &mut Default::default(),
+            )
+            .unwrap();
+        assert!(rx.try_recv().unwrap().error_message.is_none());
+        workers.push(pane);
+        assert_eq!(screen.tabs[&tab_id].get_active_pane_id(CLIENT), Some(owner));
+    }
+    let tab = &screen.tabs[&tab_id];
+    let first = tab
+        .get_pane_with_id(workers[0])
+        .unwrap()
+        .position_and_size();
+    for worker in &workers[1..] {
+        let geom = tab.get_pane_with_id(*worker).unwrap().position_and_size();
+        assert!(first.stacked.is_some());
+        assert_eq!(geom.stacked, first.stacked);
+        assert_eq!(geom.x, first.x);
+        assert_eq!(geom.cols, first.cols);
+    }
+    screen.close_pane_explicitly(workers[0], None);
+    assert_eq!(screen.agent_worker_stacks[&(owner, tab_id)], workers[1..]);
+    for worker in &workers[1..] {
+        screen.close_pane_explicitly(*worker, None);
+    }
+    assert!(!screen.agent_worker_stacks.contains_key(&(owner, tab_id)));
+    assert!(screen.tab_containing_pane(owner).is_some());
+}
+
+#[test]
+fn completed_worker_close_requires_latest_accepted_submission() {
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+    finish_paste(&writes);
+    report(&mut screen, hook("UserPromptSubmit"));
+    report(&mut screen, hook("Stop"));
+    let submission = screen.agent_submissions[&PANE].back().unwrap().id.clone();
+    replies(&messages, CLIENT);
+    screen.agent_control(
+        AgentRequest::CloseCompleted {
+            pane_id: PANE,
+            expected_session_id: Some("conversation".into()),
+            submission_id: "wrong".into(),
+        },
+        CLIENT,
+    );
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Rejected
+    );
+    assert!(screen.tab_containing_pane(PANE).is_some());
+    screen.agent_control(
+        AgentRequest::CloseCompleted {
+            pane_id: PANE,
+            expected_session_id: Some("conversation".into()),
+            submission_id: submission,
+        },
+        CLIENT,
+    );
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Ok
+    );
+    assert!(screen.tab_containing_pane(PANE).is_none());
+}
+
+#[test]
+fn completed_worker_close_preserves_subsequent_draft() {
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+    finish_paste(&writes);
+    report(&mut screen, hook("UserPromptSubmit"));
+    report(&mut screen, hook("Stop"));
+    let submission = screen.agent_submissions[&PANE].back().unwrap().id.clone();
+    replies(&messages, CLIENT);
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .write_to_active_terminal(&None, b"keep this draft".to_vec(), false, CLIENT, None)
+        .unwrap();
+    let revision = screen
+        .tab_containing_pane(PANE)
+        .unwrap()
+        .agent_input_revision(PANE);
+    screen.agent_control(
+        AgentRequest::CloseCompleted {
+            pane_id: PANE,
+            expected_session_id: Some("conversation".into()),
+            submission_id: "wrong".into(),
+        },
+        CLIENT,
+    );
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Rejected
+    );
+    assert!(screen.tab_containing_pane(PANE).is_some());
+    screen.agent_control(
+        AgentRequest::CloseCompleted {
+            pane_id: PANE,
+            expected_session_id: Some("conversation".into()),
+            submission_id: submission,
+        },
+        CLIENT,
+    );
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Rejected
+    );
+    assert!(screen.tab_containing_pane(PANE).is_some());
+    assert_eq!(
+        screen
+            .tab_containing_pane(PANE)
+            .unwrap()
+            .agent_input_revision(PANE),
+        revision
+    );
+}
+
+#[test]
+fn controller_worker_stack_avoids_unrelated_stack() {
+    use yinz_types::agent::control::AgentPlacement;
+    let (mut screen, _, _) = setup("bash");
+    let owner = PANE;
+    let tab_id = screen.tab_id_containing_pane(owner).unwrap();
+    let unrelated = PaneId::Terminal(TerminalId::new(87));
+    screen
+        .place_new_pane(
+            unrelated,
+            None,
+            None,
+            None,
+            NewPanePlacement::Stacked {
+                pane_id_to_stack_under: Some(owner),
+                borderless: None,
+            },
+            false,
+            crate::pty::ClientTabIndexOrPaneId::TabIndexNoFocus(tab_id),
+            None,
+            false,
+            &mut Default::default(),
+        )
+        .unwrap();
+    let mut workers = vec![];
+    for id in [88, 89, 90] {
+        let pane = PaneId::Terminal(TerminalId::new(id));
+        let destination = screen
+            .resolve_agent_tab(AgentPlacement::ControllerStack(owner), None, CLIENT)
+            .unwrap();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        let mut completion = crate::route::NotificationEnd::new(tx);
+        completion.agent_tab = Some(destination);
+        screen
+            .place_new_pane(
+                pane,
+                None,
+                None,
+                None,
+                NewPanePlacement::default(),
+                false,
+                crate::pty::ClientTabIndexOrPaneId::TabIndexNoFocus(tab_id),
+                Some(completion),
+                false,
+                &mut Default::default(),
+            )
+            .unwrap();
+        assert!(rx.try_recv().unwrap().error_message.is_none());
+        workers.push(pane);
+        assert_eq!(screen.tabs[&tab_id].get_active_pane_id(CLIENT), Some(owner));
+    }
+    let tab = &screen.tabs[&tab_id];
+    let first = tab
+        .get_pane_with_id(workers[0])
+        .unwrap()
+        .position_and_size();
+    assert_ne!(
+        first.stacked,
+        tab.get_pane_with_id(unrelated)
+            .unwrap()
+            .position_and_size()
+            .stacked
+    );
+    for worker in &workers[1..] {
+        let geom = tab.get_pane_with_id(*worker).unwrap().position_and_size();
+        assert!(first.stacked.is_some());
+        assert_eq!(geom.stacked, first.stacked);
+        assert_eq!(geom.x, first.x);
+        assert_eq!(geom.cols, first.cols);
+    }
+    screen.close_pane_explicitly(workers[0], None);
+    assert_eq!(screen.agent_worker_stacks[&(owner, tab_id)], workers[1..]);
+    for worker in &workers[1..] {
+        screen.close_pane_explicitly(*worker, None);
+    }
+    assert!(!screen.agent_worker_stacks.contains_key(&(owner, tab_id)));
+    assert!(screen.tab_containing_pane(owner).is_some());
+}
+
+#[test]
+fn controller_worker_stack_rejects_only_stack_space() {
+    use yinz_types::agent::control::AgentPlacement;
+    let (mut screen, _, _) = setup_with_size("bash", PaneTarget::Local, Size { cols: 20, rows: 8 });
+    let owner = PANE;
+    let tab_id = screen.tab_id_containing_pane(owner).unwrap();
+    let unrelated = PaneId::Terminal(TerminalId::new(87));
+    screen
+        .place_new_pane(
+            unrelated,
+            None,
+            None,
+            None,
+            NewPanePlacement::Stacked {
+                pane_id_to_stack_under: Some(owner),
+                borderless: None,
+            },
+            false,
+            crate::pty::ClientTabIndexOrPaneId::TabIndexNoFocus(tab_id),
+            None,
+            false,
+            &mut Default::default(),
+        )
+        .unwrap();
+    let pane = PaneId::Terminal(TerminalId::new(88));
+    let destination = screen
+        .resolve_agent_tab(AgentPlacement::ControllerStack(owner), None, CLIENT)
+        .unwrap();
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    let mut completion = crate::route::NotificationEnd::new(tx);
+    completion.agent_tab = Some(destination);
+    screen
+        .place_new_pane(
+            pane,
+            None,
+            None,
+            None,
+            NewPanePlacement::default(),
+            false,
+            crate::pty::ClientTabIndexOrPaneId::TabIndexNoFocus(tab_id),
+            Some(completion),
+            false,
+            &mut Default::default(),
+        )
+        .unwrap();
+    assert!(rx.try_recv().unwrap().error_message.is_some());
+    assert!(!screen
+        .agent_worker_stacks
+        .get(&(owner, tab_id))
+        .is_some_and(|members| members.contains(&pane)));
+    assert!(screen
+        .get_pane_info(pane)
+        .is_some_and(|info| info.is_suppressed));
+}
+
+#[test]
+fn completed_worker_close_preserves_related_panes() {
+    use yinz_types::multipane::{MultipaneDirection, MultipaneSplit};
+    use yinz_types::pane_tabs::{PaneTabDescriptor, PaneTabsLayout};
+
+    for composition in ["editor", "multipane", "pane_tabs"] {
+        let (mut screen, messages, writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+        finish_paste(&writes);
+        report(&mut screen, hook("UserPromptSubmit"));
+        report(&mut screen, hook("Stop"));
+        let submission = screen.agent_submissions[&PANE].back().unwrap().id.clone();
+        replies(&messages, CLIENT);
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        let editor = PaneId::Terminal(TerminalId::new(99));
+        let (sender, _plugins) = channels::unbounded();
+        tab.senders
+            .replace_to_plugin(SenderWithContext::new(sender));
+        match composition {
+            "editor" => tab.replace_pane_with_editor_pane(editor, PANE).unwrap(),
+            "multipane" => {
+                tab.create_multipane(
+                    [PaneId::Terminal(TerminalId::new(1)), PANE],
+                    MultipaneSplit {
+                        direction: MultipaneDirection::LeftRight,
+                        ratio: 5000,
+                    },
+                    0,
+                    OverlayPlacement::dismissible(Some(FloatingPaneCoordinates::default())),
+                )
+                .unwrap();
+            },
+            _ => {
+                tab.mount_pane_tabs(
+                    PANE,
+                    PaneTabsLayout {
+                        active: 0,
+                        tabs: ["Conversation", "Overview"]
+                            .map(|label| PaneTabDescriptor {
+                                label: label.into(),
+                                location: "yinz:fixture-plugin-for-tests".into(),
+                                configuration: BTreeMap::new(),
+                                initial_cwd: None,
+                            })
+                            .to_vec(),
+                    },
+                    0,
+                    CLIENT,
+                )
+                .unwrap();
+            },
+        }
+        screen.agent_control(
+            AgentRequest::CloseCompleted {
+                pane_id: PANE,
+                expected_session_id: Some("conversation".into()),
+                submission_id: submission,
+            },
+            CLIENT,
+        );
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(response.outcome, AgentOutcome::Rejected, "{composition}");
+        assert_eq!(
+            response.message.as_deref(),
+            Some("worker cleanup would affect other panes")
+        );
+        let tab = screen.tab_containing_pane(PANE).unwrap();
+        match composition {
+            "editor" => assert!(tab.has_pane_with_pid(&editor)),
+            "multipane" => assert!(tab.multipane_info(PANE).is_some()),
+            _ => assert!(tab.pane_tabs_of(PANE).is_some()),
+        }
+    }
+}
+
+#[test]
+fn controller_worker_stack_skips_hidden_workers() {
+    use yinz_types::agent::control::AgentPlacement;
+
+    for remaining_worker in [false, true] {
+        for list_mode in [false, true] {
+            let (mut screen, _, _) = setup("bash");
+            *screen.stacked_pane_list.borrow_mut() = list_mode;
+            let tab_id = screen.tab_id_containing_pane(PANE).unwrap();
+            let first = PaneId::Terminal(TerminalId::new(88));
+            let second = PaneId::Terminal(TerminalId::new(89));
+            for id in [88, 89, 90] {
+                if id == 89 && !remaining_worker {
+                    continue;
+                }
+                if id == 90 {
+                    screen
+                        .tabs
+                        .get_mut(&tab_id)
+                        .unwrap()
+                        .suppress_pane(first, Some(CLIENT));
+                }
+                let destination = screen
+                    .resolve_agent_tab(AgentPlacement::ControllerStack(PANE), None, CLIENT)
+                    .unwrap();
+                let (tx, mut rx) = tokio::sync::oneshot::channel();
+                let mut completion = crate::route::NotificationEnd::new(tx);
+                completion.agent_tab = Some(destination);
+                screen
+                    .place_new_pane(
+                        PaneId::Terminal(TerminalId::new(id)),
+                        None,
+                        None,
+                        None,
+                        NewPanePlacement::default(),
+                        false,
+                        crate::pty::ClientTabIndexOrPaneId::TabIndexNoFocus(tab_id),
+                        Some(completion),
+                        false,
+                        &mut Default::default(),
+                    )
+                    .unwrap();
+                assert!(rx.try_recv().unwrap().error_message.is_none());
+            }
+            let tab = &screen.tabs[&tab_id];
+            let newest = PaneId::Terminal(TerminalId::new(90));
+            assert!(tab.can_anchor_tiled_stack(newest));
+            assert!(!tab.can_anchor_tiled_stack(first));
+            if remaining_worker {
+                assert!(tab.can_anchor_tiled_stack(second));
+                let a = tab.get_pane_with_id(second).unwrap().position_and_size();
+                let b = tab.get_pane_with_id(newest).unwrap().position_and_size();
+                assert_eq!((a.x, a.cols), (b.x, b.cols));
+            }
+        }
+    }
+}
+
+#[test]
+fn worker_stack_anchor_requires_a_tiled_region() {
+    for floating in [false, true] {
+        let placement = if floating {
+            NewPanePlacement::Floating(None)
+        } else {
+            NewPanePlacement::default()
+        };
+        let (mut screen, _, _) = setup_with_placement(
+            "bash",
+            PaneTarget::Local,
+            Size { cols: 80, rows: 24 },
+            placement,
+        );
+        *screen.stacked_pane_list.borrow_mut() = true;
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        assert_eq!(tab.can_anchor_tiled_stack(PANE), !floating);
+        tab.new_pane(
+            PaneId::Terminal(TerminalId::new(88)),
+            None,
+            None,
+            false,
+            false,
+            NewPanePlacement::Stacked {
+                pane_id_to_stack_under: Some(PANE),
+                borderless: None,
+            },
+            Some(CLIENT),
+            None,
+        )
+        .unwrap();
+        assert_eq!(tab.can_anchor_tiled_stack(PANE), !floating);
+        if !floating {
+            assert!(tab.pane_is_hidden_stack_list_member(&PANE));
+        }
+    }
+    let (mut screen, _, _) = setup("bash");
+    let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+    tab.replace_pane_with_editor_pane(PaneId::Terminal(TerminalId::new(99)), PANE)
+        .unwrap();
+    assert!(!tab.can_anchor_tiled_stack(PANE));
+}
+
+#[test]
+fn controller_worker_stack_preserves_focused_member() {
+    use yinz_types::agent::control::AgentPlacement;
+
+    for list_mode in [false, true] {
+        for focus_worker in [false, true] {
+            let (mut screen, _, _) = setup("bash");
+            *screen.stacked_pane_list.borrow_mut() = list_mode;
+            let tab_id = screen.tab_id_containing_pane(PANE).unwrap();
+            let focused = PaneId::Terminal(TerminalId::new(89));
+            for id in [88, 89, 90] {
+                if id == 90 && focus_worker {
+                    screen
+                        .tabs
+                        .get_mut(&tab_id)
+                        .unwrap()
+                        .focus_pane_with_id(focused, false, false, CLIENT)
+                        .unwrap();
+                }
+                let destination = screen
+                    .resolve_agent_tab(AgentPlacement::ControllerStack(PANE), None, CLIENT)
+                    .unwrap();
+                let (tx, mut rx) = tokio::sync::oneshot::channel();
+                let mut completion = crate::route::NotificationEnd::new(tx);
+                completion.agent_tab = Some(destination);
+                screen
+                    .place_new_pane(
+                        PaneId::Terminal(TerminalId::new(id)),
+                        None,
+                        None,
+                        None,
+                        NewPanePlacement::default(),
+                        false,
+                        crate::pty::ClientTabIndexOrPaneId::TabIndexNoFocus(tab_id),
+                        Some(completion),
+                        false,
+                        &mut Default::default(),
+                    )
+                    .unwrap();
+                assert!(rx.try_recv().unwrap().error_message.is_none());
+                screen.render().unwrap();
+            }
+            let expected = if focus_worker { focused } else { PANE };
+            assert_eq!(
+                screen.tabs[&tab_id].get_active_pane_id(CLIENT),
+                Some(expected)
+            );
+            assert!(!screen.get_pane_info(expected).unwrap().is_suppressed);
+            if list_mode {
+                assert!(!screen.tabs[&tab_id]
+                    .get_pane_with_id(expected)
+                    .unwrap()
+                    .position_and_size()
+                    .rows
+                    .is_fixed());
+            }
+        }
+    }
+}
+
+#[test]
+fn controller_worker_stack_respects_first_worker_pane_limit() {
+    use yinz_types::agent::control::AgentPlacement;
+
+    for limit in [1, 2] {
+        let (mut screen, _, _) = setup_with_pane_limit(
+            "bash",
+            PaneTarget::Local,
+            Size { cols: 80, rows: 24 },
+            NewPanePlacement::default(),
+            Some(limit),
+        );
+        let tab_id = screen.tab_id_containing_pane(PANE).unwrap();
+        let worker = PaneId::Terminal(TerminalId::new(88));
+        let destination = screen
+            .resolve_agent_tab(AgentPlacement::ControllerStack(PANE), None, CLIENT)
+            .unwrap();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        let mut completion = crate::route::NotificationEnd::new(tx);
+        completion.agent_tab = Some(destination);
+        let result = screen.place_new_pane(
+            worker,
+            None,
+            None,
+            None,
+            NewPanePlacement::default(),
+            false,
+            crate::pty::ClientTabIndexOrPaneId::TabIndexNoFocus(tab_id),
+            Some(completion),
+            false,
+            &mut Default::default(),
+        );
+        assert_eq!(result.is_err(), limit == 1);
+        assert_eq!(rx.try_recv().unwrap().error_message.is_some(), limit == 1);
+        assert_eq!(screen.tabs[&tab_id].get_tiled_pane_ids().len(), limit);
+        assert_eq!(screen.tabs[&tab_id].get_active_pane_id(CLIENT), Some(PANE));
+        assert!(screen.get_pane_info(PANE).is_some());
+        assert_eq!(screen.get_pane_info(worker).is_some(), limit == 2);
+        assert_eq!(
+            screen
+                .agent_worker_stacks
+                .get(&(PANE, tab_id))
+                .is_some_and(|members| members.contains(&worker)),
+            limit == 2
+        );
+    }
+}
+
+#[test]
+fn controller_worker_stack_respects_subsequent_worker_pane_limit() {
+    use yinz_types::agent::control::AgentPlacement;
+
+    for limit in [2, 3] {
+        let (mut screen, _, _) = setup_with_pane_limit(
+            "bash",
+            PaneTarget::Local,
+            Size { cols: 80, rows: 24 },
+            NewPanePlacement::default(),
+            Some(limit),
+        );
+        let tab_id = screen.tab_id_containing_pane(PANE).unwrap();
+        let (to_pty, pty) = channels::unbounded();
+        screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+        screen.tabs.get_mut(&tab_id).unwrap().senders.to_pty = screen.bus.senders.to_pty.clone();
+        let mut workers = vec![];
+        for index in 0..limit {
+            let worker = PaneId::Terminal(TerminalId::new(88 + index as u32));
+            let destination = screen
+                .resolve_agent_tab(AgentPlacement::ControllerStack(PANE), None, CLIENT)
+                .unwrap();
+            let (tx, mut rx) = tokio::sync::oneshot::channel();
+            let mut completion = crate::route::NotificationEnd::new(tx);
+            completion.agent_tab = Some(destination);
+            let result = screen.place_new_pane(
+                worker,
+                None,
+                None,
+                None,
+                NewPanePlacement::default(),
+                false,
+                crate::pty::ClientTabIndexOrPaneId::TabIndexNoFocus(tab_id),
+                Some(completion),
+                false,
+                &mut Default::default(),
+            );
+            let at_capacity = index == limit - 1;
+            assert_eq!(result.is_err(), at_capacity);
+            let completion = rx.try_recv().unwrap();
+            if at_capacity {
+                assert!(completion
+                    .error_message
+                    .unwrap()
+                    .contains("configured pane limit reached"));
+                assert!(screen.get_pane_info(worker).is_none());
+            } else {
+                assert!(completion.error_message.is_none());
+                workers.push(worker);
+            }
+            assert_eq!(screen.agent_worker_stacks[&(PANE, tab_id)], workers);
+            assert_eq!(screen.tabs[&tab_id].get_active_pane_id(CLIENT), Some(PANE));
+            assert!(screen.get_pane_info(PANE).is_some());
+            for existing in &workers {
+                assert!(screen.get_pane_info(*existing).is_some());
+            }
+            assert!(pty.try_iter().all(|(instruction, _)| match instruction {
+                PtyInstruction::ClosePane(id, _) => id != PANE && !workers.contains(&id),
+                PtyInstruction::CloseTab(ids) => {
+                    !ids.contains(&PANE) && workers.iter().all(|id| !ids.contains(id))
+                },
+                _ => true,
+            }));
+        }
     }
 }

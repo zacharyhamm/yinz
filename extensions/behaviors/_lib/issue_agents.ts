@@ -75,6 +75,7 @@ export const AgentTaskSchema = z.object({
   }).strict().optional(),
   message: z.string().optional(),
   lastError: z.string().optional(),
+  cleanup: z.enum(["pending", "done"]).optional(),
 }).strict();
 type Task = z.infer<typeof AgentTaskSchema>;
 const RestartInput = Input.extend({
@@ -151,7 +152,10 @@ export async function assertNoPendingAgent(context: Context) {
   const raw = await context.readResource("agent-task");
   if (raw !== null && raw !== undefined) {
     const task = AgentTaskSchema.parse(raw);
-    if (!["completed", "discarded", "superseded"].includes(task.status)) {
+    if (
+      (task.status === "completed" && task.cleanup === "pending") ||
+      !["completed", "discarded", "superseded"].includes(task.status)
+    ) {
       throw new Error(
         `Pane task ${task.behaviorName} is unresolved; use resume-agent, or an explicitly requested rollback/restart-agent`,
       );
@@ -275,13 +279,43 @@ async function completedResult(context: IssueAgentContext, task: Task) {
   return result;
 }
 
+async function cleanupTask(context: IssueAgentContext, task: Task) {
+  if (task.status !== "completed" || task.cleanup !== "pending") {
+    return { dataHandles: [] };
+  }
+  const result = await context.runModel({
+    definition: task.behaviorName,
+    method: "cleanup",
+  });
+  if (!result.ok) {
+    throw new Error(`Worker cleanup blocked: ${result.error.message}`);
+  }
+  return {
+    dataHandles: [await saveTask(context, { ...task, cleanup: "done" })],
+  };
+}
+
+async function completeTask(context: IssueAgentContext, task: Task) {
+  const completed: Task = {
+    ...task,
+    status: "completed",
+    cleanup: task.config.stackWorkers ? "pending" : undefined,
+  };
+  const saved = await saveTask(context, completed);
+  const cleaned = await cleanupTask(context, completed);
+  return {
+    dataHandles: cleaned.dataHandles.length ? cleaned.dataHandles : [saved],
+  };
+}
+
 async function applyResult(
   context: IssueAgentContext,
   task: Task,
   dependencies: IssueAgentDependencies,
 ) {
   const current = await loadState(context);
-  if (["completed", "discarded", "superseded"].includes(task.status)) {
+  if (task.status === "completed") return cleanupTask(context, task);
+  if (["discarded", "superseded"].includes(task.status)) {
     return { dataHandles: [] };
   }
   const result = await completedResult(context, task);
@@ -293,9 +327,7 @@ async function applyResult(
     task.next && JSON.stringify(current) === JSON.stringify(task.next) &&
     JSON.stringify(task.before) !== JSON.stringify(task.next)
   ) {
-    return {
-      dataHandles: [await saveTask(context, { ...task, status: "completed" })],
-    };
+    return completeTask(context, task);
   }
   const fresh = await dependencies.readAgenda(
     current.issue.workspace,
@@ -361,7 +393,7 @@ async function applyResult(
     next,
   );
   handles.dataHandles.push(
-    await saveTask(context, { ...applying, status: "completed" }),
+    ...(await completeTask(context, applying)).dataHandles,
   );
   return handles;
 }
@@ -445,7 +477,11 @@ export async function prepareTask(
   }
   const prompt = taskPrompt(args.role, promptState, cwd, commit);
   const { role: _role, ...options } = args;
-  const config = AgentConfigSchema.parse({ ...options, cwd });
+  const config = AgentConfigSchema.parse({
+    ...options,
+    cwd,
+    stackWorkers: true,
+  });
   const task: Task = {
     id: dependencies.id(),
     behaviorName: `issue-agent-${dependencies.id()}`,
@@ -530,6 +566,7 @@ async function finishRecovery(
         {
           ...recovery.task,
           status: "superseded",
+          cleanup: undefined,
           supersededBy: recovery.id,
         },
       ),
@@ -552,6 +589,7 @@ async function finishRecovery(
       await saveTask(context, {
         ...recovery.task,
         status: "superseded",
+        cleanup: undefined,
         supersededBy: recovery.id,
       }),
     );

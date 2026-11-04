@@ -318,7 +318,9 @@ pub(super) fn spawn_agent_prepared(
     placement.validate()?;
     let start_suppressed = matches!(placement, AgentPlacement::Suppressed(_));
     let mut destination = match &placement {
-        AgentPlacement::Tab(_) | AgentPlacement::Suppressed(_) => Some(
+        AgentPlacement::Tab(_)
+        | AgentPlacement::Suppressed(_)
+        | AgentPlacement::ControllerStack(_) => Some(
             resolve_agent_tab(senders, placement.clone(), None, client_id).map_err(|error| {
                 let mut failure = AgentSpawnError::from(error);
                 failure.0.launch_resources = Some(AgentLaunchResources {

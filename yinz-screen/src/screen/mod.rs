@@ -613,6 +613,7 @@ pub(crate) struct Screen {
     agent_draft_clears: HashMap<PaneId, agent_control::DraftClear>,
     agent_submissions: HashMap<PaneId, std::collections::VecDeque<agent_control::Submission>>,
     agent_launches: HashMap<PaneId, yinz_types::agent::SpawnedAgent>,
+    agent_worker_stacks: HashMap<(PaneId, TabId), Vec<PaneId>>,
     pending_agent_tracking: HashMap<PaneId, PendingAgentTracking>,
     pending_terminal_states: HashMap<PaneId, String>,
     warped_agent_inputs: HashMap<PaneId, agent_control::TransferredInput>,
@@ -1454,6 +1455,7 @@ impl Screen {
             agent_draft_clears: HashMap::new(),
             agent_submissions: HashMap::new(),
             agent_launches: HashMap::new(),
+            agent_worker_stacks: HashMap::new(),
             pending_agent_tracking: HashMap::new(),
             pending_terminal_states: HashMap::new(),
             warped_agent_inputs: HashMap::new(),
@@ -3063,6 +3065,10 @@ impl Screen {
         self.agent_hook_flashes.remove(&id);
         self.invalidate_agent_lifecycle(id, "pane_closed");
         self.agent_launches.remove(&id);
+        self.agent_worker_stacks.retain(|_, members| {
+            members.retain(|pane| *pane != id);
+            !members.is_empty()
+        });
         self.close_context_menus_for_pane(id);
         if let PaneId::Plugin(plugin_id) = id {
             self.drop_quit_notice(plugin_id);

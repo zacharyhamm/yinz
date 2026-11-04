@@ -109,6 +109,8 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
   let childBehavior: string | undefined;
   let issueLocked = false;
   const controls = {
+    cleanupCalls: 0,
+    cleanupError: false,
     evidence,
     evidenceForRole: undefined as
       | ((task: ReturnType<typeof AgentTaskSchema.parse>) => unknown)
@@ -194,6 +196,15 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
       },
     },
     runModel: async (request) => {
+      if (request.method === "cleanup") {
+        const task = AgentTaskSchema.parse(resources.get("agent-task"));
+        equal(task.status, "completed");
+        equal(task.cleanup, "pending");
+        controls.cleanupCalls++;
+        return controls.cleanupError
+          ? { ok: false, error: { message: "cleanup unavailable" } }
+          : { ok: true };
+      }
       calls.push(request);
       const fresh = request.name !== undefined &&
         request.name !== childBehavior;
@@ -1726,7 +1737,10 @@ Deno.test("driver reconciles an interrupted result write and continues to review
     "applying",
   );
   equal((await loadState(h.context)).plan?.version, 1);
-  await h.drive.execute({}, h.context);
+  await h.drive.execute({ agent: { ...options, model: "changed" } }, h.context);
+  equal(result(h).decision, "blocked");
+  assert(result(h).reason.includes("original session/provider settings"));
+  await h.drive.execute({ agent: options }, h.context);
   equal(result(h).decision, "approve_plan");
   equal(h.calls.length, 2);
   equal(h.calls.map((call) => call.method), ["run", "run"]);
@@ -1939,7 +1953,10 @@ Deno.test("driver survives controller interruption and resumes its saved assignm
   equal(h.calls.length, 0);
   h.context.signal = new AbortController().signal;
   h.context.runModel = run;
-  await h.drive.execute({}, h.context);
+  await h.drive.execute({ agent: { ...options, model: "changed" } }, h.context);
+  equal(result(h).decision, "blocked");
+  assert(result(h).reason.includes("original session/provider settings"));
+  await h.drive.execute({ agent: options }, h.context);
   equal(result(h).decision, "approve_plan");
   equal(h.calls[0].name, saved.behaviorName);
   equal(h.calls[0].method, "recover");
@@ -2066,8 +2083,8 @@ Deno.test("every lifecycle role, plan revision, repair and restart resolves the 
     let value: Record<string, unknown>;
     if (args[3] === "spawn") {
       equal(task.config.control, options.control);
-      const tab = args[args.indexOf("--tab") + 1];
-      equal(tab, String(h.controls.controlTab));
+      equal(args[args.indexOf("--stack-for") + 1], options.control.paneId);
+      const tab = String(h.controls.controlTab);
       launched.push({ role: task.role, tab });
       value = {
         outcome: "ok",
@@ -2311,4 +2328,77 @@ Deno.test("legacy unlaunched workers cannot recover through automatic placement"
     );
     equal(h.calls.length, 1);
   }
+});
+
+Deno.test("accepted evidence survives failed cleanup and resume closes without rerunning", async () => {
+  const h = harness();
+  h.controls.cleanupError = true;
+  await rejects(() =>
+    h.methods.run_agent.execute(
+      h.methods.run_agent.arguments.parse({ ...options, role: "triage" }),
+      h.context,
+    ), "cleanup blocked");
+  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  equal(task.status, "completed");
+  equal(task.cleanup, "pending");
+  const state = structuredClone(h.resources.get("state"));
+  h.controls.cleanupError = false;
+  await h.methods.resume_agent.execute({}, h.context);
+  equal(h.calls.length, 1);
+  equal(h.controls.cleanupCalls, 2);
+  equal(h.resources.get("state"), state);
+  equal(AgentTaskSchema.parse(h.resources.get("agent-task")).cleanup, "done");
+});
+
+Deno.test("completion returns only the latest task handle, including applying resume", async () => {
+  for (const interrupted of [false, true]) {
+    const h = harness();
+    h.controls.failTaskCompletionOnce = interrupted;
+    const run = () =>
+      h.methods.run_agent.execute(
+        h.methods.run_agent.arguments.parse({ ...options, role: "triage" }),
+        h.context,
+      );
+    let output;
+    if (interrupted) {
+      await rejects(run, "task completion write failed");
+      output = await h.methods.resume_agent.execute({}, h.context);
+    } else output = await run();
+    const names = output.dataHandles.map((handle) => handle.name);
+    equal(new Set(names).size, names.length);
+    equal(names.filter((name) => name === "agent-task").length, 1);
+    equal(AgentTaskSchema.parse(h.resources.get("agent-task")).cleanup, "done");
+  }
+});
+
+Deno.test("rollback clears failed cleanup and legacy superseded cleanup does not block", async () => {
+  const h = harness();
+  h.controls.cleanupError = true;
+  await rejects(() =>
+    h.methods.run_agent.execute(
+      h.methods.run_agent.arguments.parse({ ...options, role: "triage" }),
+      h.context,
+    ), "cleanup blocked");
+  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  await h.methods.rollback.execute(
+    { step: "triage", request: "Start again" },
+    h.context,
+  );
+  equal(
+    AgentTaskSchema.parse(h.resources.get("agent-task")).cleanup,
+    undefined,
+  );
+  equal(
+    AgentTaskSchema.parse(h.resources.get(`agent-task-${task.id}`)).cleanup,
+    undefined,
+  );
+  h.resources.set("agent-task", {
+    ...h.resources.get("agent-task") as object,
+    cleanup: "pending",
+  });
+  await assertNoPendingAgent(h.context);
+  h.controls.cleanupError = false;
+  h.controls.evidenceForRole = driverEvidence;
+  await h.drive.execute({ agent: options }, h.context);
+  equal(result(h).decision, "approve_plan");
 });

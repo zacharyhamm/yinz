@@ -280,8 +280,12 @@ async function drive(
     const currentTask = await task();
     if (input.agent) {
       if (currentTask && ["running", "applying"].includes(currentTask.status)) {
-        const { cwd: _cwd, control: _control, ...original } =
-          currentTask.config;
+        const {
+          cwd: _cwd,
+          control: _control,
+          stackWorkers: _stackWorkers,
+          ...original
+        } = currentTask.config;
         const { control: _inputControl, ...requested } = input.agent;
         if (
           JSON.stringify(Settings.parse(original)) !==
@@ -302,7 +306,8 @@ async function drive(
     } else if (
       currentTask && (!driver.agent || currentTask.id !== driver.assignmentId)
     ) {
-      const { cwd: _cwd, ...original } = currentTask.config;
+      const { cwd: _cwd, stackWorkers: _stackWorkers, ...original } =
+        currentTask.config;
       driver.agent = Settings.parse(original);
       driver.assignmentId = currentTask.id;
     }
@@ -315,7 +320,12 @@ async function drive(
     while (true) {
       context.signal.throwIfAborted();
       const assignment = await task();
-      if (assignment && ["running", "applying"].includes(assignment.status)) {
+      if (
+        assignment &&
+        ((assignment.status === "completed" &&
+          assignment.cleanup === "pending") ||
+          ["running", "applying"].includes(assignment.status))
+      ) {
         driver = { ...driver, assignmentId: assignment.id };
         handles.push(await context.writeResource("driver", "driver", driver));
         try {

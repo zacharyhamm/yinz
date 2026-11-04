@@ -604,6 +604,7 @@ impl Agent {
             Agent::Watch { json, .. }
             | Agent::Register { json, .. }
             | Agent::List { json, .. }
+            | Agent::CloseCompleted { json, .. }
             | Agent::Status { json, .. }
             | Agent::Show { json, .. }
             | Agent::Hide { json, .. }
@@ -726,6 +727,17 @@ pub enum Agent {
         #[clap(long)]
         json: bool,
     },
+    /// Close an idle worker after its result has been saved.
+    CloseCompleted {
+        #[clap(long)]
+        submission: String,
+        #[clap(value_parser = parse_agent_target)]
+        target: yinz_types::pane_id::PaneId,
+        #[clap(long)]
+        conversation: String,
+        #[clap(long)]
+        json: bool,
+    },
     /// Inspect an agent's identity, readiness and reporting source.
     Status {
         /// Terminal pane ID, such as terminal_7 or 7.
@@ -741,6 +753,9 @@ pub enum Agent {
     /// Preserve keyboard focus, including when the worker needs another tab.
     /// Refresh existing Claude hooks with `yinz hooks install --agent claude` to prevent duplicate reports.
     Spawn {
+        /// Share a separate worker stack owned by this controller pane.
+        #[clap(long, value_parser = parse_agent_target, conflicts_with_all = ["tab", "new_tab", "suppressed"])]
+        stack_for: Option<yinz_types::pane_id::PaneId>,
         /// Initial destination: stable numeric tab ID, including zero, not tab-bar position.
         /// Does not assign a project or change focus. Requires a matching running server.
         #[clap(long, conflicts_with = "new_tab", value_name = "ID")]

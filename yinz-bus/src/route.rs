@@ -9,6 +9,7 @@ pub struct AgentTabPlacement {
     pub tab_id: TabId,
     pub lifetime: std::sync::Weak<()>,
     pub created: bool,
+    pub stack_controller: Option<PaneId>,
 }
 
 #[derive(Debug, Clone)]

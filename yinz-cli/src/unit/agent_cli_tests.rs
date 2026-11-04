@@ -451,3 +451,35 @@ fn suppressed_launch_and_visibility_commands_parse() {
             if target.to_string() == "terminal_7" && conversation == "thread"));
     }
 }
+
+#[test]
+fn controller_stack_and_completed_close_require_explicit_identity() {
+    use clap::Parser;
+    assert!(matches!(
+        AgentCli::try_parse_from(["agent", "spawn", "--stack-for", "terminal_7"])
+            .unwrap()
+            .command,
+        Agent::Spawn {
+            stack_for: Some(_),
+            ..
+        }
+    ));
+    for conflict in ["--tab", "--new-tab", "--suppressed"] {
+        let mut args = vec!["agent", "spawn", "--stack-for", "terminal_7", conflict];
+        if conflict == "--tab" {
+            args.push("0");
+        }
+        assert!(AgentCli::try_parse_from(args).is_err());
+    }
+    assert!(AgentCli::try_parse_from(["agent", "close-completed", "terminal_7"]).is_err());
+    assert!(AgentCli::try_parse_from([
+        "agent",
+        "close-completed",
+        "terminal_7",
+        "--conversation",
+        "c",
+        "--submission",
+        "s"
+    ])
+    .is_ok());
+}

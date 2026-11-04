@@ -293,7 +293,16 @@ impl Screen {
     ) -> Result<yinz_bus::route::AgentTabPlacement, String> {
         use yinz_types::agent::control::AgentPlacement;
         placement.validate().map_err(str::to_owned)?;
+        let stack_controller = match placement {
+            AgentPlacement::ControllerStack(pane) => Some(pane),
+            _ => None,
+        };
         let (tab_id, created) = match placement {
+            AgentPlacement::ControllerStack(pane) => (
+                self.tab_id_containing_pane(pane)
+                    .ok_or("controller pane does not exist")?,
+                false,
+            ),
             AgentPlacement::Tab(id) | AgentPlacement::Suppressed(Some(id)) => {
                 if let Some(tab) = self.tabs.get_mut(&id) {
                     tab.agent_tab_cleanup_allowed = false;
@@ -339,6 +348,7 @@ impl Screen {
             tab_id,
             lifetime: std::sync::Arc::downgrade(&tab.agent_tab_lifetime),
             created,
+            stack_controller,
         })
     }
 

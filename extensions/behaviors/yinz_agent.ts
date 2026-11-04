@@ -4,6 +4,7 @@ import {
   AgentObservationSchema,
   AgentResultSchema,
   AgentStateSchema,
+  cleanupAgent,
   confirmFailureAgent,
   EmptySchema,
   recoverAgent,
@@ -15,7 +16,7 @@ import {
 
 export const behavior = {
   type: "@yinz/agent",
-  version: "2026.11.04.1",
+  version: "2026.11.04.2",
   globalArguments: AgentConfigSchema,
   resources: {
     state: {
@@ -40,6 +41,14 @@ export const behavior = {
     },
   },
   methods: {
+    cleanup: {
+      kind: "action",
+      description:
+        "Close a completed worker after its evidence is durably accepted",
+      arguments: EmptySchema,
+      execute: (_args: Record<string, never>, context: AgentContext) =>
+        cleanupAgent(context),
+    },
     run: {
       kind: "action",
       description:

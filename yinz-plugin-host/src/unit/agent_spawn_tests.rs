@@ -573,6 +573,7 @@ fn created_agent_tab_failure_preserves_resources_and_unknown_completion_does_not
                     tab_id: TabId::new(7),
                     lifetime: std::sync::Arc::downgrade(&lifetime),
                     created: !suppressed,
+                    stack_controller: None,
                 }))
                 .unwrap();
             let (instruction, _) = pty_rx.recv_timeout(Duration::from_secs(30)).unwrap();
@@ -1010,6 +1011,7 @@ fn agent_destination_is_carried_for_local_and_ssh_spawns() {
                         tab_id: TabId::new(7),
                         lifetime: std::sync::Arc::downgrade(&lifetime),
                         created: false,
+                        stack_controller: None,
                     }))
                     .unwrap();
                 let (instruction, _) = pty_rx.recv_timeout(Duration::from_secs(30)).unwrap();

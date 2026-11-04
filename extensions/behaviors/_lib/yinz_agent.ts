@@ -10,6 +10,7 @@ export const ControlIdentitySchema = z.object({
 export const AgentConfigSchema = z.object({
   session: Text,
   control: ControlIdentitySchema.optional(),
+  stackWorkers: z.boolean().optional(),
   kind: z.enum(["claude", "codex", "muse", "pi", "agy"]),
   cwd: Text.refine(isAbsolute, "cwd must be an absolute path"),
   model: z.string().trim().optional(),
@@ -85,6 +86,7 @@ export const AgentStateSchema = z.object({
   backgroundTasks: z.array(z.string()).default([]),
   rawResponse: z.string().optional(),
   lastError: Text.optional(),
+  cleanedUp: z.boolean().optional(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 }).strict();
@@ -569,6 +571,9 @@ async function launch(
   state: AgentState,
   dependencies: Dependencies,
 ): Promise<ResourceHandle[]> {
+  if (state.config.stackWorkers && !state.config.control) {
+    throw new Error("Worker stacks require a control pane");
+  }
   if (["codex", "muse", "agy"].includes(state.config.kind)) {
     const hooks = await dependencies.run(
       [
@@ -636,7 +641,11 @@ async function launch(
         `Cannot resolve control pane ${control.paneId} in session ${control.session}`,
       );
     }
-    args.push("--tab", String(matches[0].tab_id));
+    if (state.config.stackWorkers) {
+      args.push("--stack-for", control.paneId);
+    } else {
+      args.push("--tab", String(matches[0].tab_id));
+    }
   }
   state.phase = "launching";
   await save(context, state, dependencies);
@@ -909,4 +918,48 @@ export async function statusAgent(
   }
   selectedAgent(state, value);
   return { dataHandles: [observation] };
+}
+
+/** Called only after the lifecycle has durably accepted the result. */
+export async function cleanupAgent(
+  context: AgentContext,
+  dependencies = defaultDependencies,
+) {
+  const state = await load(context, dependencies);
+  if (state.cleanedUp) return { dataHandles: [] };
+  if (
+    state.phase !== "completed" || !state.paneId || !state.conversationId ||
+    !state.submissionId ||
+    state.backgroundTasks.length
+  ) throw new Error("Worker is not ready for cleanup");
+  const listing = await dependencies.run(
+    ["--session", state.config.session, "action", "list-panes", "--json"],
+    undefined,
+    context.signal,
+  );
+  if (listing.code !== 0) {
+    throw new Error("Cannot inspect worker before cleanup");
+  }
+  const panes = z.array(z.object({ id: z.number(), is_plugin: z.boolean() }))
+    .parse(JSON.parse(listing.stdout));
+  if (panes.some((p) => !p.is_plugin && `terminal_${p.id}` === state.paneId)) {
+    const result = await dependencies.run(
+      commandArgs(state, [
+        "close-completed",
+        state.paneId,
+        "--conversation",
+        state.conversationId,
+        "--submission",
+        state.submissionId,
+      ]),
+      undefined,
+      context.signal,
+    );
+    const value = AgentResponseSchema.parse(JSON.parse(result.stdout));
+    if (result.code !== 0 || value.outcome !== "ok") {
+      throw new Error(`Worker cleanup blocked: ${value.outcome}`);
+    }
+  }
+  state.cleanedUp = true;
+  return { dataHandles: [await save(context, state, dependencies)] };
 }

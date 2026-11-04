@@ -317,7 +317,10 @@ impl Screen {
         if let Some(c) = completion_tx.as_mut().filter(|_| !set_blocking) {
             c.wait_for_placement();
             if let Some(target) = &c.agent_tab {
-                let live = !self.deferred_tab_closes.contains(&target.tab_id)
+                let live = target
+                    .stack_controller
+                    .is_none_or(|owner| self.tab_id_containing_pane(owner) == Some(target.tab_id))
+                    && !self.deferred_tab_closes.contains(&target.tab_id)
                     && self.tabs.get(&target.tab_id).is_some_and(|tab| {
                         target
                             .lifetime
@@ -369,12 +372,24 @@ impl Screen {
             target: client_or_tab_index,
             focus_after_placing,
             created_tab_id,
-        } = self.agent_pane_target(
-            invoked_with.as_ref(),
-            &mut new_pane_placement,
-            start_suppressed,
-            client_or_tab_index,
-        );
+        } = if completion_tx
+            .as_ref()
+            .and_then(|c| c.agent_tab.as_ref())
+            .is_some_and(|t| t.stack_controller.is_some())
+        {
+            AgentPlacement {
+                target: client_or_tab_index,
+                focus_after_placing: None,
+                created_tab_id: None,
+            }
+        } else {
+            self.agent_pane_target(
+                invoked_with.as_ref(),
+                &mut new_pane_placement,
+                start_suppressed,
+                client_or_tab_index,
+            )
+        };
         // The tab the pane went into, so that holding it for its command below reaches the
         // same tab whichever way it was chosen - including a tab whose layout has not landed,
         // which queues both the placement and the hold.
@@ -397,8 +412,41 @@ impl Screen {
                         tab_id: tab.id,
                         lifetime: std::sync::Arc::downgrade(&tab.agent_tab_lifetime),
                         created: c.created_tab_id == Some(tab.id),
+                        stack_controller: None,
                     });
             }
+        }
+        let worker_stack = completion_tx
+            .as_ref()
+            .and_then(|c| c.agent_tab.as_ref())
+            .and_then(|target| target.stack_controller.map(|owner| (owner, target.tab_id)));
+        let mut separate_worker = false;
+        if let Some(key) = worker_stack {
+            let live: Vec<_> = self
+                .agent_worker_stacks
+                .get(&key)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|pane| {
+                    self.tabs
+                        .get(&key.1)
+                        .is_some_and(|tab| tab.can_anchor_tiled_stack(*pane))
+                })
+                .collect();
+            if let Some(root) = live.first() {
+                new_pane_placement = NewPanePlacement::Stacked {
+                    pane_id_to_stack_under: Some(*root),
+                    borderless: None,
+                };
+            } else {
+                separate_worker = true;
+                new_pane_placement = NewPanePlacement::Tiled {
+                    direction: None,
+                    borderless: None,
+                };
+            }
+            self.agent_worker_stacks.insert(key, live);
         }
         let mut placed_in: Option<TabId> = None;
         let insertion = (|| -> Result<()> {
@@ -462,16 +510,28 @@ impl Screen {
                         None
                     };
                     if let Some(active_tab) = self.tabs.get_mut(&tab_index) {
-                        active_tab.new_pane(
-                            pid,
-                            initial_pane_title,
-                            invoked_with,
-                            start_suppressed,
-                            should_focus_pane,
-                            new_pane_placement,
-                            client_id,
-                            blocking_notification,
-                        )?;
+                        if worker_stack.is_some() {
+                            active_tab.ensure_worker_pane_capacity()?;
+                        }
+                        if separate_worker {
+                            active_tab.new_separate_worker_pane(
+                                pid,
+                                initial_pane_title,
+                                invoked_with,
+                                blocking_notification,
+                            )?;
+                        } else {
+                            active_tab.new_pane(
+                                pid,
+                                initial_pane_title,
+                                invoked_with,
+                                start_suppressed,
+                                should_focus_pane,
+                                new_pane_placement,
+                                client_id,
+                                blocking_notification,
+                            )?;
+                        }
                         placed_in = Some(tab_index);
                     } else {
                         self.forget_unplaced_pane(
@@ -548,6 +608,25 @@ impl Screen {
                 self.forget_unplaced_pane(pid, format!("cannot place pane: {error:#}"));
             }
             return Err(error);
+        }
+        if worker_stack.is_some()
+            && !self
+                .tabs
+                .values()
+                .any(|tab| tab.can_anchor_tiled_stack(pid))
+            && let Some(completion) = completion_tx.as_mut()
+        {
+            completion
+                .set_error_message("worker stack has no room; pane retained for inspection".into());
+        }
+        if let Some(key) = worker_stack
+            && self
+                .tabs
+                .values()
+                .any(|tab| tab.can_anchor_tiled_stack(pid))
+            && self.tab_id_containing_pane(pid) == Some(key.1)
+        {
+            self.agent_worker_stacks.entry(key).or_default().push(pid);
         }
         if let Some(completion) = completion_tx.take()
             && let Some(tab) = placed_in.and_then(|id| self.tabs.get_mut(&id))

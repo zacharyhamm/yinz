@@ -5912,8 +5912,19 @@ fn agent_provider_usage_roundtrip() {
 
 #[test]
 fn agent_spawn_placement_and_failure_resources_roundtrip() {
+    test_client_roundtrip!(ClientToServerMsg::AgentControl(
+        yinz_types::agent::control::AgentRequest::CloseCompleted {
+            pane_id: yinz_types::pane_id::PaneId::Terminal(
+                yinz_types::internal_ids::TerminalId::new(1)
+            ),
+            expected_session_id: Some("conversation".into()),
+            submission_id: "submission".into(),
+        }
+    ));
+
     use yinz_types::agent::control::{AgentOutcome, AgentPlacement, AgentRequest, AgentResponse};
-    use yinz_types::internal_ids::TabId;
+    use yinz_types::internal_ids::{TabId, TerminalId};
+    use yinz_types::pane_id::PaneId;
     test_client_roundtrip!(ClientToServerMsg::AgentControl(
         AgentRequest::SpawnNewProject {
             name: "new-app".into(),
@@ -5928,6 +5939,7 @@ fn agent_spawn_placement_and_failure_resources_roundtrip() {
         AgentPlacement::Tab(TabId::new(7)),
         AgentPlacement::NewTab(None),
         AgentPlacement::NewTab(Some("review".into())),
+        AgentPlacement::ControllerStack(PaneId::Terminal(TerminalId::new(1))),
         AgentPlacement::Suppressed(None),
         AgentPlacement::Suppressed(Some(TabId::new(0))),
     ] {

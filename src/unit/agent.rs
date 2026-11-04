@@ -570,6 +570,9 @@ fn spawn_placement_waits_for_support_reply_before_sending_spawn() {
     use yinz_types::{agent::control::AgentPlacement, internal_ids::TabId};
 
     for placement in [
+        AgentPlacement::ControllerStack(yinz_types::pane_id::PaneId::Terminal(
+            yinz_types::internal_ids::TerminalId::new(1),
+        )),
         AgentPlacement::Tab(TabId::new(7)),
         AgentPlacement::NewTab(Some("images".into())),
         AgentPlacement::Suppressed(None),
@@ -602,6 +605,8 @@ fn spawn_placement_waits_for_support_reply_before_sending_spawn() {
                     };
                     let (probe, token) = if matches!(placement, AgentPlacement::Suppressed(_)) {
                         (AgentRequest::SpawnSuppressedSupport, "agent-suppressed-v1")
+                    } else if matches!(placement, AgentPlacement::ControllerStack(_)) {
+                        (AgentRequest::SpawnStackSupport, "agent-controller-stack-v1")
                     } else {
                         (
                             AgentRequest::SpawnPlacementSupport,

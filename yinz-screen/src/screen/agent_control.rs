@@ -1392,6 +1392,12 @@ impl Screen {
                 self.agent_reply(&client, response);
                 return;
             },
+            SpawnStackSupport => {
+                let mut response = AgentResponse::new(AgentOutcome::Ok);
+                response.output = Some("agent-controller-stack-v1".into());
+                self.agent_reply(&client, response);
+                return;
+            },
             SpawnPlacementSupport => {
                 let mut response = AgentResponse::new(AgentOutcome::Ok);
                 response.output = Some("agent-tab-placement-v1".into());
@@ -1442,7 +1448,12 @@ impl Screen {
                 *pane_id,
                 (!expected_session_id.is_empty()).then_some(expected_session_id.as_str()),
             ),
-            Status {
+            CloseCompleted {
+                pane_id,
+                expected_session_id,
+                ..
+            }
+            | Status {
                 pane_id,
                 expected_session_id,
             }
@@ -1742,6 +1753,70 @@ impl Screen {
                 }
                 self.finalize_agent_recovery(pane, &status.agent, self.agent_input_revision(pane));
                 self.agent_reply(&client, self.agent_result(pane, AgentOutcome::Ok, None));
+            },
+            CloseCompleted {
+                expected_session_id,
+                submission_id,
+                ..
+            } => {
+                if expected_session_id.as_ref().is_none_or(|id| id.is_empty())
+                    || !status.status_available
+                    || status.agent.state != AgentState::Idle
+                    || !self
+                        .agent_submissions
+                        .get(&pane)
+                        .and_then(|s| s.back())
+                        .is_some_and(|s| {
+                            s.id == submission_id
+                                && s.conversation == expected_session_id
+                                && s.acknowledged
+                                && s.result
+                                    .as_ref()
+                                    .is_some_and(|r| r.outcome == AgentOutcome::Completed)
+                        })
+                    || !self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
+                        lifecycle.input_revision == Some(self.agent_input_revision(pane))
+                    })
+                    || self
+                        .draft_composer(pane, &status.agent.kind)
+                        .is_some_and(|c| !c.empty)
+                    || !status.background_tasks.is_empty()
+                    || !status.ready
+                    || self
+                        .agent_controls
+                        .iter()
+                        .any(|pending| pending.pane == pane)
+                {
+                    reject(
+                        self,
+                        AgentOutcome::Rejected,
+                        "worker must be idle with no pending work",
+                    );
+                    return;
+                }
+                if !self
+                    .tab_containing_pane(pane)
+                    .is_some_and(|tab| tab.explicit_close_is_single_pane(pane))
+                {
+                    reject(
+                        self,
+                        AgentOutcome::Rejected,
+                        "worker cleanup would affect other panes",
+                    );
+                    return;
+                }
+                self.close_pane_explicitly(pane, None);
+                if self.tab_containing_pane(pane).is_some() {
+                    reject(
+                        self,
+                        AgentOutcome::Rejected,
+                        "worker pane could not be closed",
+                    );
+                    return;
+                }
+                self.log_and_report_session_state().non_fatal();
+                self.render().non_fatal();
+                self.agent_reply(&client, AgentResponse::new(AgentOutcome::Ok));
             },
             Status { .. } => {
                 let outcome = if status.agent.state == AgentState::Exited
@@ -2240,6 +2315,7 @@ impl Screen {
             | Spawn { .. }
             | SpawnNewProject { .. }
             | CreateProject { .. }
+            | SpawnStackSupport
             | SpawnPlacementSupport
             | SpawnSuppressedSupport
             | SpawnBubblewrapSupport => {},

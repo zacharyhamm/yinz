@@ -38,10 +38,14 @@ pub enum AgentPlacement {
     Tab(crate::internal_ids::TabId),
     NewTab(Option<String>),
     Suppressed(Option<crate::internal_ids::TabId>),
+    ControllerStack(PaneId),
 }
 
 impl AgentPlacement {
     pub fn validate(&self) -> Result<(), &'static str> {
+        if matches!(self, Self::ControllerStack(PaneId::Plugin(_))) {
+            return Err("stack controller must be a terminal pane");
+        }
         if let Self::NewTab(Some(name)) = self
             && (name.trim().is_empty() || name.chars().any(char::is_control))
         {
@@ -113,6 +117,7 @@ pub struct RestartedAgent {
 pub enum AgentRequest {
     /// Read-only feature negotiation before sending placement to an older server.
     SpawnPlacementSupport,
+    SpawnStackSupport,
     /// Read-only negotiation before sending a suppressed launch to an older server.
     SpawnSuppressedSupport,
     /// Read-only feature negotiation before sending a sandboxed spawn to an older server.
@@ -123,6 +128,11 @@ pub enum AgentRequest {
     /// Account usage reported by the provider on this session's host.
     Usage {
         provider: String,
+    },
+    CloseCompleted {
+        submission_id: String,
+        pane_id: PaneId,
+        expected_session_id: Option<String>,
     },
     Status {
         pane_id: PaneId,

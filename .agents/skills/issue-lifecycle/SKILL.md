@@ -50,7 +50,7 @@ After `start`, use the launcher's `drive` command with JSON input
 Use the intended running Yinz session and provider. Omitted options preserve
 provider defaults. Settings persist; ordinary resume uses `drive` with no input.
 The launcher captures the invoking control pane's session and ID. Every new
-worker resolves that pane's current tab and spawns there explicitly, including
+worker resolves that pane's current tab and joins its separate controller-owned worker stack there, including
 revisions, repairs and restarts. Existing workers stay in their original tabs
 and resume their original submissions. The selected worker session must match
 the control pane's session; missing panes and lookup failures block launches.
@@ -143,7 +143,9 @@ failures or invalid evidence. Resolve the blocker deliberately, then `drive`
 again; use `resume-agent` for lower-level observation. Do not rerun `agent` to
 retry the prompt automatically. Completed handoffs persist, so resume does not
 repeat workers; rollback and restart invalidate superseded handoffs.
-Panes stay visible. Missing or stale Codex, Muse or AGY hooks fail preflight and
+Accepted worker results are saved before their panes close. Pending cleanup is
+retried on resume without replaying evidence. Failed or blocked panes stay visible.
+Missing or stale Codex, Muse or AGY hooks fail preflight and
 are not installed automatically.
 
 When the user asks to restart or roll back, that request authorizes superseding

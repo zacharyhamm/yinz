@@ -537,11 +537,32 @@ impl TiledPanes {
         }
         self.add_pane_without_stacked_resize(pane_id, pane, should_relayout)
     }
+    /// Insert in a separate tiled region, without falling back to an existing stack.
+    pub fn insert_pane_separate(
+        &mut self,
+        pane_id: PaneId,
+        pane: Box<dyn Pane>,
+    ) -> Option<Box<dyn Pane>> {
+        if self.has_no_content_in_viewport() {
+            return self.add_pane(pane_id, pane, true, None);
+        }
+        self.add_pane_without_stack_fallback(pane_id, pane, true, false)
+    }
+
     fn add_pane_without_stacked_resize(
+        &mut self,
+        pane_id: PaneId,
+        pane: Box<dyn Pane>,
+        should_relayout: bool,
+    ) -> Option<Box<dyn Pane>> {
+        self.add_pane_without_stack_fallback(pane_id, pane, should_relayout, true)
+    }
+    fn add_pane_without_stack_fallback(
         &mut self,
         pane_id: PaneId,
         mut pane: Box<dyn Pane>,
         should_relayout: bool,
+        allow_stack: bool,
     ) -> Option<Box<dyn Pane>> {
         let cursor_height_width_ratio = self.cursor_height_width_ratio();
         let mut pane_grid = TiledPaneGrid::new(
@@ -573,6 +594,7 @@ impl TiledPanes {
                     Some(pane)
                 }
             },
+            None if !allow_stack => Some(pane),
             None => {
                 // we couldn't add the pane normally, let's see if there's room in one of the
                 // stacks...

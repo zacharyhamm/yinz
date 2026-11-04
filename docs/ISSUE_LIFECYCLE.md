@@ -226,10 +226,11 @@ missing decision. Approval to implement does not itself authorize merging.
 
 The launcher captures the invoking control agent's `YINZ_SESSION_NAME` and
 `YINZ_PANE_ID` for `drive`, `agent` and `restart-agent`. Each new worker queries
-that pane's current tab immediately before spawning and passes the explicit
-`--tab` to Yinz. This includes plan revisions, repairs and restarts. Workers
+that pane's current tab immediately before spawning and passes
+`--stack-for <control-pane>` to Yinz. Workers across issues share one separate
+tiled stack owned by that controller in the tab. This includes plan revisions, repairs and restarts. Workers
 follow the control pane when it moves between tabs; already running workers
-stay where they are. Explicit-tab spawning preserves keyboard focus.
+stay where they are. Stack spawning preserves keyboard focus.
 
 Control identity is stored as `control: {session, paneId}` (for example,
 `{"session":"dev","paneId":"terminal_0"}`). Direct behavior callers must
@@ -279,7 +280,12 @@ prompt. An uncertain spawn is never retried automatically. Unknown or expired
 submissions remain unresolved until the operator requests rollback or restart;
 inspect the retained pane and state. Background
 tasks require a further observation of the same conversation's final idle answer
-before success. Panes remain visible after completion or failure.
+before success. Once evidence and task completion are durably saved, the lifecycle
+closes the worker with a conversation- and submission-guarded command.
+Cleanup is independently retryable through `drive` or `resume-agent`; it never
+replays accepted evidence. Failed, blocked, superseded and unusable-result panes
+remain available for inspection. Closing the last worker releases its region.
+Existing saved tasks retain legacy placement and cleanup behavior.
 
 If dispatch stopped before the child saved its initial state, `resume-agent`
 initializes the original task under the child execution lock using the saved

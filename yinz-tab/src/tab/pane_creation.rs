@@ -301,6 +301,37 @@ impl Tab {
             self.add_tiled_pane(new_pane, pid, false, focus_client_id)
         }
     }
+    /// Create the first controller worker in a region of its own.
+    pub fn new_separate_worker_pane(
+        &mut self,
+        pid: PaneId,
+        initial_pane_title: Option<String>,
+        invoked_with: Option<Run>,
+        blocking_notification: Option<NotificationEnd>,
+    ) -> Result<()> {
+        self.ensure_worker_pane_capacity()?;
+        let pane = self.build_pane(pid, initial_pane_title, invoked_with, blocking_notification)?;
+        self.add_tiled_pane_with_policy(pane, pid, false, None, true)
+    }
+
+    /// Reject worker insertion at capacity without closing existing panes.
+    pub fn ensure_worker_pane_capacity(&self) -> Result<()> {
+        // Stack-list members are tiled panes even while parked behind their visible member.
+        let mut tiled_ids: std::collections::HashSet<_> =
+            self.get_tiled_pane_ids().into_iter().collect();
+        tiled_ids.extend(
+            self.stack_lists
+                .values()
+                .flat_map(|list| list.members.iter().copied()),
+        );
+        if self.max_panes.is_some_and(|limit| tiled_ids.len() >= limit) {
+            return Err(anyhow!(
+                "cannot place worker: configured pane limit reached"
+            ));
+        }
+        Ok(())
+    }
+
     /// Build the pane a `new_*_pane` path is about to place, without deciding where it goes.
     ///
     /// Shared by no-preference, tiled, stacked, floating, and overlay creation. Each caller

@@ -1603,6 +1603,7 @@ impl Screen {
                 tab_id: tab_index,
                 lifetime: std::sync::Arc::downgrade(&lifetime),
                 created: true,
+                stack_controller: None,
             });
         let dispatched = self
             .bus
