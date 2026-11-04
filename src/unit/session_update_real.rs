@@ -1,5 +1,6 @@
 //! Real processes, supervisors, and sockets exercise the complete ownership handoff.
 use super::*;
+use interprocess::TryClone;
 use std::{path::Path, time::Instant};
 use yinz_ipc::ipc::IpcReceiverWithContext;
 use yinz_types::{
@@ -15,7 +16,36 @@ struct Peer {
 }
 impl Peer {
     fn connect(path: &Path) -> Self {
-        let stream = yinz_ipc::consts::ipc_connect(path).unwrap();
+        // The launcher exits after daemonizing, before the child necessarily binds.
+        let connected = yinz_test_support::Watched::new(None);
+        let stream = std::thread::scope(|scope| {
+            let connected = &connected;
+            scope.spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                loop {
+                    match yinz_ipc::consts::ipc_connect(path) {
+                        Ok(stream) => {
+                            *connected.lock() = Some(Ok(stream));
+                            return;
+                        },
+                        Err(error) if Instant::now() >= deadline => {
+                            *connected.lock() = Some(Err(error));
+                            return;
+                        },
+                        Err(_) => std::thread::park_timeout(Duration::from_millis(10)),
+                    }
+                }
+            });
+            connected.wait_until(
+                "server socket to accept connections",
+                Duration::from_secs(35),
+                |state| {
+                    state
+                        .as_ref()
+                        .map(|result| result.as_ref().unwrap().try_clone().unwrap())
+                },
+            )
+        });
         let receiver = IpcReceiverWithContext::new(stream);
         let sender = receiver.get_sender().unwrap();
         Self { receiver, sender }
