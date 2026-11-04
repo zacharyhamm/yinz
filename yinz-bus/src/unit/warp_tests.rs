@@ -206,6 +206,7 @@ fn the_capability_probe_reads_its_answer_after_an_older_servers_pushes() {
             warp_companions: true,
             warp_held_terminals: false,
             warp_agent_tracking: false,
+            warp_terminal_state: 0,
             signal_quit: false,
             update_protocol: 0,
         })
@@ -215,7 +216,7 @@ fn the_capability_probe_reads_its_answer_after_an_older_servers_pushes() {
             .join()
             .unwrap()
             .expect("the probe should receive its answer"),
-        (true, false, false)
+        (true, false, false, 0)
     );
 }
 
@@ -358,6 +359,9 @@ fn adopting_times_out_rather_than_waiting_on_a_pty_thread_that_never_answers() {
         &harness.senders,
         crate::ClientId::new(1),
         Box::new(WarpedPane {
+            terminal_state: None,
+            terminal_state_warning: None,
+            recovery_output: vec![],
             agent_tracking: None,
             agent_theme: None,
             bracketed_paste: false,
@@ -410,6 +414,9 @@ fn a_pty_side_refusal_to_adopt_comes_back_verbatim() {
         &senders,
         crate::ClientId::new(1),
         Box::new(WarpedPane {
+            terminal_state: None,
+            terminal_state_warning: None,
+            recovery_output: vec![],
             agent_tracking: None,
             agent_theme: None,
             bracketed_paste: false,
@@ -616,6 +623,9 @@ fn a_pty_side_refusal_to_adopt_a_tab_comes_back_verbatim() {
 
 fn remote_pane(host: &str, pane_token: &str) -> WarpedPane {
     WarpedPane {
+        terminal_state: None,
+        terminal_state_warning: None,
+        recovery_output: vec![],
         agent_tracking: None,
         agent_theme: None,
         bracketed_paste: false,
@@ -713,6 +723,7 @@ fn refuse_handoff(listener: interprocess::local_socket::Listener) {
             warp_companions: true,
             warp_held_terminals: true,
             warp_agent_tracking: true,
+            warp_terminal_state: 2,
             signal_quit: false,
             update_protocol: 0,
         })
@@ -930,4 +941,148 @@ fn a_pane_warp_answer_racing_a_timeout_is_received_or_handed_back() {
     let (reply, waiter) = pane_warp_reply();
     drop(waiter);
     assert!(reply.answer(Ok(released())).is_some());
+}
+
+#[test]
+fn warp_terminal_state_negotiation_preserves_local_rollback_and_warns_for_legacy() {
+    let original = WarpedPane {
+        terminal_state: Some("semantic state".into()),
+        contents: Some("legacy text".into()),
+        title: Some("codex".into()),
+        ..Default::default()
+    };
+    let mut modern = original.clone();
+    let mut warnings = vec![];
+    prepare_terminal_transfer(&mut modern, 2, &mut warnings);
+    assert_eq!(modern.terminal_state, original.terminal_state);
+    assert!(modern.contents.is_none());
+    assert!(warnings.is_empty());
+    let mut legacy = original.clone();
+    prepare_terminal_transfer(&mut legacy, 0, &mut warnings);
+    assert!(legacy.terminal_state.is_none());
+    assert_eq!(legacy.contents, original.contents);
+    assert!(report_transfer_warnings(warnings).contains("codex"));
+    assert!(original.terminal_state.is_some());
+    let mut unsupported = WarpedPane {
+        terminal_state_warning: Some("terminal_4: graphics cannot transfer".into()),
+        ..original
+    };
+    unsupported.terminal_state = None;
+    let mut warnings = vec![];
+    prepare_terminal_transfer(&mut unsupported, 2, &mut warnings);
+    let warning = report_transfer_warnings(warnings);
+    assert!(warning.contains("lossy text transfer"));
+    assert!(warning.contains("terminal_4: graphics"));
+}
+
+#[test]
+fn warp_failed_adoption_returns_consumed_output_only_to_its_local_pane() {
+    let mut pane = WarpedPane {
+        control_socket: "/tmp/warp-one.sock".into(),
+        ..Default::default()
+    };
+    let error = anyhow::Error::new(yinz_types::data::WarpAdoptionFailure {
+        message: "second pane refused".into(),
+        replay: vec![yinz_types::data::WarpReplay {
+            control_socket: pane.control_socket.clone(),
+            buffered: b"consumed once".to_vec(),
+        }],
+    });
+    restore_failed_adoption_output(&mut pane, &error);
+    assert_eq!(pane.recovery_output, b"consumed once");
+    let mut other = WarpedPane {
+        control_socket: "/tmp/warp-other.sock".into(),
+        ..Default::default()
+    };
+    restore_failed_adoption_output(&mut other, &error);
+    assert!(other.recovery_output.is_empty());
+}
+
+#[test]
+fn warp_ipc_failure_returns_exact_snapshot_and_consumed_bytes_to_source() {
+    let harness = harness();
+    let mut session = FakeSession::bind("semantic-rollback");
+    let listener = session.listener.take().unwrap();
+    let destination = std::thread::spawn(move || {
+        let mut probe: IpcSenderWithContext<ServerToClientMsg> =
+            IpcSenderWithContext::new(listener.accept().unwrap());
+        let mut request: IpcReceiverWithContext<ClientToServerMsg> = probe.get_receiver().unwrap();
+        assert!(matches!(
+            request.recv_client_msg().msg(),
+            Some((ClientToServerMsg::ConnStatus, _))
+        ));
+        probe
+            .send_server_msg(ServerToClientMsg::Connected {
+                warp_companions: true,
+                warp_held_terminals: true,
+                warp_agent_tracking: true,
+                warp_terminal_state: 2,
+                signal_quit: false,
+                update_protocol: 0,
+            })
+            .unwrap();
+        let mut adoption: IpcSenderWithContext<ServerToClientMsg> =
+            IpcSenderWithContext::new(listener.accept().unwrap());
+        let mut request: IpcReceiverWithContext<ClientToServerMsg> =
+            adoption.get_receiver().unwrap();
+        let Some((
+            ClientToServerMsg::Action {
+                action: Action::AdoptPane { payload, .. },
+                ..
+            },
+            _,
+        )) = request.recv_client_msg().msg()
+        else {
+            panic!("expected semantic adoption");
+        };
+        assert_eq!(payload.terminal_state.as_deref(), Some("exact snapshot"));
+        assert!(
+            payload.contents.is_none(),
+            "ANSI must not accompany semantic state"
+        );
+        adoption
+            .send_server_msg(ServerToClientMsg::WarpAdoptionFailed(
+                yinz_types::data::WarpAdoptionFailure {
+                    message: "placement failed".into(),
+                    replay: vec![yinz_types::data::WarpReplay {
+                        control_socket: payload.control_socket,
+                        buffered: b"between sessions".to_vec(),
+                    }],
+                },
+            ))
+            .unwrap();
+    });
+    let caller = start_pane_warp(&harness, &session.name);
+    assert!(screen_warp_reply(&harness)
+        .answer(Ok((
+            Box::new(WarpedPane {
+                terminal_state: Some("exact snapshot".into()),
+                contents: Some("legacy representation".into()),
+                control_socket: "/tmp/semantic-recovery.sock".into(),
+                ..Default::default()
+            }),
+            PaneWarpHold::new(harness.senders.clone())
+        )))
+        .is_none());
+    let (instruction, _) = harness.pty.recv_timeout(Duration::from_secs(5)).unwrap();
+    let PtyInstruction::AdoptTerminal {
+        payload,
+        response_channel,
+        placed,
+        ..
+    } = instruction
+    else {
+        panic!("expected source recovery");
+    };
+    assert_eq!(payload.terminal_state.as_deref(), Some("exact snapshot"));
+    assert_eq!(payload.recovery_output, b"between sessions");
+    response_channel.send(Ok(())).unwrap();
+    placed.send(Ok(())).unwrap();
+    assert!(caller
+        .join()
+        .unwrap()
+        .0
+        .unwrap_err()
+        .contains("back in this session"));
+    destination.join().unwrap();
 }

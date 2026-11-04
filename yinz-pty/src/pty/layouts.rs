@@ -389,6 +389,12 @@ impl Pty {
                         ))
                         .with_context(err_context)?;
                 }
+                if migration_operation.is_none() {
+                    self.bus
+                        .senders
+                        .send_to_screen(ScreenInstruction::WarpReplayFinished(terminal.terminal_id))
+                        .with_context(err_context)?;
+                }
                 if terminal.child_exit_status.is_none()
                     && terminal.held.is_none()
                     && let Some(input) = terminal.agent_input

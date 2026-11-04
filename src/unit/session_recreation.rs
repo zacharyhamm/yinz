@@ -523,6 +523,7 @@ fn force_delete_waits_for_completion_and_preserves_checkpoint_on_failure() {
                             warp_companions: false,
                             warp_held_terminals: false,
                             warp_agent_tracking: false,
+                            warp_terminal_state: 0,
                             signal_quit: false,
                             update_protocol: 0,
                         })

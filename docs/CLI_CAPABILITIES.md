@@ -82,3 +82,25 @@ Use `go-to-next-tab-group` and `go-to-previous-tab-group` to cycle through group
 Each group remembers its focused tab.
 Use `go-to-tab-in-group INDEX` to select a tab by its one-based position in the current group.
 Use `move-pane-to-next-tab-group` or `move-pane-to-previous-tab-group` to move the focused pane and follow it.
+
+## Pane and tab transfers
+
+`action warp-pane` and `action warp-tab` negotiate semantic terminal state with
+the destination. Supporting sessions preserve both screen buffers, normal-screen
+history, cursors, scroll margins, input modes, hyperlinks, and palette associations.
+Hidden companion panes use the same transfer. The terminal is restored at its
+source dimensions and then resized to its destination content area before buffered
+output and live reads resume. Destination pane IDs and placement remain local.
+
+If the destination lacks support, the terminal has graphics or incomplete state,
+or a snapshot exceeds the transfer budget (4 MiB per pane, shared across a tab's
+32 MiB allowance), Yinz uses its bounded ANSI text transfer. The command/plugin
+result and server log warn which pane was affected and why. This fallback loses
+terminal modes and alternate-screen semantics; semantic snapshots are never
+truncated. No additional confirmation is required. An invalid incoming semantic
+snapshot rejects adoption and invokes source recovery. Failed adoption returns
+consumed local buffered output for replay after the source snapshot, while remote
+brokers replay from the original transfer offset.
+
+This preserves future transfers. It cannot recover rows already lost from a
+damaged pane, and fullscreen application transcripts remain application-owned.

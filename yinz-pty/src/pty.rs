@@ -554,6 +554,7 @@ pub struct Pty {
     task_handles: HashMap<TerminalId, JoinHandle<()>>, // terminal_id to join-handle
     reader_controls: HashMap<TerminalId, crate::terminal_bytes::ReaderControl>,
     migration_readers_paused: bool,
+    warp_recovery: HashMap<TerminalId, yinz_types::data::WarpReplay>,
     migration_owned: Option<(String, Vec<(TerminalId, bool)>)>,
     migration_recovery_snapshot: Option<(
         PathBuf,
@@ -609,6 +610,15 @@ impl Pty {
         terminal_id: TerminalId,
         reader: Box<dyn crate::os_input_output::AsyncReader>,
     ) {
+        self.start_terminal_reader_paused(terminal_id, reader, false);
+    }
+
+    fn start_terminal_reader_paused(
+        &mut self,
+        terminal_id: TerminalId,
+        reader: Box<dyn crate::os_input_output::AsyncReader>,
+        paused: bool,
+    ) {
         let activity_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut bytes = TerminalBytes::new(
             terminal_id,
@@ -618,7 +628,7 @@ impl Pty {
             activity_flag.clone(),
         );
         let control = bytes.control();
-        if self.migration_readers_paused {
+        if paused || self.migration_readers_paused {
             control.pause();
         }
         self.reader_controls.insert(terminal_id, control);
@@ -647,6 +657,7 @@ impl Pty {
             task_handles: HashMap::new(),
             reader_controls: HashMap::new(),
             migration_readers_paused: false,
+            warp_recovery: HashMap::new(),
             migration_owned: None,
             migration_recovery_snapshot: None,
             default_editor,
@@ -887,6 +898,7 @@ impl Pty {
         self.track_launch(terminal_id, &run_command);
         let _ = self.task_handles.remove(&terminal_id);
         self.reader_controls.remove(&terminal_id);
+        self.warp_recovery.remove(&terminal_id);
         let _ = self.id_to_child_pid.remove(&terminal_id);
         let generation = self.next_rerun_generation;
         self.next_rerun_generation = self.next_rerun_generation.wrapping_add(1);

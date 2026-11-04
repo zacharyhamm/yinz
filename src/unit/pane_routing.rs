@@ -127,6 +127,7 @@ impl Session {
                     warp_companions: true,
                     warp_held_terminals: true,
                     warp_agent_tracking: true,
+                    warp_terminal_state: 2,
                     signal_quit: false,
                     update_protocol: 0,
                 },

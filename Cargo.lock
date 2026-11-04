@@ -5156,6 +5156,7 @@ dependencies = [
  "yinz-ipc",
  "yinz-runtime",
  "yinz-session",
+ "yinz-terminal",
  "yinz-test-support",
  "yinz-types",
 ]

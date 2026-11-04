@@ -225,7 +225,7 @@ fn adopt_tracking(
         }
     }
     assert!(
-        !destination.restore_staged_agent_tracking(PANE),
+        !destination.restore_staged_transfer_state(PANE),
         "the staged identity must be consumed exactly once"
     );
     (destination, plugins)
@@ -314,7 +314,7 @@ fn warp_tracking_arrival_hooks_fire_once_after_restoring_waiting_identity() {
                 );
                 report(&mut destination, permission_wait("codex"));
                 report(&mut destination, permission_wait("codex"));
-                assert!(!destination.restore_staged_agent_tracking(PANE));
+                assert!(!destination.restore_staged_transfer_state(PANE));
                 assert!(arrival_hooks(&plugins).is_empty());
             }
         }
@@ -384,7 +384,7 @@ fn transfer_into(source: &mut Screen, destination: &mut Screen) {
     destination
         .pending_agent_tracking
         .insert(PANE, (Some(handoff.agent.clone()), Some(decoded)));
-    assert!(destination.restore_staged_agent_tracking(PANE));
+    assert!(destination.restore_staged_transfer_state(PANE));
 }
 
 #[test]
@@ -480,7 +480,7 @@ fn warp_tracking_preserves_provisional_muse_and_rejects_mismatched_identity() {
         rejected
             .pending_agent_tracking
             .insert(PANE, (Some(handoff.agent.clone()), Some(handoff)));
-        rejected.restore_staged_agent_tracking(PANE);
+        rejected.restore_staged_transfer_state(PANE);
         assert!(
             !rejected.has_agent_lifecycle(PANE, "muse", "conversation"),
             "{mismatch}"
@@ -803,7 +803,7 @@ fn warp_tracking_restores_before_a_completion_queued_before_creation() {
         );
         assert!(!destination.pending_agent_tracking.contains_key(&PANE));
         // A later adoption acknowledgement cannot reapply the old Busy snapshot.
-        destination.restore_staged_agent_tracking(PANE);
+        destination.restore_staged_transfer_state(PANE);
         assert_eq!(
             destination.agent_status_for_test().agent.state,
             AgentState::Idle

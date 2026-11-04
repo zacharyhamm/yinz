@@ -195,3 +195,36 @@ fn character_runs_preserve_widths_and_explicit_blanks() {
         .unwrap();
     assert!(replacement.viewport[0].columns == original.viewport[0].columns);
 }
+
+#[test]
+fn transferred_alternate_screen_overflow_never_enters_normal_history() {
+    let mut original =
+        grid(b"normal-1\r\nnormal-2\r\nnormal-3\r\nnormal-4\r\nnormal-5\r\nnormal-6\x1b[3;4H");
+    let normal = original.dump_screen(true);
+    let cursor = original.cursor_coordinates();
+    vte::Parser::new().advance(
+        &mut original,
+        b"\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[?2004h\x1b[>1u\x1b[2Jprompt>",
+    );
+    let state = original.migration_state().unwrap();
+    let mut restored = grid(b"");
+    restored.restore_migration_state(state).unwrap();
+    // A normal prompt submission causes a fullscreen application to repaint
+    // more rows than its viewport. These must remain in the alternate buffer.
+    for round in 0..3 {
+        let output = format!(
+            "\x1b[H\x1b[2J{}\x1b[2;1Hprompt-{round}>",
+            (0..20)
+                .map(|i| format!("transcript-{i}\r\n"))
+                .collect::<String>()
+        );
+        vte::Parser::new().advance(&mut restored, output.as_bytes());
+        assert!(restored.lines_above.is_empty());
+    }
+    assert!(restored.bracketed_paste_mode);
+    assert!(restored.supports_kitty_keyboard_protocol);
+    assert_eq!(restored.mouse_tracking, original.mouse_tracking);
+    vte::Parser::new().advance(&mut restored, b"\x1b[?1049l");
+    assert_eq!(restored.dump_screen(true), normal);
+    assert_eq!(restored.cursor_coordinates(), cursor);
+}

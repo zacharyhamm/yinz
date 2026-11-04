@@ -50,6 +50,7 @@ use yinz_types::data::Event;
 use yinz_types::diagnostics::ErrorContext;
 use yinz_types::input::command::RunCommand;
 use yinz_types::internal_ids::ProcessId;
+use yinz_types::internal_ids::SessionName;
 use yinz_types::internal_ids::SupervisorId;
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TabPosition;
@@ -121,6 +122,7 @@ struct MockOsApi {
     /// and then break the one after it.
     reservations_to_allow: Arc<Mutex<usize>>,
     adopted_command: Arc<Mutex<Option<RunCommand>>>,
+    adopted_buffered: Arc<Mutex<Vec<u8>>>,
     migration_owned: Arc<Mutex<std::collections::HashSet<TerminalId>>>,
 }
 
@@ -157,6 +159,7 @@ impl MockOsApi {
             fail_reservations: Arc::new(Mutex::new(false)),
             reservations_to_allow: Arc::new(Mutex::new(0)),
             adopted_command: Arc::new(Mutex::new(None)),
+            adopted_buffered: Default::default(),
         }
     }
     fn rerun_commands(&self) -> Vec<RunCommand> {
@@ -449,7 +452,7 @@ impl TerminalSupervision for MockOsApi {
             reader: Box::new(crate::os_input_output::NullAsyncReader),
             child_pid: Some(ProcessId::new(4242)),
             cmd: self.adopted_command.lock().unwrap().take().unwrap(),
-            buffered: vec![],
+            buffered: std::mem::take(&mut *self.adopted_buffered.lock().unwrap()),
             child_exit_status: None,
         })
     }
@@ -5339,4 +5342,130 @@ fn migration_reconciles_partial_source_release_without_killing_or_releasing_abse
     assert!(mock.local_signals.lock().unwrap().is_empty());
     assert!(mock.rerun_commands().is_empty());
     assert!(mock.cleared_terminal_ids.lock().unwrap().is_empty());
+}
+
+fn warp_snapshot_fixture() -> String {
+    let grid = yinz_terminal::panes::grid::Grid::new(
+        5,
+        20,
+        Default::default(),
+        Default::default(),
+        std::rc::Rc::new(std::cell::RefCell::new(
+            yinz_terminal::panes::LinkHandler::new(),
+        )),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        false,
+        true,
+        true,
+        true,
+        false,
+    );
+    serde_json::to_string(&grid.migration_state().unwrap()).unwrap()
+}
+
+#[test]
+fn warp_rejects_invalid_snapshot_before_adopting_any_terminal() {
+    let mock = MockOsApi::new();
+    let (mut pty, _, _) = make_pty_with_screen_receiver(mock.clone());
+    let mut payload = WarpedTab {
+        tiled_panes: vec![
+            WarpedPane {
+                terminal_state: Some(warp_snapshot_fixture()),
+                ..Default::default()
+            },
+            WarpedPane {
+                terminal_state: Some(r#"{"format":999}"#.into()),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    *mock.adopted_command.lock().unwrap() = Some(RunCommand::default());
+    assert!(format!("{:#}", pty.adopt_tab(&payload).unwrap_err())
+        .contains("invalid transferred terminal snapshot"));
+    assert!(mock.adopted_command.lock().unwrap().is_some());
+    assert!(pty.reader_controls.is_empty());
+    assert!(pty.adopt_terminal(&payload.tiled_panes.remove(1)).is_err());
+}
+
+#[test]
+fn warp_partial_tab_adoption_returns_buffered_output_and_rollback_prepends_it_once() {
+    let mock = MockOsApi::new();
+    let (mut pty, _, _) = make_pty_with_screen_receiver(mock.clone());
+    *mock.adopted_command.lock().unwrap() = Some(RunCommand::default());
+    *mock.adopted_buffered.lock().unwrap() = b"during transfer".to_vec();
+    let mut first = WarpedPane {
+        terminal_state: Some(warp_snapshot_fixture()),
+        control_socket: "/tmp/first.sock".into(),
+        ..Default::default()
+    };
+    let payload = WarpedTab {
+        tiled_panes: vec![
+            first.clone(),
+            WarpedPane {
+                held: Some(yinz_types::data::HeldTerminal {
+                    command: RunCommand::default(),
+                    first_run: true,
+                    exit_status: None,
+                }),
+                control_socket: "/invalid-held.sock".into(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let error = pty.adopt_tab(&payload).unwrap_err();
+    let failure = error
+        .downcast_ref::<yinz_types::data::WarpAdoptionFailure>()
+        .unwrap();
+    assert_eq!(failure.replay.len(), 1);
+    assert_eq!(failure.replay[0].buffered, b"during transfer");
+    assert!(pty.reader_controls.is_empty());
+    first.recovery_output = failure.replay[0].buffered.clone();
+    *mock.adopted_command.lock().unwrap() = Some(RunCommand::default());
+    *mock.adopted_buffered.lock().unwrap() = b"after failure".to_vec();
+    let adopted = pty.adopt_terminal(&first).unwrap();
+    assert_eq!(adopted.buffered, b"during transferafter failure");
+    pty.give_back_adopted(adopted.terminal_id, false);
+}
+
+#[test]
+fn warp_pause_timeout_keeps_source_readers_and_panes_live() {
+    for whole_tab in [false, true] {
+        let mock = MockOsApi::new();
+        let (mut pty, _, screen) = make_pty_with_screen_receiver(mock.clone());
+        let id = TerminalId::new(3);
+        set_warpable_terminal(&mut pty, id);
+        // This reader never starts, so it cannot acknowledge the requested pause.
+        let reader = crate::terminal_bytes::TerminalBytes::new(
+            id,
+            Box::new(crate::os_input_output::NullAsyncReader),
+            pty.bus.senders.clone(),
+            false,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let control = reader.control();
+        pty.reader_controls.insert(id, control.clone());
+        let deadline = std::time::Instant::now() + Duration::from_millis(20);
+        let error = if whole_tab {
+            release_tab_for_warp(&mut pty, vec![id], deadline)
+                .remove(0)
+                .1
+                .unwrap_err()
+        } else {
+            release_pane_for_warp(&mut pty, id, &SessionName::new("destination"), deadline)
+                .unwrap_err()
+        };
+        assert!(error.contains("quiesce"), "{error}");
+        assert!(pty.task_handles.contains_key(&id));
+        assert!(mock.release_attempts().is_empty());
+        assert!(pane_messages(&drain_screen(&screen)).is_empty());
+        assert!(
+            !control.pause(),
+            "a timed-out transfer must resume its reader"
+        );
+    }
 }

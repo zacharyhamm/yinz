@@ -130,6 +130,14 @@ pub trait PluginPaneControl {
 }
 
 pub trait Pane {
+    /// Emulator state only: destination identity and geometry remain local.
+    fn terminal_state(&self) -> Result<String, String> {
+        Err("this pane has no semantic terminal state".into())
+    }
+    fn restore_terminal_state(&mut self, _state: &str) -> Result<(), String> {
+        Err("this pane has no semantic terminal state".into())
+    }
+
     fn validate_migration(&self) -> Result<(), String> {
         Err("this pane has no terminal migration format".into())
     }

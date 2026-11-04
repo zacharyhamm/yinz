@@ -733,6 +733,9 @@ pub(crate) fn layout_infos(tc: &hegel::TestCase) -> LayoutInfo {
 
 pub(crate) fn warped_panes(tc: &hegel::TestCase) -> WarpedPane {
     WarpedPane {
+        terminal_state: None,
+        terminal_state_warning: None,
+        recovery_output: vec![],
         agent_tracking: None,
         agent_theme: None,
         bracketed_paste: false,

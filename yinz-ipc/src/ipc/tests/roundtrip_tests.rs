@@ -159,6 +159,7 @@ fn a_remote_handoff_without_a_command_arrives_as_no_remote_pane() {
 
     let adopt_pane = |cmd| ProtoAction {
         action_type: Some(ActionType::AdoptPane(ProtoAdoptPaneAction {
+            terminal_state: None,
             agent_tracking_json: None,
             agent_theme_json: None,
             bracketed_paste: false,
@@ -1251,6 +1252,9 @@ fn test_client_messages() {
     });
     for first_run in [true, false] {
         let pane = WarpedPane {
+            terminal_state: None,
+            terminal_state_warning: None,
+            recovery_output: vec![],
             agent_tracking: None,
             agent_theme: Some(yinz_types::agent::theme::AgentThemeHandoff {
                 version: 1,
@@ -1353,6 +1357,9 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                terminal_state: None,
+                terminal_state_warning: None,
+                recovery_output: vec![],
                 agent_tracking: None,
                 agent_theme: None,
                 bracketed_paste: true,
@@ -1397,6 +1404,9 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                terminal_state: None,
+                terminal_state_warning: None,
+                recovery_output: vec![],
                 agent_tracking: None,
                 agent_theme: None,
                 bracketed_paste: true,
@@ -1441,6 +1451,9 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                terminal_state: None,
+                terminal_state_warning: None,
+                recovery_output: vec![],
                 agent_tracking: None,
                 agent_theme: None,
                 bracketed_paste: true,
@@ -1547,6 +1560,9 @@ fn test_client_messages() {
                 }],
                 tiled_panes: vec![
                     WarpedPane {
+                        terminal_state: None,
+                        terminal_state_warning: None,
+                        recovery_output: vec![],
                         agent_tracking: None,
                         agent_theme: None,
                         bracketed_paste: true,
@@ -1571,6 +1587,9 @@ fn test_client_messages() {
                     // is warped whole, so both addressing shapes have to survive
                     // the same message.
                     WarpedPane {
+                        terminal_state: None,
+                        terminal_state_warning: None,
+                        recovery_output: vec![],
                         agent_tracking: None,
                         agent_theme: None,
                         bracketed_paste: true,
@@ -1606,6 +1625,9 @@ fn test_client_messages() {
                     },
                 ],
                 floating_panes: vec![WarpedPane {
+                    terminal_state: None,
+                    terminal_state_warning: None,
+                    recovery_output: vec![],
                     agent_tracking: None,
                     agent_theme: None,
                     bracketed_paste: true,
@@ -5022,6 +5044,7 @@ fn test_server_messages() {
         warp_companions: true,
         warp_held_terminals: false,
         warp_agent_tracking: false,
+        warp_terminal_state: 0,
         signal_quit: false,
         update_protocol: 0,
     });
@@ -5029,6 +5052,7 @@ fn test_server_messages() {
         warp_companions: true,
         warp_held_terminals: true,
         warp_agent_tracking: true,
+        warp_terminal_state: 2,
         signal_quit: true,
         update_protocol: 0,
     });
@@ -5637,6 +5661,9 @@ fn warp_companion_relationships_roundtrip_and_reject_malformed_groups() {
     let message = |payload| ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                terminal_state: None,
+                terminal_state_warning: None,
+                recovery_output: vec![],
                 agent_tracking: None,
                 agent_theme: None,
                 held: None,
@@ -6222,6 +6249,7 @@ fn signal_quit_capability_defaults_to_false_for_older_servers() {
             ServerToClientMsg::Connected {
                 signal_quit: false,
                 warp_agent_tracking: false,
+                warp_terminal_state: 0,
                 update_protocol: 0,
                 ..
             }
@@ -6236,6 +6264,7 @@ fn signal_quit_capability_defaults_to_false_for_older_servers() {
         ServerToClientMsg::Connected {
             signal_quit: false,
             warp_agent_tracking: false,
+            warp_terminal_state: 0,
             update_protocol: 0,
             ..
         }
@@ -6353,4 +6382,41 @@ fn warp_agent_tracking_roundtrip_preserves_provider_evidence() {
             is_cli_client: true
         });
     }
+}
+
+#[test]
+fn warp_terminal_state_and_recovery_roundtrip() {
+    test_server_roundtrip!(ServerToClientMsg::WarpAdoptionFailed(
+        yinz_types::data::WarpAdoptionFailure {
+            message: "adoption failed".into(),
+            replay: vec![yinz_types::data::WarpReplay {
+                control_socket: "/tmp/pane.sock".into(),
+                buffered: vec![0, 255, 27]
+            }],
+        }
+    ));
+    let pane = yinz_types::data::WarpedPane {
+        terminal_state: Some(r#"{"format":2,"state":"alternate"}"#.into()),
+        ..Default::default()
+    };
+    test_client_roundtrip!(ClientToServerMsg::Action {
+        action: yinz_types::input::actions::Action::AdoptPane {
+            payload: Box::new(pane.clone()),
+            placement: yinz_types::data::WarpPlacement::FocusedTab,
+        },
+        terminal_id: None,
+        client_id: None,
+        is_cli_client: true,
+    });
+    test_client_roundtrip!(ClientToServerMsg::Action {
+        action: yinz_types::input::actions::Action::AdoptTab {
+            payload: Box::new(yinz_types::data::WarpedTab {
+                tiled_panes: vec![pane],
+                ..Default::default()
+            }),
+        },
+        terminal_id: None,
+        client_id: None,
+        is_cli_client: true,
+    });
 }

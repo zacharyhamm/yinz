@@ -1187,7 +1187,7 @@ pub fn route_action(
         },
         Action::AdoptPane { payload, placement } => {
             drop(completion_tx);
-            match yinz_bus::warp::adopt_pane_here(
+            match yinz_bus::warp::adopt_pane_here_with_recovery(
                 &senders,
                 client_id,
                 payload,
@@ -1198,7 +1198,11 @@ pub fn route_action(
                 Ok(message) => {
                     send_output_to_client(cli_client_id, os_input.as_deref(), vec![message])
                 },
-                Err(message) => send_error_to_client(cli_client_id, os_input.as_deref(), &message),
+                Err(error) => completion::send_adoption_error_to_client(
+                    cli_client_id,
+                    os_input.as_deref(),
+                    error,
+                ),
             }
         },
         Action::WarpTab { tab_id, to_session } => {
@@ -1219,7 +1223,7 @@ pub fn route_action(
         },
         Action::AdoptTab { payload } => {
             drop(completion_tx);
-            match yinz_bus::warp::adopt_tab_here(
+            match yinz_bus::warp::adopt_tab_here_with_recovery(
                 &senders,
                 client_id,
                 payload,
@@ -1229,7 +1233,11 @@ pub fn route_action(
                 Ok(message) => {
                     send_output_to_client(cli_client_id, os_input.as_deref(), vec![message])
                 },
-                Err(message) => send_error_to_client(cli_client_id, os_input.as_deref(), &message),
+                Err(error) => completion::send_adoption_error_to_client(
+                    cli_client_id,
+                    os_input.as_deref(),
+                    error,
+                ),
             }
         },
         Action::WarpTabFrom {

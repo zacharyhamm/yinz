@@ -34,8 +34,8 @@ pub(crate) struct ReaderControl {
 }
 
 impl ReaderControl {
-    pub(crate) fn pause(&self) {
-        self.pause.send_replace(true);
+    pub(crate) fn pause(&self) -> bool {
+        self.pause.send_replace(true)
     }
 
     pub(crate) fn resume(&self) {

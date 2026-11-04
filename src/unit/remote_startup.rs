@@ -506,6 +506,7 @@ fn local_resurrection_preserves_terminal_settings_geometry_pane_limit_and_debug(
                         warp_companions: false,
                         warp_held_terminals: false,
                         warp_agent_tracking: false,
+                        warp_terminal_state: 0,
                         signal_quit: false,
                         update_protocol: 0,
                     })
@@ -770,6 +771,7 @@ fn interrupted_startup(stage: &str, signal: Signal) {
                     warp_companions: false,
                     warp_held_terminals: false,
                     warp_agent_tracking: false,
+                    warp_terminal_state: 0,
                     signal_quit: false,
                     update_protocol: 0,
                 })
@@ -805,6 +807,7 @@ fn interrupted_startup(stage: &str, signal: Signal) {
                             warp_companions: false,
                             warp_held_terminals: false,
                             warp_agent_tracking: false,
+                            warp_terminal_state: 0,
                             signal_quit: false,
                             update_protocol: 0,
                         })

@@ -75,7 +75,20 @@ impl Screen {
 
     /// Called immediately after placement, before queued reports or terminal bytes are drained.
     /// Returns whether a staged identity was applied, even without a tracking payload.
-    pub(in crate::screen) fn restore_staged_agent_tracking(&mut self, pane: PaneId) -> bool {
+    pub(in crate::screen) fn restore_staged_transfer_state(&mut self, pane: PaneId) -> bool {
+        if let Some(state) = self.pending_terminal_states.remove(&pane) {
+            // PTY preflight validated the complete snapshot before attaching any supervisor.
+            for tab in self.tabs.values_mut() {
+                if let Some(terminal) = tab.get_pane_with_id_mut(pane) {
+                    terminal
+                        .restore_terminal_state(&state)
+                        .map_err(|e| anyhow!("{e}"))
+                        .context("restore adopted terminal state")
+                        .non_fatal();
+                    break;
+                }
+            }
+        }
         let Some((agent, tracking)) = self.pending_agent_tracking.remove(&pane) else {
             return false;
         };

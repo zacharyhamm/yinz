@@ -693,6 +693,7 @@ fn check_query_cleanup(error: ErrorKind, reconnect: bool, quit: bool) {
                     warp_companions: false,
                     warp_held_terminals: false,
                     warp_agent_tracking: false,
+                    warp_terminal_state: 0,
                     signal_quit: true,
                     update_protocol: 0,
                 });

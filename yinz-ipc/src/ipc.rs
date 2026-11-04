@@ -318,6 +318,9 @@ pub enum ServerToClientMsg {
         warp_held_terminals: bool,
         #[serde(default)]
         warp_agent_tracking: bool,
+        /// Highest supported semantic terminal snapshot version (zero for legacy peers).
+        #[serde(default)]
+        warp_terminal_state: u32,
         #[serde(default)]
         signal_quit: bool,
         #[serde(default)]
@@ -326,6 +329,7 @@ pub enum ServerToClientMsg {
     Log {
         lines: Vec<String>,
     },
+    WarpAdoptionFailed(yinz_types::data::WarpAdoptionFailure),
     LogError {
         lines: Vec<String>,
     },

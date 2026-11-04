@@ -484,6 +484,14 @@ fn run_awaits_placement(run: &Option<Run>) -> bool {
 }
 
 impl Tab {
+    pub fn reserve_warp_terminal_state(&self, state: &str) -> Result<()> {
+        yinz_terminal::panes::grid::Grid::reserve_terminal_state_links(
+            state,
+            self.link_handler.clone(),
+        )
+        .context("reserve transferred hyperlinks in destination tab")
+    }
+
     pub fn new(
         id: TabId,
         position: TabPosition,

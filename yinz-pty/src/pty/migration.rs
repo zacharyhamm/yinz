@@ -45,7 +45,7 @@ impl Pty {
         Ok(())
     }
 
-    fn pause_migration_readers(
+    pub(super) fn pause_terminal_readers(
         &mut self,
         terminals: &[TerminalId],
         deadline: Instant,
@@ -54,9 +54,7 @@ impl Pty {
             .iter()
             .filter_map(|id| self.reader_controls.get(id).cloned())
             .collect();
-        for control in &controls {
-            control.pause();
-        }
+        let already_paused: Vec<_> = controls.iter().map(|control| control.pause()).collect();
         let result = async_runtime().block_on(async {
             tokio::time::timeout_at(deadline.into(), async {
                 for control in &mut controls {
@@ -68,7 +66,13 @@ impl Pty {
             .context("wait for terminal output to quiesce")?
         });
         if result.is_err() {
-            self.resume_migration_readers();
+            // A pane transfer must not resume unrelated readers awaiting adoption,
+            // or a selected reader that was already paused before this request.
+            for (control, was_paused) in controls.iter().zip(already_paused) {
+                if !was_paused {
+                    control.resume();
+                }
+            }
         }
         result
     }
@@ -89,7 +93,7 @@ impl Pty {
             .owns_terminal_for_migration(id)
             .context("inspect destination ownership")?;
         if owned {
-            self.pause_migration_readers(
+            self.pause_terminal_readers(
                 &[id],
                 Instant::now() + std::time::Duration::from_secs(10),
             )?;
@@ -160,7 +164,7 @@ impl Pty {
                         self.drain_held_reader_for_warp(*id, deadline)
                             .context("drain held terminal final output")?;
                     }
-                    self.pause_migration_readers(&terminals, deadline)?;
+                    self.pause_terminal_readers(&terminals, deadline)?;
                     let os = self
                         .bus
                         .os_input

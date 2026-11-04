@@ -5,7 +5,7 @@ use crate::panes::terminal_character::LinkAnchor;
 use serde::{Deserialize, Serialize};
 use yinz_types::agent::theme::AgentThemeSnapshot;
 
-const FORMAT: u32 = 2;
+const FORMAT: u32 = yinz_types::data::WARP_TERMINAL_STATE_VERSION;
 
 #[derive(Serialize, Deserialize)]
 struct Snapshot {
@@ -229,6 +229,47 @@ fn no_graphics(sixel: &SixelGrid, kitty: &KittyGrid) -> bool {
     !sixel.is_parsing() && sixel.image_coordinates().next().is_none() && kitty.is_migration_empty()
 }
 impl Grid {
+    pub fn validate_terminal_state(state: &str) -> Result<()> {
+        Self::validate_terminal_states([state])
+    }
+
+    /// Validate the complete tab against one shared hyperlink table before any
+    /// supervisor is attached. Individually valid snapshots can exceed its budget together.
+    pub fn validate_terminal_states<'a>(states: impl IntoIterator<Item = &'a str>) -> Result<()> {
+        let links = Rc::new(std::cell::RefCell::new(LinkHandler::new()));
+        for state in states {
+            Self::reserve_terminal_state_links(state, links.clone())?;
+        }
+        Ok(())
+    }
+
+    /// Validate and reserve hyperlink indices in the destination tab. Later
+    /// restoration cannot fail because unrelated panes filled the table in between.
+    pub fn reserve_terminal_state_links(
+        state: &str,
+        links: Rc<std::cell::RefCell<LinkHandler>>,
+    ) -> Result<()> {
+        let value = serde_json::from_str(state).context("decode transferred terminal state")?;
+        let mut grid = Self::new(
+            1,
+            1,
+            Default::default(),
+            Default::default(),
+            links,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Style::default(),
+            false,
+            true,
+            true,
+            true,
+            false,
+        );
+        grid.restore_migration_state(value)
+            .context("validate transferred terminal state")
+    }
+
     pub fn validate_migration(&self) -> Result<()> {
         anyhow::ensure!(
             no_graphics(&self.sixel_grid, &self.kitty_grid)

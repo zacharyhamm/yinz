@@ -253,7 +253,7 @@ fn connect_to_session(
     Ok(IpcSenderWithContext::new(stream))
 }
 
-fn warp_capabilities(session: &SessionName, timeout: Duration) -> Result<(bool, bool, bool)> {
+fn warp_capabilities(session: &SessionName, timeout: Duration) -> Result<(bool, bool, bool, u32)> {
     let mut probe = connect_to_session(session, timeout)?;
     probe.send_client_msg(ClientToServerMsg::ConnStatus)?;
     let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = probe
@@ -266,10 +266,18 @@ fn warp_capabilities(session: &SessionName, timeout: Duration) -> Result<(bool, 
                     warp_companions,
                     warp_held_terminals,
                     warp_agent_tracking,
+                    warp_terminal_state,
                     ..
                 },
                 _,
-            )) => return Ok((warp_companions, warp_held_terminals, warp_agent_tracking)),
+            )) => {
+                return Ok((
+                    warp_companions,
+                    warp_held_terminals,
+                    warp_agent_tracking,
+                    warp_terminal_state,
+                ))
+            },
             Some((message, _)) if is_older_server_push(&message) => continue,
             _ => {
                 return Err(anyhow!(
@@ -339,6 +347,7 @@ fn read_cli_reply(sender: &mut IpcSenderWithContext<ClientToServerMsg>) -> Resul
     };
     match reply {
         Some((ServerToClientMsg::Log { lines }, _)) => Ok(lines.join(" ")),
+        Some((ServerToClientMsg::WarpAdoptionFailed(failure), _)) => Err(failure.into()),
         Some((ServerToClientMsg::LogError { lines }, _)) => Err(anyhow!("{}", lines.join(" "))),
         Some((ServerToClientMsg::Exit { .. }, _)) => Err(SessionEnded.into()),
         Some((other, _)) => Err(anyhow!(
@@ -413,7 +422,7 @@ pub fn warp_pane_to_session(
 
         // Reachability first, and the connection is kept: everything after this
         // point has released a supervisor.
-        let (supports_companions, supports_held, supports_tracking) =
+        let (supports_companions, supports_held, supports_tracking, terminal_version) =
             warp_capabilities(to_session, timeout).map_err(|e| format!("{e:#}"))?;
         let mut sender = connect_to_session(to_session, timeout).map_err(|e| format!("{e:#}"))?;
 
@@ -437,7 +446,7 @@ pub fn warp_pane_to_session(
             })
             .map_err(|e| format!("{e:#}"))?;
 
-        let (payload, hold) = match response_receiver.recv_timeout(timeout) {
+        let (mut payload, hold) = match response_receiver.recv_timeout(timeout) {
             Ok(Ok(released)) => released,
             Ok(Err(reason)) => return Err(reason),
             Err(e) => return Err(preparation_failed("pane", e)),
@@ -453,25 +462,30 @@ pub fn warp_pane_to_session(
             format!("The process is still running — recover it with `{recovery}`")
         };
         let handed_off_at = std::time::Instant::now();
-        match send_pane_to_session(&mut sender, payload.clone(), placement) {
+        let mut outgoing = payload.clone();
+        let mut warnings = vec![];
+        prepare_terminal_transfer(&mut outgoing, terminal_version, &mut warnings);
+        let warning = report_transfer_warnings(warnings);
+        match send_pane_to_session(&mut sender, outgoing, placement) {
             Ok(()) => {
                 log_if_slow("handing the pane over", handed_off_at);
-                Ok(format!("Moved pane to session '{to_session}'"))
+                Ok(format!("Moved pane to session '{to_session}'{warning}"))
             },
             Err(e) => {
                 // Take it back. Adopting is the same operation from this side, so
                 // the rollback is the feature's own primitive.
                 // The hold goes with the pane, so the source stays open until the
                 // pane is placed again, even if this wait times out first.
+                restore_failed_adoption_output(&mut payload, &e);
                 let rollback =
                     adopt_pane_here(senders, client_id, payload, placement, Some(hold), timeout);
                 Err(match rollback {
                     Ok(_) => format!(
-                        "Could not move the pane to '{to_session}' ({e:#}); it is back in this session"
+                        "Could not move the pane to '{to_session}' ({e:#}); it is back in this session{warning}"
                     ),
                     Err(rollback_error) => format!(
                         "Could not move the pane to '{to_session}' ({e:#}), and could not take \
-                         it back either ({rollback_error}). {recovery}"
+                         it back either ({rollback_error}). {recovery}{warning}"
                     ),
                 })
             },
@@ -493,6 +507,18 @@ pub fn adopt_pane_here(
     hold: Option<PaneWarpHold>,
     timeout: Duration,
 ) -> std::result::Result<String, String> {
+    adopt_pane_here_with_recovery(senders, client_id, payload, placement, hold, timeout)
+        .map_err(|e| format!("{e:#}"))
+}
+
+pub fn adopt_pane_here_with_recovery(
+    senders: &ThreadSenders,
+    client_id: ClientId,
+    payload: Box<WarpedPane>,
+    placement: WarpPlacement,
+    hold: Option<PaneWarpHold>,
+    timeout: Duration,
+) -> Result<String> {
     let started_at = std::time::Instant::now();
     let (response_sender, response_receiver) = crossbeam::channel::unbounded();
     let (placed_sender, placed_receiver) = crossbeam::channel::unbounded();
@@ -505,7 +531,7 @@ pub fn adopt_pane_here(
             hold,
             placed: placed_sender,
         })
-        .map_err(|e| format!("{e:#}"))?;
+        .context("request terminal adoption")?;
 
     let adopted = match response_receiver.recv_timeout(timeout) {
         // Attached, so this session owns the supervisor and the caller must not
@@ -513,12 +539,12 @@ pub fn adopt_pane_here(
         // reported as an error; one still running when time is up is not.
         Ok(Ok(())) => {
             match placed_receiver.recv_timeout(timeout.saturating_sub(started_at.elapsed())) {
-                Ok(Err(e)) => Err(format!("{e:#}")),
+                Ok(Err(e)) => Err(e),
                 Ok(Ok(())) | Err(_) => Ok("Adopted pane".to_owned()),
             }
         },
-        Ok(Err(e)) => Err(format!("{e:#}")),
-        Err(_) => Err("timed out adopting the pane".to_owned()),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(anyhow!("timed out adopting the pane")),
     };
     log_if_slow("adopting the pane", started_at);
     adopted
@@ -597,7 +623,7 @@ pub fn warp_tab_to_session(
         return Err(format!("this tab is already in session '{to_session}'"));
     }
 
-    let (supports_companions, supports_held, supports_tracking) =
+    let (supports_companions, supports_held, supports_tracking, terminal_version) =
         warp_capabilities(to_session, timeout).map_err(|e| format!("{e:#}"))?;
     let mut sender = connect_to_session(to_session, timeout).map_err(|e| format!("{e:#}"))?;
 
@@ -618,7 +644,7 @@ pub fn warp_tab_to_session(
         })
         .map_err(|e| format!("{e:#}"))?;
 
-    let payload = match response_receiver.recv_timeout(timeout) {
+    let mut payload = match response_receiver.recv_timeout(timeout) {
         Ok(Ok(payload)) => payload,
         Ok(Err(reason)) => return Err(reason),
         Err(e) => return Err(preparation_failed("tab", e)),
@@ -642,22 +668,39 @@ pub fn warp_tab_to_session(
         )
     };
     let handed_off_at = std::time::Instant::now();
-    match send_tab_to_session(&mut sender, payload.clone()) {
+    let mut outgoing = payload.clone();
+    let mut warnings = vec![];
+    for pane in outgoing
+        .tiled_panes
+        .iter_mut()
+        .chain(&mut outgoing.floating_panes)
+    {
+        prepare_terminal_transfer(pane, terminal_version, &mut warnings);
+    }
+    let warning = report_transfer_warnings(warnings);
+    match send_tab_to_session(&mut sender, outgoing) {
         Ok(()) => {
             log_if_slow("handing the tab over", handed_off_at);
-            Ok(format!("Moved tab to session '{to_session}'"))
+            Ok(format!("Moved tab to session '{to_session}'{warning}"))
         },
         Err(e) => {
             // Take it back. As with a pane, adopting is the same operation from
             // this side, so the rollback is the feature's own primitive.
+            for pane in payload
+                .tiled_panes
+                .iter_mut()
+                .chain(&mut payload.floating_panes)
+            {
+                restore_failed_adoption_output(pane, &e);
+            }
             let rollback = adopt_tab_here(senders, client_id, payload, true, timeout);
             Err(match rollback {
                 Ok(_) => format!(
-                    "Could not move the tab to '{to_session}' ({e:#}); it is back in this session"
+                    "Could not move the tab to '{to_session}' ({e:#}); it is back in this session{warning}"
                 ),
                 Err(rollback_error) => format!(
                     "Could not move the tab to '{to_session}' ({e:#}), and could not take it \
-                     back either ({rollback_error}). {recovery}"
+                     back either ({rollback_error}). {recovery}{warning}"
                 ),
             })
         },
@@ -675,6 +718,17 @@ pub fn adopt_tab_here(
     is_rollback: bool,
     timeout: Duration,
 ) -> std::result::Result<String, String> {
+    adopt_tab_here_with_recovery(senders, client_id, payload, is_rollback, timeout)
+        .map_err(|e| format!("{e:#}"))
+}
+
+pub fn adopt_tab_here_with_recovery(
+    senders: &ThreadSenders,
+    client_id: ClientId,
+    payload: Box<WarpedTab>,
+    is_rollback: bool,
+    timeout: Duration,
+) -> Result<String> {
     let started_at = std::time::Instant::now();
     let (response_sender, response_receiver) = crossbeam::channel::unbounded();
     senders
@@ -684,12 +738,12 @@ pub fn adopt_tab_here(
             is_rollback,
             response_channel: response_sender,
         })
-        .map_err(|e| format!("{e:#}"))?;
+        .context("request terminal adoption")?;
 
     let adopted = match response_receiver.recv_timeout(timeout) {
         Ok(Ok(())) => Ok("Adopted tab".to_owned()),
-        Ok(Err(e)) => Err(format!("{e:#}")),
-        Err(_) => Err("timed out adopting the tab".to_owned()),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(anyhow!("timed out adopting the tab")),
     };
     log_if_slow("adopting the tab", started_at);
     adopted
@@ -798,3 +852,58 @@ fn log_if_slow(what: &str, started_at: std::time::Instant) {
 #[cfg(test)]
 #[path = "./unit/warp_tests.rs"]
 mod warp_tests;
+
+/// Keep the full source payload for rollback. Only one representation crosses
+/// IPC, so semantic state and legacy text each use the existing transfer budget.
+fn prepare_terminal_transfer(pane: &mut WarpedPane, version: u32, warnings: &mut Vec<String>) {
+    if let Some(group) = &mut pane.group {
+        for child in group
+            .tiled_panes
+            .iter_mut()
+            .chain(&mut group.floating_panes)
+        {
+            prepare_terminal_transfer(child, version, warnings);
+        }
+        return;
+    }
+    if version < yinz_types::data::WARP_TERMINAL_STATE_VERSION {
+        pane.terminal_state = None;
+        warnings.push(format!(
+            "pane {:?} ({}): destination does not support terminal state version 2",
+            pane.title.as_ref().or(pane.caption.as_ref()),
+            pane.host_id
+        ));
+    } else if pane.terminal_state.is_some() {
+        pane.contents = None;
+        pane.agent_theme = None;
+    } else if let Some(reason) = pane.terminal_state_warning.take() {
+        warnings.push(reason);
+    }
+}
+
+fn report_transfer_warnings(warnings: Vec<String>) -> String {
+    if warnings.is_empty() {
+        return String::new();
+    }
+    let warning = format!("; WARNING: lossy text transfer (terminal modes and alternate screen are not preserved): {}", warnings.join("; "));
+    log::warn!("{warning}");
+    warning
+}
+
+fn restore_failed_adoption_output(pane: &mut WarpedPane, error: &anyhow::Error) {
+    if let Some(group) = &mut pane.group {
+        for child in group
+            .tiled_panes
+            .iter_mut()
+            .chain(&mut group.floating_panes)
+        {
+            restore_failed_adoption_output(child, error);
+        }
+    } else if let Some(failure) = error.downcast_ref::<yinz_types::data::WarpAdoptionFailure>() {
+        for replay in &failure.replay {
+            if replay.control_socket == pane.control_socket && pane.remote.is_none() {
+                pane.recovery_output.extend_from_slice(&replay.buffered);
+            }
+        }
+    }
+}

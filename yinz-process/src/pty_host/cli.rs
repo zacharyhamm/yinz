@@ -287,6 +287,9 @@ pub fn adopt_payload(host_id: &str) -> Result<WarpedPane> {
         ));
     }
     Ok(WarpedPane {
+        terminal_state: None,
+        terminal_state_warning: None,
+        recovery_output: vec![],
         agent_tracking: None,
         agent_theme: None,
         bracketed_paste: false,
@@ -448,6 +451,9 @@ fn warped_pane_from_entry(
         anyhow!("cannot recover pane '{pane_token}' on {host}: broker returned an empty argument vector")
     })?;
     Ok(WarpedPane {
+        terminal_state: None,
+        terminal_state_warning: None,
+        recovery_output: vec![],
         agent_tracking: None,
         agent_theme: None,
         bracketed_paste: false,

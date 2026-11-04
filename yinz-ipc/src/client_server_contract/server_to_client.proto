@@ -6,6 +6,7 @@ import "common_types.proto";
 message ServerToClientMsg {
   reserved 11, 17, 19;
   oneof message {
+    WarpAdoptionFailure warp_adoption_failed = 34;
     string update_request_json = 32;
     string session_update_reply_json = 33;
     string clipboard_update = 31;
@@ -56,6 +57,7 @@ message ConnectedMsg {
   bool warp_companions = 1;
   bool warp_held_terminals = 2;
   bool warp_agent_tracking = 4;
+  uint32 warp_terminal_state = 6;
   bool signal_quit = 3;
   uint32 update_protocol = 5;
 }
@@ -128,4 +130,13 @@ message DataResponseMsg {
   string request_id = 1;
   string data_json = 2;
   optional string error = 3;
+}
+
+message WarpAdoptionFailure {
+  string message = 1;
+  repeated WarpReplay replay = 2;
+}
+message WarpReplay {
+  string control_socket = 1;
+  bytes buffered = 2;
 }

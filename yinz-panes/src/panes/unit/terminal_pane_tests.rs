@@ -3327,3 +3327,116 @@ fn resurrected_agent_retry_preserves_session_but_explicit_fresh_clears_it() {
         Some("rotated")
     );
 }
+
+#[test]
+fn warp_terminal_state_keeps_destination_identity_geometry_and_input_modes() {
+    use crate::pane::AdjustedInput;
+    use yinz_types::keys::BareKey;
+    let mut source = agent_pane();
+    source.handle_pty_bytes(b"original normal screen\x1b[3;7H\x1b[?1049h\x1b[?1h\x1b[?1003h\x1b[?1006h\x1b[?2004hFULLSCREEN".to_vec());
+    let state = source.terminal_state().unwrap();
+    let mut destination = agent_pane();
+    destination.pid = crate::TerminalId::new(42);
+    destination.rename(b"destination name".to_vec());
+    let mut geom = destination.position_and_size();
+    geom.cols.set_inner(45);
+    geom.rows.set_inner(12);
+    geom.x = 9;
+    destination.set_geom(geom);
+    destination.restore_terminal_state(&state).unwrap();
+    assert_eq!(
+        destination.pid(),
+        yinz_types::pane_id::PaneId::Terminal(crate::TerminalId::new(42))
+    );
+    assert_eq!(destination.position_and_size(), geom);
+    assert_eq!(destination.current_title(), "destination name");
+    assert!(destination.supports_bracketed_paste());
+    assert!(
+        matches!(press_key(&mut destination, BareKey::Up, ClientId::new(1)),
+        Some(AdjustedInput::WriteBytesToTerminal(bytes)) if bytes == b"\x1bOA")
+    );
+    assert_eq!(
+        destination.mouse_left_click(&Position::new(2, 3), false),
+        source.mouse_left_click(&Position::new(2, 3), false)
+    );
+    assert!(destination
+        .mouse_left_click(&Position::new(2, 3), false)
+        .is_some());
+    for _ in 0..30 {
+        destination.handle_pty_bytes(b"alternate overflow\r\n".to_vec());
+    }
+    destination.handle_pty_bytes(b"\x1b[?1049l".to_vec());
+    let normal = destination.dump_screen(true, None);
+    assert!(normal.contains("original normal screen"));
+    assert!(!normal.contains("alternate overflow"));
+    assert_eq!(destination.grid.cursor_coordinates(), Some((6, 2, true)));
+}
+
+#[test]
+fn warp_snapshot_refuses_out_of_bounds_cursor_after_fullscreen_shrink() {
+    let mut pane = agent_pane();
+    pane.handle_pty_bytes(b"\x1b[?1049h\x1b[20;80H".to_vec());
+    let mut geom = pane.position_and_size();
+    geom.cols.set_inner(40);
+    geom.rows.set_inner(10);
+    pane.set_geom(geom);
+
+    let captured = pane.grid.migration_state().unwrap();
+    assert_eq!(captured["cursor"]["x"], 79);
+    assert_eq!(captured["cursor"]["y"], 19);
+    assert!(pane.terminal_state().unwrap_err().contains("cursor"));
+
+    // Once the application redraws into the new bounds, semantic capture can resume.
+    pane.handle_pty_bytes(b"\x1b[Hredrawn".to_vec());
+    let state = pane.terminal_state().unwrap();
+    super::Grid::validate_terminal_state(&state).unwrap();
+}
+
+fn assert_same_size_warp_preserves_margins_and_tab_stops(alternate_screen: bool) {
+    let mut source = agent_pane();
+    if alternate_screen {
+        source.handle_pty_bytes(b"\x1b[?1049h".to_vec());
+    }
+    for row in 1..=20 {
+        source.handle_pty_bytes(format!("\x1b[{row};1Hrow {row}").into_bytes());
+    }
+    // Set a custom scrolling region and replace all default tab stops with column 5.
+    source.handle_pty_bytes(b"\x1b[3;10r\x1b[3g\x1b[1;5H\x1bH\x1b[H".to_vec());
+    let state = source.terminal_state().unwrap();
+    let mut destination = agent_pane();
+    destination.restore_terminal_state(&state).unwrap();
+
+    let restored = destination.grid.migration_state().unwrap();
+    assert_eq!(restored["scroll_region"], serde_json::json!([2, 9]));
+    assert_eq!(restored["horizontal_tabstops"], serde_json::json!([4]));
+
+    destination.handle_pty_bytes(b"\t".to_vec());
+    assert_eq!(destination.grid.cursor_coordinates(), Some((4, 0, true)));
+    // Linefeed at the bottom margin must scroll only the custom region.
+    destination.handle_pty_bytes(b"\x1b[10;1H\n".to_vec());
+    let screen = destination.dump_screen(false, None);
+    let lines: Vec<_> = screen.lines().collect();
+    assert_eq!(lines[0].trim_end(), "row 1");
+    assert_eq!(lines[2].trim_end(), "row 4");
+    assert_eq!(lines[9].trim_end(), "");
+    assert_eq!(lines[10].trim_end(), "row 11");
+}
+
+#[test]
+fn warp_terminal_state_same_size_preserves_normal_screen_margins_and_tab_stops() {
+    assert_same_size_warp_preserves_margins_and_tab_stops(false);
+}
+
+#[test]
+fn warp_terminal_state_same_size_preserves_alternate_screen_margins_and_tab_stops() {
+    assert_same_size_warp_preserves_margins_and_tab_stops(true);
+}
+
+#[test]
+fn warp_snapshot_refuses_graphics_in_either_screen_buffer() {
+    let mut pane = agent_pane();
+    pane.handle_pty_bytes(apc_b64("a=t,f=24,s=1,v=1,i=1,q=2", &[255, 0, 0]));
+    assert!(pane.terminal_state().unwrap_err().contains("graphics"));
+    pane.handle_pty_bytes(b"\x1b[?1049htext-only alternate screen".to_vec());
+    assert!(pane.terminal_state().unwrap_err().contains("graphics"));
+}

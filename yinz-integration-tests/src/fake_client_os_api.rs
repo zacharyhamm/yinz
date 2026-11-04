@@ -23,6 +23,7 @@ fn server_message_name(msg: &ServerToClientMsg) -> String {
     match msg {
         ServerToClientMsg::UpdateRequest(_) => "UpdateRequest",
         ServerToClientMsg::SessionUpdateReply(_) => "SessionUpdateReply",
+        ServerToClientMsg::WarpAdoptionFailed(_) => "WarpAdoptionFailed",
         ServerToClientMsg::SessionRequest(_) => "SessionRequest",
         ServerToClientMsg::AgentControl(_) => "AgentControl",
         ServerToClientMsg::DataResponse { .. } => "DataResponse",

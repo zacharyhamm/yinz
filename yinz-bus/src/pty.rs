@@ -290,6 +290,7 @@ pub enum PendingSpawn {
 #[derive(Clone, Debug, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PtyInstruction {
     SessionMigration(crate::migration::PtyRequest),
+    WarpReplayFinished(TerminalId),
     SpawnTerminal(
         Option<TerminalAction>,
         Option<String>,

@@ -562,6 +562,20 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
                         .expect("client update request contains only serializable fields"),
                 )
             },
+            ServerToClientMsg::WarpAdoptionFailed(failure) => {
+                use crate::client_server_contract::client_server_contract as proto;
+                server_to_client_msg::Message::WarpAdoptionFailed(proto::WarpAdoptionFailure {
+                    message: failure.message,
+                    replay: failure
+                        .replay
+                        .into_iter()
+                        .map(|replay| proto::WarpReplay {
+                            control_socket: replay.control_socket.to_string_lossy().into_owned(),
+                            buffered: replay.buffered,
+                        })
+                        .collect(),
+                })
+            },
             ServerToClientMsg::SessionUpdateReply(reply) => {
                 server_to_client_msg::Message::SessionUpdateReplyJson(
                     serde_json::to_string(&reply)
@@ -643,12 +657,14 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
                 warp_companions,
                 warp_held_terminals,
                 warp_agent_tracking,
+                warp_terminal_state,
                 signal_quit,
                 update_protocol,
             } => server_to_client_msg::Message::Connected(ConnectedMsg {
                 warp_companions,
                 warp_held_terminals,
                 warp_agent_tracking,
+                warp_terminal_state,
                 signal_quit,
                 update_protocol,
             }),
@@ -762,6 +778,19 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
                     serde_json::from_str(&json).context("decode client update request")?,
                 ))
             },
+            Some(server_to_client_msg::Message::WarpAdoptionFailed(failure)) => Ok(
+                ServerToClientMsg::WarpAdoptionFailed(yinz_types::data::WarpAdoptionFailure {
+                    message: failure.message,
+                    replay: failure
+                        .replay
+                        .into_iter()
+                        .map(|replay| yinz_types::data::WarpReplay {
+                            control_socket: replay.control_socket.into(),
+                            buffered: replay.buffered,
+                        })
+                        .collect(),
+                }),
+            ),
             Some(server_to_client_msg::Message::SessionUpdateReplyJson(json)) => {
                 Ok(ServerToClientMsg::SessionUpdateReply(
                     serde_json::from_str(&json).context("decode session update reply")?,
@@ -829,6 +858,7 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
                     warp_companions: msg.warp_companions,
                     warp_held_terminals: msg.warp_held_terminals,
                     warp_agent_tracking: msg.warp_agent_tracking,
+                    warp_terminal_state: msg.warp_terminal_state,
                     signal_quit: msg.signal_quit,
                     update_protocol: msg.update_protocol,
                 })
@@ -1568,6 +1598,7 @@ fn warped_pane_to_protobuf(
     pane: &yinz_types::data::WarpedPane,
 ) -> crate::client_server_contract::client_server_contract::WarpedPane {
     crate::client_server_contract::client_server_contract::WarpedPane {
+        terminal_state: pane.terminal_state.clone(),
         agent_tracking_json: pane
             .agent_tracking
             .as_ref()
@@ -1598,6 +1629,9 @@ fn warped_pane_from_protobuf(
     pane: crate::client_server_contract::client_server_contract::WarpedPane,
 ) -> Result<yinz_types::data::WarpedPane> {
     Ok(yinz_types::data::WarpedPane {
+        terminal_state: pane.terminal_state,
+        terminal_state_warning: None,
+        recovery_output: vec![],
         agent_tracking: pane
             .agent_tracking_json
             .as_deref()
@@ -2475,6 +2509,7 @@ impl TryFrom<yinz_types::input::actions::Action>
             }),
             yinz_types::input::actions::Action::AdoptPane { payload, placement } => {
                 ActionType::AdoptPane(AdoptPaneAction {
+                    terminal_state: payload.terminal_state.clone(),
                     agent_tracking_json: payload.agent_tracking.as_ref().and_then(|tracking| serde_json::to_string(tracking).ok()),
                     bracketed_paste: payload.bracketed_paste,
                     agent_input: payload
@@ -3605,6 +3640,9 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                 Ok(yinz_types::input::actions::Action::AdoptPane {
                     placement: warp_placement_from_i32(adopt_pane_action.placement)?,
                     payload: Box::new(yinz_types::data::WarpedPane {
+                        terminal_state: adopt_pane_action.terminal_state.clone(),
+                        terminal_state_warning: None,
+                        recovery_output: vec![],
                         agent_tracking: adopt_pane_action
                             .agent_tracking_json
                             .as_deref()

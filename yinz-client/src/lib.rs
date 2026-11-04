@@ -126,6 +126,9 @@ impl From<ServerToClientMsg> for ClientInstruction {
             },
             ServerToClientMsg::Log { lines } => ClientInstruction::Log(lines),
             ServerToClientMsg::LogError { lines } => ClientInstruction::LogError(lines),
+            ServerToClientMsg::WarpAdoptionFailed(failure) => {
+                ClientInstruction::LogError(vec![failure.message])
+            },
             ServerToClientMsg::UpdateRequest(request) => ClientInstruction::UpdateRequest(request),
             ServerToClientMsg::SessionUpdateReply(_) => ClientInstruction::UnblockInputThread,
             ServerToClientMsg::SessionRequest(request) => {

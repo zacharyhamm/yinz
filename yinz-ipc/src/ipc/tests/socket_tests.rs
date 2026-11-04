@@ -166,6 +166,7 @@ fn send_apis_propagate_flush_failures() {
                 warp_companions: true,
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
+                warp_terminal_state: 0,
                 signal_quit: false,
                 update_protocol: 0,
             })
@@ -178,6 +179,7 @@ fn send_apis_propagate_flush_failures() {
                 warp_companions: true,
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
+                warp_terminal_state: 0,
                 signal_quit: false,
                 update_protocol: 0,
             },
@@ -305,6 +307,7 @@ fn server_to_client_message_over_socket() {
                 warp_companions: true,
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
+                warp_terminal_state: 0,
                 signal_quit: false,
                 update_protocol: 0,
             })
@@ -325,6 +328,7 @@ fn server_to_client_message_over_socket() {
                 warp_companions: true,
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
+                warp_terminal_state: 0,
                 signal_quit: false,
                 update_protocol: 0,
             }
@@ -352,6 +356,7 @@ fn bidirectional_communication_via_fd_duplication() {
                 warp_companions: true,
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
+                warp_terminal_state: 0,
                 signal_quit: false,
                 update_protocol: 0,
             })
@@ -381,6 +386,7 @@ fn bidirectional_communication_via_fd_duplication() {
                 warp_companions: true,
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
+                warp_terminal_state: 0,
                 signal_quit: false,
                 update_protocol: 0,
             }
@@ -524,6 +530,7 @@ fn session_probe_accepts_responding_socket() {
                 warp_companions: true,
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
+                warp_terminal_state: 0,
                 signal_quit: false,
                 update_protocol: 0,
             })
@@ -546,6 +553,7 @@ fn session_probe_accepts_responding_socket() {
                     warp_companions: true,
                     warp_held_terminals: false,
                     warp_agent_tracking: false,
+                    warp_terminal_state: 0,
                     signal_quit: false,
                     update_protocol: 0,
                 },
@@ -929,6 +937,7 @@ fn a_probe_timeout_is_an_unresponsive_server_not_an_absent_one() {
                 warp_companions: true,
                 warp_held_terminals: false,
                 warp_agent_tracking: false,
+                warp_terminal_state: 0,
                 signal_quit: false,
                 update_protocol: 0,
             },

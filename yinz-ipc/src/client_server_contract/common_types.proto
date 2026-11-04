@@ -1035,6 +1035,7 @@ message WarpPaneAction {
 // the supervisor over its own socket, so only the terminal's presentation state
 // travels here.
 message AdoptPaneAction {
+  optional string terminal_state = 16;
   optional string agent_tracking_json = 15;
   optional string agent_theme_json = 14;
   bool bracketed_paste = 12;
@@ -1068,6 +1069,7 @@ message WarpedAgentInput {
 // pane-sized `AdoptPaneAction`, minus the placement — a pane inside a tab has
 // its place decided by the layout.
 message WarpedPane {
+  optional string terminal_state = 15;
   optional string agent_tracking_json = 14;
   optional string agent_theme_json = 13;
   bool bracketed_paste = 11;

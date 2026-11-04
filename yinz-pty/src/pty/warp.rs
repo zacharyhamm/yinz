@@ -17,6 +17,25 @@ use yinz_types::internal_ids::{SessionName, TerminalId};
 use yinz_types::pane_id::PaneId;
 
 impl Pty {
+    pub(super) fn return_failed_adoption(
+        &mut self,
+        terminals: Vec<(TerminalId, bool)>,
+        error: anyhow::Error,
+    ) -> anyhow::Error {
+        let mut replay = vec![];
+        for (id, held) in terminals {
+            if let Some(bytes) = self.warp_recovery.remove(&id) {
+                replay.push(bytes);
+            }
+            self.give_back_adopted(id, held);
+        }
+        yinz_types::data::WarpAdoptionFailure {
+            message: format!("{error:#}"),
+            replay,
+        }
+        .into()
+    }
+
     fn check_held_can_be_warped(&self, id: TerminalId) -> Result<()> {
         if self.reruns.contains_key(&id) || self.pending_terminal_spawns.contains_key(&id) {
             return Err(anyhow!(
@@ -96,6 +115,8 @@ impl Pty {
         self.check_terminal_can_be_warped(terminal_id)
             .with_context(err_context)?;
         refuse_if_nobody_is_waiting(deadline).with_context(err_context)?;
+        self.pause_terminal_readers(&[terminal_id], deadline)
+            .with_context(err_context)?;
         self.stop_readers_for_warp(&[terminal_id]);
         // Measured *after* the readers have stopped, because stopping them is
         // not free — up to `READER_SHUTDOWN_TIMEOUT` each — and a budget taken
@@ -165,6 +186,7 @@ impl Pty {
     /// calls is identical, which is the point — the pane that arrives is an
     /// ordinary pane either way.
     pub(crate) fn adopt_terminal(&mut self, pane: &WarpedPane) -> Result<AdoptedPane> {
+        validate_terminal_state(pane)?;
         self.adopt_terminal_with_id(pane, None)
     }
 
@@ -253,9 +275,20 @@ impl Pty {
             .with_context(err_context)?;
 
         let terminal_id = adopted.terminal_id;
+        let mut buffered = pane.recovery_output.clone();
+        buffered.extend_from_slice(&adopted.buffered);
+        if pane.terminal_state.is_some() && pane.remote.is_none() && !buffered.is_empty() {
+            self.warp_recovery.insert(
+                terminal_id,
+                yinz_types::data::WarpReplay {
+                    control_socket: pane.control_socket.clone(),
+                    buffered: buffered.clone(),
+                },
+            );
+        }
         let child_pid = adopted.child_pid;
         self.track_launch(terminal_id, &adopted.cmd);
-        self.start_terminal_reader(terminal_id, adopted.reader);
+        self.start_terminal_reader_paused(terminal_id, adopted.reader, true);
         self.report_terminal_host(terminal_id);
         // `None` for a pane adopted from another machine, and it must stay out
         // of both maps rather than be given a placeholder. A pid from there
@@ -273,7 +306,7 @@ impl Pty {
         Ok(AdoptedPane {
             terminal_id,
             cmd: adopted.cmd,
-            buffered: adopted.buffered,
+            buffered,
             child_exit_status: adopted.child_exit_status,
         })
     }
@@ -296,6 +329,14 @@ impl Pty {
         payload
             .validate_relationships()
             .map_err(|e| anyhow!("{e}"))?;
+        yinz_terminal::panes::grid::Grid::validate_terminal_states(
+            payload
+                .tiled_panes
+                .iter()
+                .chain(&payload.floating_panes)
+                .filter_map(|pane| pane.terminal_state.as_deref()),
+        )
+        .context("invalid transferred terminal snapshot; adoption refused")?;
         let mut tiled = vec![];
         let mut floating = vec![];
         let mut failed = None;
@@ -308,7 +349,7 @@ impl Pty {
                 if failed.is_some() {
                     break;
                 }
-                match self.adopt_terminal(pane) {
+                match self.adopt_terminal_with_id(pane, None) {
                     Ok(pane) => adopted.push(pane),
                     Err(e) => failed = Some((pane.host_id.clone(), e)),
                 }
@@ -322,13 +363,21 @@ impl Pty {
                 .chain(payload.floating_panes.iter())
                 .map(|pane| pane.host_id.to_string())
                 .collect();
+            let mut replay = vec![];
             for (adopted, pane) in tiled
                 .iter()
                 .zip(&payload.tiled_panes)
                 .chain(floating.iter().zip(&payload.floating_panes))
             {
+                if let Some(bytes) = self.warp_recovery.remove(&adopted.terminal_id) {
+                    replay.push(bytes);
+                }
                 self.give_back_adopted(adopted.terminal_id, pane.held.is_some());
             }
+            let e = anyhow::Error::new(yinz_types::data::WarpAdoptionFailure {
+                message: format!("{e:#}"),
+                replay,
+            });
             return Err(e)
                 .with_context(|| {
                     format!(
@@ -349,6 +398,7 @@ impl Pty {
     /// supervisor and is closed; otherwise the supervisor is released so it can
     /// be adopted again.
     pub(crate) fn give_back_adopted(&mut self, terminal_id: TerminalId, held: bool) {
+        self.warp_recovery.remove(&terminal_id);
         if held {
             self.close_pane(PaneId::Terminal(terminal_id)).non_fatal();
             return;
@@ -388,8 +438,12 @@ pub(super) fn release_pane_for_warp(
     let released = pty
         .release_terminal_for_warp(terminal_id, deadline)
         .map_err(|e| {
-            let why = format!("could not move this pane to '{to_session}': {e:#}");
-            strand_pane_after_warp(pty, terminal_id, run_command.clone(), &why, None);
+            // A cooperative pause can time out before any reader is cancelled.
+            // In that case the source remains live and must not be stranded.
+            if !pty.task_handles.contains_key(&terminal_id) {
+                let why = format!("could not move this pane to '{to_session}': {e:#}");
+                strand_pane_after_warp(pty, terminal_id, run_command.clone(), &why, None);
+            }
             format!("{e:#}")
         })?;
     Ok(ReleasedPaneForWarp {
@@ -580,6 +634,12 @@ pub(super) fn release_tab_for_warp(
     // reader shares the connection the release is about to speak on, and it
     // shares it with *this* pane's release only — but stopping them all up
     // front costs one wait instead of one per pane.
+    if let Err(error) = pty.pause_terminal_readers(&terminal_ids, deadline) {
+        return terminal_ids
+            .into_iter()
+            .map(|id| (id, Err(format!("{error:#}"))))
+            .collect();
+    }
     pty.stop_readers_for_warp(&terminal_ids);
 
     let budget = deadline.saturating_duration_since(Instant::now());
@@ -721,4 +781,12 @@ pub(super) fn warp_restart_command(pty: &Pty, terminal_id: TerminalId) -> RunCom
         cwd: pty.terminal_cwds.get(&terminal_id).cloned(),
         ..Default::default()
     }
+}
+
+fn validate_terminal_state(pane: &WarpedPane) -> Result<()> {
+    if let Some(state) = &pane.terminal_state {
+        yinz_terminal::panes::grid::Grid::validate_terminal_state(state)
+            .context("invalid transferred terminal snapshot; adoption refused")?;
+    }
+    Ok(())
 }

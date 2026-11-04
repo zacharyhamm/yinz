@@ -1686,6 +1686,8 @@ pub struct WarpPaneAction {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AdoptPaneAction {
+    #[prost(string, optional, tag="16")]
+    pub terminal_state: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="15")]
     pub agent_tracking_json: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="14")]
@@ -1739,6 +1741,8 @@ pub struct WarpedAgentInput {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WarpedPane {
+    #[prost(string, optional, tag="15")]
+    pub terminal_state: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="14")]
     pub agent_tracking_json: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="13")]
@@ -4110,7 +4114,7 @@ impl HostTerminalThemeIndication {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerToClientMsg {
-    #[prost(oneof="server_to_client_msg::Message", tags="32, 33, 31, 30, 29, 28, 23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 26, 14, 15, 16, 18, 20, 21, 22, 27")]
+    #[prost(oneof="server_to_client_msg::Message", tags="34, 32, 33, 31, 30, 29, 28, 23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 26, 14, 15, 16, 18, 20, 21, 22, 27")]
     pub message: ::core::option::Option<server_to_client_msg::Message>,
 }
 /// Nested message and enum types in `ServerToClientMsg`.
@@ -4118,6 +4122,8 @@ pub mod server_to_client_msg {
     #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Message {
+        #[prost(message, tag="34")]
+        WarpAdoptionFailed(super::WarpAdoptionFailure),
         #[prost(string, tag="32")]
         UpdateRequestJson(::prost::alloc::string::String),
         #[prost(string, tag="33")]
@@ -4208,6 +4214,8 @@ pub struct ConnectedMsg {
     pub warp_held_terminals: bool,
     #[prost(bool, tag="4")]
     pub warp_agent_tracking: bool,
+    #[prost(uint32, tag="6")]
+    pub warp_terminal_state: u32,
     #[prost(bool, tag="3")]
     pub signal_quit: bool,
     #[prost(uint32, tag="5")]
@@ -4330,4 +4338,20 @@ pub struct DataResponseMsg {
     pub data_json: ::prost::alloc::string::String,
     #[prost(string, optional, tag="3")]
     pub error: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WarpAdoptionFailure {
+    #[prost(string, tag="1")]
+    pub message: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag="2")]
+    pub replay: ::prost::alloc::vec::Vec<WarpReplay>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WarpReplay {
+    #[prost(string, tag="1")]
+    pub control_socket: ::prost::alloc::string::String,
+    #[prost(bytes="vec", tag="2")]
+    pub buffered: ::prost::alloc::vec::Vec<u8>,
 }

@@ -165,3 +165,23 @@ pub(super) fn send_output_to_client(
             .non_fatal();
     }
 }
+
+pub(super) fn send_adoption_error_to_client(
+    client: Option<ClientId>,
+    os_input: Option<&dyn ClientTransport>,
+    error: anyError,
+) {
+    if let Some(failure) = error.downcast_ref::<yinz_types::data::WarpAdoptionFailure>()
+        && !failure.replay.is_empty()
+        && let (Some(client), Some(os_input)) = (client, os_input)
+    {
+        let mut failure = failure.clone();
+        failure.message = format!("{error:#}");
+        os_input
+            .send_to_client(client, ServerToClientMsg::WarpAdoptionFailed(failure))
+            .context("return buffered output after failed adoption")
+            .non_fatal();
+    } else {
+        send_error_to_client(client, os_input, &format!("{error:#}"));
+    }
+}

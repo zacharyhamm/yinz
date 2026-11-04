@@ -305,6 +305,13 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                         .map_err(|e| anyhow!("{e}"))
                         .and_then(|_| pty.adopt_tab(&group))
                         .and_then(|adopted| {
+                            let terminals = adopted
+                                .tiled
+                                .iter()
+                                .chain(&adopted.floating)
+                                .zip(group.tiled_panes.iter().chain(&group.floating_panes))
+                                .map(|(adopted, pane)| (adopted.terminal_id, pane.held.is_some()))
+                                .collect();
                             pty.bus
                                 .senders
                                 .send_to_screen(ScreenInstruction::AdoptedTabReady {
@@ -317,6 +324,7 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                                     hold,
                                 })
                                 .context("failed to place adopted pane group")
+                                .map_err(|error| pty.return_failed_adoption(terminals, error))
                         });
                     if let Err(error) = result {
                         let _ = response_channel.send(Err(error));
@@ -345,9 +353,17 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                             child_exit_status: adopted.child_exit_status,
                         })
                         .context("failed to place adopted pane")
-                        .inspect_err(|_| {
-                            // Nothing will place it, so let the caller roll back.
+                        .map_err(|error| {
+                            let failure = yinz_types::data::WarpAdoptionFailure {
+                                message: format!("{error:#}"),
+                                replay: pty
+                                    .warp_recovery
+                                    .remove(&terminal_id)
+                                    .into_iter()
+                                    .collect(),
+                            };
                             pty.give_back_adopted(terminal_id, held);
+                            anyhow::Error::new(failure)
                         })
                 });
                 let _ = response_channel.send(result);
@@ -378,6 +394,14 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
             } => {
                 strand_pane_after_warp(&pty, terminal_id, run_command, &why, recovery);
             },
+            PtyInstruction::WarpReplayFinished(id) => {
+                pty.warp_recovery.remove(&id);
+                if !pty.migration_readers_paused
+                    && let Some(control) = pty.reader_controls.get(&id)
+                {
+                    control.resume();
+                }
+            },
             PtyInstruction::GiveBackAdoptedTerminal {
                 terminal_id,
                 held,
@@ -395,6 +419,10 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                         )
                     };
                     log::error!("adopted pane {terminal_id}: {error}");
+                    let error = anyhow::Error::new(yinz_types::data::WarpAdoptionFailure {
+                        message: format!("{error:#}"),
+                        replay: pty.warp_recovery.remove(&terminal_id).into_iter().collect(),
+                    });
                     pty.give_back_adopted(terminal_id, held);
                     // Told only now, so an adopter that rolls back finds the
                     // supervisor already released.
@@ -411,6 +439,13 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
             } => {
                 let result = match pty.adopt_tab(&payload) {
                     Ok(adopted) => {
+                        let terminals = adopted
+                            .tiled
+                            .iter()
+                            .chain(&adopted.floating)
+                            .zip(payload.tiled_panes.iter().chain(&payload.floating_panes))
+                            .map(|(adopted, pane)| (adopted.terminal_id, pane.held.is_some()))
+                            .collect();
                         pty.bus
                             .senders
                             .send_to_screen(ScreenInstruction::AdoptedTabReady {
@@ -422,6 +457,7 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                                 adopted: Box::new(adopted),
                                 client_id,
                             })
+                            .map_err(|error| pty.return_failed_adoption(terminals, error))
                     },
                     Err(e) => Err(e),
                 };

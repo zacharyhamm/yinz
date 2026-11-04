@@ -579,7 +579,7 @@ impl Screen {
         }
         // Before the replay: a pane that exited before the screen created it starts,
         // and then exits, in that order.
-        self.restore_staged_agent_tracking(pid);
+        self.restore_staged_transfer_state(pid);
         self.fire_agent_start_for_new_pane(pid);
         if let Some(pending_events) = pending.waiting_for_pane.remove(&pid) {
             for event in pending_events {

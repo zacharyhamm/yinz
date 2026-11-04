@@ -788,6 +788,7 @@ fn an_adopted_focused_tab_pane_without_attached_clients_is_placed_without_focus(
             _
         ),
         ScreenInstruction::PtyBytes(TERMINAL_50, contents),
+        ScreenInstruction::WarpReplayFinished(TERMINAL_50),
         ScreenInstruction::RequestPaneRedraw(TERMINAL_50)]
         if contents == b"transferred screen\x1b[?2004lbuffered output"
     ));
@@ -4049,7 +4050,7 @@ fn warp_adopted_agent_exit_takes_precedence_over_transferred_state() {
                         if let Some(cmd) = hold {
                             tab.hold_pane(id, None, true, cmd);
                         }
-                        screen.restore_staged_agent_tracking(id);
+                        screen.restore_staged_transfer_state(id);
                     },
                     _ => {},
                 }
@@ -5104,4 +5105,52 @@ fn agent_theme_history_travels_through_pane_and_tab_warps() {
                     && chunk.application_styles(*cell.styles).foreground
                         == Some(AnsiCode::RgbCode((99, 88, 77))))));
     }
+}
+
+#[test]
+fn warp_snapshot_invalid_cursor_falls_back_before_transfer() {
+    use crate::screen::warp_ops::capture_terminal_for_warp;
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, TabId::new(0));
+    let pane = screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(1)))
+        .unwrap();
+    pane.handle_pty_bytes(b"\x1b[?1049h\x1b[20;80H".to_vec());
+    let mut geom = pane.position_and_size();
+    geom.cols.set_inner(40);
+    geom.rows.set_inner(10);
+    pane.set_geom(geom);
+
+    let (state, warning) = capture_terminal_for_warp(pane.as_ref(), Screen::WARP_CONTENTS_BUDGET);
+    assert!(state.is_none());
+    let warning = warning.unwrap();
+    assert!(warning.contains("terminal_1"));
+    assert!(warning.contains("cursor"));
+}
+
+#[test]
+fn warp_snapshot_budget_and_partial_parser_fall_back_without_truncating_state() {
+    use crate::screen::warp_ops::capture_terminal_for_warp;
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, TabId::new(0));
+    let pane = screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(1)))
+        .unwrap();
+    pane.handle_pty_bytes(b"normal\x1b[?1049hfullscreen".to_vec());
+    let (state, warning) = capture_terminal_for_warp(pane.as_ref(), Screen::WARP_CONTENTS_BUDGET);
+    assert!(state.is_some());
+    assert!(warning.is_none());
+    let (state, warning) = capture_terminal_for_warp(pane.as_ref(), 1);
+    assert!(state.is_none());
+    assert!(warning.unwrap().contains("terminal_1"));
+    pane.handle_pty_bytes(b"\x1b[31".to_vec());
+    let (state, warning) = capture_terminal_for_warp(pane.as_ref(), Screen::WARP_CONTENTS_BUDGET);
+    assert!(state.is_none());
+    assert!(warning.unwrap().contains("escape sequence"));
 }

@@ -68,8 +68,8 @@ impl Screen {
         false
     }
 
-    // Screen owns held state. Freeze restart input until the release reply is processed;
-    // a restart already accepted by Screen is no longer held and takes the supervisor path.
+    // Freeze input for every affected pane until the release reply is processed.
+    // Screen owns held state: a restart already accepted takes the supervisor path.
     fn prepare_held_warp(
         &mut self,
         ids: &[TerminalId],
@@ -89,7 +89,7 @@ impl Screen {
                 held.insert(*id, state);
             }
         }
-        for id in held.keys() {
+        for id in ids {
             for tab in self.tabs.values_mut() {
                 if let Some(pane) = tab.get_pane_with_id_mut(PaneId::Terminal(*id)) {
                     pane.set_warp_pending(true);
@@ -914,7 +914,12 @@ impl Screen {
             .serialize_handoff(Some(0), Self::WARP_CONTENTS_BUDGET)
             .map(|(c, m)| (Some(c), m))
             .unwrap_or_default();
+        let (terminal_state, terminal_state_warning) =
+            capture_terminal_for_warp(pane, Self::WARP_CONTENTS_BUDGET);
         let payload = Box::new(WarpedPane {
+            terminal_state,
+            terminal_state_warning,
+            recovery_output: vec![],
             agent_theme,
             held: address.held,
             group: None,
@@ -1201,7 +1206,14 @@ impl Screen {
                 .and_then(|p| p.serialize_handoff(Some(0), budget))
                 .map(|(c, m)| (Some(c), m))
                 .unwrap_or_default();
+            let (terminal_state, terminal_state_warning) = tab
+                .get_pane_with_id(*pane_id)
+                .map(|pane| capture_terminal_for_warp(pane, budget))
+                .unwrap_or_default();
             WarpedPane {
+                terminal_state,
+                terminal_state_warning,
+                recovery_output: vec![],
                 agent_theme,
                 held: address.held,
                 group: None,
@@ -1395,8 +1407,25 @@ impl Screen {
                 )
             },
         };
+        if let Some(state) = &payload.terminal_state {
+            let tab_id = match &tab_target {
+                ClientTabIndexOrPaneId::TabIndex(id) => Some(*id),
+                ClientTabIndexOrPaneId::ClientId(client) => {
+                    self.tab_a_client_is_looking_at(*client)
+                },
+                _ => None,
+            };
+            if let Some(tab) = tab_id.and_then(|id| self.tabs.get(&id)) {
+                tab.reserve_warp_terminal_state(state)?;
+            }
+        }
         if payload.agent_tracking.is_some() {
             payload.agent_input = None;
+        }
+        if let Some(state) = payload.terminal_state.take() {
+            self.pending_terminal_states.insert(pane_id, state);
+            payload.contents = None;
+            payload.agent_theme = None;
         }
         self.pending_agent_tracking.insert(
             pane_id,
@@ -1444,15 +1473,23 @@ impl Screen {
         // The transferred screen first, then whatever the supervisor caught during
         // the hand-off, then live output. `NewPane` is ahead of these on the same
         // channel, and `pending_events_waiting_for_pane` would buffer them anyway.
-        let replay = warp_replay_with_theme(
-            payload.contents.take(),
-            payload.agent_theme.take(),
-            payload.bracketed_paste,
-            buffered,
-        );
+        let replay = if self.pending_terminal_states.contains_key(&pane_id) {
+            buffered
+        } else {
+            warp_replay_with_theme(
+                payload.contents.take(),
+                payload.agent_theme.take(),
+                payload.bracketed_paste,
+                buffered,
+            )
+        };
         self.bus
             .senders
             .send_to_screen(ScreenInstruction::PtyBytes(terminal_id, replay))
+            .with_context(err_context)?;
+        self.bus
+            .senders
+            .send_to_screen(ScreenInstruction::WarpReplayFinished(terminal_id))
             .with_context(err_context)?;
         if let Some(exit_status) = child_exit_status {
             let hold_on_close = cmd.hold_on_close;
@@ -1509,6 +1546,7 @@ impl Screen {
             return;
         }
         self.pending_agent_tracking.remove(&pane_id);
+        self.pending_terminal_states.remove(&pane_id);
         self.bus
             .senders
             .send_to_pty(PtyInstruction::GiveBackAdoptedTerminal {
@@ -1774,12 +1812,18 @@ impl Screen {
                 // The transferred screen first, then whatever the supervisor
                 // caught during the hand-off — the same order a single adopted
                 // pane is replayed in, and the same order it happened in.
-                let replay = warp_replay_with_theme(
-                    pane.contents,
-                    pane.agent_theme,
-                    pane.bracketed_paste,
-                    adopted.buffered,
-                );
+                let replay = if let Some(state) = pane.terminal_state.take() {
+                    self.pending_terminal_states
+                        .insert(PaneId::Terminal(adopted.terminal_id), state);
+                    adopted.buffered
+                } else {
+                    warp_replay_with_theme(
+                        pane.contents,
+                        pane.agent_theme,
+                        pane.bracketed_paste,
+                        adopted.buffered,
+                    )
+                };
                 AdoptedTabTerminal {
                     agent_input: pane.agent_input,
                     held: pane.held,
@@ -1840,4 +1884,31 @@ fn carried_caption(pane: &dyn Pane) -> Option<String> {
 fn default_caption(pane: &dyn Pane) -> Option<String> {
     (matches!(pane.pid(), PaneId::Terminal(_)) && carried_caption(pane).is_none())
         .then(|| pane.current_title())
+}
+
+/// Never truncate a semantic document: either the entire state travels or the
+/// coordinator reports why it must use the legacy text transfer.
+pub(super) fn capture_terminal_for_warp(
+    pane: &dyn Pane,
+    budget: usize,
+) -> (Option<String>, Option<String>) {
+    match pane.terminal_state().and_then(|state| {
+        if state.len() > budget {
+            Err(format!(
+                "semantic snapshot exceeds the {budget}-byte transfer budget"
+            ))
+        } else {
+            Ok(state)
+        }
+    }) {
+        Ok(state) => (Some(state), None),
+        Err(reason) => (
+            None,
+            Some(format!(
+                "{} ({:?}): {reason}",
+                pane.pid(),
+                pane.current_title()
+            )),
+        ),
+    }
 }

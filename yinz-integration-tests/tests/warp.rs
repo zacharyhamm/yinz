@@ -2081,6 +2081,7 @@ fn warp_disconnected_destination_restores_the_only_held_pane() {
                         warp_companions: true,
                         warp_held_terminals: true,
                         warp_agent_tracking: true,
+                        warp_terminal_state: 2,
                         signal_quit: false,
                         update_protocol: 0,
                     })
@@ -2334,4 +2335,106 @@ fn agent_tracking_survives_pi_warps() {
 #[test]
 fn agent_tracking_survives_opencode_warps() {
     exercise_agent_tracking_warps("opencode");
+}
+
+#[test]
+fn semantic_warp_preserves_fullscreen_prompt_redraws_for_panes_tabs_companions_and_rollback() {
+    for transfer in ["pane", "tab", "hidden", "rollback"] {
+        let ((sender, _shell), (receiver, _receiver_shell)) = sender_and_receiver();
+        receiver.resize(yinz_types::pane_size::Size { cols: 90, rows: 18 });
+        let subject = split_off_a_pane(&sender, "SEMANTIC_SUBJECT");
+        type_and_confirm(&sender, &subject, b"semantic-subject-identity");
+        let normal: String = (0..60)
+            .map(|i| format!("normal-history-{i:02}\r\n"))
+            .collect();
+        subject.output(format!("{normal}normal-prompt>\x1b[?1049h\x1b[?1h\x1b[?1003h\x1b[?1006h\x1b[?2004h\x1b[2J\x1b[HAPP_PROMPT_READY").as_bytes());
+        sender.wait_until("fullscreen prompt before transfer", |grid| {
+            grid.contains("APP_PROMPT_READY")
+        });
+        if transfer == "hidden" {
+            sender.send_stdin(&keys::ctrl('s'));
+            sender.send_stdin(&keys::key('e'));
+            let _editor = sender.expect_pty_spawn();
+            sender.wait_until("fullscreen companion hidden by editor", |grid| {
+                grid.contains("EDITING SCROLLBACK") && grid.contains("APP_PROMPT_READY")
+            });
+        }
+        if transfer == "rollback" {
+            subject.fail_warp(WarpFailure::UnadoptableOnce);
+        }
+        let (code, report) = if transfer == "tab" {
+            sender.run_cli_action_reporting(CliAction::WarpTab {
+                to_session: Some(receiver.session_name().into()),
+                from_session: None,
+                tab_id: None,
+            })
+        } else {
+            warp_focused_pane_to(&sender, &receiver, false)
+        };
+        let destination = if transfer == "rollback" {
+            assert_ne!(code, 0, "{report}");
+            assert!(report.contains("back in this session"), "{report}");
+            &sender
+        } else {
+            assert_eq!(code, 0, "{report}");
+            assert!(!report.contains("WARNING"), "{report}");
+            &receiver
+        };
+        let count = if matches!(transfer, "tab" | "hidden") {
+            2
+        } else {
+            1
+        };
+        let adopted: Vec<_> = (0..count)
+            .map(|_| destination.expect_adopted_pty())
+            .collect();
+        let subject = adopted_with_marker(&adopted, b"semantic-subject-identity");
+        if transfer == "hidden" {
+            adopted
+                .iter()
+                .find(|pane| pane.terminal_id() != subject.terminal_id())
+                .unwrap()
+                .exit(Some(0));
+            subject.output(b"\x1b[HRESTORED_SUBJECT_PROMPT");
+            destination.wait_until("editor closed and its subject restored", |grid| {
+                grid.contains("RESTORED_SUBJECT_PROMPT")
+            });
+            subject.output(b"\x1b[HAPP_PROMPT_READY");
+        }
+        destination.wait_until("fullscreen prompt restored", |grid| {
+            grid.contains("APP_PROMPT_READY")
+        });
+        type_and_confirm(destination, subject, b"ordinary prompt\r");
+        destination.send_stdin(b"\x1b[A");
+        subject.wait_for_stdin("application cursor mode after transfer", |bytes| {
+            bytes.windows(3).any(|b| b == b"\x1bOA")
+        });
+        let redraw: String = (0..80)
+            .map(|i| format!("alternate-transcript-{i:02}\r\n"))
+            .collect();
+        subject.output(format!("\x1b[H\x1b[2J{redraw}\x1b[HAFTER_PROMPT_SUBMISSION").as_bytes());
+        destination.wait_until("ordinary prompt triggers fullscreen redraw", |grid| {
+            grid.contains("AFTER_PROMPT_SUBMISSION")
+        });
+        subject.output(b"\x1b[?1049l");
+        destination.wait_until("normal screen restored after fullscreen exit", |grid| {
+            grid.contains("normal-prompt>")
+        });
+        let (code, dump) = destination.run_cli_action_reporting(CliAction::DumpScreen {
+            path: None,
+            full: true,
+            pane_id: Some(format!("terminal_{}", subject.terminal_id())),
+            ansi: false,
+        });
+        assert_eq!(code, 0, "{dump}");
+        assert_eq!(
+            dump.matches("normal-history-").count(),
+            60,
+            "{transfer}: {dump}"
+        );
+        assert!(
+            !dump.contains("alternate-transcript-"),
+            "{transfer}: {dump}"
+        );
+    }
 }

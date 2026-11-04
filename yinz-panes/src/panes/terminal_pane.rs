@@ -1727,6 +1727,41 @@ impl Pane for TerminalPane {
     fn validate_migration(&self) -> Result<(), String> {
         self.check_migration()
     }
+    fn terminal_state(&self) -> Result<String, String> {
+        self.check_migration()?;
+        let state = self.grid.migration_state().map_err(|e| format!("{e:#}"))?;
+        let state =
+            serde_json::to_string(&state).map_err(|e| format!("encode terminal state: {e}"))?;
+        // A fullscreen application may not have redrawn after a shrink, leaving
+        // its cursor outside the new dimensions. Reject unrestorable state while
+        // the source still exists so transfer can use the legacy fallback.
+        Grid::validate_terminal_state(&state)
+            .map_err(|e| format!("validate captured terminal state: {e:#}"))?;
+        Ok(state)
+    }
+
+    fn restore_terminal_state(&mut self, state: &str) -> Result<(), String> {
+        let state =
+            serde_json::from_str(state).map_err(|e| format!("decode terminal state: {e}"))?;
+        self.grid
+            .restore_migration_state(state)
+            .map_err(|e| format!("restore terminal state: {e:#}"))?;
+        // Reflow only when the destination content rectangle differs. Forcing a
+        // resize at the same dimensions would erase restored margins and tab stops.
+        let rows = self.get_content_rows();
+        let cols = self.get_content_columns();
+        if self.grid.height != rows || self.grid.width != cols {
+            self.grid.change_size(rows, cols);
+        }
+        self.set_should_render(true);
+        self.vte_parser = vte::Parser::new();
+        self.parser_boundary = Default::default();
+        self.frame.clear();
+        self.fake_cursor_locations.clear();
+        self.render_width = None;
+        Ok(())
+    }
+
     fn migration_state(&self) -> Result<serde_json::Value, String> {
         self.capture_migration()
     }

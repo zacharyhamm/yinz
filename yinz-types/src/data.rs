@@ -2159,6 +2159,9 @@ pub enum WarpPlacement {
     Floating,
 }
 
+/// Semantic terminal snapshot format advertised to transfer peers.
+pub const WARP_TERMINAL_STATE_VERSION: u32 = 2;
+
 /// Everything that has to travel with a pane moving between sessions, beyond what
 /// the pane's own supervisor can already report.
 ///
@@ -2168,6 +2171,15 @@ pub enum WarpPlacement {
 /// server-side agent record attached to that process.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub struct WarpedPane {
+    /// Versioned semantic emulator state, independent of pane identity and layout.
+    #[serde(default)]
+    pub terminal_state: Option<String>,
+    /// Source-side diagnostics; reported by the warp coordinator.
+    #[serde(skip)]
+    pub terminal_state_warning: Option<String>,
+    /// Output consumed by a failed destination, prepended on local rollback.
+    #[serde(skip)]
+    pub recovery_output: Vec<u8>,
     /// Observed lifecycle state; absent in older transfers.
     #[serde(default)]
     pub agent_tracking: Option<crate::agent::tracking::AgentTrackingHandoff>,
@@ -3573,3 +3585,23 @@ pub struct PluginInstanceInfo {
     #[serde(default)]
     pub pane: Option<bool>,
 }
+
+/// A failed adoption returns locally consumed output to the source. Remote
+/// brokers replay from the original offset and need no copy here.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct WarpReplay {
+    pub control_socket: PathBuf,
+    pub buffered: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct WarpAdoptionFailure {
+    pub message: String,
+    pub replay: Vec<WarpReplay>,
+}
+impl std::fmt::Display for WarpAdoptionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for WarpAdoptionFailure {}

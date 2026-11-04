@@ -1349,7 +1349,7 @@ fn lifecycle_warp_preserves_turn_observation_without_migrating_subscribers() {
             destination
                 .pending_agent_tracking
                 .insert(PANE, (Some(handoff.agent.clone()), Some(handoff)));
-            destination.restore_staged_agent_tracking(PANE);
+            destination.restore_staged_transfer_state(PANE);
             assert!(events(&mut destination, &messages).is_empty());
             start(&mut destination, &messages, EventSubscription::default());
             report_kind(&mut destination, kind, hook("Stop"));

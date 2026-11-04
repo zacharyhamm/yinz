@@ -614,6 +614,7 @@ pub(crate) struct Screen {
     agent_submissions: HashMap<PaneId, std::collections::VecDeque<agent_control::Submission>>,
     agent_launches: HashMap<PaneId, yinz_types::agent::SpawnedAgent>,
     pending_agent_tracking: HashMap<PaneId, PendingAgentTracking>,
+    pending_terminal_states: HashMap<PaneId, String>,
     warped_agent_inputs: HashMap<PaneId, agent_control::TransferredInput>,
     agent_lifecycle: HashMap<PaneId, agent_control::Lifecycle>,
     agent_dialog_inputs: HashMap<PaneId, agent_control::DialogInput>,
@@ -1454,6 +1455,7 @@ impl Screen {
             agent_submissions: HashMap::new(),
             agent_launches: HashMap::new(),
             pending_agent_tracking: HashMap::new(),
+            pending_terminal_states: HashMap::new(),
             warped_agent_inputs: HashMap::new(),
             agent_lifecycle: HashMap::new(),
             agent_dialog_inputs: HashMap::new(),
@@ -2224,7 +2226,7 @@ impl Screen {
                 })
                 .collect();
             for pane_id in adopted_ids {
-                if self.restore_staged_agent_tracking(pane_id) {
+                if self.restore_staged_transfer_state(pane_id) {
                     self.fire_agent_start_for_new_pane(pane_id);
                 }
             }
@@ -3054,6 +3056,7 @@ impl Screen {
 
     pub(crate) fn cleanup_closed_pane(&mut self, id: PaneId) {
         self.pending_agent_tracking.remove(&id);
+        self.pending_terminal_states.remove(&id);
         self.forget_notification_assemblies(id);
         self.retire_agent_event_pane(id, "pane_closed");
         self.destroyed_panes.insert(id);

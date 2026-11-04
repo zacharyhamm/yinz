@@ -64,6 +64,7 @@ pub type AgentEventProjectMemberships = BTreeMap<String, Result<Option<Vec<PaneI
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum ScreenInstruction {
     SessionMigration(crate::migration::ScreenRequest),
+    WarpReplayFinished(TerminalId),
     SubscribePaneOutput(
         PluginId,
         ClientId,

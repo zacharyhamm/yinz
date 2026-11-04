@@ -40,6 +40,7 @@ fn session_preflight_ignores_pty_broker_and_checks_session_capabilities() {
                         warp_companions: false,
                         warp_held_terminals: false,
                         warp_agent_tracking: false,
+                        warp_terminal_state: 0,
                         signal_quit: false,
                         update_protocol: protocol,
                     })

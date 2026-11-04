@@ -2861,6 +2861,14 @@ pub fn screen_thread_main(
                     screen.log_and_report_session_state().non_fatal();
                     screen.render()?;
                 },
+                ScreenInstruction::WarpReplayFinished(id) => {
+                    screen
+                        .bus
+                        .senders
+                        .send_to_pty(PtyInstruction::WarpReplayFinished(id))
+                        .context("resume adopted terminal reader")
+                        .non_fatal();
+                },
                 ScreenInstruction::RequestPaneRedraw(terminal_id) => {
                     if let Some(tab) = screen.tab_containing_pane_mut(PaneId::Terminal(terminal_id))
                     {
