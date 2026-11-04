@@ -12152,7 +12152,7 @@ fn worker_stack_anchor_requires_a_tiled_region() {
             None,
             None,
             false,
-            false,
+            true, // Focus the new member so the original anchor is hidden.
             NewPanePlacement::Stacked {
                 pane_id_to_stack_under: Some(PANE),
                 borderless: None,
