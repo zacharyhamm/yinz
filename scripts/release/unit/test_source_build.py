@@ -77,6 +77,10 @@ class SourceBuildWorkerTests(unittest.TestCase):
         self.assertIn("requires cargo", (self.root / "build.log").read_text())
         self.assertFalse(json.loads((self.root / "result.json").read_text())["success"])
 
+    # The real worker is gated to Linux by source_build::preflight and binds
+    # process-group signals to /proc incarnations. Other tests mock or avoid
+    # that process boundary and can still validate packaging on macOS.
+    @unittest.skipUnless(sys.platform == "linux", "source-build cancellation requires Linux /proc")
     def test_cancellation_stops_active_compiler_and_its_child(self):
         self.script("cargo", 'sleep 60 & echo "child=$!"; wait')
         with subprocess.Popen([sys.executable, str(SCRIPT), str(self.record)], stdout=subprocess.PIPE,
@@ -92,6 +96,7 @@ class SourceBuildWorkerTests(unittest.TestCase):
             remaining_output, _ = process.communicate(timeout=10)
             output += remaining_output
             self.assertEqual(process.returncode, 1, output.decode())
+        self.assertTrue((self.root / "result.json").is_file(), output.decode())
         result = json.loads((self.root / "result.json").read_text())
         self.assertFalse(result["success"])
         child_pid = int(output.split(b"child=", 1)[1].splitlines()[0])
