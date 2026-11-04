@@ -57,7 +57,7 @@ export const behavior = {
     confirm_failure: {
       kind: "action",
       description:
-        "Verify the original submission failed and its identity-verified pane is idle without background work",
+        "Verify a terminal or structured unsent failure and fresh idle identity with no background work or pending writes",
       arguments: EmptySchema,
       execute: (_args: Record<string, never>, context: AgentContext) =>
         confirmFailureAgent(context),

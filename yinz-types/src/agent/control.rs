@@ -274,6 +274,14 @@ pub struct CreatedProject {
     pub root: PathBuf,
 }
 
+/// Evidence about actual prompt writes, independent of preparation marker/clearing writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptDelivery {
+    NotSent,
+    Started,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AgentResponse {
     pub outcome: AgentOutcome,
@@ -294,6 +302,10 @@ pub struct AgentResponse {
     /// Stable Yinz submission identity, including providers without a turn ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submission_id: Option<String>,
+    /// Missing means unknown. `NotSent` requires a finalized preparation failure;
+    /// `Started` is recorded before the first prompt write and never downgraded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_delivery: Option<PromptDelivery>,
     /// Claude background work the completed turn launched. Its final answer arrives in a later
     /// turn; `agent wait --until idle` returns it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

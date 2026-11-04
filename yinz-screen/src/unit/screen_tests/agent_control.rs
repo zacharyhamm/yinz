@@ -8478,6 +8478,154 @@ fn prompt_automatically_replaces_idle_drafts() {
 }
 
 #[test]
+fn codex_first_run_id_binding_before_or_during_prompt_preparation_delivers() {
+    for binding in ["before", "marker", "clearing"] {
+        let (mut screen, messages, writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        let original = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+        assert_eq!(original.run_id, None);
+        let mut bound = original.clone();
+        bound.run_id = Some("codex:conversation".into());
+        if binding == "before" {
+            screen
+                .tab_containing_pane_mut(PANE)
+                .unwrap()
+                .set_pane_agent(PANE, Some(bound.clone()));
+        }
+        let now = Instant::now();
+        screen.agent_control_at(
+            prompt(false),
+            crate::screen::agent_control::Reply::Client(CLIENT),
+            now,
+        );
+        let marker = finish_paste(&writes);
+        assert!(marker.starts_with(b"\x1b[200~yz") && marker.ends_with(b"\x1b[201~"));
+        if binding == "clearing" {
+            screen.refresh_agent_controls_at(now + Duration::from_millis(1));
+            assert_eq!(finish_paste(&writes), [3]);
+        }
+        let revision = screen.tabs[&TabId::new(0)].agent_input_revision(PANE);
+        screen
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .set_pane_agent(PANE, Some(bound));
+        assert_eq!(
+            screen.tabs[&TabId::new(0)].agent_input_revision(PANE),
+            revision
+        );
+        if binding != "clearing" {
+            screen.refresh_agent_controls_at(now + Duration::from_millis(1));
+            assert_eq!(finish_paste(&writes), [3]);
+        }
+        screen.refresh_agent_controls_at(now + Duration::from_millis(2));
+        screen.refresh_agent_controls_at(now + Duration::from_millis(252));
+        assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+        screen.refresh_agent_controls_at(now + Duration::from_millis(253));
+        screen.refresh_agent_controls_at(now + Duration::from_secs(1));
+        assert_eq!(finish_paste(&writes), b"\r");
+        report(&mut screen, hook("UserPromptSubmit"));
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(response.outcome, AgentOutcome::Submitted, "{binding}");
+        assert_eq!(
+            response.prompt_delivery,
+            Some(yinz_types::agent::control::PromptDelivery::Started)
+        );
+        assert!(response.acknowledged);
+    }
+}
+
+#[test]
+fn prompt_preparation_pins_identity_and_retains_unsent_failures() {
+    use yinz_types::agent::control::PromptDelivery;
+    for stage in ["marker", "clearing"] {
+        for change in [
+            "noncanonical",
+            "replacement",
+            "removal",
+            "provider",
+            "conversation",
+            "missing",
+            "input",
+        ] {
+            let (mut screen, messages, writes) = setup("codex");
+            report(&mut screen, hook("SessionStart"));
+            let mut original = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+            if matches!(change, "replacement" | "removal") {
+                original.run_id = Some("codex:conversation".into());
+            }
+            screen
+                .tab_containing_pane_mut(PANE)
+                .unwrap()
+                .set_pane_agent(PANE, Some(original.clone()));
+            let now = Instant::now();
+            let mut request = prompt(false);
+            if let AgentRequest::Prompt { submission_id, .. } = &mut request {
+                *submission_id = Some("identity-check".into());
+            }
+            screen.agent_control_at(
+                request,
+                crate::screen::agent_control::Reply::Client(CLIENT),
+                now,
+            );
+            finish_paste(&writes);
+            if stage == "clearing" {
+                screen.refresh_agent_controls_at(now + Duration::from_millis(1));
+                assert_eq!(finish_paste(&writes), [3]);
+            }
+            let mut changed = original.clone();
+            match change {
+                "noncanonical" | "replacement" => changed.run_id = Some("codex:other".into()),
+                "removal" => changed.run_id = None,
+                "provider" => changed.kind = "claude".into(),
+                "conversation" => changed.session_id = Some("other".into()),
+                "input" => {
+                    screen.agent_control(send_keys(vec![BareKey::Char('x')]), ClientId::new(2))
+                },
+                _ => {},
+            }
+            screen
+                .tab_containing_pane_mut(PANE)
+                .unwrap()
+                .set_pane_agent(PANE, (change != "missing").then_some(changed));
+            screen.refresh_agent_controls_at(now + Duration::from_millis(2));
+            let response = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(
+                response.outcome,
+                match change {
+                    "missing" => AgentOutcome::StatusUnavailable,
+                    "input" => AgentOutcome::Interrupted,
+                    _ => AgentOutcome::TargetChanged,
+                },
+                "{stage}/{change}"
+            );
+            assert_eq!(response.prompt_delivery, Some(PromptDelivery::NotSent));
+            assert!(!response.acknowledged);
+            assert!(response.turn_id.is_none());
+            // Restore status only to retrieve the retained result; never retry preparation.
+            screen
+                .tab_containing_pane_mut(PANE)
+                .unwrap()
+                .set_pane_agent(PANE, Some(original));
+            screen.agent_control(
+                AgentRequest::WaitTurn {
+                    pane_id: PANE,
+                    expected_session_id: Some("conversation".into()),
+                    submission_id: "identity-check".into(),
+                    timeout_ms: 1000,
+                },
+                CLIENT,
+            );
+            let retained = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(retained.outcome, response.outcome);
+            assert_eq!(retained.prompt_delivery, response.prompt_delivery);
+            screen.refresh_agent_controls_at(now + Duration::from_secs(1));
+            let remaining = finish_paste(&writes);
+            assert!(remaining.is_empty() || (change == "input" && remaining == b"x"));
+        }
+    }
+}
+
+#[test]
 fn pi_prompt_clear_waits_after_marker_delivery_and_honors_cancellation() {
     for cancellation in ["none", "typing", "timeout"] {
         let (mut screen, messages, writes) = setup("pi");
@@ -8670,6 +8818,9 @@ fn automatic_draft_clear_cancellation_retains_result_and_drains_writer() {
         screen.refresh_agent_controls_at(later);
         if race != "writer" {
             assert!(screen.agent_draft_clears.contains_key(&PANE), "{race}");
+            let status = screen.agent_status(PANE, None).unwrap();
+            assert!(!status.ready);
+            assert_eq!(status.not_ready_reason, Some(NotReadyReason::ClearingDraft));
         }
         finish_paste(&writes);
         screen.refresh_agent_controls_at(later);
@@ -8687,6 +8838,14 @@ fn automatic_draft_clear_cancellation_retains_result_and_drains_writer() {
             );
             let result = replies(&messages, ClientId::new(3)).pop().unwrap();
             assert!(!result.acknowledged);
+            assert_eq!(
+                result.prompt_delivery,
+                Some(yinz_types::agent::control::PromptDelivery::NotSent)
+            );
+            assert_ne!(
+                screen.agent_status(PANE, None).unwrap().not_ready_reason,
+                Some(NotReadyReason::ClearingDraft)
+            );
             assert_eq!(
                 result.outcome,
                 match race {
@@ -11445,3 +11604,96 @@ fn claude_steering_attempts_replacement_for_full_and_hidden_composers() {
 
 #[path = "agent_tracking_handoff.rs"]
 mod tracking_handoff;
+
+#[test]
+fn canonical_binding_during_preparation_is_pinned_for_later_checks() {
+    for replacement in [None, Some("codex:replacement")] {
+        let (mut screen, messages, writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        let now = Instant::now();
+        screen.agent_control_at(
+            prompt(false),
+            crate::screen::agent_control::Reply::Client(CLIENT),
+            now,
+        );
+        finish_paste(&writes);
+        let mut agent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+        agent.run_id = Some("codex:conversation".into());
+        screen
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .set_pane_agent(PANE, Some(agent.clone()));
+        screen.refresh_agent_controls_at(now + Duration::from_millis(1));
+        assert_eq!(finish_paste(&writes), [3]);
+        assert!(replies(&messages, CLIENT).is_empty());
+        agent.run_id = replacement.map(str::to_owned);
+        screen
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .set_pane_agent(PANE, Some(agent));
+        screen.refresh_agent_controls_at(now + Duration::from_millis(2));
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(response.outcome, AgentOutcome::TargetChanged);
+        assert_eq!(
+            response.prompt_delivery,
+            Some(yinz_types::agent::control::PromptDelivery::NotSent)
+        );
+        assert!(finish_paste(&writes).is_empty());
+    }
+}
+
+#[test]
+fn attempted_prompt_writes_never_gain_unsent_evidence() {
+    use yinz_types::agent::control::PromptDelivery;
+    for failure in ["queue", "writer"] {
+        let (mut screen, messages, writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        let now = Instant::now();
+        let mut request = prompt(false);
+        if let AgentRequest::Prompt { submission_id, .. } = &mut request {
+            *submission_id = Some("failed-write".into());
+        }
+        screen.agent_control_at(
+            request,
+            crate::screen::agent_control::Reply::Client(CLIENT),
+            now,
+        );
+        finish_paste(&writes);
+        screen.refresh_agent_controls_at(now + Duration::from_millis(1));
+        assert_eq!(finish_paste(&writes), [3]);
+        screen.refresh_agent_controls_at(now + Duration::from_millis(2));
+        if failure == "queue" {
+            let (sender, receiver) = channels::unbounded();
+            drop(receiver);
+            let senders = &mut screen.tab_containing_pane_mut(PANE).unwrap().senders;
+            senders.should_silently_fail = false;
+            senders.to_pty_writer = Some(SenderWithContext::new(sender));
+        }
+        screen.refresh_agent_controls_at(now + Duration::from_millis(252));
+        if failure == "writer" {
+            for (instruction, _) in writes.try_iter() {
+                if let PtyWriteInstruction::Write(_, _, Some(mut completion)) = instruction {
+                    completion.set_error_message("prompt write failed".into());
+                }
+            }
+            screen.refresh_agent_controls_at(now + Duration::from_millis(253));
+        }
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(response.outcome, AgentOutcome::Failed);
+        assert_eq!(response.prompt_delivery, Some(PromptDelivery::Started));
+        assert!(!response.acknowledged);
+        screen.agent_control_at(
+            AgentRequest::WaitTurn {
+                pane_id: PANE,
+                expected_session_id: Some("conversation".into()),
+                submission_id: "failed-write".into(),
+                timeout_ms: 1000,
+            },
+            crate::screen::agent_control::Reply::Client(CLIENT),
+            now + Duration::from_secs(1),
+        );
+        screen.refresh_agent_controls_at(now + Duration::from_secs(3));
+        let retained = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(retained.prompt_delivery, Some(PromptDelivery::Started));
+    }
+}

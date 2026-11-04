@@ -10,7 +10,8 @@ use yinz_types::agent::control::{
     claude_prompt_text, claude_task_notification_ids, is_claude_task_notification,
     is_command_prompt, needs_paste_lead_in, pi_prompt_text, supports_prompt,
     validate_submission_id, AgentOutcome, AgentReadiness, AgentRequest, AgentResponse, AgentStatus,
-    NotReadyReason, PromptObservation, MAX_PROMPT_BYTES, MAX_TIMEOUT_MS, PASTE_LEAD_IN,
+    NotReadyReason, PromptDelivery, PromptObservation, MAX_PROMPT_BYTES, MAX_TIMEOUT_MS,
+    PASTE_LEAD_IN,
 };
 pub(super) use yinz_types::agent::tracking::{
     ClaudeActivity, ClaudeNotification, ClaudeTurn, DialogInput, LifecycleState, PermissionWait,
@@ -209,6 +210,13 @@ impl Screen {
         self.agent_submissions
             .get(&pane)?
             .iter()
+            .find(|submission| submission.id == id)
+    }
+
+    fn submission_mut(&mut self, pane: PaneId, id: &str) -> Option<&mut Submission> {
+        self.agent_submissions
+            .get_mut(&pane)?
+            .iter_mut()
             .find(|submission| submission.id == id)
     }
 
@@ -2057,6 +2065,7 @@ impl Screen {
                 let protected = self.protected_submissions();
                 let submissions = self.agent_submissions.entry(pane).or_default();
                 submissions.push_back(Submission {
+                    prompt_delivery: None,
                     id: submission_id.clone(),
                     kind: status.agent.kind.clone(),
                     conversation: status.agent.session_id.clone(),
@@ -2239,6 +2248,15 @@ impl Screen {
 
     fn deliver_agent_prompt(&mut self, mut pending: Pending, prefix: Vec<u8>, paste: Vec<u8>) {
         let pane = pending.pane;
+        // Mark the attempt before any write, including a typed prefix. Even a failed
+        // write may have delivered bytes and must never become non-delivery evidence.
+        if let Some(submission) = pending
+            .submission_id
+            .as_deref()
+            .and_then(|id| self.submission_mut(pane, id))
+        {
+            submission.prompt_delivery = Some(PromptDelivery::Started);
+        }
         let previous_revision = self.agent_input_revision(pane);
         let kind = pending.kind.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -2437,6 +2455,11 @@ impl Screen {
         if let Some(client) = &pending.client {
             let mut response = AgentResponse::new(outcome);
             response.submission_id = pending.submission_id.clone();
+            response.prompt_delivery = pending
+                .submission_id
+                .as_deref()
+                .and_then(|id| self.submission(pending.pane, id))
+                .and_then(|submission| submission.prompt_delivery);
             response
                 .agents
                 .extend(self.agent_status(pending.pane, pending_claim));
@@ -3534,6 +3557,7 @@ pub(super) struct DraftClear {
     prompt: Option<(Pending, Vec<u8>, Vec<u8>)>,
 }
 
+#[derive(Debug)]
 enum DraftStage {
     Marker,
     Empty {
@@ -3902,14 +3926,38 @@ impl Screen {
                 .prompt
                 .as_ref()
                 .is_some_and(|(pending, _, _)| pending.steering);
+            // The asynchronous Codex binding publishes a derived ID for the already
+            // bound conversation. Accept it once, then pin it for the remaining stages.
+            if operation.prompt.is_some()
+                && operation.agent.kind == "codex"
+                && operation.agent.run_id.is_none()
+                && let Some(conversation) = operation
+                    .agent
+                    .session_id
+                    .as_deref()
+                    .filter(|id| !id.is_empty())
+                && let Some(status) = &status
+                && status.agent.kind == operation.agent.kind
+                && status.agent.session_id == operation.agent.session_id
+                && status.agent.run_id.as_deref() == Some(format!("codex:{conversation}").as_str())
+            {
+                operation.agent.run_id = status.agent.run_id.clone();
+            }
             let failure = if self.get_pane_info(pane).is_none() {
                 Some((AgentOutcome::TargetClosed, "pane closed"))
-            } else if status.as_ref().is_none_or(|status| {
+            } else if status.is_none() {
+                Some((AgentOutcome::StatusUnavailable, "agent status unavailable"))
+            } else if status.as_ref().is_some_and(|status| {
                 status.agent.kind != operation.agent.kind
                     || status.agent.session_id != operation.agent.session_id
                     || status.agent.run_id != operation.agent.run_id
             }) {
                 Some((AgentOutcome::TargetChanged, "agent identity changed"))
+            } else if status
+                .as_ref()
+                .is_some_and(|status| !status.status_available)
+            {
+                Some((AgentOutcome::StatusUnavailable, "agent status unavailable"))
             } else if self.agent_input_revision(pane) != operation.revision {
                 Some((
                     AgentOutcome::Interrupted,
@@ -4017,6 +4065,22 @@ impl Screen {
                     lifecycle.input_revision = None;
                 }
                 if let Some((mut pending, _, _)) = operation.prompt.take() {
+                    log::warn!(
+                        "agent prompt preparation failed: submission={:?} pane={} stage={:?} outcome={:?} expected_identity={:?} observed_identity={:?} expected_input_revision={} observed_input_revision={} pending_writer={}",
+                        pending.submission_id, pane, operation.stage, outcome,
+                        (&operation.agent.kind, &operation.agent.session_id, &operation.agent.run_id),
+                        status.as_ref().map(|s| (&s.agent.kind, &s.agent.session_id, &s.agent.run_id)),
+                        operation.revision, self.agent_input_revision(pane), operation.delivery.is_some(),
+                    );
+                    if let Some(submission) = pending
+                        .submission_id
+                        .as_deref()
+                        .and_then(|id| self.submission_mut(pane, id))
+                    {
+                        submission
+                            .prompt_delivery
+                            .get_or_insert(PromptDelivery::NotSent);
+                    }
                     pending.client = operation.client.take();
                     pending.resolved = true;
                     self.finish_agent_control(

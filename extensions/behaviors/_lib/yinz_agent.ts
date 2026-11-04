@@ -48,6 +48,7 @@ export const AgentResponseSchema = z.object({
   launch_resources: z.unknown().optional(),
   message: z.string().nullable().optional(),
   submission_id: z.string().nullable().optional(),
+  prompt_delivery: z.enum(["not_sent", "started"]).optional(),
   acknowledged: z.boolean().default(false),
   turn_id: z.string().nullable().optional(),
   background_tasks: z.array(z.string()).default([]),
@@ -108,7 +109,16 @@ export function isRejectedLaunch(state: AgentState): boolean {
     return false;
   }
 }
-/** Only a correlated provider failure proves terminality; transport errors do not. */
+const PreparationFailures = new Set([
+  "failed",
+  "target_changed",
+  "target_closed",
+  "status_unavailable",
+  "interrupted",
+  "timed_out",
+]);
+
+/** A correlated provider failure or explicit non-delivery proves terminality. */
 export function isTerminalFailure(state: AgentState): boolean {
   if (
     !state.paneId || !state.conversationId || !state.submissionId ||
@@ -116,9 +126,17 @@ export function isTerminalFailure(state: AgentState): boolean {
   ) return false;
   try {
     const value = AgentResponseSchema.parse(JSON.parse(state.rawResponse));
-    selectedAgent(state, value);
-    return value.outcome === "failed" &&
-      value.submission_id === state.submissionId;
+    const { agent } = selectedAgent(state, value);
+    if (value.submission_id !== state.submissionId) return false;
+    if (value.prompt_delivery === "not_sent") {
+      return PreparationFailures.has(value.outcome) && !value.acknowledged &&
+        value.turn_id == null && state.turnId === undefined &&
+        !value.background_tasks.length && !agent.background_tasks.length &&
+        !state.backgroundTasks.length;
+    }
+    // A delivery error is also called `failed`; only an acknowledged provider
+    // failure can use the existing terminal-turn recovery path.
+    return value.outcome === "failed" && value.acknowledged;
   } catch {
     return false;
   }
@@ -715,7 +733,9 @@ export async function confirmFailureAgent(
       dependencies,
     );
     if (!isTerminalFailure(state)) {
-      throw new Error("No confirmed terminal submission failure");
+      throw new Error(
+        "No confirmed terminal submission failure: require the original correlated submission with prompt_delivery: not_sent and no acknowledgement or turn ID, or an acknowledged provider failure; legacy text and uncertain delivery cannot authorize discard",
+      );
     }
     // Status writes a separate observation, preserving the correlated failure response.
     const observation = await statusAgent(context, dependencies);
@@ -726,9 +746,15 @@ export async function confirmFailureAgent(
     const { agent } = selectedAgent(state, value);
     if (
       !agent.status_available || agent.agent.state.toLowerCase() !== "idle" ||
-      agent.background_tasks.length || value.background_tasks.length
+      agent.background_tasks.length || value.background_tasks.length ||
+      !agent.prompt_supported ||
+      (agent.not_ready_reason != null &&
+        agent.not_ready_reason !== "unconsumed_input") ||
+      (!agent.ready && agent.not_ready_reason !== "unconsumed_input")
     ) {
-      throw new Error("Cannot discard an uncertain or active pane task");
+      throw new Error(
+        "Cannot discard an uncertain or active pane task: require fresh idle status with no background work or pending clearing/submission writes; wait for writes to drain and inspect the composer before reuse",
+      );
     }
     return observation.dataHandles;
   });

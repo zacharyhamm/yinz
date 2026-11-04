@@ -1,5 +1,5 @@
 //! Pane-owned agent tracking transferred between sessions. Live requests never travel.
-use super::control::{AgentOutcome, PromptObservation};
+use super::control::{AgentOutcome, PromptDelivery, PromptObservation};
 use super::{AgentInfo, SpawnedAgent};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -95,6 +95,8 @@ pub struct DialogInput {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Submission {
+    #[serde(default)]
+    pub prompt_delivery: Option<PromptDelivery>,
     pub id: String,
     pub kind: String,
     pub conversation: Option<String>,

@@ -746,7 +746,7 @@ Deno.test("recovery initializes an unstarted task once and validates existing in
 });
 
 Deno.test("terminal failure requires correlated failure and a fresh stopped observation", async () => {
-  const failure = completed({ outcome: "failed" });
+  const failure = completed({ outcome: "failed", acknowledged: true });
   const h = harness([spawned, ready(), failure, failure, ready()]);
   await rejects(
     () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
@@ -764,7 +764,7 @@ Deno.test("terminal failure requires correlated failure and a fresh stopped obse
 });
 
 Deno.test("failure discard rejects uncertain evidence, replacements and background work", async () => {
-  const failure = completed({ outcome: "failed" });
+  const failure = completed({ outcome: "failed", acknowledged: true });
   const cases: [Reply, Reply | undefined, string][] = [
     [completed({ outcome: "timed_out" }), undefined, "No confirmed terminal"],
     [
@@ -803,6 +803,135 @@ Deno.test("failure discard rejects uncertain evidence, replacements and backgrou
       "has not completed",
     );
     await rejects(() => confirmFailureAgent(h.context, h.dependencies), error);
+    assert(!h.records.has("result"));
+  }
+});
+
+function unsent(overrides: Record<string, unknown> = {}) {
+  return completed({
+    outcome: "target_changed",
+    prompt_delivery: "not_sent",
+    acknowledged: false,
+    turn_id: null,
+    message: "Preparation failed; inspect the composer before reuse.",
+    ...overrides,
+  });
+}
+
+Deno.test("unsent failure confirmation retrieves the original and preserves it separately from fresh status", async () => {
+  for (
+    const outcome of [
+      "target_changed",
+      "target_closed",
+      "status_unavailable",
+      "interrupted",
+      "timed_out",
+      "failed",
+    ]
+  ) {
+    const failure = unsent({ outcome });
+    const h = harness([spawned, ready(), failure, failure, {
+      outcome: "ok",
+      agents: [{
+        ...agent(),
+        ready: false,
+        not_ready_reason: "unconsumed_input",
+      }],
+    }]);
+    await rejects(
+      () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+      "has not completed",
+    );
+    assert(isTerminalFailure(AgentStateSchema.parse(h.records.get("state"))));
+    await confirmFailureAgent(h.context, h.dependencies);
+    equal(JSON.parse(String(h.records.get("state")?.rawResponse)), failure);
+    equal(h.records.get("observation")?.outcome, "ok");
+    equal(h.calls.map((call) => call.args[3]), [
+      "spawn",
+      "wait",
+      "prompt",
+      "wait",
+      "status",
+    ]);
+    assert(h.calls[3].args.includes("submission-1"));
+    assert(h.calls[3].args.includes("conversation-1"));
+    assert(!h.records.has("result"));
+  }
+});
+
+Deno.test("unsent confirmation rejects legacy, malformed, uncorrelated and uncertain delivery evidence", async () => {
+  const cases = [
+    { prompt_delivery: undefined },
+    { prompt_delivery: undefined, outcome: "failed" },
+    { prompt_delivery: "started" },
+    { prompt_delivery: "started", outcome: "failed" },
+    { prompt_delivery: null },
+    { prompt_delivery: "never_sent" },
+    { outcome: "ok" },
+    { outcome: "submitted" },
+    { outcome: "completed" },
+    { outcome: "needs_input" },
+    { outcome: "rejected" },
+    { submission_id: undefined },
+    { submission_id: "unknown" },
+    { agents: [] },
+    { agents: [agent(), agent()] },
+    { agents: [{ ...agent(), pane_id: "terminal_8" }] },
+    { agents: [{ ...agent(), session: "other" }] },
+    { agents: [agent("other")] },
+    { agents: [agent("conversation-1", "codex")] },
+    { acknowledged: true },
+    { turn_id: "turn-1" },
+    { turn_id: "" },
+    { background_tasks: ["work"] },
+    { agents: [{ ...agent(), background_tasks: ["work"] }] },
+  ];
+  for (const patch of cases) {
+    const failure = unsent(patch);
+    const h = harness([spawned, ready(), unsent(), failure]);
+    await rejects(
+      () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+      "has not completed",
+    );
+    await rejects(
+      () => confirmFailureAgent(h.context, h.dependencies),
+      patch.prompt_delivery === null || patch.prompt_delivery === "never_sent"
+        ? "no valid agent response"
+        : "No confirmed terminal",
+    );
+    assert(!isTerminalFailure(AgentStateSchema.parse(h.records.get("state"))));
+    assert(!h.records.has("observation"));
+    assert(!h.records.has("result"));
+  }
+});
+
+Deno.test("unsent discard requires fresh idle identity and drained writers but permits a leftover marker", async () => {
+  const statuses = [
+    { ...agent(), ready: false, not_ready_reason: "clearing_draft" },
+    { ...agent(), ready: true, not_ready_reason: "pending_submission" },
+    { ...agent(), ready: false, not_ready_reason: "unresolved_turn" },
+    { ...agent(), ready: false },
+    { ...agent(), status_available: false },
+    { ...agent(), prompt_supported: false },
+    { ...agent(), agent: { ...agent().agent, state: "busy" } },
+    { ...agent(), agent: { ...agent().agent, state: "waiting" } },
+    { ...agent(), background_tasks: ["work"] },
+    { ...agent(), session: "other" },
+    { ...agent(), pane_id: "terminal_8" },
+    agent("other"),
+    agent("conversation-1", "codex"),
+  ];
+  for (const status of statuses) {
+    const h = harness([spawned, ready(), unsent(), unsent(), {
+      outcome: "ok",
+      agents: [status],
+    }]);
+    await rejects(
+      () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
+      "has not completed",
+    );
+    await rejects(() => confirmFailureAgent(h.context, h.dependencies), "");
+    equal(JSON.parse(String(h.records.get("state")?.rawResponse)), unsent());
     assert(!h.records.has("result"));
   }
 });

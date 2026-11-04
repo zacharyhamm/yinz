@@ -452,7 +452,7 @@ export function createAgentMethods(
     discard_agent: {
       kind: "update",
       description:
-        "Discard completed unusable evidence, a confirmed stopped terminal failure, or a launch rejected without resources, with an operator reason and confirmation",
+        "Discard completed unusable evidence, a confirmed stopped terminal or unsent failure, or a launch rejected without resources, with an operator reason and confirmation",
       arguments: AgentTaskSchema.shape.discard.unwrap().strip(),
       execute: (
         input: z.infer<ReturnType<typeof AgentTaskSchema.shape.discard.unwrap>>,
@@ -488,7 +488,7 @@ export function createAgentMethods(
               !child.conversationId || !child.submissionId)
           ) {
             throw new Error(
-              "Cannot discard an uncertain or active pane task; resume its original submission and inspect the pane first",
+              "Cannot discard an uncertain or active pane task; retrieve its original submission for structured not_sent evidence or an acknowledged provider failure, then inspect the pane; legacy text is insufficient",
             );
           }
           const current = await loadState(context);

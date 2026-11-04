@@ -163,7 +163,7 @@ does not replace pane workers with headless agents or inline agent work.
 | `agent` with role `implement`   | Implement and commit the approved plan in the existing issue worktree, running focused checks.                        |
 | `agent` with role `review_code` | Review the committed implementation and import plan conformance, deviations and observed verification.                |
 | `resume-agent`                  | Retrieve the original submission or reconcile already-applied evidence; never resubmit or relaunch.                   |
-| `discard-agent`                 | Discard completed unusable evidence or a launch rejected without resources, with an operator reason and confirmation. |
+| `discard-agent`                 | Discard unusable completed evidence, a confirmed stopped failure, or a resource-free rejected launch, with an operator reason and confirmation. |
 | `ready`                         | Record authorization to integrate the reviewed change.                                                                |
 | `merge`                         | Run `yinz-issue-merge`; serialize rebase, full CI and local fast-forward merge, recording the result.                 |
 | `repair`                        | Record repair work after an integration failure and return to development and review.                                 |
@@ -245,11 +245,36 @@ changes configuration or launches a replacement.
 Malformed responses, transport failures, responses containing resources and
 legacy uncertain launches remain blocked. `discard-agent` cannot discard an
 active or uncertain task, and it does not close panes or undo code changes.
-A correlated terminal provider failure (`failed`, including `StopFailure`) can
+A correlated, acknowledged terminal provider failure (`failed`, including `StopFailure`) can
 also be explicitly discarded. Discard rechecks the original submission and
 requires a fresh observation of the same pane and conversation, idle with no
 background tasks. The failure response remains separate from that observation.
 Inspect any changes before dispatching replacement work.
+
+A finalized prompt-preparation failure can also be discarded when the retained
+server response explicitly contains `prompt_delivery: "not_sent"`. Confirmation
+retrieves the original submission and requires the recorded submission ID, pane,
+Yinz session, provider and conversation to match. The response must have a failure
+outcome, no acknowledgement, no turn ID and no background work. Fresh status must
+show that same worker idle with no background work, clearing writes or submission
+writes pending. `clearing_draft` and `pending_submission` block discard until the
+writes drain. The operator must supply a reason and `confirmedStopped: true`, and
+the lifecycle must still equal the task's original snapshot.
+
+Discard records the reason on the task, preserves the correlated failure separately
+from fresh status, and leaves lifecycle state unchanged. An empty composer is not
+required: preparation may have left a marker or draft. Inspect the composer before
+reuse. Discard never resends, respawns, closes the pane or marks an issue successful;
+a replacement task requires a separate explicit request.
+
+`prompt_delivery` is optional. Missing means unknown, including older responses
+whose text says the prompt was not sent. Such text cannot authorize unsent recovery.
+`started` is recorded before the first actual prompt write (including a typed
+prefix) and never downgraded, even if the write fails. Preparation marker and
+clearing writes do not count as prompt delivery. Unknown submissions, malformed or
+mismatched evidence, uncertain delivery and active workers remain blocked. This
+requires both updated server responses and updated behavior code; it does not
+unlock older stopped tasks without structured non-delivery evidence.
 
 If a state-changing transition was saved but the final task-completion write
 failed, `resume-agent` validates the completed result's identity and reconciles

@@ -581,6 +581,22 @@ an ID. Responses for admitted prompts carry `submission_id`, and transport error
 echo the client-known ID. For concurrent workers, submit without `--wait`, retain
 each pane/conversation/submission triple, and wait on those IDs later.
 
+Responses may also include `prompt_delivery`: `not_sent` proves a finalized
+preparation failure never attempted the requested prompt; `started` means a prompt
+write was attempted, even if it failed. The first actual write (including a typed
+prefix) records `started`, which is never downgraded. Marker and clearing writes
+are preparation, not prompt delivery. This evidence is retained with the submission
+and returned by `wait --submission`. A missing field means unknown; older textual
+claims of non-delivery do not acquire this evidence.
+
+`not_sent` does not prove the composer is empty or that preparation writes have
+drained. Before discarding an unsent task, retrieve its exact submission and verify
+fresh status for the same pane, session, provider and conversation: idle, no
+background work, no `clearing_draft` or `pending_submission`. Inspect the composer
+before reuse. The issue lifecycle's explicit `discard-agent` additionally requires
+an operator reason, `confirmedStopped: true` and unchanged lifecycle state; it
+preserves the failure and status observations and never submits replacement work.
+
 The server retains a recent window of 32 submissions per pane/conversation in memory,
 keeping unresolved submissions even when they exceed that window.
 Target replacement, exit, closure, and server restart discard this history. Unknown or expired
@@ -1081,6 +1097,11 @@ The marker makes an empty composer nonempty before clearing. Clearing does not r
 Providers must bind `clear_key` to clear the whole composer.
 One timeout covers clearing and submission. Clearing failures are available through `wait --submission`, with acknowledgement false.
 New input, conversation replacement, agent activity, caller disconnection, or writer failure cancels further delivery.
+During preparation, the first Codex run ID may bind from absent to
+`codex:<already-bound conversation>` when provider and conversation are unchanged.
+The new ID is then pinned: replacement or removal cancels delivery. Other explicit
+run ID, provider or conversation changes are rejected. Missing status returns
+`status_unavailable` and stops preparation without automatic retry.
 `ready` can remain false when Yinz cannot verify the composer. An explicit prompt still clears that input before delivery.
 Status and idle waits remain read-only.
 

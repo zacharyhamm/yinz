@@ -1755,3 +1755,30 @@ fn claude_observation_keeps_only_its_successfully_confirmed_tasks() {
         }
     }
 }
+
+#[test]
+fn prompt_delivery_roundtrips_without_inventing_legacy_evidence() {
+    let legacy = serde_json::to_value(AgentResponse::new(AgentOutcome::Failed)).unwrap();
+    assert!(legacy.get("prompt_delivery").is_none());
+    assert_eq!(
+        serde_json::from_value::<AgentResponse>(legacy)
+            .unwrap()
+            .prompt_delivery,
+        None
+    );
+    for (delivery, wire) in [
+        (PromptDelivery::NotSent, "not_sent"),
+        (PromptDelivery::Started, "started"),
+    ] {
+        let response = AgentResponse {
+            prompt_delivery: Some(delivery),
+            ..AgentResponse::new(AgentOutcome::Failed)
+        };
+        let encoded = serde_json::to_value(&response).unwrap();
+        assert_eq!(encoded["prompt_delivery"], wire);
+        assert_eq!(
+            serde_json::from_value::<AgentResponse>(encoded).unwrap(),
+            response
+        );
+    }
+}

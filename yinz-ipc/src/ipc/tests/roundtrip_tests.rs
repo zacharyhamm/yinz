@@ -4976,6 +4976,7 @@ fn test_server_messages() {
             acknowledged: true,
             turn_id: Some("turn-7".into()),
             submission_id: Some("submission-7".into()),
+            prompt_delivery: Some(yinz_types::agent::control::PromptDelivery::Started),
             background_tasks: vec!["bj30txqod".into()],
         }));
     }
@@ -6306,6 +6307,7 @@ fn warp_agent_tracking_roundtrip_preserves_provider_evidence() {
             }),
             launch: None,
             submissions: [Submission {
+                prompt_delivery: Some(yinz_types::agent::control::PromptDelivery::Started),
                 id: "request".into(),
                 kind: kind.into(),
                 conversation: Some("conversation".into()),

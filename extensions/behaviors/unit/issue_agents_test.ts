@@ -845,6 +845,7 @@ function recoveryRunner(failed: boolean, calls: string[][]): YinzRunner {
       }
       : {
         outcome: submission ? (failed ? "failed" : "completed") : "ok",
+        acknowledged: submission,
         submission_id: submission ? "submission-1" : undefined,
         message: JSON.stringify(triage),
         agents: [{
@@ -932,4 +933,112 @@ Deno.test("terminal provider failure can be explicitly discarded and unblocks li
   h.controls.agentRunner = undefined;
   await h.methods.run_agent.execute({ ...options, role: "triage" }, h.context);
   equal((h.resources.get("state") as LifecycleState).phase, "classified");
+});
+
+Deno.test("explicit unsent discard waits for drained writes, preserves evidence and lifecycle, and is idempotent", async () => {
+  const h = harness();
+  const calls: string[][] = [];
+  const run = recoveryRunner(true, calls);
+  let pendingWrites = true;
+  h.controls.agentRunner = async (args) => {
+    const reply = await run(args);
+    const value = JSON.parse(reply.stdout);
+    if (args.includes("--submission")) {
+      value.outcome = "target_changed";
+      value.prompt_delivery = "not_sent";
+      value.acknowledged = false;
+      value.turn_id = null;
+    }
+    if (args[3] === "status") {
+      value.agents[0].ready = false;
+      value.agents[0].not_ready_reason = pendingWrites
+        ? "clearing_draft"
+        : "unconsumed_input";
+    }
+    return { ...reply, stdout: JSON.stringify(value) };
+  };
+  await rejects(
+    () =>
+      h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+    "has not completed",
+  );
+  const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const discard = {
+    request: "Discard the task proven unsent; inspect the marker before reuse",
+    confirmedStopped: true as const,
+  };
+  await rejects(
+    () => h.methods.discard_agent.execute(discard, h.context),
+    "pending clearing/submission writes",
+  );
+  await rejects(() => assertNoPendingAgent(h.context), "unresolved");
+  pendingWrites = false;
+  h.resources.set("state", transition(original.before, "triage", triage));
+  await rejects(
+    () => h.methods.discard_agent.execute(discard, h.context),
+    "may already be applied",
+  );
+  h.resources.set("state", original.before);
+  const evidence = h.child.get("state")?.rawResponse;
+  await h.methods.discard_agent.execute(discard, h.context);
+  const callCount = calls.length;
+  await h.methods.discard_agent.execute(discard, h.context);
+  equal(calls.length, callCount);
+  equal(h.resources.get("state"), original.before);
+  equal(AgentTaskSchema.parse(h.resources.get("agent-task")).discard, discard);
+  equal(
+    AgentTaskSchema.parse(h.resources.get("agent-task")).status,
+    "discarded",
+  );
+  equal(h.child.get("state")?.rawResponse, evidence);
+  equal(h.child.get("observation")?.outcome, "ok");
+  assert(!h.child.has("result"));
+  equal(calls.filter((args) => args[3] === "spawn").length, 1);
+  equal(calls.filter((args) => args[3] === "prompt").length, 1);
+  await assertNoPendingAgent(h.context);
+});
+
+Deno.test("legacy stopped preparation failures remain blocked without server non-delivery evidence", async () => {
+  for (
+    const outcome of [
+      "target_changed",
+      "status_unavailable",
+      "failed",
+      "interrupted",
+      "timed_out",
+    ]
+  ) {
+    const h = harness();
+    const calls: string[][] = [];
+    const run = recoveryRunner(true, calls);
+    h.controls.agentRunner = async (args) => {
+      const reply = await run(args);
+      const value = JSON.parse(reply.stdout);
+      if (args.includes("--submission")) {
+        value.outcome = outcome;
+        value.acknowledged = false;
+        value.message = "agent identity changed; prompt was not sent";
+      }
+      return { ...reply, stdout: JSON.stringify(value) };
+    };
+    await rejects(
+      () =>
+        h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+      "has not completed",
+    );
+    const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    const count = calls.length;
+    await rejects(
+      () =>
+        h.methods.discard_agent.execute({
+          request: "Discard stopped task",
+          confirmedStopped: true,
+        }, h.context),
+      "legacy text is insufficient",
+    );
+    equal(calls.length, count);
+    equal(h.resources.get("state"), original.before);
+    equal(h.resources.get("agent-task"), original);
+    await rejects(() => assertNoPendingAgent(h.context), "unresolved");
+  }
 });
