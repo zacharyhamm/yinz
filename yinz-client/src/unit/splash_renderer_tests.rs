@@ -508,7 +508,15 @@ fn bouncing_reflects_at_both_walls_and_stays_above_the_hint_after_resize() {
         assert_eq!(reflected_position(distance, 10), position);
         assert_eq!(reflected_position(distance + 2000.0, 10), position);
     }
-    assert_eq!(reflected_position(100.0, 0), 0.0);
+    for distance in [-100.0, 0.0, 100.0] {
+        assert_eq!(reflected_position(distance, 0), 0.0);
+    }
+    for distance in [0.0, 4.0, 5.0, 6.0, 14.0, 15.0, 16.0, 2005.0] {
+        assert_eq!(
+            reflected_position(-distance, 10),
+            10.0 - reflected_position(distance, 10)
+        );
+    }
     for size in [
         Size { rows: 24, cols: 80 },
         Size { rows: 10, cols: 28 },
@@ -517,13 +525,16 @@ fn bouncing_reflects_at_both_walls_and_stays_above_the_hint_after_resize() {
             cols: 200,
         },
     ] {
-        for frame in 0..1200 {
-            let (stage, offset) = bouncing_stage(size, Duration::from_millis(frame * 50));
-            assert!(stage.left >= 1 && stage.top >= 1);
-            assert!(stage.left + stage.cols - 1 <= size.cols);
-            assert!(stage.top + stage.rows - 1 < size.rows);
-            assert!((0.0..2.0).contains(&offset[0]));
-            assert!((0.0..4.0).contains(&offset[1]));
+        for direction in DIRECTIONS {
+            for frame in 0..1200 {
+                let (stage, offset) =
+                    bouncing_stage(size, Duration::from_millis(frame * 50), direction);
+                assert!(stage.left >= 1 && stage.top >= 1);
+                assert!(stage.left + stage.cols - 1 <= size.cols);
+                assert!(stage.top + stage.rows - 1 < size.rows);
+                assert!((0.0..2.0).contains(&offset[0]));
+                assert!((0.0..4.0).contains(&offset[1]));
+            }
         }
     }
 }
@@ -535,30 +546,128 @@ fn bouncing_glyphs_render_in_both_themes_without_the_quote_or_clipped_surfaces()
         let stage = Stage::new(size).unwrap();
         let mut dark = Renderer::new(stage, style(false), accent(false));
         let mut light = Renderer::new(stage, style(true), accent(true));
-        for millis in (0..16000).step_by(250) {
-            let time = Duration::from_millis(millis);
-            let frame = dark.bouncing_frame(size, time);
-            let light_frame = light.bouncing_frame(size, time);
-            assert_eq!(
-                ansi.replace_all(&frame, ""),
-                ansi.replace_all(&light_frame, "")
-            );
-            assert!(!frame.contains("Aristotle"));
-            assert!(frame
-                .chars()
-                .any(|c| ('\u{2801}'..='\u{28ff}').contains(&c)));
-            // Occupied dots must have padding on every side throughout each rotation.
-            // Touching the tile boundary would risk truncating a surface as it moves.
-            let width = dark.stage.cols * 2;
-            let height = dark.stage.rows * 4;
-            for (index, dot) in dark.dots.iter().enumerate() {
-                if dot.depth.is_finite() {
-                    let (x, y) = (index % width, index / width);
-                    assert!(
-                        x > 0 && x < width - 1 && y > 0 && y < height - 1,
-                        "clipped at {millis}ms: {x},{y}"
-                    );
+        for direction in DIRECTIONS {
+            for millis in (0..16000).step_by(250) {
+                let time = Duration::from_millis(millis);
+                let frame = dark.bouncing_frame(size, time, direction);
+                let light_frame = light.bouncing_frame(size, time, direction);
+                assert_eq!(
+                    ansi.replace_all(&frame, ""),
+                    ansi.replace_all(&light_frame, "")
+                );
+                assert!(!frame.contains("Aristotle"));
+                assert!(frame
+                    .chars()
+                    .any(|c| ('\u{2801}'..='\u{28ff}').contains(&c)));
+                // Occupied dots must have padding on every side throughout each rotation.
+                // Touching the tile boundary would risk truncating a surface as it moves.
+                let width = dark.stage.cols * 2;
+                let height = dark.stage.rows * 4;
+                for (index, dot) in dark.dots.iter().enumerate() {
+                    if dot.depth.is_finite() {
+                        let (x, y) = (index % width, index / width);
+                        assert!(
+                            x > 0 && x < width - 1 && y > 0 && y < height - 1,
+                            "clipped at {millis}ms: {x},{y}"
+                        );
+                    }
                 }
+            }
+        }
+    }
+}
+
+const DIRECTIONS: [Direction; 4] = [
+    Direction::UpLeft,
+    Direction::UpRight,
+    Direction::DownLeft,
+    Direction::DownRight,
+];
+
+#[test]
+fn launch_choices_cover_all_initial_directions_and_both_horizontal_reversals() {
+    let mut initial = Vec::new();
+    for right in [false, true] {
+        for down in [false, true] {
+            initial.push(Direction::from_choices(None, right, down));
+        }
+    }
+    for previous in DIRECTIONS {
+        assert_eq!(initial.iter().filter(|&&d| d == previous).count(), 1);
+        let up = Direction::from_choices(Some(previous), false, false);
+        let down = Direction::from_choices(Some(previous), false, true);
+        assert_ne!(up, down);
+        for right in [false, true] {
+            for (vertical, expected) in [(false, up), (true, down)] {
+                let next = Direction::from_choices(Some(previous), right, vertical);
+                assert_eq!(next, expected);
+                assert_eq!(next.velocity()[0], -previous.velocity()[0]);
+                assert_eq!(next.velocity()[1], if vertical { 2.6 } else { -2.6 });
+            }
+        }
+    }
+}
+
+#[test]
+fn eligible_terminals_always_have_horizontal_travel() {
+    assert!(Stage::new(Size { rows: 10, cols: 28 }).is_some());
+    for rows in 0..=100 {
+        for cols in 0..=200 {
+            let size = Size { rows, cols };
+            if Stage::new(size).is_some() {
+                let (stage, _) = bouncing_stage(size, Duration::ZERO, Direction::UpLeft);
+                assert!(cols >= 28);
+                assert!(stage.cols <= 20);
+                assert!(cols > stage.cols);
+            }
+        }
+    }
+}
+
+fn bounce_position(size: Size, elapsed: Duration, direction: Direction) -> [f64; 2] {
+    let (stage, offset) = bouncing_stage(size, elapsed, direction);
+    [
+        (stage.left - 1) as f64 + f64::from(offset[0]) / 2.0,
+        (stage.top - 1) as f64 + f64::from(offset[1]) / 4.0,
+    ]
+}
+
+#[test]
+fn every_successor_has_a_distinct_full_bounce_trajectory_even_without_vertical_travel() {
+    for size in [Size { rows: 24, cols: 80 }, Size { rows: 10, cols: 28 }] {
+        for previous in DIRECTIONS {
+            let positions: Vec<_> = (0..1200)
+                .map(|frame| bounce_position(size, Duration::from_millis(frame * 50), previous))
+                .collect();
+            for down in [false, true] {
+                let next = Direction::from_choices(Some(previous), false, down);
+                let successors: Vec<_> = (0..1200)
+                    .map(|frame| bounce_position(size, Duration::from_millis(frame * 50), next))
+                    .collect();
+                assert_ne!(positions, successors, "{size:?}: {previous:?} -> {next:?}");
+                // Center and wall crossings may coincide; the first moving frame must differ.
+                assert_ne!(positions[1][0], successors[1][0]);
+            }
+        }
+    }
+}
+
+#[test]
+fn bouncing_moves_twice_as_fast_in_all_directions_and_preserves_subcell_offsets() {
+    let size = Size { rows: 24, cols: 80 };
+    for (direction, velocity) in [
+        (Direction::UpLeft, [-6.0, -2.6]),
+        (Direction::UpRight, [6.0, -2.6]),
+        (Direction::DownLeft, [-6.0, 2.6]),
+        (Direction::DownRight, [6.0, 2.6]),
+    ] {
+        let origin = bounce_position(size, Duration::ZERO, direction);
+        for millis in [50, 125, 1000] {
+            let time = Duration::from_millis(millis);
+            let position = bounce_position(size, time, direction);
+            for axis in 0..2 {
+                let displacement = position[axis] - origin[axis];
+                assert!((displacement - velocity[axis] * time.as_secs_f64()).abs() < 1e-6);
             }
         }
     }

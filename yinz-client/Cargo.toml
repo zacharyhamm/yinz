@@ -27,6 +27,7 @@ crossterm = { workspace = true, features = ["events", "bracketed-paste"] }
 interprocess = { workspace = true }
 lazy_static = { workspace = true }
 log = { workspace = true }
+rand = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

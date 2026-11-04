@@ -101,22 +101,22 @@ fn protocol_focus_and_resize_do_not_reset_idle_but_recovery_does() {
 fn loops_at_splash_speed_and_repaints_on_resize_without_waiting_for_frame() {
     for millis in [0, 50, 250, 500, 950] {
         assert_eq!(
-            animation_phase(Duration::from_millis(millis)),
+            animation_phase(Duration::from_millis(millis)).1,
             Phase::Original(Duration::from_millis(millis))
         );
     }
     for millis in [1000, 2000, 3999] {
         assert_eq!(
-            animation_phase(Duration::from_millis(millis)),
+            animation_phase(Duration::from_millis(millis)).1,
             Phase::Original(Duration::from_millis(millis))
         );
     }
     assert_eq!(
-        animation_phase(Duration::from_secs(4)),
+        animation_phase(Duration::from_secs(4)).1,
         Phase::Original(Duration::ZERO)
     );
     assert_eq!(
-        animation_phase(Duration::from_millis(4250)),
+        animation_phase(Duration::from_millis(4250)).1,
         Phase::Original(Duration::from_millis(250))
     );
     let mut saver = saver();
@@ -246,20 +246,20 @@ fn three_original_loops_alternate_with_one_minute_of_bouncing() {
         let start = Duration::from_secs(cycle * 72);
         for seconds in [0, 4, 8] {
             assert_eq!(
-                animation_phase(start + Duration::from_secs(seconds)),
+                animation_phase(start + Duration::from_secs(seconds)).1,
                 Phase::Original(Duration::ZERO)
             );
         }
         assert_eq!(
-            animation_phase(start + Duration::from_millis(11999)),
+            animation_phase(start + Duration::from_millis(11999)).1,
             Phase::Original(Duration::from_millis(3999))
         );
         assert_eq!(
-            animation_phase(start + Duration::from_secs(12)),
+            animation_phase(start + Duration::from_secs(12)).1,
             Phase::Bouncing(Duration::ZERO)
         );
         assert_eq!(
-            animation_phase(start + Duration::from_millis(71999)),
+            animation_phase(start + Duration::from_millis(71999)).1,
             Phase::Bouncing(Duration::from_millis(59999))
         );
     }
@@ -328,4 +328,110 @@ fn bouncing_repaints_on_resize_returns_to_the_quote_and_restarts_after_waking() 
         .tick(&os, None, start + Duration::from_secs(145), true)
         .unwrap();
     assert_eq!(&os.stdout_bytes()[before..], original);
+}
+
+fn assert_horizontal_reversal(previous: Direction, next: Direction) {
+    let points_right = |direction| matches!(direction, Direction::UpRight | Direction::DownRight);
+    assert_ne!(points_right(previous), points_right(next));
+}
+
+#[test]
+fn direction_is_selected_once_per_observed_cycle_and_survives_frames_and_resizes() {
+    let mut saver = saver();
+    let os = FakeClientOsApi::new();
+    let small = os.clone().with_terminal_size(Size { rows: 10, cols: 28 });
+    let start = saver.activity.lock().unwrap().last_input + Duration::from_secs(60);
+    assert_eq!(saver.direction, None);
+    saver.tick(&os, None, start, true).unwrap();
+    let first = saver.direction.unwrap();
+    assert_eq!(saver.cycle, Some(0));
+    // Include a redundant tick, original-loop boundaries, delayed bouncing entry,
+    // letter changes, and a late frame near the end of the bounce.
+    for millis in [0, 25, 50, 4000, 8000, 13500, 16000, 20000, 71999] {
+        let now = start + Duration::from_millis(millis);
+        saver.tick(&os, None, now, true).unwrap();
+        saver.tick(&small, None, now, true).unwrap();
+        saver.tick(&os, None, now, true).unwrap();
+        assert_eq!(saver.direction, Some(first));
+        assert_eq!(saver.cycle, Some(0));
+    }
+    saver
+        .tick(&os, None, start + Duration::from_secs(72), true)
+        .unwrap();
+    let second = saver.direction.unwrap();
+    assert_horizontal_reversal(first, second);
+    assert_eq!(saver.cycle, Some(1));
+    // Skip an even number of boundaries: replaying them would incorrectly preserve
+    // the horizontal sign. Select once against the last direction actually shown.
+    saver
+        .tick(&small, None, start + Duration::from_secs(3 * 72 + 18), true)
+        .unwrap();
+    let third = saver.direction.unwrap();
+    assert_horizontal_reversal(second, third);
+    assert_eq!(saver.cycle, Some(3));
+    saver
+        .tick(&os, None, start + Duration::from_secs(3 * 72 + 22), true)
+        .unwrap();
+    assert_eq!(saver.direction, Some(third));
+}
+
+#[test]
+fn dismissal_and_ineligibility_clear_the_cycle_but_retain_direction_history() {
+    for cause in ["input", "size", "eligibility"] {
+        let mut saver = saver();
+        let os = FakeClientOsApi::new();
+        let start = saver.activity.lock().unwrap().last_input + Duration::from_secs(60);
+        saver.tick(&os, None, start, true).unwrap();
+        let previous = saver.direction.unwrap();
+        let wake = start + Duration::from_secs(13);
+        let needs_repaint = match cause {
+            "input" => {
+                let input = InputInstruction::KeyEvent(InputEvent::Paste("wake".into()), vec![]);
+                assert!(record_input(&saver.activity, &input, wake).unwrap());
+                saver.tick(&os, None, wake, true).unwrap()
+            },
+            "size" => {
+                let tiny = os.clone().with_terminal_size(Size { rows: 9, cols: 27 });
+                saver.tick(&tiny, None, wake, true).unwrap()
+            },
+            _ => saver.tick(&os, None, wake, false).unwrap(),
+        };
+        assert_eq!(needs_repaint, cause != "eligibility");
+        assert!(!saver.active());
+        assert_eq!(saver.cycle, None);
+        assert_eq!(saver.direction, Some(previous));
+        saver.repaint_complete();
+        saver
+            .tick(&os, None, wake + Duration::from_secs(60), true)
+            .unwrap();
+        assert!(saver.active());
+        assert_eq!(saver.cycle, Some(0));
+        assert_horizontal_reversal(previous, saver.direction.unwrap());
+    }
+}
+
+#[test]
+fn phase_and_absolute_cycle_share_exact_boundaries() {
+    for cycle in [0, 1, 100, u64::MAX / 72 - 1] {
+        let start = Duration::from_secs(cycle * 72);
+        assert_eq!(
+            animation_phase(start),
+            (u128::from(cycle), Phase::Original(Duration::ZERO))
+        );
+        assert_eq!(
+            animation_phase(start + Duration::from_secs(12)),
+            (u128::from(cycle), Phase::Bouncing(Duration::ZERO))
+        );
+        assert_eq!(
+            animation_phase(start + Duration::from_millis(71999)),
+            (
+                u128::from(cycle),
+                Phase::Bouncing(Duration::from_millis(59999))
+            )
+        );
+        assert_eq!(
+            animation_phase(start + Duration::from_secs(72)),
+            (u128::from(cycle) + 1, Phase::Original(Duration::ZERO))
+        );
+    }
 }

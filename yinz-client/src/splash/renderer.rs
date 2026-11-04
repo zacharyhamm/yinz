@@ -100,6 +100,43 @@ impl Stage {
     }
 }
 
+/// Launch direction, independent of subsequent wall reflections.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Direction {
+    UpLeft,
+    UpRight,
+    DownLeft,
+    DownRight,
+}
+
+impl Direction {
+    pub fn random_after(previous: Option<Self>) -> Self {
+        Self::from_choices(previous, rand::random(), rand::random())
+    }
+
+    fn from_choices(previous: Option<Self>, right: bool, down: bool) -> Self {
+        // Eligible terminals always have horizontal travel, but may have none vertically.
+        // Alternating horizontal signs sacrifices one possible successor so even the
+        // smallest terminal has a visibly different trajectory on the next cycle.
+        let right = previous.map_or(right, |direction| direction.velocity()[0] < 0.0);
+        match (right, down) {
+            (false, false) => Self::UpLeft,
+            (true, false) => Self::UpRight,
+            (false, true) => Self::DownLeft,
+            (true, true) => Self::DownRight,
+        }
+    }
+
+    fn velocity(self) -> [f64; 2] {
+        match self {
+            Self::UpLeft => [-6.0, -2.6],
+            Self::UpRight => [6.0, -2.6],
+            Self::DownLeft => [-6.0, 2.6],
+            Self::DownRight => [6.0, 2.6],
+        }
+    }
+}
+
 pub(crate) struct Renderer {
     pub stage: Stage,
     background: Rgb,
@@ -176,8 +213,13 @@ impl Renderer {
         self.output()
     }
 
-    pub fn bouncing_frame(&mut self, size: Size, elapsed: Duration) -> String {
-        let (stage, offset) = bouncing_stage(size, elapsed);
+    pub fn bouncing_frame(
+        &mut self,
+        size: Size,
+        elapsed: Duration,
+        direction: Direction,
+    ) -> String {
+        let (stage, offset) = bouncing_stage(size, elapsed, direction);
         if self.stage != stage {
             self.resize(stage);
         }
@@ -314,13 +356,14 @@ fn bouncing_letter(elapsed: Duration) -> (usize, Duration) {
     )
 }
 
-fn bouncing_stage(size: Size, elapsed: Duration) -> (Stage, [f32; 2]) {
+fn bouncing_stage(size: Size, elapsed: Duration, direction: Direction) -> (Stage, [f32; 2]) {
     let cols = size.cols.min(20);
     // Reserve the bottom row for the wake hint.
     let rows = size.rows.saturating_sub(1).min(12);
     let seconds = elapsed.as_secs_f64();
-    let x = reflected_position(seconds * 3.0, size.cols - cols);
-    let y = reflected_position(seconds * 1.3, size.rows.saturating_sub(rows + 1));
+    let [dx, dy] = direction.velocity();
+    let x = reflected_position(seconds * dx, size.cols - cols);
+    let y = reflected_position(seconds * dy, size.rows.saturating_sub(rows + 1));
     (
         Stage {
             cols,

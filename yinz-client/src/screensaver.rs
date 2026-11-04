@@ -2,7 +2,7 @@
 use crate::os_input_output::ClientOsApi;
 use crate::splash::{
     self,
-    renderer::{Renderer, Stage},
+    renderer::{Direction, Renderer, Stage},
 };
 use crate::stdin_ansi_parser::SyncOutput;
 use crate::terminal_escapes::write_synchronised;
@@ -59,6 +59,8 @@ pub(crate) struct Screensaver {
     next_frame: Instant,
     restoring: bool,
     last_size: Option<Size>,
+    cycle: Option<u128>,
+    direction: Option<Direction>,
 }
 
 impl Screensaver {
@@ -82,6 +84,8 @@ impl Screensaver {
             next_frame: now,
             restoring: false,
             last_size: None,
+            cycle: None,
+            direction: None,
         })
     }
 
@@ -110,6 +114,7 @@ impl Screensaver {
             state.last_input = now;
             state.sleeping = false;
             self.renderer = None;
+            self.cycle = None;
             self.restoring = false;
             return Ok(false);
         }
@@ -119,6 +124,7 @@ impl Screensaver {
             state.sleeping = false;
             state.last_input = now;
             self.renderer = None;
+            self.cycle = None;
             self.restoring = true;
             return Ok(true);
         }
@@ -150,7 +156,17 @@ impl Screensaver {
             let resized = self.last_size != Some(size);
             if resized || now >= self.next_frame {
                 let elapsed = now.saturating_duration_since(self.started);
-                let phase = animation_phase(elapsed);
+                let (cycle, phase) = animation_phase(elapsed);
+                let direction = match (self.cycle, self.direction) {
+                    (Some(active), Some(direction)) if active == cycle => direction,
+                    _ => {
+                        // Select only for the observed cycle, including after missed cycles.
+                        let direction = Direction::random_after(self.direction);
+                        self.direction = Some(direction);
+                        self.cycle = Some(cycle);
+                        direction
+                    },
+                };
                 let mut output = match phase {
                     Phase::Original(time) => {
                         if renderer.stage != stage {
@@ -158,7 +174,7 @@ impl Screensaver {
                         }
                         renderer.frame(time.min(splash::DURATION))
                     },
-                    Phase::Bouncing(time) => renderer.bouncing_frame(size, time),
+                    Phase::Bouncing(time) => renderer.bouncing_frame(size, time, direction),
                 };
                 renderer.append_bottom_hint(&mut output, size, "press any key");
                 write_synchronised(
@@ -208,18 +224,19 @@ enum Phase {
     Bouncing(Duration),
 }
 
-fn animation_phase(elapsed: Duration) -> Phase {
+fn animation_phase(elapsed: Duration) -> (u128, Phase) {
     let original_loop = splash::DURATION + LOOP_PAUSE;
     let original_duration = original_loop * ORIGINAL_LOOPS;
     let cycle = original_duration + BOUNCE_DURATION;
     let time = Duration::from_nanos((elapsed.as_nanos() % cycle.as_nanos()) as u64);
-    if time < original_duration {
+    let phase = if time < original_duration {
         Phase::Original(Duration::from_nanos(
             (time.as_nanos() % original_loop.as_nanos()) as u64,
         ))
     } else {
         Phase::Bouncing(time - original_duration)
-    }
+    };
+    (elapsed.as_nanos() / cycle.as_nanos(), phase)
 }
 
 #[cfg(test)]
