@@ -179,6 +179,45 @@ fn explicit_source_cancellation_finalizes_as_cancelled() {
 }
 
 #[test]
+fn resumed_source_cancellation_precedes_inventory_and_preflight() {
+    let fixture = BuildFixture::new("exit 1");
+    let directory = fixture.store.directory.clone();
+    fs::write(directory.join("cancel"), "").unwrap();
+    // No source server exists and its inventory has never been recorded. Even
+    // an ambiguous launch must stop before any inventory or capability checks.
+    run_store(fixture.store).unwrap();
+    let journal: Journal =
+        serde_json::from_slice(&fs::read(directory.join("journal.json")).unwrap()).unwrap();
+    assert_eq!(journal.phase, Phase::Cancelled);
+    assert!(directory.join("source/cancel").exists());
+}
+
+#[test]
+fn source_cancellation_cleanup_failure_stays_resumable() {
+    let fixture = BuildFixture::new("exit 1");
+    let directory = fixture.store.directory.clone();
+    fs::write(directory.join("cancel"), "").unwrap();
+    fs::write(directory.join("source/process.json"), "invalid").unwrap();
+    assert!(run_store(fixture.store).is_err());
+    let journal: Journal =
+        serde_json::from_slice(&fs::read(directory.join("journal.json")).unwrap()).unwrap();
+    assert_eq!(journal.phase, Phase::Discover);
+    assert!(!journal.errors.is_empty());
+}
+
+#[test]
+fn refusal_after_a_finished_source_build_is_terminal() {
+    let mut fixture = BuildFixture::new("exit 1");
+    journal::atomic_json(
+        &fixture.store.directory.join("source/result.json"),
+        &serde_json::json!({"success":true}),
+    )
+    .unwrap();
+    record_discovery_failure(&mut fixture.store, &anyhow!("invalid source artifact")).unwrap();
+    fixture.assert_retry(Phase::Failed);
+}
+
+#[test]
 fn failed_source_receipt_still_finalizes_operation() {
     let mut fixture = BuildFixture::new("printf '%s' '[{\"id\":42,\"exited\":true}]'");
     journal::atomic_json(

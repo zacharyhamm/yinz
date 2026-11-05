@@ -818,12 +818,20 @@ fn session_palette_update_dispatches_to_the_session_coordinator() {
         ("cancel-update", "CancelYinzUpdate"),
     ] {
         let mut h = Palette::new(state());
-        h.stub(command, Value::Bool(true));
+        // Update controls enqueue work and return JSON null; errors reject the call.
+        h.stub(command, Value::Null);
         let result = h.execute(h.root(action), Value::Null).unwrap();
         assert_eq!(result["type"], "complete");
         assert!(h.issued(json!(command)));
-        h.stub(command, Value::Bool(false));
-        assert!(h.execute(h.root(action), Value::Null).is_err());
+        h.host
+            .lock()
+            .unwrap()
+            .failures
+            .insert(command.into(), "update dispatch failed".into());
+        assert!(h
+            .execute(h.root(action), Value::Null)
+            .unwrap_err()
+            .contains("update dispatch failed"));
     }
 }
 
@@ -849,7 +857,7 @@ fn session_palette_source_update_visibility_and_invocation_revalidate_registry()
         palette.stub("DataFetch", rows("yinz", origin));
         palette.roots = palette.discover(Value::Null, "");
         let handle = palette.root("update-yinz-source");
-        palette.stub("UpdateYinzFromSource", json!(true));
+        palette.stub("UpdateYinzFromSource", Value::Null);
         let result = palette.execute(handle, Value::Null).unwrap();
         assert_eq!(result["type"], "complete");
         assert!(palette.issued(json!("UpdateYinzFromSource")));

@@ -228,23 +228,7 @@ pub(super) fn resume_client(
 
 #[cfg(test)]
 pub fn run(socket: &Path, data_dir: &Path, operation: &str) -> Result<()> {
-    run_with_source(socket, data_dir, operation, false)
-}
-
-#[cfg(test)]
-pub fn run_with_source(
-    socket: &Path,
-    data_dir: &Path,
-    operation: &str,
-    source_build: bool,
-) -> Result<()> {
-    run_with_channel(
-        socket,
-        data_dir,
-        operation,
-        source_build,
-        ReleaseChannel::Stable,
-    )
+    run_store(Store::open(socket, data_dir, operation)?)
 }
 
 pub fn run_with_channel(
@@ -254,59 +238,81 @@ pub fn run_with_channel(
     source_build: bool,
     channel: ReleaseChannel,
 ) -> Result<()> {
-    let mut store = Store::open_with_channel(socket, data_dir, operation, source_build, channel)?;
+    run_store(Store::open_with_channel(
+        socket,
+        data_dir,
+        operation,
+        source_build,
+        channel,
+    )?)
+}
+
+fn run_store(mut store: Store) -> Result<()> {
     if matches!(
         store.journal.phase,
         Phase::Complete | Phase::Failed | Phase::Cancelled
     ) {
         return Ok(());
     }
-    // A published session name now reaches the replacement. Reconnect by the
-    // journal's process incarnation, never by an assumed socket/name association.
-    let mut source = if store.journal.source.is_some() {
-        locate_server(&store, false)?
-    } else {
-        Some(Connection::connect(&store.journal.source_socket)?)
-    };
-    let mut recreated = false;
-    if !store.journal.handoff_committed && source.is_none() && store.journal.source.is_some() {
-        match recreate_source(&mut store) {
-            Ok(recovery) => {
-                // recreate_source has already initialized and restored clients.
-                recreated = true;
-                source = Some(recovery);
-            },
-            Err(error) => {
-                store
-                    .journal
-                    .errors
-                    .push(format!("Cold recovery incomplete: {error:#}"));
-                store.phase(Phase::RecoveryRequired)?;
-                return Err(error);
-            },
+    let mut source = None;
+    let result = (|| {
+        // Cancellation must precede discovery, version checks and even reconnecting
+        // to the source. Discover has not changed any installation or terminal.
+        if cancel_discovery(&mut store)? {
+            return Ok(());
         }
-    }
-    if !recreated
-        && store.journal.recovery_source_identity.is_some()
-        && let Some(source) = source.as_mut()
-    {
-        initialize_recovery_source(&store, source)?;
-    }
-    let result = if store.journal.handoff_committed {
-        finish_forward(&mut store, source.as_mut(), None)
-    } else if let Some(source) = source.as_mut() {
-        if store.journal.phase == Phase::Discover {
-            execute(&mut store, source)
+        // A published session name now reaches the replacement. Reconnect by the
+        // journal's process incarnation, never by an assumed socket/name association.
+        source = if store.journal.source.is_some() {
+            locate_server(&store, false)?
         } else {
-            recover(&mut store, source, None)
+            Some(Connection::connect(&store.journal.source_socket)?)
+        };
+        anyhow::ensure!(
+            source.is_some() || store.journal.phase != Phase::Discover,
+            "the source server is unavailable; no installation was changed"
+        );
+        let mut recreated = false;
+        if !store.journal.handoff_committed && source.is_none() && store.journal.source.is_some() {
+            match recreate_source(&mut store) {
+                Ok(recovery) => {
+                    // recreate_source has already initialized and restored clients.
+                    recreated = true;
+                    source = Some(recovery);
+                },
+                Err(error) => {
+                    store
+                        .journal
+                        .errors
+                        .push(format!("Cold recovery incomplete: {error:#}"));
+                    store.phase(Phase::RecoveryRequired)?;
+                    return Err(error);
+                },
+            }
         }
-    } else {
-        store.phase(Phase::RecoveryRequired)?;
-        Err(anyhow!("the recorded source server is unavailable; terminal ownership must be recovered before installation rollback"))
-    };
+        if !recreated
+            && store.journal.recovery_source_identity.is_some()
+            && let Some(source) = source.as_mut()
+        {
+            initialize_recovery_source(&store, source)?;
+        }
+        if store.journal.handoff_committed {
+            finish_forward(&mut store, source.as_mut(), None)
+        } else if let Some(source) = source.as_mut() {
+            if store.journal.phase == Phase::Discover {
+                execute(&mut store, source)
+            } else {
+                recover(&mut store, source, None)
+            }
+        } else {
+            store.phase(Phase::RecoveryRequired)?;
+            Err(anyhow!("the recorded source server is unavailable; terminal ownership must be recovered before installation rollback"))
+        }
+    })();
     if let Err(error) = &result {
         store.journal.errors.push(format!("{error:#}"));
         store.save()?;
+        record_discovery_failure(&mut store, error)?;
         if let Some(source) = source.as_mut() {
             let _ = source.request(
                 &store.journal.operation,
@@ -322,7 +328,34 @@ pub fn run_with_channel(
     result
 }
 
+fn cancel_discovery(store: &mut Store) -> Result<bool> {
+    if store.journal.phase != Phase::Discover || !store.cancel_requested() {
+        return Ok(false);
+    }
+    if store.journal.source_build {
+        source_build::cancel(store).context("stop cancelled source build")?;
+    }
+    store.phase(Phase::Cancelled)?;
+    Ok(true)
+}
+
+fn record_discovery_failure(store: &mut Store, error: &anyhow::Error) -> Result<()> {
+    if store.journal.phase != Phase::Discover || cancel_discovery(store)? {
+        return Ok(());
+    }
+    if store.journal.source_build {
+        // A launched source worker may still own a build. Keep that operation
+        // resumable until its result or cleanup is known, avoiding a second build.
+        record_source_build_failure(store, error)
+    } else {
+        // Even transient discovery failures are terminal: nothing was prepared,
+        // so a fresh request can safely rediscover on the user's chosen channel.
+        store.phase(Phase::Failed)
+    }
+}
+
 fn execute(store: &mut Store, source: &mut Connection) -> Result<()> {
+    check_cancel(store)?;
     let operation = store.journal.operation.clone();
     let inventory: Inventory =
         serde_json::from_value(source.request(&operation, Command::Inventory)?)
@@ -343,13 +376,7 @@ fn execute(store: &mut Store, source: &mut Connection) -> Result<()> {
         },
     )?;
     if store.journal.source_build {
-        let release = match build_source_release(store, source, &inventory) {
-            Ok(release) => release,
-            Err(error) => {
-                record_source_build_failure(store, &error)?;
-                return Err(error);
-            },
-        };
+        let release = build_source_release(store, source, &inventory)?;
         let inventory: Inventory =
             serde_json::from_value(source.request(&operation, Command::Inventory)?)
                 .context("refresh participants after source compilation")?;
@@ -376,14 +403,15 @@ fn resolve_release(
 
 fn record_source_build_failure(store: &mut Store, error: &anyhow::Error) -> Result<()> {
     let build = store.directory.join("source");
-    let failed = std::fs::read(build.join("result.json"))
+    let finished = std::fs::read(build.join("result.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .is_some_and(|result| result["success"] == false);
-    if store.cancel_requested() {
-        store.phase(Phase::Cancelled)?;
-    } else if error.is::<source_build::TerminalFailure>()
-        || failed
+        .is_some_and(|result| result["success"].is_boolean());
+    if cancel_discovery(store)? {
+        return Ok(());
+    }
+    if error.is::<source_build::TerminalFailure>()
+        || finished
         || !build.join("launch.json").exists()
     {
         store.phase(Phase::Failed)?;
@@ -573,6 +601,7 @@ pub(super) fn execute_release(
     inventory: Inventory,
     release: update::Release,
 ) -> Result<()> {
+    check_cancel(store)?;
     let operation = store.journal.operation.clone();
     store.journal.source = Some(inventory.clone());
     store.save()?;
@@ -581,6 +610,18 @@ pub(super) fn execute_release(
         release.source.is_some() || update::version(&inventory.running_version)? <= target,
         "source server is newer than the selected release; refusing downgrade"
     );
+    for client in &inventory.clients {
+        anyhow::ensure!(
+            target.pre.is_empty() || release.source.is_some() || client.supports_update,
+            "client {} does not support prerelease updates; update it manually first",
+            client.id
+        );
+        anyhow::ensure!(
+            release.source.is_none() || client.supports_source_update,
+            "client {} does not support source updates; no installation was published",
+            client.id
+        );
+    }
     store.journal.release = Some(serde_json::to_value(&release).context("record pinned release")?);
     store.phase(Phase::Prepare)?;
     let prepared = (|| {
@@ -605,16 +646,6 @@ pub(super) fn execute_release(
         });
         store.save()?;
         for client in &inventory.clients {
-            anyhow::ensure!(
-                target.pre.is_empty() || release.source.is_some() || client.supports_update,
-                "client {} does not support prerelease updates; update it manually first",
-                client.id
-            );
-            anyhow::ensure!(
-                release.source.is_none() || client.supports_source_update,
-                "client {} does not support source updates; no installation was published",
-                client.id
-            );
             if !client.supports_update {
                 store.journal.restart_required.push(client.id);
                 store.save()?;
@@ -2413,3 +2444,7 @@ mod source_build_tests;
 #[cfg(test)]
 #[path = "../unit/prerelease_coordinator.rs"]
 mod prerelease_tests;
+
+#[cfg(test)]
+#[path = "../unit/live_update_discovery.rs"]
+mod discovery_tests;

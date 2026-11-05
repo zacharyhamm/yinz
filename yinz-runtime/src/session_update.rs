@@ -3,6 +3,26 @@ use crate::errors::prelude::*;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
+/// Joining an operation must never silently change the user's artifact source.
+pub fn ensure_matching_mode(
+    source_build: bool,
+    channel: yinz_types::session_update::ReleaseChannel,
+    requested_source_build: bool,
+    requested_channel: yinz_types::session_update::ReleaseChannel,
+) -> Result<()> {
+    use yinz_types::session_update::ReleaseChannel;
+    let mode = match (source_build, channel) {
+        (true, _) => "local source",
+        (false, ReleaseChannel::Stable) => "stable",
+        (false, ReleaseChannel::Prerelease) => "prerelease",
+    };
+    anyhow::ensure!(
+        source_build == requested_source_build && channel == requested_channel,
+        "a {mode} update is already in progress; cancel it first (or finish recovery if terminal transfer has begun)"
+    );
+    Ok(())
+}
+
 pub fn canonical_socket(socket: &Path) -> Result<PathBuf> {
     Ok(socket
         .parent()

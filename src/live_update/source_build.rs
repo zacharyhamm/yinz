@@ -493,6 +493,18 @@ fn close_successful_pane(inventory: &Inventory, pane: &str) -> Result<()> {
     Ok(())
 }
 
+pub(super) fn cancel(store: &Store) -> Result<()> {
+    let directory = store.directory.join("source");
+    if directory.join("launch.json").exists() {
+        // Launch intent precedes every worker. Before that point cancellation
+        // needs no tools, even if preflight failed because Python is missing.
+        fs::write(directory.join("build.py"), include_str!("source_build.py"))
+            .context("write source build cancellation worker")?;
+        stop(&directory)?;
+    }
+    Ok(())
+}
+
 fn stop(directory: &Path) -> Result<()> {
     // The worker validates the saved Linux process incarnation before signalling
     // its build group; it never guesses ownership from a recycled PID.

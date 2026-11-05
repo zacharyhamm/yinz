@@ -134,7 +134,21 @@ fn cancellation_is_durable_but_does_not_change_the_recorded_ownership_phase() {
 }
 
 #[test]
-fn retry_before_inventory_preserves_the_original_release_or_source_mode() {
+fn cancellation_accepted_before_discovery_failure_wins_the_terminal_decision() {
+    let root = tempfile::tempdir().unwrap();
+    let mut store = Store::open(
+        &root.path().join("session"),
+        root.path(),
+        &uuid::Uuid::new_v4().to_string(),
+    )
+    .unwrap();
+    std::fs::write(store.directory.join("cancel"), "").unwrap();
+    store.phase(Phase::Failed).unwrap();
+    assert_eq!(store.journal.phase, Phase::Cancelled);
+}
+
+#[test]
+fn retry_before_inventory_rejects_a_different_source_mode() {
     for source_build in [false, true] {
         let root = tempfile::tempdir().unwrap();
         let socket = root.path().join("session");
@@ -144,16 +158,19 @@ fn retry_before_inventory_preserves_the_original_release_or_source_mode() {
         assert_eq!(original.journal.phase, Phase::Discover);
         assert!(original.journal.source.is_none());
         drop(original);
-        // Simulate a coordinator crash before the first server inventory. The
-        // opposite palette action must resume this operation without changing
-        // its artifact source, even though no release or inventory exists yet.
-        let retry = Store::open_with_source(
+        // A different palette action cannot silently resume the old mode.
+        let error = Store::open_with_source(
             &socket,
             &data,
             &uuid::Uuid::new_v4().to_string(),
             !source_build,
         )
+        .err()
         .unwrap();
+        assert!(error
+            .to_string()
+            .contains("update is already in progress; cancel it first"));
+        let retry = Store::open_with_source(&socket, &data, &operation, source_build).unwrap();
         assert_eq!(retry.journal.operation, operation);
         assert_eq!(retry.journal.source_build, source_build);
         assert!(retry.journal.release.is_none());
@@ -166,7 +183,7 @@ fn retry_before_inventory_preserves_the_original_release_or_source_mode() {
 }
 
 #[test]
-fn old_journals_default_to_stable_even_when_retried_with_prereleases() {
+fn old_journals_default_to_stable_and_reject_prerelease_starts() {
     use yinz_types::session_update::ReleaseChannel;
     let root = tempfile::tempdir().unwrap();
     let socket = root.path().join("session");
@@ -178,14 +195,19 @@ fn old_journals_default_to_stable_even_when_retried_with_prereleases() {
     old.as_object_mut().unwrap().remove("channel");
     std::fs::write(path, serde_json::to_vec(&old).unwrap()).unwrap();
     drop(store);
-    let resumed = Store::open_with_channel(
+    let error = Store::open_with_channel(
         &socket,
         &data,
         &uuid::Uuid::new_v4().to_string(),
         false,
         ReleaseChannel::Prerelease,
     )
+    .err()
     .unwrap();
+    assert!(error
+        .to_string()
+        .contains("stable update is already in progress; cancel it first"));
+    let resumed = Store::open(&socket, &data, &operation).unwrap();
     assert_eq!(resumed.journal.channel, ReleaseChannel::Stable);
     assert_eq!(resumed.journal.operation, operation);
 }

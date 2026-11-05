@@ -377,7 +377,7 @@ fn dispatch(
                 .unwrap_or_else(get_default_data_dir)
                 .join("updates")
                 .join(&request.operation);
-            let _guard = if matches!(request.command, Command::Cancel) {
+            let guard = if matches!(request.command, Command::Cancel) {
                 Some(yinz_runtime::session_update::lock_phase(&directory)?)
             } else {
                 None
@@ -408,6 +408,11 @@ fn dispatch(
                     .context("open cancellation directory")?
                     .sync_all()
                     .context("persist cancellation directory")?;
+                // A crashed coordinator cannot consume the marker. Relaunch it
+                // in the recorded mode, after releasing its phase lock, so even
+                // Prepare can roll back staged participants before cancelling.
+                drop(guard);
+                return start(request, client, state, data);
             }
             Ok(value)
         },
@@ -442,18 +447,16 @@ fn start(
     match launch.try_lock() {
         Ok(()) => {},
         Err(std::fs::TryLockError::WouldBlock) => {
-            return Ok(
-                yinz_runtime::session_update::read_active(&data_dir, &socket)?
-                    .filter(|active| {
-                        !matches!(
-                            active["phase"].as_str(),
-                            Some("Complete" | "Failed" | "Cancelled")
-                        )
-                    })
-                    .unwrap_or_else(
-                        || serde_json::json!({"phase":"Starting","session":inventory.session}),
-                    ),
-            )
+            let active = yinz_runtime::session_update::read_active(&data_dir, &socket)?
+                .filter(|active| {
+                    !matches!(
+                        active["phase"].as_str(),
+                        Some("Complete" | "Failed" | "Cancelled")
+                    )
+                })
+                .context("an update is starting; retry after its channel is recorded")?;
+            check_start_mode(&active, request)?;
+            return Ok(active);
         },
         Err(std::fs::TryLockError::Error(error)) => {
             return Err(error).context("lock update coordinator startup")
@@ -461,11 +464,22 @@ fn start(
     }
     let active = yinz_runtime::session_update::read_active(&data_dir, &socket)?;
     let mut operation = request.operation.clone();
+    let cancelling = matches!(request.command, session_update::Command::Cancel);
+    let (mut source_build, mut channel) = requested_mode(&request.command);
+    anyhow::ensure!(
+        !cancelling || active.is_some(),
+        "the update to cancel is no longer active"
+    );
     if let Some(active) = active {
+        if cancelling {
+            check_start_mode(&active, request)?;
+            (source_build, channel) = recorded_mode(&active)?;
+        }
         let phase = active["phase"]
             .as_str()
             .context("update journal has no phase")?;
         if !matches!(phase, "Complete" | "Failed" | "Cancelled") {
+            check_start_mode(&active, request)?;
             operation = active["operation"]
                 .as_str()
                 .context("update journal has no operation")?
@@ -485,6 +499,8 @@ fn start(
                     return Err(error).context("inspect update coordinator lock")
                 },
             }
+        } else if cancelling {
+            return Ok(active);
         }
     }
     let mut launch_command = std::process::Command::new(&inventory.executable);
@@ -493,9 +509,9 @@ fn start(
         .arg(&socket)
         .arg(&data_dir)
         .arg(&operation);
-    if matches!(request.command, session_update::Command::StartSource) {
+    if source_build {
         launch_command.arg("--source-build");
-    } else if matches!(request.command, session_update::Command::StartPrerelease) {
+    } else if channel == session_update::ReleaseChannel::Prerelease {
         launch_command.arg("--prerelease");
     }
     let mut child = launch_command
@@ -534,6 +550,48 @@ fn start(
         })
         .context("watch update coordinator")?;
     result
+}
+
+fn requested_mode(command: &session_update::Command) -> (bool, session_update::ReleaseChannel) {
+    (
+        matches!(command, session_update::Command::StartSource),
+        if matches!(command, session_update::Command::StartPrerelease) {
+            session_update::ReleaseChannel::Prerelease
+        } else {
+            session_update::ReleaseChannel::Stable
+        },
+    )
+}
+
+fn recorded_mode(active: &serde_json::Value) -> Result<(bool, session_update::ReleaseChannel)> {
+    Ok((
+        active["source_build"] == true,
+        serde_json::from_value(
+            active
+                .get("channel")
+                .cloned()
+                .unwrap_or(serde_json::json!("Stable")),
+        )
+        .context("decode active update channel")?,
+    ))
+}
+
+fn check_start_mode(active: &serde_json::Value, request: &session_update::Request) -> Result<()> {
+    if matches!(request.command, session_update::Command::Cancel) {
+        anyhow::ensure!(
+            active["operation"].as_str() == Some(&request.operation),
+            "the active update changed before cancellation; inspect its status"
+        );
+        return Ok(());
+    }
+    let (source_build, channel) = recorded_mode(active)?;
+    let (requested_source, requested_channel) = requested_mode(&request.command);
+    yinz_runtime::session_update::ensure_matching_mode(
+        source_build,
+        channel,
+        requested_source,
+        requested_channel,
+    )
 }
 
 /// A retired source still serves its attached clients while the coordinator

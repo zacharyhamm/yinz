@@ -95,9 +95,11 @@ pub struct Store {
 
 impl Store {
     pub fn open(socket: &Path, data_dir: &Path, operation: &str) -> Result<Self> {
-        Self::open_with_source(socket, data_dir, operation, false)
+        // Recovery addresses a recorded operation, without requesting a mode.
+        Self::open_inner(socket, data_dir, operation, None)
     }
 
+    #[cfg(test)]
     pub fn open_with_source(
         socket: &Path,
         data_dir: &Path,
@@ -119,6 +121,15 @@ impl Store {
         operation: &str,
         source_build: bool,
         channel: yinz_types::session_update::ReleaseChannel,
+    ) -> Result<Self> {
+        Self::open_inner(socket, data_dir, operation, Some((source_build, channel)))
+    }
+
+    fn open_inner(
+        socket: &Path,
+        data_dir: &Path,
+        operation: &str,
+        requested: Option<(bool, yinz_types::session_update::ReleaseChannel)>,
     ) -> Result<Self> {
         use std::os::unix::fs::OpenOptionsExt;
         uuid::Uuid::parse_str(operation).context("invalid update operation id")?;
@@ -153,6 +164,14 @@ impl Store {
                 ) {
                     operation.to_owned()
                 } else {
+                    if let Some((source_build, channel)) = requested {
+                        yinz_runtime::session_update::ensure_matching_mode(
+                            old.source_build,
+                            old.channel,
+                            source_build,
+                            channel,
+                        )?;
+                    }
                     active
                 }
             },
@@ -166,6 +185,7 @@ impl Store {
             .canonicalize()
             .context("resolve operation directory")?;
         let path = directory.join("journal.json");
+        let (source_build, channel) = requested.unwrap_or_default();
         let journal = match fs::read(&path) {
             Ok(bytes) => {
                 let mut journal: Journal =
@@ -176,6 +196,18 @@ impl Store {
                         && journal.source_socket == socket,
                     "update journal identity or format mismatch"
                 );
+                if !matches!(
+                    journal.phase,
+                    Phase::Complete | Phase::Failed | Phase::Cancelled
+                ) && requested.is_some()
+                {
+                    yinz_runtime::session_update::ensure_matching_mode(
+                        journal.source_build,
+                        journal.channel,
+                        source_build,
+                        channel,
+                    )?;
+                }
                 // The snapshot always lives in this operation directory. A
                 // relative path recorded from a relative data directory must
                 // not depend on whichever directory this process started in.
@@ -231,6 +263,17 @@ impl Store {
     }
     pub fn phase(&mut self, phase: Phase) -> Result<()> {
         let _guard = yinz_runtime::session_update::lock_phase(&self.directory)?;
+        // Cancellation can arrive after the discovery error was inspected. At
+        // this point failure is safe (including any source-worker cleanup), so
+        // honor the accepted cancellation under the same lock as its marker.
+        let phase = if self.journal.phase == Phase::Discover
+            && phase == Phase::Failed
+            && self.cancel_requested()
+        {
+            Phase::Cancelled
+        } else {
+            phase
+        };
         anyhow::ensure!(
             phase != Phase::Transfer || !self.cancel_requested(),
             "update cancelled before terminal transfer"

@@ -26,7 +26,7 @@
           (list (action "update-yinz-source" "Update Yinz from local main…"
               (defer (lambda ()
                   (unless (source-update-eligible?) (error "The canonical yinz project is no longer registered"))
-                  (require-success (yinz-command "UpdateYinzFromSource"))
+                  (yinz-command "UpdateYinzFromSource")
                   (complete "Source update requested. Compilation and progress will appear in this session.")))))
           '())))))
 
@@ -406,17 +406,17 @@
     (action "notifications" "Notifications…" (defer notifications))
     (action "update-yinz" "Update Yinz…"
       (defer (lambda ()
-          (require-success (yinz-command "UpdateYinz"))
+          (yinz-command "UpdateYinz")
           (complete "Update requested. Progress will appear in session notifications."))))
     (action "update-yinz-prerelease" "Update Yinz including prereleases…"
       (defer (lambda ()
-          (require-success (yinz-command "UpdateYinzPrerelease"))
+          (yinz-command "UpdateYinzPrerelease")
           (complete "Update including prereleases requested. Progress will appear in session notifications."))))
     (action "update-status" "Yinz update status"
       (defer (lambda ()
-          (require-success (yinz-command "YinzUpdateStatus"))
+          (yinz-command "YinzUpdateStatus")
           (complete "Update status will appear in session notifications."))))
     (action "cancel-update" "Cancel Yinz update"
       (defer (lambda ()
-          (require-success (yinz-command "CancelYinzUpdate"))
+          (yinz-command "CancelYinzUpdate")
           (complete "Cancellation requested. Progress will appear in session notifications."))))))

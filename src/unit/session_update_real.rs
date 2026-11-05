@@ -7,6 +7,8 @@ use yinz_types::{
     session_migration::{SessionMigrationInventory, SessionMigrationMap},
     session_update::{Command as UpdateCommand, Inventory, Request},
 };
+#[path = "session_update_control.rs"]
+mod control;
 #[path = "update_previous_release.rs"]
 mod previous_release;
 
@@ -714,9 +716,14 @@ fn retired_source_duplicate_update_returns_the_original_active_operation() {
         UpdateCommand::StartPrerelease,
         UpdateCommand::StartSource,
     ] {
-        let status = source
-            .request(&uuid::Uuid::new_v4().to_string(), command)
-            .unwrap();
+        let result = source.request(&uuid::Uuid::new_v4().to_string(), command.clone());
+        if command != UpdateCommand::StartPrerelease {
+            assert!(result
+                .unwrap_err()
+                .contains("update is already in progress; cancel it first"));
+            continue;
+        }
+        let status = result.unwrap();
         assert_eq!(status["operation"], operation);
         assert_eq!(status["phase"], "Transfer");
         assert_eq!(status["channel"], "Prerelease");

@@ -26,13 +26,13 @@ fn discovery_recovery_keeps_pinned_prerelease_and_original_channel() {
     .unwrap();
     let pinned = serde_json::to_value(release).unwrap();
     drop(store);
-    // Even a different palette action must resume the original operation.
+    // The same channel resumes the original operation without rediscovery.
     let mut resumed = Store::open_with_channel(
         &socket,
         &data,
         &uuid::Uuid::new_v4().to_string(),
-        true,
-        ReleaseChannel::Stable,
+        false,
+        ReleaseChannel::Prerelease,
     )
     .unwrap();
     assert_eq!(resumed.journal.operation, operation);
