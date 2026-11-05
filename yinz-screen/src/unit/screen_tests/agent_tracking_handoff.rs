@@ -388,6 +388,79 @@ fn transfer_into(source: &mut Screen, destination: &mut Screen) {
 }
 
 #[test]
+fn warp_tracking_claude_execution_tombstones_and_waits_survive_transfer() {
+    let (mut source, _, _) = setup_tracking("claude");
+    report_kind(&mut source, "claude", hook("SessionStart"));
+    report_kind(
+        &mut source,
+        "claude",
+        claude_execution("SubagentStart", "worker", "first"),
+    );
+    report_kind(
+        &mut source,
+        "claude",
+        claude_execution("SubagentStop", "worker", "first"),
+    );
+    report_kind(
+        &mut source,
+        "claude",
+        claude_execution("SubagentStart", "worker", "resumed"),
+    );
+    report_kind(
+        &mut source,
+        "claude",
+        HookEvent {
+            tool_name: Some("AskUserQuestion".into()),
+            ..claude_worker("PreToolUse", "worker")
+        },
+    );
+    let mut destination = transfer(&mut source, "claude");
+    for event in ["SubagentStop", "SubagentStart"] {
+        report_kind(
+            &mut destination,
+            "claude",
+            claude_execution(event, "worker", "first"),
+        );
+        assert_eq!(
+            destination.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
+        assert!(destination.agent_worker_waits[&PANE]
+            .waits
+            .contains_key("worker"));
+    }
+    report_kind(
+        &mut destination,
+        "claude",
+        claude_worker("PostToolUse", "worker"),
+    );
+    report_kind(
+        &mut destination,
+        "claude",
+        claude_execution("SubagentStop", "worker", "resumed"),
+    );
+    assert_eq!(
+        destination.agent_status_for_test().agent.state,
+        AgentState::Idle
+    );
+    let mut again = transfer(&mut destination, "claude");
+    report_kind(
+        &mut again,
+        "claude",
+        claude_execution("SubagentStart", "worker", "resumed"),
+    );
+    assert_eq!(again.agent_status_for_test().agent.state, AgentState::Idle);
+    let mut legacy = serde_json::to_value(again.capture_agent_tracking(PANE).unwrap()).unwrap();
+    legacy["lifecycle"]["claude"]
+        .as_object_mut()
+        .unwrap()
+        .remove("executions");
+    let decoded: yinz_types::agent::tracking::AgentTrackingHandoff =
+        serde_json::from_value(legacy).unwrap();
+    assert!(decoded.lifecycle.unwrap().claude.executions.is_empty());
+}
+
+#[test]
 fn warp_tracking_preserves_provider_states_and_completion_correlation() {
     for kind in [
         "claude", "codex", "agy", "muse", "pi", "opencode", "cursor", "qwen", "gemini", "aider",

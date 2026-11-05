@@ -1431,3 +1431,32 @@ fn a_notification_and_a_prompt_submission_each_carry_their_text() {
     .expect("parsed");
     assert_eq!(event.prompt.as_deref(), Some("fix the flaky test"));
 }
+#[test]
+fn claude_task_execution_survives_pruning_without_raw_tool_responses() {
+    let event = super::HookEvent {
+        hook_event_name: "SubagentStop".into(),
+        session_id: "conversation".into(),
+        agent_id: Some("worker".into()),
+        claude_task_execution: Some(super::ClaudeTaskExecution {
+            tool_use_id: "launch-tool".into(),
+            run_id: Some("provider-run".into()),
+        }),
+        tool_response: Some(
+            serde_json::json!({"large": "x".repeat(super::HOOK_BROADCAST_MAX_BYTES * 2)}),
+        ),
+        ..Default::default()
+    };
+    let (_, raw) = event.broadcast(serde_json::to_string(&event).unwrap());
+    assert!(raw.len() <= super::HOOK_BROADCAST_MAX_BYTES);
+    let decoded: super::HookEvent = serde_json::from_str(&raw).unwrap();
+    assert!(decoded.tool_response.is_none());
+    assert_eq!(decoded.claude_task_execution, event.claude_task_execution);
+    let legacy: super::HookEvent =
+        serde_json::from_str(r#"{"hook_event_name":"SubagentStop","agent_id":"worker"}"#).unwrap();
+    assert!(legacy.claude_task_execution.is_none());
+    for value in ["".into(), "x".repeat(129), "bad\nidentity".into()] {
+        let mut invalid = event.clone();
+        invalid.claude_task_execution.as_mut().unwrap().tool_use_id = value;
+        assert!(invalid.pruned().claude_task_execution.is_none());
+    }
+}

@@ -1,12 +1,269 @@
 use super::*;
 use serde_json::json;
 
+fn follow(observation: &Observation) -> Result<Turn> {
+    follow_with_api_reporting(observation, None, |_| Ok(()))
+}
+
+fn follow_with_api(observation: &Observation, api: Option<AgyApi>) -> Result<Turn> {
+    follow_with_api_reporting(observation, api, |_| Ok(()))
+}
+
 fn hook() -> HookEvent {
     HookEvent {
         session_id: "conversation".into(),
         prompt_id: Some("prompt".into()),
         ..Default::default()
     }
+}
+
+fn task_fixture() -> Value {
+    serde_json::from_str(include_str!("fixtures/claude-task-executions.json")).unwrap()
+}
+
+#[test]
+fn captured_task_runs_correlate_launch_resume_and_successful_handback_notifications() {
+    let fixture = task_fixture();
+    assert_eq!(fixture["provider"]["version"], "2.1.318");
+    for (case, data) in fixture["cases"].as_object().unwrap() {
+        let records = data["parent_records"].as_array().unwrap();
+        let session = records[0]["record"]["sessionId"].as_str().unwrap();
+        let mut tasks = tasks::Tasks::new(session);
+        let mut events = vec![];
+        for entry in records {
+            events.extend(tasks.record(&entry["record"]).unwrap());
+        }
+        assert!(!tasks.pending(), "{case}");
+        let mut turn = Turn::new(
+            "claude",
+            &HookEvent {
+                session_id: session.into(),
+                ..hook()
+            },
+        );
+        turn.record(
+            &json!({"type":"user", "sessionId":session, "promptId":"prompt", "uuid":"parent"}),
+        )
+        .unwrap();
+        for entry in records {
+            let mut record = entry["record"].clone();
+            record["promptId"] = json!("prompt");
+            turn.record(&record).unwrap();
+        }
+        assert_eq!(
+            turn.background_tasks,
+            [events[0].agent_id.clone().unwrap()],
+            "each prompt retains its launched or resumed task: {case}"
+        );
+        let runs = data["runs"].as_array().unwrap();
+        assert_eq!(events.len(), runs.len(), "{case}");
+        for (event, run) in events.iter().zip(runs) {
+            let run = &run["record"];
+            assert_eq!(event.agent_id.as_deref(), run["task_id"].as_str(), "{case}");
+            let execution = event.claude_task_execution.as_ref().unwrap();
+            assert_eq!(execution.tool_use_id, run["tool_use_id"], "{case}");
+            if event.hook_event_name == "SubagentStop" {
+                assert_eq!(
+                    execution.run_id.as_deref(),
+                    run["run_id"].as_str(),
+                    "{case}"
+                );
+            }
+            let json = serde_json::to_string(event).unwrap();
+            let (_, bounded) = event.broadcast(json);
+            assert_eq!(
+                serde_json::from_str::<HookEvent>(&bounded)
+                    .unwrap()
+                    .claude_task_execution,
+                event.claude_task_execution
+            );
+        }
+        // Multiple observers replay the same transcript; duplicates do not create work.
+        for entry in records {
+            assert!(tasks.record(&entry["record"]).unwrap().is_empty(), "{case}");
+        }
+    }
+    let hooks = fixture["cases"]["same-prompt"]["hooks"].as_array().unwrap();
+    for name in ["SubagentStart", "SubagentStop"] {
+        let payloads: Vec<_> = hooks
+            .iter()
+            .map(|h| &h["payload"])
+            .filter(|h| h["hook_event_name"] == name)
+            .collect();
+        assert_eq!(payloads.len(), 2);
+        assert_eq!(
+            payloads[0], payloads[1],
+            "raw {name} cannot identify executions"
+        );
+    }
+}
+
+#[test]
+fn captured_handback_success_is_distinct_from_a_denied_attempt_or_blocked_stop() {
+    let fixture = task_fixture();
+    let case = &fixture["cases"]["denied-handback"];
+    let mut succeeded = 0;
+    let mut denied = 0;
+    for entry in case["worker_results"].as_array().unwrap() {
+        let record = &entry["record"];
+        for result in record["message"]["content"].as_array().unwrap() {
+            if result["type"] != "tool_result" {
+                continue;
+            }
+            if result["is_error"] == true {
+                denied += 1;
+                assert_ne!(record["toolEndsTurn"], true);
+            } else if record["toolEndsTurn"] == true {
+                let response: Value =
+                    serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+                assert_eq!(response["success"], true);
+                assert!(case["hooks"].as_array().unwrap().iter().any(|hook| {
+                    let hook = &hook["payload"];
+                    hook["hook_event_name"] == "PostToolUse"
+                        && hook["tool_name"] == "SubagentHandback"
+                        && hook["tool_response"]["success"] == true
+                        && hook["tool_use_id"] == result["tool_use_id"]
+                }));
+                succeeded += 1;
+            }
+        }
+    }
+    assert_eq!((succeeded, denied), (2, 1));
+    let stops: Vec<_> = fixture["cases"]["blocked-plain"]["hooks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|hook| hook["payload"]["hook_event_name"] == "SubagentStop")
+        .collect();
+    assert_eq!(stops.len(), 2);
+    assert_eq!(stops[0]["payload"]["stop_hook_active"], false);
+    assert_eq!(stops[1]["payload"]["stop_hook_active"], true);
+}
+
+#[test]
+fn task_completions_require_provider_origin_identity_and_matching_launch() {
+    let fixture = task_fixture();
+    let records = fixture["cases"]["same-prompt"]["parent_records"]
+        .as_array()
+        .unwrap();
+    for change in [
+        json!({"sessionId":"foreign"}),
+        json!({"isSidechain":true}),
+        json!({"attachment":{"type":"queued_command","commandMode":"task-notification"}}),
+    ] {
+        let mut tasks = tasks::Tasks::new("ID_0350");
+        for entry in &records[..2] {
+            tasks.record(&entry["record"]).unwrap();
+        }
+        let mut completion = records[2]["record"].clone();
+        completion
+            .as_object_mut()
+            .unwrap()
+            .extend(change.as_object().unwrap().clone());
+        assert!(tasks.record(&completion).unwrap().is_empty());
+        assert!(tasks.pending());
+    }
+    for field in ["runId", "origin", "prompt"] {
+        let mut tasks = tasks::Tasks::new("ID_0350");
+        for entry in &records[..2] {
+            tasks.record(&entry["record"]).unwrap();
+        }
+        let mut completion = records[2]["record"].clone();
+        completion["attachment"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(tasks.record(&completion).unwrap().is_empty(), "{field}");
+        assert!(tasks.pending());
+    }
+    for replacement in ["failed", "killed", "running"] {
+        let mut tasks = tasks::Tasks::new("ID_0350");
+        for entry in &records[..2] {
+            tasks.record(&entry["record"]).unwrap();
+        }
+        let mut completion = records[2]["record"].clone();
+        let text = completion["attachment"]["prompt"]
+            .as_str()
+            .unwrap()
+            .replace("completed", replacement);
+        completion["attachment"]["prompt"] = json!(text);
+        assert!(tasks.record(&completion).unwrap().is_empty());
+        assert!(tasks.pending());
+    }
+}
+
+#[test]
+fn task_observer_continues_after_parent_confirmation_until_background_completion() {
+    use std::io::Write;
+    let fixture = task_fixture();
+    let records = fixture["cases"]["same-prompt"]["parent_records"]
+        .as_array()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("transcript.jsonl");
+    let mut file = std::fs::File::create(&path).unwrap();
+    writeln!(
+        file,
+        "{}",
+        json!({"type":"user", "sessionId":"ID_0350", "promptId":"prompt", "uuid":"parent"})
+    )
+    .unwrap();
+    for entry in &records[..2] {
+        writeln!(file, "{}", entry["record"]).unwrap();
+    }
+    writeln!(file, "{}", json!({"type":"system", "sessionId":"ID_0350", "subtype":"turn_duration", "parentUuid":"parent"})).unwrap();
+    let mut observation = observation(&path, None);
+    observation.hook.session_id = "ID_0350".into();
+    let mut events = vec![];
+    let turn = follow_with_api_reporting(&observation, None, |hook| {
+        events.push(hook.clone());
+        if hook.claude_turn_complete == Some(true) {
+            writeln!(file, "{}", records[2]["record"]).unwrap();
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert!(turn.reported);
+    assert_eq!(
+        events
+            .iter()
+            .map(|e| e.hook_event_name.as_str())
+            .collect::<Vec<_>>(),
+        ["SubagentStart", "Stop", "SubagentStop"]
+    );
+}
+
+#[test]
+fn old_uncorrelated_tasks_do_not_keep_later_prompt_observers_alive() {
+    use std::io::Write;
+    let fixture = task_fixture();
+    let records = fixture["cases"]["same-prompt"]["parent_records"]
+        .as_array()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("transcript.jsonl");
+    let mut file = std::fs::File::create(&path).unwrap();
+    for entry in &records[..2] {
+        writeln!(file, "{}", entry["record"]).unwrap();
+    }
+    writeln!(
+        file,
+        "{}",
+        json!({"type":"user", "sessionId":"ID_0350", "promptId":"prompt", "uuid":"parent"})
+    )
+    .unwrap();
+    writeln!(file, "{}", json!({"type":"system", "sessionId":"ID_0350", "subtype":"turn_duration", "parentUuid":"parent"})).unwrap();
+    let mut observation = observation(&path, None);
+    observation.hook.session_id = "ID_0350".into();
+    let mut events = vec![];
+    follow_with_api_reporting(&observation, None, |hook| {
+        events.push(hook.clone());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].hook_event_name, "SubagentStart");
+    assert_eq!(events[1].claude_turn_complete, Some(true));
 }
 
 #[test]

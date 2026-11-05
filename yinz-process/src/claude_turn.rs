@@ -14,6 +14,8 @@ use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::HookEvent;
 
+mod tasks;
+
 pub const OBSERVER_FLAG: &str = "--claude-turn-observer";
 
 fn observer_executable() -> Result<PathBuf> {
@@ -246,6 +248,9 @@ pub fn run() -> Result<()> {
     let mut observation: Observation =
         serde_json::from_reader(std::io::stdin()).context("read turn observation")?;
     let completed = follow(&observation);
+    if completed.as_ref().is_ok_and(|turn| turn.reported) {
+        return Ok(());
+    }
     observation.hook.hook_event_name = "Stop".into();
     observation.hook.prompt = None;
     observation.hook.prompt_sha256 = None;
@@ -337,6 +342,16 @@ fn follow(observation: &Observation) -> Result<Turn> {
 }
 
 fn follow_with_api(observation: &Observation, api: Option<AgyApi>) -> Result<Turn> {
+    follow_with_api_reporting(observation, api, |hook| {
+        send(&observation.route, &observation.kind, hook)
+    })
+}
+
+fn follow_with_api_reporting(
+    observation: &Observation,
+    api: Option<AgyApi>,
+    mut report: impl FnMut(&HookEvent) -> Result<()>,
+) -> Result<Turn> {
     let kind = &observation.kind;
     let (process_id, start_time) = observation
         .process
@@ -399,6 +414,9 @@ fn follow_with_api(observation: &Observation, api: Option<AgyApi>) -> Result<Tur
     }
     let mut reader = BufReader::new(file);
     let mut turn = Turn::new(kind, &observation.hook);
+    let mut tasks = tasks::Tasks::new(&observation.hook.session_id);
+    let mut watched_tasks = HashSet::new();
+    let mut completed = false;
     if kind == "agy"
         && (turn.session.is_empty()
             || turn.step_idx.is_none_or(|step| step == 0)
@@ -443,9 +461,28 @@ fn follow_with_api(observation: &Observation, api: Option<AgyApi>) -> Result<Tur
             let record: Value = serde_json::from_slice(&line)
                 .with_context(|| format!("parse {kind} transcript record"))?;
             line.clear();
-            if turn.record(&record)? {
-                return Ok(turn);
+            if kind == "claude" {
+                for event in tasks.record(&record)? {
+                    if turn.found
+                        && !completed
+                        && event.hook_event_name == "SubagentStart"
+                        && let Some(execution) = &event.claude_task_execution
+                    {
+                        watched_tasks.insert(execution.tool_use_id.clone());
+                    }
+                    report(&event)?;
+                }
             }
+            if !completed && turn.record(&record)? {
+                completed = true;
+                if kind != "claude" {
+                    return Ok(turn);
+                }
+                confirm(observation, &mut turn, &mut report)?;
+            }
+        }
+        if completed && !tasks.pending_for(&watched_tasks) {
+            return Ok(turn);
         }
         if let Some(api) = &api
             && turn.found
@@ -463,6 +500,7 @@ fn follow_with_api(observation: &Observation, api: Option<AgyApi>) -> Result<Tur
             }
         }
         if kind == "claude"
+            && !completed
             && turn.found
             && line.is_empty()
             && observation
@@ -479,7 +517,11 @@ fn follow_with_api(observation: &Observation, api: Option<AgyApi>) -> Result<Tur
                 && current.dev() == metadata.dev()
                 && current.len() == offset
             {
-                return Ok(turn);
+                completed = true;
+                confirm(observation, &mut turn, &mut report)?;
+                if !tasks.pending_for(&watched_tasks) {
+                    return Ok(turn);
+                }
             }
         }
         // Regular files cannot wake a condition variable; poll only while this exact process lives.
@@ -487,7 +529,25 @@ fn follow_with_api(observation: &Observation, api: Option<AgyApi>) -> Result<Tur
     }
 }
 
+fn confirm(
+    observation: &Observation,
+    turn: &mut Turn,
+    report: &mut impl FnMut(&HookEvent) -> Result<()>,
+) -> Result<()> {
+    let mut hook = observation.hook.clone();
+    hook.hook_event_name = "Stop".into();
+    hook.prompt = None;
+    hook.prompt_sha256 = None;
+    hook.claude_turn_complete = Some(true);
+    hook.last_assistant_message = turn.last_text.clone();
+    hook.claude_background_tasks = turn.background_tasks.clone();
+    report(&hook)?;
+    turn.reported = true;
+    Ok(())
+}
+
 struct Turn {
+    reported: bool,
     kind: String,
     session: String,
     prompt: String,
@@ -506,6 +566,7 @@ impl Turn {
             .as_deref()
             .and_then(|id| id.parse::<u64>().ok());
         Self {
+            reported: false,
             kind: kind.to_owned(),
             session: hook.session_id.clone(),
             prompt: hook.prompt_id.clone().unwrap_or_default(),
@@ -640,10 +701,18 @@ impl Turn {
 
 /// The task a tool result left running: a Bash `run_in_background` command reports
 /// `backgroundTaskId`, and an async subagent launch reports `async_launched` with its `agentId`.
+/// A successful SendMessage resumption reports `resumedAgentId`.
 /// Claude names the same ID in the `<task-id>` of the notification that ends it.
 fn background_task(result: &Value) -> Option<&str> {
     if let Some(task) = result["backgroundTaskId"].as_str() {
         return Some(task).filter(|task| !task.is_empty());
+    }
+    if result["success"] == true
+        && let Some(task) = result["resumedAgentId"]
+            .as_str()
+            .filter(|task| !task.is_empty())
+    {
+        return Some(task);
     }
     (result["isAsync"] == true && result["status"] == "async_launched")
         .then(|| result["agentId"].as_str())

@@ -149,6 +149,47 @@ pub(super) fn apply_queued_agent_report(
     {
         screen.correlate_claude_terminal_hook(pane_id, hook);
     }
+    if report.kind == "claude"
+        && let Some(hook) = hook.as_ref().filter(|hook| {
+            hook.hook_event_name == "SubagentStop" && hook.claude_task_execution.is_none()
+        })
+    {
+        // Raw Stops are useful archive evidence but cannot identify which execution
+        // ended. Never pass them through activity or worker-wait reconciliation.
+        if screen.has_agent_lifecycle(pane_id, "claude", &hook.session_id)
+            && hook.agent_id.as_deref().is_some_and(|id| !id.is_empty())
+            && report.event.as_ref().is_some_and(|event| {
+                event.kind == "claude" && event.session_id.as_deref() == Some(&hook.session_id)
+            })
+        {
+            if !hook.archive_only
+                && let Some(lifecycle) = screen.agent_lifecycle.get_mut(&pane_id)
+            {
+                // Reporting after Esc invalidates the recovery quiet-period proof,
+                // even though this report cannot change working/waiting state.
+                lifecycle.last_report = Instant::now();
+            }
+            if let Some(event) = &report.event {
+                let mut archived = hook.clone();
+                archived.archive_only = true;
+                let mut event = event.clone();
+                event.state = None;
+                event.raw = archived.broadcast_json(
+                    serde_json::to_string(&archived)
+                        .context("serialize archive-only Claude worker Stop")?,
+                );
+                screen
+                    .bus
+                    .senders
+                    .send_to_plugin(PluginInstruction::Update(vec![(
+                        None,
+                        None,
+                        yinz_types::data::Event::AgentEvent(event),
+                    )]))?;
+            }
+        }
+        return Ok(true);
+    }
     // Older installed reporters can still send Idle for an ordinary Claude or Antigravity Stop.
     // Correlate internal confirmations before applying or broadcasting any state.
     if report.kind == "claude"

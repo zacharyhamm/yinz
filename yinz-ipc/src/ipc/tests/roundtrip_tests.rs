@@ -6323,6 +6323,16 @@ fn warp_agent_tracking_roundtrip_preserves_provider_evidence() {
                 conversation: "conversation".into(),
                 input_revision: Some(90),
                 claude: ClaudeActivity {
+                    executions: [(
+                        "worker".into(),
+                        [
+                            ("first-tool".into(), Some("first-run".into())),
+                            ("resume-tool".into(), None),
+                        ]
+                        .into(),
+                    )]
+                    .into(),
+                    abandoned_executions: ["abandoned-tool".into()].into(),
                     turns: [(
                         "prompt".into(),
                         ClaudeTurn {

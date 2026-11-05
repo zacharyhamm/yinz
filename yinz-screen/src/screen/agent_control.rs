@@ -373,6 +373,49 @@ impl Screen {
     }
 
     pub(super) fn ignore_claude_worker(&self, pane: PaneId, hook: &HookEvent) -> bool {
+        if matches!(
+            hook.hook_event_name.as_str(),
+            "SubagentStart" | "SubagentStop"
+        ) {
+            // Claude 2.1.318 can emit byte-identical hooks for successive runs.
+            // Reject before apply_agent_report_state can clear a resumed worker's wait.
+            let complete = hook.hook_event_name == "SubagentStop";
+            return !self.agent_lifecycle.get(&pane).is_some_and(|l| {
+                l.kind == "claude"
+                    && l.conversation == hook.session_id
+                    && !hook.archive_only
+                    && hook
+                        .agent_id
+                        .as_deref()
+                        .is_some_and(|id| !id.is_empty() && id.len() <= 128)
+                    && hook.claude_task_execution.as_ref().map_or_else(
+                        || {
+                            !complete
+                                && !l
+                                    .claude
+                                    .executions
+                                    .contains_key(hook.agent_id.as_deref().unwrap_or_default())
+                                && !l
+                                    .claude
+                                    .stopped_workers
+                                    .contains(hook.agent_id.as_deref().unwrap_or_default())
+                        },
+                        |execution| {
+                            execution.valid(complete)
+                                && !l
+                                    .claude
+                                    .abandoned_executions
+                                    .contains(&execution.tool_use_id)
+                                && !l
+                                    .claude
+                                    .executions
+                                    .get(hook.agent_id.as_deref().unwrap_or_default())
+                                    .and_then(|runs| runs.get(&execution.tool_use_id))
+                                    .is_some_and(Option::is_some)
+                        },
+                    )
+            });
+        }
         hook.is_worker()
             && !self.agent_lifecycle.get(&pane).is_some_and(|l| {
                 l.kind == "claude"
@@ -380,8 +423,10 @@ impl Screen {
                     && !hook.archive_only
                     && hook.agent_id.as_ref().is_some_and(|id| {
                         !id.is_empty()
-                            && (hook.hook_event_name == "SubagentStart"
-                                || !l.claude.stopped_workers.contains(id))
+                            // Uncorrelated worker input can arrive before the observer
+                            // sees the resuming launch. Preserve that wait conservatively.
+                            && (!l.claude.stopped_workers.contains(id)
+                                || yinz_types::agent::hook_state_for("claude", hook) == Some(AgentState::Waiting))
                     })
             })
     }
@@ -405,18 +450,33 @@ impl Screen {
         }) else {
             return;
         };
-        if let Some(id) = hook.agent_id.as_ref().filter(|id| !id.is_empty()) {
+        if let Some(id) = hook.agent_id.as_ref().filter(|id| !id.is_empty())
+            && let Some(execution) = &hook.claude_task_execution
+        {
+            let runs = lifecycle.claude.executions.entry(id.clone()).or_default();
             match hook.hook_event_name.as_str() {
                 "SubagentStart" => {
+                    runs.entry(execution.tool_use_id.clone()).or_insert(None);
                     lifecycle.claude.stopped_workers.remove(id);
                     lifecycle.claude.workers.insert(id.clone());
+                    lifecycle.background_tasks.insert(id.clone());
                 },
                 "SubagentStop" => {
-                    lifecycle.claude.workers.remove(id);
-                    lifecycle.claude.stopped_workers.insert(id.clone());
+                    runs.insert(execution.tool_use_id.clone(), execution.run_id.clone());
+                    if runs.values().all(Option::is_some) {
+                        lifecycle.claude.workers.remove(id);
+                        lifecycle.claude.stopped_workers.insert(id.clone());
+                        lifecycle.background_tasks.remove(id);
+                    }
                 },
                 _ => {},
             }
+        } else if hook.hook_event_name == "SubagentStart"
+            && let Some(id) = &hook.agent_id
+        {
+            // Legacy and nested launches without causal evidence stay conservative.
+            // Their raw Stop cannot prove completion or clear a later input wait.
+            lifecycle.claude.workers.insert(id.clone());
         }
         let parent = lifecycle.claude.parent.get_or_insert_with(|| {
             let mut parent = self
@@ -571,6 +631,9 @@ impl Screen {
                     .and_then(|prompt| lifecycle.claude_notifications.remove(prompt))
                 {
                     for task in notification.tasks {
+                        if lifecycle.claude.executions.contains_key(&task) {
+                            continue;
+                        }
                         lifecycle.background_tasks.remove(&task);
                         lifecycle.claude.completed_tasks.insert(task);
                     }
@@ -578,7 +641,10 @@ impl Screen {
                 lifecycle.background_tasks.extend(
                     hook.claude_background_tasks
                         .iter()
-                        .filter(|task| !lifecycle.claude.completed_tasks.contains(*task))
+                        .filter(|task| {
+                            !lifecycle.claude.completed_tasks.contains(*task)
+                                && !lifecycle.claude.executions.contains_key(*task)
+                        })
                         .cloned(),
                 );
                 let sequence = hook
@@ -787,7 +853,8 @@ impl Screen {
                         .waits
                         .insert(id.clone(), waiting_detail(hook));
                 } else if (hook_state_for(&report.kind, hook).is_some()
-                    || matches!(hook.hook_event_name.as_str(), "SubagentStop" | "SessionEnd"))
+                    || (report.kind != "claude"
+                        && matches!(hook.hook_event_name.as_str(), "SubagentStop" | "SessionEnd")))
                     && let Some(workers) = &mut workers
                 {
                     workers.waits.remove(id);
@@ -1140,7 +1207,10 @@ impl Screen {
         };
         let not_ready_reason = not_ready_reason.filter(|reason| {
             *reason != NotReadyReason::UnconsumedInput
-                || self.draft_composer(pane_id, &agent.kind).is_none()
+                // Being able to clear a Claude draft does not mean it has been
+                // consumed. Finishing the last worker must not make that draft ready.
+                || self.draft_composer(pane_id, &agent.kind)
+                    .is_none_or(|composer| agent.kind == "claude" && !composer.empty)
                 || self.claude_steering(pane_id, &agent)
                 || self.claude_background_pending(pane_id)
                 || self
@@ -2429,6 +2499,16 @@ impl Screen {
                 .claude
                 .stopped_workers
                 .append(&mut lifecycle.claude.workers);
+            for runs in lifecycle.claude.executions.values_mut() {
+                runs.retain(|tool, completed| {
+                    if completed.is_none() {
+                        lifecycle.claude.abandoned_executions.insert(tool.clone());
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
             for turn in lifecycle.claude.turns.values_mut() {
                 turn.confirmation = Some(true);
             }

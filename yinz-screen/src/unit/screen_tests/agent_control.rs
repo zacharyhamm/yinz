@@ -3923,7 +3923,7 @@ fn claude_worker_permission_reminders_preserve_parent_state_and_worker_waits() {
                 screen.get_pane_info(PANE).unwrap().agent.unwrap().state,
                 AgentState::Waiting
             );
-            worker.hook_event_name = "SubagentStop".into();
+            worker.hook_event_name = "ElicitationResult".into();
             report_kind(&mut screen, "claude", worker);
             assert_eq!(screen.get_pane_info(PANE).unwrap().agent, Some(parent));
             assert!(screen.agent_worker_waits.is_empty());
@@ -7701,7 +7701,15 @@ fn clear_draft_never_treats_suggestions_or_continuation_rows_as_empty() {
                 AgentOutcome::TimedOut
             );
             // A later prompt can retry verified clearing; timeout did not prove emptiness.
-            assert!(screen.agent_status_for_test().ready);
+            let status = screen.agent_status_for_test();
+            assert!(status.clear_draft_supported);
+            assert_eq!(status.ready, kind != "claude");
+            if kind == "claude" {
+                assert_eq!(
+                    status.not_ready_reason,
+                    Some(NotReadyReason::UnconsumedInput)
+                );
+            }
         }
     }
 }
@@ -10293,8 +10301,359 @@ fn hook_flash_idle_hooks_restart_title_deadline_without_arming_palette() {
 fn claude_worker(name: &str, id: &str) -> HookEvent {
     HookEvent {
         agent_id: Some(id.into()),
+        claude_task_execution: matches!(name, "SubagentStart" | "SubagentStop").then(|| {
+            yinz_types::agent::ClaudeTaskExecution {
+                tool_use_id: format!("launch-{id}"),
+                run_id: (name == "SubagentStop").then(|| format!("run-{id}")),
+            }
+        }),
         ..hook(name)
     }
+}
+
+fn claude_execution(name: &str, task: &str, tool: &str) -> HookEvent {
+    let mut hook = claude_worker(name, task);
+    hook.claude_task_execution.as_mut().unwrap().tool_use_id = tool.into();
+    hook
+}
+
+#[test]
+fn claude_correlated_completion_retires_launches_in_both_parent_orderings() {
+    for parent_first in [false, true] {
+        let (mut screen, messages, writes) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+        finish_paste(&writes);
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker("SubagentStart", "same"),
+        );
+        if parent_first {
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_stop("prompt", "done", &["same"]),
+            );
+        }
+        for _ in 0..2 {
+            report_kind(&mut screen, "claude", claude_worker("SubagentStop", "same"));
+        }
+        if !parent_first {
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_stop("prompt", "done", &["same"]),
+            );
+        }
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker("SubagentStart", "same"),
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_stop("prompt", "late duplicate", &["same"]),
+        );
+        let status = screen.agent_status_for_test();
+        assert_eq!(status.agent.state, AgentState::Idle);
+        assert!(status.background_tasks.is_empty());
+        replies(&messages, CLIENT);
+        screen.agent_control(wait(AgentState::Idle), CLIENT);
+        assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+    }
+}
+
+#[test]
+fn claude_old_completions_cannot_end_resumed_work_or_clear_its_wait() {
+    for waiting in [false, true] {
+        for old_stop_first in [false, true] {
+            let (mut screen, _, _) = setup("claude");
+            report_kind(&mut screen, "claude", hook("SessionStart"));
+            report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_execution("SubagentStart", "same", "first"),
+            );
+            if old_stop_first {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    claude_execution("SubagentStop", "same", "first"),
+                );
+            }
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_execution("SubagentStart", "same", "resumed"),
+            );
+            if waiting {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    HookEvent {
+                        tool_name: Some("AskUserQuestion".into()),
+                        ..claude_worker("PreToolUse", "same")
+                    },
+                );
+            }
+            for _ in 0..2 {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    claude_execution("SubagentStop", "same", "first"),
+                );
+                // Raw hooks are indistinguishable, including a first delivery of an old Stop.
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    HookEvent {
+                        agent_id: Some("same".into()),
+                        ..hook("SubagentStop")
+                    },
+                );
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    claude_execution("SubagentStart", "same", "first"),
+                );
+            }
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_stop("prompt", "parent", &["same"]),
+            );
+            assert_eq!(
+                screen.agent_status_for_test().agent.state,
+                if waiting {
+                    AgentState::Waiting
+                } else {
+                    AgentState::Busy
+                }
+            );
+            assert_eq!(screen.agent_status_for_test().background_tasks, ["same"]);
+            if waiting {
+                assert!(screen.agent_worker_waits[&PANE].waits.contains_key("same"));
+                // Only the actual tool's response releases an uncorrelated input wait.
+                report_kind(&mut screen, "claude", claude_worker("PostToolUse", "same"));
+            }
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_execution("SubagentStop", "same", "resumed"),
+            );
+            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+            assert!(screen.agent_status_for_test().background_tasks.is_empty());
+        }
+    }
+}
+
+#[test]
+fn claude_completion_preserves_draft_revision_and_independent_readiness() {
+    let (mut screen, _, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_worker("SubagentStart", "same"),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("prompt", "done", &["same"]),
+    );
+    screen.agent_write_for_test();
+    assert_eq!(
+        screen.agent_status_for_test().not_ready_reason,
+        Some(NotReadyReason::UnconsumedInput),
+        "draft input before render"
+    );
+    draft_frame(
+        &mut screen,
+        "claude",
+        "unsubmitted draft",
+        17,
+        Instant::now(),
+    );
+    let revision = screen.tabs[&TabId::new(0)].agent_input_revision(PANE);
+    assert_eq!(
+        screen.agent_status_for_test().not_ready_reason,
+        Some(NotReadyReason::UnconsumedInput),
+        "draft input after render"
+    );
+    report_kind(&mut screen, "claude", claude_worker("SubagentStop", "same"));
+    let status = screen.agent_status_for_test();
+    assert_eq!(status.agent.state, AgentState::Idle);
+    assert!(status.background_tasks.is_empty());
+    assert_eq!(
+        status.not_ready_reason,
+        Some(NotReadyReason::UnconsumedInput)
+    );
+    assert_eq!(
+        screen.tabs[&TabId::new(0)].agent_input_revision(PANE),
+        revision
+    );
+    assert!(screen.tabs[&TabId::new(0)]
+        .get_pane_with_id(PANE)
+        .unwrap()
+        .dump_screen(false, Some(CLIENT))
+        .contains("unsubmitted draft"));
+}
+
+#[test]
+fn claude_completion_is_scoped_and_legacy_stops_preserve_unknown_waits() {
+    let (mut screen, _, _) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_worker("SubagentStart", "same"),
+    );
+    for change in ["foreign", "archive", "missing", "empty"] {
+        let mut event = claude_worker("SubagentStop", "same");
+        match change {
+            "foreign" => event.session_id = "foreign".into(),
+            "archive" => event.archive_only = true,
+            "missing" => event.claude_task_execution = None,
+            "empty" => event.claude_task_execution.as_mut().unwrap().run_id = Some(String::new()),
+            _ => unreachable!(),
+        }
+        report_kind(&mut screen, "claude", event);
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+    }
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            tool_name: Some("AskUserQuestion".into()),
+            ..claude_worker("PreToolUse", "same")
+        },
+    );
+    report_kind(&mut screen, "claude", claude_worker("SubagentStop", "same"));
+    assert_eq!(
+        screen.agent_status_for_test().agent.state,
+        AgentState::Waiting
+    );
+    assert!(screen.agent_worker_waits[&PANE].waits.contains_key("same"));
+}
+
+#[test]
+fn claude_raw_stop_archives_without_publishing_idle_or_clearing_waits() {
+    let (mut screen, _, _) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_execution("SubagentStart", "worker", "resumed"),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            tool_name: Some("AskUserQuestion".into()),
+            ..claude_worker("PreToolUse", "worker")
+        },
+    );
+    let (sender, plugins) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    let mut stop = claude_worker("SubagentStop", "worker");
+    stop.claude_task_execution = None;
+    stop.agent_type = Some("reviewer".into());
+    stop.last_assistant_message = Some("worker report".into());
+    report_kind(&mut screen, "claude", stop);
+    assert_eq!(
+        screen.agent_status_for_test().agent.state,
+        AgentState::Waiting
+    );
+    assert!(screen.agent_worker_waits[&PANE]
+        .waits
+        .contains_key("worker"));
+    let events: Vec<_> = plugins
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PluginInstruction::Update(updates) => updates
+                .into_iter()
+                .map(|(_, _, event)| event)
+                .collect::<Vec<_>>(),
+            _ => vec![],
+        })
+        .collect();
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, Event::PaneUpdate(_))));
+    let archived = events
+        .into_iter()
+        .find_map(|event| match event {
+            Event::AgentEvent(event) => {
+                Some(serde_json::from_str::<HookEvent>(&event.raw).unwrap())
+            },
+            _ => None,
+        })
+        .unwrap();
+    assert!(archived.archive_only);
+    assert_eq!(
+        archived.last_assistant_message.as_deref(),
+        Some("worker report")
+    );
+    assert_eq!(archived.agent_type.as_deref(), Some("reviewer"));
+}
+
+#[test]
+fn claude_recovery_abandons_execution_without_fabricating_completion() {
+    let (mut screen, messages, writes) = setup("claude");
+    complete_with_background(&mut screen, &messages, &writes, &["worker"]);
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_execution("SubagentStart", "worker", "first"),
+    );
+    send_esc(&mut screen, &messages);
+    recover_after_quiet(&mut screen, interrupted_recover());
+    assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+    for name in ["SubagentStart", "SubagentStop"] {
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_execution(name, "worker", "first"),
+        );
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+    }
+    let tracking = screen
+        .capture_agent_tracking(PANE)
+        .unwrap()
+        .lifecycle
+        .unwrap()
+        .claude;
+    assert!(tracking.abandoned_executions.contains("first"));
+    assert!(tracking.executions["worker"].is_empty());
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_execution("SubagentStart", "worker", "resumed"),
+    );
+    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            session_id: "new".into(),
+            ..hook("SessionStart")
+        },
+    );
+    let tracking = screen
+        .capture_agent_tracking(PANE)
+        .unwrap()
+        .lifecycle
+        .unwrap()
+        .claude;
+    assert!(tracking.executions.is_empty());
+    assert!(tracking.abandoned_executions.is_empty());
 }
 
 fn steering_prompt(id: &str) -> AgentRequest {
@@ -10401,7 +10760,8 @@ fn claude_workers_and_notifications_publish_aggregate_activity_without_idle_edge
             );
             assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
             assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
-            // A completed worker's stale question cannot resurrect it before another start.
+            // An uncorrelated question may belong to a resumption not yet persisted.
+            // Keep that input wait conservative until the actual tool response arrives.
             report_kind(
                 &mut screen,
                 "claude",
@@ -10410,7 +10770,10 @@ fn claude_workers_and_notifications_publish_aggregate_activity_without_idle_edge
                     ..claude_worker("PreToolUse", "one")
                 },
             );
-            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+            assert_eq!(
+                screen.agent_status_for_test().agent.state,
+                AgentState::Waiting
+            );
         }
     }
 }
@@ -10996,12 +11359,12 @@ fn claude_stopped_workers_can_resume_and_request_input() {
             tool_name: Some("AskUserQuestion".into()),
             ..claude_worker("PreToolUse", "worker")
         };
-        for _ in 0..2 {
+        for run in ["first", "resumed"] {
             for _ in 0..2 {
                 report_kind(
                     &mut screen,
                     "claude",
-                    claude_worker("SubagentStart", "worker"),
+                    claude_execution("SubagentStart", "worker", run),
                 );
                 assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
             }
@@ -11018,32 +11381,35 @@ fn claude_stopped_workers_can_resume_and_request_input() {
             report_kind(
                 &mut screen,
                 "claude",
-                claude_worker("SubagentStart", "worker"),
+                claude_execution("SubagentStart", "worker", run),
             );
             assert_eq!(
                 screen.agent_status_for_test().agent.state,
                 AgentState::Waiting
             );
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_worker("PostToolUse", "worker"),
+            );
             for _ in 0..2 {
                 report_kind(
                     &mut screen,
                     "claude",
-                    claude_worker("SubagentStop", "worker"),
+                    claude_execution("SubagentStop", "worker", run),
                 );
                 assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
             }
             for stale in [
-                question.clone(),
                 claude_worker("PostToolUse", "worker"),
                 HookEvent {
                     archive_only: true,
-                    ..claude_worker("SubagentStart", "worker")
+                    ..claude_execution("SubagentStart", "worker", run)
                 },
                 HookEvent {
                     session_id: "foreign".into(),
-                    ..claude_worker("SubagentStart", "worker")
+                    ..claude_execution("SubagentStart", "worker", run)
                 },
-                question.clone(),
             ] {
                 report_kind(&mut screen, "claude", stale);
                 assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);

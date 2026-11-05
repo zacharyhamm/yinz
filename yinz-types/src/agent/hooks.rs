@@ -601,6 +601,24 @@ const PRUNED_MESSAGE_CHARS: usize = HOOK_BROADCAST_MAX_BYTES;
 /// Background task IDs one Claude turn can report; IDs past this are not tracked.
 pub const MAX_BACKGROUND_TASKS: usize = 32;
 
+/// Claude's causal Agent/SendMessage tool call identifies an execution, even when
+/// resuming the same task within one prompt. A terminal notification additionally
+/// supplies a provider run ID. Raw SubagentStart/Stop hooks supply neither.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaudeTaskExecution {
+    pub tool_use_id: String,
+    pub run_id: Option<String>,
+}
+
+impl ClaudeTaskExecution {
+    pub fn valid(&self, complete: bool) -> bool {
+        let id = |s: &str| !s.is_empty() && s.len() <= 128 && !s.chars().any(char::is_control);
+        id(&self.tool_use_id)
+            && self.run_id.as_deref().is_none_or(id)
+            && (!complete || self.run_id.is_some())
+    }
+}
+
 /// A Claude Code hook event, as its JSON arrives.
 ///
 /// Every field but the event name is optional, because the payload's shape differs between
@@ -638,6 +656,13 @@ pub struct HookEvent {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub claude_background_tasks: Vec<String>,
+    /// Host observer evidence, carried independently of prunable tool responses.
+    #[serde(
+        default,
+        rename = "_yinz_claude_task_execution",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub claude_task_execution: Option<ClaudeTaskExecution>,
     /// Antigravity's host-side turn confirmation.
     #[serde(
         default,
@@ -836,6 +861,10 @@ impl HookEvent {
             prompt_id: self.prompt_id.clone(),
             transcript_path: self.transcript_path.clone(),
             claude_turn_complete: self.claude_turn_complete,
+            claude_task_execution: self
+                .claude_task_execution
+                .clone()
+                .filter(|e| e.valid(false)),
             claude_background_tasks: self
                 .claude_background_tasks
                 .iter()

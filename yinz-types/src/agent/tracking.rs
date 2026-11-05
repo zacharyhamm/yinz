@@ -66,6 +66,13 @@ pub struct ClaudeActivity {
     pub stopped_workers: BTreeSet<String>,
     pub turns: BTreeMap<String, ClaudeTurn>,
     pub completed_tasks: BTreeSet<String>,
+    /// Executions indexed by task ID and causal tool call. Completion tombstones
+    /// survive ordinary prompts and pane transfer, until conversation replacement.
+    #[serde(default)]
+    pub executions: BTreeMap<String, BTreeMap<String, Option<String>>>,
+    /// Explicit recovery abandons executions without claiming successful completion.
+    #[serde(default)]
+    pub abandoned_executions: BTreeSet<String>,
     pub sequence: u64,
     pub message_sequence: u64,
 }

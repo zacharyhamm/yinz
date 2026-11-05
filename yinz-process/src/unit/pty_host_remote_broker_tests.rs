@@ -620,7 +620,7 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
     let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind failed");
     let broker_registry = registry.clone();
     let broker = std::thread::spawn(move || {
-        for _ in 0..10 {
+        for _ in 0..11 {
             let (stream, _) = listener.accept().expect("accept failed");
             let _ = serve_connection(stream, std::path::Path::new("/bin/false"), &broker_registry);
         }
@@ -669,6 +669,38 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
     assert_eq!(
         serde_json::from_str::<yinz_types::agent::HookEvent>(&json).unwrap(),
         confirmation
+    );
+
+    let worker_completion = yinz_types::agent::HookEvent {
+        hook_event_name: "SubagentStop".into(),
+        session_id: "remote-session".into(),
+        agent_id: Some("worker".into()),
+        claude_task_execution: Some(yinz_types::agent::ClaudeTaskExecution {
+            tool_use_id: "resume-tool".into(),
+            run_id: Some("resumed-run".into()),
+        }),
+        ..Default::default()
+    };
+    crate::claude_turn::send(
+        &crate::claude_turn::Route::Remote {
+            socket: socket.clone(),
+            pane_token: "token".into(),
+        },
+        "claude",
+        &worker_completion,
+    )
+    .unwrap();
+    let BrokerToServerMsg::AgentReport { json, .. } = protocol::read_frame(&mut server_side)
+        .unwrap()
+        .unwrap()
+        .decode_control()
+        .unwrap()
+    else {
+        panic!("expected worker completion")
+    };
+    assert_eq!(
+        serde_json::from_str::<yinz_types::agent::HookEvent>(&json).unwrap(),
+        worker_completion
     );
 
     for (hook, mode, notification, state) in [

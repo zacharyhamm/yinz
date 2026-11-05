@@ -28,83 +28,97 @@ Each one found its session from the environment, then ran spawn, wait, prompt,
 | 35 | P2 | **Not reproduced; watch for it.** A worker spawned into `.worktrees/fix-sub` once edited the main checkout's file by absolute path, and `prompt --wait` reported success. Later runs stayed inside their own worktrees. |
 | 37 | P2 | **Not reproduced; watch for it.** Haiku once called a 55 KB paste ending in an instruction a "prompt injection" and ignored it, despite `PASTE_LEAD_IN`. A later 56 KB sample worked. |
 
-## Claude background completion: implementation prerequisite blocked
+## Claude background completion, 2026-11-05
 
-Investigation on 2026-11-05 for Agenda workspace `yinz`, item 17, approved plan
-version 2, against source `7ea5a7f4ef4dcee5ea491e1a82bc58b31e132582`.
-This Agenda item is separate from shakedown finding 17 in the table above.
-The runtime fix is **not implemented**. Plan step `validate-worker-run-evidence`
-requires attributable provider fixtures before changing completion transitions;
-the repository and documentation inspected do not establish the required
-correlation. The controller owns external fixture capture. No live Claude session,
-incident transcript, installed hook, or provider configuration was changed or
-read during this investigation.
+Agenda workspace `yinz`, item 17, approved plan version 2 (separate from the
+shakedown finding numbered 17 above). The earlier investigation at
+`7ea5a7f4ef4dcee5ea491e1a82bc58b31e132582` identified overlapping worker/background
+tracking and stale Stop side effects, but stopped before runtime implementation.
+The controller subsequently supplied nine bounded Claude Code 2.1.318 captures;
+all exited successfully and the controller's 336 fixture checks passed. This
+implementation read those captures and the authorized incident transcript without
+changing provider configuration or running further live-provider experiments.
 
-The source still has both tracking defects:
+The same-prompt capture disproves raw-hook execution correlation: both Starts
+are identical and both Stops are byte-identical across two executions of one
+worker. The agent ID and prompt ID remain the same. Reporter UUIDs, receipt time,
+and a hook-time transcript tail do not repair that ambiguity. In particular,
+Stop snapshots precede persisted successful handback results, and resumed Start
+precedes the coordinator message in the worker transcript.
 
-- `yinz-process/src/claude_turn.rs`, `background_task` and `Turn::record`, retain
-  only the `agentId` from an `async_launched` result. Parent confirmation carries
-  those IDs in `HookEvent.claude_background_tasks`.
-- `yinz-screen/src/screen/agent_control.rs`, `reconcile_claude_activity`, removes
-  a stopped ID from `workers` but leaves it in `background_tasks`. A later
-  confirmation can add it again because only completed notification turns populate
-  `completed_tasks`.
-- `ignore_claude_worker` accepts a new `SubagentStart` for a stopped ID;
-  reconciliation clears its `stopped_workers` entry. An older Stop arriving after
-  that start is accepted. `apply_agent_report_state` can remove the resumed
-  worker's input wait before reconciliation removes the worker itself. A guard
-  confined to reconciliation would therefore be too late.
+There is a usable independent completion path. Stream task_started and
+task_notification records join task_id, run_id and the causal tool_use_id. On
+SendMessage resumption, both run_id and the causal tool call change. Parent
+transcript launch results preserve that causal tool ID; queued_command
+attachments carry runId and task-notification XML with task-id/tool-use-id.
+Notifications processed as turns instead carry origin.runId. These same two
+notification shapes are present in the interactive incident transcript, so this
+adapter does not depend on the print/stream-json interface. All three stale async
+task IDs from the incident have a completed notification matching their launch
+tool call with a nonempty run ID. A successful
+SubagentHandback has success=true in the captured tool response and its linked
+terminal result, followed by a completed task notification. The denied handback
+has is_error=true and no toolEndsTurn; the adapter never interprets an attempted
+handback or a raw Stop as successful completion.
 
-The transport does not supply a validated execution identity. `HookEvent` has
-optional prompt, turn, tool and message IDs, but the existing fixtures do not
-show which, if any, links a worker launch to its completion across resumption.
-`ReportTrace::new` creates a fresh UUID per reporter invocation; `AgentReport`
-does not turn that UUID into a provider execution identifier. The local path
-(`yinz-cli/src/actions/agents.rs`, `src/agent_report.rs`) and broker path
-(`yinz-process/src/pty_host/remote/broker.rs`) both use shared hook parsing and
-bounded broadcasts. Unknown fields can survive an unpruned raw broadcast but
-are lost during typed decoding or pruning; raw tool responses are also pruned.
-The turn observer explicitly excludes worker hooks. No repository fixture or
-adapter for `SubagentHandback` was found. The synthetic async-launch test
-`background_launches_in_the_turn_are_reported_once_in_launch_order` covers ID
-collection, not provider execution correlation.
+The runtime observer now emits typed worker execution reports from these parent
+transcript records. It validates the originating Agent/Task or SendMessage call,
+its successful launch result, provider notification origin, conversation, task
+and causal tool ID, and completed status with a nonempty run ID. It continues
+following background work after confirming the parent's turn. Existing local,
+pane-reference and broker routes carry the metadata through bounded broadcasts.
+Screen tracking retains active executions and completed execution tombstones
+separately from public task IDs. Completion retires only its own execution;
+late starts, parent confirmations and notification confirmations cannot resurrect
+it or retire another execution of the same task. Ordinary prompts and pane
+transfer preserve this evidence. Conversation replacement resets it. Explicit
+recovery records abandonment separately from successful completion.
 
-Provider documentation checked on 2026-11-05 narrows the investigation:
+Raw SubagentStop is excluded from activity and wait reconciliation. It remains
+available as an archive-only event, and its receipt still invalidates an Esc
+recovery quiet-period proof; it cannot publish Idle or clear a worker wait. An uncorrelated Start for an unknown task conservatively records work;
+known tasks use the observer's causal launches. Background Bash tasks and
+notification processing retain their independent lifetimes. Submission results
+remain historical and keep their original launch lists. Completion never consumes
+an unsubmitted draft or changes its input revision. A recognized nonempty Claude
+composer now retains unconsumed_input readiness when the last worker finishes;
+support for guarded clearing is not proof that the draft has been consumed.
 
-- `SubagentStart` fires on resumption. `SubagentStop` includes a worker transcript
-  path, but hooks can block stopping and continue the worker. Handback delivers
-  its report before stopping; the Stop's closing text need not be that report.
-  These statements do not validate a successful handback-result shape or an
-  execution key. See the [hooks reference](https://code.claude.com/docs/en/hooks#subagentstop).
-- Resumption starts another run under the same agent ID, including through
-  `SendMessage` without a new `Agent` call. Therefore agent ID or the original
-  launch alone cannot distinguish runs. See [resuming subagents](https://code.claude.com/docs/en/sub-agents#resume-subagents).
+**Remaining protocol limitation:** raw worker input hooks do not identify the
+execution either. A wait can arrive before the resumed launch is persisted. The
+adapter therefore cannot safely assign that wait to the currently observed run,
+or clear it on completion of that run. Input waits remain until a subsequent
+worker tool event releases them. A late uncorrelated wait or missing release hook
+can consequently leave Waiting after the execution finishes; this conservative
+fallback is not a claim that every missing-hook case now completes automatically.
+The smallest further architecture change is a provider adapter carrying execution
+identity on input and release events too, or an independently validated transcript
+join from each waiting tool call to the causal parent launch. Neither receipt
+order nor a synthetic generation supplies that join. Unknown legacy or nested
+task IDs without parent transcript evidence retain provisional worker activity.
+Resumption of an already-known task by a nested worker, with no causal launch
+record in the parent transcript, is outside the validated adapter contract:
+root-only observation cannot establish that execution. Supporting it requires
+observation of nested launch evidence or a complete provider task stream. This
+change must not be treated as satisfying automatic activity for that case.
 
-These are current documentation findings, not a captured Claude 2.1.318 event
-sequence. Before implementation resumes, the controller must supply a sanitized,
-version-attributed capture containing the raw hooks and linked transcript records
-for an async launch, successful handback and eventual stop, then same-ID
-resumption and its completion. Preserve identifier equality, tool-result success
-or error metadata, message ancestry, and transcript boundaries while removing
-prose and private paths. Include a resumed input wait, failed or denied handback,
-and a blocking Stop continuation. The evidence must establish how each completion
-and late launch report identifies its execution even when delivered after a newer
-start; a parent prompt ID alone is insufficient unless that relationship is
-demonstrated for multiple worker runs in the same parent prompt.
+Minimal sanitized projections are committed in
+`yinz-process/src/unit/fixtures/claude-task-executions.json`. They include
+same-prompt resumption, processed notifications, successful and denied handback,
+a resumed input request, and blocked plain Stop. XML prose is removed and the
+identity/status tags are reconstructed from the controller sanitizer's extracted
+fields; source line numbers and provider version preserve attribution. Private
+raw captures, paths and alias maps are not committed.
 
-Until that contract is established, assigning local generations or tombstoning
-worker IDs would conceal the ambiguity rather than meet the approved acceptance
-criteria. The controller should keep this implementation blocked; the existing
-stale Busy behavior remains unresolved.
-
-Checks for this evidence-only change: `cargo x test -p yinz-types
-agent::hooks::tests` passed all 35 selected tests (267 skipped),
-`cargo x format --check` passed, and `git diff --check` passed. The test command
-built this worktree's own binary in its real, isolated `target/` directory.
-No new regression tests or runtime changes were made. Process/screen tests and
-lint from the implementation plan remain outstanding with implementation; neither
-the full test suites nor the CI gate ran. Passing existing hook tests does not
-resolve the missing provider evidence or establish the acceptance criteria.
+Validation: 351 selected tests passed across `yinz-process`, `yinz-screen`,
+`yinz-types`, and `yinz-ipc`, covering Claude turn observation, broker relay,
+the screen agent-control module (including tracking transfer), hook decoding and
+pruning, and the IPC tracking roundtrip. `cargo x lint`, `cargo x format --check`,
+and `git diff --check` passed. The regressions exposed and fixed both the visible
+draft readiness shortcut and raw Stop suppression bypassing the recovery quiet
+proof. No test flakes or unexpected timeouts remain. No
+full test suite, full CI gate, merge, rebase, push or remote Git operation is
+part of this implementation task. No live installed binary was replaced.
 
 ## Known limitations and caller guidance
 
