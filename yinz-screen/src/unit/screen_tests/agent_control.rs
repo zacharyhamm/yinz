@@ -10482,6 +10482,94 @@ fn claude_late_wait_after_completion_can_release_but_missing_identity_stays_cons
 }
 
 #[test]
+fn claude_repeated_raw_starts_survive_delayed_execution_reports() {
+    let (mut screen, messages, _) = setup("claude");
+    let runs = captured_claude_executions();
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            claude_task_execution: None,
+            ..runs[0].clone()
+        },
+    );
+    assert_claude_raw_resumption_survives_delayed_completion(&mut screen, &messages);
+}
+
+/// Start with a worker known only through a raw hook (or a legacy handoff). The
+/// root observer has not seen g1 yet, and the nested g2 never appears there.
+fn assert_claude_raw_resumption_survives_delayed_completion(
+    screen: &mut Screen,
+    messages: &CapturedClientMessages,
+) {
+    let runs = captured_claude_executions();
+    let task = runs[0].agent_id.as_deref().unwrap();
+    let (sender, plugins) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    screen.background_plugin_subscriptions.insert(
+        (PluginId::new(99), CLIENT),
+        HashSet::from([EventType::PaneUpdate]),
+    );
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    for event in [
+        // Raw Stops are archived without identifying which execution finished.
+        HookEvent {
+            claude_task_execution: None,
+            ..runs[1].clone()
+        },
+        HookEvent {
+            claude_task_execution: None,
+            ..runs[2].clone()
+        },
+        runs[0].clone(),
+        runs[1].clone(),
+        claude_stop("prompt", "parent completed", &[task]),
+        // Replaying the older observer reports must also preserve the ambiguity.
+        runs[0].clone(),
+        runs[1].clone(),
+        claude_stop("prompt", "duplicate parent completion", &[task]),
+    ] {
+        report_kind(screen, "claude", event);
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+        assert!(replies(messages, CLIENT).is_empty());
+    }
+    let mut pane_updates = 0;
+    let mut archived_stops = 0;
+    for (instruction, _) in plugins.try_iter() {
+        if let PluginInstruction::Update(updates) = instruction {
+            for (_, _, event) in updates {
+                match event {
+                    Event::PaneUpdate(manifest) => {
+                        pane_updates += 1;
+                        assert!(manifest
+                            .panes
+                            .values()
+                            .flatten()
+                            .filter_map(|p| p.agent.as_ref())
+                            .all(|a| a.state != AgentState::Idle));
+                    },
+                    Event::AgentEvent(event) => {
+                        let hook: HookEvent = serde_json::from_str(&event.raw).unwrap();
+                        if hook.hook_event_name == "SubagentStop" && hook.archive_only {
+                            archived_stops += 1;
+                        }
+                    },
+                    _ => {},
+                }
+            }
+        }
+    }
+    assert!(pane_updates > 0);
+    assert_eq!(archived_stops, 1);
+    let tracking = screen.capture_agent_tracking(PANE).unwrap();
+    let claude = tracking.lifecycle.unwrap().claude;
+    assert!(claude.workers.contains(task));
+    assert!(claude.provisional_workers.contains(task));
+}
+
+#[test]
 fn claude_uncorrelated_known_worker_starts_cannot_publish_premature_idle() {
     for completed_first in [false, true] {
         let (mut screen, messages, _) = setup("claude");

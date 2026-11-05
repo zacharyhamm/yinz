@@ -422,6 +422,41 @@ fn warp_tracking_legacy_worker_wait_cannot_be_released_by_a_newer_tool() {
 }
 
 #[test]
+fn warp_tracking_legacy_raw_worker_resumption_survives_delayed_execution_reports() {
+    let (mut source, _, _) = setup_tracking("claude");
+    let runs = captured_claude_executions();
+    let task = runs[0].agent_id.as_deref().unwrap();
+    report_kind(&mut source, "claude", hook("SessionStart"));
+    report_kind(&mut source, "claude", hook("UserPromptSubmit"));
+    report_kind(
+        &mut source,
+        "claude",
+        HookEvent {
+            claude_task_execution: None,
+            ..runs[0].clone()
+        },
+    );
+    let handoff = source.capture_agent_tracking(PANE).unwrap();
+    let mut legacy = serde_json::to_value(&handoff).unwrap();
+    let claude = legacy["lifecycle"]["claude"].as_object_mut().unwrap();
+    for field in ["executions", "provisional_workers", "abandoned_executions"] {
+        claude.remove(field);
+    }
+    let decoded: yinz_types::agent::tracking::AgentTrackingHandoff =
+        serde_json::from_value(legacy).unwrap();
+    let claude = &decoded.lifecycle.as_ref().unwrap().claude;
+    assert!(claude.workers.contains(task));
+    assert!(claude.executions.is_empty());
+    assert!(claude.provisional_workers.is_empty());
+    let (mut destination, messages, _) = setup_tracking("claude");
+    destination
+        .pending_agent_tracking
+        .insert(PANE, (Some(handoff.agent), Some(decoded)));
+    assert!(destination.restore_staged_transfer_state(PANE));
+    assert_claude_raw_resumption_survives_delayed_completion(&mut destination, &messages);
+}
+
+#[test]
 fn warp_tracking_keeps_worker_tool_releases_and_provisional_resumptions() {
     let (mut source, _, _) = setup_tracking("claude");
     report_kind(&mut source, "claude", hook("SessionStart"));

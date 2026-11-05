@@ -470,7 +470,10 @@ impl Screen {
         {
             // Legacy and nested launches without causal evidence stay conservative.
             // Their raw Stop cannot prove completion or clear a later input wait.
-            if lifecycle.claude.executions.contains_key(id)
+            // A repeated raw Start can be a resumption even before the observer
+            // records the first execution, including workers restored from older handoffs.
+            if lifecycle.claude.workers.contains(id)
+                || lifecycle.claude.executions.contains_key(id)
                 || lifecycle.claude.stopped_workers.contains(id)
             {
                 lifecycle.claude.provisional_workers.insert(id.clone());
