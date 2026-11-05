@@ -1733,7 +1733,9 @@ impl Pane for TerminalPane {
             || !self.kitty_interceptor.is_in_ground_state()
             || self.grid.lock_renders
         {
-            return Err("ordinary pane transfer requires a complete terminal escape sequence".into());
+            return Err(
+                "ordinary pane transfer requires a complete terminal escape sequence".into(),
+            );
         }
         let state = self.grid.migration_state().map_err(|e| format!("{e:#}"))?;
         let state =
