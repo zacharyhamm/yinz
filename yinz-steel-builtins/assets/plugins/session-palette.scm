@@ -414,5 +414,5 @@
           (complete "Update including prereleases requested. Progress will appear in session notifications."))))
     (action "update-status" "Yinz update status"
       (defer (lambda ()
-          (require-success (yinz-command "YinzUpdateStatus"))
+          (yinz-command "YinzUpdateStatus")
           (complete "Update status will appear in session notifications."))))))
