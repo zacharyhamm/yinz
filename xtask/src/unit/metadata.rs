@@ -226,3 +226,29 @@ fn engine_free_crates_reject_engines_directly_and_through_workspace_crates() {
 fn current_workspace_respects_dependency_boundaries() {
     check_dependency_boundaries(&Shell::new().unwrap()).unwrap();
 }
+
+#[test]
+fn vendored_parser_is_not_a_yinz_dependency_layer() {
+    let mut metadata = allowed_workspace();
+    metadata["workspace_root"] = json!("/repo");
+    metadata["workspace_members"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("vte"));
+    metadata["packages"].as_array_mut().unwrap().push(json!({
+        "id": "vte", "name": "vte", "manifest_path": "/repo/vendor/vte/Cargo.toml", "dependencies": []
+    }));
+    let graphics = metadata["packages"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|package| package["name"] == "yinz-terminal-graphics")
+        .unwrap();
+    graphics["dependencies"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "name": "vte", "kind": "dev", "target": null
+        }));
+    validate_dependency_boundaries(&metadata).unwrap();
+}

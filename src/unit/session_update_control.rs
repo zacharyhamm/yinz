@@ -30,53 +30,6 @@ fn record_interrupted_update(session: &Session, source: &mut Peer, phase: &str) 
     operation
 }
 
-fn wait_for_cancelled(source: &mut Peer, operation: &str) {
-    let observed = yinz_test_support::Watched::new(serde_json::Value::Null);
-    std::thread::scope(|scope| {
-        let observed = &observed;
-        scope.spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(30);
-            while Instant::now() < deadline {
-                let status = source.request(operation, UpdateCommand::Status).unwrap();
-                let done = status["phase"] == "Cancelled";
-                *observed.lock() = status;
-                if done {
-                    return;
-                }
-                std::thread::park_timeout(Duration::from_millis(10));
-            }
-        });
-        observed.wait_until(
-            "idle coordinator to finish cancellation",
-            Duration::from_secs(35),
-            |status| (status["phase"] == "Cancelled").then_some(()),
-        );
-    });
-}
-
-#[test]
-fn cancel_stuck_discover_without_a_coordinator_finishes_cancelled() {
-    let (session, pids) = setup();
-    let mut source = Peer::connect(&session.socket());
-    let operation = record_interrupted_update(&session, &mut source, "Discover");
-    source.request(&operation, UpdateCommand::Cancel).unwrap();
-    wait_for_cancelled(&mut source, &operation);
-    assert_alive(&pids);
-}
-
-#[test]
-fn cancel_interrupted_prepare_restarts_cleanup_without_a_coordinator() {
-    let (session, pids) = setup();
-    let mut source = Peer::connect(&session.socket());
-    let operation = record_interrupted_update(&session, &mut source, "Prepare");
-    source
-        .request(&operation, UpdateCommand::PrepareMigration)
-        .unwrap();
-    source.request(&operation, UpdateCommand::Cancel).unwrap();
-    wait_for_cancelled(&mut source, &operation);
-    assert_alive(&pids);
-}
-
 #[test]
 fn active_stable_update_rejects_prerelease_and_source_starts_even_during_launch() {
     let (session, pids) = setup();

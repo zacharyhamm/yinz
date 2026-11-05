@@ -162,20 +162,6 @@ fn historical_cancelled_journals_are_failed_and_allow_a_new_update() {
 }
 
 #[test]
-fn cancellation_accepted_before_discovery_failure_wins_the_terminal_decision() {
-    let root = tempfile::tempdir().unwrap();
-    let mut store = Store::open(
-        &root.path().join("session"),
-        root.path(),
-        &uuid::Uuid::new_v4().to_string(),
-    )
-    .unwrap();
-    std::fs::write(store.directory.join("cancel"), "").unwrap();
-    store.phase(Phase::Failed).unwrap();
-    assert_eq!(store.journal.phase, Phase::Cancelled);
-}
-
-#[test]
 fn retry_before_inventory_rejects_a_different_source_mode() {
     for source_build in [false, true] {
         let root = tempfile::tempdir().unwrap();

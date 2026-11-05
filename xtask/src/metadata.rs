@@ -333,6 +333,19 @@ fn validate_dependency_boundaries(metadata: &Value) -> anyhow::Result<()> {
     let workspace: Vec<_> = packages
         .iter()
         .filter(|p| members.contains(&p["id"]))
+        // Cargo can include vendored path dependencies as implicit members.
+        // Dependency boundaries describe Yinz layers, not third-party libraries.
+        .filter(|p| {
+            let vendored = metadata["workspace_root"]
+                .as_str()
+                .zip(p["manifest_path"].as_str())
+                .is_some_and(|(root, manifest)| {
+                    std::path::Path::new(manifest)
+                        .strip_prefix(root)
+                        .is_ok_and(|relative| relative.starts_with("vendor"))
+                });
+            !vendored
+        })
         .collect();
     for package in workspace.iter().filter(|p| p["name"] != COMPOSITION_ROOT) {
         for dependency in package["dependencies"]
