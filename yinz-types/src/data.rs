@@ -3199,7 +3199,6 @@ pub enum PluginCommand {
     UpdateYinzPrerelease,
     /// Build the registered Yinz repository's clean local main and update this session.
     UpdateYinzFromSource,
-    CancelYinzUpdate,
     YinzUpdateStatus,
     GetSessionInventory(String),
     SwitchSessionDestination(crate::session_destination::SwitchRequest),

@@ -756,29 +756,70 @@ fn make_terminal_pane_for_bell() -> TerminalPane {
 }
 
 #[test]
-fn migration_refuses_partial_parser_and_resumes_exact_terminal_state() {
+fn migration_preserves_parser_continuations_at_every_byte_boundary() {
+    // CSI subparameters/ignore states, OSC terminators, DCS payloads, UTF-8,
+    // intercepted ESC prefixes, cancellation, and synchronized output.
+    let samples: &[&[u8]] = &[
+        b"hello\x1b[38:2::10:20:30mred\x1b[?2004hafter",
+        b"hello\x1b]2;a title\x1b\\after",
+        b"hello\x1b]2;a title\x07after",
+        b"hello\x1bP+q544e\x1b\\after",
+        b"hello\x1bP1;2:3zignored\x1b\\after",
+        b"hello\x1b[?2026hframe\x1b[?2026lafter",
+        b"hello\x1b[1:2;3\x18after",
+        b"hello\x1b_Xignored\x1b\\after",
+        "hello é中😀after".as_bytes(),
+    ];
+    for sample in samples {
+        for split in 0..sample.len() {
+            let mut source = make_terminal_pane_for_bell();
+            source.handle_pty_bytes(sample[..split].to_vec());
+            // Tab normally drains these after each PTY chunk.
+            source.drain_messages_to_pty();
+            let snapshot = source.migration_state().unwrap();
+            let mut target = make_terminal_pane_for_bell();
+            target.restore_migration_state(snapshot.clone()).unwrap();
+            let mut rollback = make_terminal_pane_for_bell();
+            rollback.restore_migration_state(snapshot).unwrap();
+            for pane in [&mut source, &mut target, &mut rollback] {
+                pane.handle_pty_bytes(sample[split..].to_vec());
+            }
+            let output = source.dump_screen_with_ansi(true, None);
+            assert_eq!(
+                target.dump_screen_with_ansi(true, None),
+                output,
+                "destination split {split}: {sample:?}"
+            );
+            assert_eq!(
+                rollback.dump_screen_with_ansi(true, None),
+                output,
+                "rollback split {split}: {sample:?}"
+            );
+            let replies = source.drain_messages_to_pty();
+            assert_eq!(target.drain_messages_to_pty(), replies);
+            assert_eq!(rollback.drain_messages_to_pty(), replies);
+            assert_eq!(
+                target.grid.migration_state().unwrap(),
+                source.grid.migration_state().unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+fn migration_rejects_invalid_parser_indices_before_mutating_the_grid() {
     let mut source = make_terminal_pane_for_bell();
-    source.handle_pty_bytes(b"hello\x1b[31".to_vec());
-    assert!(source
-        .migration_state()
-        .unwrap_err()
-        .contains("escape sequence"));
-    source.handle_pty_bytes(b"mred\x1b[?2004h".to_vec());
+    source.handle_pty_bytes(b"source\x1b[31".to_vec());
+    let mut snapshot = source.migration_state().unwrap();
+    snapshot["parser"]["intermediate_idx"] = serde_json::json!(100);
     let mut target = make_terminal_pane_for_bell();
-    target
-        .restore_migration_state(source.migration_state().unwrap())
-        .unwrap();
-    assert_eq!(
-        target.dump_screen_with_ansi(true, None),
-        source.dump_screen_with_ansi(true, None)
-    );
-    assert!(target.grid.bracketed_paste_mode);
-    source.handle_pty_bytes(b"\r\nnext".to_vec());
-    target.handle_pty_bytes(b"\r\nnext".to_vec());
-    assert_eq!(
-        target.dump_screen_with_ansi(true, None),
-        source.dump_screen_with_ansi(true, None)
-    );
+    target.handle_pty_bytes(b"original target".to_vec());
+    let before = target.dump_screen(true, None);
+    assert!(target
+        .restore_migration_state(snapshot)
+        .unwrap_err()
+        .contains("invalid terminal parser"));
+    assert_eq!(target.dump_screen(true, None), before);
 }
 
 #[test]

@@ -5489,3 +5489,39 @@ fn warp_pause_timeout_keeps_source_readers_and_panes_live() {
         );
     }
 }
+
+#[test]
+fn migration_preparation_reports_pending_spawn_without_blocking_completion() {
+    use yinz_bus::migration::PtyRequest;
+    use yinz_types::session_migration::*;
+    let (mut pty, _) = make_pty_with_plugin_receiver(MockOsApi::new());
+    let inventory = SessionMigrationInventory {
+        format: SESSION_MIGRATION_FORMAT,
+        session_name: yinz_types::internal_ids::SessionName::new("preparing"),
+        instance_id: uuid::Uuid::new_v4().to_string(),
+        tabs: vec![],
+        clients: vec![],
+        remote_hosts: vec![],
+        global_last_active_tab: TabId::new(0),
+        tab_group_preferences: vec![],
+        paneless_plugins: vec![],
+    };
+    let poll = |pty: &mut Pty| {
+        let (reply, received) = crossbeam::channel::bounded(1);
+        pty.session_migration(PtyRequest::PrepareUpdate {
+            inventory: inventory.clone(),
+            terminals: vec![],
+            held: HashMap::new(),
+            reply,
+        });
+        received.recv().unwrap().unwrap()
+    };
+    pty.pending_terminal_spawns.insert(TerminalId::new(1), 1);
+    assert_eq!(
+        poll(&mut pty),
+        MigrationPreparation::Waiting(vec![PreparationWork::TerminalPlacement])
+    );
+    // The request returned to the dispatch loop; the spawn can now complete.
+    pty.pending_terminal_spawns.clear();
+    assert_eq!(poll(&mut pty), MigrationPreparation::Ready(inventory));
+}

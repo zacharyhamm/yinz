@@ -128,7 +128,7 @@ fn archived_source_stays_at_the_pinned_commit_after_main_advances() {
 fn closed_build_pane_takes_precedence_over_a_racing_worker_receipt() {
     for success in [true, false] {
         let receipt =
-            serde_json::json!({"success":success,"error":"source build cancelled by SIGHUP"});
+            serde_json::json!({"success":success,"error":"source build interrupted by SIGHUP"});
         let error = validate_result(&receipt, false, Path::new("build.log")).unwrap_err();
         assert!(error.to_string().contains("was closed"));
         assert!(!error.to_string().contains("pane and log retained"));

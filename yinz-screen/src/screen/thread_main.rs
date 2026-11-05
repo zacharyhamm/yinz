@@ -120,6 +120,7 @@ pub fn screen_thread_main(
     let mut escape_focus = HashMap::new();
     let mut pending_escape_count = 0;
     'instructions: loop {
+        screen.advance_migration_drain();
         if !screen.migration_blocks_normal_work() {
             screen.refresh_agent_controls();
             if screen.agent_events.dirty {
@@ -2842,10 +2843,7 @@ pub fn screen_thread_main(
                     )?;
                 },
                 ScreenInstruction::PaneWarpFinished => {
-                    match screen.in_flight_pane_warps.checked_sub(1) {
-                        Some(remaining) => screen.in_flight_pane_warps = remaining,
-                        None => log::warn!("a pane warp finished that was never started"),
-                    }
+                    screen.finish_pane_warp();
                 },
                 ScreenInstruction::AdoptedPaneFinished(finish) => {
                     screen.finish_adopted_pane(finish);

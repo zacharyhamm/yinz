@@ -4298,6 +4298,61 @@ impl Default for CopyOptions {
 }
 
 impl Tab {
+    /// End transient interaction at the last applied geometry and consume every
+    /// scrolled pane's queued output before capturing its terminal state.
+    pub fn prepare_migration(&mut self) -> Result<()> {
+        self.pane_being_resized_with_mouse = None;
+        for id in self.get_all_pane_ids() {
+            if let PaneId::Terminal(pid) = id {
+                if let Some(pane) = self.get_pane_with_id_mut(id) {
+                    pane.clear_scroll();
+                }
+                self.process_pending_vte_events(pid)
+                    .context("drain scrolled terminal for session update")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Overlay containers are transient UI. Retain every owned terminal,
+    /// including hidden pane-tab children, as an ordinary floating pane.
+    /// Return only plugin IDs for normal host teardown; no terminal is closed.
+    pub fn prepare_migration_overlays(&mut self) -> Vec<PaneId> {
+        let mut plugins = Vec::new();
+        let ids: Vec<_> = self.overlay_panes.pane_ids().copied().collect();
+        for id in ids {
+            let Some(transfer) = self.take_overlay_container(id) else {
+                continue;
+            };
+            self.pending_vte_events.extend(transfer.pending_output);
+            self.pids_waiting_resize.extend(transfer.waiting_resize);
+            self.pending_command_respawns.extend(transfer.respawns);
+            for pane in transfer
+                .container
+                .into_panes()
+                .into_iter()
+                .chain(transfer.suppressed.into_values().map(|hidden| hidden.pane))
+            {
+                let id = pane.pid();
+                if matches!(id, PaneId::Terminal(_)) {
+                    self.floating_panes.add_pane(id, pane);
+                    self.show_floating_panes();
+                } else {
+                    plugins.push(id);
+                    self.announce_pane_closed(id);
+                }
+            }
+        }
+        self.repair_focus_after_pane_removal();
+        plugins
+    }
+
+    pub fn migration_pending(&self) -> bool {
+        self.is_pending
+            || !self.pending_command_respawns.is_empty()
+            || !self.pending_instructions.is_empty()
+    }
+
     pub fn migration_state(&self) -> Result<yinz_types::session_migration::TabState, String> {
         if !self.pending_command_respawns.is_empty()
             || !self.pending_instructions.is_empty()

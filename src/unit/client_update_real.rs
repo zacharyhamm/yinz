@@ -711,6 +711,30 @@ fn session_update_refuses_legacy_client_without_sending_unknown_messages() {
     );
     // A same-connection inventory reply is an ordering fence after the refused route.
     legacy.inventory(&operation);
+    peer.request(
+        &operation,
+        SessionCommand::DisconnectUpdateClient { client: client.id },
+    )
+    .unwrap();
+    loop {
+        match legacy
+            .receiver
+            .recv_server_msg_until(Instant::now() + TIMEOUT)
+        {
+            IpcRecv::Msg(ServerToClientMsg::Exit { .. }, _) | IpcRecv::Eof => break,
+            IpcRecv::Msg(ServerToClientMsg::UpdateRequest(_), _) => {
+                panic!("legacy client received an unsupported update message")
+            },
+            IpcRecv::Msg(_, _) => {},
+            IpcRecv::Idle => panic!("legacy client did not disconnect before the deadline"),
+            IpcRecv::Malformed => panic!("malformed reply during legacy client disconnection"),
+        }
+    }
+    assert!(!peer
+        .inventory(&operation)
+        .clients
+        .iter()
+        .any(|current| current.id == client.id));
 }
 
 #[test]
@@ -805,6 +829,8 @@ struct CoordinatorFixture {
     data: PathBuf,
     operation: String,
     release: crate::update::Release,
+    #[serde(default)]
+    stale_clients: bool,
 }
 
 #[test]
@@ -833,6 +859,11 @@ fn coordinator_test_worker() {
     if request.release.source.is_none() {
         inventory.running_version = "0.0.0".into();
     }
+    if request.stale_clients {
+        // The inventory was captured before the second client attached. Its
+        // installation must be discovered and staged by the same transaction.
+        inventory.clients.truncate(1);
+    }
     crate::live_update::coordinator::execute_release(
         &mut store,
         &mut source,
@@ -844,16 +875,21 @@ fn coordinator_test_worker() {
 
 #[test]
 fn full_update_coordinator_preserves_two_clients_focus_input_and_terminal_processes() {
-    check_full_update_coordinator(false);
+    check_full_update_coordinator(false, false);
 }
 
 #[test]
 #[cfg(target_os = "linux")]
 fn same_version_source_update_streams_to_client_and_preserves_processes() {
-    check_full_update_coordinator(true);
+    check_full_update_coordinator(true, false);
 }
 
-fn check_full_update_coordinator(from_source: bool) {
+#[test]
+fn coordinator_reconciles_client_missing_from_initial_inventory() {
+    check_full_update_coordinator(false, true);
+}
+
+fn check_full_update_coordinator(from_source: bool, stale_clients: bool) {
     use sha2::{Digest, Sha256};
     let fixture = Fixture::new();
     fs::write(fixture.root.path().join("config.kdl"), "detachable_panes true\nmirror_session false\nload_plugins clear-defaults=true\ndefault_mode \"locked\"\n").unwrap();
@@ -871,14 +907,14 @@ fn check_full_update_coordinator(from_source: bool) {
         .id;
     // Source updates must stream to a separate client installation, so this
     // client cannot satisfy preparation by reading the server's staging files.
-    let second_binary = if from_source {
+    let second_binary = if from_source || stale_clients {
         let binary = fixture.root.path().join("second-client-yinz");
         fs::copy(&fixture.binary, &binary).unwrap();
         binary
     } else {
         fixture.binary.clone()
     };
-    let second_data = if from_source {
+    let second_data = if from_source || stale_clients {
         let data = fixture.root.path().join("second-client-data");
         yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), &data).unwrap();
         data
@@ -942,6 +978,30 @@ fn check_full_update_coordinator(from_source: bool) {
             serde_json::to_vec(&release).unwrap(),
         )
         .unwrap();
+        if stale_clients {
+            drop(
+                Transaction::prepare(
+                    &fixture.root.path().join("release"),
+                    &second_binary,
+                    &second_data,
+                    &operation,
+                )
+                .unwrap(),
+            );
+            let receipts = second_data
+                .join("updates")
+                .join(&operation)
+                .join("participants");
+            fs::create_dir_all(&receipts).unwrap();
+            let executable = second_binary.canonicalize().unwrap();
+            let key =
+                crate::update::hex(&Sha256::digest(executable.as_os_str().as_encoded_bytes()));
+            fs::write(
+                receipts.join(format!("{key}.json")),
+                serde_json::to_vec(&release).unwrap(),
+            )
+            .unwrap();
+        }
         release
     };
     let source_identity = release.source.clone();
@@ -953,6 +1013,7 @@ fn check_full_update_coordinator(from_source: bool) {
             data: fixture.data.clone(),
             operation: operation.clone(),
             release,
+            stale_clients,
         })
         .unwrap(),
     )

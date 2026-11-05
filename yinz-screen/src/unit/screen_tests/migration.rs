@@ -1,6 +1,9 @@
 use super::*;
 use yinz_bus::migration::{self, ScreenRequest};
-use yinz_types::{internal_ids::SupervisorId, session_migration::MigrationPhase};
+use yinz_types::{
+    internal_ids::{PluginId, SupervisorId},
+    session_migration::MigrationPhase,
+};
 
 fn operation() -> String {
     uuid::Uuid::new_v4().to_string()
@@ -90,7 +93,7 @@ fn migration_suppresses_intermediate_plugin_manifests_until_commit() {
 }
 
 #[test]
-fn migration_refuses_incomplete_terminal_parser_before_any_release() {
+fn migration_accepts_incomplete_terminal_parser_before_release() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, TabId::new(0));
     screen
@@ -99,8 +102,7 @@ fn migration_refuses_incomplete_terminal_parser_before_any_release() {
         .unwrap()
         .handle_pty_bytes(TerminalId::new(1), b"live\x1b[31".to_vec())
         .unwrap();
-    let error = screen.migration_inventory(ClientId::new(1)).unwrap_err();
-    assert!(format!("{error:#}").contains("escape sequence"));
+    screen.migration_inventory(ClientId::new(1)).unwrap();
     assert_eq!(screen.tabs.len(), 1);
     assert!(screen.migration.is_none());
     screen
@@ -138,12 +140,56 @@ fn releasing_the_last_tab_retains_source_server_and_durable_recovery_state() {
         host_pid: ProcessId::new(42),
         control_socket: Some(directory.path().join("supervisor.sock")),
     });
-    // The fake has no reader tasks. Drive the barrier acknowledgements directly;
-    // the real-OS test verifies those barriers against running supervised children.
+    // The final reader chunk can pause on a host query after preparation
+    // reported Ready. Neither that query nor bytes behind it may be lost.
+    let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+    tab.get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(1)))
+        .unwrap()
+        .terminal_io_mut()
+        .unwrap()
+        .arm_forward_pause();
+    tab.handle_pty_bytes(TerminalId::new(1), b"after-host-reply".to_vec())
+        .unwrap();
     screen.session_migration(ScreenRequest::InputDrained {
         operation: operation.clone(),
         result: Ok(vec![(TerminalId::new(1), address.clone())]),
     });
+    assert_eq!(
+        migration::load_snapshot(&path, &operation).unwrap().phase,
+        MigrationPhase::Prepared
+    );
+    assert!(received.try_recv().is_err());
+    assert!(screen
+        .defer_for_migration(ScreenInstruction::ResumePaneAfterForward {
+            pane_id: PaneId::Terminal(TerminalId::new(1)),
+            reply_bytes: vec![],
+        })
+        .is_some());
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .resume_pane_after_forward(TerminalId::new(1), vec![])
+        .unwrap();
+    let (writer_tx, writer_rx) = channels::unbounded();
+    let (screen_tx, screen_rx) = channels::unbounded();
+    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(writer_tx));
+    screen.bus.senders.to_screen = Some(SenderWithContext::new(screen_tx));
+    screen.advance_migration_drain();
+    let (barrier, _) = writer_rx
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap();
+    let yinz_bus::pty_writer::PtyWriteInstruction::MigrationBarrier { reply, .. } = barrier else {
+        panic!("missing final input barrier");
+    };
+    reply.send(Ok(())).unwrap();
+    let (event, _) = screen_rx
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap();
+    let ScreenInstruction::SessionMigration(request) = event else {
+        panic!("missing drained input acknowledgement");
+    };
+    screen.session_migration(request);
     assert_eq!(
         migration::load_snapshot(&path, &operation).unwrap().phase,
         MigrationPhase::Releasing
@@ -570,4 +616,296 @@ fn migration_plugin_failure_keeps_terminals_interactive_and_finish_retryable() {
         instruction,
         PtyInstruction::SessionMigration(PtyRequest::Resume)
     )));
+}
+
+#[test]
+fn rollback_adoption_completion_releases_the_hold_during_update_preparation() {
+    use yinz_types::session_migration::{MigrationPreparation, PreparationWork};
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, TabId::new(0));
+    let (tx, events) = channels::unbounded();
+    screen.bus.senders.to_screen = Some(SenderWithContext::new(tx));
+    screen.in_flight_pane_warps = 1;
+    let (placed, placement) = crossbeam::channel::bounded(1);
+    // Rollback has placed the original pane, but its completion still owns the
+    // transfer hold when update preparation begins.
+    let finish = yinz_bus::warp::AdoptedPaneFinish {
+        terminal_id: TerminalId::new(1),
+        recovery: "yinz pty-host adopt rollback".into(),
+        held: false,
+        hold: Some(yinz_bus::warp::PaneWarpHold::new(
+            screen.bus.senders.clone(),
+        )),
+        placed,
+    };
+    let operation = operation();
+    let (reply, progress) = crossbeam::channel::bounded(1);
+    screen.session_migration(ScreenRequest::PrepareUpdate {
+        operation: operation.clone(),
+        client: ClientId::new(1),
+        reply,
+    });
+    assert_eq!(
+        progress.recv().unwrap().unwrap(),
+        MigrationPreparation::Waiting(vec![PreparationWork::PaneTransfer])
+    );
+    let Some(ScreenInstruction::AdoptedPaneFinished(finish)) =
+        screen.defer_for_migration(ScreenInstruction::AdoptedPaneFinished(finish))
+    else {
+        panic!("rollback completion must be admitted while preparation drains transfers");
+    };
+    screen.finish_adopted_pane(finish);
+    placement.recv().unwrap().unwrap();
+    let (event, _) = events
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap();
+    assert!(matches!(
+        screen.defer_for_migration(event),
+        Some(ScreenInstruction::PaneWarpFinished)
+    ));
+    screen.finish_pane_warp();
+    assert_eq!(screen.in_flight_pane_warps, 0);
+    let (tx, pty) = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(tx));
+    let (reply, _) = crossbeam::channel::bounded(1);
+    screen.session_migration(ScreenRequest::PrepareUpdate {
+        operation,
+        client: ClientId::new(1),
+        reply,
+    });
+    assert!(pty.try_iter().any(|(event, _)| matches!(
+        event,
+        PtyInstruction::SessionMigration(yinz_bus::migration::PtyRequest::PrepareUpdate { .. })
+    )));
+}
+
+#[test]
+fn migration_preparation_finishes_inflight_editor_placement() {
+    use yinz_bus::pty_writer::PtyWriteInstruction;
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    let tab_id = TabId::new(0);
+    new_tab(&mut screen, 1, tab_id);
+    screen.in_flight_pane_warps = 1;
+    let (tx, rx) = crossbeam::channel::bounded(1);
+    screen.session_migration(ScreenRequest::PrepareUpdate {
+        operation: operation(),
+        client: ClientId::new(1),
+        reply: tx,
+    });
+    rx.recv().unwrap().unwrap();
+    let (writer_tx, writer_rx) = channels::unbounded();
+    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(writer_tx));
+    let editor_id = TerminalId::new(2);
+    let event = screen
+        .defer_for_migration(ScreenInstruction::OpenInPlaceEditor(
+            PaneId::Terminal(editor_id),
+            ClientTabIndexOrPaneId::ClientId(ClientId::new(1)),
+        ))
+        .expect("already-dispatched editor placement must drain during preparation");
+    let ScreenInstruction::OpenInPlaceEditor(pane_id, ClientTabIndexOrPaneId::ClientId(client)) =
+        event
+    else {
+        panic!("unexpected editor placement event");
+    };
+    screen
+        .tabs
+        .get_mut(&tab_id)
+        .unwrap()
+        .replace_active_pane_with_editor_pane(pane_id, client)
+        .unwrap();
+    let event = screen
+        .defer_for_migration(ScreenInstruction::ConfirmTerminalPlacement(editor_id, 7))
+        .unwrap();
+    let ScreenInstruction::ConfirmTerminalPlacement(terminal_id, generation) = event else {
+        panic!("unexpected confirmation event");
+    };
+    let mut placements = HashMap::from([(terminal_id, generation)]);
+    screen
+        .confirm_terminal_placements(
+            &mut placements,
+            &super::super::pending_events::PendingEvents::default(),
+        )
+        .unwrap();
+    assert!(placements.is_empty());
+    assert!(writer_rx.try_iter().any(|(event, _)| matches!(event,
+        PtyWriteInstruction::TerminalPlaced { terminal_id, generation: 7, placement: Some((size, placed_tab)) }
+        if terminal_id == editor_id && placed_tab == tab_id && size.cols > 0 && size.rows > 0
+    )));
+    assert!(screen
+        .defer_for_migration(ScreenInstruction::WriteCharacter(
+            None,
+            b"input".to_vec(),
+            false,
+            ClientId::new(1),
+            None
+        ))
+        .is_none());
+}
+
+#[test]
+fn migration_preparation_drains_completions_and_defers_new_structure() {
+    use yinz_types::session_migration::{MigrationPreparation, PreparationWork};
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, TabId::new(0));
+    let operation = operation();
+    screen.in_flight_pane_warps = 1;
+    screen.animating_plugin_loads.insert(PluginId::new(5));
+    let (tx, rx) = crossbeam::channel::bounded(1);
+    screen.session_migration(ScreenRequest::PrepareUpdate {
+        operation: operation.clone(),
+        client: ClientId::new(1),
+        reply: tx,
+    });
+    assert_eq!(
+        rx.recv().unwrap().unwrap(),
+        MigrationPreparation::Waiting(vec![
+            PreparationWork::PaneTransfer,
+            PreparationWork::PluginLoad
+        ])
+    );
+    assert!(screen
+        .defer_for_migration(ScreenInstruction::StopPluginLoadingAnimation(
+            PluginId::new(5)
+        ))
+        .is_some());
+    assert!(screen
+        .defer_for_migration(ScreenInstruction::PaneWarpFinished)
+        .is_some());
+    assert!(screen
+        .defer_for_migration(ScreenInstruction::ConfirmTerminalPlacement(
+            TerminalId::new(1),
+            1
+        ))
+        .is_some());
+    assert!(screen
+        .defer_for_migration(ScreenInstruction::RerunCommandPane(
+            TerminalId::new(1),
+            None
+        ))
+        .is_none());
+    assert!(screen.next_migration_event().is_none());
+    let input = || {
+        ScreenInstruction::WriteCharacter(None, b"input".to_vec(), false, ClientId::new(1), None)
+    };
+    assert!(screen.defer_for_migration(input()).is_none());
+    // Completing the existing work makes the next poll reach PTY preflight.
+    screen.in_flight_pane_warps = 0;
+    screen.animating_plugin_loads.clear();
+    let (tx, pty) = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(tx));
+    let (tx, rx) = crossbeam::channel::bounded(1);
+    screen.session_migration(ScreenRequest::PrepareUpdate {
+        operation: operation.clone(),
+        client: ClientId::new(1),
+        reply: tx,
+    });
+    assert!(rx.try_recv().is_err());
+    assert!(pty.try_iter().any(|(event, _)| matches!(
+        event,
+        PtyInstruction::SessionMigration(yinz_bus::migration::PtyRequest::PrepareUpdate { .. })
+    )));
+    let (tx, rx) = crossbeam::channel::bounded(1);
+    screen.session_migration(ScreenRequest::Abort {
+        operation,
+        reply: tx,
+    });
+    rx.recv().unwrap().unwrap();
+    assert!(screen.preparing_migration.is_none());
+    assert!(!screen
+        .bus
+        .senders
+        .session_update_quiesced
+        .load(std::sync::atomic::Ordering::Acquire));
+    assert!(screen
+        .defer_for_migration(ScreenInstruction::RerunCommandPane(
+            TerminalId::new(1),
+            None
+        ))
+        .is_some());
+    assert!(screen.defer_for_migration(input()).is_some());
+    assert!(matches!(
+        screen.next_migration_event(),
+        Some(ScreenInstruction::RerunCommandPane(..))
+    ));
+}
+
+#[test]
+fn migration_preparation_disconnects_watchers_via_server_cleanup() {
+    use yinz_types::session_migration::{MigrationPreparation, PreparationWork};
+    let (mut screen, _, server) =
+        create_new_screen_with_capture(Size { cols: 80, rows: 24 }, false, false, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+    let watcher = ClientId::new(9);
+    screen.add_watcher_client(watcher).unwrap();
+    let (tx, rx) = crossbeam::channel::bounded(1);
+    screen.session_migration(ScreenRequest::PrepareUpdate {
+        operation: operation(),
+        client: ClientId::new(1),
+        reply: tx,
+    });
+    assert_eq!(
+        rx.recv().unwrap().unwrap(),
+        MigrationPreparation::Waiting(vec![PreparationWork::WatcherDisconnect])
+    );
+    assert!(server
+        .try_iter()
+        .any(|(event, _)| matches!(event, ServerInstruction::DetachSession(ids, _) if ids == vec![watcher])));
+    assert!(screen
+        .defer_for_migration(ScreenInstruction::RemoveWatcherClient(watcher))
+        .is_some());
+    screen.remove_watcher_client(watcher);
+    assert!(screen.watcher_clients.is_empty());
+    assert_eq!(screen.tabs.len(), 1);
+}
+
+#[test]
+fn migration_preparation_waits_for_an_inflight_layout_then_captures_its_terminal() {
+    use yinz_types::session_migration::{MigrationPreparation, PreparationWork};
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    let tab = TabId::new(0);
+    let client = ClientId::new(1);
+    screen
+        .new_tab(tab, (vec![], vec![]), None, Some(client))
+        .unwrap();
+    let operation = operation();
+    let (tx, rx) = crossbeam::channel::bounded(1);
+    screen.session_migration(ScreenRequest::PrepareUpdate {
+        operation: operation.clone(),
+        client,
+        reply: tx,
+    });
+    assert!(
+        matches!(rx.recv().unwrap().unwrap(), MigrationPreparation::Waiting(work) if work.contains(&PreparationWork::Layout))
+    );
+    screen
+        .apply_layout(
+            TiledPaneLayout::default(),
+            vec![],
+            vec![(TerminalId::new(1), None)],
+            vec![],
+            HashMap::new(),
+            tab,
+            true,
+            client,
+            None,
+        )
+        .unwrap();
+    let (tx, pty) = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(tx));
+    let (tx, _) = crossbeam::channel::bounded(1);
+    screen.session_migration(ScreenRequest::PrepareUpdate {
+        operation,
+        client,
+        reply: tx,
+    });
+    let terminals =
+        pty.try_iter()
+            .find_map(|(event, _)| match event {
+                PtyInstruction::SessionMigration(
+                    yinz_bus::migration::PtyRequest::PrepareUpdate { terminals, .. },
+                ) => Some(terminals),
+                _ => None,
+            })
+            .unwrap();
+    assert_eq!(terminals, vec![TerminalId::new(1)]);
 }

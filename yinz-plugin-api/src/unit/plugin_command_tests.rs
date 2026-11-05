@@ -870,7 +870,6 @@ mod props {
             | PluginCommand::UpdateYinz
             | PluginCommand::UpdateYinzPrerelease
             | PluginCommand::UpdateYinzFromSource
-            | PluginCommand::CancelYinzUpdate
             | PluginCommand::YinzUpdateStatus
             | PluginCommand::GetSessionList
             | PluginCommand::GetDisconnectTargets
@@ -982,11 +981,20 @@ fn local_time_command_round_trips() {
 
 #[test]
 fn source_and_release_update_commands_remain_distinct_on_the_wire() {
+    assert!(CommandName::try_from(320).is_err());
+    assert!(CommandName::from_str_name("CancelYinzUpdate").is_none());
+    assert!(PluginCommand::try_from(ProtobufPluginCommand {
+        name: 320,
+        payload: None
+    })
+    .is_err());
+    assert!(
+        serde_json::from_value::<PluginCommand>(serde_json::json!("CancelYinzUpdate")).is_err()
+    );
     for original in [
         PluginCommand::UpdateYinz,
         PluginCommand::UpdateYinzPrerelease,
         PluginCommand::UpdateYinzFromSource,
-        PluginCommand::CancelYinzUpdate,
         PluginCommand::YinzUpdateStatus,
     ] {
         let proto = ProtobufPluginCommand::try_from(original.clone()).unwrap();

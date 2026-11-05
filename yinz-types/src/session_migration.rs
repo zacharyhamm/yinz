@@ -6,7 +6,38 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-pub const SESSION_MIGRATION_FORMAT: u32 = 2;
+pub const SESSION_MIGRATION_FORMAT: u32 = 3;
+
+/// Preparation is polled while the screen and PTY threads continue processing
+/// completions. Busy work is progress, never a string error or a retry budget.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum MigrationPreparation {
+    Waiting(Vec<PreparationWork>),
+    Ready(SessionMigrationInventory),
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PreparationWork {
+    PaneTransfer,
+    Layout,
+    PluginLoad,
+    TerminalPlacement,
+    HostReply,
+    WatcherDisconnect,
+}
+
+impl PreparationWork {
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::PaneTransfer => "pane transfers",
+            Self::Layout => "layout application",
+            Self::PluginLoad => "plugin loading",
+            Self::TerminalPlacement => "terminal startup and placement",
+            Self::HostReply => "terminal host replies",
+            Self::WatcherDisconnect => "watcher disconnection",
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClientFocus {

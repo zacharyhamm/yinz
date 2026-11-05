@@ -1525,6 +1525,13 @@ impl Screen {
         Ok(())
     }
 
+    pub(super) fn finish_pane_warp(&mut self) {
+        match self.in_flight_pane_warps.checked_sub(1) {
+            Some(remaining) => self.in_flight_pane_warps = remaining,
+            None => log::warn!("a pane warp finished that was never started"),
+        }
+    }
+
     /// Runs straight after the `NewPane` that `place_adopted_pane` queued. An
     /// adopted terminal that did not get a pane is given back so it can be
     /// adopted again. The warp hold is released only after this check.

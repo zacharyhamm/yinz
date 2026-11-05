@@ -82,6 +82,7 @@ vte = { workspace = true }
 nix = { workspace = true, features = ["process", "user"] }
 
 [workspace]
+exclude = ["vendor/vte"]
 members = [
     "default-plugins/agent-proto",
     "default-plugins/project-data",
@@ -235,7 +236,7 @@ tokio-util = { version = "0.7.15" }
 unicode-width = { version = "0.2.2", default-features = false }
 url = { version = "2.2.2", default-features = false, features = ["serde"] }
 uuid = { version = "1.4.1", default-features = false, features = ["serde", "v4", "std"] }
-vte = { version = "0.15", default-features = false, features = ["std"] }
+vte = { path = "vendor/vte", version = "0.15", default-features = false, features = ["std", "serde"] }
 names = { version = "0.14.0", default-features = false }
 include_dir = { version = "0.7.3", default-features = false }
 # Match the digest features enabled by the Codex WebSocket client in both build graphs.

@@ -1,12 +1,12 @@
 //! Conservative boundary tracking for vte 0.15. The parser has no public state accessor.
 //! A migration is refused while a sequence or UTF-8 character is incomplete.
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct ParserBoundary {
     state: State,
     utf8: Vec<u8>,
 }
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 enum State {
     #[default]
     Ground,

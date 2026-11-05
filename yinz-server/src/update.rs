@@ -301,6 +301,27 @@ fn dispatch(
                 .map_err(anyhow::Error::msg)?;
             serde_json::to_value(result).context("encode participant reply")
         },
+        Command::DisconnectUpdateClient { client } => {
+            senders
+                .send_to_server(ServerInstruction::DetachSession(vec![*client], None))
+                .context("disconnect client without update support")?;
+            Ok(serde_json::Value::Null)
+        },
+        Command::PrepareUpdate => {
+            state
+                .write()
+                .to_anyhow()
+                .context("remember preparing update endpoint")?
+                .update_control_socket =
+                Some(yinz_runtime::consts::YINZ_SOCK_DIR.join(senders.session.current().as_str()));
+            let value = yinz_bus::migration::prepare_update(
+                &senders,
+                &request.operation,
+                client,
+                Duration::from_secs(60),
+            )?;
+            serde_json::to_value(value).context("encode session preparation progress")
+        },
         Command::PrepareMigration => {
             let value = yinz_bus::migration::prepare_session(
                 &senders,
@@ -369,7 +390,7 @@ fn dispatch(
         | Command::StartSource => {
             unreachable!()
         },
-        Command::Status | Command::Cancel => {
+        Command::Status => {
             let inventory = inventory(state, data, client)?;
             let directory = inventory
                 .assets
@@ -377,44 +398,7 @@ fn dispatch(
                 .unwrap_or_else(get_default_data_dir)
                 .join("updates")
                 .join(&request.operation);
-            let guard = if matches!(request.command, Command::Cancel) {
-                Some(yinz_runtime::session_update::lock_phase(&directory)?)
-            } else {
-                None
-            };
-            let value: serde_json::Value = serde_json::from_slice(
-                &std::fs::read(directory.join("journal.json")).context("read update journal")?,
-            )
-            .context("decode update journal")?;
-            if matches!(request.command, Command::Cancel) {
-                let phase = value
-                    .get("phase")
-                    .and_then(serde_json::Value::as_str)
-                    .context("journal has no phase")?;
-                anyhow::ensure!(
-                    matches!(phase, "Discover" | "Prepare" | "Quiesce"),
-                    "terminal transfer has begun; the update must commit or recover"
-                );
-                use std::os::unix::fs::OpenOptionsExt;
-                let marker = std::fs::OpenOptions::new()
-                    .create(true)
-                    .truncate(false)
-                    .write(true)
-                    .mode(0o600)
-                    .open(directory.join("cancel"))
-                    .context("request update cancellation")?;
-                marker.sync_all().context("persist cancellation request")?;
-                std::fs::File::open(&directory)
-                    .context("open cancellation directory")?
-                    .sync_all()
-                    .context("persist cancellation directory")?;
-                // A crashed coordinator cannot consume the marker. Relaunch it
-                // in the recorded mode, after releasing its phase lock, so even
-                // Prepare can roll back staged participants before cancelling.
-                drop(guard);
-                return start(request, client, state, data);
-            }
-            Ok(value)
+            yinz_runtime::session_update::read_journal(&directory)
         },
     }
 }
@@ -448,12 +432,7 @@ fn start(
         Ok(()) => {},
         Err(std::fs::TryLockError::WouldBlock) => {
             let active = yinz_runtime::session_update::read_active(&data_dir, &socket)?
-                .filter(|active| {
-                    !matches!(
-                        active["phase"].as_str(),
-                        Some("Complete" | "Failed" | "Cancelled")
-                    )
-                })
+                .filter(|active| !matches!(active["phase"].as_str(), Some("Complete" | "Failed")))
                 .context("an update is starting; retry after its channel is recorded")?;
             check_start_mode(&active, request)?;
             return Ok(active);
@@ -464,21 +443,12 @@ fn start(
     }
     let active = yinz_runtime::session_update::read_active(&data_dir, &socket)?;
     let mut operation = request.operation.clone();
-    let cancelling = matches!(request.command, session_update::Command::Cancel);
-    let (mut source_build, mut channel) = requested_mode(&request.command);
-    anyhow::ensure!(
-        !cancelling || active.is_some(),
-        "the update to cancel is no longer active"
-    );
+    let (source_build, channel) = requested_mode(&request.command);
     if let Some(active) = active {
-        if cancelling {
-            check_start_mode(&active, request)?;
-            (source_build, channel) = recorded_mode(&active)?;
-        }
         let phase = active["phase"]
             .as_str()
             .context("update journal has no phase")?;
-        if !matches!(phase, "Complete" | "Failed" | "Cancelled") {
+        if !matches!(phase, "Complete" | "Failed") {
             check_start_mode(&active, request)?;
             operation = active["operation"]
                 .as_str()
@@ -499,8 +469,6 @@ fn start(
                     return Err(error).context("inspect update coordinator lock")
                 },
             }
-        } else if cancelling {
-            return Ok(active);
         }
     }
     let mut launch_command = std::process::Command::new(&inventory.executable);
@@ -577,13 +545,6 @@ fn recorded_mode(active: &serde_json::Value) -> Result<(bool, session_update::Re
 }
 
 fn check_start_mode(active: &serde_json::Value, request: &session_update::Request) -> Result<()> {
-    if matches!(request.command, session_update::Command::Cancel) {
-        anyhow::ensure!(
-            active["operation"].as_str() == Some(&request.operation),
-            "the active update changed before cancellation; inspect its status"
-        );
-        return Ok(());
-    }
     let (source_build, channel) = recorded_mode(active)?;
     let (requested_source, requested_channel) = requested_mode(&request.command);
     yinz_runtime::session_update::ensure_matching_mode(
@@ -682,9 +643,8 @@ fn source_build_status(active: &serde_json::Value, data_dir: &std::path::Path) -
     ))
 }
 
-pub(crate) fn active_control(
+pub(crate) fn active_status(
     client: ClientId,
-    cancel: bool,
     state: &Arc<RwLock<SessionState>>,
     data: &Arc<RwLock<Option<SessionMetaData>>>,
 ) -> Result<String> {
@@ -700,19 +660,6 @@ pub(crate) fn active_control(
     let operation = active["operation"]
         .as_str()
         .context("update journal has no operation")?;
-    if cancel {
-        dispatch(
-            &session_update::Request {
-                token: uuid::Uuid::new_v4().to_string(),
-                operation: operation.into(),
-                command: session_update::Command::Cancel,
-            },
-            client,
-            state,
-            data,
-        )?;
-        return Ok("Update cancellation requested; preparation will finish cleanup".into());
-    }
     let attempted = active["restart_attempted"].as_array();
     let pending = active["restart_required"]
         .as_array()

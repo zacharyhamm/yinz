@@ -279,7 +279,6 @@ pub(super) fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::UpdateYinz
         | CommandType::UpdateYinzPrerelease
         | CommandType::UpdateYinzFromSource
-        | CommandType::CancelYinzUpdate
         | CommandType::YinzUpdateStatus
         | CommandType::AgentControl
         | CommandType::RegisterProjectProvider

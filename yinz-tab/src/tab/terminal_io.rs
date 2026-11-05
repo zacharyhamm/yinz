@@ -81,8 +81,7 @@ impl Tab {
         Ok(())
     }
     pub fn process_pending_vte_events(&mut self, pid: TerminalId) -> Result<()> {
-        if let Some(pending_vte_events) = self.pending_vte_events.get_mut(&pid) {
-            let vte_events: Vec<VteBytes> = std::mem::take(pending_vte_events);
+        if let Some(vte_events) = self.pending_vte_events.remove(&pid) {
             for vte_event in vte_events {
                 self.process_pty_bytes(pid, vte_event)
                     .context("failed to process pending vte events")?;

@@ -35,9 +35,9 @@ The palette clears native linker flags before compiling the build driver. A dire
 a host without mold, use `CARGO_ENCODED_RUSTFLAGS='' cargo x source-build <target>`.
 
 Compilation appears in a server-host command pane. Successful builds close that
-pane before migration. Failed builds retain it and its log. **Cancel Yinz update**
-can stop compilation and its children before transfer; manually closing the build
-pane also stops the operation. No client compiles the source or downloads its
+pane before migration. Failed, interrupted, or terminated builds retain it and
+its log. Manually closing the build pane also fails the operation and stops its
+compiler processes. No client compiles the source or downloads its
 artifacts from GitHub.
 
 The coordinator builds each required target once and transfers bounded chunks

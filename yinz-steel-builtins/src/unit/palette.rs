@@ -283,7 +283,7 @@ fn plugin_palette_blank_keys_remain_visible_and_keep_their_values() {
 #[test]
 fn session_palette_registers_all_actions_and_separates_live_from_saved() {
     let mut h = Palette::new(state());
-    assert_eq!(h.roots.len(), 18);
+    assert_eq!(h.roots.len(), 17);
     let view = h.open("switch-session");
     let actions = h.discover(view["source"].clone(), "");
     assert_eq!(
@@ -811,11 +811,14 @@ fn failed_deferred_session_switch_reports_the_error_and_cancels_preparation() {
 
 #[test]
 fn session_palette_update_dispatches_to_the_session_coordinator() {
+    assert!(!Palette::new(state())
+        .roots
+        .iter()
+        .any(|action| action["id"] == "cancel-update"));
     for (action, command) in [
         ("update-yinz", "UpdateYinz"),
         ("update-yinz-prerelease", "UpdateYinzPrerelease"),
         ("update-status", "YinzUpdateStatus"),
-        ("cancel-update", "CancelYinzUpdate"),
     ] {
         let mut h = Palette::new(state());
         // Update controls enqueue work and return JSON null; errors reject the call.

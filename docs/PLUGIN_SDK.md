@@ -907,8 +907,9 @@ Both require `RunCommands`. The session protocol commands are `Start` and
 `StartPrerelease`, respectively. `UpdateYinzFromSource` / `StartSource` still
 select the registered repository's local main build.
 
-`YinzUpdateStatus` reports the channel, pinned version, and progress;
-`CancelYinzUpdate` requests cancellation before terminal transfer. Retrying an
+`YinzUpdateStatus` reports the channel, pinned version, and progress.
+Preparation waits up to 60 seconds for pending session work to drain; failures
+restore the session through the existing recovery process. Retrying an
 interrupted update preserves its channel and selected version, including when a
 different update action is used. Missing channel fields in older journals mean
 stable. Participants without prerelease support fail with instructions to update

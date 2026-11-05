@@ -70,8 +70,19 @@ impl Connection {
         operation: &str,
         command: session_update::Command,
     ) -> Result<serde_json::Value> {
+        self.request_until(
+            operation,
+            command,
+            Instant::now() + Duration::from_secs(180),
+        )
+    }
+    pub fn request_until(
+        &mut self,
+        operation: &str,
+        command: session_update::Command,
+        deadline: Instant,
+    ) -> Result<serde_json::Value> {
         let token = uuid::Uuid::new_v4().to_string();
-        let deadline = Instant::now() + Duration::from_secs(180);
         self.sender
             .send_client_msg_until(
                 ClientToServerMsg::SessionUpdate(session_update::Request {

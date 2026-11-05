@@ -2343,7 +2343,6 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::UpdateYinz => PluginCommand::UpdateYinz,
         CommandType::UpdateYinzPrerelease => PluginCommand::UpdateYinzPrerelease,
         CommandType::UpdateYinzFromSource => PluginCommand::UpdateYinzFromSource,
-        CommandType::CancelYinzUpdate => PluginCommand::CancelYinzUpdate,
         CommandType::YinzUpdateStatus => PluginCommand::YinzUpdateStatus,
         CommandType::GetSessionList => PluginCommand::GetSessionList,
         CommandType::KillSessionsAndReply => PluginCommand::KillSessionsAndReply(

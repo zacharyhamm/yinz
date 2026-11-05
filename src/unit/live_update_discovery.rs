@@ -174,23 +174,6 @@ fn discovery_network_failure_is_terminal_and_can_be_retried_fresh() {
 }
 
 #[test]
-fn cancelled_discovery_needs_neither_a_source_server_nor_valid_release_metadata() {
-    let fixture = Discovery::new(serde_json::json!({"tag_name":42}));
-    let directory = fixture.root.path().join("updates").join(&fixture.operation);
-    std::fs::write(directory.join("cancel"), "").unwrap();
-    run_with_channel(
-        &fixture.socket,
-        fixture.root.path(),
-        &fixture.operation,
-        false,
-        ReleaseChannel::Stable,
-    )
-    .unwrap();
-    assert_eq!(fixture.journal().phase, Phase::Cancelled);
-    assert!(fixture.journal().errors.is_empty());
-}
-
-#[test]
 fn prerelease_capability_refusal_is_terminal_before_preparation() {
     let fixture = Discovery::new(
         serde_json::json!({"channel":"Prerelease", "tag_name":"v0.1.3-alpha.1", "assets":[]}),

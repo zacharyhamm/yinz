@@ -233,6 +233,8 @@ fn test_client_messages() {
     }
     for command in [
         session_update::Command::Identity,
+        session_update::Command::Status,
+        session_update::Command::PrepareUpdate,
         session_update::Command::Start,
         session_update::Command::StartPrerelease,
         session_update::Command::StartSource,
@@ -271,6 +273,9 @@ fn test_client_messages() {
             command,
         }));
     }
+    assert!(
+        serde_json::from_value::<session_update::Command>(serde_json::json!("Cancel")).is_err()
+    );
     use yinz_types::session_destination::*;
     test_client_roundtrip!(ClientToServerMsg::RequestRepaint);
     for result in [

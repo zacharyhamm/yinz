@@ -800,6 +800,7 @@ pub(crate) struct Screen {
     /// against this before starting is the only chance to notice in time.
     pending_warps: HashMap<TerminalId, (ParkedPaneWarp, std::time::Instant)>,
     migration: Option<migration::MigrationState>,
+    preparing_migration: Option<String>,
     completed_migration: Option<(
         String,
         yinz_types::session_migration::SessionMigrationInventory,
@@ -1561,6 +1562,7 @@ impl Screen {
             scrollback_lines_to_serialize,
             in_flight_pane_warps: 0,
             migration: None,
+            preparing_migration: None,
             completed_migration: None,
             migration_deferred: Default::default(),
             pending_warps: HashMap::new(),

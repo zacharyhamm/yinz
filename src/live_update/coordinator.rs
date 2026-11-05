@@ -14,6 +14,7 @@ use yinz_types::{
 std::thread_local! {
     /// Subprocess regressions exercise failed readiness without waiting a minute.
     pub(super) static CLIENT_READY_TIMEOUT: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::from_secs(60)) };
+    pub(super) static PREPARATION_TIMEOUT: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::from_secs(60)) };
 }
 
 /// An explicit user selection binds a current attachment to one missing original.
@@ -248,19 +249,11 @@ pub fn run_with_channel(
 }
 
 fn run_store(mut store: Store) -> Result<()> {
-    if matches!(
-        store.journal.phase,
-        Phase::Complete | Phase::Failed | Phase::Cancelled
-    ) {
+    if matches!(store.journal.phase, Phase::Complete | Phase::Failed) {
         return Ok(());
     }
     let mut source = None;
     let result = (|| {
-        // Cancellation must precede discovery, version checks and even reconnecting
-        // to the source. Discover has not changed any installation or terminal.
-        if cancel_discovery(&mut store)? {
-            return Ok(());
-        }
         // A published session name now reaches the replacement. Reconnect by the
         // journal's process incarnation, never by an assumed socket/name association.
         source = if store.journal.source.is_some() {
@@ -328,19 +321,8 @@ fn run_store(mut store: Store) -> Result<()> {
     result
 }
 
-fn cancel_discovery(store: &mut Store) -> Result<bool> {
-    if store.journal.phase != Phase::Discover || !store.cancel_requested() {
-        return Ok(false);
-    }
-    if store.journal.source_build {
-        source_build::cancel(store).context("stop cancelled source build")?;
-    }
-    store.phase(Phase::Cancelled)?;
-    Ok(true)
-}
-
 fn record_discovery_failure(store: &mut Store, error: &anyhow::Error) -> Result<()> {
-    if store.journal.phase != Phase::Discover || cancel_discovery(store)? {
+    if store.journal.phase != Phase::Discover {
         return Ok(());
     }
     if store.journal.source_build {
@@ -355,7 +337,6 @@ fn record_discovery_failure(store: &mut Store, error: &anyhow::Error) -> Result<
 }
 
 fn execute(store: &mut Store, source: &mut Connection) -> Result<()> {
-    check_cancel(store)?;
     let operation = store.journal.operation.clone();
     let inventory: Inventory =
         serde_json::from_value(source.request(&operation, Command::Inventory)?)
@@ -407,9 +388,6 @@ fn record_source_build_failure(store: &mut Store, error: &anyhow::Error) -> Resu
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
         .is_some_and(|result| result["success"].is_boolean());
-    if cancel_discovery(store)? {
-        return Ok(());
-    }
     if error.is::<source_build::TerminalFailure>()
         || finished
         || !build.join("launch.json").exists()
@@ -470,7 +448,6 @@ fn build_source_release(
         )),
         "source updates require Linux x86_64 or aarch64 on every participant"
     );
-    check_cancel(store)?;
     let build = source_build::build(store, inventory, &targets.into_iter().collect::<Vec<_>>())?;
     let data_dir = store
         .directory
@@ -479,7 +456,6 @@ fn build_source_release(
         .context("update data directory")?;
     let mut artifacts = Vec::new();
     for (target, path) in &build.artifacts {
-        check_cancel(store)?;
         let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(
             std::fs::File::open(path).context("open source package")?,
         ));
@@ -547,7 +523,6 @@ fn transfer_source_artifact(
     let mut offset = 0;
     let mut buffer = [0; 65536];
     loop {
-        check_cancel(store)?;
         let count = file
             .read(&mut buffer)
             .context("read source artifact chunk")?;
@@ -594,6 +569,245 @@ fn require_prerelease_support(
     Ok(())
 }
 
+fn wait_for_update_preparation(
+    store: &Store,
+    source: &mut Connection,
+) -> Result<yinz_types::session_migration::SessionMigrationInventory> {
+    #[cfg(test)]
+    let timeout = PREPARATION_TIMEOUT.get();
+    #[cfg(not(test))]
+    let timeout = Duration::from_secs(60);
+    wait_for_update_preparation_until(store, source, Instant::now() + timeout)
+}
+
+fn wait_for_update_preparation_until(
+    store: &Store,
+    source: &mut Connection,
+    deadline: Instant,
+) -> Result<yinz_types::session_migration::SessionMigrationInventory> {
+    use yinz_types::session_migration::MigrationPreparation;
+    let operation = &store.journal.operation;
+    let mut reported = None;
+    let mut last_report = Instant::now();
+    let mut pending = "preparation progress from the session".to_owned();
+    let result = (|| loop {
+        anyhow::ensure!(Instant::now() < deadline, "preparation deadline reached");
+        let progress: MigrationPreparation = serde_json::from_value(source.request_until(
+            operation,
+            Command::PrepareUpdate,
+            deadline,
+        )?)
+        .context("decode update preparation progress")?;
+        match progress {
+            MigrationPreparation::Ready(inventory) => return Ok(inventory),
+            MigrationPreparation::Waiting(work) => {
+                pending = work
+                    .iter()
+                    .map(|work| work.description())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if reported.as_ref() != Some(&work)
+                    || last_report.elapsed() >= Duration::from_secs(5)
+                {
+                    source.request_until(
+                        operation,
+                        Command::Notify {
+                            text: format!("Preparing session update: waiting for {pending}…"),
+                        },
+                        deadline,
+                    )?;
+                    reported = Some(work);
+                    last_report = Instant::now();
+                }
+                // Polling releases both server threads to consume completion
+                // events, bounded by this preparation attempt's deadline.
+                std::thread::park_timeout(
+                    Duration::from_millis(100)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+            },
+        }
+    })();
+    if Instant::now() >= deadline {
+        result.with_context(|| {
+            format!("session update preparation timed out while waiting for {pending}")
+        })
+    } else {
+        result
+    }
+}
+
+fn inventory_update_clients(
+    store: &mut Store,
+    source: &mut Connection,
+    inventory: &Inventory,
+    release: &update::Release,
+) -> Result<()> {
+    let operation = store.journal.operation.clone();
+    for client in &inventory.clients {
+        if store
+            .journal
+            .participants
+            .iter()
+            .any(|participant| matches!(participant.route, Route::Client(id) if id == client.id))
+        {
+            continue;
+        }
+        if !client.supports_update || (release.source.is_some() && !client.supports_source_update) {
+            source.request(
+                &operation,
+                Command::DisconnectUpdateClient { client: client.id },
+            )?;
+            if !store.journal.disconnected_clients.contains(&client.id) {
+                store.journal.disconnected_clients.push(client.id);
+            }
+            store.save()?;
+            continue;
+        }
+        match client_participant(source, &operation, client.id, ParticipantRequest::Inventory) {
+            Ok(value) => {
+                let installation: Installation =
+                    serde_json::from_value(value).context("decode client installation")?;
+                require_prerelease_support(release, &installation)?;
+                store.journal.participants.push(Participant {
+                    installation,
+                    route: Route::Client(client.id),
+                    state: "inventoried".into(),
+                });
+            },
+            Err(error) => {
+                let current: Inventory =
+                    serde_json::from_value(source.request(&operation, Command::Inventory)?)
+                        .context("check disconnected client")?;
+                if current.clients.iter().any(|c| c.id == client.id) {
+                    return Err(error);
+                }
+                store.journal.disconnected_clients.push(client.id);
+            },
+        }
+        store.save()?;
+    }
+    Ok(())
+}
+
+fn inventory_update_hosts(
+    store: &mut Store,
+    release: &update::Release,
+    hosts: Vec<String>,
+    config: &yinz_config::config::Config,
+) -> Result<()> {
+    let operation = store.journal.operation.clone();
+    for host in hosts {
+        let already_staged = store.journal.participants.iter().any(|participant| {
+            matches!(&participant.route, Route::Remote { host: staged, .. } if staged == &host)
+        });
+        if already_staged {
+            continue;
+        }
+        let (executable, directory, helper) = transport::bootstrap_remote(
+            &host,
+            release,
+            &config.env,
+            &operation,
+            Some(&store.directory.clone()),
+            |directory| {
+                store.journal.remote_helpers.push(journal::RemoteHelper {
+                    host: host.clone(),
+                    directory: directory.to_owned(),
+                    cleaned: false,
+                });
+                store.save()
+            },
+        )?;
+        let value = transport::remote_participant(
+            &host,
+            &helper,
+            &ParticipantInvocation {
+                executable,
+                data_dir: None,
+                request: ParticipantRequest::Inventory,
+            },
+            &config.env,
+        )?;
+        let installation = serde_json::from_value(value).context("decode remote installation")?;
+        store.journal.participants.push(Participant {
+            installation,
+            route: Route::Remote {
+                host,
+                helper,
+                directory,
+            },
+            state: "inventoried".into(),
+        });
+        store.save()?;
+    }
+    Ok(())
+}
+
+fn prepare_update_participants(
+    store: &mut Store,
+    source: &mut Connection,
+    release: &update::Release,
+) -> Result<()> {
+    let operation = store.journal.operation.clone();
+    for index in unique_participants(&store.journal) {
+        if store.journal.participants[index].state == "prepared" {
+            continue;
+        }
+        require_prerelease_support(release, &store.journal.participants[index].installation)?;
+        if let Some(source_release) = &release.source {
+            anyhow::ensure!(
+                store.journal.participants[index]
+                    .installation
+                    .capabilities
+                    .source_update,
+                "participant does not support source artifacts; update it first"
+            );
+            let artifact = source_release
+                .artifacts
+                .iter()
+                .find(|artifact| {
+                    artifact.target == store.journal.participants[index].installation.target
+                })
+                .context("a participant requires an unbuilt source target; retry a new update")?;
+            transfer_source_artifact(store, source, index, artifact)?;
+        }
+        set_installation_state(&mut store.journal, index, "preparing");
+        store.save()?;
+        participant(
+            source,
+            &store.journal,
+            index,
+            ParticipantRequest::Prepare {
+                operation: operation.clone(),
+                release: store
+                    .journal
+                    .release
+                    .clone()
+                    .context("missing pinned release")?,
+            },
+        )?;
+        set_installation_state(&mut store.journal, index, "prepared");
+        store.save()?;
+    }
+    Ok(())
+}
+
+fn reconcile_update_participants(
+    store: &mut Store,
+    source: &mut Connection,
+    release: &update::Release,
+    migration: &yinz_types::session_migration::SessionMigrationInventory,
+) -> Result<()> {
+    let current: Inventory =
+        serde_json::from_value(source.request(&store.journal.operation, Command::Inventory)?)
+            .context("refresh update participants")?;
+    inventory_update_clients(store, source, &current, release)?;
+    let config = decode_configuration(&current.configuration)?;
+    inventory_update_hosts(store, release, migration.remote_hosts.clone(), &config)?;
+    prepare_update_participants(store, source, release)
+}
+
 /// The release is resolved exactly once, before any participant is prepared.
 pub(super) fn execute_release(
     store: &mut Store,
@@ -601,7 +815,6 @@ pub(super) fn execute_release(
     inventory: Inventory,
     release: update::Release,
 ) -> Result<()> {
-    check_cancel(store)?;
     let operation = store.journal.operation.clone();
     store.journal.source = Some(inventory.clone());
     store.save()?;
@@ -625,10 +838,7 @@ pub(super) fn execute_release(
     store.journal.release = Some(serde_json::to_value(&release).context("record pinned release")?);
     store.phase(Phase::Prepare)?;
     let prepared = (|| {
-        check_cancel(store)?;
-        let migration =
-            serde_json::from_value(source.request(&operation, Command::PrepareMigration)?)
-                .context("decode migration preflight")?;
+        let migration = wait_for_update_preparation(store, source)?;
         store.journal.migration = Some(migration);
         store.save()?;
         let mut installation: Installation =
@@ -645,35 +855,7 @@ pub(super) fn execute_release(
             state: "inventoried".into(),
         });
         store.save()?;
-        for client in &inventory.clients {
-            if !client.supports_update {
-                store.journal.restart_required.push(client.id);
-                store.save()?;
-                continue;
-            }
-            match client_participant(source, &operation, client.id, ParticipantRequest::Inventory) {
-                Ok(value) => {
-                    let installation: Installation =
-                        serde_json::from_value(value).context("decode client installation")?;
-                    require_prerelease_support(&release, &installation)?;
-                    store.journal.participants.push(Participant {
-                        installation,
-                        route: Route::Client(client.id),
-                        state: "inventoried".into(),
-                    });
-                },
-                Err(error) => {
-                    let current: Inventory =
-                        serde_json::from_value(source.request(&operation, Command::Inventory)?)
-                            .context("check disconnected client")?;
-                    if current.clients.iter().any(|c| c.id == client.id) {
-                        return Err(error);
-                    }
-                    store.journal.disconnected_clients.push(client.id);
-                },
-            }
-            store.save()?;
-        }
+        inventory_update_clients(store, source, &inventory, &release)?;
         let config: yinz_config::config::Config = decode_configuration(&inventory.configuration)?;
         let hosts = store
             .journal
@@ -715,50 +897,12 @@ pub(super) fn execute_release(
             }
         }
         if already_current {
+            source.request(&operation, Command::AbortMigration)?;
             store.phase(Phase::Complete)?;
             source.request(&operation,Command::Notify{text:format!("Yinz {target} ({}) is up to date. {} legacy clients need a manual update/restart on their host to verify their running version.",release.channel.label(),store.journal.restart_required.len())})?;
             return Ok(());
         }
-        for host in hosts {
-            check_cancel(store)?;
-            let (executable, directory, helper) = transport::bootstrap_remote(
-                &host,
-                &release,
-                &config.env,
-                &operation,
-                Some(&store.directory.clone()),
-                |directory| {
-                    store.journal.remote_helpers.push(journal::RemoteHelper {
-                        host: host.clone(),
-                        directory: directory.to_owned(),
-                        cleaned: false,
-                    });
-                    store.save()
-                },
-            )?;
-            let value = transport::remote_participant(
-                &host,
-                &helper,
-                &ParticipantInvocation {
-                    executable,
-                    data_dir: None,
-                    request: ParticipantRequest::Inventory,
-                },
-                &config.env,
-            )?;
-            let installation =
-                serde_json::from_value(value).context("decode remote installation")?;
-            store.journal.participants.push(Participant {
-                installation,
-                route: Route::Remote {
-                    host,
-                    helper,
-                    directory,
-                },
-                state: "inventoried".into(),
-            });
-            store.save()?;
-        }
+        inventory_update_hosts(store, &release, hosts, &config)?;
         source.request(
             &operation,
             Command::Notify {
@@ -773,46 +917,7 @@ pub(super) fn execute_release(
                 ),
             },
         )?;
-        for index in unique_participants(&store.journal) {
-            check_cancel(store)?;
-            require_prerelease_support(&release, &store.journal.participants[index].installation)?;
-            if let Some(source_release) = &release.source {
-                anyhow::ensure!(
-                    store.journal.participants[index]
-                        .installation
-                        .capabilities
-                        .source_update,
-                    "participant does not support source artifacts; update it first"
-                );
-                let artifact = source_release
-                    .artifacts
-                    .iter()
-                    .find(|artifact| {
-                        artifact.target == store.journal.participants[index].installation.target
-                    })
-                    .context(
-                        "a participant requires an unbuilt source target; retry a new update",
-                    )?;
-                transfer_source_artifact(store, source, index, artifact)?;
-            }
-            set_installation_state(&mut store.journal, index, "preparing");
-            store.save()?;
-            participant(
-                source,
-                &store.journal,
-                index,
-                ParticipantRequest::Prepare {
-                    operation: operation.clone(),
-                    release: store
-                        .journal
-                        .release
-                        .clone()
-                        .context("missing pinned release")?,
-                },
-            )?;
-            set_installation_state(&mut store.journal, index, "prepared");
-            store.save()?;
-        }
+        prepare_update_participants(store, source, &release)?;
         Ok(())
     })();
     if let Err(error) = prepared {
@@ -826,14 +931,9 @@ pub(super) fn execute_release(
     if store.journal.phase == Phase::Complete {
         return Ok(());
     }
-    if let Err(error) = check_cancel(store) {
-        recover(store, source, None)?;
-        return Err(error);
-    }
     // Pause old plugin workers before replacing their installed sources. Every
     // installation has already staged and validated its generation at this point.
     let publication = (|| {
-        check_cancel(store)?;
         store.phase(Phase::Quiesce)?;
         source.request(
             &operation,
@@ -841,35 +941,8 @@ pub(super) fn execute_release(
                 text: format!("Migrating this session to Yinz {target}…"),
             },
         )?;
-        // Refresh preflight just before pausing: panes may have changed during download.
-        let migration =
-            serde_json::from_value(source.request(&operation, Command::PrepareMigration)?)
-                .context("refresh migration preflight")?;
-        let migration: yinz_types::session_migration::SessionMigrationInventory = migration;
-        let staged_hosts = store
-            .journal
-            .migration
-            .as_ref()
-            .context("missing original preflight")?
-            .remote_hosts
-            .clone();
-        anyhow::ensure!(
-            migration
-                .remote_hosts
-                .iter()
-                .all(|host| staged_hosts.contains(host)),
-            "a pane on an unstaged remote host appeared during preparation; retry the update"
-        );
-        let current: Inventory =
-            serde_json::from_value(source.request(&operation, Command::Inventory)?)
-                .context("refresh attached clients")?;
-        anyhow::ensure!(
-            current.clients.iter().all(|client| inventory
-                .clients
-                .iter()
-                .any(|prepared| prepared.id == client.id)),
-            "a client attached during preparation; retry the update to prepare its installation"
-        );
+        let migration = wait_for_update_preparation(store, source)?;
+        reconcile_update_participants(store, source, &release, &migration)?;
         store.journal.migration = Some(migration);
         store.save()?;
         store.phase(Phase::Transfer)?;
@@ -882,12 +955,14 @@ pub(super) fn execute_release(
         let actual: yinz_types::session_migration::SessionMigrationInventory =
             serde_json::from_value(released["inventory"].clone())
                 .context("decode frozen migration inventory")?;
-        anyhow::ensure!(actual.remote_hosts.iter().all(|host|staged_hosts.contains(host)), "a pane on an unstaged remote host appeared before quiescence; restoring source to prepare that host on retry");
+        // Reconcile the authoritative frozen inventory as well: completions
+        // admitted during preparation may reveal another host or attachment.
+        reconcile_update_participants(store, source, &release, &actual)?;
         store.journal.migration = Some(actual);
         let frozen: Inventory =
             serde_json::from_value(source.request(&operation, Command::Inventory)?)
                 .context("capture quiesced client configuration")?;
-        anyhow::ensure!(frozen.clients.iter().all(|client|inventory.clients.iter().any(|prepared|prepared.id==client.id)), "a client attached before quiescence; restoring source so its installation can be prepared on retry");
+
         for client in &inventory.clients {
             if !frozen
                 .clients
@@ -982,14 +1057,6 @@ pub(super) fn execute_release(
         return Err(error);
     }
     commit(store, Some(source), &mut replacement)
-}
-
-fn check_cancel(store: &Store) -> Result<()> {
-    anyhow::ensure!(
-        !store.cancel_requested(),
-        "update cancelled before terminal transfer"
-    );
-    Ok(())
 }
 
 fn cleanup_remote_helpers(store: &mut Store) -> Result<()> {
@@ -2403,11 +2470,7 @@ fn recover(
             failures.join("; ")
         );
         cleanup_remote_helpers(store)?;
-        store.phase(if store.cancel_requested() {
-            Phase::Cancelled
-        } else {
-            Phase::Failed
-        })?;
+        store.phase(Phase::Failed)?;
         Ok(())
     })();
     if let Err(error) = &result {
@@ -2448,3 +2511,7 @@ mod prerelease_tests;
 #[cfg(test)]
 #[path = "../unit/live_update_discovery.rs"]
 mod discovery_tests;
+
+#[cfg(test)]
+#[path = "../unit/update_preparation.rs"]
+mod preparation_tests;

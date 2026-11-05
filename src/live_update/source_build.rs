@@ -400,13 +400,6 @@ pub(super) fn build(
     let result_path = directory.join("result.json");
     let mut next_probe = Instant::now();
     loop {
-        if store.cancel_requested() {
-            stop(&directory)?;
-            bail!(
-                "source update cancelled; build pane and log retained at {}",
-                record.log.display()
-            );
-        }
         match fs::read(&result_path) {
             Ok(bytes) => {
                 let result: serde_json::Value =

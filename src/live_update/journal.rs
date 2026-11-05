@@ -17,8 +17,8 @@ pub enum Phase {
     Complete,
     Recovering,
     RecoveryRequired,
+    #[serde(alias = "Cancelled")]
     Failed,
-    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,10 +158,7 @@ impl Store {
                         .context("read previous update journal")?,
                 )
                 .context("decode previous update journal")?;
-                if matches!(
-                    old.phase,
-                    Phase::Complete | Phase::Failed | Phase::Cancelled
-                ) {
+                if matches!(old.phase, Phase::Complete | Phase::Failed) {
                     operation.to_owned()
                 } else {
                     if let Some((source_build, channel)) = requested {
@@ -196,10 +193,7 @@ impl Store {
                         && journal.source_socket == socket,
                     "update journal identity or format mismatch"
                 );
-                if !matches!(
-                    journal.phase,
-                    Phase::Complete | Phase::Failed | Phase::Cancelled
-                ) && requested.is_some()
+                if !matches!(journal.phase, Phase::Complete | Phase::Failed) && requested.is_some()
                 {
                     yinz_runtime::session_update::ensure_matching_mode(
                         journal.source_build,
@@ -262,22 +256,6 @@ impl Store {
         atomic_json(&self.directory.join("journal.json"), &self.journal)
     }
     pub fn phase(&mut self, phase: Phase) -> Result<()> {
-        let _guard = yinz_runtime::session_update::lock_phase(&self.directory)?;
-        // Cancellation can arrive after the discovery error was inspected. At
-        // this point failure is safe (including any source-worker cleanup), so
-        // honor the accepted cancellation under the same lock as its marker.
-        let phase = if self.journal.phase == Phase::Discover
-            && phase == Phase::Failed
-            && self.cancel_requested()
-        {
-            Phase::Cancelled
-        } else {
-            phase
-        };
-        anyhow::ensure!(
-            phase != Phase::Transfer || !self.cancel_requested(),
-            "update cancelled before terminal transfer"
-        );
         self.journal.phase = phase;
         self.save()?;
         log::info!(
@@ -285,9 +263,6 @@ impl Store {
             self.journal.operation
         );
         Ok(())
-    }
-    pub fn cancel_requested(&self) -> bool {
-        self.directory.join("cancel").exists()
     }
 }
 

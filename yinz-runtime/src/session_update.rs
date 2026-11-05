@@ -32,21 +32,6 @@ pub fn canonical_socket(socket: &Path) -> Result<PathBuf> {
         .join(socket.file_name().context("session socket has no name")?))
 }
 
-/// Serialize cancellation with the coordinator's transition into terminal
-/// transfer. A successful cancellation can never race past that decision.
-pub fn lock_phase(directory: &Path) -> Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .open(directory.join("phase.lock"))
-        .context("open update phase lock")?;
-    lock.lock().context("lock update phase")?;
-    Ok(lock)
-}
 pub fn record(data_dir: &Path, socket: &Path) -> Result<PathBuf> {
     let digest = Sha256::digest(canonical_socket(socket)?.as_os_str().as_encoded_bytes());
     let key: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -62,17 +47,19 @@ pub fn read_active(data_dir: &Path, socket: &Path) -> Result<Option<serde_json::
     let operation: String =
         serde_json::from_slice(&bytes).context("decode active update operation")?;
     uuid::Uuid::parse_str(&operation).context("invalid active update operation")?;
-    let value = serde_json::from_slice(
-        &std::fs::read(
-            data_dir
-                .join("updates")
-                .join(operation)
-                .join("journal.json"),
-        )
-        .context("read active update journal")?,
+    read_journal(&data_dir.join("updates").join(operation)).map(Some)
+}
+
+pub fn read_journal(directory: &Path) -> Result<serde_json::Value> {
+    let mut value: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(directory.join("journal.json")).context("read update journal")?,
     )
-    .context("decode active update journal")?;
-    Ok(Some(value))
+    .context("decode update journal")?;
+    // Cancellation is a historical failure outcome, including in status replies.
+    if value["phase"] == "Cancelled" {
+        value["phase"] = "Failed".into();
+    }
+    Ok(value)
 }
 
 /// Hash the image executing in this process, even after its installed path is replaced.

@@ -136,6 +136,32 @@ impl Pty {
 
     pub(super) fn session_migration(&mut self, request: PtyRequest) {
         match request {
+            PtyRequest::PrepareUpdate {
+                inventory,
+                terminals,
+                held,
+                reply,
+            } => {
+                use yinz_types::session_migration::{MigrationPreparation, PreparationWork};
+                let pending = !self.pending_terminal_spawns.is_empty()
+                    || !self.reruns.is_empty()
+                    || !self.adopted_tabs.is_empty()
+                    || self
+                        .task_handles
+                        .keys()
+                        .chain(self.terminal_launch_commands.keys())
+                        .any(|id| !terminals.contains(id));
+                let result = if pending {
+                    Ok(MigrationPreparation::Waiting(vec![
+                        PreparationWork::TerminalPlacement,
+                    ]))
+                } else {
+                    self.preflight_migration(&terminals, &held)
+                        .map(|()| MigrationPreparation::Ready(inventory))
+                        .map_err(|error| format!("prepare terminal ownership: {error:#}"))
+                };
+                let _ = reply.send(result);
+            },
             PtyRequest::Prepare {
                 inventory,
                 terminals,

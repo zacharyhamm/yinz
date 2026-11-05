@@ -887,15 +887,6 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     )
                     .context("start source session update")?;
             },
-            PluginCommand::CancelYinzUpdate => {
-                env.senders
-                    .send_to_server(
-                        yinz_bus::server_instruction::ServerInstruction::CancelSessionUpdate(
-                            env.client_id,
-                        ),
-                    )
-                    .context("cancel session update")?;
-            },
             PluginCommand::YinzUpdateStatus => {
                 env.senders
                     .send_to_server(

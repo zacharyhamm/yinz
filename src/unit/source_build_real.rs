@@ -108,6 +108,9 @@ fn build_in_real_pane(mode: &str) {
         .unwrap(),
     )
     .unwrap();
+    // Historical cancellation files must not affect either the driver or worker.
+    fs::write(directory.parent().unwrap().join("cancel"), "").unwrap();
+    fs::write(directory.join("cancel"), "").unwrap();
     let request_path = fixture.root.path().join("build-request.json");
     let result_path = fixture.root.path().join("build-result.json");
     fs::write(
@@ -145,7 +148,7 @@ fn build_in_real_pane(mode: &str) {
         .stderr(log)
         .spawn()
         .unwrap();
-    if matches!(mode, "cancel" | "closed" | "killed") {
+    if matches!(mode, "interrupted" | "terminated" | "closed" | "killed") {
         let started = Watched::new(None);
         let pane = std::thread::scope(|scope| {
             let started = &started;
@@ -172,9 +175,7 @@ fn build_in_real_pane(mode: &str) {
                 Clone::clone,
             )
         });
-        if mode == "cancel" {
-            fs::write(directory.parent().unwrap().join("cancel"), "").unwrap();
-        } else if mode == "killed" {
+        if matches!(mode, "interrupted" | "terminated" | "killed") {
             let pid: i32 = fs::read_to_string(snapshot.join("worker.pid"))
                 .unwrap()
                 .trim()
@@ -182,7 +183,11 @@ fn build_in_real_pane(mode: &str) {
                 .unwrap();
             nix::sys::signal::kill(
                 nix::unistd::Pid::from_raw(pid),
-                nix::sys::signal::Signal::SIGKILL,
+                match mode {
+                    "interrupted" => nix::sys::signal::Signal::SIGINT,
+                    "terminated" => nix::sys::signal::Signal::SIGTERM,
+                    _ => nix::sys::signal::Signal::SIGKILL,
+                },
             )
             .unwrap();
         } else {
@@ -227,8 +232,8 @@ fn build_in_real_pane(mode: &str) {
     } else {
         let error = result.unwrap_err();
         assert!(
-            error.contains(if mode == "cancel" {
-                "cancelled"
+            error.contains(if matches!(mode, "interrupted" | "terminated") {
+                "interrupted"
             } else if mode == "killed" {
                 "worker exited without a result"
             } else {
@@ -293,8 +298,8 @@ fn source_build_failure_retains_real_pane_and_log() {
 }
 
 #[test]
-fn source_build_cancellation_retains_real_pane_without_installation() {
-    build_in_real_pane("cancel");
+fn source_build_interruption_retains_real_pane_without_installation() {
+    build_in_real_pane("interrupted");
 }
 
 #[test]
@@ -305,4 +310,9 @@ fn source_build_closed_pane_stops_without_installation() {
 #[test]
 fn source_build_killed_worker_stops_compiler_and_retains_pane_and_log() {
     build_in_real_pane("killed");
+}
+
+#[test]
+fn source_build_termination_retains_real_pane_without_installation() {
+    build_in_real_pane("terminated");
 }

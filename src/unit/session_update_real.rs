@@ -52,6 +52,35 @@ impl Peer {
         let sender = receiver.get_sender().unwrap();
         Self { receiver, sender }
     }
+    fn prepare_update(&mut self, operation: &str) -> SessionMigrationInventory {
+        use yinz_types::session_migration::MigrationPreparation;
+        let prepared = yinz_test_support::Watched::new(None);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                loop {
+                    let progress: MigrationPreparation = serde_json::from_value(
+                        self.request(operation, UpdateCommand::PrepareUpdate)
+                            .unwrap(),
+                    )
+                    .unwrap();
+                    if let MigrationPreparation::Ready(inventory) = progress {
+                        *prepared.lock() = Some(inventory);
+                        return;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "preparation did not drain: {progress:?}"
+                    );
+                }
+            });
+            prepared.wait_until(
+                "session preparation to drain pending activity",
+                Duration::from_secs(35),
+                |state| state.clone(),
+            )
+        })
+    }
     fn request(
         &mut self,
         operation: &str,
@@ -337,6 +366,46 @@ impl PersistentBindings {
     }
 }
 
+fn assert_terminal_output(session: &Session, pane: yinz_types::pane_id::PaneId, marker: &str) {
+    let observed = yinz_test_support::Watched::new(String::new());
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                let output = session
+                    .command()
+                    .args([
+                        "--session",
+                        NAME,
+                        "action",
+                        "dump-screen",
+                        "--pane-id",
+                        &pane.to_string(),
+                        "--full",
+                    ])
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let text = String::from_utf8(output.stdout).unwrap();
+                let ready = text.contains(marker);
+                *observed.lock() = text;
+                if ready || Instant::now() >= deadline {
+                    return;
+                }
+            }
+        });
+        observed.wait_until(
+            "ordered terminal output after session handoff",
+            Duration::from_secs(35),
+            |text| text.contains(marker).then_some(()),
+        );
+    });
+}
+
 fn migration(rollback: bool) {
     let (session, pids) = setup_with_configuration(
         "detachable_panes true\nplugins { project-store location=\"yinz:project-store\" { shared true; }; agent-service location=\"yinz:agent-service\" { shared true; }; }\nload_plugins clear-defaults=true { project-store; agent-service; }\n"
@@ -350,12 +419,26 @@ fn migration(rollback: bool) {
             .unwrap(),
     )
     .unwrap();
-    let before: SessionMigrationInventory = serde_json::from_value(
-        source
-            .request(&operation, UpdateCommand::PrepareMigration)
-            .unwrap(),
-    )
-    .unwrap();
+    // This follows a normal scroll/drain cycle, then leaves the pane scrolled
+    // with more output buffered when preparation begins.
+    session.success(&[
+        "action",
+        "write-chars",
+        "--pane-id",
+        "terminal_0",
+        &"update output\n".repeat(100),
+    ]);
+    session.success(&["action", "scroll-up", "--pane-id", "terminal_0"]);
+    session.success(&["action", "scroll-to-bottom", "--pane-id", "terminal_0"]);
+    session.success(&["action", "scroll-up", "--pane-id", "terminal_0"]);
+    session.success(&[
+        "action",
+        "write-chars",
+        "--pane-id",
+        "terminal_0",
+        "ordered-update-tail\n",
+    ]);
+    let before = source.prepare_update(&operation);
     assert_eq!(before.tabs.len(), 2);
     let snapshot = session.0.path().join("snapshot.json");
     source
@@ -393,14 +476,29 @@ fn migration(rollback: bool) {
         destination
             .request(&operation, UpdateCommand::AbortMigration)
             .unwrap();
-        source
-            .request(&operation, UpdateCommand::AdoptMigration { snapshot })
-            .unwrap();
+        let restored_mapping: SessionMigrationMap = serde_json::from_value(
+            source
+                .request(&operation, UpdateCommand::AdoptMigration { snapshot })
+                .unwrap(),
+        )
+        .unwrap();
         source
             .request(&operation, UpdateCommand::FinishMigration)
             .unwrap();
         bindings.assert_preserved(&session);
         assert_alive(&pids);
+        let pane = restored_mapping.panes[0].1;
+        assert_terminal_output(&session, pane, "ordered-update-tail");
+        session.success(&[
+            "--session",
+            NAME,
+            "action",
+            "write-chars",
+            "--pane-id",
+            &pane.to_string(),
+            "usable-after-rollback\n",
+        ]);
+        assert_terminal_output(&session, pane, "usable-after-rollback");
         let restored: SessionMigrationInventory = serde_json::from_value(
             source
                 .request(&operation, UpdateCommand::PrepareMigration)
@@ -441,6 +539,7 @@ fn migration(rollback: bool) {
             .unwrap();
         bindings.assert_preserved(&session);
         assert_alive(&pids);
+        assert_terminal_output(&session, mapping.panes[0].1, "ordered-update-tail");
         let after: SessionMigrationInventory = serde_json::from_value(
             destination
                 .request(&operation, UpdateCommand::PrepareMigration)
@@ -854,4 +953,56 @@ fn live_update_preserves_layout_defaults_for_new_tabs() {
         .send_client_msg(ClientToServerMsg::KillSession)
         .unwrap();
     assert_server_exited(inventory.server_pid);
+}
+
+#[test]
+fn preparation_disconnects_real_watcher_without_closing_terminals() {
+    let (session, pids) = setup();
+    let operation = uuid::Uuid::new_v4().to_string();
+    let mut watcher = Peer::connect(&session.socket());
+    watcher
+        .sender
+        .send_client_msg(ClientToServerMsg::AttachWatcherClient {
+            terminal_size: yinz_types::pane_size::Size { rows: 24, cols: 80 },
+        })
+        .unwrap();
+    loop {
+        match watcher
+            .receiver
+            .recv_server_msg_until(Instant::now() + Duration::from_secs(30))
+        {
+            IpcRecv::Msg(ServerToClientMsg::Connected { .. }, _) => break,
+            IpcRecv::Msg(_, _) => {},
+            _ => panic!("watcher did not attach"),
+        }
+    }
+    let mut source = Peer::connect(&session.socket());
+    source.prepare_update(&operation);
+    loop {
+        match watcher
+            .receiver
+            .recv_server_msg_until(Instant::now() + Duration::from_secs(30))
+        {
+            IpcRecv::Eof | IpcRecv::Msg(ServerToClientMsg::Exit { .. }, _) => break,
+            IpcRecv::Msg(_, _) => {},
+            IpcRecv::Idle => panic!("watcher did not disconnect before the deadline"),
+            IpcRecv::Malformed => panic!("malformed reply during watcher disconnection"),
+        }
+    }
+    source
+        .request(&operation, UpdateCommand::AbortMigration)
+        .unwrap();
+    assert_alive(&pids);
+    session.success(&[
+        "action",
+        "write-chars",
+        "--pane-id",
+        "terminal_0",
+        "usable-after-prepare\n",
+    ]);
+    assert_terminal_output(
+        &session,
+        yinz_types::pane_id::PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(0)),
+        "usable-after-prepare",
+    );
 }

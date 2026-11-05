@@ -41,6 +41,7 @@ pub(super) struct MigrationState {
     finish_replies: Vec<Reply<()>>,
     pending_tabs: HashMap<TabId, MigrationTab>,
     replay_tabs: std::collections::HashSet<TabId>,
+    pending_host_drain: Option<Vec<(TerminalId, crate::os_input_output::ReleasedPane)>>,
 }
 
 type PreparedSessionMigration = (
@@ -51,17 +52,231 @@ type PreparedSessionMigration = (
 );
 
 impl Screen {
-    pub(super) fn migration_blocks_normal_work(&self) -> bool {
+    fn prepare_update(
+        &mut self,
+        operation: &str,
+        client: ClientId,
+        reply: Reply<MigrationPreparation>,
+    ) -> Result<()> {
+        migration::validate_operation(operation)?;
+        anyhow::ensure!(
+            self.migration.is_none(),
+            "this session already has an active migration"
+        );
+        anyhow::ensure!(
+            self.preparing_migration
+                .as_deref()
+                .is_none_or(|active| active == operation),
+            "another session migration is preparing"
+        );
+        self.preparing_migration = Some(operation.into());
+        // Stop accepting new routed actions and attachments, while admitting
+        // completion events for work already dispatched to the other threads.
         self.bus
             .senders
             .session_update_quiesced
-            .load(std::sync::atomic::Ordering::Acquire)
+            .store(true, std::sync::atomic::Ordering::Release);
+        let mut pending = Vec::new();
+        if !self.watcher_clients.is_empty() {
+            for watcher in self.watcher_clients.keys() {
+                self.bus
+                    .senders
+                    .send_to_server(
+                        yinz_bus::server_instruction::ServerInstruction::DetachSession(
+                            vec![*watcher],
+                            None,
+                        ),
+                    )
+                    .context("disconnect update watcher")?;
+            }
+            pending.push(PreparationWork::WatcherDisconnect);
+        }
+        if !self.pending_warps.is_empty()
+            || !self.pending_tab_warps.is_empty()
+            || !self.pending_pane_groups.is_empty()
+            || !self.pending_group_placements.is_empty()
+            || self.in_flight_pane_warps != 0
+            || !self.pending_tab_adoptions.is_empty()
+            || !self.pending_warp_relationships.is_empty()
+        {
+            pending.push(PreparationWork::PaneTransfer);
+        }
+        if self.has_pending_tabs() || self.pending_arrangement.is_some() {
+            pending.push(PreparationWork::Layout);
+        }
+        if !self.resolving_plugins.is_empty()
+            || !self.animating_plugin_loads.is_empty()
+            || self.pending_overlay_tabs.is_some()
+        {
+            pending.push(PreparationWork::PluginLoad);
+        }
+        for tab in self.tabs.values_mut() {
+            tab.prepare_migration()
+                .context("prepare tab for session update")?;
+            if tab.migration_pending() && !pending.contains(&PreparationWork::TerminalPlacement) {
+                pending.push(PreparationWork::TerminalPlacement);
+            }
+            if tab.get_all_pane_ids().iter().any(|id| {
+                tab.get_pane_with_id_mut(*id)
+                    .and_then(|pane| pane.terminal_io_mut())
+                    .is_some_and(|pane| pane.is_forward_paused())
+            }) && !pending.contains(&PreparationWork::HostReply)
+            {
+                pending.push(PreparationWork::HostReply);
+            }
+        }
+        if !pending.is_empty() {
+            let _ = reply.send(Ok(MigrationPreparation::Waiting(pending)));
+            return Ok(());
+        }
+        let plugins: Vec<_> = self
+            .tabs
+            .values_mut()
+            .flat_map(|tab| tab.prepare_migration_overlays())
+            .collect();
+        for id in plugins {
+            self.cleanup_closed_pane(id);
+            self.bus
+                .senders
+                .send_to_pty(PtyInstruction::ClosePane(id, None))
+                .context("unload transient plugin UI for session update")?;
+        }
+        let (inventory, _, terminals, held) = self.migration_inventory(client)?;
+        self.bus
+            .senders
+            .send_to_pty(PtyInstruction::SessionMigration(
+                PtyRequest::PrepareUpdate {
+                    inventory,
+                    terminals,
+                    held,
+                    reply,
+                },
+            ))
+            .context("preflight prepared terminals")
+    }
+
+    fn migration_output_pending(&mut self) -> bool {
+        self.tabs.values_mut().any(|tab| {
+            tab.get_all_pane_ids().iter().any(|id| {
+                tab.get_pane_with_id_mut(*id)
+                    .and_then(|pane| pane.terminal_io_mut())
+                    .is_some_and(|pane| pane.is_forward_paused())
+            })
+        })
+    }
+
+    /// The reader's final chunk can itself contain a host query. Keep processing
+    /// its reply, then fence the resulting PTY writes before taking the snapshot.
+    pub(super) fn advance_migration_drain(&mut self) {
+        if !self
+            .migration
+            .as_ref()
+            .is_some_and(|state| state.pending_host_drain.is_some())
+            || self.migration_output_pending()
+        {
+            return;
+        }
+        if let Some(state) = self.migration.as_mut()
+            && let Some(addresses) = state.pending_host_drain.take()
+        {
+            let operation = state.operation.clone();
+            self.session_migration(ScreenRequest::ReadersPaused {
+                operation,
+                result: Ok(addresses),
+            });
+        }
+    }
+
+    fn preparation_admits(event: &ScreenInstruction) -> bool {
+        matches!(
+            event,
+            ScreenInstruction::SessionMigration(_)
+                | ScreenInstruction::Exit
+                | ScreenInstruction::PtyBytes(..)
+                | ScreenInstruction::Render
+                | ScreenInstruction::RenderToClients
+                | ScreenInstruction::RenderWriterReady
+                | ScreenInstruction::Notify(..)
+                | ScreenInstruction::RemoveClient(..)
+                | ScreenInstruction::RemoveWatcherClient(..)
+                | ScreenInstruction::AddClient(..)
+                | ScreenInstruction::AddWatcherClient(..)
+                | ScreenInstruction::ApplyLayout(..)
+                | ScreenInstruction::LayoutSpawnFailed(..)
+                | ScreenInstruction::OverrideLayoutComplete(..)
+                | ScreenInstruction::NewPane(..)
+                | ScreenInstruction::ReplacePane(..)
+                | ScreenInstruction::OpenInPlaceEditor(..)
+                | ScreenInstruction::ConfirmTerminalPlacement(..)
+                | ScreenInstruction::RemotePaneReady(..)
+                | ScreenInstruction::HoldPane(..)
+                | ScreenInstruction::ClosePane(_, None, None, _)
+                | ScreenInstruction::CloseSelf(..)
+                | ScreenInstruction::RestoreHeldPane(..)
+                | ScreenInstruction::RestoreWarpedAgentInput(..)
+                | ScreenInstruction::RequestPaneRedraw(..)
+                | ScreenInstruction::WarpReplayFinished(..)
+                | ScreenInstruction::PaneWarpFinished
+                | ScreenInstruction::PaneReleasedForWarp { .. }
+                | ScreenInstruction::TabReleasedForWarp { .. }
+                | ScreenInstruction::AdoptedPaneReady { .. }
+                | ScreenInstruction::AdoptedPaneFinished(..)
+                | ScreenInstruction::AdoptedTabReady { .. }
+                | ScreenInstruction::AddPlugin(..)
+                | ScreenInstruction::PluginPaneless { .. }
+                | ScreenInstruction::PluginResolving { .. }
+                | ScreenInstruction::PluginFailed(..)
+                | ScreenInstruction::PluginRecovered(..)
+                | ScreenInstruction::PluginUnloaded(..)
+                | ScreenInstruction::PluginBytes(..)
+                | ScreenInstruction::UpdatePluginLocation(..)
+                | ScreenInstruction::UpdatePluginLoadingStage(..)
+                | ScreenInstruction::StartPluginLoadingIndication(..)
+                | ScreenInstruction::StartPluginLoadingAnimation(..)
+                | ScreenInstruction::StopPluginLoadingAnimation(..)
+                | ScreenInstruction::SetSelectable(..)
+                | ScreenInstruction::SetMouseSelectionSupport(..)
+                | ScreenInstruction::ShowPluginCursor(..)
+                | ScreenInstruction::SetPaneCaption(..)
+                | ScreenInstruction::SetPaneAgent(..)
+                | ScreenInstruction::PaneTabLoaded { .. }
+                | ScreenInstruction::OverlayTabCwd { .. }
+                | ScreenInstruction::RequestStateUpdateForPlugins
+                | ScreenInstruction::UpdateBackgroundPluginSubscriptions(..)
+                | ScreenInstruction::AgentSpawned(..)
+                | ScreenInstruction::AgentWorktreeResolved { .. }
+                | ScreenInstruction::ForwardHostQuery { .. }
+                | ScreenInstruction::ForwardedReplyFromHost { .. }
+                | ScreenInstruction::ResumePaneAfterForward { .. }
+                | ScreenInstruction::DumpLayoutToPlugin { .. }
+                | ScreenInstruction::GetCellPixelSize { .. }
+                | ScreenInstruction::GetFocusedPaneInfo { .. }
+                | ScreenInstruction::GetPaneInfo { .. }
+                | ScreenInstruction::GetTabInfo { .. }
+                | ScreenInstruction::GetPaneScrollback { .. }
+                | ScreenInstruction::ListPanes { .. }
+                | ScreenInstruction::ListTabs { .. }
+                | ScreenInstruction::ListNotifications { .. }
+                | ScreenInstruction::GetCurrentTabInfo { .. }
+                | ScreenInstruction::ListClientsToPlugin(..)
+                | ScreenInstruction::ReportCellPixelSize(..)
+        )
+    }
+
+    pub(super) fn migration_blocks_normal_work(&self) -> bool {
+        self.preparing_migration.is_none()
+            && self
+                .bus
+                .senders
+                .session_update_quiesced
+                .load(std::sync::atomic::Ordering::Acquire)
     }
     pub(super) fn migration_reports_suspended(&self) -> bool {
         self.bus
             .senders
             .session_update_quiesced
             .load(std::sync::atomic::Ordering::Acquire)
+            && self.preparing_migration.is_none()
             && !self
                 .migration
                 .as_ref()
@@ -201,6 +416,10 @@ impl Screen {
         event: ScreenInstruction,
     ) -> Option<ScreenInstruction> {
         let Some(state) = &self.migration else {
+            if self.preparing_migration.is_some() && !Self::preparation_admits(&event) {
+                self.migration_deferred.push_back(event);
+                return None;
+            }
             return Some(event);
         };
         // Finish is the coordinator's irreversible commit boundary. Plugin
@@ -219,6 +438,9 @@ impl Screen {
                 | ScreenInstruction::RenderToClients
                 | ScreenInstruction::RenderWriterReady
                 | ScreenInstruction::RemoveClient(..)
+                | ScreenInstruction::ForwardHostQuery { .. }
+                | ScreenInstruction::ForwardedReplyFromHost { .. }
+                | ScreenInstruction::ResumePaneAfterForward { .. }
                 | ScreenInstruction::Notify(..)
                 | ScreenInstruction::DumpLayoutToPlugin { .. }
                 | ScreenInstruction::GetCellPixelSize { .. }
@@ -265,7 +487,7 @@ impl Screen {
     }
 
     pub(super) fn next_migration_event(&mut self) -> Option<ScreenInstruction> {
-        if !self.migration_blocks_normal_work() {
+        if self.preparing_migration.is_none() && !self.migration_blocks_normal_work() {
             self.migration_deferred.pop_front()
         } else {
             None
@@ -372,6 +594,15 @@ impl Screen {
 
     pub(super) fn session_migration(&mut self, request: ScreenRequest) {
         match request {
+            ScreenRequest::PrepareUpdate {
+                operation,
+                client,
+                reply,
+            } => {
+                if let Err(error) = self.prepare_update(&operation, client, reply.clone()) {
+                    let _ = reply.send(Err(format!("prepare update {operation}: {error:#}")));
+                }
+            },
             ScreenRequest::Prepare {
                 operation,
                 client,
@@ -420,6 +651,12 @@ impl Screen {
                             "session migration is already in progress; inspect its journal"
                         ));
                     }
+                    anyhow::ensure!(
+                        self.preparing_migration
+                            .as_deref()
+                            .is_none_or(|active| active == operation),
+                        "another session migration is preparing"
+                    );
                     let (inventory, prepared, _, held) = self.migration_inventory(client)?;
                     let document = SessionMigrationSnapshot {
                         format: SESSION_MIGRATION_FORMAT,
@@ -432,6 +669,7 @@ impl Screen {
                         ownership: vec![],
                     };
                     migration::save_snapshot(&snapshot, &document)?;
+                    self.preparing_migration = None;
                     self.migration = Some(MigrationState {
                         operation: operation.clone(),
                         path: snapshot,
@@ -445,6 +683,7 @@ impl Screen {
                         finish_replies: vec![],
                         pending_tabs: HashMap::new(),
                         replay_tabs: Default::default(),
+                        pending_host_drain: None,
                     });
                     self.bus
                         .senders
@@ -571,6 +810,11 @@ impl Screen {
                     return;
                 };
                 if state.operation != operation || state.stage != Stage::Pausing {
+                    self.migration = Some(state);
+                    return;
+                }
+                if result.is_ok() && self.migration_output_pending() {
+                    state.pending_host_drain = result.ok();
                     self.migration = Some(state);
                     return;
                 }
@@ -851,6 +1095,7 @@ impl Screen {
                         finish_replies: vec![],
                         pending_tabs: HashMap::new(),
                         replay_tabs: Default::default(),
+                        pending_host_drain: None,
                     });
                     self.bus
                         .senders
@@ -964,7 +1209,21 @@ impl Screen {
             },
             ScreenRequest::Abort { operation, reply } => match self.migration.as_ref() {
                 None => {
-                    let _ = reply.send(Ok(()));
+                    if self
+                        .preparing_migration
+                        .as_deref()
+                        .is_some_and(|active| active != operation)
+                    {
+                        let _ =
+                            reply.send(Err("a different session migration is preparing".into()));
+                    } else {
+                        self.preparing_migration = None;
+                        self.bus
+                            .senders
+                            .session_update_quiesced
+                            .store(false, std::sync::atomic::Ordering::Release);
+                        let _ = reply.send(Ok(()));
+                    }
                 },
                 Some(state) if state.operation != operation => {
                     let _ = reply.send(Err("a different session migration is active".into()));

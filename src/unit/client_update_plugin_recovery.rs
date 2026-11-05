@@ -73,6 +73,7 @@ fn run_worker(fixture: &Fixture, operation: &str, release: &crate::update::Relea
         &request_path,
         serde_json::to_vec(&PluginRecoveryFixture {
             coordinator: CoordinatorFixture {
+                stale_clients: false,
                 socket: fixture.socket(),
                 data: fixture.data.clone(),
                 operation: operation.into(),

@@ -4,6 +4,9 @@ use super::*;
 struct Snapshot {
     version: u32,
     grid: serde_json::Value,
+    parser: serde_json::Value,
+    parser_boundary: serde_json::Value,
+    interceptor: serde_json::Value,
     selectable: bool,
     geom: PaneGeom,
     geom_override: Option<PaneGeom>,
@@ -36,9 +39,6 @@ struct Snapshot {
 }
 impl TerminalPane {
     pub(super) fn check_migration(&self) -> Result<(), String> {
-        if !self.parser_boundary.is_ground() || !self.kitty_interceptor.is_in_ground_state() {
-            return Err("terminal output ends inside an escape sequence or UTF-8 character; retry when output settles".into());
-        }
         if self.forward_paused || !self.pending_pty_input.is_empty() || self.nested_guest {
             return Err("terminal has pending host-query output or a nested session that cannot be transferred".into());
         }
@@ -47,7 +47,13 @@ impl TerminalPane {
     pub(super) fn capture_migration(&self) -> Result<serde_json::Value, String> {
         self.check_migration()?;
         let snapshot = Snapshot {
-            version: 1,
+            version: 2,
+            parser_boundary: serde_json::to_value(&self.parser_boundary)
+                .map_err(|e| format!("capture parser boundary: {e}"))?,
+            parser: serde_json::to_value(&self.vte_parser)
+                .map_err(|e| format!("capture parser continuation: {e}"))?,
+            interceptor: serde_json::to_value(&self.kitty_interceptor)
+                .map_err(|e| format!("capture APC continuation: {e}"))?,
             grid: self.grid.migration_state().map_err(|e| format!("{e:#}"))?,
             selectable: self.selectable,
             geom: self.geom,
@@ -85,9 +91,18 @@ impl TerminalPane {
     pub(super) fn apply_migration(&mut self, value: serde_json::Value) -> Result<(), String> {
         let mut state: Snapshot = serde_json::from_value(value)
             .map_err(|error| format!("decode pane migration snapshot: {error}"))?;
-        if state.version != 1 {
+        if state.version != 2 {
             return Err("unsupported pane migration snapshot version".into());
         }
+        let parser: vte::Parser = serde_json::from_value(state.parser)
+            .map_err(|e| format!("decode parser continuation: {e}"))?;
+        if !parser.valid_continuation() {
+            return Err("invalid terminal parser continuation".into());
+        }
+        let boundary = serde_json::from_value(state.parser_boundary)
+            .map_err(|e| format!("decode parser boundary: {e}"))?;
+        let interceptor = serde_json::from_value(state.interceptor)
+            .map_err(|e| format!("decode APC continuation: {e}"))?;
         // A callback belongs to the source plugin's interpreter generation. Recreated plugins
         // have no corresponding pending invocation, even if their numeric IDs happen to match.
         if let Some((_, _, command)) = &mut state.is_held {
@@ -131,8 +146,9 @@ impl TerminalPane {
         self.frame.clear();
         self.fake_cursor_locations.clear();
         self.render_width = None;
-        self.vte_parser = vte::Parser::new();
-        self.parser_boundary = Default::default();
+        self.vte_parser = parser;
+        self.parser_boundary = boundary;
+        self.kitty_interceptor = interceptor;
         self.warp_pending = true;
         Ok(())
     }

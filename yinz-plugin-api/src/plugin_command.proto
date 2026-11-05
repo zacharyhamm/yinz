@@ -293,7 +293,8 @@ enum CommandName {
   GetSessionInventory = 316;
   SwitchSessionDestination = 317;
   UpdateYinz = 319;
-  CancelYinzUpdate = 320;
+  reserved 320;
+  reserved "CancelYinzUpdate";
   YinzUpdateStatus = 321;
   UpdateYinzFromSource = 322;
   UpdateYinzPrerelease = 323;

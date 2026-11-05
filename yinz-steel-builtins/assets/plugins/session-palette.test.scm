@@ -5,7 +5,7 @@
     "available_layouts" (list (hash "BuiltIn" "default") (hash "File" (list "custom" default-layout)))))
 (define default-inventory (hash "live_sessions" (list (live "current" #t) (live "other")) "resurrectable_sessions" (list (list "saved" (hash "secs" 20 "nanos" 0)))))
 (define ordinary-root-ids '("switch-session" "find-tab" "find-pane" "new-session" "resurrect" "rename" "save"
-    "kill" "kill-others" "delete" "delete-all" "disconnect" "details" "notifications" "update-yinz" "update-yinz-prerelease" "update-status" "cancel-update"))
+    "kill" "kill-others" "delete" "delete-all" "disconnect" "details" "notifications" "update-yinz" "update-yinz-prerelease" "update-status"))
 (define empty-projects (hash "columns" '("name" "root" "remote") "rows" '() "truncated" #f "next_cursor" json-null))
 (define (action-ids actions) (map (lambda (action) (hash-ref action "id")) actions))
 (define (inventory sessions) (hash "live_sessions" sessions "resurrectable_sessions" '()))

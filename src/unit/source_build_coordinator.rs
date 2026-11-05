@@ -107,8 +107,7 @@ fn exited_source_worker_without_receipt_finalizes_operation() {
     assert!(format!("{error:#}").contains("worker exited without a result"));
     let build = fixture.store.directory.join("source");
     assert!(!build.join("result.json").exists());
-    assert!(build.join("cancel").exists());
-    assert!(!fixture.store.cancel_requested());
+    assert!(!build.join("cancel").exists());
     assert_eq!(
         fs::read_to_string(build.join("build.log")).unwrap(),
         "retained build output\n"
@@ -170,12 +169,19 @@ fn ambiguous_source_worker_launch_keeps_operation_resumable() {
 }
 
 #[test]
-fn explicit_source_cancellation_finalizes_as_cancelled() {
-    let mut fixture = BuildFixture::new("exit 1");
+fn interrupted_source_build_finalizes_as_failed_despite_obsolete_markers() {
+    let mut fixture = BuildFixture::new("printf '%s' '[{\"id\":42,\"exited\":true}]'");
     fs::write(fixture.store.directory.join("cancel"), "").unwrap();
+    fs::write(fixture.store.directory.join("source/cancel"), "").unwrap();
+    journal::atomic_json(
+        &fixture.store.directory.join("source/result.json"),
+        &serde_json::json!({"success": false, "error": "source build interrupted"}),
+    )
+    .unwrap();
     let error = fixture.fail();
-    assert!(format!("{error:#}").contains("source update cancelled"));
-    fixture.assert_retry(Phase::Cancelled);
+    assert!(format!("{error:#}").contains("source build interrupted"));
+    assert!(fixture.store.directory.join("source/build.log").is_file());
+    fixture.assert_retry(Phase::Failed);
 }
 
 #[test]

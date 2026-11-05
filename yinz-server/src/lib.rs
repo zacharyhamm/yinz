@@ -2028,7 +2028,21 @@ pub fn start_server_impl(
                                 exit_reason: ExitReason::Normal,
                             },
                         );
-                        remove_client!(*client_id, os_input, session_state, session_data);
+                        let is_watcher = session_state
+                            .read()
+                            .to_anyhow()
+                            .context("inspect detached client kind")?
+                            .is_watcher(client_id);
+                        if is_watcher {
+                            remove_watcher_client(
+                                *client_id,
+                                &mut os_input,
+                                &session_state,
+                                &session_data,
+                            )?;
+                        } else {
+                            remove_client!(*client_id, os_input, session_state, session_data);
+                        }
                     }
                     drop(completion_tx); // cleanup is queued before the action completes
                 },
@@ -2253,18 +2267,8 @@ pub fn start_server_impl(
                         );
                     }
                 },
-                ServerInstruction::CancelSessionUpdate(client) => {
-                    let text = update::active_control(client, true, &session_state, &session_data)
-                        .unwrap_or_else(|error| format!("Yinz update: {error:#}"));
-                    with_session(&session_data, |session| {
-                        session
-                            .senders
-                            .send_to_screen(ScreenInstruction::Notify(text, None, None, None))
-                            .non_fatal()
-                    })?;
-                },
                 ServerInstruction::SessionUpdateStatus(client) => {
-                    let text = update::active_control(client, false, &session_state, &session_data)
+                    let text = update::active_status(client, &session_state, &session_data)
                         .unwrap_or_else(|error| format!("Yinz update: {error:#}"));
                     with_session(&session_data, |session| {
                         session

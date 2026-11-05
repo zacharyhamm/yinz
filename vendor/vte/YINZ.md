@@ -1,0 +1,1 @@
+Vendored vte 0.15.0 (Apache-2.0 OR MIT). Yinz adds serde serialization of the parser continuation and validation of restored indices. Keep this representation versioned by the terminal/session migration contracts when updating vte. Parsing behavior is unchanged.

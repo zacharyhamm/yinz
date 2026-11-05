@@ -19,6 +19,11 @@ pub type Reply<T> = crossbeam::channel::Sender<Result<T, String>>;
 
 #[derive(Clone, Debug)]
 pub enum ScreenRequest {
+    PrepareUpdate {
+        operation: String,
+        client: ClientId,
+        reply: Reply<MigrationPreparation>,
+    },
     Prepare {
         operation: String,
         client: ClientId,
@@ -104,6 +109,12 @@ pub enum ScreenRequest {
 
 #[derive(Clone, Debug)]
 pub enum PtyRequest {
+    PrepareUpdate {
+        inventory: SessionMigrationInventory,
+        terminals: Vec<TerminalId>,
+        held: HashMap<TerminalId, HeldTerminal>,
+        reply: Reply<MigrationPreparation>,
+    },
     Prepare {
         inventory: SessionMigrationInventory,
         terminals: Vec<TerminalId>,
@@ -163,6 +174,19 @@ pub fn prepare_session(
 ) -> Result<SessionMigrationInventory> {
     validate_operation(operation)?;
     request(senders, timeout, |reply| ScreenRequest::Prepare {
+        operation: operation.into(),
+        client,
+        reply,
+    })
+}
+pub fn prepare_update(
+    senders: &ThreadSenders,
+    operation: &str,
+    client: ClientId,
+    timeout: Duration,
+) -> Result<MigrationPreparation> {
+    validate_operation(operation)?;
+    request(senders, timeout, |reply| ScreenRequest::PrepareUpdate {
         operation: operation.into(),
         client,
         reply,

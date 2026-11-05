@@ -1885,10 +1885,6 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 None => Ok(PluginCommand::UpdateYinzFromSource),
                 _ => Err("Mismatched payload for UpdateYinzFromSource"),
             },
-            Some(CommandName::CancelYinzUpdate) => match protobuf_plugin_command.payload {
-                None => Ok(PluginCommand::CancelYinzUpdate),
-                _ => Err("Mismatched payload for CancelYinzUpdate"),
-            },
             Some(CommandName::YinzUpdateStatus) => match protobuf_plugin_command.payload {
                 None => Ok(PluginCommand::YinzUpdateStatus),
                 _ => Err("Mismatched payload for YinzUpdateStatus"),
@@ -4567,10 +4563,6 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             }),
             PluginCommand::UpdateYinzFromSource => Ok(ProtobufPluginCommand {
                 name: CommandName::UpdateYinzFromSource as i32,
-                payload: None,
-            }),
-            PluginCommand::CancelYinzUpdate => Ok(ProtobufPluginCommand {
-                name: CommandName::CancelYinzUpdate as i32,
                 payload: None,
             }),
             PluginCommand::YinzUpdateStatus => Ok(ProtobufPluginCommand {

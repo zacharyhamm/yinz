@@ -41,14 +41,11 @@ def build(record_path):
     directory = record_path.parent
     process_path = directory / "process.json"
     child = None
-    cancelled = False
-
-    def cancellation_requested():
-        return cancelled or (directory / "cancel").exists() or (directory.parent / "cancel").exists()
+    interrupted = False
 
     def interrupt(signum, frame):
-        nonlocal cancelled
-        cancelled = True
+        nonlocal interrupted
+        interrupted = True
         stop(process_path)
 
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
@@ -77,8 +74,8 @@ def build(record_path):
                 if target not in installed:
                     raise RuntimeError(f"install server build target first: rustup target add {target}")
             for target in record["targets"]:
-                if cancellation_requested():
-                    raise RuntimeError("source build cancelled")
+                if interrupted:
+                    raise RuntimeError("source build interrupted")
                 write(f"\nCompiling {target}\n".encode())
                 # The outer xtask build must also ignore native mold flags;
                 # source-build clears them again for Zig's target compilation.
@@ -87,7 +84,7 @@ def build(record_path):
                                          env=environment, stdout=subprocess.PIPE,
                                          stderr=subprocess.STDOUT, start_new_session=True)
                 save(process_path, {"pid": child.pid, "start": incarnation(child.pid)})
-                if cancellation_requested():
+                if interrupted:
                     stop(process_path)
                 with selectors.DefaultSelector() as selector:
                     selector.register(child.stdout, selectors.EVENT_READ)
@@ -98,16 +95,16 @@ def build(record_path):
                                 write(data)
                             else:
                                 selector.unregister(key.fd)
-                        if cancellation_requested():
+                        if interrupted:
                             stop(process_path)
                 child.stdout.close()
                 status = child.wait()
-                if cancellation_requested() or status:
-                    raise RuntimeError(f"source build {'cancelled' if cancellation_requested() else 'failed'} for {target} (exit {status})")
+                if interrupted or status:
+                    raise RuntimeError(f"source build {'interrupted' if interrupted else 'failed'} for {target} (exit {status})")
                 if not lock_path.is_file() or lock_path.read_bytes() != pinned_lock:
                     raise RuntimeError("pinned Cargo.lock changed during source build; refusing to publish artifacts")
-            if cancellation_requested():
-                raise RuntimeError("source build cancelled")
+            if interrupted:
+                raise RuntimeError("source build interrupted")
             write(b"\nSource artifacts built successfully. Validating before session replacement.\n")
             save(directory / "result.json", {"success": True})
         except Exception as error:
@@ -124,7 +121,6 @@ def build(record_path):
 if __name__ == "__main__":
     if sys.argv[1] == "--stop":
         process_path = Path(sys.argv[2])
-        (process_path.parent / "cancel").touch()
         stop(process_path)
     else:
         sys.exit(build(Path(sys.argv[1])))

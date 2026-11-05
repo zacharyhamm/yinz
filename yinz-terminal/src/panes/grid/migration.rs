@@ -10,6 +10,16 @@ const FORMAT: u32 = yinz_types::data::WARP_TERMINAL_STATE_VERSION;
 #[derive(Serialize, Deserialize)]
 struct Snapshot {
     format: u32,
+    #[serde(default)]
+    lock_renders: bool,
+    #[serde(default)]
+    completed_text: Option<Vec<Vec<ChunkState>>>,
+    #[serde(default)]
+    ui_component_bytes: Option<Vec<u8>>,
+    #[serde(default)]
+    nested_frame_bytes: Option<Vec<u8>>,
+    #[serde(default)]
+    xtgettcap_bytes: Option<Vec<u8>>,
     lines_above: Vec<RowState>,
     viewport: Vec<RowState>,
     lines_below: Vec<RowState>,
@@ -76,6 +86,72 @@ struct AlternateState {
     supports_kitty_keyboard_protocol: bool,
 }
 type PlaceholderState = (usize, Option<u16>, Option<u16>, Option<u16>);
+
+// Completed chunks can differ from the live viewport during synchronized output.
+// Keep their pane-relative coordinates and resolve shared palettes and links just
+// like the live rows, including palettes no longer present in those rows.
+#[derive(Serialize, Deserialize)]
+struct ChunkState {
+    terminal_characters: Vec<TerminalCharacter>,
+    x: usize,
+    y: usize,
+    changed_colors: Option<Vec<Option<AnsiCode>>>,
+    pane_default_fg: Option<AnsiCode>,
+    pane_default_bg: Option<AnsiCode>,
+    theme_background: bool,
+    agent_theme: Option<usize>,
+    selection_and_colors: Vec<crate::output::HighlightSelection>,
+}
+
+impl ChunkState {
+    fn capture(chunk: &CharacterChunk, palettes: &mut Vec<Rc<SourcePalette>>) -> Self {
+        Self {
+            terminal_characters: chunk.terminal_characters.clone(),
+            x: chunk.x,
+            y: chunk.y,
+            changed_colors: chunk.changed_colors.map(|colors| colors.to_vec()),
+            pane_default_fg: chunk.pane_default_fg,
+            pane_default_bg: chunk.pane_default_bg,
+            theme_background: chunk.theme_background,
+            agent_theme: chunk
+                .agent_theme
+                .as_ref()
+                .map(|palette| palette_id(palette, palettes)),
+            selection_and_colors: chunk.selection_and_colors().to_vec(),
+        }
+    }
+
+    fn restore(mut self, palettes: &[Rc<SourcePalette>], links: &[u32]) -> Result<CharacterChunk> {
+        for character in &mut self.terminal_characters {
+            remap_styles(&mut character.styles, links)?;
+        }
+        let mut chunk = CharacterChunk::new(self.terminal_characters, self.x, self.y);
+        chunk.changed_colors = self
+            .changed_colors
+            .map(|colors| {
+                colors
+                    .try_into()
+                    .map_err(|_| anyhow!("invalid completed frame palette length"))
+            })
+            .transpose()?;
+        chunk.pane_default_fg = self.pane_default_fg;
+        chunk.pane_default_bg = self.pane_default_bg;
+        chunk.theme_background = self.theme_background;
+        chunk.agent_theme = self
+            .agent_theme
+            .map(|index| {
+                palettes
+                    .get(index)
+                    .cloned()
+                    .context("unknown completed frame source palette")
+            })
+            .transpose()?;
+        for highlight in self.selection_and_colors {
+            chunk.add_selection_and_colors(highlight, 0, 0);
+        }
+        Ok(chunk)
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 struct RowState {
@@ -283,8 +359,6 @@ impl Grid {
                 && !self.kitty_parser.has_pending(),
             "terminal has graphics that this migration format cannot transfer"
         );
-        anyhow::ensure!(!self.lock_renders && self.ui_component_bytes.is_none() && self.nested_frame_bytes.is_none() && self.xtgettcap_bytes.is_none(),
-            "terminal has an incomplete frame or device-control sequence; retry when output settles");
         anyhow::ensure!(
             self.pending_forwarded_queries.is_empty()
                 && self.agent_color_queries.is_empty()
@@ -315,8 +389,23 @@ impl Grid {
                 cursor: alternate.cursor.clone(),
                 supports_kitty_keyboard_protocol: alternate.supports_kitty_keyboard_protocol,
             });
+        let completed_text = self.lock_renders.then(|| {
+            self.completed_text
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|chunk| ChunkState::capture(chunk, &mut palettes))
+                        .collect()
+                })
+                .collect()
+        });
         let snapshot = Snapshot {
             format: FORMAT,
+            lock_renders: self.lock_renders,
+            completed_text,
+            ui_component_bytes: self.ui_component_bytes.clone(),
+            nested_frame_bytes: self.nested_frame_bytes.clone(),
+            xtgettcap_bytes: self.xtgettcap_bytes.clone(),
             lines_above,
             viewport,
             lines_below,
@@ -447,8 +536,22 @@ impl Grid {
                     .map_err(|_| anyhow!("invalid terminal palette length"))
             })
             .transpose()?;
+        let completed_text = state
+            .completed_text
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(|chunk| chunk.restore(&palettes, &links))
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()?;
         // All validation and shared-link allocation above precede mutation of the live grid.
         *self.link_handler.borrow_mut() = merged_links;
+        self.lock_renders = state.lock_renders;
+        self.ui_component_bytes = state.ui_component_bytes;
+        self.nested_frame_bytes = state.nested_frame_bytes;
+        self.xtgettcap_bytes = state.xtgettcap_bytes;
         self.lines_above = lines_above;
         self.viewport = viewport;
         self.lines_below = lines_below;
@@ -509,7 +612,7 @@ impl Grid {
         self.word_separators = state.word_separators;
         self.osc7_payload = state.osc7_payload;
         self.output_buffer = Default::default();
-        self.completed_text.clear();
+        self.completed_text = completed_text;
         self.completed_sixel.clear();
         self.completed_kitty.clear();
         self.clear_viewport_before_rendering = true;

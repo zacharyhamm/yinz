@@ -39,8 +39,11 @@ pub enum Command {
     StartPrerelease,
     StartSource,
     Status,
-    Cancel,
     PrepareMigration,
+    PrepareUpdate,
+    DisconnectUpdateClient {
+        client: ClientId,
+    },
     ReleaseMigration {
         snapshot: PathBuf,
     },

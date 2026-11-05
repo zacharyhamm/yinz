@@ -50,7 +50,7 @@ fn vte_hide_cursor_instruction(vte_output: &mut String) -> Result<()> {
 }
 
 /// A selection region with associated styling for highlights and text selection.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct HighlightSelection {
     pub selection: Selection,
     pub bg: Option<AnsiCode>,

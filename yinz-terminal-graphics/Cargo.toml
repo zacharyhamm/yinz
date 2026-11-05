@@ -11,6 +11,7 @@ workspace = true
 # Nothing from the terminal emulator itself: the grid drives this crate through `KittyGrid`,
 # `SixelGrid` and their stores, never the other way round.
 [dependencies]
+serde = { workspace = true }
 yinz-types = { workspace = true }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 # Image payloads are megabytes of base64 each way; this is several times faster than `base64`.

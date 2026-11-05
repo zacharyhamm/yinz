@@ -116,7 +116,7 @@ fn socket_aliases_cannot_start_concurrent_updates() {
 }
 
 #[test]
-fn cancellation_is_durable_but_does_not_change_the_recorded_ownership_phase() {
+fn obsolete_cancellation_marker_does_not_block_transfer() {
     let root = tempfile::tempdir().unwrap();
     let socket = root.path().join("session");
     let data = root.path().join("data");
@@ -125,12 +125,40 @@ fn cancellation_is_durable_but_does_not_change_the_recorded_ownership_phase() {
     store.phase(Phase::Prepare).unwrap();
     std::fs::write(store.directory.join("cancel"), b"").unwrap();
     drop(store);
-    let retry = Store::open(&socket, &data, &operation).unwrap();
-    assert!(retry.cancel_requested());
+    let mut retry = Store::open(&socket, &data, &operation).unwrap();
     assert_eq!(retry.journal.phase, Phase::Prepare);
-    let mut retry = retry;
-    assert!(retry.phase(Phase::Transfer).is_err());
-    assert_eq!(retry.journal.phase, Phase::Prepare);
+    retry.phase(Phase::Transfer).unwrap();
+    assert_eq!(retry.journal.phase, Phase::Transfer);
+}
+
+#[test]
+fn historical_cancelled_journals_are_failed_and_allow_a_new_update() {
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("session");
+    let data = root.path().join("data");
+    let operation = uuid::Uuid::new_v4().to_string();
+    let store = Store::open(&socket, &data, &operation).unwrap();
+    let mut old = serde_json::to_value(&store.journal).unwrap();
+    old["phase"] = "Cancelled".into();
+    std::fs::write(
+        store.directory.join("journal.json"),
+        serde_json::to_vec(&old).unwrap(),
+    )
+    .unwrap();
+    let decoded: super::super::journal::Journal = serde_json::from_value(old).unwrap();
+    assert_eq!(decoded.phase, Phase::Failed);
+    assert_eq!(serde_json::to_value(decoded).unwrap()["phase"], "Failed");
+    assert_eq!(
+        yinz_runtime::session_update::read_active(&data, &socket)
+            .unwrap()
+            .unwrap()["phase"],
+        "Failed"
+    );
+    drop(store);
+    let next = uuid::Uuid::new_v4().to_string();
+    let retry = Store::open(&socket, &data, &next).unwrap();
+    assert_eq!(retry.journal.operation, next);
+    assert_eq!(retry.journal.phase, Phase::Discover);
 }
 
 #[test]

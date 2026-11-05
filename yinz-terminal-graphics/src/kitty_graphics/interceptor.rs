@@ -1,6 +1,6 @@
 const MAX_CAPTURE_LEN: usize = 1_048_576;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 enum State {
     Ground,
     Esc,
@@ -9,7 +9,7 @@ enum State {
     CapturingEsc,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct KittyApcInterceptor {
     state: State,
     buffer: Vec<u8>,

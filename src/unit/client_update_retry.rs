@@ -295,6 +295,7 @@ fn coordinator_keeps_backups_after_client_startup_failure_and_repeated_recovery(
         &request_path,
         serde_json::to_vec(&RetryFixture {
             coordinator: CoordinatorFixture {
+                stale_clients: false,
                 socket: fixture.socket(),
                 data: fixture.data.clone(),
                 operation: operation.clone(),

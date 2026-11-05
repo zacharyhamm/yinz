@@ -1729,6 +1729,12 @@ impl Pane for TerminalPane {
     }
     fn terminal_state(&self) -> Result<String, String> {
         self.check_migration()?;
+        if !self.parser_boundary.is_ground()
+            || !self.kitty_interceptor.is_in_ground_state()
+            || self.grid.lock_renders
+        {
+            return Err("ordinary pane transfer requires a complete terminal sequence".into());
+        }
         let state = self.grid.migration_state().map_err(|e| format!("{e:#}"))?;
         let state =
             serde_json::to_string(&state).map_err(|e| format!("encode terminal state: {e}"))?;
