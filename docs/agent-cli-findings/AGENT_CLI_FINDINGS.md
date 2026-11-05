@@ -28,6 +28,84 @@ Each one found its session from the environment, then ran spawn, wait, prompt,
 | 35 | P2 | **Not reproduced; watch for it.** A worker spawned into `.worktrees/fix-sub` once edited the main checkout's file by absolute path, and `prompt --wait` reported success. Later runs stayed inside their own worktrees. |
 | 37 | P2 | **Not reproduced; watch for it.** Haiku once called a 55 KB paste ending in an instruction a "prompt injection" and ignored it, despite `PASTE_LEAD_IN`. A later 56 KB sample worked. |
 
+## Claude background completion: implementation prerequisite blocked
+
+Investigation on 2026-11-05 for Agenda workspace `yinz`, item 17, approved plan
+version 2, against source `7ea5a7f4ef4dcee5ea491e1a82bc58b31e132582`.
+This Agenda item is separate from shakedown finding 17 in the table above.
+The runtime fix is **not implemented**. Plan step `validate-worker-run-evidence`
+requires attributable provider fixtures before changing completion transitions;
+the repository and documentation inspected do not establish the required
+correlation. The controller owns external fixture capture. No live Claude session,
+incident transcript, installed hook, or provider configuration was changed or
+read during this investigation.
+
+The source still has both tracking defects:
+
+- `yinz-process/src/claude_turn.rs`, `background_task` and `Turn::record`, retain
+  only the `agentId` from an `async_launched` result. Parent confirmation carries
+  those IDs in `HookEvent.claude_background_tasks`.
+- `yinz-screen/src/screen/agent_control.rs`, `reconcile_claude_activity`, removes
+  a stopped ID from `workers` but leaves it in `background_tasks`. A later
+  confirmation can add it again because only completed notification turns populate
+  `completed_tasks`.
+- `ignore_claude_worker` accepts a new `SubagentStart` for a stopped ID;
+  reconciliation clears its `stopped_workers` entry. An older Stop arriving after
+  that start is accepted. `apply_agent_report_state` can remove the resumed
+  worker's input wait before reconciliation removes the worker itself. A guard
+  confined to reconciliation would therefore be too late.
+
+The transport does not supply a validated execution identity. `HookEvent` has
+optional prompt, turn, tool and message IDs, but the existing fixtures do not
+show which, if any, links a worker launch to its completion across resumption.
+`ReportTrace::new` creates a fresh UUID per reporter invocation; `AgentReport`
+does not turn that UUID into a provider execution identifier. The local path
+(`yinz-cli/src/actions/agents.rs`, `src/agent_report.rs`) and broker path
+(`yinz-process/src/pty_host/remote/broker.rs`) both use shared hook parsing and
+bounded broadcasts. Unknown fields can survive an unpruned raw broadcast but
+are lost during typed decoding or pruning; raw tool responses are also pruned.
+The turn observer explicitly excludes worker hooks. No repository fixture or
+adapter for `SubagentHandback` was found. The synthetic async-launch test
+`background_launches_in_the_turn_are_reported_once_in_launch_order` covers ID
+collection, not provider execution correlation.
+
+Provider documentation checked on 2026-11-05 narrows the investigation:
+
+- `SubagentStart` fires on resumption. `SubagentStop` includes a worker transcript
+  path, but hooks can block stopping and continue the worker. Handback delivers
+  its report before stopping; the Stop's closing text need not be that report.
+  These statements do not validate a successful handback-result shape or an
+  execution key. See the [hooks reference](https://code.claude.com/docs/en/hooks#subagentstop).
+- Resumption starts another run under the same agent ID, including through
+  `SendMessage` without a new `Agent` call. Therefore agent ID or the original
+  launch alone cannot distinguish runs. See [resuming subagents](https://code.claude.com/docs/en/sub-agents#resume-subagents).
+
+These are current documentation findings, not a captured Claude 2.1.318 event
+sequence. Before implementation resumes, the controller must supply a sanitized,
+version-attributed capture containing the raw hooks and linked transcript records
+for an async launch, successful handback and eventual stop, then same-ID
+resumption and its completion. Preserve identifier equality, tool-result success
+or error metadata, message ancestry, and transcript boundaries while removing
+prose and private paths. Include a resumed input wait, failed or denied handback,
+and a blocking Stop continuation. The evidence must establish how each completion
+and late launch report identifies its execution even when delivered after a newer
+start; a parent prompt ID alone is insufficient unless that relationship is
+demonstrated for multiple worker runs in the same parent prompt.
+
+Until that contract is established, assigning local generations or tombstoning
+worker IDs would conceal the ambiguity rather than meet the approved acceptance
+criteria. The controller should keep this implementation blocked; the existing
+stale Busy behavior remains unresolved.
+
+Checks for this evidence-only change: `cargo x test -p yinz-types
+agent::hooks::tests` passed all 35 selected tests (267 skipped),
+`cargo x format --check` passed, and `git diff --check` passed. The test command
+built this worktree's own binary in its real, isolated `target/` directory.
+No new regression tests or runtime changes were made. Process/screen tests and
+lint from the implementation plan remain outstanding with implementation; neither
+the full test suites nor the CI gate ran. Passing existing hook tests does not
+resolve the missing provider evidence or establish the acceptance criteria.
+
 ## Known limitations and caller guidance
 
 The following behavior is intentional or not worth fixing. Callers and the skill should account for it.
