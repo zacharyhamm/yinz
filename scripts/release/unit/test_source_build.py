@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import select
+import signal
 import subprocess
 import sys
 import time
@@ -65,11 +66,18 @@ class SourceBuildWorkerTests(unittest.TestCase):
         self.assertIn("compiler-failure", (self.root / "build.log").read_text())
         self.assertFalse((self.checkout / "built-aarch64-unknown-linux-gnu").exists())
 
-    def test_cancel_before_worker_start_never_launches_compilation(self):
-        (self.root / "cancel").touch()
-        self.assertEqual(self.run_worker(), 1)
-        self.assertIn("cancelled", json.loads((self.root / "result.json").read_text())["error"])
+    def test_interrupt_before_compilation_never_launches_compiler(self):
+        def interrupt_on_registration(signum, handler):
+            if signum == signal.SIGTERM:
+                handler(signum, None)
+
+        with patch.object(worker.signal, "signal", side_effect=interrupt_on_registration):
+            self.assertEqual(worker.build(self.record), 1)
+        result = json.loads((self.root / "result.json").read_text())
+        self.assertFalse(result["success"])
+        self.assertIn("interrupted", result["error"])
         self.assertEqual([path.name for path in self.checkout.iterdir()], ["Cargo.lock"])
+        self.assertFalse((self.root / "process.json").exists())
 
     def test_missing_prerequisite_is_diagnostic_failure(self):
         with patch.object(worker.shutil, "which", return_value=None):
@@ -80,31 +88,58 @@ class SourceBuildWorkerTests(unittest.TestCase):
     # The real worker is gated to Linux by source_build::preflight and binds
     # process-group signals to /proc incarnations. Other tests mock or avoid
     # that process boundary and can still validate packaging on macOS.
-    @unittest.skipUnless(sys.platform == "linux", "source-build cancellation requires Linux /proc")
-    def test_cancellation_stops_active_compiler_and_its_child(self):
+    @unittest.skipUnless(sys.platform == "linux", "source-build interruption requires Linux /proc")
+    def test_signals_stop_active_compiler_and_its_child(self):
         self.script("cargo", 'sleep 60 & echo "child=$!"; wait')
-        with subprocess.Popen([sys.executable, str(SCRIPT), str(self.record)], stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT) as process:
-            output = b""
-            deadline = time.monotonic() + 10
-            while b"child=" not in output:
-                remaining = deadline - time.monotonic()
-                self.assertGreater(remaining, 0, output.decode())
-                self.assertTrue(select.select([process.stdout], [], [], remaining)[0])
-                output += os.read(process.stdout.fileno(), 65536)
-            (self.root / "cancel").touch()
-            remaining_output, _ = process.communicate(timeout=10)
-            output += remaining_output
-            self.assertEqual(process.returncode, 1, output.decode())
-        self.assertTrue((self.root / "result.json").is_file(), output.decode())
-        result = json.loads((self.root / "result.json").read_text())
-        self.assertFalse(result["success"])
-        child_pid = int(output.split(b"child=", 1)[1].splitlines()[0])
-        child_stat = Path(f"/proc/{child_pid}/stat")
-        if child_stat.exists():
-            # An exited orphan may await init's reap; it must no longer execute.
-            self.assertEqual(child_stat.read_text().rsplit(")", 1)[1].split()[0], "Z")
-        self.assertIn("cancelled", result["error"])
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(signal=signum):
+                (self.root / "result.json").unlink(missing_ok=True)
+                process_path = self.root / "process.json"
+                process_path.unlink(missing_ok=True)
+                process = subprocess.Popen([sys.executable, str(SCRIPT), str(self.record)],
+                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                output = b""
+                try:
+                    deadline = time.monotonic() + 20
+                    while b"child=" not in output or b"\n" not in output.split(b"child=", 1)[1]:
+                        remaining = deadline - time.monotonic()
+                        self.assertGreater(remaining, 0, output.decode())
+                        self.assertTrue(select.select([process.stdout], [], [], remaining)[0], output.decode())
+                        chunk = os.read(process.stdout.fileno(), 65536)
+                        self.assertTrue(chunk, output.decode())
+                        output += chunk
+                    process.send_signal(signum)
+                    remaining_output, _ = process.communicate(timeout=20)
+                    output += remaining_output
+                    self.assertEqual(process.returncode, 1, output.decode())
+                    self.assertTrue((self.root / "result.json").is_file(), output.decode())
+                    result = json.loads((self.root / "result.json").read_text())
+                    self.assertFalse(result["success"])
+                    self.assertIn("interrupted", result["error"])
+                    compiler_pid = json.loads(process_path.read_text())["pid"]
+                    child_pid = int(output.split(b"child=", 1)[1].splitlines()[0])
+                    for pid in (compiler_pid, child_pid):
+                        try:
+                            state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+                        except FileNotFoundError:
+                            continue
+                        # An exited orphan may await init's reap; it must no longer execute.
+                        self.assertEqual(state, "Z")
+                    self.assertFalse((self.checkout / "built-aarch64-unknown-linux-gnu").exists())
+                finally:
+                    # Bound failure cleanup too: never let Popen.__exit__ wait for
+                    # the long-running compiler, or leave its children behind.
+                    try:
+                        if process.poll() is None:
+                            process.terminate()
+                            try:
+                                process.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                process.kill()
+                                process.wait(timeout=5)
+                    finally:
+                        worker.stop(process_path)
+                        process.stdout.close()
 
     def test_changed_committed_lock_refuses_successful_compiler_output(self):
         self.script("cargo", 'echo changed-dependencies > Cargo.lock; echo compiler-succeeded')
