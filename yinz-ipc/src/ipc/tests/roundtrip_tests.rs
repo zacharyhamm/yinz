@@ -6333,6 +6333,10 @@ fn warp_agent_tracking_roundtrip_preserves_provider_evidence() {
                     )]
                     .into(),
                     abandoned_executions: ["abandoned-tool".into()].into(),
+                    provisional_workers: ["nested-worker".into()].into(),
+                    worker_wait_tools: [("worker".into(), ["question-2".into()].into())].into(),
+                    uncorrelated_worker_waits: ["legacy-worker".into()].into(),
+                    released_worker_tools: [("worker".into(), ["question-1".into()].into())].into(),
                     turns: [(
                         "prompt".into(),
                         ClaudeTurn {

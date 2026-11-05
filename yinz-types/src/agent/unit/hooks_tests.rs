@@ -1354,6 +1354,31 @@ fn tool_call_identity_accepts_both_provider_spellings_and_survives_pruning() {
 }
 
 #[test]
+fn worker_wait_and_release_identity_survives_bounded_broadcasts() {
+    for name in [
+        "PreToolUse",
+        "PostToolUse",
+        "Elicitation",
+        "ElicitationResult",
+    ] {
+        let hook = HookEvent {
+            agent_id: Some("worker".into()),
+            tool_use_id: Some("question-1".into()),
+            tool_name: Some("AskUserQuestion".into()),
+            tool_input: Some(serde_json::json!({"question": "x".repeat(HOOK_BROADCAST_MAX_BYTES)})),
+            ..event(name)
+        };
+        let (_, bounded) = hook.broadcast(serde_json::to_string(&hook).unwrap());
+        assert!(bounded.len() <= HOOK_BROADCAST_MAX_BYTES);
+        let decoded: HookEvent = serde_json::from_str(&bounded).unwrap();
+        assert_eq!(decoded.tool_use_id, hook.tool_use_id);
+        assert_eq!(decoded.agent_id, hook.agent_id);
+        assert_eq!(decoded.session_id, hook.session_id);
+        assert_eq!(decoded.hook_event_name, hook.hook_event_name);
+    }
+}
+
+#[test]
 fn a_hint_is_one_printable_word_cut_to_size() {
     assert_eq!(clean_hint("  git\tstatus "), Some("gitstatus".to_owned()));
     assert_eq!(clean_hint("\u{7}"), None);

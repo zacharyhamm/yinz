@@ -3729,6 +3729,7 @@ fn claude_permission_enter_preserves_unrelated_worker_waits() {
         report_kind(&mut screen, "claude", hook("SessionStart"));
         let worker = HookEvent {
             agent_id: Some("worker".into()),
+            tool_use_id: Some("worker-question".into()),
             tool_name: Some("AskUserQuestion".into()),
             ..hook("PreToolUse")
         };
@@ -3899,6 +3900,7 @@ fn claude_worker_permission_reminders_preserve_parent_state_and_worker_waits() {
             }
             for tool in ["AskUserQuestion", "ExitPlanMode"] {
                 worker.tool_name = Some(tool.into());
+                worker.tool_use_id = Some(format!("input-{tool}"));
                 worker.hook_event_name = "PreToolUse".into();
                 report_kind(&mut screen, "claude", worker.clone());
                 worker.hook_event_name = "PermissionRequest".into();
@@ -3916,6 +3918,7 @@ fn claude_worker_permission_reminders_preserve_parent_state_and_worker_waits() {
                 );
                 assert!(screen.agent_worker_waits.is_empty());
             }
+            worker.tool_use_id = Some("eliciting-tool".into());
             worker.hook_event_name = "Elicitation".into();
             report_kind(&mut screen, "claude", worker.clone());
             report_kind(&mut screen, "claude", reminder);
@@ -10301,6 +10304,7 @@ fn hook_flash_idle_hooks_restart_title_deadline_without_arming_palette() {
 fn claude_worker(name: &str, id: &str) -> HookEvent {
     HookEvent {
         agent_id: Some(id.into()),
+        tool_use_id: matches!(name, "PreToolUse" | "PostToolUse").then(|| format!("input-{id}")),
         claude_task_execution: matches!(name, "SubagentStart" | "SubagentStop").then(|| {
             yinz_types::agent::ClaudeTaskExecution {
                 tool_use_id: format!("launch-{id}"),
@@ -10315,6 +10319,228 @@ fn claude_execution(name: &str, task: &str, tool: &str) -> HookEvent {
     let mut hook = claude_worker(name, task);
     hook.claude_task_execution.as_mut().unwrap().tool_use_id = tool.into();
     hook
+}
+
+/// The process fixture tests verify these stream identities against persisted launch and
+/// completion records. Replay the same identities through the normal screen report path.
+fn captured_claude_executions() -> Vec<HookEvent> {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../yinz-process/src/unit/fixtures/claude-task-executions.json"
+    ))
+    .unwrap();
+    fixture["cases"]["same-prompt"]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            let run = &entry["record"];
+            let complete = run["subtype"] == "task_notification";
+            HookEvent {
+                agent_id: Some(run["task_id"].as_str().unwrap().into()),
+                claude_task_execution: Some(yinz_types::agent::ClaudeTaskExecution {
+                    tool_use_id: run["tool_use_id"].as_str().unwrap().into(),
+                    run_id: complete.then(|| run["run_id"].as_str().unwrap().into()),
+                }),
+                // Only the conversation alias is adapted to the screen fixture.
+                ..hook(if complete {
+                    "SubagentStop"
+                } else {
+                    "SubagentStart"
+                })
+            }
+        })
+        .collect()
+}
+
+fn claude_worker_input(name: &str, task: &str, tool: Option<&str>) -> HookEvent {
+    HookEvent {
+        tool_name: Some("AskUserQuestion".into()),
+        tool_use_id: tool.map(str::to_owned),
+        ..claude_worker(name, task)
+    }
+}
+
+#[test]
+fn claude_completed_workers_release_only_the_matching_tool_wait() {
+    for (asking, release) in [
+        ("PreToolUse", "PostToolUse"),
+        ("Elicitation", "ElicitationResult"),
+    ] {
+        for stop_first in [false, true] {
+            let (mut screen, messages, _) = setup("claude");
+            let runs = captured_claude_executions();
+            let task = runs[0].agent_id.as_deref().unwrap();
+            report_kind(&mut screen, "claude", hook("SessionStart"));
+            report_kind(&mut screen, "claude", runs[0].clone());
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_worker_input(asking, task, Some("question-1")),
+            );
+            report_kind(&mut screen, "claude", runs[1].clone());
+            report_kind(&mut screen, "claude", runs[2].clone());
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_worker_input(asking, task, Some("question-2")),
+            );
+            if stop_first {
+                report_kind(&mut screen, "claude", runs[3].clone());
+            }
+            for event in [
+                runs[1].clone(),
+                // A delayed older wait cannot replace the newer pending tool.
+                claude_worker_input(asking, task, Some("question-1")),
+                claude_worker_input(release, task, Some("question-1")),
+                claude_worker_input(release, task, None),
+                HookEvent {
+                    session_id: "foreign".into(),
+                    ..claude_worker_input(release, task, Some("question-2"))
+                },
+                HookEvent {
+                    archive_only: true,
+                    ..claude_worker_input(release, task, Some("question-2"))
+                },
+                // A release received before its wait must suppress that late wait.
+                claude_worker_input(asking, task, Some("question-1")),
+            ] {
+                report_kind(&mut screen, "claude", event);
+                assert_eq!(
+                    screen.agent_status_for_test().agent.state,
+                    AgentState::Waiting
+                );
+                assert!(screen.agent_worker_waits[&PANE].waits.contains_key(task));
+            }
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_worker_input(release, task, Some("question-2")),
+            );
+            assert_eq!(
+                screen.agent_status_for_test().agent.state,
+                if stop_first {
+                    AgentState::Idle
+                } else {
+                    AgentState::Busy
+                }
+            );
+            if !stop_first {
+                report_kind(&mut screen, "claude", runs[3].clone());
+            }
+            // Duplicate completion and reordered wait must not recreate Waiting.
+            report_kind(&mut screen, "claude", runs[3].clone());
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_worker_input(asking, task, Some("question-2")),
+            );
+            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+            screen.agent_control(wait(AgentState::Idle), CLIENT);
+            assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+        }
+    }
+}
+
+#[test]
+fn claude_late_wait_after_completion_can_release_but_missing_identity_stays_conservative() {
+    for tool in [None, Some("late-question")] {
+        let (mut screen, _, _) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker("SubagentStart", "worker"),
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker("SubagentStop", "worker"),
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker_input("PreToolUse", "worker", tool),
+        );
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker_input("PostToolUse", "worker", tool),
+        );
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            if tool.is_some() {
+                AgentState::Idle
+            } else {
+                AgentState::Waiting
+            }
+        );
+    }
+}
+
+#[test]
+fn claude_uncorrelated_known_worker_starts_cannot_publish_premature_idle() {
+    for completed_first in [false, true] {
+        let (mut screen, messages, _) = setup("claude");
+        let runs = captured_claude_executions();
+        let task = runs[0].agent_id.as_deref().unwrap();
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        report_kind(&mut screen, "claude", runs[0].clone());
+        if completed_first {
+            report_kind(&mut screen, "claude", runs[1].clone());
+        }
+        let (sender, plugins) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+        screen.background_plugin_subscriptions.insert(
+            (PluginId::new(99), CLIENT),
+            HashSet::from([EventType::PaneUpdate]),
+        );
+        screen.agent_control(wait(AgentState::Idle), CLIENT);
+        for event in [
+            HookEvent {
+                claude_task_execution: None,
+                ..runs[2].clone()
+            },
+            runs[1].clone(),
+            // Observing another execution cannot prove which execution the raw Start meant.
+            runs[2].clone(),
+            runs[3].clone(),
+            claude_stop("prompt", "parent completed", &[task]),
+        ] {
+            report_kind(&mut screen, "claude", event);
+            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+        }
+        assert!(replies(&messages, CLIENT).is_empty());
+        assert!(screen
+            .capture_agent_tracking(PANE)
+            .unwrap()
+            .lifecycle
+            .unwrap()
+            .claude
+            .provisional_workers
+            .contains(task));
+        let mut pane_updates = 0;
+        for (instruction, _) in plugins.try_iter() {
+            if let PluginInstruction::Update(updates) = instruction {
+                for (_, _, event) in updates {
+                    if let Event::PaneUpdate(manifest) = event {
+                        pane_updates += 1;
+                        assert!(manifest
+                            .panes
+                            .values()
+                            .flatten()
+                            .filter_map(|p| p.agent.as_ref())
+                            .all(|a| a.state != AgentState::Idle));
+                    }
+                }
+            }
+        }
+        assert!(pane_updates > 0);
+    }
 }
 
 #[test]
@@ -10613,6 +10839,22 @@ fn claude_recovery_abandons_execution_without_fabricating_completion() {
         "claude",
         claude_execution("SubagentStart", "worker", "first"),
     );
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            claude_task_execution: None,
+            ..claude_execution("SubagentStart", "worker", "unobserved")
+        },
+    );
+    assert!(screen
+        .capture_agent_tracking(PANE)
+        .unwrap()
+        .lifecycle
+        .unwrap()
+        .claude
+        .provisional_workers
+        .contains("worker"));
     send_esc(&mut screen, &messages);
     recover_after_quiet(&mut screen, interrupted_recover());
     assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
@@ -10631,6 +10873,7 @@ fn claude_recovery_abandons_execution_without_fabricating_completion() {
         .unwrap()
         .claude;
     assert!(tracking.abandoned_executions.contains("first"));
+    assert!(tracking.provisional_workers.is_empty());
     assert!(tracking.executions["worker"].is_empty());
     report_kind(
         &mut screen,
@@ -11355,11 +11598,12 @@ fn claude_stopped_workers_can_resume_and_request_input() {
     for target in pane_targets() {
         let (mut screen, messages, _) = setup_on_target("claude", target);
         report_kind(&mut screen, "claude", hook("SessionStart"));
-        let question = HookEvent {
+        let mut question = HookEvent {
             tool_name: Some("AskUserQuestion".into()),
             ..claude_worker("PreToolUse", "worker")
         };
         for run in ["first", "resumed"] {
+            question.tool_use_id = Some(format!("input-{run}"));
             for _ in 0..2 {
                 report_kind(
                     &mut screen,
@@ -11390,7 +11634,10 @@ fn claude_stopped_workers_can_resume_and_request_input() {
             report_kind(
                 &mut screen,
                 "claude",
-                claude_worker("PostToolUse", "worker"),
+                HookEvent {
+                    tool_use_id: question.tool_use_id.clone(),
+                    ..claude_worker("PostToolUse", "worker")
+                },
             );
             for _ in 0..2 {
                 report_kind(
@@ -11401,7 +11648,10 @@ fn claude_stopped_workers_can_resume_and_request_input() {
                 assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
             }
             for stale in [
-                claude_worker("PostToolUse", "worker"),
+                HookEvent {
+                    tool_use_id: question.tool_use_id.clone(),
+                    ..claude_worker("PostToolUse", "worker")
+                },
                 HookEvent {
                     archive_only: true,
                     ..claude_execution("SubagentStart", "worker", run)
@@ -11588,6 +11838,7 @@ fn notification_permission_wait_clears_only_after_delivered_enter() {
             .set_suspended(false);
         let worker = HookEvent {
             agent_id: Some("worker".into()),
+            tool_use_id: Some("worker-question".into()),
             tool_name: Some("AskUserQuestion".into()),
             ..hook("PreToolUse")
         };

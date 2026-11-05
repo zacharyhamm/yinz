@@ -76,31 +76,40 @@ recovery records abandonment separately from successful completion.
 
 Raw SubagentStop is excluded from activity and wait reconciliation. It remains
 available as an archive-only event, and its receipt still invalidates an Esc
-recovery quiet-period proof; it cannot publish Idle or clear a worker wait. An uncorrelated Start for an unknown task conservatively records work;
-known tasks use the observer's causal launches. Background Bash tasks and
-notification processing retain their independent lifetimes. Submission results
+recovery quiet-period proof; it cannot publish Idle or clear a worker wait. An
+uncorrelated Start for an unknown task conservatively records work. A raw Start for a known task now also
+retains provisional activity: a nested resumption must not disappear when an
+older observed execution finishes. Background Bash tasks and notification
+processing retain their independent lifetimes. Submission results
 remain historical and keep their original launch lists. Completion never consumes
 an unsubmitted draft or changes its input revision. A recognized nonempty Claude
 composer now retains unconsumed_input readiness when the last worker finishes;
 support for guarded clearing is not proof that the draft has been consumed.
 
-**Remaining protocol limitation:** raw worker input hooks do not identify the
-execution either. A wait can arrive before the resumed launch is persisted. The
-adapter therefore cannot safely assign that wait to the currently observed run,
-or clear it on completion of that run. Input waits remain until a subsequent
-worker tool event releases them. A late uncorrelated wait or missing release hook
-can consequently leave Waiting after the execution finishes; this conservative
-fallback is not a claim that every missing-hook case now completes automatically.
-The smallest further architecture change is a provider adapter carrying execution
-identity on input and release events too, or an independently validated transcript
-join from each waiting tool call to the causal parent launch. Neither receipt
-order nor a synthetic generation supplies that join. Unknown legacy or nested
-task IDs without parent transcript evidence retain provisional worker activity.
-Resumption of an already-known task by a nested worker, with no causal launch
-record in the parent transcript, is outside the validated adapter contract:
-root-only observation cannot establish that execution. Supporting it requires
-observation of nested launch evidence or a complete provider task stream. This
-change must not be treated as satisfying automatic activity for that case.
+**Conservative protocol fallbacks:** raw worker input hooks do not identify the
+execution. A wait can arrive before the resumed launch is persisted, so execution
+completion alone cannot release it. Worker input and release hooks do carry
+`tool_use_id` when available. Screen tracking now retains pending and released
+tool identities per worker. Matching PostToolUse, PostToolUseFailure,
+PermissionDenied, or ElicitationResult releases that tool's wait even after
+completion has marked the worker stopped. Older or unrelated releases cannot
+clear a newer wait; multiple outstanding tools remain waiting until each releases.
+Released identities suppress reordered waiting hooks and survive ordinary prompts
+and pane transfer. Missing tool identity, including a legacy handoff lacking that
+metadata, conservatively retains Waiting. An unrelated later tool is not proof
+that the missing-identity wait ended. Conversation replacement and explicit
+recovery clear these pending waits.
+
+Root transcript observation still cannot establish nested same-ID executions.
+Raw Starts for already-known tasks therefore retain provisional worker activity,
+including when a start might be a duplicate or the adapter later observes another
+execution. Neither a parent confirmation nor completion of any observed execution
+can retire this ambiguous activity. It remains Busy (or Waiting for input) until
+explicit recovery or conversation replacement. This prevents premature Idle for
+unobserved resumptions; it does not claim automatic completion for ambiguous raw
+starts. Automatically retiring them still requires validated nested launch
+observation or a complete provider task stream. Arrival order and synthetic
+generations cannot supply that evidence.
 
 Minimal sanitized projections are committed in
 `yinz-process/src/unit/fixtures/claude-task-executions.json`. They include
@@ -110,15 +119,21 @@ identity/status tags are reconstructed from the controller sanitizer's extracted
 fields; source line numbers and provider version preserve attribution. Private
 raw captures, paths and alias maps are not committed.
 
-Validation: 351 selected tests passed across `yinz-process`, `yinz-screen`,
-`yinz-types`, and `yinz-ipc`, covering Claude turn observation, broker relay,
-the screen agent-control module (including tracking transfer), hook decoding and
-pruning, and the IPC tracking roundtrip. `cargo x lint`, `cargo x format --check`,
-and `git diff --check` passed. The regressions exposed and fixed both the visible
-draft readiness shortcut and raw Stop suppression bypassing the recovery quiet
-proof. No test flakes or unexpected timeouts remain. No
-full test suite, full CI gate, merge, rebase, push or remote Git operation is
-part of this implementation task. No live installed binary was replaced.
+Revision validation includes normal screen report-path regressions using the
+captured same-prompt task/tool/run identities, completion-before-release and
+release-before-completion, stale and missing-identity releases, reordered waits,
+raw starts for known tasks, PaneUpdate and pending idle waits, and transfer of
+provisional activity and input correlation. Broker and bounded-broadcast checks
+preserve tool identities; IPC roundtrip and legacy handoff coverage include the
+new fields. The first focused run passed 354/356 tests; the two failures were
+older fixtures expecting identity-free releases to clear waits. Those fixtures now
+supply matching tool IDs, while separate regressions verify the conservative
+missing-identity behavior. The final affected selection passed all 357 tests
+across process observation, screen control and transfer, hook decoding and pruning,
+and IPC/broker transport. Two strengthened recovery/publication assertions also
+passed their focused rerun. `cargo x lint`, `cargo x format --check`, and
+`git diff --check` passed. No full suite, full CI gate, merge, rebase, push or
+remote Git operation is part of this task. No live installed binary was replaced.
 
 ## Known limitations and caller guidance
 

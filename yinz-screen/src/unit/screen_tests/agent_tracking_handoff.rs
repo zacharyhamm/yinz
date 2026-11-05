@@ -388,6 +388,106 @@ fn transfer_into(source: &mut Screen, destination: &mut Screen) {
 }
 
 #[test]
+fn warp_tracking_legacy_worker_wait_cannot_be_released_by_a_newer_tool() {
+    let (mut source, _, _) = setup_tracking("claude");
+    report_kind(&mut source, "claude", hook("SessionStart"));
+    report_kind(
+        &mut source,
+        "claude",
+        claude_worker_input("PreToolUse", "worker", Some("old-question")),
+    );
+    let handoff = source.capture_agent_tracking(PANE).unwrap();
+    let mut legacy = serde_json::to_value(&handoff).unwrap();
+    legacy["lifecycle"]["claude"]
+        .as_object_mut()
+        .unwrap()
+        .remove("worker_wait_tools");
+    let decoded = serde_json::from_value(legacy).unwrap();
+    let (mut destination, _, _) = setup_tracking("claude");
+    destination
+        .pending_agent_tracking
+        .insert(PANE, (Some(handoff.agent), Some(decoded)));
+    assert!(destination.restore_staged_transfer_state(PANE));
+    for event in [
+        claude_worker_input("PreToolUse", "worker", Some("new-question")),
+        claude_worker_input("PostToolUse", "worker", Some("new-question")),
+        claude_worker_input("PostToolUse", "worker", Some("old-question")),
+    ] {
+        report_kind(&mut destination, "claude", event);
+        assert_eq!(
+            destination.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
+    }
+}
+
+#[test]
+fn warp_tracking_keeps_worker_tool_releases_and_provisional_resumptions() {
+    let (mut source, _, _) = setup_tracking("claude");
+    report_kind(&mut source, "claude", hook("SessionStart"));
+    let runs = captured_claude_executions();
+    let task = runs[0].agent_id.as_deref().unwrap();
+    report_kind(&mut source, "claude", runs[0].clone());
+    report_kind(
+        &mut source,
+        "claude",
+        claude_worker_input("PreToolUse", task, Some("question-1")),
+    );
+    report_kind(
+        &mut source,
+        "claude",
+        claude_worker_input("PostToolUse", task, Some("question-1")),
+    );
+    report_kind(
+        &mut source,
+        "claude",
+        claude_worker_input("PreToolUse", task, Some("question-2")),
+    );
+    report_kind(&mut source, "claude", runs[1].clone());
+    let mut destination = transfer(&mut source, "claude");
+    for event in [
+        runs[1].clone(),
+        claude_worker_input("PostToolUse", task, Some("question-1")),
+        claude_worker_input("PreToolUse", task, Some("question-1")),
+    ] {
+        report_kind(&mut destination, "claude", event);
+        assert_eq!(
+            destination.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
+    }
+    report_kind(
+        &mut destination,
+        "claude",
+        claude_worker_input("PostToolUse", task, Some("question-2")),
+    );
+    assert_eq!(
+        destination.agent_status_for_test().agent.state,
+        AgentState::Idle
+    );
+    report_kind(
+        &mut destination,
+        "claude",
+        HookEvent {
+            claude_task_execution: None,
+            ..runs[2].clone()
+        },
+    );
+    let mut again = transfer(&mut destination, "claude");
+    report_kind(&mut again, "claude", runs[2].clone());
+    report_kind(&mut again, "claude", runs[3].clone());
+    assert_eq!(again.agent_status_for_test().agent.state, AgentState::Busy);
+    assert!(again
+        .capture_agent_tracking(PANE)
+        .unwrap()
+        .lifecycle
+        .unwrap()
+        .claude
+        .provisional_workers
+        .contains(task));
+}
+
+#[test]
 fn warp_tracking_claude_execution_tombstones_and_waits_survive_transfer() {
     let (mut source, _, _) = setup_tracking("claude");
     report_kind(&mut source, "claude", hook("SessionStart"));
@@ -451,13 +551,26 @@ fn warp_tracking_claude_execution_tombstones_and_waits_survive_transfer() {
     );
     assert_eq!(again.agent_status_for_test().agent.state, AgentState::Idle);
     let mut legacy = serde_json::to_value(again.capture_agent_tracking(PANE).unwrap()).unwrap();
-    legacy["lifecycle"]["claude"]
-        .as_object_mut()
-        .unwrap()
-        .remove("executions");
+    for field in [
+        "executions",
+        "provisional_workers",
+        "worker_wait_tools",
+        "uncorrelated_worker_waits",
+        "released_worker_tools",
+    ] {
+        legacy["lifecycle"]["claude"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+    }
     let decoded: yinz_types::agent::tracking::AgentTrackingHandoff =
         serde_json::from_value(legacy).unwrap();
-    assert!(decoded.lifecycle.unwrap().claude.executions.is_empty());
+    let claude = decoded.lifecycle.unwrap().claude;
+    assert!(claude.executions.is_empty());
+    assert!(claude.provisional_workers.is_empty());
+    assert!(claude.worker_wait_tools.is_empty());
+    assert!(claude.uncorrelated_worker_waits.is_empty());
+    assert!(claude.released_worker_tools.is_empty());
 }
 
 #[test]

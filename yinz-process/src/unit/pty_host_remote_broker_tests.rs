@@ -620,7 +620,7 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
     let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind failed");
     let broker_registry = registry.clone();
     let broker = std::thread::spawn(move || {
-        for _ in 0..11 {
+        for _ in 0..13 {
             let (stream, _) = listener.accept().expect("accept failed");
             let _ = serve_connection(stream, std::path::Path::new("/bin/false"), &broker_registry);
         }
@@ -702,6 +702,34 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
         serde_json::from_str::<yinz_types::agent::HookEvent>(&json).unwrap(),
         worker_completion
     );
+
+    // Input and release tool identities must reach the screen unchanged, even when
+    // the raw hook's prose forces the broker's bounded broadcast path.
+    for name in ["PreToolUse", "PostToolUse"] {
+        let payload = serde_json::json!({
+            "hook_event_name": name,
+            "session_id": "remote-session",
+            "agent_id": "worker",
+            "tool_name": "AskUserQuestion",
+            "tool_use_id": "worker-question",
+            "tool_input": {"question": "x".repeat(80_000)}
+        })
+        .to_string();
+        report_agent_hook_to(&socket, "token", "claude", &payload).unwrap();
+        let BrokerToServerMsg::AgentReport { json, .. } = protocol::read_frame(&mut server_side)
+            .unwrap()
+            .unwrap()
+            .decode_control()
+            .unwrap()
+        else {
+            panic!("expected worker input report")
+        };
+        let hook: yinz_types::agent::HookEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(hook.hook_event_name, name);
+        assert_eq!(hook.tool_use_id.as_deref(), Some("worker-question"));
+        assert_eq!(hook.agent_id.as_deref(), Some("worker"));
+        assert_eq!(hook.session_id, "remote-session");
+    }
 
     for (hook, mode, notification, state) in [
         (

@@ -64,6 +64,19 @@ pub struct ClaudeActivity {
     pub parent: Option<AgentInfo>,
     pub workers: BTreeSet<String>,
     pub stopped_workers: BTreeSet<String>,
+    /// Raw starts for known workers cannot distinguish a duplicate from an unobserved
+    /// resumption. Only explicit recovery or conversation replacement clears this evidence.
+    #[serde(default)]
+    pub provisional_workers: BTreeSet<String>,
+    /// Tool identity of each worker's visible input wait. Missing identity never permits
+    /// an unrelated tool event to release the wait, including after execution completion.
+    #[serde(default)]
+    pub worker_wait_tools: BTreeMap<String, BTreeSet<String>>,
+    #[serde(default)]
+    pub uncorrelated_worker_waits: BTreeSet<String>,
+    /// Released tool calls suppress reordered waiting hooks across prompts and transfers.
+    #[serde(default)]
+    pub released_worker_tools: BTreeMap<String, BTreeSet<String>>,
     pub turns: BTreeMap<String, ClaudeTurn>,
     pub completed_tasks: BTreeSet<String>,
     /// Executions indexed by task ID and causal tool call. Completion tombstones

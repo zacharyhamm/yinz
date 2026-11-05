@@ -389,17 +389,7 @@ impl Screen {
                         .as_deref()
                         .is_some_and(|id| !id.is_empty() && id.len() <= 128)
                     && hook.claude_task_execution.as_ref().map_or_else(
-                        || {
-                            !complete
-                                && !l
-                                    .claude
-                                    .executions
-                                    .contains_key(hook.agent_id.as_deref().unwrap_or_default())
-                                && !l
-                                    .claude
-                                    .stopped_workers
-                                    .contains(hook.agent_id.as_deref().unwrap_or_default())
-                        },
+                        || !complete,
                         |execution| {
                             execution.valid(complete)
                                 && !l
@@ -423,10 +413,12 @@ impl Screen {
                     && !hook.archive_only
                     && hook.agent_id.as_ref().is_some_and(|id| {
                         !id.is_empty()
-                            // Uncorrelated worker input can arrive before the observer
-                            // sees the resuming launch. Preserve that wait conservatively.
-                            && (!l.claude.stopped_workers.contains(id)
-                                || yinz_types::agent::hook_state_for("claude", hook) == Some(AgentState::Waiting))
+                            // A release can arrive after execution completion. Tool identity,
+                            // not the worker's stopped flag, determines which wait it releases.
+                            && !(yinz_types::agent::hook_state_for("claude", hook) == Some(AgentState::Waiting)
+                                && hook.tool_use_id.as_ref().is_some_and(|tool| {
+                                    l.claude.released_worker_tools.get(id).is_some_and(|tools| tools.contains(tool))
+                                }))
                     })
             })
     }
@@ -463,7 +455,9 @@ impl Screen {
                 },
                 "SubagentStop" => {
                     runs.insert(execution.tool_use_id.clone(), execution.run_id.clone());
-                    if runs.values().all(Option::is_some) {
+                    if runs.values().all(Option::is_some)
+                        && !lifecycle.claude.provisional_workers.contains(id)
+                    {
                         lifecycle.claude.workers.remove(id);
                         lifecycle.claude.stopped_workers.insert(id.clone());
                         lifecycle.background_tasks.remove(id);
@@ -476,6 +470,12 @@ impl Screen {
         {
             // Legacy and nested launches without causal evidence stay conservative.
             // Their raw Stop cannot prove completion or clear a later input wait.
+            if lifecycle.claude.executions.contains_key(id)
+                || lifecycle.claude.stopped_workers.contains(id)
+            {
+                lifecycle.claude.provisional_workers.insert(id.clone());
+            }
+            lifecycle.claude.stopped_workers.remove(id);
             lifecycle.claude.workers.insert(id.clone());
         }
         let parent = lifecycle.claude.parent.get_or_insert_with(|| {
@@ -842,6 +842,64 @@ impl Screen {
                 return Ok(true);
             }
             if let Some(id) = &hook.agent_id {
+                let claude = self
+                    .agent_lifecycle
+                    .get_mut(&pane)
+                    .filter(|l| report.kind == "claude" && l.conversation == hook.session_id)
+                    .map(|l| &mut l.claude);
+                let tool = hook
+                    .tool_use_id
+                    .as_ref()
+                    .filter(|id| !id.is_empty() && id.len() <= 128);
+                let release = if let Some(claude) = claude {
+                    // Older handoffs retain the visible wait without tool correlation.
+                    // Learning a newer tool must not make its release clear that old wait.
+                    if workers.as_ref().is_some_and(|w| w.waits.contains_key(id))
+                        && claude
+                            .worker_wait_tools
+                            .get(id)
+                            .is_none_or(BTreeSet::is_empty)
+                    {
+                        claude.uncorrelated_worker_waits.insert(id.clone());
+                    }
+                    if hook_state_for(&report.kind, hook) == Some(AgentState::Waiting)
+                        && waiting_needs_a_person(hook)
+                    {
+                        if let Some(tool) = tool {
+                            claude
+                                .worker_wait_tools
+                                .entry(id.clone())
+                                .or_default()
+                                .insert(tool.clone());
+                        } else {
+                            claude.uncorrelated_worker_waits.insert(id.clone());
+                        }
+                        false
+                    } else if matches!(
+                        hook.hook_event_name.as_str(),
+                        "PostToolUse"
+                            | "PostToolUseFailure"
+                            | "PermissionDenied"
+                            | "ElicitationResult"
+                    ) && let Some(tool) = tool
+                    {
+                        claude
+                            .released_worker_tools
+                            .entry(id.clone())
+                            .or_default()
+                            .insert(tool.clone());
+                        claude.worker_wait_tools.get_mut(id).is_some_and(|tools| {
+                            tools.remove(tool)
+                                && tools.is_empty()
+                                && !claude.uncorrelated_worker_waits.contains(id)
+                        })
+                    } else {
+                        false
+                    }
+                } else {
+                    hook_state_for(&report.kind, hook).is_some()
+                        || matches!(hook.hook_event_name.as_str(), "SubagentStop" | "SessionEnd")
+                };
                 if hook_state_for(&report.kind, hook) == Some(AgentState::Waiting)
                     && waiting_needs_a_person(hook)
                 {
@@ -852,11 +910,7 @@ impl Screen {
                         })
                         .waits
                         .insert(id.clone(), waiting_detail(hook));
-                } else if (hook_state_for(&report.kind, hook).is_some()
-                    || (report.kind != "claude"
-                        && matches!(hook.hook_event_name.as_str(), "SubagentStop" | "SessionEnd")))
-                    && let Some(workers) = &mut workers
-                {
+                } else if release && let Some(workers) = &mut workers {
                     workers.waits.remove(id);
                 }
             }
@@ -2495,6 +2549,9 @@ impl Screen {
             lifecycle.input_revision = Some(revision);
             lifecycle.background_tasks.clear();
             lifecycle.claude_notifications.clear();
+            lifecycle.claude.provisional_workers.clear();
+            lifecycle.claude.worker_wait_tools.clear();
+            lifecycle.claude.uncorrelated_worker_waits.clear();
             lifecycle
                 .claude
                 .stopped_workers
