@@ -11,10 +11,10 @@ workspace = true
 [dependencies]
 agent-proto = { path = "../default-plugins/agent-proto" }
 project-data = { path = "../default-plugins/project-data" }
-yinz-terminal = { path = "../yinz-terminal", version = "0.1.2-alpha.4" }
+yinz-terminal = { path = "../yinz-terminal", version = "0.1.2-alpha.5" }
 vte = { workspace = true }
-yinz-routing = { path = "../yinz-routing", version = "0.1.2-alpha.4" }
-yinz-bus = { path = "../yinz-bus", version = "0.1.2-alpha.4" }
+yinz-routing = { path = "../yinz-routing", version = "0.1.2-alpha.5" }
+yinz-bus = { path = "../yinz-bus", version = "0.1.2-alpha.5" }
 yinz-config = { workspace = true }
 yinz-codex = { workspace = true }
 yinz-ipc = { workspace = true }
@@ -27,7 +27,7 @@ yinz-steel-builtins = { path = "../yinz-steel-builtins" }
 yinz-storage = { workspace = true }
 yinz-runtime = { workspace = true }
 yinz-types = { workspace = true }
-yinz-process = { path = "../yinz-process", version = "0.1.2-alpha.4" }
+yinz-process = { path = "../yinz-process", version = "0.1.2-alpha.5" }
 yinz-tile = { path = "../yinz-tile" }
 yinz-tile-markdown = { path = "../yinz-tile-markdown" }
 anyhow = { workspace = true }
