@@ -151,6 +151,96 @@ evidence, stale completion after resumption, worker waits, independent draft
 readiness, aggregate activity, and pane transfer. Lint and formatting checks
 passed. The controller retains ownership of the next full merge gate.
 
+### Resumption acceptance blocker, 2026-11-06
+
+**Issue 17 remains unresolved and is not ready to merge.** The conservative raw
+Start handling above also prevents ordinary, fully completed resumption from
+ever becoming Idle. It is a safety fallback, not an acceptable resolution of the
+reported bug. The repair at `b5f32045a` remains intact. This investigation makes
+no runtime transition changes because the approved plan requires validated
+correlation before relaxing completion acceptance.
+
+Two additional bounded Claude Code 2.1.318 runs used `claude-haiku-5-5` in visible
+Yinz panes, with isolated temporary hooks, no repository-write tools, no MCP
+servers, a $5 limit per invocation and a 240-second process timeout. Both exited
+0 without timing out (7.85 and 14.72 seconds); every started worker execution had
+a successful provider completion, and both panes were closed. The sanitized
+projection is `yinz-process/src/unit/fixtures/claude-resumption-observation.json`.
+Only identity, status and success fields are retained; private raw transcripts,
+paths and alias maps are not committed.
+
+The first invocation repeats an ordinary launch, successful handback, same-ID
+SendMessage resumption and successful handback in one parent prompt. Both raw
+Starts are identical and both raw Stops are identical, including the fields
+omitted from the sanitized projection. Each worker Stop's `background_tasks`
+snapshot still lists that worker as `running`. The final parent Stop lists no
+background tasks, but neither snapshot carries an execution revision. Inspecting
+this previously unused field therefore did not establish a safe ordering or
+completion contract for delayed hooks.
+
+The second invocation proves that nested resumption is real, not merely an
+adversarial synthetic possibility. After the first worker completed, a second
+worker used SendMessage to resume it. The stream contains three distinct
+executions and three completed notifications. The root transcript contains only
+the two Agent launches; the resuming SendMessage call occurs in the second
+worker's sidechain. The root receives the resumed run's completed notification,
+but the current adapter cannot join it to a launch and emits no execution report
+for that run. Its pending set is empty despite missing an entire execution.
+Feeding the sidechain into the current adapter also produces no events: it
+explicitly rejects sidechains, and the nested SendMessage result lacks the
+top-level `toolUseResult.resumedAgentId` used by the root adapter.
+
+The new screen characterization replays the captured raw hooks together with
+the observer identities through ordinary report acceptance. With only observer
+reports, both executions complete and the pane reaches Idle. Adding the actual
+raw hooks leaves both execution tombstones completed but the worker provisional,
+and the background ID outstanding. An initial assertion
+of the required Idle outcome failed with `left: Busy, right: Idle`; this is the
+unresolved defect, not a flake. The committed characterization explicitly asserts
+the current Busy outcome to preserve the evidence without claiming acceptance.
+Early test drafts also mixed an unrelated readiness assertion into this activity
+replay: an idle wait had no reply, and a guarded-submission variant returned
+TargetChanged. The final characterization isolates report acceptance and activity;
+it makes no claim to validate input readiness or idle-wait delivery. Existing
+draft and control regressions remain in the focused selection.
+
+The ambiguous histories are: (1) the second raw Start describes g2, whose
+correlated completion arrives later; (2) g2 already ended, a nested g3 starts,
+and its identical raw Start arrives before delayed g2 observer reports. Both
+produce the same available screen reports, but only the first may become Idle.
+The second history is a constructed delivery ordering using the demonstrated
+payload ambiguity and nested launch gap; it is not claimed as a live transport
+reordering experiment. Clearing provisional activity on any observed start or
+completion, counting raw starts, waiting for a quiet interval, or inspecting
+only transcript EOF cannot distinguish these histories. Parent registry Idle
+and parent completion likewise do not establish that all workers stopped.
+
+Concrete design alternatives for the controller:
+
+- Obtain an ordered provider task stream covering root and nested executions,
+  with an initial complete snapshot and a reconnect boundary. The captured print
+  stream supplies task/tool/run identities for the nested case. Yinz's current
+  interactive launcher does not consume that stream; the installed CLI exposes
+  stream-json output in print mode. An interactive transport or a deliberate
+  provider bridge design needs validation before replacing raw-hook activity.
+- Obtain provider execution identity or a comparable event revision on native
+  worker hooks and task snapshots. Then raw starts can be joined to the same
+  executions as notifications without assigning identity from delivery order.
+- Extend transcript observation to every relevant sidechain, but first validate
+  nested launch/result shapes and a completeness boundary that accounts for
+  records not yet persisted at hook time. Recursive scanning alone is not such
+  a boundary and does not safely discharge provisional activity.
+
+Validation: 75 selected process/screen tests passed, followed by all 18 focused
+tracking-handoff tests. The selection includes the existing stale completion,
+worker wait, draft independence and transfer safety regressions. `cargo x lint`,
+`cargo x format --check`, and `git diff --check` passed. These results validate
+the characterization and unchanged safety behavior, not the unmet automatic-Idle
+acceptance criterion.
+
+Explicit recovery remains a workaround only. No full CI gate, merge, rebase,
+push, remote Git operation, lifecycle mutation or Agenda mutation was performed.
+
 ## Known limitations and caller guidance
 
 The following behavior is intentional or not worth fixing. Callers and the skill should account for it.

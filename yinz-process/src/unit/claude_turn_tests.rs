@@ -22,6 +22,72 @@ fn task_fixture() -> Value {
 }
 
 #[test]
+fn captured_haiku_nested_resumption_is_missing_from_parent_launch_observation() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/claude-resumption-observation.json")).unwrap();
+    for (case, data) in fixture["cases"].as_object().unwrap() {
+        assert_eq!(data["exit_code"], 0);
+        let runs = data["runs"].as_array().unwrap();
+        let session = runs[0]["record"]["session_id"].as_str().unwrap();
+        let mut tasks = tasks::Tasks::new(session);
+        let mut observed = vec![];
+        for entry in data["parent_records"].as_array().unwrap() {
+            observed.extend(tasks.record(&entry["record"]).unwrap());
+        }
+        assert!(!tasks.pending());
+        let missing: Vec<_> = runs
+            .iter()
+            .map(|entry| &entry["record"])
+            .filter(|run| run["subtype"] == "task_started")
+            .filter(|run| {
+                !observed.iter().any(|event| {
+                    event.claude_task_execution.as_ref().unwrap().tool_use_id == run["tool_use_id"]
+                })
+            })
+            .collect();
+        if case == "same-prompt" {
+            assert!(missing.is_empty());
+            assert_eq!(observed.len(), runs.len());
+            assert_eq!(data["raw_payload_equality"]["SubagentStart"], true);
+            assert_eq!(data["raw_payload_equality"]["SubagentStop"], true);
+        } else {
+            assert_eq!(case, "nested-resume");
+            assert_eq!(missing.len(), 1);
+            assert_eq!(observed.len() + 2, runs.len());
+            let tool = missing[0]["tool_use_id"].as_str().unwrap();
+            // This real SendMessage call occurs in the coordinator's sidechain. The
+            // root observer sees its completed notification but cannot join its launch.
+            assert!(data["worker_records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| {
+                    let record = &entry["record"];
+                    record["isSidechain"] == true
+                        && record["message"]["content"][0]["name"] == "SendMessage"
+                        && record["message"]["content"][0]["id"] == tool
+                }));
+            assert!(data["parent_records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| {
+                    entry["record"]["attachment"]["prompt"]
+                        .as_str()
+                        .is_some_and(|text| {
+                            text.contains(&format!("<tool-use-id>{tool}</tool-use-id>"))
+                        })
+                }));
+            // Merely feeding sidechain records to the current adapter does not make
+            // the observation complete. Supporting them needs a validated adapter.
+            for entry in data["worker_records"].as_array().unwrap() {
+                assert!(tasks.record(&entry["record"]).unwrap().is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn captured_task_runs_correlate_launch_resume_and_successful_handback_notifications() {
     let fixture = task_fixture();
     assert_eq!(fixture["provider"]["version"], "2.1.318");

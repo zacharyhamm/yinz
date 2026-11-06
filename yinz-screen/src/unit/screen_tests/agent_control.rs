@@ -10328,8 +10328,11 @@ fn captured_claude_executions() -> Vec<HookEvent> {
         "../../../../yinz-process/src/unit/fixtures/claude-task-executions.json"
     ))
     .unwrap();
-    fixture["cases"]["same-prompt"]["runs"]
-        .as_array()
+    claude_fixture_executions(&fixture["cases"]["same-prompt"]["runs"])
+}
+
+fn claude_fixture_executions(runs: &serde_json::Value) -> Vec<HookEvent> {
+    runs.as_array()
         .unwrap()
         .iter()
         .map(|entry| {
@@ -10350,6 +10353,77 @@ fn captured_claude_executions() -> Vec<HookEvent> {
             }
         })
         .collect()
+}
+
+#[test]
+fn claude_captured_raw_and_observed_resumption_reproduces_unresolved_busy_state() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../yinz-process/src/unit/fixtures/claude-resumption-observation.json"
+    ))
+    .unwrap();
+    let case = &fixture["cases"]["same-prompt"];
+    let runs = claude_fixture_executions(&case["runs"]);
+    let raw: Vec<HookEvent> = case["hooks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["payload"]["agent_id"].is_string())
+        .map(|entry| {
+            let mut event: HookEvent = serde_json::from_value(entry["payload"].clone()).unwrap();
+            event.session_id = hook("SessionStart").session_id;
+            event.prompt_id = hook("UserPromptSubmit").prompt_id;
+            event
+        })
+        .collect();
+    assert_eq!(raw.len(), 4);
+    assert_eq!(raw[0], raw[2]);
+    assert_eq!(raw[1], raw[3]);
+    let task = runs[0].agent_id.as_deref().unwrap();
+    for include_raw in [false, true] {
+        let (mut screen, _, _) = setup("claude");
+        // Native Claude hooks and the task observer have no turn_id. Do not mix
+        // their captured absence with the generic fixture's synthetic "turn".
+        let report = |screen: &mut Screen, mut event: HookEvent| {
+            event.turn_id = None;
+            report_kind(screen, "claude", event);
+        };
+        report(&mut screen, hook("SessionStart"));
+        report(&mut screen, hook("UserPromptSubmit"));
+        for (raw, observed) in raw.iter().zip(&runs) {
+            if include_raw {
+                report(&mut screen, raw.clone());
+            }
+            report(&mut screen, observed.clone());
+        }
+        report(&mut screen, claude_stop("prompt", "done", &[task]));
+        // Characterize the unresolved acceptance blocker, not a successful fix: the
+        // real raw Start for g2 permanently retains provisional activity. Its payload
+        // is also indistinguishable from a newer nested start delivered before delayed
+        // g2 observer reports. Clearing it on those reports would hide that newer run.
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            if include_raw {
+                AgentState::Busy
+            } else {
+                AgentState::Idle
+            }
+        );
+        if include_raw {
+            let lifecycle = screen
+                .capture_agent_tracking(PANE)
+                .unwrap()
+                .lifecycle
+                .unwrap();
+            assert!(lifecycle.claude.executions[task]
+                .values()
+                .all(Option::is_some));
+            assert!(lifecycle.claude.provisional_workers.contains(task));
+            assert!(lifecycle.claude.workers.contains(task));
+            assert_eq!(screen.agent_status_for_test().background_tasks, [task]);
+        } else {
+            assert!(screen.agent_status_for_test().background_tasks.is_empty());
+        }
+    }
 }
 
 fn claude_worker_input(name: &str, task: &str, tool: Option<&str>) -> HookEvent {
