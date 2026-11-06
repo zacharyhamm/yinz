@@ -9,7 +9,7 @@ description = "The yinz server's pty thread: spawning and supervising pane proce
 workspace = true
 
 [dependencies]
-yinz-bus = { path = "../yinz-bus", version = "0.1.2-alpha.3" }
+yinz-bus = { path = "../yinz-bus", version = "0.1.2-alpha.4" }
 yinz-runtime = { workspace = true }
 yinz-session = { workspace = true }
 yinz-types = { workspace = true }
@@ -19,7 +19,7 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-yinz-terminal = { path = "../yinz-terminal", version = "0.1.2-alpha.3" }
+yinz-terminal = { path = "../yinz-terminal", version = "0.1.2-alpha.4" }
 yinz-ipc = { workspace = true }
 yinz-test-support = { path = "../yinz-test-support" }
 async-trait = { version = "0.1.50", default-features = false }
