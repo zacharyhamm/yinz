@@ -103,12 +103,7 @@ impl Session {
             scope.spawn(move || {
                 let deadline = std::time::Instant::now() + timeout;
                 while std::time::Instant::now() < deadline {
-                    let out = self
-                        .command()
-                        .args(["--session", NAME, "action", "list-panes", "--json"])
-                        .output()
-                        .unwrap();
-                    if let Ok(panes) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                    if let Some(panes) = self.list_panes() {
                         let complete = ready(&panes);
                         *state.lock() = panes;
                         if complete {
@@ -122,6 +117,30 @@ impl Session {
             });
         });
         eprintln!("ready panes: {:?}", *state.lock());
+    }
+    /// `list-panes --json` for NAME, or `None` while the session cannot answer. Quiet, so a
+    /// poll does not log every attempt.
+    fn list_panes(&self) -> Option<serde_json::Value> {
+        let out = self
+            .command()
+            .args(["--session", NAME, "action", "list-panes", "--json"])
+            .output()
+            .unwrap();
+        serde_json::from_slice(&out.stdout).ok()
+    }
+    /// Names of the live server sockets in this test's private socket directory.
+    fn server_names(&self) -> Vec<String> {
+        use std::os::unix::fs::FileTypeExt;
+        let Ok(entries) = fs::read_dir(self.socket().parent().unwrap()) else {
+            return Vec::new();
+        };
+        let mut names: Vec<_> = entries
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_socket()))
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect();
+        names.sort();
+        names
     }
     fn socket(&self) -> PathBuf {
         self.0
@@ -169,22 +188,6 @@ impl Drop for Session {
         for name in self.server_names() {
             let _ = self.run(&["kill-session", &name]);
         }
-    }
-}
-impl Session {
-    /// Names of the live server sockets in this test's private socket directory.
-    fn server_names(&self) -> Vec<String> {
-        use std::os::unix::fs::FileTypeExt;
-        let Ok(entries) = fs::read_dir(self.socket().parent().unwrap()) else {
-            return Vec::new();
-        };
-        let mut names: Vec<_> = entries
-            .flatten()
-            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_socket()))
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .collect();
-        names.sort();
-        names
     }
 }
 

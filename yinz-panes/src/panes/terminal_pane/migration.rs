@@ -42,11 +42,17 @@ impl TerminalPane {
     ///
     /// Only when the rectangle differs: a resize at the same dimensions would erase restored
     /// margins and tab stops. Shared by warp and session migration so the two restores agree.
+    /// A pane showing its first-run banner redraws it at the new size, as an ordinary resize
+    /// does, instead of rewrapping the banner the source drew for its own rectangle.
     pub(super) fn fit_restored_grid(&mut self) {
         let rows = self.get_content_rows();
         let cols = self.get_content_columns();
         if self.grid.height != rows || self.grid.width != cols {
-            self.grid.change_size(rows, cols);
+            if self.banner.is_some() {
+                self.reflow_lines();
+            } else {
+                self.grid.change_size(rows, cols);
+            }
         }
     }
     pub(super) fn check_migration(&self) -> Result<(), String> {

@@ -895,11 +895,17 @@ fn wait_for_rectangles(
         scope.spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(30);
             loop {
-                let current = tab_rectangles(&list_panes(session), tab);
-                let finished = done(&current);
                 let expired = Instant::now() >= deadline;
-                *observed.lock() = (current, finished);
-                if finished || expired {
+                // A failed read (the session renaming or busy) is retried, not fatal.
+                if let Some(panes) = session.list_panes() {
+                    let current = tab_rectangles(&panes, tab);
+                    let finished = done(&current);
+                    *observed.lock() = (current, finished);
+                    if finished {
+                        return;
+                    }
+                }
+                if expired {
                     return;
                 }
                 std::thread::park_timeout(Duration::from_millis(50));
@@ -912,15 +918,6 @@ fn wait_for_rectangles(
             |(current, _)| format!("last rectangles: {current:?}"),
         )
     })
-}
-
-fn list_panes(session: &Session) -> serde_json::Value {
-    serde_json::from_slice(
-        &session
-            .success(&["--session", NAME, "action", "list-panes", "--json"])
-            .stdout,
-    )
-    .unwrap()
 }
 
 /// A replacement places every adopted pane from the migrated layout at its own screen size,
@@ -1020,7 +1017,12 @@ fn live_update_lays_out_adopted_tabs_for_the_replacement_screen() {
         .request(&operation, UpdateCommand::FinishMigration)
         .unwrap();
 
-    let adopted = tab_rectangles(&list_panes(&session), "split");
+    let adopted = tab_rectangles(
+        &session
+            .list_panes()
+            .expect("the adopted session lists its panes"),
+        "split",
+    );
     assert_eq!(adopted.len(), 3, "{adopted:?}");
     for (index, &(x, y, cols, rows)) in adopted.iter().enumerate() {
         assert!(
