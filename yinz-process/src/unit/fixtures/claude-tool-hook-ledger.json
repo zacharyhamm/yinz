@@ -1,0 +1,1072 @@
+{
+  "provider": {
+    "name": "Claude Code",
+    "version": "2.1.318",
+    "model": "claude-haiku-5-5",
+    "binary_sha256": "708c77b204db30086ff6f1ed34577bda03e1be74ced80557cbf7b54249ebf0bd"
+  },
+  "provenance": {
+    "date_utc": "2026-11-06",
+    "method": "Identity-only projections of two existing and four additional bounded print/stream-json captures in visible Yinz panes. Temporary isolated hooks, no repository-write tools or MCP, max $5 and 240 seconds per invocation. Faults target only nested SendMessage PreToolUse; active-message control holds handback until PostToolUse SendMessage.",
+    "projection": "IDs replaced consistently within each case, independently of other fixtures. Capture sequence and source line locate evidence, not execution order. Tool text, paths, prompts, aliases, pin metadata, and unrelated records omitted. Error booleans below classify captured text; they are not provider wire fields."
+  },
+  "cases": {
+    "same-prompt": {
+      "hooks": [
+        {
+          "capture_sequence": 3,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_2"
+          }
+        },
+        {
+          "capture_sequence": 5,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_2",
+            "tool_response": {
+              "isAsync": true,
+              "status": "async_launched",
+              "agentId": "fixture_3"
+            }
+          }
+        },
+        {
+          "capture_sequence": 7,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_3",
+            "tool_use_id": "fixture_4"
+          }
+        },
+        {
+          "capture_sequence": 8,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_3",
+            "tool_use_id": "fixture_4",
+            "tool_response": {
+              "success": true
+            }
+          }
+        },
+        {
+          "capture_sequence": 12,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SendMessage",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_5"
+          }
+        },
+        {
+          "capture_sequence": 14,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "SendMessage",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_5",
+            "tool_response": {
+              "success": true,
+              "resumedAgentId": "fixture_3",
+              "revivedAgentId": "fixture_3"
+            }
+          }
+        },
+        {
+          "capture_sequence": 15,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_3",
+            "tool_use_id": "fixture_6"
+          }
+        },
+        {
+          "capture_sequence": 17,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_3",
+            "tool_use_id": "fixture_6",
+            "tool_response": {
+              "success": true
+            }
+          }
+        }
+      ],
+      "runs": [
+        {
+          "source_line": 13,
+          "record": {
+            "type": "system",
+            "subtype": "task_started",
+            "session_id": "fixture_1",
+            "task_id": "fixture_3",
+            "run_id": "fixture_7",
+            "tool_use_id": "fixture_2"
+          }
+        },
+        {
+          "source_line": 32,
+          "record": {
+            "type": "system",
+            "subtype": "task_notification",
+            "status": "completed",
+            "handback": "send",
+            "session_id": "fixture_1",
+            "task_id": "fixture_3",
+            "run_id": "fixture_7",
+            "tool_use_id": "fixture_2"
+          }
+        },
+        {
+          "source_line": 44,
+          "record": {
+            "type": "system",
+            "subtype": "task_started",
+            "session_id": "fixture_1",
+            "task_id": "fixture_3",
+            "run_id": "fixture_8",
+            "tool_use_id": "fixture_5"
+          }
+        },
+        {
+          "source_line": 63,
+          "record": {
+            "type": "system",
+            "subtype": "task_notification",
+            "status": "completed",
+            "handback": "send",
+            "session_id": "fixture_1",
+            "task_id": "fixture_3",
+            "run_id": "fixture_8",
+            "tool_use_id": "fixture_5"
+          }
+        }
+      ],
+      "failures": [],
+      "exit_code": 0,
+      "process_timeout": false
+    },
+    "nested-resume": {
+      "hooks": [
+        {
+          "capture_sequence": 3,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_2"
+          }
+        },
+        {
+          "capture_sequence": 4,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_2",
+            "tool_response": {
+              "isAsync": true,
+              "status": "async_launched",
+              "agentId": "fixture_3"
+            }
+          }
+        },
+        {
+          "capture_sequence": 7,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_3",
+            "tool_use_id": "fixture_4"
+          }
+        },
+        {
+          "capture_sequence": 8,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_3",
+            "tool_use_id": "fixture_4",
+            "tool_response": {
+              "success": true
+            }
+          }
+        },
+        {
+          "capture_sequence": 12,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_5"
+          }
+        },
+        {
+          "capture_sequence": 14,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_5",
+            "tool_response": {
+              "isAsync": true,
+              "status": "async_launched",
+              "agentId": "fixture_6"
+            }
+          }
+        },
+        {
+          "capture_sequence": 16,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SendMessage",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_6",
+            "tool_use_id": "fixture_7"
+          }
+        },
+        {
+          "capture_sequence": 17,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "SendMessage",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_6",
+            "tool_use_id": "fixture_7",
+            "tool_response": {
+              "success": true,
+              "revivedAgentId": "fixture_3"
+            }
+          }
+        },
+        {
+          "capture_sequence": 19,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_6",
+            "tool_use_id": "fixture_8"
+          }
+        },
+        {
+          "capture_sequence": 20,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_3",
+            "tool_use_id": "fixture_9"
+          }
+        },
+        {
+          "capture_sequence": 21,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_6",
+            "tool_use_id": "fixture_8",
+            "tool_response": {
+              "success": true
+            }
+          }
+        },
+        {
+          "capture_sequence": 23,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_3",
+            "tool_use_id": "fixture_9",
+            "tool_response": {
+              "success": true
+            }
+          }
+        }
+      ],
+      "runs": [
+        {
+          "source_line": 14,
+          "record": {
+            "type": "system",
+            "subtype": "task_started",
+            "session_id": "fixture_1",
+            "task_id": "fixture_3",
+            "run_id": "fixture_10",
+            "tool_use_id": "fixture_2"
+          }
+        },
+        {
+          "source_line": 33,
+          "record": {
+            "type": "system",
+            "subtype": "task_notification",
+            "status": "completed",
+            "handback": "send",
+            "session_id": "fixture_1",
+            "task_id": "fixture_3",
+            "run_id": "fixture_10",
+            "tool_use_id": "fixture_2"
+          }
+        },
+        {
+          "source_line": 50,
+          "record": {
+            "type": "system",
+            "subtype": "task_started",
+            "session_id": "fixture_1",
+            "task_id": "fixture_6",
+            "run_id": "fixture_11",
+            "tool_use_id": "fixture_5"
+          }
+        },
+        {
+          "source_line": 61,
+          "record": {
+            "type": "system",
+            "subtype": "task_started",
+            "session_id": "fixture_1",
+            "task_id": "fixture_3",
+            "run_id": "fixture_12",
+            "tool_use_id": "fixture_7"
+          }
+        },
+        {
+          "source_line": 82,
+          "record": {
+            "type": "system",
+            "subtype": "task_notification",
+            "status": "completed",
+            "handback": "send",
+            "session_id": "fixture_1",
+            "task_id": "fixture_6",
+            "run_id": "fixture_11",
+            "tool_use_id": "fixture_5"
+          }
+        },
+        {
+          "source_line": 92,
+          "record": {
+            "type": "system",
+            "subtype": "task_notification",
+            "status": "completed",
+            "handback": "send",
+            "session_id": "fixture_1",
+            "task_id": "fixture_3",
+            "run_id": "fixture_12",
+            "tool_use_id": "fixture_7"
+          }
+        }
+      ],
+      "failures": [],
+      "exit_code": 0,
+      "process_timeout": false
+    },
+    "continue-error": {
+      "hooks": [
+        {
+          "capture_sequence": 3,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_2"
+          }
+        },
+        {
+          "capture_sequence": 6,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_2",
+            "tool_response": {
+              "isAsync": true,
+              "status": "async_launched",
+              "agentId": "fixture_3"
+            }
+          }
+        },
+        {
+          "capture_sequence": 7,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_3",
+            "tool_use_id": "fixture_4"
+          }
+        },
+        {
+          "capture_sequence": 8,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_3",
+            "tool_use_id": "fixture_4",
+            "tool_response": {
+              "success": true
+            }
+          }
+        },
+        {
+          "capture_sequence": 12,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_5"
+          }
+        },
+        {
+          "capture_sequence": 15,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_5",
+            "tool_response": {
+              "isAsync": true,
+              "status": "async_launched",
+              "agentId": "fixture_6"
+            }
+          }
+        },
+        {
+          "capture_sequence": 16,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SendMessage",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_6",
+            "tool_use_id": "fixture_7"
+          }
+        },
+        {
+          "capture_sequence": 18,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "SendMessage",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_6",
+            "tool_use_id": "fixture_7",
+            "tool_response": {
+              "success": true,
+              "revivedAgentId": "fixture_3"
+            }
+          }
+        },
+        {
+          "capture_sequence": 19,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_6",
+            "tool_use_id": "fixture_8"
+          }
+        },
+        {
+          "capture_sequence": 20,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_3",
+            "tool_use_id": "fixture_9"
+          }
+        },
+        {
+          "capture_sequence": 21,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_3",
+            "tool_use_id": "fixture_9",
+            "tool_response": {
+              "success": true
+            }
+          }
+        },
+        {
+          "capture_sequence": 25,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_6",
+            "tool_use_id": "fixture_8",
+            "tool_response": {
+              "success": true
+            }
+          }
+        }
+      ],
+      "runs": [
+        {
+          "source_line": 15,
+          "record": {
+            "type": "system",
+            "subtype": "task_started",
+            "session_id": "fixture_1",
+            "task_id": "fixture_3",
+            "run_id": "fixture_10",
+            "tool_use_id": "fixture_2"
+          }
+        },
+        {
+          "source_line": 32,
+          "record": {
+            "type": "system",
+            "subtype": "task_notification",
+            "status": "completed",
+            "handback": "send",
+            "session_id": "fixture_1",
+            "task_id": "fixture_3",
+            "run_id": "fixture_10",
+            "tool_use_id": "fixture_2"
+          }
+        },
+        {
+          "source_line": 49,
+          "record": {
+            "type": "system",
+            "subtype": "task_started",
+            "session_id": "fixture_1",
+            "task_id": "fixture_6",
+            "run_id": "fixture_11",
+            "tool_use_id": "fixture_5"
+          }
+        },
+        {
+          "source_line": 62,
+          "record": {
+            "type": "system",
+            "subtype": "task_started",
+            "session_id": "fixture_1",
+            "task_id": "fixture_3",
+            "run_id": "fixture_12",
+            "tool_use_id": "fixture_7"
+          }
+        },
+        {
+          "source_line": 83,
+          "record": {
+            "type": "system",
+            "subtype": "task_notification",
+            "status": "completed",
+            "handback": "send",
+            "session_id": "fixture_1",
+            "task_id": "fixture_3",
+            "run_id": "fixture_12",
+            "tool_use_id": "fixture_7"
+          }
+        },
+        {
+          "source_line": 97,
+          "record": {
+            "type": "system",
+            "subtype": "task_notification",
+            "status": "completed",
+            "handback": "send",
+            "session_id": "fixture_1",
+            "task_id": "fixture_6",
+            "run_id": "fixture_11",
+            "tool_use_id": "fixture_5"
+          }
+        }
+      ],
+      "failures": [],
+      "exit_code": 0,
+      "process_timeout": false,
+      "elapsed_seconds": 16.51,
+      "cost_usd": 0.00356323,
+      "fault": {
+        "tool_use_id": "fixture_7",
+        "caller_agent_id": "fixture_6",
+        "mode": "exit_1",
+        "onFailure": null,
+        "hook_timeout_seconds": 10
+      }
+    },
+    "block-error": {
+      "hooks": [
+        {
+          "capture_sequence": 3,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_2"
+          }
+        },
+        {
+          "capture_sequence": 4,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_2",
+            "tool_response": {
+              "isAsync": true,
+              "status": "async_launched",
+              "agentId": "fixture_3"
+            }
+          }
+        },
+        {
+          "capture_sequence": 6,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_3",
+            "tool_use_id": "fixture_4"
+          }
+        },
+        {
+          "capture_sequence": 8,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_3",
+            "tool_use_id": "fixture_4",
+            "tool_response": {
+              "success": true
+            }
+          }
+        },
+        {
+          "capture_sequence": 12,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_5"
+          }
+        },
+        {
+          "capture_sequence": 14,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_5",
+            "tool_response": {
+              "isAsync": true,
+              "status": "async_launched",
+              "agentId": "fixture_6"
+            }
+          }
+        },
+        {
+          "capture_sequence": 15,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SendMessage",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_6",
+            "tool_use_id": "fixture_7"
+          }
+        },
+        {
+          "capture_sequence": 17,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_6",
+            "tool_use_id": "fixture_8"
+          }
+        },
+        {
+          "capture_sequence": 18,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_6",
+            "tool_use_id": "fixture_8",
+            "tool_response": {
+              "success": true
+            }
+          }
+        }
+      ],
+      "runs": [
+        {
+          "source_line": 13,
+          "record": {
+            "type": "system",
+            "subtype": "task_started",
+            "session_id": "fixture_1",
+            "task_id": "fixture_3",
+            "run_id": "fixture_9",
+            "tool_use_id": "fixture_2"
+          }
+        },
+        {
+          "source_line": 33,
+          "record": {
+            "type": "system",
+            "subtype": "task_notification",
+            "status": "completed",
+            "handback": "send",
+            "session_id": "fixture_1",
+            "task_id": "fixture_3",
+            "run_id": "fixture_9",
+            "tool_use_id": "fixture_2"
+          }
+        },
+        {
+          "source_line": 45,
+          "record": {
+            "type": "system",
+            "subtype": "task_started",
+            "session_id": "fixture_1",
+            "task_id": "fixture_6",
+            "run_id": "fixture_10",
+            "tool_use_id": "fixture_5"
+          }
+        },
+        {
+          "source_line": 73,
+          "record": {
+            "type": "system",
+            "subtype": "task_notification",
+            "status": "completed",
+            "handback": "send",
+            "session_id": "fixture_1",
+            "task_id": "fixture_6",
+            "run_id": "fixture_10",
+            "tool_use_id": "fixture_5"
+          }
+        }
+      ],
+      "failures": [
+        {
+          "source_line": 14,
+          "session_id": "fixture_1",
+          "agent_id": "fixture_6",
+          "tool_use_id": "fixture_7",
+          "is_error": true,
+          "classified_on_failure_block": true,
+          "classified_timeout": false
+        }
+      ],
+      "exit_code": 0,
+      "process_timeout": false,
+      "elapsed_seconds": 11.8,
+      "cost_usd": 0.002505135,
+      "fault": {
+        "tool_use_id": "fixture_7",
+        "caller_agent_id": "fixture_6",
+        "mode": "exit_1",
+        "onFailure": "block",
+        "hook_timeout_seconds": 10
+      }
+    },
+    "block-timeout": {
+      "hooks": [
+        {
+          "capture_sequence": 3,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_2"
+          }
+        },
+        {
+          "capture_sequence": 4,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_2",
+            "tool_response": {
+              "isAsync": true,
+              "status": "async_launched",
+              "agentId": "fixture_3"
+            }
+          }
+        },
+        {
+          "capture_sequence": 7,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_3",
+            "tool_use_id": "fixture_4"
+          }
+        },
+        {
+          "capture_sequence": 8,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_3",
+            "tool_use_id": "fixture_4",
+            "tool_response": {
+              "success": true
+            }
+          }
+        },
+        {
+          "capture_sequence": 12,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_5"
+          }
+        },
+        {
+          "capture_sequence": 15,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_5",
+            "tool_response": {
+              "isAsync": true,
+              "status": "async_launched",
+              "agentId": "fixture_6"
+            }
+          }
+        },
+        {
+          "capture_sequence": 16,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SendMessage",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_6",
+            "tool_use_id": "fixture_7"
+          }
+        },
+        {
+          "capture_sequence": 17,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_6",
+            "tool_use_id": "fixture_8"
+          }
+        },
+        {
+          "capture_sequence": 18,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_6",
+            "tool_use_id": "fixture_8",
+            "tool_response": {
+              "success": true
+            }
+          }
+        }
+      ],
+      "runs": [
+        {
+          "source_line": 13,
+          "record": {
+            "type": "system",
+            "subtype": "task_started",
+            "session_id": "fixture_1",
+            "task_id": "fixture_3",
+            "run_id": "fixture_9",
+            "tool_use_id": "fixture_2"
+          }
+        },
+        {
+          "source_line": 33,
+          "record": {
+            "type": "system",
+            "subtype": "task_notification",
+            "status": "completed",
+            "handback": "send",
+            "session_id": "fixture_1",
+            "task_id": "fixture_3",
+            "run_id": "fixture_9",
+            "tool_use_id": "fixture_2"
+          }
+        },
+        {
+          "source_line": 50,
+          "record": {
+            "type": "system",
+            "subtype": "task_started",
+            "session_id": "fixture_1",
+            "task_id": "fixture_6",
+            "run_id": "fixture_10",
+            "tool_use_id": "fixture_5"
+          }
+        },
+        {
+          "source_line": 73,
+          "record": {
+            "type": "system",
+            "subtype": "task_notification",
+            "status": "completed",
+            "handback": "send",
+            "session_id": "fixture_1",
+            "task_id": "fixture_6",
+            "run_id": "fixture_10",
+            "tool_use_id": "fixture_5"
+          }
+        }
+      ],
+      "failures": [
+        {
+          "source_line": 14,
+          "session_id": "fixture_1",
+          "agent_id": "fixture_6",
+          "tool_use_id": "fixture_7",
+          "is_error": true,
+          "classified_on_failure_block": true,
+          "classified_timeout": true
+        }
+      ],
+      "exit_code": 0,
+      "process_timeout": false,
+      "elapsed_seconds": 13.25,
+      "cost_usd": 0.002528265,
+      "fault": {
+        "tool_use_id": "fixture_7",
+        "caller_agent_id": "fixture_6",
+        "mode": "timeout",
+        "onFailure": "block",
+        "hook_timeout_seconds": 1
+      }
+    },
+    "message-active": {
+      "hooks": [
+        {
+          "capture_sequence": 3,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_2"
+          }
+        },
+        {
+          "capture_sequence": 4,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Agent",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_2",
+            "tool_response": {
+              "isAsync": true,
+              "status": "async_launched",
+              "agentId": "fixture_3"
+            }
+          }
+        },
+        {
+          "capture_sequence": 6,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_3",
+            "tool_use_id": "fixture_4"
+          }
+        },
+        {
+          "capture_sequence": 7,
+          "payload": {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SendMessage",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_5"
+          }
+        },
+        {
+          "capture_sequence": 8,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "SendMessage",
+            "session_id": "fixture_1",
+            "tool_use_id": "fixture_5",
+            "tool_response": {
+              "success": true
+            }
+          }
+        },
+        {
+          "capture_sequence": 10,
+          "payload": {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "SubagentHandback",
+            "session_id": "fixture_1",
+            "agent_id": "fixture_3",
+            "tool_use_id": "fixture_4",
+            "tool_response": {
+              "success": true
+            }
+          }
+        }
+      ],
+      "runs": [
+        {
+          "source_line": 13,
+          "record": {
+            "type": "system",
+            "subtype": "task_started",
+            "session_id": "fixture_1",
+            "task_id": "fixture_3",
+            "run_id": "fixture_6",
+            "tool_use_id": "fixture_2"
+          }
+        },
+        {
+          "source_line": 46,
+          "record": {
+            "type": "system",
+            "subtype": "task_notification",
+            "status": "completed",
+            "handback": "send",
+            "session_id": "fixture_1",
+            "task_id": "fixture_3",
+            "run_id": "fixture_6",
+            "tool_use_id": "fixture_2"
+          }
+        }
+      ],
+      "failures": [],
+      "exit_code": 0,
+      "process_timeout": false,
+      "elapsed_seconds": 7.75,
+      "cost_usd": 0.0014834500000000003,
+      "handback_gate_expired": false
+    }
+  }
+}

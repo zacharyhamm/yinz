@@ -21,6 +21,168 @@ fn task_fixture() -> Value {
     serde_json::from_str(include_str!("fixtures/claude-task-executions.json")).unwrap()
 }
 
+fn tool_hook_fixture() -> Value {
+    serde_json::from_str(include_str!("fixtures/claude-tool-hook-ledger.json")).unwrap()
+}
+
+#[test]
+fn captured_tool_hooks_join_nested_launches_but_success_alone_is_not_resumption() {
+    let fixture = tool_hook_fixture();
+    assert_eq!(fixture["provider"]["version"], "2.1.318");
+    for (name, case) in fixture["cases"].as_object().unwrap() {
+        assert_eq!(case["exit_code"], 0, "{name}");
+        assert_eq!(case["process_timeout"], false, "{name}");
+        let hooks: Vec<HookEvent> = case["hooks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| serde_json::from_value(entry["payload"].clone()).unwrap())
+            .collect();
+        let runs = case["runs"].as_array().unwrap();
+        for start in runs
+            .iter()
+            .map(|entry| &entry["record"])
+            .filter(|run| run["subtype"] == "task_started")
+        {
+            let tool = start["tool_use_id"].as_str().unwrap();
+            let pre = hooks
+                .iter()
+                .find(|hook| {
+                    hook.hook_event_name == "PreToolUse"
+                        && hook.tool_use_id.as_deref() == Some(tool)
+                })
+                .unwrap();
+            let post = hooks
+                .iter()
+                .find(|hook| {
+                    hook.hook_event_name == "PostToolUse"
+                        && hook.tool_use_id.as_deref() == Some(tool)
+                })
+                .unwrap();
+            assert_eq!(pre.session_id, start["session_id"]);
+            assert_eq!(pre.session_id, post.session_id);
+            assert_eq!(pre.agent_id, post.agent_id);
+            assert_eq!(pre.tool_name, post.tool_name);
+            let response = post.tool_response.as_ref().unwrap();
+            if pre.tool_name.as_deref() == Some("Agent") {
+                assert_eq!(response["isAsync"], true);
+                assert_eq!(response["status"], "async_launched");
+                assert_eq!(response["agentId"], start["task_id"]);
+            } else {
+                assert_eq!(pre.tool_name.as_deref(), Some("SendMessage"));
+                assert_eq!(response["success"], true);
+                assert_eq!(response["revivedAgentId"], start["task_id"]);
+                // The nested caller has the same causal tool ID, but its response
+                // lacks the field the current root transcript adapter requires.
+                if pre.agent_id.is_some() {
+                    assert!(response.get("resumedAgentId").is_none());
+                } else {
+                    assert_eq!(response["resumedAgentId"], start["task_id"]);
+                }
+            }
+            assert!(runs.iter().any(|entry| {
+                let end = &entry["record"];
+                end["subtype"] == "task_notification"
+                    && end["status"] == "completed"
+                    && end["task_id"] == start["task_id"]
+                    && end["tool_use_id"] == start["tool_use_id"]
+                    && end["run_id"] == start["run_id"]
+            }));
+        }
+        if name == "message-active" {
+            assert_eq!(case["handback_gate_expired"], false);
+            let message = hooks
+                .iter()
+                .find(|hook| {
+                    hook.hook_event_name == "PostToolUse"
+                        && hook.tool_name.as_deref() == Some("SendMessage")
+                })
+                .unwrap();
+            let response = message.tool_response.as_ref().unwrap();
+            assert_eq!(response["success"], true);
+            assert!(response.get("revivedAgentId").is_none());
+            assert!(response.get("resumedAgentId").is_none());
+            assert_eq!(runs.len(), 2, "only the original execution ran");
+            assert!(runs.iter().all(|entry| {
+                entry["record"]["tool_use_id"].as_str() != message.tool_use_id.as_deref()
+            }));
+        }
+    }
+}
+
+#[test]
+fn captured_launch_barrier_failures_need_more_than_post_tool_hooks() {
+    let fixture = tool_hook_fixture();
+    for name in ["continue-error", "block-error", "block-timeout"] {
+        let case = &fixture["cases"][name];
+        let fault = &case["fault"];
+        let tool = &fault["tool_use_id"];
+        let hooks = case["hooks"].as_array().unwrap();
+        let pre = hooks
+            .iter()
+            .map(|entry| &entry["payload"])
+            .find(|hook| hook["hook_event_name"] == "PreToolUse" && &hook["tool_use_id"] == tool)
+            .unwrap();
+        assert_eq!(pre["agent_id"], fault["caller_agent_id"]);
+        let post: Vec<_> = hooks
+            .iter()
+            .map(|entry| &entry["payload"])
+            .filter(|hook| hook["hook_event_name"] != "PreToolUse" && &hook["tool_use_id"] == tool)
+            .collect();
+        let started = case["runs"].as_array().unwrap().iter().any(|entry| {
+            entry["record"]["subtype"] == "task_started" && &entry["record"]["tool_use_id"] == tool
+        });
+        if name == "continue-error" {
+            assert!(fault["onFailure"].is_null());
+            assert!(
+                started,
+                "ordinary reporting failure does not prevent launch"
+            );
+            assert_eq!(post.len(), 1);
+            assert_eq!(post[0]["hook_event_name"], "PostToolUse");
+        } else {
+            assert_eq!(fault["onFailure"], "block");
+            assert!(!started);
+            assert!(post.is_empty(), "no PostToolUseFailure on this denied call");
+            let failures = case["failures"].as_array().unwrap();
+            assert_eq!(failures.len(), 1);
+            assert_eq!(&failures[0]["tool_use_id"], tool);
+            assert_eq!(failures[0]["agent_id"], pre["agent_id"]);
+            assert_eq!(failures[0]["is_error"], true);
+            assert_eq!(failures[0]["classified_on_failure_block"], true);
+            assert_eq!(failures[0]["classified_timeout"], name == "block-timeout");
+        }
+    }
+}
+
+#[test]
+fn captured_nested_launch_response_is_lost_by_current_broadcast_pruning() {
+    let fixture = tool_hook_fixture();
+    let payload = fixture["cases"]["nested-resume"]["hooks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| &entry["payload"])
+        .find(|hook| hook["hook_event_name"] == "PostToolUse" && hook["tool_name"] == "SendMessage")
+        .unwrap();
+    let mut event: HookEvent = serde_json::from_value(payload.clone()).unwrap();
+    let raw = serde_json::to_string(&event).unwrap();
+    assert_eq!(event.broadcast_json(raw.clone()), raw);
+    // Real tool responses also carry prose. Only this padding is synthetic; the
+    // successful nested launch fields above come from the provider capture.
+    event.tool_response.as_mut().unwrap()["message"] = "x"
+        .repeat(yinz_types::agent::HOOK_BROADCAST_MAX_BYTES)
+        .into();
+    let raw = serde_json::to_string(&event).unwrap();
+    let pruned: HookEvent = serde_json::from_str(&event.broadcast_json(raw)).unwrap();
+    assert_eq!(pruned.tool_use_id, event.tool_use_id);
+    assert_eq!(pruned.agent_id, event.agent_id);
+    assert!(pruned.tool_response.is_none());
+    assert!(pruned.claude_task_execution.is_none());
+    // This characterizes a prerequisite, not a usable ledger: enrichment must
+    // preserve validated launch evidence before any local or broker pruning.
+}
+
 #[test]
 fn captured_haiku_nested_resumption_is_missing_from_parent_launch_observation() {
     let fixture: Value =

@@ -241,6 +241,171 @@ acceptance criterion.
 Explicit recovery remains a workaround only. No full CI gate, merge, rebase,
 push, remote Git operation, lifecycle mutation or Agenda mutation was performed.
 
+### Causal tool ledger investigation, 2026-11-06
+
+**BLOCKED: automatic Idle after same-ID resumption remains unimplemented.**
+Tool hooks expose the missing nested launch identity, and a managed launch
+barrier is a credible next design. They do not make the existing reporting path
+a complete ledger. Do not remove `provisional_workers`, relax stale completion
+acceptance, or merge this branch based on these captures. The prior fixtures,
+repair `b5f32045a`, and stale/wait/draft/transfer regressions remain unchanged.
+
+#### New evidence
+
+`yinz-process/src/unit/fixtures/claude-tool-hook-ledger.json` projects the two
+existing resumption captures and four additional visible-pane Haiku captures.
+All used Claude Code 2.1.318, isolated temporary hooks, no repository-write tools
+or MCP, a $5 per-invocation cap, and a 240-second process bound. The four new
+captures exited 0 in 16.51, 11.80, 13.25, and 7.75 seconds, respectively; none
+reached the process bound. All capture panes were closed and their process
+groups were empty. The injected one-second hook timeout is intentional evidence,
+not a test flake. Raw captures and private identifiers remain outside Git.
+
+| Capture | Observation |
+|---|---|
+| Existing same-prompt resumption | Root SendMessage Pre/Post share `tool_use_id`; successful response has both `resumedAgentId` and `revivedAgentId`. |
+| Existing nested resumption | Helper SendMessage Pre/Post share `tool_use_id` and caller `agent_id`; response has `success=true` and `revivedAgentId`, without `resumedAgentId`. |
+| Nested hook exits 1, default policy | SendMessage executes and starts the resumed run despite the reporting failure. Three executions complete. |
+| Nested hook exits 1, `onFailure: "block"` | No resumed run. Only the original worker and helper complete. |
+| Nested hook times out, `onFailure: "block"` | Same blocked outcome. |
+| Message to an active worker | Successful SendMessage has neither resumption field; only the original execution runs. A bounded hook holds handback until the message's PostToolUse, preventing accidental completion before delivery. |
+
+Every captured launch joins Agent/SendMessage tool hooks to stream task/run/tool
+identities. Every captured execution completes. These are finite observations,
+not a proof that all provider launch paths are covered. Successful handback tool
+hooks still lack the causal *launch* tool ID and run ID; their own tool IDs must
+not be substituted for execution identity.
+
+Both blocked calls emit PreToolUse but **no PostToolUse or PostToolUseFailure**.
+Their sidechain transcripts contain a matching `is_error=true` tool result with
+an onFailure-block diagnostic. The fixture's diagnostic classification booleans
+are derived annotations, not new provider fields. A generic `is_error` cannot
+prove no child started: failures after a side effect are a different case.
+
+The [provider hook reference](https://code.claude.com/docs/en/hooks#block-the-action-when-a-hook-fails),
+checked 2026-11-06, documents `onFailure`, not `onError`, available from
+v2.1.295. Synchronous PreToolUse normally permits execution after timeout or
+failure; `onFailure: "block"` changes that policy. Settings hooks run inside
+subagents, with caller identity. PostToolUse cannot undo an executed tool;
+SubagentStart cannot prevent a launch. Async hooks cannot serve as the barrier.
+The installed 2.1.318 binary contains matching onFailure configuration and
+failure-handling code; its SHA-256 is recorded in the fixture. The new captures
+verify nested exit-error and timeout behavior on that binary. They do not test
+missing executables, malformed output, cancellation, configuration replacement,
+interactive-mode equivalence, or reconnect behavior.
+
+#### Why current transport is insufficient
+
+- `yinz-types/src/agent/hooks.rs`: the inline reporter exits successfully if
+  `yinz` is absent; generated handlers do not request onFailure blocking.
+  Oversized broadcasts discard `tool_response`. The new pruning
+  characterization proves that a nested launch's success and revived ID vanish
+  while its causal tool ID survives. Typed enrichment must happen before pruning.
+- `yinz-runtime/src/agent/report.rs` and `src/agent_report.rs`: the local reporter
+  has a one-second watchdog and per-invocation report UUIDs. It has no durable
+  operation receipt/retry journal. Those UUIDs do not identify provider calls.
+- `yinz-server/src/client_router.rs`: AgentReportAccepted means successful
+  enqueue, before screen application. The queue and acknowledgement are not a
+  persisted reservation and cannot prevent loss on restart.
+- `yinz-process/src/pty_host/remote/broker.rs`: AgentReported confirms a write
+  to the owner connection, not screen application or durable storage. A detached
+  pane has no owner to receive it. Neither route establishes a launch barrier.
+- `yinz-process/src/claude_turn.rs` and `claude_turn/tasks.rs`: observation begins
+  for a root prompt, rejects worker prompts/sidechains, follows only known root
+  launch IDs, and can finish with no pending IDs while nested execution exists.
+  Transcript EOF and root completion remain insufficient completeness boundaries.
+
+#### Candidate managed-epoch protocol and proof obligations
+
+This is a proposed replacement protocol, **not validated implementation**. It
+changes failure behavior: unavailable tracking can prevent Claude from launching
+work. The controller must account for that product tradeoff before expanding
+the approved implementation scope.
+
+1. Establish an epoch before a fresh provider process can execute work. Bind it
+   to provider process incarnation, conversation, pinned capability/configuration,
+   and pane ownership. Every root and nested operation capable of creating or
+   resuming work must pass the same synchronous, fail-closed gate. Enumerate
+   Agent/Task, SendMessage variants, teams, and any automatic/provider-internal
+   starts; unverified paths keep the epoch incomplete. SessionStart alone cannot
+   enforce this. Attaching to an already-running conversation cannot assert an
+   empty ledger; it needs a provider snapshot/replay boundary or a fresh managed
+   process with validated resume semantics.
+2. Before releasing a launch-capable PreToolUse, durably reserve the provider
+   operation keyed by epoch, conversation, caller, and causal `tool_use_id`.
+   Unknown target IDs are valid pending reservations. Publish Busy before an
+   end-to-end applied acknowledgement allows the hook to return success. A
+   local append without screen synchronization is insufficient: the provider
+   could start while the screen still advertises Idle. Duplicates return the same
+   reservation; contradictory reuse invalidates completeness. No receipt means
+   deny, including reporter startup/parse failures and deadline expiration.
+3. Join validated PostToolUse launch results to reservations, including nested
+   `revivedAgentId`. Atomically replace pending work with its execution; a child
+   may start before the post hook, so never create a gap. Retain completion
+   received before launch association and join by conversation/task/tool/run,
+   rather than discarding unmatched notifications. Keep each execution's
+   completion tombstone; an old completion cannot retire a newer launch.
+4. Close non-launching operations only with attributable terminal evidence.
+   The active-message control provides one non-resuming success shape, not a
+   blanket rule that absent revived ID means no launch. Denied operations need
+   a separate receipt path: the blocked captures disprove post-hook-only cleanup.
+   Validate a provider-specific rejection/result adapter, including cancellation
+   and failures after partial execution. Unknown outcome, missing post report,
+   dropped notification, or unreadable sidechain keeps work pending. Do not
+   expire reservations by elapsed time, parent completion, or a generic error.
+5. Store reservations, associations, completions, and epoch health durably before
+   acknowledging transitions. Recover acknowledged work after hook/process,
+   observer, screen/server, or broker failure. Remote acknowledgements must join
+   the same committed/applied boundary. On transfer or reconnect, fence the old
+   owner and replay a complete snapshot plus journal tail before allowing Idle
+   or new reservations. Missing journal, overflow, unsupported schema, disabled
+   gate, or unverified provider restart invalidates completeness; an empty new
+   in-memory map must never restore it. Post-report loss should reduce liveness,
+   not falsely establish Idle; durable retry/reconciliation must restore liveness.
+6. Only an established complete epoch could make unidentified raw Starts
+   archive-only: each real launch is already protected by a pending reservation
+   or outstanding execution. Raw Stops remain insufficient completion evidence.
+   There is no safe retroactive conversion of this branch's provisional entries
+   based on hook counts or subsequent correlated completions. Worker waits also
+   need validated operation/execution association: caller `agent_id` alone does
+   not distinguish resumed executions. Keep exact tool waits until correlated
+   resolution; do not assign them to the latest screen arrival. Parent turns,
+   background commands, notifications, submission history, and draft readiness
+   retain their independent accounting.
+
+The safety argument is conditional: before any execution can start, a pending
+reservation is visible and durable; only evidence for that operation can replace
+or discharge it; Idle requires a healthy complete epoch with no outstanding
+operations/executions and an idle parent. The captures support causal identities
+and the fail-closed gate, but do not establish the premises for every launch,
+attachment, wait, or failure path. Root completion notifications covered the
+captured nested run; a complete nested notification/replay contract is still
+required, including helper termination and lost reports.
+
+The exact prerequisites for dependent runtime changes are therefore: validated
+launch-path coverage and epoch establishment; durable applied acknowledgement
+across local/broker routes; attributable no-launch and completion reconciliation
+including sidechains; and restart/transfer fencing that retains completeness and
+worker waits. Fault-injection tests must cover crash before/after commit and
+acknowledgement, post-report loss, denied calls without failure hooks, successful
+non-resuming messages, cancellation, configuration changes, and reconnect during
+g2 with a delayed g1 completion. Provider support or a deliberate managed bridge
+is still needed wherever those boundaries cannot be established. The new tests
+characterize evidence and existing pruning behavior; they do not claim automatic
+Idle acceptance.
+
+Validation for this investigation: 132 focused tests passed (34 process
+`claude_turn`, 43 screen `agent_control::claude_`, 18 `warp_tracking_`, and
+37 types `agent::hooks::tests`). The initial process selection ran without
+socket permission: two existing AGY tests failed at `TcpListener::bind` with
+EPERM, while the other 32 passed. Re-running that selection with socket
+permission passed all 34; this was an execution-environment error, not a timing
+flake or an assertion fixed by retrying. Formatting initially found three new
+Rust layout differences; `cargo x format` corrected them. `cargo x lint`, the
+final `cargo x format --check`, fixture privacy checks, and `git diff --check`
+passed. No runtime transition changed, no full CI gate ran, and no lifecycle,
+Agenda, merge, rebase, push, install, or incident-pane operation was performed.
+
 ## Known limitations and caller guidance
 
 The following behavior is intentional or not worth fixing. Callers and the skill should account for it.
