@@ -21,15 +21,29 @@ Linux, Landlock, C compiler, or kernel-header requirement. Explicit execution on
 another platform fails with an explanation; an unavailable Linux ABI fails rather
 than reporting successful coverage. Dependencies for this experiment are Linux
 with enabled Landlock ABI 3 or newer, Linux Landlock headers, Deno, `cc`, Git,
-Python 3, and `/usr/bin:/bin` system tools. It does not use Bubblewrap.
+Python 3, readable Linux procfs, and `/usr/bin:/bin` system tools. It does not use
+Bubblewrap.
 
 The Deno harness compiles the small
 [C executor](../../extensions/behaviors/unit/fixtures/checkout_boundary_probe.c)
 into a disposable directory, creates a primary repository and linked worktrees,
-and awaits every subprocess. Each subprocess has a 30-second deadline. It removes
-the fixture in `finally`; no providers, Yinz servers, lifecycle methods, Agenda
-operations, remote Git services, or background tasks are invoked. Worktree build
-output is local to that disposable worktree; no Cargo build directory is changed.
+and awaits every subprocess. A Linux
+[Python supervisor](../../extensions/behaviors/unit/fixtures/checkout_probe_supervisor.py)
+sets `PR_SET_CHILD_SUBREAPER` before launching each command and owns its 30-second
+deadline. It waits for the whole descendant tree, including orphaned or detached
+children. On deadline or interruption it sends `SIGKILL` to unreaped direct
+children, repeats for descendants adopted as their parents die, and reaps all of
+them before returning. Timeout exits 124; command startup failure exits 125;
+ordinary command exit statuses are preserved. Termination and collection still
+depend on kernel scheduling and killable processes; the deadline is not a hard
+real-time guarantee against uninterruptible kernel waits.
+
+The Deno harness removes the fixture in `finally`; no providers, Yinz servers,
+lifecycle methods, Agenda operations, or remote Git services are invoked. The
+supervisor regressions deliberately fork disposable children and verify their
+collection before returning. Worktree build output is local to that disposable
+worktree; no Cargo build directory is changed. The supervisor is test cleanup,
+not a production enforcement backend.
 
 The executor changes to the assigned directory or exits 125, opens the rule roots,
 sets `PR_SET_NO_NEW_PRIVS`, installs a Landlock mutation ruleset, closes its rule
@@ -45,6 +59,18 @@ On 2026-11-06, Linux x86_64 kernel `7.3.1-1-cachyos`, Landlock ABI 11,
 Deno 2.9.8, GCC 16.2.1, and Git 2.56.0: **1 test, 14 steps passed**.
 A passing counterexample step means the candidate failed a required boundary.
 These are real local subprocess checks, not provider execution checks.
+
+Code review found that the original `AbortSignal.timeout` killed only the immediate
+child: a descendant retaining stdout/stderr delayed completion beyond the deadline.
+The supervisor repair adds six focused steps: retained pipes with a live parent,
+an exited parent, a detached double-forked grandchild, successful child collection
+with preserved command status, supervisor interruption, and an unavailable
+executable. Timeout fixtures ignore `SIGTERM` and sleep for 20 seconds; a one-second
+deadline must return within ten seconds with every reported PID absent from procfs.
+The supervisor and original boundary proof now pass **2 tests, 20 steps**.
+The first repair run failed because Deno protects `/proc` even with `--allow-read`;
+the collection assertion now uses the existing Python dependency under the same
+documented permissions instead of adding `--allow-all`.
 
 | Experiment | Result |
 | --- | --- |
@@ -184,10 +210,12 @@ replace enforcement with directory validation, or report the issue as resolved.
 The proof is standalone and changes no Rust runtime or protobuf definitions; it
 does not require building Yinz. Focused results for this commit:
 
-- Explicit 14-step experiment above: passed.
+- Explicit boundary experiment and supervisor regressions: 2 tests, 20 steps
+  passed, including all 14 original boundary steps.
 - Existing `yinz_agent_test.ts` and `issue_agents_test.ts`, plus the probe without
-  its opt-in flag: 105 passed, 0 failed, 1 ignored (the probe).
+  its opt-in flag: 105 passed, 0 failed, 2 ignored (the opt-in probe tests).
 - `deno check`, `deno lint`, and `deno fmt --check` on the probe: passed.
+- Python supervisor syntax check: passed.
 - `git diff --check`: passed.
 
 No workspace test suite, integration suite, full CI gate, rebase, merge or push is

@@ -6,15 +6,31 @@ const fixture = new URL(
   "./fixtures/checkout_boundary_probe.c",
   import.meta.url,
 );
+const supervisor = new URL(
+  "./fixtures/checkout_probe_supervisor.py",
+  import.meta.url,
+);
 const decoder = new TextDecoder();
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
 }
 
-async function run(cwd: string, program: string, args: string[]) {
-  const output = await new Deno.Command(program, {
-    args,
+async function run(
+  cwd: string,
+  program: string,
+  args: string[],
+  timeoutMs = 30_000,
+) {
+  // The supervisor, rather than AbortSignal on the immediate child, owns the
+  // deadline and reaps descendants before inherited output pipes can finish.
+  const output = await new Deno.Command("python3", {
+    args: [
+      decodeURIComponent(supervisor.pathname),
+      String(timeoutMs / 1000),
+      program,
+      ...args,
+    ],
     cwd,
     clearEnv: true,
     env: {
@@ -28,7 +44,6 @@ async function run(cwd: string, program: string, args: string[]) {
       GIT_COMMITTER_EMAIL: "checkout-proof@example.invalid",
       GIT_TERMINAL_PROMPT: "0",
     },
-    signal: AbortSignal.timeout(30_000),
     stdout: "piped",
     stderr: "piped",
   }).output();
@@ -39,10 +54,138 @@ async function run(cwd: string, program: string, args: string[]) {
   };
 }
 
+Deno.test({
+  name: "checkout probe supervisor collects descendants before returning",
+  ignore: !Deno.args.includes("--checkout-boundary-probe"),
+  async fn(t) {
+    assert(Deno.build.os === "linux", "The probe supervisor requires Linux");
+    const temporary = await Deno.makeTempDir({ prefix: "yinz-probe-timeout-" });
+    try {
+      for (
+        const scenario of [
+          "retained pipes",
+          "exited parent",
+          "detached grandchild",
+        ]
+      ) {
+        await t.step(scenario, async () => {
+          const start = performance.now();
+          const result = await run(temporary, "python3", [
+            "-c",
+            `import os, signal, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+print(os.getpid(), flush=True)
+child = os.fork()
+if child == 0:
+    if sys.argv[1] == "detached grandchild":
+        os.setsid()
+        grandchild = os.fork()
+        if grandchild != 0:
+            print(os.getpid(), flush=True)
+            os._exit(0)
+    print(os.getpid(), flush=True)
+    time.sleep(20)
+    os._exit(0)
+if sys.argv[1] != "retained pipes":
+    os._exit(0)
+time.sleep(20)
+`,
+            scenario,
+          ], 1_000);
+          assert(result.code === 124, JSON.stringify(result));
+          assert(
+            result.stderr.includes("all descendants collected"),
+            JSON.stringify(result),
+          );
+          // Timing is the behavior under test: inherited pipes must not keep us
+          // waiting for the fixture's 20-second sleep. Allow scheduling slack.
+          assert(
+            performance.now() - start < 10_000,
+            "deadline was not bounded",
+          );
+          const pids = result.stdout.split(/\s+/).map(Number);
+          assert(
+            pids.length >= 2 && pids.every((pid) => pid > 0),
+            result.stdout,
+          );
+          await collected(temporary, pids);
+        });
+      }
+      await t.step(
+        "successful descendants and command exit status",
+        async () => {
+          const result = await run(temporary, "python3", [
+            "-c",
+            `import os
+child = os.fork()
+print(os.getpid(), flush=True)
+os._exit(0 if child == 0 else 7)
+`,
+          ]);
+          assert(result.code === 7, JSON.stringify(result));
+          const pids = result.stdout.split(/\s+/).map(Number);
+          assert(pids.length === 2, result.stdout);
+          await collected(temporary, pids);
+        },
+      );
+      await t.step("supervisor interruption collects descendants", async () => {
+        const result = await run(temporary, "python3", [
+          "-c",
+          `import os, signal, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+supervisor = os.getppid()
+ready_read, ready_write = os.pipe()
+child = os.fork()
+print(os.getpid(), flush=True)
+if child != 0:
+    os.close(ready_write)
+    os.read(ready_read, 1)
+    os.kill(supervisor, signal.SIGTERM)
+else:
+    os.close(ready_read)
+    os.write(ready_write, b"1")
+time.sleep(20)
+`,
+        ]);
+        assert(result.code === 143, JSON.stringify(result));
+        const pids = result.stdout.split(/\s+/).map(Number);
+        assert(
+          pids.length === 2 && pids.every((pid) => pid > 0),
+          result.stdout,
+        );
+        await collected(temporary, pids);
+      });
+      await t.step(
+        "unavailable executable fails without leaking a child",
+        async () => {
+          const result = await run(temporary, `${temporary}/missing`, []);
+          assert(result.code === 125, JSON.stringify(result));
+          assert(
+            result.stderr.includes("could not start"),
+            JSON.stringify(result),
+          );
+        },
+      );
+    } finally {
+      await Deno.remove(temporary, { recursive: true });
+    }
+  },
+});
+
 async function succeeds(cwd: string, program: string, args: string[]) {
   const result = await run(cwd, program, args);
   assert(result.code === 0, JSON.stringify({ program, args, ...result }));
   return result.stdout;
+}
+
+async function collected(cwd: string, pids: number[]) {
+  // Deno protects /proc behind --allow-all even with --allow-read. Use the
+  // existing Python dependency to check collection without widening permissions.
+  await succeeds(cwd, "python3", [
+    "-c",
+    'import os, sys; remaining = [pid for pid in sys.argv[1:] if os.path.exists(f"/proc/{pid}")]; assert not remaining, remaining',
+    ...pids.map(String),
+  ]);
 }
 
 async function absent(path: string) {
