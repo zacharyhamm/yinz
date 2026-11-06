@@ -14,6 +14,17 @@ inputs:
       default: {}
       additionalProperties: false
       properties:
+        revisionApproval:
+          type: object
+          required: [handoffId, request]
+          additionalProperties: false
+          properties:
+            handoffId:
+              type: string
+              format: uuid
+            request:
+              type: string
+              minLength: 1
         control:
           type: object
           required: [session, paneId]

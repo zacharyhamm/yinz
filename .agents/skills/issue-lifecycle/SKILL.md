@@ -76,9 +76,21 @@ assumptions and review; or delivered change, code review and verification).
 For a blocker, explain the recorded cause and the recovery needed. Do not promise
 to wake the controller after its turn or session ends; that is outside this flow.
 
-The driver automatically runs missing triage, planning and review, revising
-unresolved high/critical plan findings up to three times per invocation with a
-fresh review each time. It stops for explicit plan approval and worktree
+The driver automatically runs initial triage, planning and review. Unresolved
+high/critical plan findings stop at `authorize_plan_revision` with the current
+plan, findings and proposed next version. Present that concrete handoff and
+obtain the user's explicit authorization for one revision before continuing.
+Record it with `drive` input
+`{revisionApproval: {handoffId, request}}`, using the exact handoff ID and the
+user's actual request. Authorization is saved with one planner assignment;
+ordinary `drive` resume reuses it and automatically reviews the resulting version.
+Remaining blockers require a new handoff and authorization. Never infer blanket
+approval or repeat approval for an already authorized assignment. Automatic
+planning after refresh or rollback is also gated if a prior plan version exists.
+Manual planning, rollback and restart commands retain their existing behavior.
+
+Revision authorization does not authorize implementation or merge. The driver
+stops separately for explicit approval of the reviewed plan and worktree
 preparation, then runs implementation and code review up to merge authorization.
 It never records approval, merge authorization or a CI waiver on its own.
 
@@ -86,8 +98,8 @@ It never records approval, merge authorization or a CI waiver on its own.
    criteria, scope and reproduction evidence against the affected source.
 2. **Plan:** the driver runs role `plan` for concrete steps, affected files, risks and
    development test selection, then role `review_plan` for adversarial review.
-   Resolve blockers through revised worker results. A revised plan needs a fresh
-   review.
+   Before dispatching each automatic revision, present its approval handoff and
+   record authorization for that one revision. A revised plan needs a fresh review.
 3. **Approve and implement:** record authorization for the reviewed plan, then
    create or adopt a local issue worktree. Existing approval in this session is
    sufficient; do not ask again. If authorization is missing, present the

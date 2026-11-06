@@ -1614,20 +1614,44 @@ Deno.test("driver takes planning through fresh review to a reusable approval han
   equal((await loadState(h.context)).approval, undefined);
 });
 
-Deno.test("driver revises unresolved plan findings and always obtains a fresh versioned review", async () => {
+function blockedPlanEvidence(task: ReturnType<typeof AgentTaskSchema.parse>) {
+  return task.role === "review_plan"
+    ? {
+      planVersion: task.before.plan!.version,
+      findings: [{
+        id: "gap",
+        severity: "critical",
+        description: "Cover the caller",
+      }],
+    }
+    : driverEvidence(task);
+}
+function revisionApproval(h: ReturnType<typeof harness>) {
+  return {
+    handoffId: result(h).id,
+    request: "Revise this plan once to address the findings",
+  };
+}
+
+Deno.test("driver stops at a stable revision proposal and one authorization permits only one revision and review", async () => {
   const h = harness();
-  h.controls.evidenceForRole = (task) =>
-    task.role === "review_plan" && task.before.plan!.version === 1
-      ? {
-        planVersion: 1,
-        findings: [{
-          id: "gap",
-          severity: "high",
-          description: "Cover the caller",
-        }],
-      }
-      : driverEvidence(task);
+  h.controls.evidenceForRole = blockedPlanEvidence;
   await h.drive.execute({ agent: options }, h.context);
+  const proposal = result(h);
+  equal(proposal.decision, "authorize_plan_revision");
+  equal(proposal.planVersion, 1);
+  equal(proposal.proposedPlanVersion, 2);
+  assert(proposal.presentation.includes("Cover the caller"));
+  assert(proposal.presentation.includes("Proposed next plan version: 2"));
+  assert(
+    proposal.presentation.includes("does not approve implementation or merge"),
+  );
+  equal(dispatchedRoles(h), ["triage", "plan", "review_plan"]);
+  await h.drive.execute({}, h.context);
+  equal(result(h).id, proposal.id);
+  equal(h.calls.length, 3);
+  const approval = revisionApproval(h);
+  await h.drive.execute({ revisionApproval: approval }, h.context);
   equal(dispatchedRoles(h), [
     "triage",
     "plan",
@@ -1635,44 +1659,198 @@ Deno.test("driver revises unresolved plan findings and always obtains a fresh ve
     "plan",
     "review_plan",
   ]);
-  equal(result(h).decision, "approve_plan");
+  equal(result(h).decision, "authorize_plan_revision");
   equal(result(h).planVersion, 2);
+  equal(result(h).proposedPlanVersion, 3);
+  assert(result(h).id !== proposal.id);
   assert(h.calls[3].arguments!.prompt!.toString().includes("Cover the caller"));
+  const authorization = DriverSchema.parse(h.resources.get("driver"))
+    .revisionAuthorization!;
+  equal(authorization.request, approval.request);
+  equal(authorization.assignment.before, proposal.state);
+  const saved = h.writes.findIndex((write) =>
+    write.spec === "driver" && !!write.value.revisionAuthorization
+  );
+  const dispatched = h.writes.findIndex((write) =>
+    write.spec === "agent-task" &&
+    write.value.id === authorization.assignment.id
+  );
+  assert(saved < dispatched);
+  const nextProposal = result(h);
+  await h.drive.execute({}, h.context);
+  equal(result(h).id, nextProposal.id);
+  equal(h.calls.length, 5);
+  await h.drive.execute({ revisionApproval: approval }, h.context);
+  equal(result(h).decision, "blocked");
+  assert(result(h).reason.includes("stale"));
+  equal(h.calls.length, 5);
+  await h.drive.execute({}, h.context);
+  h.controls.evidenceForRole = driverEvidence;
+  await h.drive.execute({ revisionApproval: revisionApproval(h) }, h.context);
+  equal(result(h).decision, "approve_plan");
+  equal(result(h).planVersion, 3);
+  equal((await loadState(h.context)).approval, undefined);
+  equal((await loadState(h.context)).mergeAuthorization, undefined);
 });
 
-Deno.test("driver allows three plan revisions per invocation before returning the unresolved evidence", async () => {
+Deno.test("revision approval rejects blank requests and other handoff types without dispatch", async () => {
   const h = harness();
-  h.controls.evidenceForRole = (task) =>
-    task.role === "review_plan"
-      ? {
-        planVersion: task.before.plan!.version,
-        findings: [{
-          id: "gap",
-          severity: "critical",
-          description: "Still missing coverage",
-        }],
-      }
-      : driverEvidence(task);
-  await h.drive.execute({ agent: options }, h.context);
-  equal(dispatchedRoles(h), [
-    "triage",
-    "plan",
-    "review_plan",
-    "plan",
-    "review_plan",
-    "plan",
-    "review_plan",
-    "plan",
-    "review_plan",
-  ]);
-  equal(result(h).decision, "blocked");
-  equal(result(h).planVersion, 4);
-  assert(result(h).reason.includes("three revision attempts"));
-  assert(result(h).presentation.includes("Still missing coverage"));
   h.controls.evidenceForRole = driverEvidence;
-  await h.drive.execute({}, h.context);
+  await h.drive.execute({ agent: options }, h.context);
+  const approval = revisionApproval(h);
+  await rejects(
+    () =>
+      h.drive.execute(
+        { revisionApproval: { ...approval, request: "  " } },
+        h.context,
+      ),
+    "Too small",
+  );
   equal(result(h).decision, "approve_plan");
-  equal(result(h).planVersion, 5);
+  await h.drive.execute({ revisionApproval: approval }, h.context);
+  equal(result(h).decision, "blocked");
+  assert(result(h).reason.includes("wrong handoff type"));
+  equal(h.calls.length, 3);
+});
+
+for (const fault of ["dispatch", "worker", "event", "completion"]) {
+  Deno.test(`authorized revision recovers interrupted ${fault} using the exact assignment`, async () => {
+    const h = harness();
+    h.controls.evidenceForRole = blockedPlanEvidence;
+    await h.drive.execute({ agent: options }, h.context);
+    const approval = revisionApproval(h);
+    if (fault === "dispatch") {
+      h.controls.failWrite = (spec, _name, value) =>
+        spec === "agent-task" && value.status === "running";
+    }
+    if (fault === "worker") {
+      h.controls.runError = "Interrupted worker observation";
+    }
+    if (fault === "event") h.controls.failEventOnce = true;
+    if (fault === "completion") h.controls.failTaskCompletionOnce = true;
+    await h.drive.execute({
+      agent: { ...options, model: "revision-model" },
+      revisionApproval: approval,
+    }, h.context);
+    equal(result(h).decision, "blocked");
+    const authorization = DriverSchema.parse(h.resources.get("driver"))
+      .revisionAuthorization!;
+    h.controls.runError = undefined;
+    // Both an input retry and ordinary resume reuse the recorded authorization.
+    await h.drive.execute(
+      fault === "dispatch" || fault === "completion"
+        ? { revisionApproval: approval }
+        : {},
+      h.context,
+    );
+    equal(result(h).decision, "authorize_plan_revision");
+    equal(result(h).planVersion, 2);
+    assert(
+      h.calls.slice(3).every((call) =>
+        call.arguments?.model === "revision-model"
+      ),
+    );
+    const planners = h.calls.slice(3).filter((call) =>
+      call.name === authorization.assignment.behaviorName
+    );
+    equal(planners.filter((call) => call.method === "run").length, 1);
+    equal(
+      planners.filter((call) => call.method === "recover").length,
+      fault === "worker" ? 1 : 0,
+    );
+    equal(
+      DriverSchema.parse(h.resources.get("driver")).revisionAuthorization!
+        .assignment.id,
+      authorization.assignment.id,
+    );
+    const count = h.calls.length;
+    await h.drive.execute({}, h.context);
+    equal(h.calls.length, count);
+  });
+}
+
+for (const change of ["requirements", "rollback", "manual_plan"]) {
+  for (const authorized of [false, true]) {
+    Deno.test(`${change} invalidates ${authorized ? "persisted authorization" : "revision proposal"} and gates the next automatic plan`, async () => {
+      const h = harness();
+      h.controls.evidenceForRole = blockedPlanEvidence;
+      await h.drive.execute({ agent: options }, h.context);
+      const approval = revisionApproval(h);
+      if (authorized) {
+        h.controls.failWrite = (spec, _name, value) =>
+          spec === "agent-task" && value.status === "running";
+        await h.drive.execute({ revisionApproval: approval }, h.context);
+      }
+      if (change === "requirements") {
+        h.controls.agenda = {
+          ...issue,
+          digest: "e".repeat(64),
+          note: "Changed requirements",
+        };
+        await h.drive.execute({ revisionApproval: approval }, h.context);
+        equal(result(h).decision, "blocked");
+        assert(result(h).reason.includes("requirements changed"));
+        h.resources.set(
+          "state",
+          refreshIssue(await loadState(h.context), h.controls.agenda),
+        );
+      } else if (change === "rollback") {
+        await h.methods.rollback.execute({
+          step: "plan",
+          request: "Return to planning",
+        }, h.context);
+      } else {
+        await saveState(
+          h.context,
+          "plan",
+          transition(await loadState(h.context), "plan", driverPlan),
+        );
+      }
+      await h.drive.execute({ revisionApproval: approval }, h.context);
+      equal(result(h).decision, "blocked");
+      equal(h.calls.length, 3);
+      await h.drive.execute({}, h.context);
+      equal(result(h).decision, "authorize_plan_revision");
+      equal(result(h).proposedPlanVersion, change === "manual_plan" ? 3 : 2);
+      equal(dispatchedRoles(h).filter((role) => role === "plan").length, 1);
+      assert(result(h).id !== approval.handoffId);
+      // The new proposal can authorize exactly the next version.
+      await h.drive.execute(
+        { revisionApproval: revisionApproval(h) },
+        h.context,
+      );
+      equal(result(h).planVersion, change === "manual_plan" ? 3 : 2);
+    });
+  }
+}
+
+Deno.test("manual planning and planner restart remain ungated, and legacy running planners can finish", async () => {
+  const h = harness();
+  h.controls.evidenceForRole = blockedPlanEvidence;
+  await h.drive.execute({ agent: options }, h.context);
+  await h.methods.run_agent.execute({ ...options, role: "plan" }, h.context);
+  equal((await loadState(h.context)).planVersion, 2);
+  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  await h.methods.restart_agent.execute({
+    ...options,
+    role: "plan",
+    taskId: task.id,
+    request: "Restart planning",
+  }, h.context);
+  equal((await loadState(h.context)).planVersion, 3);
+  h.controls.failEventOnce = true;
+  await rejects(
+    () => h.methods.run_agent.execute({ ...options, role: "plan" }, h.context),
+    "Fixture event write failed",
+  );
+  equal(
+    DriverSchema.parse(h.resources.get("driver")).revisionAuthorization,
+    undefined,
+  );
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "authorize_plan_revision");
+  equal(result(h).planVersion, 4);
+  equal(result(h).proposedPlanVersion, 5);
 });
 
 Deno.test("driver requires worktree preparation after explicit approval, then implements and reviews to merge authorization", async () => {
@@ -2130,6 +2308,8 @@ Deno.test("every lifecycle role, plan revision, repair and restart resolves the 
     });
   };
   await h.drive.execute({ agent: options }, h.context);
+  equal(result(h).decision, "authorize_plan_revision");
+  await h.drive.execute({ revisionApproval: revisionApproval(h) }, h.context);
   equal(result(h).decision, "approve_plan");
   equal(launched.map((launch) => launch.role), [
     "triage",

@@ -79,8 +79,8 @@ def main():
                 parser.error("merge accepts only skipCiRequest")
             inputs = {"issueName": name, **inputs}
         else:
-            if set(inputs) - {"agent", "control"}:
-                parser.error("drive accepts only agent settings and control identity; omit them to resume")
+            if set(inputs) - {"agent", "control", "revisionApproval"}:
+                parser.error("drive accepts only agent settings, control identity and revisionApproval; omit them to resume")
             inputs = {"issueName": name, "drive": inputs}
         command = ["swamp", "workflow", "run", workflow, "--stdin", *tail]
     else:

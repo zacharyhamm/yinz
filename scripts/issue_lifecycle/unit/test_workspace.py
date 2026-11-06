@@ -111,3 +111,18 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         dispatched = next(call["input"] for call in self.calls() if "input" in call)
         self.assertEqual(dispatched["drive"], {})
+
+    def test_drive_forwards_one_revision_approval_and_rejects_unknown_inputs(self):
+        approval = {"handoffId": "a6da10b0-c980-4b82-b920-000000000001", "request": "Revise this plan once"}
+        inputs = self.root / "drive.json"
+        inputs.write_text(json.dumps({"revisionApproval": approval}))
+        result = self.launch("drive", "--input-file", str(inputs))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        dispatched = next(call["input"] for call in self.calls() if "input" in call)
+        self.assertEqual(dispatched["drive"]["revisionApproval"], approval)
+        self.log.unlink()
+        inputs.write_text(json.dumps({"approveAllRevisions": True}))
+        result = self.launch("drive", "--input-file", str(inputs))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("revisionApproval", result.stderr)
+        self.assertFalse(any("input" in call for call in self.calls()))

@@ -21,17 +21,30 @@ const Settings = AgentInputSchema.omit({ role: true });
 export const DriveInputSchema = z.object({
   agent: Settings.optional(),
   control: ControlIdentitySchema.optional(),
+  revisionApproval: z.object({
+    handoffId: z.uuid(),
+    request: z.string().trim().min(1),
+  }).strict().optional(),
 })
   .strip();
 export const DriverSchema = z.object({
   agent: Settings.optional(),
   assignmentId: z.uuid().optional(),
   implementation: AgentTaskSchema.optional(),
+  revisionAuthorization: z.object({
+    handoffId: z.uuid(),
+    request: z.string().trim().min(1),
+    createdAt: z.iso.datetime(),
+    assignment: AgentTaskSchema,
+    previousAssignmentId: z.uuid().optional(),
+    recoveryId: z.uuid().optional(),
+  }).strict().optional(),
 }).strict();
 export const HandoffSchema = z.object({
   id: z.uuid(),
   status: z.enum(["current", "invalidated"]),
   decision: z.enum([
+    "authorize_plan_revision",
     "approve_plan",
     "prepare_worktree",
     "authorize_merge",
@@ -46,6 +59,7 @@ export const HandoffSchema = z.object({
   assignment: AgentTaskSchema.optional(),
   implementation: AgentTaskSchema.optional(),
   recoveryId: z.uuid().optional(),
+  proposedPlanVersion: z.number().int().positive().optional(),
   planVersion: z.number().int().positive().optional(),
   commit: z.string().optional(),
   presentation: z.string().min(1),
@@ -69,6 +83,13 @@ function present(handoff: Omit<Handoff, "presentation">) {
     ...(handoff.commit ? [`Commit: ${handoff.commit}`] : []),
     `Requirements: ${state.issue.note}`,
   ];
+  if (handoff.decision === "authorize_plan_revision") {
+    lines.push(
+      `Proposed next plan version: ${handoff.proposedPlanVersion}`,
+      `To authorize this one revision, call drive with revisionApproval: {handoffId: "${handoff.id}", request: "<the user's actual authorization>"}.`,
+      "Revision authorization does not approve implementation or merge.",
+    );
+  }
   if (state.classification) {
     lines.push(`Investigation: ${state.classification.summary}`);
   }
@@ -202,7 +223,6 @@ async function drive(
   const handles: Handle[] = [];
   const rawDriver = await context.readResource("driver");
   let driver = DriverSchema.parse(rawDriver ?? {});
-  let revisions = 0;
 
   async function task() {
     const raw = await context.readResource("agent-task");
@@ -250,6 +270,9 @@ async function drive(
         ...(assignment ? { assignment } : {}),
         ...(implementation ? { implementation } : {}),
         ...(recovery ? { recoveryId: recovery.id } : {}),
+        ...(decision === "authorize_plan_revision"
+          ? { proposedPlanVersion: state.planVersion + 1 }
+          : {}),
         ...(state.plan ? { planVersion: state.plan.version } : {}),
         ...(state.codeReview ? { commit: state.codeReview.commit } : {}),
       };
@@ -304,7 +327,12 @@ async function drive(
       };
       if (currentTask) driver.assignmentId = currentTask.id;
     } else if (
-      currentTask && (!driver.agent || currentTask.id !== driver.assignmentId)
+      currentTask &&
+      (!driver.agent || currentTask.id !== driver.assignmentId) &&
+      // A saved revision may not have reached the agent-task write yet. Keep
+      // its selected settings instead of adopting the preceding review's config.
+      !(driver.assignmentId === driver.revisionAuthorization?.assignment.id &&
+        currentTask.id === driver.revisionAuthorization?.previousAssignmentId)
     ) {
       const { cwd: _cwd, stackWorkers: _stackWorkers, ...original } =
         currentTask.config;
@@ -315,6 +343,66 @@ async function drive(
     if (driver.agent && input.control) {
       driver.agent = { ...driver.agent, control: input.control };
     }
+    if (input.revisionApproval) {
+      const approval = input.revisionApproval;
+      const state = await loadState(context);
+      const fresh = await dependencies.readAgenda(
+        state.issue.workspace,
+        state.issue.itemId,
+      );
+      if (fresh.digest !== state.issue.digest) {
+        throw new Error(
+          "Agenda requirements changed; refresh before authorizing a revision",
+        );
+      }
+      const authorization = driver.revisionAuthorization;
+      const sameState = (value: unknown) =>
+        JSON.stringify(value) === JSON.stringify(state);
+      const retry = authorization?.handoffId === approval.handoffId &&
+        authorization.request === approval.request &&
+        authorization.recoveryId === recovery?.id &&
+        ((currentTask?.id === authorization.previousAssignmentId &&
+          sameState(authorization.assignment.before)) ||
+          (currentTask?.id === authorization.assignment.id &&
+            ["running", "applying", "completed"].includes(currentTask.status) &&
+            (sameState(currentTask.before) || sameState(currentTask.next))));
+      if (!retry) {
+        const raw = await context.readResource("handoff");
+        const proposal = raw == null ? undefined : HandoffSchema.parse(raw);
+        if (
+          proposal?.id !== approval.handoffId ||
+          proposal.status !== "current" ||
+          proposal.decision !== "authorize_plan_revision" ||
+          !sameState(proposal.state) ||
+          proposal.assignment?.id !== currentTask?.id ||
+          proposal.recoveryId !== recovery?.id ||
+          proposal.proposedPlanVersion !== state.planVersion + 1
+        ) {
+          throw new Error(
+            "Revision approval requires the current authorize_plan_revision handoff; this approval is stale or has the wrong handoff type",
+          );
+        }
+        if (!driver.agent) {
+          throw new Error(
+            "Select agent settings before authorizing a revision",
+          );
+        }
+        const assignment = await prepareTask(
+          context,
+          { ...driver.agent, role: "plan" },
+          state,
+          dependencies,
+        );
+        driver.revisionAuthorization = {
+          ...approval,
+          createdAt: dependencies.now(),
+          assignment,
+          ...(currentTask ? { previousAssignmentId: currentTask.id } : {}),
+          ...(recovery ? { recoveryId: recovery.id } : {}),
+        };
+      }
+    }
+    // Persist the authorization and exact assignment together before dispatch.
     handles.push(await context.writeResource("driver", "driver", driver));
 
     while (true) {
@@ -368,13 +456,6 @@ async function drive(
           state.planReview.planVersion !== state.plan.version
         ) role = "review_plan";
         else if (blockedFindings(state.planReview.findings)) {
-          if (revisions === 3) {
-            return await handoff(
-              "blocked",
-              "Plan review still has unresolved high/critical findings after three revision attempts in this invocation",
-            );
-          }
-          revisions++;
           role = "plan";
         } else {
           return await handoff(
@@ -471,17 +552,35 @@ async function drive(
         );
       }
 
-      if (!driver.agent) {
-        throw new Error(
-          "Select a running session and provider with drive {agent: {session, kind, ...}} before dispatching workers",
+      let next: Task;
+      if (role === "plan" && state.planVersion > 0) {
+        const authorization = driver.revisionAuthorization;
+        if (
+          !authorization ||
+          authorization.previousAssignmentId !== assignment?.id ||
+          authorization.recoveryId !== recovery?.id ||
+          JSON.stringify(authorization.assignment.before) !==
+            JSON.stringify(state)
+        ) {
+          return await handoff(
+            "authorize_plan_revision",
+            "Explicit authorization is required to create one more plan version and review it",
+          );
+        }
+        next = authorization.assignment;
+      } else {
+        if (!driver.agent) {
+          throw new Error(
+            "Select a running session and provider with drive {agent: {session, kind, ...}} before dispatching workers",
+          );
+        }
+        next = await prepareTask(
+          context,
+          { ...driver.agent, role },
+          state,
+          dependencies,
         );
       }
-      const next = await prepareTask(
-        context,
-        { ...driver.agent, role },
-        state,
-        dependencies,
-      );
       driver = { ...driver, assignmentId: next.id };
       handles.push(await context.writeResource("driver", "driver", driver));
       try {

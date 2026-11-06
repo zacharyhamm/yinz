@@ -159,17 +159,42 @@ object on stdout. The behavior also logs the readable result and publishes the
 `handoff` resource, including the issue snapshot, plan version or commit,
 assignment identity, decision and supporting evidence.
 
-Before approval, the driver fills in missing triage, planning and plan review.
-Unresolved high/critical plan findings trigger up to three revision attempts per
-invocation, each followed by a fresh review. It then returns `approve_plan` or a
-`blocked` result containing the findings. Approval must be recorded explicitly
-with `approve`. The `prepare_worktree` handoff requires `implement` to create or
-adopt the worktree. After preparation, `drive` runs implementation and code
-review and returns `authorize_merge` with the delivered change, review coverage
-and actual verification results. Code blockers or failed checks return `blocked`
-for repair and fresh review. `ready`, `merge` and `summarize` remain explicit
-operator operations. The driver never infers approval, merge authorization or
-a CI waiver.
+The driver runs initial triage, planning and plan review automatically. Unresolved
+high/critical findings return an `authorize_plan_revision` handoff with the current
+plan, review findings and proposed next version. Repeated `drive` calls return the
+same pending proposal without launching a planner. To authorize exactly that
+revision, pass an input file containing the handoff ID and the user's actual request:
+
+```json
+{
+  "revisionApproval": {
+    "handoffId": "<id from the current authorize_plan_revision handoff>",
+    "request": "<the user's actual authorization for this revision>"
+  }
+}
+```
+
+The authorization and its exact planner assignment are saved before dispatch.
+Resume with `drive` after interruption; it reuses the authorized assignment and
+reviews the resulting version automatically. Any remaining blockers require a
+new authorization. There is no automatic revision budget or blanket approval.
+Automatic planning after refresh or rollback also requires this handoff when
+any prior plan version exists. Changed requirements, lifecycle state or assignments
+invalidate old proposals and prevent reusing authorization. Blank requests and
+approvals for other handoff types are rejected. Manual `plan`, `agent` planning,
+`rollback` and `restart-agent` retain their existing behavior. Previously running
+planners may finish and import their results without new authorization; existing
+records need no migration and stop before the next automatic revision.
+
+A clear review returns `approve_plan`. Revision authorization does not approve
+implementation: record that separate approval explicitly with `approve`.
+The `prepare_worktree` handoff requires `implement` to create or adopt the worktree.
+After preparation, `drive` runs implementation and code review and returns
+`authorize_merge` with the delivered change, review coverage and actual verification
+results. Code blockers or failed checks return `blocked` for repair and fresh
+review. `ready`, `merge` and `summarize` remain explicit operator operations.
+The driver never infers revision approval, implementation approval, merge
+authorization or a CI waiver.
 
 Resume with `drive` and no input: the selected session and provider settings and
 current assignment are durable. Pending work resumes its original task and
@@ -617,12 +642,14 @@ The latter requires installed Swamp and Agenda commands and uses a disposable
 repository and Agenda data directory.
 
 The focused tests exercise state transitions, automatic role dispatch and plan
-revisions, human handoffs, timeout observation, interrupted imports, stale
+revision authorization, human handoffs, timeout observation, interrupted imports, stale
 evidence, restart invalidation, Agenda and Yinz adapters, prompt correlation,
 local Git locking and recovery. Agent adapter tests use an injected Yinz runner.
 The installed Swamp smoke test drives planning through review to a handoff,
 resumes an ordinary timeout on its original submission, and proves that resuming
-the handoff does not submit duplicate prompts. Integration smoke tests use a
+the handoff does not submit duplicate prompts. It also checks that one revision
+authorization permits one new version and review, remaining blockers need fresh
+authorization, and implementation approval stays separate. Integration smoke tests use a
 fake `cargo` executable to exercise
 gate ordering and failure recovery without running Yinz's full Rust suites.
 These checks do not establish that a live provider launched or that the full CI

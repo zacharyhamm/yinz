@@ -81,17 +81,21 @@ operation = args[3]
 stdin = sys.stdin.read() if operation == "prompt" else None
 with pathlib.Path(os.environ["YINZ_SMOKE_AGENT_LOG"]).open("a") as log:
     log.write(json.dumps({"args":args,"stdin":stdin,"stub":True}) + "\\n")
+state_file = pathlib.Path(os.environ["YINZ_SMOKE_AGENT_STATE"])
 if operation == "list-panes":
     assert args == ["--session", "smoke", "action", "list-panes", "--json"], args
-    print(json.dumps([{"id":0,"is_plugin":False,"tab_id":int(os.environ.get("YINZ_SMOKE_CONTROL_TAB", "0"))}]))
+    panes = [{"id":0,"is_plugin":False,"tab_id":int(os.environ.get("YINZ_SMOKE_CONTROL_TAB", "0"))}]
+    if state_file.exists() and not json.loads(state_file.read_text()).get("closed"):
+        panes.append({"id":17,"is_plugin":False,"tab_id":3})
+    print(json.dumps(panes))
     sys.exit(0)
 assert args[2] == "agent", args
-state_file = pathlib.Path(os.environ["YINZ_SMOKE_AGENT_STATE"])
 response = {"outcome":"ok","agents":[],"spawned":None,"output":None,"message":None,"acknowledged":False,"turn_id":None}
 if operation == "spawn":
     assert args[args.index("--kind")+1] == "claude"
     assert "--allow-outside-worktree" in args
-    assert args[args.index("--tab")+1] == os.environ.get("YINZ_SMOKE_CONTROL_TAB", "0")
+    assert args[args.index("--stack-for")+1] == "terminal_0"
+    assert "--tab" not in args
     state = {"cwd":args[args.index("--cwd")+1]}
     state_file.write_text(json.dumps(state))
     response["spawned"] = {"pane_id":"terminal_17","tab_id":3,"branch":None,"cwd":state["cwd"]}
@@ -99,7 +103,12 @@ else:
     state = json.loads(state_file.read_text())
     response["agents"] = [{"pane_id":"terminal_17","session":"smoke","host_id":"smoke-host","tab_id":3,"is_suppressed":False,"target":"Local","agent":{"kind":"claude","session_id":"smoke-conversation","state":"Idle","source":"Reported"},"cwd":state["cwd"],"branch":"main","ready":True,"status_available":True,"prompt_supported":True,"not_ready_reason":None,"readiness":None,"input_revision":None,"clear_draft_supported":False,"background_tasks":[]}]
     assert args[4] == "terminal_17", args
-    if operation == "wait":
+    if operation == "close-completed":
+        assert args[args.index("--conversation")+1] == "smoke-conversation"
+        assert args[args.index("--submission")+1] == state["submission"]
+        state["closed"] = True
+        state_file.write_text(json.dumps(state))
+    elif operation == "wait":
         if "--until" in args:
             assert args[args.index("--until")+1] == "idle", args
         else:
@@ -113,6 +122,8 @@ else:
         snapshot = json.loads(stdin.split("Current lifecycle snapshot (issue requirements and recorded evidence):\\n\\n", 1)[1])
         if "Adversarially review the current plan" in stdin:
             evidence = {"planVersion":snapshot["plan"]["version"], "findings":[]}
+            if snapshot["plan"]["version"] <= int(os.environ.get("YINZ_SMOKE_BLOCKED_VERSIONS", "0")):
+                evidence["findings"] = [{"id":"coverage", "severity":"high", "description":"Cover the missing caller"}]
         elif "Develop or revise a concrete implementation plan" in stdin:
             evidence = {"summary":"Add the disposable fixture marker.","steps":[{"id":"marker","description":"Create marker.txt","files":["marker.txt"]}],"testingStrategy":"Inspect marker contents with focused fixture checks.","assumptions":["The marker is the complete fixture requirement."]}
         else:
@@ -203,7 +214,7 @@ print(json.dumps(response))
         self.assertNotIn("approval", self.state())
         self.assertNotIn("implementation", self.state())
         calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
-        self.assertEqual([call["args"][3] for call in calls], ["list-panes", "spawn", "wait", "prompt", "wait", "list-panes", "spawn", "wait", "prompt", "list-panes", "spawn", "wait", "prompt"])
+        self.assertEqual([call["args"][3] for call in calls], ["list-panes", "spawn", "wait", "prompt", "wait", "list-panes", "close-completed"] + ["list-panes", "spawn", "wait", "prompt", "list-panes", "close-completed"] * 2)
         prompts = [call for call in calls if call["args"][3] == "prompt"]
         observed = calls[4]["args"]
         submitted = prompts[0]["args"]
@@ -215,6 +226,43 @@ print(json.dumps(response))
         prepared = json.loads(self.lifecycle("drive"))
         self.assertEqual(prepared["decision"], "prepare_worktree")
         self.assertEqual(len(self.yinz_log.read_text().splitlines()), len(calls))
+
+    def test_installed_revision_approval_is_single_use(self):
+        self.lifecycle("start")
+        self.env["YINZ_SMOKE_BLOCKED_VERSIONS"] = "2"
+        handoff = json.loads(self.lifecycle("drive", {"agent": {"session": "smoke", "kind": "claude"}}))
+        self.assertEqual(handoff["decision"], "authorize_plan_revision")
+        self.assertEqual(handoff["planVersion"], 1)
+        self.assertEqual(handoff["proposedPlanVersion"], 2)
+        self.assertIn("Cover the missing caller", handoff["presentation"])
+        calls = self.yinz_log.read_text()
+        self.assertEqual(json.loads(self.lifecycle("drive"))["id"], handoff["id"])
+        self.assertEqual(self.yinz_log.read_text(), calls)
+        approval = {"handoffId": handoff["id"], "request": "Revise this disposable plan once"}
+        revised = json.loads(self.lifecycle("drive", {"revisionApproval": approval}))
+        self.assertEqual(revised["decision"], "authorize_plan_revision")
+        self.assertEqual(revised["planVersion"], 2)
+        self.assertEqual(revised["proposedPlanVersion"], 3)
+        self.assertNotEqual(revised["id"], handoff["id"])
+        calls = self.yinz_log.read_text()
+        self.assertEqual(json.loads(self.lifecycle("drive"))["id"], revised["id"])
+        stale = json.loads(self.lifecycle("drive", {"revisionApproval": approval}))
+        self.assertEqual(stale["decision"], "blocked")
+        self.assertIn("stale", stale["reason"])
+        self.assertEqual(self.yinz_log.read_text(), calls)
+        proposal = json.loads(self.lifecycle("drive"))
+        reviewed = json.loads(self.lifecycle("drive", {"revisionApproval": {
+            "handoffId": proposal["id"], "request": "Revise once more to resolve the remaining finding",
+        }}))
+        self.assertEqual(reviewed["decision"], "approve_plan")
+        self.assertEqual(reviewed["planVersion"], 3)
+        self.assertNotIn("approval", self.state())
+        self.assertNotIn("implementation", self.state())
+        prompts = [json.loads(line) for line in self.yinz_log.read_text().splitlines()
+                   if json.loads(line)["args"][3] == "prompt"]
+        self.assertEqual(len(prompts), 7)
+        self.lifecycle("approve", {"planVersion": 3, "request": "Implement the reviewed fixture plan"})
+        self.assertEqual(json.loads(self.lifecycle("drive"))["decision"], "prepare_worktree")
 
     def test_installed_dispatch_agents_rebase_ci_merge_and_agenda_completion(self):
         self.command(["swamp", "workflow", "validate", "yinz-issue-start", "--json"])
@@ -234,8 +282,8 @@ print(json.dumps(response))
         self.assertEqual(state["phase"], "classified")
         self.assertEqual(state["classification"]["classification"], "maintenance")
         calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
-        self.assertEqual([call["args"][3] for call in calls], ["list-panes", "spawn", "wait", "prompt"])
-        self.assertIn("Return exactly one JSON object", calls[-1]["stdin"])
+        self.assertEqual([call["args"][3] for call in calls], ["list-panes", "spawn", "wait", "prompt", "list-panes", "close-completed"])
+        self.assertIn("Return exactly one JSON object", next(call["stdin"] for call in calls if call["args"][3] == "prompt"))
         records = json.loads(self.lifecycle("status"))["results"]
         task = next(record for record in records if "behaviorName" in record)
         restart = {"taskId": task["id"], "role": "triage", "session": "smoke",
@@ -245,7 +293,7 @@ print(json.dumps(response))
         self.lifecycle("restart-agent", restart)
         self.lifecycle("resume-rollback")
         calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
-        self.assertEqual([call["args"][3] for call in calls], ["list-panes", "spawn", "wait", "prompt"] * 2)
+        self.assertEqual([call["args"][3] for call in calls], ["list-panes", "spawn", "wait", "prompt", "list-panes", "close-completed"] * 2)
         self.lifecycle("plan", {
             "summary": "Add the disposable fixture's marker.",
             "steps": [{"id": "marker", "description": "Create marker.txt", "files": ["marker.txt"]}],
