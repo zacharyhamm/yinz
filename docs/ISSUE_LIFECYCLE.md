@@ -329,6 +329,13 @@ worktree; the `implement` agent role performs the coding. Workers receive their
 output schema in the prompt. Reviews must return actual evidence, and
 implementation must return the clean worktree's full committed HEAD.
 
+The assigned directory and prompt are not an enforced checkout execution boundary.
+Current location reports do not establish where individual tool commands ran.
+Issue 26's [execution-boundary proof](plans/issue-26-checkout-boundary-proof.md)
+records reproducible Linux counterexamples, the platform/provider coverage gaps,
+and the blocking requirements for an enforced policy. That experiment does not
+change launch behavior or qualify existing cwd-only results as execution proof.
+
 Codex, Muse and AGY require current, fully wired Yinz hooks before launch. The
 behavior checks `yinz hooks status --agent KIND` and reports missing or stale
 hooks; it does not install them automatically. It waits for guarded-prompt
