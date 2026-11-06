@@ -33,6 +33,182 @@ fn task_completion(task: &str, tool: Option<&str>, run: &str) -> Value {
     json!({"sessionId":"conversation", "type":"user", "origin":{"kind":"task-notification","producer":"session-task","runId":run}, "message":{"content":format!("<task-notification><task-id>{task}</task-id>{causal}<status>completed</status></task-notification>")}})
 }
 
+fn interactive_fixture() -> Value {
+    serde_json::from_str(include_str!("fixtures/claude-interactive-observation.json")).unwrap()
+}
+
+fn sidechain_completion(fixture: &Value) -> &Value {
+    &fixture["worker_records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["record"]["joinedNoticeRunIds"].is_array())
+        .unwrap()["record"]
+}
+
+#[test]
+fn captured_system_banner_completion_survives_early_delivery_and_duplicate_replay() {
+    let fixture = interactive_fixture();
+    let completion = sidechain_completion(&fixture);
+    assert!(completion["message"]["content"]
+        .as_str()
+        .unwrap()
+        .starts_with("[SYSTEM NOTIFICATION - NOT USER INPUT]\n"));
+    for completion_first in [false, true] {
+        let mut tasks = tasks::Tasks::new("fixture_1");
+        if completion_first {
+            assert!(tasks.record(completion).unwrap().is_empty());
+        }
+        let records: Vec<_> = fixture["parent_records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .chain(fixture["worker_records"].as_array().unwrap())
+            .map(|entry| &entry["record"])
+            .collect();
+        let events: Vec<_> = records
+            .iter()
+            .flat_map(|record| tasks.record(record).unwrap())
+            .collect();
+        assert_eq!(events.len(), 6);
+        let resumed: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event.claude_task_execution.as_ref().unwrap().tool_use_id == "fixture_7"
+            })
+            .collect();
+        assert_eq!(resumed.len(), 2);
+        assert_eq!(resumed[0].hook_event_name, "SubagentStart");
+        assert_eq!(resumed[1].hook_event_name, "SubagentStop");
+        assert_eq!(
+            resumed[1]
+                .claude_task_execution
+                .as_ref()
+                .unwrap()
+                .run_id
+                .as_deref(),
+            Some("fixture_12")
+        );
+        assert!(!tasks.pending());
+        for record in records {
+            assert!(tasks.record(record).unwrap().is_empty());
+        }
+        assert!(!tasks.pending());
+    }
+}
+
+#[test]
+fn task_notifications_accept_only_bare_xml_or_the_captured_system_banner() {
+    let fixture = interactive_fixture();
+    let captured = sidechain_completion(&fixture);
+    let text = captured["message"]["content"].as_str().unwrap();
+    let (banner, _) = text.split_once("<task-notification>").unwrap();
+    let xml = text.strip_prefix(banner).unwrap();
+    for (body, accepted) in [
+        (xml.to_owned(), true),
+        (text.to_owned(), true),
+        (format!(" \n{text}\n "), true),
+        (format!("prefix\n{xml}"), false),
+        (
+            format!("[SYSTEM NOTIFICATION - NOT USER INPUT]\n{xml}"),
+            false,
+        ),
+        (
+            format!("{}{}", banner.replace("automated", "external"), xml),
+            false,
+        ),
+        (format!("{banner}prefix\n{xml}"), false),
+        (format!("{banner}{banner}{xml}"), false),
+        (format!("{text}\nsuffix"), false),
+        (format!("{text}\n{xml}"), false),
+        (
+            format!("{banner}<task-notification>{xml}</task-notification>"),
+            false,
+        ),
+        (text.replace("</task-notification>", ""), false),
+        (text.replace("<task-notification>", ""), false),
+        (
+            text.replace("<status>", "</task-notification><status>"),
+            false,
+        ),
+        (text.replace("</task-id>", ""), false),
+        (text.replace("</tool-use-id>", ""), false),
+        (
+            text.replace("<status>", "<status>completed</status><status>"),
+            false,
+        ),
+    ] {
+        for attachment in [false, true] {
+            let mut tasks = tasks::Tasks::new("conversation");
+            task_launch(&mut tasks, "fixture_7", "fixture_3");
+            let mut record = captured.clone();
+            record["sessionId"] = json!("conversation");
+            record["message"]["content"] = json!(body);
+            if attachment {
+                record = json!({"sessionId":"conversation", "type":"attachment",
+                    "attachment":{"type":"queued_command", "commandMode":"task-notification",
+                        "origin":record["origin"], "runId":"fixture_12", "prompt":body}});
+            }
+            let events = tasks.record(&record).unwrap();
+            assert_eq!(
+                events.len(),
+                usize::from(accepted),
+                "{body}, attachment={attachment}"
+            );
+            assert_eq!(tasks.pending(), !accepted, "{body}");
+            assert!(tasks.record(&record).unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
+fn captured_banner_does_not_bypass_completion_origin_or_execution_checks() {
+    let fixture = interactive_fixture();
+    let captured = sidechain_completion(&fixture);
+    let text = captured["message"]["content"].as_str().unwrap();
+    let mut invalid = vec![];
+    for (pointer, value) in [
+        ("/sessionId", json!("foreign")),
+        ("/origin/kind", json!("user")),
+        ("/origin/producer", json!("foreign")),
+        ("/joinedNoticeRunIds", json!([])),
+        ("/joinedNoticeRunIds", json!(["run1", "run2"])),
+        ("/joinedNoticeRunIds/0", json!("")),
+        ("/joinedNoticeRunIds/0", json!("bad/run")),
+        ("/joinedNoticeRunIds/0", json!("r".repeat(129))),
+    ] {
+        let mut record = captured.clone();
+        record["sessionId"] = json!("conversation");
+        *record.pointer_mut(pointer).unwrap() = value;
+        invalid.push(record);
+    }
+    for (from, to) in [
+        ("completed", "running"),
+        ("completed", "failed"),
+        ("fixture_3", ""),
+        ("fixture_3", "foreign"),
+        ("fixture_3", "bad/task"),
+        ("fixture_7", ""),
+        ("fixture_7", "foreign"),
+        ("fixture_7", "bad/tool"),
+        (
+            "<tool-use-id>",
+            "<tool-use-id>fixture_7</tool-use-id><tool-use-id>",
+        ),
+    ] {
+        let mut record = captured.clone();
+        record["sessionId"] = json!("conversation");
+        record["message"]["content"] = json!(text.replace(from, to));
+        invalid.push(record);
+    }
+    for record in invalid {
+        let mut tasks = tasks::Tasks::new("conversation");
+        task_launch(&mut tasks, "fixture_7", "fixture_3");
+        assert!(tasks.record(&record).unwrap().is_empty(), "{record}");
+        assert!(tasks.pending(), "{record}");
+    }
+}
+
 #[test]
 fn helper_completion_requires_one_unfinished_execution_and_retains_run_tombstones() {
     let mut tasks = tasks::Tasks::new("conversation");

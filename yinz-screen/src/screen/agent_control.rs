@@ -389,7 +389,19 @@ impl Screen {
                         .as_deref()
                         .is_some_and(|id| !id.is_empty() && id.len() <= 128)
                     && hook.claude_task_execution.as_ref().map_or_else(
-                        || !complete,
+                        || {
+                            // A delayed raw Start cannot reopen completed observed work:
+                            // incremental observation and replay both deduplicate its Stop.
+                            // A real resume becomes active when its causal launch arrives.
+                            !complete
+                                && !l
+                                    .claude
+                                    .executions
+                                    .get(hook.agent_id.as_deref().unwrap_or_default())
+                                    .is_some_and(|runs| {
+                                        !runs.is_empty() && runs.values().all(Option::is_some)
+                                    })
+                        },
                         |execution| {
                             execution.valid(complete)
                                 && !l

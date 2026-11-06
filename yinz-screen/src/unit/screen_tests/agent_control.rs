@@ -10627,18 +10627,18 @@ fn claude_uncorrelated_known_worker_starts_are_replaced_by_observed_executions()
                 ..runs[2].clone()
             },
         );
-        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
-        report_kind(&mut screen, "claude", runs[1].clone());
-        // An already tombstoned completion is ignored. A newly observed old
-        // completion supersedes provisional activity under the accepted tradeoff.
         assert_eq!(
             screen.agent_status_for_test().agent.state,
             if completed_first {
-                AgentState::Busy
-            } else {
                 AgentState::Idle
+            } else {
+                AgentState::Busy
             }
         );
+        report_kind(&mut screen, "claude", runs[1].clone());
+        // A delayed raw Start cannot reopen observed completed work. A newly
+        // observed old completion also supersedes provisional activity.
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
         report_kind(&mut screen, "claude", runs[2].clone());
         assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
         report_kind(&mut screen, "claude", runs[3].clone());
@@ -10653,6 +10653,65 @@ fn claude_uncorrelated_known_worker_starts_are_replaced_by_observed_executions()
             .provisional_workers
             .contains(task));
     }
+}
+
+#[test]
+fn claude_delayed_raw_start_cannot_reopen_completed_work_during_observer_replay() {
+    let (mut screen, _, _) = setup("claude");
+    let runs = captured_claude_executions();
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    for event in &runs[..2] {
+        report_kind(&mut screen, "claude", event.clone());
+    }
+    for _ in 0..2 {
+        report_kind(
+            &mut screen,
+            "claude",
+            HookEvent {
+                claude_task_execution: None,
+                ..runs[0].clone()
+            },
+        );
+        // A running observer deduplicates records and need not emit another Stop.
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+        for event in &runs[..2] {
+            report_kind(&mut screen, "claude", event.clone());
+        }
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+        assert!(screen.agent_status_for_test().background_tasks.is_empty());
+    }
+    // Only the new execution's causal launch reactivates this known worker.
+    report_kind(&mut screen, "claude", runs[2].clone());
+    let task = runs[2].agent_id.as_deref().unwrap();
+    let mut input = claude_worker("PreToolUse", task);
+    input.tool_name = Some("AskUserQuestion".into());
+    input.tool_use_id = Some("resumed-question".into());
+    report_kind(&mut screen, "claude", input.clone());
+    for event in &runs[..2] {
+        report_kind(&mut screen, "claude", event.clone());
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
+        assert_eq!(screen.agent_status_for_test().background_tasks, [task]);
+    }
+    report_kind(&mut screen, "claude", runs[3].clone());
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            claude_task_execution: None,
+            ..runs[2].clone()
+        },
+    );
+    assert_eq!(
+        screen.agent_status_for_test().agent.state,
+        AgentState::Waiting
+    );
+    input.hook_event_name = "PostToolUse".into();
+    report_kind(&mut screen, "claude", input);
+    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+    assert!(screen.agent_status_for_test().background_tasks.is_empty());
 }
 
 #[test]

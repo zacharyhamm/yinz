@@ -82,6 +82,47 @@ no timeout or flake was waived. Malformed causal IDs are also explicitly rejecte
 rather than falling back to an unidentified helper completion.
 
 
+## Captured system banner and delayed raw Start repair, 2026-11-06
+
+The private interactive capture was reread without running a new provider session.
+Its sidechain record at source line 21 starts with the complete
+`[SYSTEM NOTIFICATION - NOT USER INPUT]` banner, including four explanatory lines
+and a blank line before the notification XML. The previous sanitizer rebuilt only
+the XML and dropped this envelope. That made the regression pass while production
+rejected the captured completion. The earlier claim below that retaining extracted
+identity fields fixed the projection was incomplete: it concealed the parser bug.
+
+The interactive fixture now preserves the banner verbatim with the same anonymized
+identifiers. The parser strips only this exact banner, or accepts bare XML. It
+still requires provider origin, conversation, run and task identities, completed
+status and a matching causal launch. Arbitrary prefixes, altered or repeated
+banners, suffix prose, malformed envelopes and multiple notifications are rejected.
+The restored fixture verifies all three observed executions complete, including
+the nested resume, with no pending execution and no extra events on replay.
+Completion-before-launch and both user and queued attachment forms are covered.
+
+The separate delayed-start sequence is correlated Start/Stop, then a delayed raw
+Start, followed by observer replay. Raw Starts have no execution identity; accepting
+one after all observed executions finished restored Busy, while the observer and
+screen correctly deduplicated the completed execution forever. Completed execution
+evidence now suppresses such raw Starts before report side effects. A newly
+observed causal launch still restores Busy, and exact input waits remain protected.
+This uses the accepted best-effort tradeoff: a real unobserved resume of a completed
+worker can stay hidden until its causal launch is observed. Unknown workers and
+workers with known unfinished executions retain their existing handling.
+
+Focused verification: `cargo x test -p yinz-process claude_turn` passed 45 tests;
+`cargo x test -p yinz-screen -E 'test(claude) | test(tracking_handoff)'` passed
+68 tests. `cargo x integration-test -E 'test(claude_steering)' -j 16` passed its
+one selected test using this worktree's freshly built binary. Formatting, lint
+and whitespace checks passed. The new delayed-start
+regression first reproduced Busy instead of Idle, then passed with the fix.
+The first process run hit sandbox socket restrictions in two existing AGY tests;
+the socket-enabled run passed all 45. This was an environment restriction, not
+a waived test flake. Fresh review and the rebased full CI gate remain required.
+The incident pane and draft remain untouched; no capture, installation or push
+was performed.
+
 ## Claude background completion, 2026-11-05
 
 Agenda workspace `yinz`, item 17, approved plan version 2 (separate from the
@@ -497,8 +538,9 @@ completion, resumed Waiting, independent draft readiness, ordinary unresolved
 Busy, and transfer regressions. Tests used socket access on their first run.
 The first combined selection exposed a fixture-projection bug: it discarded a
 notification prefixed by Claude's system-notification banner. Retaining the
-notification's allowlisted identity fields fixed the failure; it was not a
-flake. The final selection narrowed an overly broad name match that had also
+notification's allowlisted identity fields made that characterization pass, but
+incorrectly stripped its system banner and hid a runtime rejection. The repair
+above restores the captured envelope and tests production acceptance. The final selection narrowed an overly broad name match that had also
 run four unrelated screen tests. Formatting first found new Rust layout
 differences, corrected by `cargo x format`. Final `cargo x format --check`,
 `cargo x lint`, fixture privacy checks, and `git diff --check` passed.

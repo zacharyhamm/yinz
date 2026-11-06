@@ -10,7 +10,9 @@ journal, or public observer-health API is not required or implemented.
 Correlated launches and completions now supersede provisional raw worker activity.
 Once all observed executions finish, worker/background activity is removed. An
 unidentified newer execution can temporarily be hidden by delayed evidence; its
-subsequently observed launch restores Busy. Exact execution tombstones still stop
+subsequently observed launch restores Busy. Raw Starts arriving after all observed
+executions finish cannot reopen them, even when the observer has no new records
+to report or replays completed records. Exact execution tombstones still stop
 an older identified completion from finishing a known newer execution. Input waits
 continue to require the matching tool release, and draft readiness is independent.
 
@@ -24,7 +26,9 @@ ends observation. There is no timeout-based task completion.
 
 Launch results recognize `resumedAgentId` and `revivedAgentId`; successful active
 worker messages create no execution. Provider run identities deduplicate root and
-sidechain notifications, including a single `joinedNoticeRunIds` entry. Unmatched
+sidechain notifications, including a single `joinedNoticeRunIds` entry. Notification
+XML may be bare or preceded by the exact captured system banner; arbitrary
+surrounding prose and multiple notification blocks remain rejected. Unmatched
 completions are retained until their launch appears. A completion without a causal
 tool ID is associated only with exactly one unfinished observed execution for that
 worker. This is best-effort correlation, not a complete provider execution ledger.
@@ -140,7 +144,10 @@ was bounded by time, tools, worker turns and the task's two explicit launches,
 not a claimed dollar cap.
 
 The fixture retains only allowlisted identity/status fields with consistent
-aliases. `source_keys` records field presence without private values. Capture
+aliases. The sidechain record at source line 21 now retains the complete captured
+system banner verbatim. The previous sanitizer mistakenly removed that envelope
+while reconstructing the notification XML, hiding a production parse rejection.
+`source_keys` records field presence without private values. Capture
 sequence numbers, source lines and `reporter_exit`/`delivered` are experiment
 metadata, **not provider revisions or loss signals available to Yinz**. Raw
 transcripts, paths and private identifiers remain outside Git. Prior print-mode
