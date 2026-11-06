@@ -453,11 +453,11 @@ fn warp_tracking_legacy_raw_worker_resumption_survives_delayed_execution_reports
         .pending_agent_tracking
         .insert(PANE, (Some(handoff.agent), Some(decoded)));
     assert!(destination.restore_staged_transfer_state(PANE));
-    assert_claude_raw_resumption_survives_delayed_completion(&mut destination, &messages);
+    assert_claude_raw_resumption_reconciles_delayed_completion(&mut destination, &messages);
 }
 
 #[test]
-fn warp_tracking_keeps_worker_tool_releases_and_provisional_resumptions() {
+fn warp_tracking_keeps_worker_tool_releases_and_reconciles_provisional_resumptions() {
     let (mut source, _, _) = setup_tracking("claude");
     report_kind(&mut source, "claude", hook("SessionStart"));
     let runs = captured_claude_executions();
@@ -511,8 +511,8 @@ fn warp_tracking_keeps_worker_tool_releases_and_provisional_resumptions() {
     let mut again = transfer(&mut destination, "claude");
     report_kind(&mut again, "claude", runs[2].clone());
     report_kind(&mut again, "claude", runs[3].clone());
-    assert_eq!(again.agent_status_for_test().agent.state, AgentState::Busy);
-    assert!(again
+    assert_eq!(again.agent_status_for_test().agent.state, AgentState::Idle);
+    assert!(!again
         .capture_agent_tracking(PANE)
         .unwrap()
         .lifecycle

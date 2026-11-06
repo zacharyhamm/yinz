@@ -445,6 +445,9 @@ impl Screen {
         if let Some(id) = hook.agent_id.as_ref().filter(|id| !id.is_empty())
             && let Some(execution) = &hook.claude_task_execution
         {
+            // Observed execution evidence supersedes ambiguous raw activity. Delayed
+            // evidence can briefly hide an unobserved resume; its launch restores Busy.
+            lifecycle.claude.provisional_workers.remove(id);
             let runs = lifecycle.claude.executions.entry(id.clone()).or_default();
             match hook.hook_event_name.as_str() {
                 "SubagentStart" => {
@@ -455,9 +458,7 @@ impl Screen {
                 },
                 "SubagentStop" => {
                     runs.insert(execution.tool_use_id.clone(), execution.run_id.clone());
-                    if runs.values().all(Option::is_some)
-                        && !lifecycle.claude.provisional_workers.contains(id)
-                    {
+                    if runs.values().all(Option::is_some) {
                         lifecycle.claude.workers.remove(id);
                         lifecycle.claude.stopped_workers.insert(id.clone());
                         lifecycle.background_tasks.remove(id);
@@ -468,7 +469,7 @@ impl Screen {
         } else if hook.hook_event_name == "SubagentStart"
             && let Some(id) = &hook.agent_id
         {
-            // Legacy and nested launches without causal evidence stay conservative.
+            // Launches without causal evidence stay Busy until execution evidence arrives.
             // Their raw Stop cannot prove completion or clear a later input wait.
             // A repeated raw Start can be a resumption even before the observer
             // records the first execution, including workers restored from older handoffs.

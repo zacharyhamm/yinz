@@ -14,6 +14,7 @@ use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::HookEvent;
 
+mod task_observer;
 mod tasks;
 
 pub const OBSERVER_FLAG: &str = "--claude-turn-observer";
@@ -62,6 +63,8 @@ struct Observation {
     conversation_file: Option<PathBuf>,
     #[serde(default)]
     claude_status: Option<ClaudeStatusObservation>,
+    #[serde(default)]
+    task_observer: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -124,10 +127,13 @@ impl ClaudeStatusObservation {
 /// Each installed reporter may start one; the screen deduplicates by prompt identity.
 pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
     if !matches!(kind, "claude" | "agy")
-        || hook.is_worker()
+        || (hook.is_worker()
+            && !(kind == "claude"
+                && hook.hook_event_name == "SubagentStart"
+                && hook.claude_task_execution.is_none()))
         || !matches!(
             hook.hook_event_name.as_str(),
-            "UserPromptSubmit" | "SessionStart" | "SessionEnd"
+            "UserPromptSubmit" | "SessionStart" | "SessionEnd" | "SubagentStart"
         )
     {
         return Ok(());
@@ -142,12 +148,8 @@ pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
         if let Some(path) = &conversation_file {
             update_conversation_marker(path, kind, hook)?;
         }
-        if hook.hook_event_name != "UserPromptSubmit"
-            || hook.prompt_id.as_deref().is_none_or(str::is_empty)
-        {
-            return Ok(());
-        }
         let observation = Observation {
+            task_observer: false,
             kind: kind.to_owned(),
             hook: hook.clone(),
             route: route.clone(),
@@ -157,30 +159,31 @@ pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
                 .filter(|_| kind == "claude")
                 .and_then(|(pid, _)| ClaudeStatusObservation::new(pid)),
         };
-        let mut command = Command::new(observer_executable()?);
-        command
-            .arg(OBSERVER_FLAG)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        // SAFETY: setsid and descriptor closure use only async-signal-safe operations.
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                close_fds::close_open_fds(3, &[]);
-                Ok(())
-            });
+        if kind == "claude"
+            && matches!(
+                hook.hook_event_name.as_str(),
+                "UserPromptSubmit" | "SubagentStart"
+            )
+        {
+            // Task observation is independent of prompt identity and parent completion.
+            let mut task = Observation {
+                task_observer: true,
+                ..observation
+            };
+            spawn_observer(&task)
+                .context("start Claude task observation")
+                .non_fatal();
+            task.task_observer = false;
+            if hook.hook_event_name == "UserPromptSubmit"
+                && hook.prompt_id.as_deref().is_some_and(|id| !id.is_empty())
+            {
+                spawn_observer(&task)?;
+            }
+        } else if hook.hook_event_name == "UserPromptSubmit"
+            && hook.prompt_id.as_deref().is_some_and(|id| !id.is_empty())
+        {
+            spawn_observer(&observation)?;
         }
-        let mut child = command
-            .spawn()
-            .with_context(|| format!("start {kind} turn observer"))?;
-        serde_json::to_writer(
-            child.stdin.take().context("open observer input")?,
-            &observation,
-        )
-        .with_context(|| format!("write {kind} turn observation"))?;
         Ok(())
     })();
     if result.is_err()
@@ -199,6 +202,35 @@ pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
         return send(&route, kind, &unavailable);
     }
     result
+}
+
+fn spawn_observer(observation: &Observation) -> Result<()> {
+    let kind = &observation.kind;
+    let mut command = Command::new(observer_executable()?);
+    command
+        .arg(OBSERVER_FLAG)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: setsid and descriptor closure use only async-signal-safe operations.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            close_fds::close_open_fds(3, &[]);
+            Ok(())
+        });
+    }
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("start {kind} turn observer"))?;
+    serde_json::to_writer(
+        child.stdin.take().context("open observer input")?,
+        observation,
+    )
+    .with_context(|| format!("write {kind} turn observation"))?;
+    Ok(())
 }
 
 fn agent_ancestor(kind: &str) -> Option<(u32, u64)> {
@@ -247,6 +279,9 @@ fn agent_ancestor(kind: &str) -> Option<(u32, u64)> {
 pub fn run() -> Result<()> {
     let mut observation: Observation =
         serde_json::from_reader(std::io::stdin()).context("read turn observation")?;
+    if observation.task_observer {
+        return task_observer::run(&observation);
+    }
     let completed = follow(&observation);
     if completed.as_ref().is_ok_and(|turn| turn.reported) {
         return Ok(());
@@ -316,8 +351,20 @@ fn update_conversation_marker(path: &Path, kind: &str, hook: &HookEvent) -> Resu
             marker
                 .write_all(conversation_marker(kind, hook).as_bytes())
                 .with_context(|| format!("write {kind} conversation marker"))?;
-            std::fs::rename(&temporary, path)
-                .with_context(|| format!("replace {kind} conversation marker"))
+            if hook.is_worker() {
+                // A worker can restart observation after a missed parent hook, but a
+                // delayed worker must never replace a newer conversation marker.
+                let installed = std::fs::hard_link(&temporary, path);
+                std::fs::remove_file(&temporary).context("remove worker conversation temporary")?;
+                match installed {
+                    Ok(()) => Ok(()),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+                    Err(error) => Err(error).context("initialize worker conversation marker"),
+                }
+            } else {
+                std::fs::rename(&temporary, path)
+                    .with_context(|| format!("replace {kind} conversation marker"))
+            }
         })();
         if result.is_err() {
             std::fs::remove_file(&temporary)
@@ -414,8 +461,6 @@ fn follow_with_api_reporting(
     }
     let mut reader = BufReader::new(file);
     let mut turn = Turn::new(kind, &observation.hook);
-    let mut tasks = tasks::Tasks::new(&observation.hook.session_id);
-    let mut watched_tasks = HashSet::new();
     let mut completed = false;
     if kind == "agy"
         && (turn.session.is_empty()
@@ -461,18 +506,6 @@ fn follow_with_api_reporting(
             let record: Value = serde_json::from_slice(&line)
                 .with_context(|| format!("parse {kind} transcript record"))?;
             line.clear();
-            if kind == "claude" {
-                for event in tasks.record(&record)? {
-                    if turn.found
-                        && !completed
-                        && event.hook_event_name == "SubagentStart"
-                        && let Some(execution) = &event.claude_task_execution
-                    {
-                        watched_tasks.insert(execution.tool_use_id.clone());
-                    }
-                    report(&event)?;
-                }
-            }
             if !completed && turn.record(&record)? {
                 completed = true;
                 if kind != "claude" {
@@ -481,7 +514,7 @@ fn follow_with_api_reporting(
                 confirm(observation, &mut turn, &mut report)?;
             }
         }
-        if completed && !tasks.pending_for(&watched_tasks) {
+        if completed {
             return Ok(turn);
         }
         if let Some(api) = &api
@@ -517,11 +550,8 @@ fn follow_with_api_reporting(
                 && current.dev() == metadata.dev()
                 && current.len() == offset
             {
-                completed = true;
                 confirm(observation, &mut turn, &mut report)?;
-                if !tasks.pending_for(&watched_tasks) {
-                    return Ok(turn);
-                }
+                return Ok(turn);
             }
         }
         // Regular files cannot wake a condition variable; poll only while this exact process lives.
@@ -701,7 +731,7 @@ impl Turn {
 
 /// The task a tool result left running: a Bash `run_in_background` command reports
 /// `backgroundTaskId`, and an async subagent launch reports `async_launched` with its `agentId`.
-/// A successful SendMessage resumption reports `resumedAgentId`.
+/// A successful SendMessage resumption reports `resumedAgentId` or `revivedAgentId`.
 /// Claude names the same ID in the `<task-id>` of the notification that ends it.
 fn background_task(result: &Value) -> Option<&str> {
     if let Some(task) = result["backgroundTaskId"].as_str() {
@@ -710,6 +740,7 @@ fn background_task(result: &Value) -> Option<&str> {
     if result["success"] == true
         && let Some(task) = result["resumedAgentId"]
             .as_str()
+            .or_else(|| result["revivedAgentId"].as_str())
             .filter(|task| !task.is_empty())
     {
         return Some(task);

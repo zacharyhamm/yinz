@@ -65,7 +65,7 @@ pub struct ClaudeActivity {
     pub workers: BTreeSet<String>,
     pub stopped_workers: BTreeSet<String>,
     /// Raw starts for known workers cannot distinguish a duplicate from an unobserved
-    /// resumption. Only explicit recovery or conversation replacement clears this evidence.
+    /// resumption. Correlated execution evidence supersedes this provisional activity.
     #[serde(default)]
     pub provisional_workers: BTreeSet<String>,
     /// Tool identity of each worker's visible input wait. Missing identity never permits

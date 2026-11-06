@@ -21,6 +21,203 @@ fn task_fixture() -> Value {
     serde_json::from_str(include_str!("fixtures/claude-task-executions.json")).unwrap()
 }
 
+fn task_launch(tasks: &mut tasks::Tasks, tool: &str, task: &str) -> Vec<HookEvent> {
+    tasks.record(&json!({"sessionId":"conversation", "type":"assistant", "message":{"content":[{"type":"tool_use", "id":tool,"name":"Agent"}]}})).unwrap();
+    tasks.record(&json!({"sessionId":"conversation", "type":"user", "message":{"content":[{"type":"tool_result","tool_use_id":tool}]},"toolUseResult":{"isAsync":true,"status":"async_launched","agentId":task}})).unwrap()
+}
+
+fn task_completion(task: &str, tool: Option<&str>, run: &str) -> Value {
+    let causal = tool
+        .map(|tool| format!("<tool-use-id>{tool}</tool-use-id>"))
+        .unwrap_or_default();
+    json!({"sessionId":"conversation", "type":"user", "origin":{"kind":"task-notification","producer":"session-task","runId":run}, "message":{"content":format!("<task-notification><task-id>{task}</task-id>{causal}<status>completed</status></task-notification>")}})
+}
+
+#[test]
+fn helper_completion_requires_one_unfinished_execution_and_retains_run_tombstones() {
+    let mut tasks = tasks::Tasks::new("conversation");
+    let completion = task_completion("helper", None, "run-1");
+    assert!(tasks.record(&completion).unwrap().is_empty());
+    let events = task_launch(&mut tasks, "launch-1", "helper");
+    assert_eq!(events.len(), 2);
+    assert!(!tasks.pending());
+    task_launch(&mut tasks, "launch-2", "helper");
+    assert!(tasks.record(&completion).unwrap().is_empty());
+    assert!(tasks.pending());
+    task_launch(&mut tasks, "launch-3", "helper");
+    // Two unfinished executions are ambiguous; retain the notice until later evidence.
+    assert!(tasks
+        .record(&task_completion("helper", None, "run-3"))
+        .unwrap()
+        .is_empty());
+    assert!(tasks.pending());
+    let events = tasks
+        .record(&task_completion("helper", Some("launch-2"), "run-2"))
+        .unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(!tasks.pending());
+    assert!(tasks.record(&completion).unwrap().is_empty());
+}
+
+#[test]
+fn successful_active_worker_messages_do_not_create_executions() {
+    let mut tasks = tasks::Tasks::new("conversation");
+    tasks.record(&json!({"sessionId":"conversation", "isSidechain":true, "type":"assistant", "message":{"content":[{"type":"tool_use", "id":"message", "name":"SendMessage"}]}})).unwrap();
+    assert!(tasks.record(&json!({"sessionId":"conversation", "isSidechain":true, "type":"user", "message":{"content":[{"type":"tool_result", "tool_use_id":"message"}]}, "toolUseResult":{"success":true}})).unwrap().is_empty());
+    assert!(!tasks.pending());
+}
+
+#[test]
+fn malformed_causal_completion_cannot_fall_back_to_a_newer_execution() {
+    let mut tasks = tasks::Tasks::new("conversation");
+    task_launch(&mut tasks, "newer", "worker");
+    for tool in [
+        "<tool-use-id>older",
+        "<tool-use-id>older</tool-use-id><tool-use-id>other</tool-use-id>",
+    ] {
+        let mut completion = task_completion("worker", None, "old-run");
+        completion["message"]["content"] = json!(format!("<task-notification><task-id>worker</task-id>{tool}<status>completed</status></task-notification>"));
+        assert!(tasks.record(&completion).unwrap().is_empty());
+        assert!(tasks.pending());
+    }
+}
+
+#[test]
+fn task_observer_lock_scopes_process_conversation_and_route_and_releases_on_exit() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut observation = observation(&dir.path().join("root.jsonl"), None);
+    let held = task_observer::lock(&observation, dir.path())
+        .unwrap()
+        .unwrap();
+    assert!(task_observer::lock(&observation, dir.path())
+        .unwrap()
+        .is_none());
+    observation.hook.prompt_id = Some("another-prompt".into());
+    assert!(task_observer::lock(&observation, dir.path())
+        .unwrap()
+        .is_none());
+    for changed in ["process", "conversation", "route"] {
+        let mut other: Observation =
+            serde_json::from_value(serde_json::to_value(&observation).unwrap()).unwrap();
+        match changed {
+            "process" => other.process.as_mut().unwrap().1 += 1,
+            "conversation" => other.hook.session_id = "replacement".into(),
+            _ => {
+                other.route = Route::Local {
+                    session: "different".into(),
+                    pane: "7".into(),
+                }
+            },
+        }
+        assert!(task_observer::lock(&other, dir.path()).unwrap().is_some());
+    }
+    drop(held);
+    assert!(task_observer::lock(&observation, dir.path())
+        .unwrap()
+        .is_some());
+}
+
+#[test]
+fn worker_trigger_initializes_a_missing_marker_but_cannot_replace_a_new_conversation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("conversation");
+    let worker = HookEvent {
+        hook_event_name: "SubagentStart".into(),
+        agent_id: Some("worker".into()),
+        ..hook()
+    };
+    update_conversation_marker(&path, "claude", &worker).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "conversation");
+    update_conversation_marker(
+        &path,
+        "claude",
+        &HookEvent {
+            session_id: "replacement".into(),
+            hook_event_name: "SessionStart".into(),
+            ..hook()
+        },
+    )
+    .unwrap();
+    update_conversation_marker(&path, "claude", &worker).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "replacement");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn task_observer_follows_new_sidechains_after_parent_idle_and_replays_after_report_failure() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/claude-interactive-observation.json")).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("root.jsonl");
+    let marker = dir.path().join("conversation");
+    let session = fixture["parent_records"][0]["record"]["sessionId"]
+        .as_str()
+        .unwrap();
+    std::fs::write(&marker, session).unwrap();
+    let mut observation = observation(&path, Some(marker.clone()));
+    observation.hook.session_id = session.into();
+    let records = fixture["parent_records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["record"].to_string() + "\n")
+        .collect::<String>();
+    std::fs::write(&path, records).unwrap();
+    // Parent completion cannot end the task observer, including with no current work.
+    let mut root = OpenOptions::new().append(true).open(&path).unwrap();
+    writeln!(
+        root,
+        "{}",
+        json!({"type":"system","sessionId":session,"subtype":"turn_duration"})
+    )
+    .unwrap();
+    let mut first = vec![];
+    let failure = task_observer::follow(&observation, |event| {
+        first.push(event.clone());
+        let sidechains = path.with_extension("").join("subagents");
+        std::fs::create_dir_all(&sidechains).unwrap();
+        let records = fixture["worker_records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["record"].to_string() + "\n")
+            .collect::<String>();
+        std::fs::write(sidechains.join("agent-helper.jsonl"), records).unwrap();
+        if first.len() == 6 {
+            return Err(anyhow!("injected report failure"));
+        }
+        Ok(())
+    });
+    assert!(failure
+        .unwrap_err()
+        .to_string()
+        .contains("injected report failure"));
+    assert_eq!(
+        first
+            .iter()
+            .filter(|event| event.hook_event_name == "SubagentStop")
+            .count(),
+        3
+    );
+    let mut replayed = vec![];
+    task_observer::follow(&observation, |event| {
+        replayed.push(event.clone());
+        if replayed.len() == 6 {
+            std::fs::write(&marker, "replacement").unwrap();
+        }
+        Ok(())
+    })
+    .unwrap();
+    // File discovery order changes on restart; provider identities stay the same.
+    let key = |event: &HookEvent| {
+        let execution = event.claude_task_execution.as_ref().unwrap();
+        (execution.tool_use_id.clone(), execution.run_id.clone())
+    };
+    first.sort_by_key(key);
+    replayed.sort_by_key(key);
+    assert_eq!(first, replayed);
+}
+
 fn tool_hook_fixture() -> Value {
     serde_json::from_str(include_str!("fixtures/claude-tool-hook-ledger.json")).unwrap()
 }
@@ -184,7 +381,7 @@ fn captured_nested_launch_response_is_lost_by_current_broadcast_pruning() {
 }
 
 #[test]
-fn captured_haiku_nested_resumption_is_missing_from_parent_launch_observation() {
+fn older_sanitized_capture_without_resumption_fields_does_not_invent_a_launch() {
     let fixture: Value =
         serde_json::from_str(include_str!("fixtures/claude-resumption-observation.json")).unwrap();
     for (case, data) in fixture["cases"].as_object().unwrap() {
@@ -240,12 +437,176 @@ fn captured_haiku_nested_resumption_is_missing_from_parent_launch_observation() 
                             text.contains(&format!("<tool-use-id>{tool}</tool-use-id>"))
                         })
                 }));
-            // Merely feeding sidechain records to the current adapter does not make
-            // the observation complete. Supporting them needs a validated adapter.
+            // This earlier projection retained only success=true in the nested
+            // result. The newer interactive fixture carries revivedAgentId.
             for entry in data["worker_records"].as_array().unwrap() {
                 assert!(tasks.record(&entry["record"]).unwrap().is_empty());
             }
+            assert!(!tasks.pending());
+            assert_eq!(observed.len() + 2, runs.len());
         }
+    }
+}
+
+#[test]
+fn captured_interactive_reporter_loss_does_not_block_nested_resumption() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/claude-interactive-observation.json")).unwrap();
+    assert_eq!(fixture["provenance"]["mode"], "interactive");
+    assert_eq!(fixture["provenance"]["result"]["exit_code"], 0);
+    assert_eq!(fixture["provenance"]["result"]["timeout"], false);
+    let hooks = fixture["hooks"].as_array().unwrap();
+    let lost: Vec<_> = hooks
+        .iter()
+        .filter(|entry| entry["delivered"] == false)
+        .collect();
+    assert_eq!(lost.len(), 2);
+    let pre = &lost[0]["payload"];
+    let post = &lost[1]["payload"];
+    assert_eq!(pre["hook_event_name"], "PreToolUse");
+    assert_eq!(post["hook_event_name"], "PostToolUse");
+    assert_eq!(pre["tool_name"], "SendMessage");
+    assert_eq!(pre["tool_use_id"], post["tool_use_id"]);
+    assert_eq!(pre["agent_id"], post["agent_id"]);
+    assert!(pre["agent_id"].is_string());
+    assert_eq!(post["tool_response"]["success"], true);
+    assert!(post["tool_response"].get("resumedAgentId").is_none());
+    let task = post["tool_response"]["revivedAgentId"].as_str().unwrap();
+    let tool = post["tool_use_id"].as_str().unwrap();
+    for event in ["SubagentStart", "SubagentStop"] {
+        assert_eq!(
+            hooks
+                .iter()
+                .filter(|entry| {
+                    entry["payload"]["hook_event_name"] == event
+                        && entry["payload"]["agent_id"] == task
+                })
+                .count(),
+            2
+        );
+    }
+    let worker_records = fixture["worker_records"].as_array().unwrap();
+    for event in ["PreToolUse", "PostToolUse"] {
+        assert!(worker_records.iter().any(|entry| {
+            let attachment = &entry["record"]["attachment"];
+            attachment["type"] == "hook_non_blocking_error"
+                && attachment["hookEvent"] == event
+                && attachment["toolUseID"] == tool
+                && attachment["exitCode"] == 1
+        }));
+    }
+    // Interactive completion was routed to the helper, with its run identity
+    // alongside the joined notice. The root did not receive this as a user turn.
+    assert!(worker_records.iter().any(|entry| {
+        let record = &entry["record"];
+        record["isSidechain"] == true
+            && record["agentId"] == pre["agent_id"]
+            && record["origin"]["kind"] == "task-notification"
+            && record["joinedNoticeRunIds"][0].is_string()
+            && record["message"]["content"].as_str().is_some_and(|text| {
+                text.contains(&format!("<task-id>{task}</task-id>"))
+                    && text.contains(&format!("<tool-use-id>{tool}</tool-use-id>"))
+                    && text.contains("<status>completed</status>")
+            })
+    }));
+    let mut tasks = tasks::Tasks::new(pre["session_id"].as_str().unwrap());
+    let mut observed = vec![];
+    for entry in fixture["parent_records"].as_array().unwrap() {
+        observed.extend(tasks.record(&entry["record"]).unwrap());
+    }
+    assert!(observed
+        .iter()
+        .all(|event| { event.claude_task_execution.as_ref().unwrap().tool_use_id != tool }));
+    for entry in worker_records {
+        observed.extend(tasks.record(&entry["record"]).unwrap());
+    }
+    assert!(!tasks.pending());
+    assert!(observed.iter().any(
+        |event| event.claude_task_execution.as_ref().unwrap().tool_use_id == tool
+            && event.hook_event_name == "SubagentStop"
+    ));
+    for entry in fixture["parent_records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(worker_records)
+    {
+        assert!(tasks.record(&entry["record"]).unwrap().is_empty());
+    }
+    assert_eq!(fixture["registry"][0]["record"]["status"], "idle");
+    // Neither registry Idle nor successful reconstruction of a finite capture
+    // provides a provider revision/snapshot boundary for live observation.
+}
+
+#[test]
+fn captured_transcript_replay_recovers_completion_before_launch() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/claude-resumption-observation.json")).unwrap();
+    let case = &fixture["cases"]["same-prompt"];
+    let records: Vec<_> = case["parent_records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| &entry["record"])
+        .collect();
+    let session = case["runs"][0]["record"]["session_id"].as_str().unwrap();
+    let resume = records
+        .iter()
+        .find(|record| record["toolUseResult"]["resumedAgentId"].is_string())
+        .unwrap();
+    let tool = resume["message"]["content"][0]["tool_use_id"]
+        .as_str()
+        .unwrap();
+
+    // Synthetic loss/delay of the captured resume result. A completed first run
+    // plus an unmatched second completion leaves no pending execution, even
+    // though the observer never reconstructed the second launch. This is a
+    // best-effort source; replay can only recover the executions it observes.
+    let mut tasks = tasks::Tasks::new(session);
+    let mut partial = vec![];
+    for record in &records {
+        if record != resume {
+            partial.extend(tasks.record(record).unwrap());
+        }
+    }
+    assert_eq!(partial.len(), 2);
+    assert!(!tasks.pending());
+    assert!(partial
+        .iter()
+        .all(|event| { event.claude_task_execution.as_ref().unwrap().tool_use_id != tool }));
+
+    // Late persistence joins the retained completion to its launch.
+    let late = tasks.record(resume).unwrap();
+    assert_eq!(late.len(), 2);
+    assert!(late[0]
+        .claude_task_execution
+        .as_ref()
+        .unwrap()
+        .run_id
+        .is_none());
+    assert!(late[1]
+        .claude_task_execution
+        .as_ref()
+        .unwrap()
+        .run_id
+        .is_some());
+    assert!(!tasks.pending());
+
+    // An independent replay can reconstruct both executions from this finite,
+    // known-complete fixture. EOF itself does not prove that a live file is complete.
+    let mut replay = tasks::Tasks::new(session);
+    let mut recovered = vec![];
+    for record in &records {
+        recovered.extend(replay.record(record).unwrap());
+    }
+    assert_eq!(recovered.len(), 4);
+    assert!(!replay.pending());
+    assert!(recovered.iter().any(|event| {
+        let execution = event.claude_task_execution.as_ref().unwrap();
+        execution.tool_use_id == tool && execution.run_id.is_some()
+    }));
+    for record in &records {
+        assert!(replay.record(record).unwrap().is_empty());
     }
 }
 
@@ -376,7 +737,6 @@ fn task_completions_require_provider_origin_identity_and_matching_launch() {
         .unwrap();
     for change in [
         json!({"sessionId":"foreign"}),
-        json!({"isSidechain":true}),
         json!({"attachment":{"type":"queued_command","commandMode":"task-notification"}}),
     ] {
         let mut tasks = tasks::Tasks::new("ID_0350");
@@ -421,7 +781,7 @@ fn task_completions_require_provider_origin_identity_and_matching_launch() {
 }
 
 #[test]
-fn task_observer_continues_after_parent_confirmation_until_background_completion() {
+fn parent_observer_finishes_independently_of_background_completion() {
     use std::io::Write;
     let fixture = task_fixture();
     let records = fixture["cases"]["same-prompt"]["parent_records"]
@@ -457,7 +817,7 @@ fn task_observer_continues_after_parent_confirmation_until_background_completion
             .iter()
             .map(|e| e.hook_event_name.as_str())
             .collect::<Vec<_>>(),
-        ["SubagentStart", "Stop", "SubagentStop"]
+        ["Stop"]
     );
 }
 
@@ -489,9 +849,8 @@ fn old_uncorrelated_tasks_do_not_keep_later_prompt_observers_alive() {
         Ok(())
     })
     .unwrap();
-    assert_eq!(events.len(), 2);
-    assert_eq!(events[0].hook_event_name, "SubagentStart");
-    assert_eq!(events[1].claude_turn_complete, Some(true));
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].claude_turn_complete, Some(true));
 }
 
 #[test]
@@ -555,7 +914,6 @@ fn interruption_record() -> Value {
 #[test]
 fn interruption_requires_metadata_exact_text_and_an_existing_parent_in_the_turn() {
     for change in [
-        json!({"isSidechain":true}),
         json!({"type":"assistant"}),
         json!({"parentUuid":"unrelated"}),
         json!({"parentUuid":null}),
@@ -696,6 +1054,7 @@ fn missing_transcripts_and_exited_processes_are_unavailable() {
         process: Some((std::process::id(), started)),
         conversation_file: None,
         claude_status: None,
+        task_observer: false,
     };
     assert!(follow(&observation).is_err());
     let dir = tempfile::tempdir().unwrap();
@@ -755,6 +1114,7 @@ fn observation(path: &std::path::Path, marker: Option<PathBuf>) -> Observation {
         )),
         conversation_file: marker,
         claude_status: None,
+        task_observer: false,
     }
 }
 

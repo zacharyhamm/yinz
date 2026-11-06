@@ -28,6 +28,60 @@ Each one found its session from the environment, then ran spawn, wait, prompt,
 | 35 | P2 | **Not reproduced; watch for it.** A worker spawned into `.worktrees/fix-sub` once edited the main checkout's file by absolute path, and `prompt --wait` reported success. Later runs stayed inside their own worktrees. |
 | 37 | P2 | **Not reproduced; watch for it.** Haiku once called a 55 KB paste ending in an instruction a "prompt injection" and ignored it, despite `PASTE_LEAD_IN`. A later 56 KB sample worked. |
 
+## Revised Claude activity acceptance, 2026-11-06
+
+The user's accepted plan supersedes the completeness prerequisites and blocking
+recommendations in the historical sections below. Preserve Claude's availability
+and tolerate occasional stale status when reports are missing or delayed. The
+actual fix replaces permanent provisional-worker activity with observed execution
+reconciliation and separates task observation from parent-turn completion.
+
+The observer now follows root and sidechain transcripts for the provider process,
+conversation and reporting route, deduplicated by a host-local lock. It recognizes
+root and nested resumes, sidechain joined notifications, and helper completion
+without a causal tool ID when exactly one unfinished observed execution matches.
+Unmatched completions and provider execution tombstones survive incremental replay;
+a restarted observer replays files through the same idempotent screen reports.
+No timeout clears activity and no reporting failure blocks Claude.
+
+Known unfinished executions and exact tool waits remain protected. An unidentified
+resume can be temporarily hidden by delayed evidence; its observed launch restores
+Busy. This explicitly accepted limitation replaces the permanent Busy assertions
+in the old raw-hook ambiguity tests. The ordinary raw-plus-correlated resumption
+regression now requires Idle. The incident pane and draft remain untouched.
+
+See [the updated observation contract](CLAUDE_OBSERVATION_CONTRACT.md). The captures
+are preserved; no new live-provider experiment or installation was needed.
+
+
+Focused verification of the runtime fix (worktree-local build):
+
+- `cargo x test -p yinz-process claude_turn`: 42 passed, covering ordinary/nested
+  resumption, sidechain completion, bare helper completion, completion-before-launch,
+  active-worker messaging, duplicate replay, observer restart/lock scope and markers.
+- `cargo x test -p yinz-screen -E 'test(claude) | test(tracking_handoff)'`:
+  67 passed, including execution tombstones, exact waits, provisional reconciliation,
+  transfer compatibility and draft/readiness independence.
+- `cargo x test -p yinz-types -E 'test(agent::hooks::tests)'`: 37 passed.
+- Selected process broker report and oversized-hook tests: 2 passed.
+- Selected root Claude observer subprocess and reporter-failure tests: 3 passed.
+- `cargo x integration-test -E 'test(claude_steering)' -j 16`: 1 passed with socket
+  access. The worktree's own Yinz binary was built before integration.
+- Formatting and lint passed; fresh review and the rebased full CI merge gate
+  remain separate required steps.
+
+Initial development failures were diagnosed: the new replay test incorrectly
+required cross-file event order to stay identical on restart; it now compares
+provider execution identities. The raw-activity test incorrectly expected an Idle
+wait to bypass `unconsumed_input`; it now verifies independent readiness. The
+older sanitized nested capture omitted the resumption field; it correctly remains
+insufficient to invent that launch, while the fresh interactive fixture proves
+nested recovery. An initial SHA-256 formatting compile error was corrected for
+the workspace's digest API. These were fixed before the passing checks above;
+no timeout or flake was waived. Malformed causal IDs are also explicitly rejected
+rather than falling back to an unidentified helper completion.
+
+
 ## Claude background completion, 2026-11-05
 
 Agenda workspace `yinz`, item 17, approved plan version 2 (separate from the
@@ -405,6 +459,55 @@ Rust layout differences; `cargo x format` corrected them. `cargo x lint`, the
 final `cargo x format --check`, fixture privacy checks, and `git diff --check`
 passed. No runtime transition changed, no full CI gate ran, and no lifecycle,
 Agenda, merge, rebase, push, install, or incident-pane operation was performed.
+
+### Passive interactive observation gate, 2026-11-06
+
+**BLOCKED: the non-blocking replacement plan fails its provider prerequisite.**
+The versioned [passive observation contract](CLAUDE_OBSERVATION_CONTRACT.md)
+records the inspected interfaces, exact missing provider capability, sanitized
+interactive evidence, and unvalidated acceptance cases. It supersedes the
+managed launch barrier above as the direction for issue 17: Claude must continue
+when reporting fails; `onFailure: "block"` is not an authorized fallback.
+
+On the installed Claude 2.1.318 binary, no inspected supported interactive
+interface establishes a complete execution snapshot with revisioned replay
+across root/nested work, attachment, observer loss and provider restart. Session
+status, hooks and transcript records cannot independently certify completeness.
+Dependent runtime changes therefore stopped, as required by the supplied plan.
+
+A fresh bounded, visible interactive Haiku capture lost both nested SendMessage
+PreToolUse and PostToolUse reports through controlled reporter exit errors. The
+worker still resumed and completed. Its completion was delivered to the helper's
+sidechain, with `joinedNoticeRunIds`; the helper subsequently completed without
+a causal launch tool ID. The parent registry returned Idle. The capture's
+sanitized projection is
+`yinz-process/src/unit/fixtures/claude-interactive-observation.json`.
+The isolated process exited 0 without reaching its 120-second bound and its
+pane was closed. Two corrected fixture startup errors and all limits are
+recorded in the contract; this is not a successful full acceptance run.
+
+Two new process characterization tests cover the interactive evidence and
+synthetic missing/delayed launch-result delivery followed by intact replay.
+The latter reconstructs identities from the finite existing fixture, while
+showing that the current observer cannot certify missing evidence. Neither test
+claims complete live reconstruction or an accepted recovery boundary.
+
+Verification: 15 selected process/screen tests passed, including existing stale
+completion, resumed Waiting, independent draft readiness, ordinary unresolved
+Busy, and transfer regressions. Tests used socket access on their first run.
+The first combined selection exposed a fixture-projection bug: it discarded a
+notification prefixed by Claude's system-notification banner. Retaining the
+notification's allowlisted identity fields fixed the failure; it was not a
+flake. The final selection narrowed an overly broad name match that had also
+run four unrelated screen tests. Formatting first found new Rust layout
+differences, corrected by `cargo x format`. Final `cargo x format --check`,
+`cargo x lint`, fixture privacy checks, and `git diff --check` passed.
+
+No production behavior changed. The ordinary raw-plus-correlated regression
+still characterizes Busy and issue 17 remains unresolved. Acceptance and fresh
+implementation review are not complete, so no full CI, rebase or local merge is
+authorized by the plan's conditional merge step. No lifecycle/Agenda mutation,
+push, installation, deployment or incident-pane operation was performed.
 
 ## Known limitations and caller guidance
 
