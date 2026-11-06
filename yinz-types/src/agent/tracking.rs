@@ -92,6 +92,9 @@ pub struct ClaudeActivity {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaudeTurn {
+    /// Transcript acceptance has not yet received its native submission evidence.
+    #[serde(default)]
+    pub awaiting_native_submit: bool,
     pub confirmation: Option<bool>,
     pub sequence: u64,
 }

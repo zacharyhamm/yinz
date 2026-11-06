@@ -2028,3 +2028,377 @@ fn overlapping_claude_prompts_keep_their_own_results_and_boundaries() {
     assert_eq!(first.background_tasks, ["first-task"]);
     assert_eq!(second.background_tasks, ["second-task"]);
 }
+
+fn queued_fixture() -> Value {
+    serde_json::from_str(include_str!("fixtures/claude-missed-queued-prompt.json")).unwrap()
+}
+
+#[test]
+fn queued_prompt_recovery_replays_once_and_confirms_the_correct_response() {
+    let fixture = queued_fixture();
+    let records = fixture["transcript"].as_array().unwrap();
+    let mut prompts = prompts::Prompts::new(&hook());
+    let recovered: Vec<_> = records
+        .iter()
+        .filter_map(|r| prompts.record(r).unwrap())
+        .collect();
+    assert_eq!(recovered.len(), 1);
+    let recovered = &recovered[0];
+    assert_eq!(recovered.prompt_id.as_deref(), Some("queued"));
+    assert_eq!(recovered.claude_recovered_after.as_deref(), Some("prompt"));
+    assert!(recovered.prompt.is_none());
+    assert!(recovered.prompt_sha256.is_none());
+    assert!(recovered.turn_id.is_none());
+    for record in records {
+        assert!(prompts.record(record).unwrap().is_none());
+    }
+    let mut turn = Turn::new("claude", recovered);
+    let completed: Vec<_> = records.iter().map(|r| turn.record(r).unwrap()).collect();
+    assert_eq!(completed.iter().filter(|done| **done).count(), 1);
+    assert!(completed.last().unwrap());
+    assert_eq!(turn.last_text.as_deref(), Some("Second task finished."));
+}
+
+#[test]
+fn queued_prompt_recovery_requires_anchor_identity_and_explicit_human_metadata() {
+    let fixture = queued_fixture();
+    let anchor = &fixture["transcript"][0];
+    let queued = &fixture["transcript"][3];
+    for patch in [
+        json!({"sessionId":"other"}),
+        json!({"sessionId":null}),
+        json!({"isSidechain":true}),
+        json!({"isSidechain":null}),
+        json!({"type":"attachment"}),
+        json!({"isMeta":true}),
+        json!({"origin":{"kind":"task-notification"}}),
+        json!({"origin":null}),
+        json!({"turnOrigin":"task-notification"}),
+        json!({"promptSource":"direct"}),
+        json!({"promptId":""}),
+        json!({"promptId":"  "}),
+        json!({"promptId":42}),
+        json!({"promptId":"bad\nidentity"}),
+        json!({"promptId":"x".repeat(1025)}),
+        json!({"toolUseResult":{}}),
+        json!({"message":{"content":[{"type":"tool_result","tool_use_id":"tool"}]}}),
+    ] {
+        let mut prompts = prompts::Prompts::new(&hook());
+        assert!(prompts.record(anchor).unwrap().is_none());
+        let mut record = queued.clone();
+        record
+            .as_object_mut()
+            .unwrap()
+            .extend(patch.as_object().unwrap().clone());
+        assert!(prompts.record(&record).unwrap().is_none(), "{patch}");
+    }
+    let mut prompts = prompts::Prompts::new(&hook());
+    assert!(prompts.record(queued).unwrap().is_none());
+    assert!(prompts.record(anchor).unwrap().is_none());
+    assert!(
+        prompts.record(queued).unwrap().is_none(),
+        "records before anchor cannot be replayed into acceptance"
+    );
+    let mut later = queued.clone();
+    later["promptId"] = json!("later");
+    assert_eq!(
+        prompts
+            .record(&later)
+            .unwrap()
+            .unwrap()
+            .claude_recovered_after
+            .as_deref(),
+        Some("prompt")
+    );
+}
+
+#[test]
+fn queued_prompt_recovery_tracks_intervening_native_prompts() {
+    let fixture = queued_fixture();
+    let mut prompts = prompts::Prompts::new(&hook());
+    prompts.record(&fixture["transcript"][0]).unwrap();
+    let mut native = fixture["transcript"][0].clone();
+    native["promptId"] = json!("native");
+    assert!(prompts.record(&native).unwrap().is_none());
+    let recovered = prompts.record(&fixture["transcript"][3]).unwrap().unwrap();
+    assert_eq!(recovered.claude_recovered_after.as_deref(), Some("native"));
+}
+
+#[test]
+fn queued_prompt_observer_inherits_process_route_and_marker_after_acceptance() {
+    let fixture = queued_fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("root.jsonl");
+    let marker = dir.path().join("conversation");
+    std::fs::write(&marker, "conversation").unwrap();
+    std::fs::write(
+        &path,
+        fixture["transcript"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.to_string() + "\n")
+            .collect::<String>(),
+    )
+    .unwrap();
+    let original = observation(&path, Some(marker.clone()));
+    let reports = std::cell::RefCell::new(Vec::new());
+    task_observer::follow_reporting(
+        &original,
+        |hook| {
+            reports.borrow_mut().push(hook.clone());
+            Ok(())
+        },
+        |recovered| {
+            assert_eq!(
+                reports.borrow().len(),
+                1,
+                "acceptance precedes starting completion observation"
+            );
+            assert_eq!(recovered.process, original.process);
+            assert_eq!(recovered.conversation_file, original.conversation_file);
+            assert_eq!(
+                serde_json::to_value(&recovered.route).unwrap(),
+                serde_json::to_value(&original.route).unwrap()
+            );
+            assert!(!recovered.task_observer);
+            follow_with_api_reporting(recovered, None, |hook| {
+                reports.borrow_mut().push(hook.clone());
+                Ok(())
+            })
+            .unwrap();
+            std::fs::write(&marker, "replacement").unwrap();
+            Ok(Command::new("/usr/bin/true").spawn().unwrap())
+        },
+    )
+    .unwrap();
+    let reports = reports.into_inner();
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[1].claude_turn_complete, Some(true));
+    assert_eq!(
+        reports[1].last_assistant_message.as_deref(),
+        Some("Second task finished.")
+    );
+    // A reporter child must not initialize a marker or spawn more observers.
+    start("claude", &reports[0], original.route).unwrap();
+}
+
+#[test]
+fn queued_prompt_idle_freshness_uses_transcript_time_before_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("turn.jsonl");
+    let mut original = observation(&path, None);
+    original.claude_status = Some(ClaudeStatusObservation {
+        path: dir.path().join("status.json"),
+        after_ms: 300, // Recovery starts after the registry already published Idle.
+    });
+    let prompt = json!({"type":"user", "sessionId":"conversation", "promptId":"queued",
+        "uuid":"queued-user", "timestamp":"1970-01-01T00:00:00.100Z"});
+    let recovered_hook = HookEvent {
+        prompt_id: Some("queued".into()),
+        ..original.hook.clone()
+    };
+    let recovered =
+        task_observer::recovered_observation(&original, recovered_hook.clone(), &prompt);
+    let status = recovered.claude_status.as_ref().unwrap();
+    assert_eq!(status.after_ms, 100);
+    let idle = json!({"pid":std::process::id(),"sessionId":"conversation","kind":"interactive",
+        "status":"idle", "statusUpdatedAt":200});
+    std::fs::write(&status.path, idle.to_string()).unwrap();
+    std::fs::write(&path, format!("{prompt}\n")).unwrap();
+    assert!(!original
+        .claude_status
+        .as_ref()
+        .unwrap()
+        .idle(std::process::id(), "conversation"));
+    follow(&recovered).unwrap();
+    for change in [
+        json!({"statusUpdatedAt":99}),
+        json!({"statusUpdatedAt":100}),
+        json!({"pid":0}),
+        json!({"sessionId":"other"}),
+    ] {
+        let mut stale = idle.clone();
+        stale
+            .as_object_mut()
+            .unwrap()
+            .extend(change.as_object().unwrap().clone());
+        std::fs::write(&status.path, stale.to_string()).unwrap();
+        assert!(!status.idle(std::process::id(), "conversation"), "{change}");
+    }
+    std::fs::write(&status.path, idle.to_string()).unwrap();
+    for timestamp in [
+        Value::Null,
+        json!(100),
+        json!("invalid"),
+        json!("1969-12-31T23:59:59Z"),
+    ] {
+        let mut invalid = prompt.clone();
+        invalid["timestamp"] = timestamp;
+        let recovered =
+            task_observer::recovered_observation(&original, recovered_hook.clone(), &invalid);
+        assert!(recovered.claude_status.is_none());
+        let boundary =
+            json!({"type":"system","subtype":"turn_duration","parentUuid":"queued-user"});
+        std::fs::write(&path, format!("{invalid}\n{boundary}\n")).unwrap();
+        follow(&recovered).unwrap(); // Transcript completion remains available.
+    }
+}
+
+// Observe termination without consuming the exit status: the task observer must reap it.
+fn exited_observer_child(child: &Child) {
+    let mut status = std::mem::MaybeUninit::<libc::siginfo_t>::uninit();
+    // SAFETY: status points to writable siginfo storage and the PID belongs to our child.
+    assert_eq!(
+        unsafe {
+            libc::waitid(
+                libc::P_PID,
+                child.id(),
+                status.as_mut_ptr(),
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        },
+        0
+    );
+}
+
+fn assert_observer_child_reaped(pid: u32) {
+    // SAFETY: no status output is requested; this only checks our child's waitability.
+    assert_eq!(
+        unsafe { libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG) },
+        -1
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ECHILD)
+    );
+}
+
+#[test]
+fn task_observer_reaps_multiple_completion_children_while_still_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("turn.jsonl");
+    let marker = dir.path().join("conversation");
+    std::fs::write(&marker, "conversation").unwrap();
+    let fixture = queued_fixture();
+    let mut records = vec![fixture["transcript"][0].clone()];
+    let queued = fixture["transcript"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["promptSource"] == "queued")
+        .unwrap();
+    for id in ["one", "two"] {
+        let mut prompt = queued.clone();
+        prompt["promptId"] = json!(id);
+        records.push(prompt);
+    }
+    // Each sweep reads at most 1024 records. The third prompt therefore runs after
+    // a reap sweep, regardless of scheduling; waitid below proves both children exited.
+    records.resize(1024, json!({"type":"system"}));
+    let mut third = queued.clone();
+    third["promptId"] = json!("three");
+    records.push(third);
+    std::fs::write(
+        &path,
+        records.iter().map(|r| format!("{r}\n")).collect::<String>(),
+    )
+    .unwrap();
+    let original = observation(&path, Some(marker.clone()));
+    let mut pids = vec![];
+    task_observer::follow_reporting(
+        &original,
+        |_| Ok(()),
+        |_| {
+            if pids.len() == 2 {
+                for pid in &pids {
+                    assert_observer_child_reaped(*pid);
+                }
+                std::fs::write(&marker, "replacement").unwrap();
+            }
+            let child = Command::new("/usr/bin/true").spawn().unwrap();
+            exited_observer_child(&child);
+            pids.push(child.id());
+            Ok(child)
+        },
+    )
+    .unwrap();
+    assert_eq!(pids.len(), 3);
+    for pid in pids {
+        assert_observer_child_reaped(pid);
+    }
+}
+
+#[test]
+fn task_observer_cleans_up_live_children_on_shutdown_and_failure() {
+    for failure in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("turn.jsonl");
+        let marker = dir.path().join("conversation");
+        std::fs::write(&marker, "conversation").unwrap();
+        let fixture = queued_fixture();
+        let queued = fixture["transcript"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["promptSource"] == "queued")
+            .unwrap();
+        let mut second = queued.clone();
+        second["promptId"] = json!("second");
+        std::fs::write(
+            &path,
+            format!("{}\n{queued}\n{second}\n", fixture["transcript"][0]),
+        )
+        .unwrap();
+        let original = observation(&path, Some(marker.clone()));
+        let mut pids = vec![];
+        let result = task_observer::follow_reporting(
+            &original,
+            |_| Ok(()),
+            |_| {
+                if !pids.is_empty() && failure {
+                    return Err(anyhow!("injected spawn failure"));
+                }
+                let child = Command::new("/usr/bin/cat")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .spawn()
+                    .unwrap();
+                pids.push(child.id());
+                std::fs::write(&marker, "replacement").unwrap();
+                Ok(child)
+            },
+        );
+        assert_eq!(result.is_err(), failure);
+        assert_eq!(pids.len(), if failure { 1 } else { 2 });
+        for pid in pids {
+            assert_observer_child_reaped(pid);
+        }
+    }
+}
+
+#[test]
+fn completion_observer_initialization_failure_kills_and_reaps_child() {
+    let dir = tempfile::tempdir().unwrap();
+    let original = observation(&dir.path().join("turn.jsonl"), None);
+    for missing_input in [false, true] {
+        let mut child = Command::new(if missing_input {
+            "/usr/bin/cat"
+        } else {
+            "/usr/bin/true"
+        })
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+        let pid = child.id();
+        let _input = if missing_input {
+            child.stdin.take()
+        } else {
+            exited_observer_child(&child);
+            None
+        };
+        assert!(initialize_observer(child, &original).is_err());
+        assert_observer_child_reaped(pid);
+    }
+}

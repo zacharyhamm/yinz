@@ -27,6 +27,7 @@ tempfile = { workspace = true }
 toml = "0.9"
 tokio = { workspace = true, features = ["sync"] }
 uuid = { workspace = true }
+chrono = { workspace = true }
 close_fds = "0.3.2"
 libc = { workspace = true }
 nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "signal", "socket", "term", "uio", "user"] }

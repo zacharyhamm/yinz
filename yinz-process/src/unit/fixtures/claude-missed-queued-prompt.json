@@ -1,0 +1,157 @@
+{
+  "description": "Sanitized pane 17 failure sequence: queued human input has no native submit hook; tool hooks arrive before transcript recovery.",
+  "transcript": [
+    {
+      "type": "user",
+      "sessionId": "conversation",
+      "isSidechain": false,
+      "promptId": "prompt",
+      "uuid": "user-1",
+      "origin": {
+        "kind": "human"
+      },
+      "promptSource": "direct",
+      "turnOrigin": "human",
+      "message": {
+        "role": "user",
+        "content": "First sanitized task"
+      }
+    },
+    {
+      "type": "assistant",
+      "sessionId": "conversation",
+      "promptId": "prompt",
+      "parentUuid": "user-1",
+      "uuid": "answer-1",
+      "message": {
+        "content": [
+          {
+            "type": "text",
+            "text": "First task finished."
+          }
+        ]
+      }
+    },
+    {
+      "type": "system",
+      "sessionId": "conversation",
+      "subtype": "turn_duration",
+      "parentUuid": "answer-1"
+    },
+    {
+      "type": "user",
+      "sessionId": "conversation",
+      "isSidechain": false,
+      "promptId": "queued",
+      "uuid": "user-2",
+      "parentUuid": "answer-1",
+      "origin": {
+        "kind": "human"
+      },
+      "promptSource": "queued",
+      "turnOrigin": "human",
+      "turnPosition": {
+        "promptIndex": 2,
+        "turnIndex": 2
+      },
+      "message": {
+        "role": "user",
+        "content": "Second sanitized task"
+      }
+    },
+    {
+      "type": "assistant",
+      "sessionId": "conversation",
+      "promptId": "queued",
+      "parentUuid": "user-2",
+      "uuid": "tool-2",
+      "message": {
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "read-2",
+            "name": "Read",
+            "input": {
+              "file_path": "fixture.txt"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "sessionId": "conversation",
+      "isSidechain": false,
+      "parentUuid": "tool-2",
+      "uuid": "result-2",
+      "message": {
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "read-2",
+            "content": "Sanitized content"
+          }
+        ]
+      }
+    },
+    {
+      "type": "assistant",
+      "sessionId": "conversation",
+      "promptId": "queued",
+      "parentUuid": "result-2",
+      "uuid": "answer-2",
+      "message": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Second task finished."
+          }
+        ]
+      }
+    },
+    {
+      "type": "system",
+      "sessionId": "conversation",
+      "subtype": "turn_duration",
+      "parentUuid": "answer-2"
+    }
+  ],
+  "reports": [
+    {
+      "hook_event_name": "UserPromptSubmit",
+      "session_id": "conversation",
+      "prompt_id": "prompt"
+    },
+    {
+      "hook_event_name": "Stop",
+      "session_id": "conversation",
+      "prompt_id": "prompt",
+      "_yinz_claude_turn_complete": true,
+      "last_assistant_message": "First task finished."
+    },
+    {
+      "hook_event_name": "PreToolUse",
+      "session_id": "conversation",
+      "tool_name": "Read"
+    },
+    {
+      "hook_event_name": "PostToolUse",
+      "session_id": "conversation",
+      "tool_name": "Read"
+    },
+    {
+      "hook_event_name": "UserPromptSubmit",
+      "session_id": "conversation",
+      "prompt_id": "queued",
+      "_yinz_claude_recovered_after": "prompt"
+    },
+    {
+      "hook_event_name": "Stop",
+      "session_id": "conversation",
+      "prompt_id": "queued",
+      "_yinz_claude_turn_complete": true,
+      "_yinz_claude_recovered_after": "prompt",
+      "last_assistant_message": "Second task finished."
+    }
+  ]
+}

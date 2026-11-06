@@ -190,11 +190,25 @@ pub(super) fn apply_queued_agent_report(
         }
         return Ok(true);
     }
+    if report.kind == "claude"
+        && let Some(hook) = hook.as_ref().filter(|hook| {
+            !hook.is_worker()
+                && !hook.archive_only
+                && hook.hook_event_name == "UserPromptSubmit"
+                && hook.claude_recovered_after.is_none()
+                && screen.ignore_claude_confirmation(pane_id, hook)
+        })
+        && let Some(event) = &report.event
+    {
+        screen.correlate_recovered_claude_submit(event, hook);
+        return Ok(true);
+    }
     // Older installed reporters can still send Idle for an ordinary Claude or Antigravity Stop.
     // Correlate internal confirmations before applying or broadcasting any state.
     if report.kind == "claude"
         && hook.as_ref().is_some_and(|hook| {
-            screen.ignore_claude_confirmation(pane_id, hook)
+            screen.ignore_claude_recovery(pane_id, hook)
+                || screen.ignore_claude_confirmation(pane_id, hook)
                 || screen.ignore_claude_worker(pane_id, hook)
         })
     {
@@ -216,7 +230,23 @@ pub(super) fn apply_queued_agent_report(
         return Ok(true);
     }
     let mut normalized;
-    let report = if matches!(report.kind.as_str(), "claude" | "agy")
+    let recovered_wait = hook
+        .as_ref()
+        .filter(|hook| {
+            report.kind == "claude"
+                && hook.claude_recovered_after.is_some()
+                && hook.hook_event_name == "UserPromptSubmit"
+        })
+        .and_then(|_| screen.get_pane_info(pane_id).and_then(|info| info.agent))
+        .filter(|agent| agent.state == AgentState::Waiting);
+    let report = if let Some(waiting) = recovered_wait {
+        normalized = report.clone();
+        normalized.state = yinz_types::agent::report::AgentReportState::Set(waiting);
+        if let Some(event) = &mut normalized.event {
+            event.state = Some(AgentState::Waiting);
+        }
+        &normalized
+    } else if matches!(report.kind.as_str(), "claude" | "agy")
         && hook
             .as_ref()
             .is_some_and(|hook| hook.hook_event_name == "Stop")

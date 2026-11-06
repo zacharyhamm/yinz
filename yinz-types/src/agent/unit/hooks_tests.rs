@@ -1485,3 +1485,24 @@ fn claude_task_execution_survives_pruning_without_raw_tool_responses() {
         assert!(invalid.pruned().claude_task_execution.is_none());
     }
 }
+
+#[test]
+fn recovered_claude_prompt_metadata_survives_serialization_and_pruning() {
+    let hook = HookEvent {
+        hook_event_name: "UserPromptSubmit".into(),
+        session_id: "conversation".into(),
+        prompt_id: Some("queued".into()),
+        claude_recovered_after: Some("previous".into()),
+        message: Some("x".repeat(HOOK_BROADCAST_MAX_BYTES * 2)),
+        ..Default::default()
+    };
+    for candidate in [hook.clone(), hook.pruned(), hook.pruned_to(0)] {
+        let raw = candidate.broadcast_json(serde_json::to_string(&candidate).unwrap());
+        assert!(raw.len() <= HOOK_BROADCAST_MAX_BYTES);
+        let decoded: HookEvent = serde_json::from_str(&raw).unwrap();
+        assert_eq!(decoded.claude_recovered_after, hook.claude_recovered_after);
+        assert_eq!(decoded.prompt_id, hook.prompt_id);
+    }
+    let old: HookEvent = serde_json::from_str(r#"{"hook_event_name":"UserPromptSubmit"}"#).unwrap();
+    assert!(old.claude_recovered_after.is_none());
+}

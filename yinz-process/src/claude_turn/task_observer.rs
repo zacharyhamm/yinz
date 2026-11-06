@@ -42,7 +42,15 @@ pub(super) fn lock(observation: &Observation, directory: &Path) -> Result<Option
 
 pub(super) fn follow(
     observation: &Observation,
+    report: impl FnMut(&HookEvent) -> Result<()>,
+) -> Result<()> {
+    follow_reporting(observation, report, spawn_observer)
+}
+
+pub(super) fn follow_reporting(
+    observation: &Observation,
     mut report: impl FnMut(&HookEvent) -> Result<()>,
+    mut observe: impl FnMut(&Observation) -> Result<Child>,
 ) -> Result<()> {
     let (process_id, started) = observation.process.context("Claude process missing")?;
     let pid = sysinfo::Pid::from_u32(process_id);
@@ -56,8 +64,11 @@ pub(super) fn follow(
     let sidechains = root.with_extension("").join("subagents");
     let mut system = System::new();
     let mut tasks = tasks::Tasks::new(&observation.hook.session_id);
+    let mut prompts = prompts::Prompts::new(&observation.hook);
     let mut readers = BTreeMap::<PathBuf, Transcript>::new();
+    let mut children = CompletionChildren::default();
     loop {
+        children.reap()?;
         system.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[pid]),
             true,
@@ -114,6 +125,24 @@ pub(super) fn follow(
                 .get_mut(&path)
                 .context("Claude transcript reader missing")?;
             reader.poll(&path, |record| {
+                if path == root
+                    && let Some(hook) = prompts.record(record)?
+                {
+                    // Deliver acceptance before completion can race it. Keep the original
+                    // process, marker and route; a reporter child has no Claude ancestor.
+                    report(&hook)?;
+                    let recovered = recovered_observation(observation, hook, record);
+                    match observe(&recovered) {
+                        Ok(child) => children.0.push(child),
+                        Err(error) => {
+                            let mut unavailable = recovered.hook;
+                            unavailable.hook_event_name = "Stop".into();
+                            unavailable.claude_turn_complete = Some(false);
+                            report(&unavailable)?;
+                            return Err(error).context("observe recovered Claude prompt");
+                        },
+                    }
+                }
                 for hook in tasks.record(record)? {
                     report(&hook)?;
                 }
@@ -123,6 +152,63 @@ pub(super) fn follow(
         // EOF and parent Idle are not completion signals. A later trigger replays
         // all files if this observer exits on an I/O or bounded reporting failure.
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+pub(super) fn recovered_observation(
+    observation: &Observation,
+    hook: HookEvent,
+    record: &Value,
+) -> Observation {
+    // Idle may have been published before replay catches up. Only the prompt's own
+    // timestamp is a freshness boundary; malformed/missing timestamps leave transcript
+    // completion in charge. Keep the original process-specific registry path.
+    let after_ms = record["timestamp"]
+        .as_str()
+        .and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok())
+        .and_then(|timestamp| u64::try_from(timestamp.timestamp_millis()).ok());
+    Observation {
+        hook,
+        task_observer: false,
+        claude_status: after_ms.and_then(|after_ms| {
+            observation
+                .claude_status
+                .as_ref()
+                .map(|status| ClaudeStatusObservation {
+                    path: status.path.clone(),
+                    after_ms,
+                })
+        }),
+        ..observation.clone()
+    }
+}
+
+#[derive(Default)]
+struct CompletionChildren(Vec<Child>);
+
+impl CompletionChildren {
+    fn reap(&mut self) -> Result<()> {
+        let mut index = 0;
+        while index < self.0.len() {
+            if self.0[index]
+                .try_wait()
+                .context("poll Claude completion observer")?
+                .is_some()
+            {
+                self.0.swap_remove(index);
+            } else {
+                index += 1;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for CompletionChildren {
+    fn drop(&mut self) {
+        for child in &mut self.0 {
+            stop_observer(child);
+        }
     }
 }
 

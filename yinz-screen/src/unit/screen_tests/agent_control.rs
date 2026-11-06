@@ -13135,3 +13135,381 @@ fn controller_worker_stack_respects_subsequent_worker_pane_limit() {
         }
     }
 }
+
+fn recovered_prompt(id: &str, predecessor: &str) -> HookEvent {
+    HookEvent {
+        hook_event_name: "UserPromptSubmit".into(),
+        session_id: "conversation".into(),
+        prompt_id: Some(id.into()),
+        claude_recovered_after: Some(predecessor.into()),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn claude_queued_prompt_recovery_finishes_the_missed_hook_fixture() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../yinz-process/src/unit/fixtures/claude-missed-queued-prompt.json"
+    ))
+    .unwrap();
+    for background in [false, true] {
+        let (mut screen, _, _) = setup("claude");
+        for (index, raw) in fixture["reports"].as_array().unwrap().iter().enumerate() {
+            if background && index == 5 {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    claude_execution("SubagentStart", "worker", "execution"),
+                );
+            }
+            let hook: HookEvent = serde_json::from_value(raw.clone()).unwrap();
+            report_kind(&mut screen, "claude", hook);
+            let expected = if index == 1 || (index == 5 && !background) {
+                AgentState::Idle
+            } else {
+                AgentState::Busy
+            };
+            assert_eq!(
+                screen.agent_status_for_test().agent.state,
+                expected,
+                "report {index}, background {background}"
+            );
+        }
+        if background {
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_execution("SubagentStop", "worker", "execution"),
+            );
+            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+        }
+        let lifecycle = screen
+            .capture_agent_tracking(PANE)
+            .unwrap()
+            .lifecycle
+            .unwrap();
+        assert_eq!(lifecycle.claude_prompt_id.as_deref(), Some("queued"));
+        assert_eq!(
+            lifecycle.last_message.as_deref(),
+            Some("Second task finished.")
+        );
+    }
+}
+
+#[test]
+fn claude_queued_prompt_recovery_deduplicates_native_hook_races_and_late_replay() {
+    for native_first in [false, true] {
+        let (mut screen, _, _) = setup("claude");
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        report_kind(&mut screen, "claude", claude_stop("prompt", "first", &[]));
+        let native = steering_ack("queued");
+        let recovered = recovered_prompt("queued", "prompt");
+        let (first, second) = if native_first {
+            (native, recovered.clone())
+        } else {
+            (recovered.clone(), native)
+        };
+        report_kind(&mut screen, "claude", first);
+        report_kind(&mut screen, "claude", claude_stop("queued", "final", &[]));
+        for duplicate in [second, recovered.clone(), recovered] {
+            report_kind(&mut screen, "claude", duplicate);
+            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+            let lifecycle = screen
+                .capture_agent_tracking(PANE)
+                .unwrap()
+                .lifecycle
+                .unwrap();
+            assert_eq!(lifecycle.last_message.as_deref(), Some("final"));
+            assert_eq!(lifecycle.claude.turns.len(), 2);
+        }
+    }
+}
+
+#[test]
+fn claude_queued_prompt_recovery_rejects_stale_conversations_predecessors_and_identities() {
+    for change in [
+        "newer_prompt",
+        "conversation",
+        "empty",
+        "missing",
+        "predecessor",
+        "worker",
+    ] {
+        let (mut screen, _, _) = setup("claude");
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_stop("prompt", "original", &[]),
+        );
+        let mut recovered = recovered_prompt("queued", "prompt");
+        match change {
+            "newer_prompt" => {
+                report_kind(&mut screen, "claude", steering_ack("newer"));
+                report_kind(&mut screen, "claude", claude_stop("newer", "newest", &[]));
+            },
+            "conversation" => report_kind(
+                &mut screen,
+                "claude",
+                HookEvent {
+                    session_id: "replacement".into(),
+                    ..hook("SessionStart")
+                },
+            ),
+            "empty" => recovered.prompt_id = Some(" ".into()),
+            "missing" => recovered.prompt_id = None,
+            "predecessor" => recovered.claude_recovered_after = Some("wrong".into()),
+            "worker" => recovered.agent_id = Some("worker".into()),
+            _ => unreachable!(),
+        }
+        let before = screen
+            .capture_agent_tracking(PANE)
+            .unwrap()
+            .lifecycle
+            .unwrap();
+        report_kind(&mut screen, "claude", recovered.clone());
+        recovered.hook_event_name = "Stop".into();
+        recovered.claude_turn_complete = Some(true);
+        recovered.last_assistant_message = Some("stale response".into());
+        report_kind(&mut screen, "claude", recovered);
+        let after = screen
+            .capture_agent_tracking(PANE)
+            .unwrap()
+            .lifecycle
+            .unwrap();
+        assert_eq!(after.claude_prompt_id, before.claude_prompt_id, "{change}");
+        assert_eq!(after.last_message, before.last_message, "{change}");
+        assert_eq!(after.conversation, before.conversation, "{change}");
+        assert_eq!(
+            after.claude.turns.len(),
+            before.claude.turns.len(),
+            "{change}"
+        );
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            AgentState::Idle,
+            "{change}"
+        );
+    }
+}
+
+#[test]
+fn claude_queued_prompt_recovery_cannot_acknowledge_pending_input_or_consume_a_draft() {
+    for newer_draft in [false, true] {
+        let (mut screen, messages, writes) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        screen.agent_control_with_clear(identified_prompt("initial", true), CLIENT, &writes);
+        finish_paste(&writes);
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        report_kind(&mut screen, "claude", claude_stop("prompt", "first", &[]));
+        replies(&messages, CLIENT);
+        if newer_draft {
+            screen.agent_write_for_test();
+            draft_frame(&mut screen, "claude", "new draft", 9, Instant::now());
+        } else {
+            deliver_steering(&mut screen, &writes, "pending", CLIENT);
+        }
+        let revision = screen.tabs[&TabId::new(0)].agent_input_revision(PANE);
+        // Even identical prose is not correlation evidence in a recovered report.
+        let mut recovered = recovered_prompt("queued", "prompt");
+        recovered.prompt = Some("steer".into());
+        report_kind(&mut screen, "claude", recovered.clone());
+        recovered.hook_event_name = "Stop".into();
+        recovered.claude_turn_complete = Some(true);
+        recovered.last_assistant_message = Some("recovered response".into());
+        report_kind(&mut screen, "claude", recovered);
+        let responses = replies(&messages, CLIENT);
+        assert!(responses.is_empty(), "{responses:?}");
+        if !newer_draft {
+            let pending = screen.agent_submissions[&PANE]
+                .iter()
+                .find(|submission| submission.id == "pending")
+                .unwrap();
+            assert!(!pending.acknowledged);
+            assert!(pending.result.is_none());
+        }
+        assert_eq!(
+            screen.tabs[&TabId::new(0)].agent_input_revision(PANE),
+            revision
+        );
+        assert_ne!(
+            screen
+                .capture_agent_tracking(PANE)
+                .unwrap()
+                .lifecycle
+                .unwrap()
+                .input_revision,
+            Some(revision)
+        );
+        if newer_draft {
+            assert_eq!(
+                screen.agent_status_for_test().not_ready_reason,
+                Some(NotReadyReason::UnconsumedInput)
+            );
+            assert!(screen.tabs[&TabId::new(0)]
+                .get_pane_with_id(PANE)
+                .unwrap()
+                .dump_screen(false, Some(CLIENT))
+                .contains("new draft"));
+        }
+    }
+}
+
+#[test]
+fn claude_queued_prompt_recovery_preserves_permission_wait_and_event_state() {
+    let (mut screen, _, _) = setup("claude");
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    report_kind(&mut screen, "claude", claude_stop("prompt", "first", &[]));
+    report_kind(&mut screen, "claude", claude_permission_prompt());
+    let before = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+    let revision = screen.claude_permission_waits[&PANE].input_revision;
+    let (sender, plugins) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    report_kind(&mut screen, "claude", recovered_prompt("queued", "prompt"));
+    assert_eq!(screen.get_pane_info(PANE).unwrap().agent.unwrap(), before);
+    assert_eq!(
+        screen.claude_permission_waits[&PANE].input_revision,
+        revision
+    );
+    assert_eq!(
+        screen.claude_permission_waits[&PANE].conversation,
+        "conversation"
+    );
+    let lifecycle = screen
+        .capture_agent_tracking(PANE)
+        .unwrap()
+        .lifecycle
+        .unwrap();
+    assert_eq!(lifecycle.claude_prompt_id.as_deref(), Some("queued"));
+    assert_eq!(lifecycle.claude.parent.unwrap().state, AgentState::Waiting);
+    let events: Vec<_> = plugins
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PluginInstruction::Update(updates) => updates,
+            _ => vec![],
+        })
+        .filter_map(|(_, _, event)| match event {
+            Event::AgentEvent(event) => Some(event),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].state, Some(AgentState::Waiting));
+}
+
+#[test]
+fn claude_queued_prompt_recovery_native_evidence_correlates_once_without_reopening() {
+    for native_first in [false, true] {
+        for late in [false, true] {
+            for matches in [false, true] {
+                let (mut screen, messages, writes) = setup("claude");
+                report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+                report_kind(&mut screen, "claude", claude_stop("prompt", "first", &[]));
+                deliver_steering(&mut screen, &writes, "pending", CLIENT);
+                replies(&messages, CLIENT);
+                let (sender, plugins) = channels::unbounded();
+                screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+                let mut native = steering_ack("queued");
+                if !matches {
+                    native.prompt = Some("different input".into());
+                }
+                let recovered = recovered_prompt("queued", "prompt");
+                let (first, second) = if native_first {
+                    (native.clone(), recovered)
+                } else {
+                    (recovered, native.clone())
+                };
+                report_kind(&mut screen, "claude", first);
+                if !native_first {
+                    assert!(
+                        !screen.agent_submissions[&PANE]
+                            .iter()
+                            .find(|s| s.id == "pending")
+                            .unwrap()
+                            .acknowledged
+                    );
+                }
+                if late {
+                    report_kind(&mut screen, "claude", claude_stop("queued", "final", &[]));
+                }
+                report_kind(&mut screen, "claude", second);
+                report_kind(&mut screen, "claude", native.clone());
+                report_kind(&mut screen, "claude", native);
+                assert_eq!(
+                    screen.agent_submissions[&PANE]
+                        .iter()
+                        .find(|s| s.id == "pending")
+                        .unwrap()
+                        .acknowledged,
+                    matches
+                );
+                if !late {
+                    report_kind(&mut screen, "claude", claude_stop("queued", "final", &[]));
+                    let responses = replies(&messages, CLIENT);
+                    assert_eq!(
+                        responses.len(),
+                        1,
+                        "native_first={native_first} late={late} matches={matches} {responses:?}"
+                    );
+                    assert_eq!(responses[0].acknowledged, matches);
+                    assert_eq!(
+                        responses[0].outcome,
+                        if matches {
+                            AgentOutcome::Completed
+                        } else {
+                            AgentOutcome::Interrupted
+                        },
+                        "native_first={native_first} late={late} matches={matches} {responses:?}"
+                    );
+                }
+                // Capturing a handoff retires pending callers, so inspect it only after
+                // checking the submission replies above.
+                let lifecycle = screen
+                    .capture_agent_tracking(PANE)
+                    .unwrap()
+                    .lifecycle
+                    .unwrap();
+                assert_eq!(lifecycle.claude.turns.len(), 2);
+                assert_eq!(lifecycle.claude.sequence, 2);
+                assert!(!lifecycle.claude.turns["queued"].awaiting_native_submit);
+                assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+                assert_eq!(lifecycle.claude_confirmation, Some(true));
+                assert_eq!(lifecycle.last_message.as_deref(), Some("final"));
+                let accepts = plugins.try_iter().flat_map(|(instruction, _)| match instruction {
+                    PluginInstruction::Update(updates) => updates,
+                    _ => vec![],
+                }).filter(|(_, _, event)| matches!(event, Event::AgentEvent(event) if event.hook == "UserPromptSubmit")).count();
+                assert_eq!(accepts, 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn claude_queued_prompt_recovery_native_replay_cannot_acknowledge_later_identical_input() {
+    for native_first in [false, true] {
+        let (mut screen, messages, writes) = setup("claude");
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        let native = steering_ack("queued");
+        let recovered = recovered_prompt("queued", "prompt");
+        let reports = if native_first {
+            [native.clone(), recovered]
+        } else {
+            [recovered, native.clone()]
+        };
+        for report in reports {
+            report_kind(&mut screen, "claude", report);
+        }
+        report_kind(&mut screen, "claude", claude_stop("queued", "final", &[]));
+        deliver_steering(&mut screen, &writes, "later", CLIENT);
+        replies(&messages, CLIENT);
+        report_kind(&mut screen, "claude", native);
+        let later = screen.agent_submissions[&PANE]
+            .iter()
+            .find(|s| s.id == "later")
+            .unwrap();
+        assert!(!later.acknowledged);
+        assert!(later.result.is_none());
+        assert!(replies(&messages, CLIENT).is_empty());
+    }
+}

@@ -354,6 +354,51 @@ impl Screen {
             })
     }
 
+    /// Recovery may extend only the current conversation's accepted prompt chain.
+    /// Check before state, input consumption, or event publication can be changed.
+    pub(super) fn ignore_claude_recovery(&self, pane: PaneId, hook: &HookEvent) -> bool {
+        let Some(predecessor) = hook.claude_recovered_after.as_deref() else {
+            return false;
+        };
+        if hook.hook_event_name != "UserPromptSubmit" {
+            return false; // Confirmations use the ordinary per-prompt guard.
+        }
+        let reason = match self.agent_lifecycle.get(&pane) {
+            _ if hook.is_worker()
+                || hook.session_id.trim().is_empty()
+                || predecessor.trim().is_empty()
+                || hook
+                    .prompt_id
+                    .as_deref()
+                    .is_none_or(|id| id.trim().is_empty()) =>
+            {
+                "invalid_identity"
+            },
+            Some(lifecycle)
+                if lifecycle.kind == "claude" && lifecycle.conversation == hook.session_id =>
+            {
+                if hook
+                    .prompt_id
+                    .as_ref()
+                    .is_some_and(|id| lifecycle.claude.turns.contains_key(id))
+                {
+                    "duplicate"
+                } else if lifecycle.claude_prompt_id.as_deref() != Some(predecessor) {
+                    "predecessor_mismatch"
+                } else {
+                    "accepted"
+                }
+            },
+            _ => "conversation_mismatch",
+        };
+        let bounded = |id: &str| id.chars().take(128).collect::<String>();
+        log::debug!(
+            "Claude prompt recovery pane={pane:?} conversation={:?} prompt={:?} predecessor={:?} reason={reason}",
+            bounded(&hook.session_id), bounded(hook.prompt_id.as_deref().unwrap_or_default()), bounded(predecessor),
+        );
+        reason != "accepted"
+    }
+
     /// Native terminal hooks omit prompt IDs. Resolve them once before either submission or
     /// lifecycle-event observers see the hook; older overlapping turns must stay open.
     pub(super) fn correlate_claude_terminal_hook(&self, pane: PaneId, hook: &mut HookEvent) {
@@ -588,6 +633,7 @@ impl Screen {
                         id.clone(),
                         ClaudeTurn {
                             confirmation: None,
+                            awaiting_native_submit: hook.claude_recovered_after.is_some(),
                             sequence: lifecycle.claude.sequence,
                         },
                     );
@@ -788,6 +834,24 @@ impl Screen {
         use yinz_types::agent::report::AgentReportState;
         use yinz_types::agent::{hook_state_for, waiting_detail, waiting_needs_a_person};
         let pane = report.pane_id;
+        // Transcript acceptance can arrive while Claude is already asking permission.
+        // It registers a turn, but says nothing about whether that wait was answered.
+        if report.kind == "claude"
+            && hook.is_some_and(|hook| {
+                hook.claude_recovered_after.is_some()
+                    && hook.hook_event_name == "UserPromptSubmit"
+                    && self
+                        .get_pane_info(pane)
+                        .and_then(|info| info.agent)
+                        .is_some_and(|agent| {
+                            agent.kind == "claude"
+                                && agent.session_id.as_deref() == Some(&hook.session_id)
+                                && agent.state == AgentState::Waiting
+                        })
+            })
+        {
+            return Ok(true);
+        }
         // Only the matching clear lifecycle may carry its submitted input across the
         // record removal and conversation replacement. All other invalidations discard it.
         let clear_transition = hook.is_some_and(|hook| {
@@ -3254,7 +3318,8 @@ impl Screen {
         if let Some(input) = self.agent_dialog_inputs.get_mut(&pane)
             && event.kind == input.kind
             && hook.is_some_and(|hook| {
-                event.session_id.as_deref() == Some(hook.session_id.as_str())
+                hook.claude_recovered_after.is_none()
+                    && event.session_id.as_deref() == Some(hook.session_id.as_str())
                     && !hook.session_id.is_empty()
                     && hook.codex_hooks_ready != Some(false)
                     && input
@@ -3540,6 +3605,58 @@ impl Screen {
             }
         }
         self.reconcile_claude_activity(pane, event, hook);
+        self.correlate_agent_submissions(event, hook);
+    }
+
+    /// A recovered turn already has its lifecycle. Native evidence may still acknowledge
+    /// input, even after completion, without reopening that turn or publishing it twice.
+    pub(super) fn correlate_recovered_claude_submit(
+        &mut self,
+        event: &AgentEvent,
+        hook: &HookEvent,
+    ) {
+        let pane = PaneId::Terminal(event.pane_id);
+        let Some(turn) = self
+            .agent_lifecycle
+            .get_mut(&pane)
+            .filter(|l| l.kind == "claude" && l.conversation == hook.session_id)
+            .and_then(|l| {
+                hook.prompt_id
+                    .as_ref()
+                    .and_then(|id| l.claude.turns.get_mut(id))
+            })
+            .filter(|turn| turn.awaiting_native_submit)
+        else {
+            return;
+        };
+        turn.awaiting_native_submit = false;
+        if let Some(revision) = self
+            .agent_controls
+            .iter()
+            .find(|pending| {
+                pending.pane == pane
+                    && pending.kind == event.kind
+                    && pending
+                        .prompt
+                        .as_ref()
+                        .is_some_and(|prompt| prompt.matches_submission(hook))
+            })
+            .map(|pending| pending.input_revision)
+            && let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane)
+        {
+            // Never roll consumption back over a newer accepted input.
+            lifecycle.input_revision = Some(
+                lifecycle
+                    .input_revision
+                    .map_or(revision, |old| old.max(revision)),
+            );
+        }
+        self.correlate_agent_submissions(event, Some(hook));
+    }
+
+    fn correlate_agent_submissions(&mut self, event: &AgentEvent, hook: Option<&HookEvent>) {
+        let pane = PaneId::Terminal(event.pane_id);
+        let parent = hook.is_some_and(|hook| !hook.is_worker());
         let claude_claims: Vec<_> = self
             .agent_controls
             .iter()

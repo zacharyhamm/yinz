@@ -7,13 +7,14 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     os::unix::{fs::MetadataExt, process::CommandExt},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::HookEvent;
 
+mod prompts;
 mod task_observer;
 mod tasks;
 
@@ -52,7 +53,7 @@ fn default_claude_kind() -> String {
     "claude".into()
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Observation {
     #[serde(default = "default_claude_kind")]
     kind: String,
@@ -67,7 +68,7 @@ struct Observation {
     task_observer: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ClaudeStatusObservation {
     path: PathBuf,
     after_ms: u64,
@@ -126,7 +127,8 @@ impl ClaudeStatusObservation {
 /// Start only after the prompt report is delivered, so confirmation cannot overtake it.
 /// Each installed reporter may start one; the screen deduplicates by prompt identity.
 pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
-    if !matches!(kind, "claude" | "agy")
+    if hook.claude_recovered_after.is_some()
+        || !matches!(kind, "claude" | "agy")
         || (hook.is_worker()
             && !(kind == "claude"
                 && hook.hook_event_name == "SubagentStart"
@@ -204,7 +206,7 @@ pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
     result
 }
 
-fn spawn_observer(observation: &Observation) -> Result<()> {
+fn spawn_observer(observation: &Observation) -> Result<Child> {
     let kind = &observation.kind;
     let mut command = Command::new(observer_executable()?);
     command
@@ -222,15 +224,36 @@ fn spawn_observer(observation: &Observation) -> Result<()> {
             Ok(())
         });
     }
-    let mut child = command
+    let child = command
         .spawn()
         .with_context(|| format!("start {kind} turn observer"))?;
-    serde_json::to_writer(
-        child.stdin.take().context("open observer input")?,
-        observation,
-    )
-    .with_context(|| format!("write {kind} turn observation"))?;
-    Ok(())
+    initialize_observer(child, observation)
+}
+
+fn initialize_observer(mut child: Child, observation: &Observation) -> Result<Child> {
+    let result = (|| {
+        serde_json::to_writer(
+            child.stdin.take().context("open observer input")?,
+            observation,
+        )
+        .with_context(|| format!("write {} turn observation", observation.kind))
+    })();
+    if let Err(error) = result {
+        stop_observer(&mut child);
+        return Err(error);
+    }
+    Ok(child)
+}
+
+fn stop_observer(child: &mut Child) {
+    child
+        .kill()
+        .context("stop Claude completion observer")
+        .non_fatal();
+    child
+        .wait()
+        .context("reap Claude completion observer")
+        .non_fatal();
 }
 
 fn agent_ancestor(kind: &str) -> Option<(u32, u64)> {

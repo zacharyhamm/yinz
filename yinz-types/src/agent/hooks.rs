@@ -648,6 +648,14 @@ pub struct HookEvent {
         skip_serializing_if = "Option::is_none"
     )]
     pub claude_turn_complete: Option<bool>,
+    /// Preceding transcript prompt for a recovered queued human acceptance. Internal
+    /// evidence only: it cannot acknowledge submitted input or start another observer.
+    #[serde(
+        default,
+        rename = "_yinz_claude_recovered_after",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub claude_recovered_after: Option<String>,
     /// Background tasks (Bash `run_in_background` or async subagents) that the confirmed Claude
     /// turn launched. Each finishes later in its own `<task-notification>` turn.
     #[serde(
@@ -861,6 +869,7 @@ impl HookEvent {
             prompt_id: self.prompt_id.clone(),
             transcript_path: self.transcript_path.clone(),
             claude_turn_complete: self.claude_turn_complete,
+            claude_recovered_after: self.claude_recovered_after.clone(),
             claude_task_execution: self
                 .claude_task_execution
                 .clone()

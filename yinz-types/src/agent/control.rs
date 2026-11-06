@@ -589,6 +589,7 @@ impl PromptObservation {
     /// fingerprint takes precedence over recognizing a provider-generated notification.
     pub fn matches_submission(&self, hook: &HookEvent) -> bool {
         hook.hook_event_name == "UserPromptSubmit"
+            && hook.claude_recovered_after.is_none()
             && (!self.acknowledged || self.acknowledges(hook))
             && (self.conversation_id.is_empty() || hook.session_id == self.conversation_id)
             && submit_matches(
@@ -638,6 +639,10 @@ impl PromptObservation {
         let Some(hook) = hook else {
             return Some(AgentOutcome::StatusUnavailable);
         };
+        // Transcript recovery knows a provider prompt, not which caller submitted it.
+        if hook.claude_recovered_after.is_some() && !self.acknowledged {
+            return None;
+        }
         if hook.is_worker() {
             return (event.kind == self.kind
                 && hook.session_id == self.conversation_id
