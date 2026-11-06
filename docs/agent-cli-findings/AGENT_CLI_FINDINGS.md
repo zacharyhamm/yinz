@@ -39,7 +39,8 @@ reconciliation and separates task observation from parent-turn completion.
 The observer now follows root and sidechain transcripts for the provider process,
 conversation and reporting route, deduplicated by a host-local lock. It recognizes
 root and nested resumes, sidechain joined notifications, and helper completion
-without a causal tool ID when exactly one unfinished observed execution matches.
+without a causal tool ID only for the sole observed initial Agent/Task launch.
+Resumes and tasks with multiple observed launches require causal attribution.
 Unmatched completions and provider execution tombstones survive incremental replay;
 a restarted observer replays files through the same idempotent screen reports.
 No timeout clears activity and no reporting failure blocks Claude.
@@ -86,7 +87,7 @@ rather than falling back to an unidentified helper completion.
 
 The private interactive capture was reread without running a new provider session.
 Its sidechain record at source line 21 starts with the complete
-`[SYSTEM NOTIFICATION - NOT USER INPUT]` banner, including four explanatory lines
+`[SYSTEM NOTIFICATION - NOT USER INPUT]` banner, including all explanatory text
 and a blank line before the notification XML. The previous sanitizer rebuilt only
 the XML and dropped this envelope. That made the regression pass while production
 rejected the captured completion. The earlier claim below that retaining extracted
@@ -120,6 +121,23 @@ regression first reproduced Busy instead of Idle, then passed with the fix.
 The first process run hit sandbox socket restrictions in two existing AGY tests;
 the socket-enabled run passed all 45. This was an environment restriction, not
 a waived test flake. Fresh review and the rebased full CI gate remain required.
+Fresh review of `1aeae496e` found a separate adapter defect: a delayed unidentified
+notification could be assigned to the sole unfinished execution even when it was
+a newer SendMessage resume. Helper fallback is now restricted to the task's sole
+initial Agent/Task launch. Resumes and multiple-launch histories require a causal
+tool ID, including when only the resume was observed. Unmatched helper notices
+can acquire causal attribution from a later copy of the same provider run; matched
+run tombstones cannot be reassigned. Regressions retain the captured helper case
+and protect known resumes from older unidentified notices, including delivery
+before the resumed launch and observation without the original launch. The repaired
+process selection passed all 46 tests; lint passed. A formatting invocation raced
+my concurrent lint rebuild of the same worktree's binary and failed to spawn one
+compilation worker with ENOENT. Serializing those commands removes that orchestration
+race; the subsequent format check passed. No flake was waived.
+
+The review also evaluated the old version-2 completeness criteria instead of the
+superseding acceptance recorded above. That requirement mismatch must be resolved
+in the lifecycle review context; it is not a reason to restore permanent Busy.
 The incident pane and draft remain untouched; no capture, installation or push
 was performed.
 

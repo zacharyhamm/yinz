@@ -210,7 +210,7 @@ fn captured_banner_does_not_bypass_completion_origin_or_execution_checks() {
 }
 
 #[test]
-fn helper_completion_requires_one_unfinished_execution_and_retains_run_tombstones() {
+fn helper_completion_requires_the_sole_initial_launch_and_retains_run_tombstones() {
     let mut tasks = tasks::Tasks::new("conversation");
     let completion = task_completion("helper", None, "run-1");
     assert!(tasks.record(&completion).unwrap().is_empty());
@@ -219,6 +219,10 @@ fn helper_completion_requires_one_unfinished_execution_and_retains_run_tombstone
     assert!(!tasks.pending());
     task_launch(&mut tasks, "launch-2", "helper");
     assert!(tasks.record(&completion).unwrap().is_empty());
+    assert!(tasks
+        .record(&task_completion("helper", Some("launch-2"), "run-1"))
+        .unwrap()
+        .is_empty());
     assert!(tasks.pending());
     task_launch(&mut tasks, "launch-3", "helper");
     // Two unfinished executions are ambiguous; retain the notice until later evidence.
@@ -230,9 +234,51 @@ fn helper_completion_requires_one_unfinished_execution_and_retains_run_tombstone
     let events = tasks
         .record(&task_completion("helper", Some("launch-2"), "run-2"))
         .unwrap();
-    assert_eq!(events.len(), 2);
+    assert_eq!(events.len(), 1);
+    assert!(tasks.pending());
+    assert_eq!(
+        tasks
+            .record(&task_completion("helper", Some("launch-3"), "run-3"))
+            .unwrap()
+            .len(),
+        1
+    );
     assert!(!tasks.pending());
     assert!(tasks.record(&completion).unwrap().is_empty());
+}
+
+#[test]
+fn unidentified_old_completion_cannot_finish_a_known_resume() {
+    for (initial_observed, completion_first) in
+        [(false, false), (false, true), (true, false), (true, true)]
+    {
+        let mut tasks = tasks::Tasks::new("conversation");
+        if initial_observed {
+            task_launch(&mut tasks, "initial", "worker");
+            tasks
+                .record(&task_completion("worker", Some("initial"), "first-run"))
+                .unwrap();
+        }
+        let older = task_completion("worker", None, "older-helper-run");
+        if completion_first {
+            assert!(tasks.record(&older).unwrap().is_empty());
+        }
+        tasks.record(&json!({"sessionId":"conversation", "type":"assistant", "message":{"content":[{"type":"tool_use", "id":"resume","name":"SendMessage"}]}})).unwrap();
+        let events = tasks.record(&json!({"sessionId":"conversation", "type":"user", "message":{"content":[{"type":"tool_result","tool_use_id":"resume"}]},"toolUseResult":{"success":true,"revivedAgentId":"worker"}})).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].hook_event_name, "SubagentStart");
+        assert!(tasks.record(&older).unwrap().is_empty());
+        assert!(tasks.pending());
+        assert!(tasks.record(&older).unwrap().is_empty());
+        assert_eq!(
+            tasks
+                .record(&task_completion("worker", Some("resume"), "resumed-run"))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(!tasks.pending());
+    }
 }
 
 #[test]

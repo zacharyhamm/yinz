@@ -85,6 +85,13 @@ impl Tasks {
         if let Some((task, tool, run)) = completion(record) {
             self.completions
                 .entry((task.into(), run.into()))
+                .and_modify(|(known, matched)| {
+                    // A later copy may carry causal attribution missing from a helper
+                    // notice. Never reassign a run that already completed an execution.
+                    if known.is_none() && !*matched {
+                        *known = tool.map(str::to_owned);
+                    }
+                })
                 .or_insert((tool.map(str::to_owned), false));
         }
         // Explicit causal identities take precedence over best-effort helper notices.
@@ -98,13 +105,22 @@ impl Tasks {
                         .get_key_value(tool)
                         .filter(|(_, (known, _))| known == task)
                 } else {
-                    let mut unfinished = self
+                    // Helper notices can identify the sole initial launch by task ID.
+                    // A resumed task reuses that ID: even one unfinished execution
+                    // could receive an older notice, so require its causal tool ID.
+                    let mut launches = self
                         .executions
                         .iter()
-                        .filter(|(_, (known, done))| known == task && !done);
-                    let candidate = unfinished.next();
-                    if unfinished.next().is_none() {
-                        candidate
+                        .filter(|(_, (known, _))| known == task);
+                    let candidate = launches.next();
+                    if launches.next().is_none() {
+                        candidate.filter(|(tool, (_, done))| {
+                            !done
+                                && self
+                                    .calls
+                                    .get(*tool)
+                                    .is_some_and(|name| matches!(name.as_str(), "Agent" | "Task"))
+                        })
                     } else {
                         None
                     }

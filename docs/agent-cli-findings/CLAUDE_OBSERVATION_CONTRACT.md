@@ -30,8 +30,11 @@ sidechain notifications, including a single `joinedNoticeRunIds` entry. Notifica
 XML may be bare or preceded by the exact captured system banner; arbitrary
 surrounding prose and multiple notification blocks remain rejected. Unmatched
 completions are retained until their launch appears. A completion without a causal
-tool ID is associated only with exactly one unfinished observed execution for that
-worker. This is best-effort correlation, not a complete provider execution ledger.
+tool ID is associated only with the sole observed initial Agent/Task launch for
+that worker. SendMessage resumes and workers with multiple observed launches need
+causal attribution, even if only one execution remains unfinished. An unmatched
+notice can acquire attribution from a later copy of the same provider run; matched
+run tombstones are never reassigned. This is best-effort correlation, not a complete provider execution ledger.
 
 The sanitized captures below remain evidence of observed provider behavior. Their
 old completeness verdict is preserved as investigation history, but no longer
