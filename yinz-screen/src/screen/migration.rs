@@ -401,6 +401,7 @@ impl Screen {
                     .filter(|(id, _)| !self.failed_paneless_plugins.contains(id))
                     .map(|(_, run)| run.clone())
                     .collect(),
+                display_size: Some(self.surface_size()),
             },
             prepared,
             terminals,

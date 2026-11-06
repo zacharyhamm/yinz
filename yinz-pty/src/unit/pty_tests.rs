@@ -5281,6 +5281,7 @@ fn migration_reconciles_partial_source_release_without_killing_or_releasing_abse
             global_last_active_tab: TabId::new(0),
             tab_group_preferences: vec![],
             paneless_plugins: vec![],
+            display_size: None,
         },
         phase: MigrationPhase::Recovery,
         tabs: vec![MigrationTab {
@@ -5505,6 +5506,7 @@ fn migration_preparation_reports_pending_spawn_without_blocking_completion() {
         global_last_active_tab: TabId::new(0),
         tab_group_preferences: vec![],
         paneless_plugins: vec![],
+        display_size: None,
     };
     let poll = |pty: &mut Pty| {
         let (reply, received) = crossbeam::channel::bounded(1);

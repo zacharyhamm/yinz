@@ -30,6 +30,7 @@ fn relative_data_directory_and_interrupted_snapshot_become_absolute() {
             global_last_active_tab: yinz_types::internal_ids::TabId::new(0),
             tab_group_preferences: vec![],
             paneless_plugins: vec![],
+            display_size: None,
         },
         phase: MigrationPhase::Prepared,
         tabs: vec![],
@@ -224,4 +225,69 @@ fn old_journals_default_to_stable_and_reject_prerelease_starts() {
     let resumed = Store::open(&socket, &data, &operation).unwrap();
     assert_eq!(resumed.journal.channel, ReleaseChannel::Stable);
     assert_eq!(resumed.journal.operation, operation);
+}
+
+/// A replacement starts at the size the session had when it froze, not the size its source
+/// server's first client had at startup - which no resize ever updates.
+#[test]
+fn replacement_assets_start_at_the_frozen_session_size() {
+    use yinz_types::{
+        pane_size::Size,
+        session_migration::{SessionMigrationInventory, SESSION_MIGRATION_FORMAT},
+        session_update::Inventory,
+    };
+    let root = tempfile::tempdir().unwrap();
+    let operation = uuid::Uuid::new_v4().to_string();
+    let mut store = Store::open(
+        &root.path().join("session"),
+        &root.path().join("data"),
+        &operation,
+    )
+    .unwrap();
+    let startup = Size {
+        rows: 86,
+        cols: 317,
+    };
+    store.journal.source = Some(Inventory {
+        session: "session".into(),
+        server_pid: 1,
+        server_instance: uuid::Uuid::new_v4().to_string(),
+        executable: "/usr/bin/true".into(),
+        running_version: "0.0.0".into(),
+        running_binary_sha256: None,
+        assets: yinz_types::input::cli_assets::CliAssets {
+            terminal_window_size: startup,
+            supports_in_place_update: true,
+            ..Default::default()
+        },
+        configuration: serde_json::Value::String(String::new()),
+        clients: vec![],
+    });
+    let frozen = |display_size| SessionMigrationInventory {
+        format: SESSION_MIGRATION_FORMAT,
+        session_name: "session".into(),
+        instance_id: uuid::Uuid::new_v4().to_string(),
+        tabs: vec![],
+        clients: vec![],
+        remote_hosts: vec![],
+        global_last_active_tab: yinz_types::internal_ids::TabId::new(0),
+        tab_group_preferences: vec![],
+        paneless_plugins: vec![],
+        display_size,
+    };
+
+    let current = Size {
+        rows: 89,
+        cols: 319,
+    };
+    store.journal.migration = Some(frozen(Some(current)));
+    let assets = super::super::coordinator::replacement_assets(&store.journal).unwrap();
+    assert_eq!(assets.terminal_window_size, current);
+    assert_eq!(assets.update_target.as_deref(), Some(operation.as_str()));
+    assert!(!assets.supports_in_place_update);
+
+    // A source from before the size was recorded keeps its startup size.
+    store.journal.migration = Some(frozen(None));
+    let assets = super::super::coordinator::replacement_assets(&store.journal).unwrap();
+    assert_eq!(assets.terminal_window_size, startup);
 }

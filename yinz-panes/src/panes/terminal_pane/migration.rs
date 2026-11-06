@@ -38,6 +38,17 @@ struct Snapshot {
     invoked_with: Option<Run>,
 }
 impl TerminalPane {
+    /// Reflow restored terminal state into this pane's content rectangle.
+    ///
+    /// Only when the rectangle differs: a resize at the same dimensions would erase restored
+    /// margins and tab stops. Shared by warp and session migration so the two restores agree.
+    pub(super) fn fit_restored_grid(&mut self) {
+        let rows = self.get_content_rows();
+        let cols = self.get_content_columns();
+        if self.grid.height != rows || self.grid.width != cols {
+            self.grid.change_size(rows, cols);
+        }
+    }
     pub(super) fn check_migration(&self) -> Result<(), String> {
         if self.forward_paused || !self.pending_pty_input.is_empty() || self.nested_guest {
             return Err("terminal has pending host-query output or a nested session that cannot be transferred".into());
@@ -115,9 +126,10 @@ impl TerminalPane {
             .restore_migration_state(state.grid)
             .map_err(|error| format!("restore pane terminal state: {error:#}"))?;
         self.selectable = state.selectable;
-        self.geom = state.geom;
-        self.geom_override = state.geom_override;
-        self.content_offset = state.content_offset;
+        // Geometry, frame offsets and borderlessness stay as the destination's layout placed
+        // them, as for a warped pane. The source laid this pane out for its own screen; copying
+        // that rectangle over a placed pane leaves the tab's panes not tiling its display, so
+        // the solver then refuses every resize. Fullscreen comes back through the tab's state.
         self.max_content_width = state.max_content_width;
         self.subtitle = state.subtitle;
         self.subtitle_enabled = state.subtitle_enabled;
@@ -135,7 +147,6 @@ impl TerminalPane {
         self.last_agent_cwd = state.last_agent_cwd;
         self.last_agent_session_id = state.last_agent_session_id;
         self.last_hook_at_ms = state.last_hook_at_ms;
-        self.borderless = state.borderless;
         self.exclude_from_sync = state.exclude_from_sync;
         self.search_term = state.search_term;
         self.is_held = state.is_held;
@@ -143,6 +154,8 @@ impl TerminalPane {
         self.banner = state.banner;
         self.has_bell_notification = state.has_bell_notification;
         self.invoked_with = state.invoked_with;
+        self.fit_restored_grid();
+        self.set_should_render(true);
         self.frame.clear();
         self.fake_cursor_locations.clear();
         self.render_width = None;

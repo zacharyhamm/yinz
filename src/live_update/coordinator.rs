@@ -1334,9 +1334,17 @@ pub(super) fn start_server_at(executable: &Path, socket: &Path) -> Result<Connec
     Ok(connection)
 }
 
-fn initialize_replacement(store: &Store, connection: &mut Connection) -> Result<()> {
-    let source = store
-        .journal
+/// Startup assets for a server that adopts this operation's frozen session, whether the
+/// replacement or a recreated source rolling back.
+///
+/// The window size comes from the frozen migration inventory. The source's own assets hold the
+/// size its first client had at startup, which no later resize updates; a server bootstrapped
+/// at that size rebuilt every tab into the wrong screen. Older sources do not record a size,
+/// and fall back to it.
+pub(super) fn replacement_assets(
+    journal: &Journal,
+) -> Result<yinz_types::input::cli_assets::CliAssets> {
+    let source = journal
         .source
         .as_ref()
         .context("missing source inventory")?;
@@ -1350,11 +1358,23 @@ fn initialize_replacement(store: &Store, connection: &mut Connection) -> Result<
     );
     assets.configuration_options = None;
     assets.layout = None;
-    assets.update_target = Some(store.journal.operation.clone());
+    assets.update_target = Some(journal.operation.clone());
     assets.update_source_session = Some(source.session.clone().into());
     assets.supports_in_place_update = false;
     assets.supports_source_update = false;
-    connection.initialize(assets)?;
+    if let Some(size) = journal
+        .migration
+        .as_ref()
+        .and_then(|migration| migration.display_size)
+        .filter(|size| size.rows > 0 && size.cols > 0)
+    {
+        assets.terminal_window_size = size;
+    }
+    Ok(assets)
+}
+
+fn initialize_replacement(store: &Store, connection: &mut Connection) -> Result<()> {
+    connection.initialize(replacement_assets(&store.journal)?)?;
     let ready: Inventory =
         serde_json::from_value(connection.request(&store.journal.operation, Command::Inventory)?)
             .context("check private replacement initialization")?;
@@ -1601,21 +1621,7 @@ fn initialize_recovery_source(store: &Store, source: &mut Connection) -> Result<
         .and_then(serde_json::Value::as_bool)
         != Some(true)
     {
-        let mut assets = original.assets.clone();
-        assets.update_configuration = Some(
-            original
-                .configuration
-                .as_str()
-                .context("missing original effective configuration")?
-                .to_owned(),
-        );
-        assets.configuration_options = None;
-        assets.layout = None;
-        assets.update_target = Some(operation.clone());
-        assets.update_source_session = Some(original.session.clone().into());
-        assets.supports_in_place_update = false;
-        assets.supports_source_update = false;
-        source.initialize(assets)?;
+        source.initialize(replacement_assets(&store.journal)?)?;
     }
     let initialized: Inventory =
         serde_json::from_value(source.request(operation, Command::Inventory)?)

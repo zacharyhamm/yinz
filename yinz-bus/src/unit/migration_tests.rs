@@ -15,6 +15,7 @@ fn snapshot(operation: &str) -> SessionMigrationSnapshot {
             global_last_active_tab: yinz_types::internal_ids::TabId::new(0),
             tab_group_preferences: vec![],
             paneless_plugins: vec![],
+            display_size: None,
         },
         phase: MigrationPhase::Prepared,
         tabs: vec![],

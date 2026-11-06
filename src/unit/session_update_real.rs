@@ -202,6 +202,17 @@ fn setup_with_configuration(configuration: &str) -> (Session, Vec<i32>) {
 }
 
 fn target(session: &Session, source: &Inventory, operation: &str) -> (Peer, PathBuf) {
+    target_at(session, source, operation, None)
+}
+
+/// Bootstrap a private replacement, optionally at a window size other than the source's
+/// startup size - the size a replacement saw when no client resize had updated it.
+fn target_at(
+    session: &Session,
+    source: &Inventory,
+    operation: &str,
+    size: Option<yinz_types::pane_size::Size>,
+) -> (Peer, PathBuf) {
     let socket = session.socket().with_file_name("private-update");
     let mut cmd = session.command();
     assert!(cmd.arg("--server").arg(&socket).status().unwrap().success());
@@ -212,6 +223,9 @@ fn target(session: &Session, source: &Inventory, operation: &str) -> (Peer, Path
     assets.update_configuration = Some(source.configuration.as_str().unwrap().to_owned());
     assets.configuration_options = None;
     assets.layout = None;
+    if let Some(size) = size {
+        assets.terminal_window_size = size;
+    }
     peer.sender
         .send_client_msg(ClientToServerMsg::FirstClientConnected { cli_assets: assets })
         .unwrap();
@@ -841,6 +855,212 @@ fn retired_source_duplicate_update_returns_the_original_active_operation() {
         .request(&operation, UpdateCommand::FinishMigration)
         .unwrap();
     assert_alive(&pids);
+}
+
+/// Tiled terminal rectangles `(x, y, columns, rows)` of one tab, ordered by position.
+fn tab_rectangles(panes: &serde_json::Value, tab: &str) -> Vec<(u64, u64, u64, u64)> {
+    let mut rectangles: Vec<_> = panes
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|pane| {
+            pane["tab_name"] == tab && pane["is_plugin"] == false && pane["is_floating"] == false
+        })
+        .map(|pane| {
+            let field = |name: &str| pane[name].as_u64().unwrap();
+            (
+                field("pane_x"),
+                field("pane_y"),
+                field("pane_columns"),
+                field("pane_rows"),
+            )
+        })
+        .collect();
+    rectangles.sort();
+    rectangles
+}
+
+/// Poll `list-panes` until the tab's rectangles satisfy `done`, describing the last read.
+fn wait_for_rectangles(
+    session: &Session,
+    tab: &str,
+    what: &str,
+    done: impl Fn(&[(u64, u64, u64, u64)]) -> bool + Sync,
+) -> Vec<(u64, u64, u64, u64)> {
+    let observed = yinz_test_support::Watched::new((Vec::new(), false));
+    std::thread::scope(|scope| {
+        let observed = &observed;
+        let done = &done;
+        // list-panes is a CLI round trip, not an in-process event; poll it with a deadline.
+        scope.spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                let current = tab_rectangles(&list_panes(session), tab);
+                let finished = done(&current);
+                let expired = Instant::now() >= deadline;
+                *observed.lock() = (current, finished);
+                if finished || expired {
+                    return;
+                }
+                std::thread::park_timeout(Duration::from_millis(50));
+            }
+        });
+        observed.wait_until_described(
+            what,
+            Duration::from_secs(35),
+            |(current, finished)| finished.then(|| current.clone()),
+            |(current, _)| format!("last rectangles: {current:?}"),
+        )
+    })
+}
+
+fn list_panes(session: &Session) -> serde_json::Value {
+    serde_json::from_slice(
+        &session
+            .success(&["--session", NAME, "action", "list-panes", "--json"])
+            .stdout,
+    )
+    .unwrap()
+}
+
+/// A replacement places every adopted pane from the migrated layout at its own screen size,
+/// then restores each pane's terminal state. Restoring the source's pane rectangles over that
+/// placement left panes overflowing the replacement's screen and the layout solver refusing
+/// every later resize, which corrupted every tab after a real update.
+#[test]
+fn live_update_lays_out_adopted_tabs_for_the_replacement_screen() {
+    let session = Session::new();
+    yinz_steel_builtins::install(
+        &yinz_steel_builtins::asset_dir(),
+        &session.0.path().join("data/yinz"),
+    )
+    .unwrap();
+    fs::write(
+        session.0.path().join("config.kdl"),
+        "detachable_panes true\nload_plugins clear-defaults=true\n",
+    )
+    .unwrap();
+    session.success(&[
+        "--layout-string",
+        r#"
+        layout {
+            default_tab_template {
+                pane size=1 borderless=true { plugin location="yinz:tab-bar"; }
+                children
+                pane size=1 borderless=true { plugin location="yinz:status-bar"; }
+            }
+            tab name="split" {
+                pane split_direction="vertical" {
+                    pane command="/bin/cat";
+                    pane command="/bin/cat";
+                    pane command="/bin/cat";
+                }
+            }
+        }
+    "#,
+        "attach",
+        "--create-background",
+        NAME,
+    ]);
+    session.wait_for_panes(false);
+    let before = wait_for_rectangles(&session, "split", "all three split panes", |panes| {
+        panes.len() == 3
+    });
+
+    let operation = uuid::Uuid::new_v4().to_string();
+    let mut source = Peer::connect(&session.socket());
+    let inventory: Inventory = serde_json::from_value(
+        source
+            .request(&operation, UpdateCommand::Inventory)
+            .unwrap(),
+    )
+    .unwrap();
+    // As the coordinator does: preparation reports progress until the session drains, including
+    // the tab-bar and status-bar plugins still loading after the terminals appear.
+    source.prepare_update(&operation);
+    let snapshot = session.0.path().join("geometry-snapshot.json");
+    let released = source
+        .request(
+            &operation,
+            UpdateCommand::ReleaseMigration {
+                snapshot: snapshot.clone(),
+            },
+        )
+        .unwrap();
+    let frozen: SessionMigrationInventory =
+        serde_json::from_value(released["inventory"].clone()).unwrap();
+    let source_size = frozen
+        .display_size
+        .expect("the frozen inventory records the session's screen size");
+    // Smaller than the source in both directions, so a pane keeping its source rectangle
+    // cannot fit the replacement's screen.
+    let smaller = yinz_types::pane_size::Size {
+        rows: source_size.rows - 6,
+        cols: source_size.cols - 20,
+    };
+    let (mut destination, _socket) = target_at(&session, &inventory, &operation, Some(smaller));
+    destination
+        .request(&operation, UpdateCommand::AdoptMigration { snapshot })
+        .unwrap();
+    source
+        .request(
+            &operation,
+            UpdateCommand::RenameSession {
+                name: "retired-update".into(),
+            },
+        )
+        .unwrap();
+    destination
+        .request(
+            &operation,
+            UpdateCommand::RenameSession { name: NAME.into() },
+        )
+        .unwrap();
+    destination
+        .request(&operation, UpdateCommand::FinishMigration)
+        .unwrap();
+
+    let adopted = tab_rectangles(&list_panes(&session), "split");
+    assert_eq!(adopted.len(), 3, "{adopted:?}");
+    for (index, &(x, y, cols, rows)) in adopted.iter().enumerate() {
+        assert!(
+            x + cols <= smaller.cols as u64 && y + rows <= smaller.rows as u64,
+            "pane {index} overflows the {smaller:?} replacement screen: {adopted:?}"
+        );
+        for &(other_x, other_y, other_cols, other_rows) in &adopted[index + 1..] {
+            let disjoint = x + cols <= other_x
+                || other_x + other_cols <= x
+                || y + rows <= other_y
+                || other_y + other_rows <= y;
+            assert!(disjoint, "adopted panes overlap: {adopted:?}");
+        }
+    }
+    let width: u64 = adopted.iter().map(|(_, _, cols, _)| cols).sum();
+    assert_eq!(
+        width, smaller.cols as u64,
+        "the split must span the replacement screen: {adopted:?}"
+    );
+
+    // The adopted layout follows ordinary resizes: back at the source's size, it is the
+    // layout the source had.
+    destination
+        .sender
+        .send_client_msg(ClientToServerMsg::TerminalResize {
+            new_size: source_size,
+        })
+        .unwrap();
+    wait_for_rectangles(
+        &session,
+        "split",
+        &format!("adopted panes to resize to the source layout {before:?}"),
+        |current| current == before.as_slice(),
+    );
+
+    source
+        .sender
+        .send_client_msg(ClientToServerMsg::KillSession)
+        .unwrap();
+    assert_server_exited(inventory.server_pid);
 }
 
 #[test]

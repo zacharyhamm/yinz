@@ -163,9 +163,28 @@ impl Drop for Session {
                 }
             }
         }
-        if self.socket().exists() {
-            let _ = self.run(&["kill-session", NAME]);
+        // Every server this test started, not only the one named NAME: update tests rename the
+        // source (`retired-update`) and hand NAME to a replacement started on another socket, and
+        // a failing assertion skips their explicit KillSession. The directory is this test's own.
+        for name in self.server_names() {
+            let _ = self.run(&["kill-session", &name]);
         }
+    }
+}
+impl Session {
+    /// Names of the live server sockets in this test's private socket directory.
+    fn server_names(&self) -> Vec<String> {
+        use std::os::unix::fs::FileTypeExt;
+        let Ok(entries) = fs::read_dir(self.socket().parent().unwrap()) else {
+            return Vec::new();
+        };
+        let mut names: Vec<_> = entries
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_socket()))
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect();
+        names.sort();
+        names
     }
 }
 

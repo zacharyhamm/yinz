@@ -69,6 +69,11 @@ pub struct SessionMigrationInventory {
     pub global_last_active_tab: TabId,
     pub tab_group_preferences: Vec<(u32, Option<TabId>)>,
     pub paneless_plugins: Vec<crate::input::layout::RunPluginOrAlias>,
+    /// The session's screen size when it was frozen. A replacement server starts at this size
+    /// rather than at its source's startup size, which no client resize ever updated. Absent
+    /// from older sources, whose replacements fall back to the startup size.
+    #[serde(default)]
+    pub display_size: Option<crate::pane_size::Size>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

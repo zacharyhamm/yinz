@@ -30,6 +30,7 @@ fn cold_release_discards_destination_mappings_and_preserves_terminal_state() {
             global_last_active_tab: tab,
             tab_group_preferences: vec![],
             paneless_plugins: vec![],
+            display_size: None,
         },
         phase: MigrationPhase::Adopted,
         tabs: vec![MigrationTab {

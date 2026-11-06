@@ -1754,13 +1754,7 @@ impl Pane for TerminalPane {
         self.grid
             .restore_migration_state(state)
             .map_err(|e| format!("restore terminal state: {e:#}"))?;
-        // Reflow only when the destination content rectangle differs. Forcing a
-        // resize at the same dimensions would erase restored margins and tab stops.
-        let rows = self.get_content_rows();
-        let cols = self.get_content_columns();
-        if self.grid.height != rows || self.grid.width != cols {
-            self.grid.change_size(rows, cols);
-        }
+        self.fit_restored_grid();
         self.set_should_render(true);
         self.vte_parser = vte::Parser::new();
         self.parser_boundary = Default::default();

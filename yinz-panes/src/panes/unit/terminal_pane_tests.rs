@@ -806,6 +806,46 @@ fn migration_preserves_parser_continuations_at_every_byte_boundary() {
     }
 }
 
+/// A replacement server places each adopted pane from the migrated layout at its own screen
+/// size before restoring the pane's state. Restoring the source's rectangle over that placement
+/// left the tab's panes not tiling the display, and the solver then refused every resize.
+#[test]
+fn migration_keeps_destination_geometry_and_reflows_into_it() {
+    let mut source = make_terminal_pane_for_bell();
+    source.set_content_offset(Offset::frame(1));
+    source.handle_pty_bytes(b"first line\r\nsecond line".to_vec());
+    source.drain_messages_to_pty();
+    let snapshot = source.migration_state().unwrap();
+
+    let mut target = make_terminal_pane_for_bell();
+    let mut placed = PaneGeom {
+        x: 7,
+        y: 2,
+        ..Default::default()
+    };
+    placed.cols.set_inner(60);
+    placed.rows.set_inner(12);
+    target.set_geom(placed);
+    target.set_borderless(true);
+    let offset = target.get_content_offset();
+
+    target.restore_migration_state(snapshot).unwrap();
+
+    assert_eq!(target.position_and_size(), placed);
+    assert_eq!(target.get_content_offset(), offset);
+    assert!(target.borderless());
+    assert_eq!(
+        (target.grid.width, target.grid.height),
+        (target.get_content_columns(), target.get_content_rows()),
+        "restored grid must be reflowed into the destination's content rectangle"
+    );
+    let screen = target.dump_screen(true, None);
+    assert!(
+        screen.contains("first line") && screen.contains("second line"),
+        "{screen}"
+    );
+}
+
 #[test]
 fn migration_rejects_invalid_parser_indices_before_mutating_the_grid() {
     let mut source = make_terminal_pane_for_bell();
