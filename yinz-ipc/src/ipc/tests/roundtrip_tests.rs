@@ -6340,6 +6340,7 @@ fn warp_agent_tracking_roundtrip_preserves_provider_evidence() {
                     turns: [(
                         "prompt".into(),
                         ClaudeTurn {
+                            awaiting_native_submit: true,
                             confirmation: Some(false),
                             sequence: 8,
                         },

@@ -195,7 +195,10 @@ impl CompletionChildren {
                 .context("poll Claude completion observer")?
                 .is_some()
             {
-                self.0.swap_remove(index);
+                self.0
+                    .swap_remove(index)
+                    .wait()
+                    .context("reap finished Claude completion observer")?;
             } else {
                 index += 1;
             }
