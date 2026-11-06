@@ -135,6 +135,22 @@ passed their focused rerun. `cargo x lint`, `cargo x format --check`, and
 `git diff --check` passed. No full suite, full CI gate, merge, rebase, push or
 remote Git operation is part of this task. No live installed binary was replaced.
 
+The controller's subsequent merge gate exposed an outdated IPC steering fixture:
+`claude_steering_delivers_without_interrupting_and_publishes_background_activity`
+sent only raw SubagentStart/Stop hooks, so the worker correctly remained active
+and its idle wait timed out. A focused run reproduced the failure in 32.7 seconds.
+The fixture now also sends the observer's correlated launch and completion reports,
+using task/tool/run identities from the same captured provider fixture validated
+by the process tests. Additional assertions retain work after the raw Stop, remove
+the worker after correlated completion, suppress duplicate completion and late
+parent confirmation, and retain Busy for the independent Bash notification until
+its turn finishes. The repaired integration test passes in 2.7 seconds without
+changing runtime acceptance rules or weakening the steering/publication assertions.
+The 12 focused process/screen checks also passed, covering captured provider
+evidence, stale completion after resumption, worker waits, independent draft
+readiness, aggregate activity, and pane transfer. Lint and formatting checks
+passed. The controller retains ownership of the next full merge gate.
+
 ## Known limitations and caller guidance
 
 The following behavior is intentional or not worth fixing. Callers and the skill should account for it.
