@@ -5,6 +5,13 @@ scope and unnecessary complexity. For revisions, compare the previous plan,
 findings, planner responses, controller dispositions and current plan. Verify
 claimed fixes and look for new defects while preserving supported tradeoffs.
 
+For plan and code review, read the [Yinz review dimensions](dimensions.md) and
+apply those relevant to the change. Findings may cite a dimension name in
+`description` and its authoritative source in `evidence`, alongside concrete
+affected code or plan locations. Use the existing finding fields, without a
+`category` property. Dimension citations do not replace evidence, severity,
+finding identity, disposition or reopening requirements.
+
 A high or critical blocker must identify an affected `requirement`, a concrete
 failure `mechanism`, and nonempty source `evidence` with paths and relevant code
 locations. Explain the trigger and consequence. Missing implementation detail,

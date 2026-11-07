@@ -118,8 +118,10 @@ dispatch. Resume reuses it and reviews the resulting version. Never infer blanke
 approval or ask again for an already authorized assignment.
 
 Planners and reviewers must read [planning standards](references/planning.md) and
-[review standards](references/review.md). Preserve unaffected steps, accepted
-tradeoffs and finding IDs. Reopening a disposed concern requires new evidence
+[review standards](references/review.md). Plan and code reviewers must also read
+the [Yinz review dimensions](references/dimensions.md), applying those relevant to
+the change. Preserve unaffected steps, accepted tradeoffs and finding IDs.
+Reopening a disposed concern requires new evidence
 explaining why its previous disposition no longer holds. Historical context never
 substitutes for current review evidence.
 

@@ -246,6 +246,9 @@ receive the previous plan, findings, responses and current plan, verify fixes,
 and check for new defects. Workers must read the skill's
 [planning standards](../.agents/skills/issue-lifecycle/references/planning.md) and
 [review standards](../.agents/skills/issue-lifecycle/references/review.md).
+Plan and code reviewers also read the
+[Yinz review dimensions](../.agents/skills/issue-lifecycle/references/dimensions.md)
+for applicable repository rules and the existing-field finding citation convention.
 
 Existing records need no rewrite: new fields are optional, and saved prompts and
 snapshots are kept. Results are always validated against the current contract;

@@ -6,6 +6,9 @@ behavior, affected files, concrete steps, risks, assumptions and focused checks.
 Keep scope proportional to the requirement; avoid unnecessary abstractions,
 configuration, migrations and unrelated improvements.
 
+Use the applicable [Yinz review dimensions](dimensions.md) to check proposed
+behavior, affected callers and verification coverage against repository rules.
+
 For a revision, compare the previous plan with its review and applicable
 controller dispositions. Preserve unaffected steps, step IDs and accepted
 tradeoffs. Change only what the findings or new user instructions justify.

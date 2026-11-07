@@ -1676,6 +1676,167 @@ function driverEvidence(
       };
   }
 }
+
+Deno.test("the Yinz review dimensions guide is available from the repository", async () => {
+  const guide = await Deno.readTextFile(
+    new URL(
+      "../../../.agents/skills/issue-lifecycle/references/dimensions.md",
+      import.meta.url,
+    ),
+  );
+  assert(guide.startsWith("# Yinz review dimensions\n"));
+});
+
+for (
+  const { role, prepared } of [
+    { role: "review_plan", prepared: false },
+    { role: "review_plan", prepared: true },
+    { role: "review_code", prepared: true },
+  ] as const
+) {
+  Deno.test(`${role} reads Yinz dimensions from the ${prepared ? "control" : "worker"} checkout and retains the finding contract`, async () => {
+    const origin = "/repo/issue";
+    let state = prepared
+      ? { ...implementing(), workerWorktree: origin }
+      : transition(createState(issue, origin), "triage", triage);
+    if (role === "review_plan") {
+      state = transition(state, "plan", driverPlan);
+    }
+    const h = harness(state);
+    h.controls.evidenceForRole = driverEvidence;
+    await h.methods.run_agent.execute({ ...options, role }, h.context);
+    const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    equal(task.config.cwd, origin);
+    const references = `${
+      prepared ? h.context.repoDir : origin
+    }/.agents/skills/issue-lifecycle/references`;
+    assert(
+      task.prompt.includes(
+        `Read ${references}/dimensions.md before reviewing.`,
+      ),
+    );
+    assert(
+      task.prompt.includes(
+        "cite a dimension name in description and its authoritative source in evidence alongside concrete affected code or plan locations",
+      ),
+    );
+    assert(task.prompt.includes("do not add a category property"));
+    assert(
+      task.prompt.includes(
+        "A dimension citation does not replace requirement, mechanism, source evidence, severity, finding identity, disposition or reopening rules",
+      ),
+    );
+    assert(
+      task.prompt.includes(
+        "An inapplicable dimension creates no finding or additional testing obligation",
+      ),
+    );
+    if (role === "review_plan") {
+      assert(
+        task.prompt.includes(
+          `Read ${references}/planning.md and ${references}/review.md before working.`,
+        ),
+      );
+      assert(
+        task.prompt.includes("proposed behavior and verification coverage"),
+      );
+      assert(
+        task.prompt.includes(
+          "Every blocker needs an affected requirement, concrete failure mechanism and source evidence",
+        ),
+      );
+      assert(
+        task.prompt.includes(
+          "speculative concerns alone are not high severity",
+        ),
+      );
+      assert(task.prompt.includes("Reuse finding IDs for persistent concerns"));
+      assert(
+        task.prompt.includes(
+          "Compare the previous plan, review findings, revision responses and current plan in planningContext",
+        ),
+      );
+    } else {
+      assert(
+        task.prompt.includes("committed implementation and affected callers"),
+      );
+      assert(
+        task.prompt.includes("Review the committed diff against local main"),
+      );
+      assert(task.prompt.includes("Preliminary checks are advisory"));
+      assert(task.prompt.includes(`The commit being reviewed is ${head}.`));
+    }
+
+    const contract = JSON.parse(
+      task.prompt.split(
+        "Return exactly one JSON object matching this schema, without Markdown fences or extra prose:\n\n",
+      )[1].split("\n\nCurrent lifecycle snapshot")[0],
+    );
+    const finding = contract.properties.findings.items;
+    equal(Object.keys(finding.properties).sort(), [
+      "description",
+      "evidence",
+      "id",
+      "mechanism",
+      "reopening",
+      "requirement",
+      "resolution",
+      "severity",
+    ]);
+    equal(finding.required, ["id", "severity", "description"]);
+    equal(finding.additionalProperties, false);
+  });
+}
+
+Deno.test("initial and revision planners retain planning and review guidance", async () => {
+  const origin = "/repo/issue";
+  for (const prepared of [false, true]) {
+    const state = prepared
+      ? { ...implementing(), workerWorktree: origin }
+      : transition(createState(issue, origin), "triage", triage);
+    const h = harness(state);
+    h.controls.evidenceForRole = driverEvidence;
+    await h.methods.run_agent.execute(
+      { ...options, role: "plan" },
+      h.context,
+    );
+    const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    const references = `${
+      prepared ? h.context.repoDir : origin
+    }/.agents/skills/issue-lifecycle/references`;
+    assert(
+      task.prompt.includes(
+        `Read ${references}/planning.md and ${references}/review.md before working.`,
+      ),
+    );
+    assert(
+      task.prompt.includes("testingStrategy explaining the test selection"),
+    );
+    assert(
+      task.prompt.includes("focused development checks selected per AGENTS.md"),
+    );
+    assert(
+      task.prompt.includes(
+        "Preserve unaffected steps, accepted decisions and tradeoffs",
+      ),
+    );
+    assert(task.prompt.includes("Reuse finding IDs for persistent concerns"));
+    if (prepared) {
+      assert(
+        task.prompt.includes(
+          "This is a targeted revision. Include revision.summary, acceptedDecisions and a response (addressed, disputed with evidence, or unresolved) to each blocking finding",
+        ),
+      );
+    } else {
+      assert(
+        task.prompt.includes(
+          "Every blocker needs an affected requirement, concrete failure mechanism and source evidence",
+        ),
+      );
+    }
+  }
+});
+
 function dispatchedRoles(h: ReturnType<typeof harness>) {
   return h.writes.filter((write) =>
     write.spec === "agent-task" && write.value.status === "running" &&

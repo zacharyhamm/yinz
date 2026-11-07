@@ -263,6 +263,15 @@ function taskPrompt(
           : []),
       ]
       : []),
+    ...(["review_plan", "review_code"].includes(role)
+      ? [
+        `Read ${join(references, "dimensions.md")} before reviewing.`,
+        role === "review_plan"
+          ? "Apply relevant Yinz review dimensions to the proposed behavior and verification coverage against source."
+          : "Apply relevant Yinz review dimensions to the committed implementation and affected callers.",
+        "When applicable, cite a dimension name in description and its authoritative source in evidence alongside concrete affected code or plan locations. Use the existing finding fields; do not add a category property. A dimension citation does not replace requirement, mechanism, source evidence, severity, finding identity, disposition or reopening rules. An inapplicable dimension creates no finding or additional testing obligation.",
+      ]
+      : []),
     ...(request
       ? ["Exact user instructions for this assignment:", request]
       : []),
