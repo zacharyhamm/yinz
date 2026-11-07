@@ -124,9 +124,7 @@ pub struct PluginPane {
     /// attaching to a session. Shown in that client's grid alone: the other clients' rendered
     /// content is theirs to keep, and their instances will not re-render it when the newcomer's
     /// load finishes (a state update that changes nothing for them draws nothing).
-    client_loading_indications: HashMap<ClientId, LoadingIndication>,
-    /// Per client, what `last_loading_indication` is for the plugin-wide indicator.
-    last_client_loading_indications: HashMap<ClientId, String>,
+    client_loads: HashMap<ClientId, ClientLoad>,
     debug: bool,
     arrow_fonts: bool,
     styled_underlines: bool,
@@ -206,8 +204,7 @@ impl PluginPane {
             last_loading_indication: None,
             invoked_with,
             loading_indication,
-            client_loading_indications: HashMap::new(),
-            last_client_loading_indications: HashMap::new(),
+            client_loads: HashMap::new(),
             debug,
             arrow_fonts,
             styled_underlines,
@@ -219,6 +216,31 @@ impl PluginPane {
             plugin.add_client(client_id);
         }
         plugin
+    }
+}
+
+/// One client's own load of its instance of the plugin; see `PluginPane::client_loads`.
+struct ClientLoad {
+    indication: LoadingIndication,
+    /// What `last_loading_indication` is for the plugin-wide indicator.
+    last_rendered: Option<String>,
+}
+
+impl ClientLoad {
+    /// The indicator's frame now, remembered as the one last drawn.
+    fn render(&mut self) -> String {
+        let frame = self.indication.to_string();
+        self.last_rendered = Some(frame.clone());
+        frame
+    }
+    /// `render`, unless it would draw the same frame as last time.
+    fn render_if_changed(&mut self) -> Option<String> {
+        let frame = self.indication.to_string();
+        if self.last_rendered.as_deref() == Some(frame.as_str()) {
+            return None;
+        }
+        self.last_rendered = Some(frame.clone());
+        Some(frame)
     }
 }
 
@@ -272,23 +294,25 @@ impl PluginPaneControl for PluginPane {
         let mut indication =
             LoadingIndication::new(self.pane_title.clone()).with_colors(self.style.colors);
         indication.merge(loading_indication);
-        let rendered = indication.to_string();
-        self.client_loading_indications
-            .insert(client_id, indication);
+        let mut load = ClientLoad {
+            indication,
+            last_rendered: None,
+        };
         // A client the screen has not attached yet has no grid; `add_client` draws the
         // indication when it gets one.
-        if let Some(grid) = self.grids.get_mut(&client_id) {
+        let frame = self.grids.get_mut(&client_id).map(|grid| {
             grid.reset_terminal_state();
+            load.render()
+        });
+        self.client_loads.insert(client_id, load);
+        if let Some(frame) = frame {
             self.vte_parsers.remove(&client_id);
             self.kitty_interceptors.remove(&client_id);
-            self.last_client_loading_indications
-                .insert(client_id, rendered.clone());
-            self.handle_plugin_bytes(client_id, rendered.into_bytes());
+            self.handle_plugin_bytes(client_id, frame.into_bytes());
         }
     }
     fn end_client_loading_indication(&mut self, client_id: ClientId) {
-        self.client_loading_indications.remove(&client_id);
-        self.last_client_loading_indications.remove(&client_id);
+        self.client_loads.remove(&client_id);
     }
     fn progress_animation_offset(&mut self) {
         if !self.loading_indication.ended {
@@ -305,23 +329,28 @@ impl PluginPaneControl for PluginPane {
             if self.last_loading_indication.as_deref() != Some(rendered.as_str()) {
                 let bytes = rendered.as_bytes().to_vec();
                 self.last_loading_indication = Some(rendered);
-                self.handle_plugin_bytes_for_all_clients(bytes);
+                // Not into a grid with a load of its own: the two indicators would take turns
+                // overwriting each other there on every tick.
+                let client_ids: Vec<ClientId> = self
+                    .grids
+                    .keys()
+                    .filter(|client_id| !self.client_loads.contains_key(client_id))
+                    .copied()
+                    .collect();
+                for client_id in client_ids {
+                    self.handle_plugin_bytes(client_id, bytes.clone());
+                }
             }
         }
         // Each client's own load animates in its grid alone, compared the same way.
         let client_frames: Vec<(ClientId, String)> = self
-            .client_loading_indications
-            .iter()
+            .client_loads
+            .iter_mut()
             .filter(|(client_id, _)| self.grids.contains_key(client_id))
-            .map(|(client_id, indication)| (*client_id, indication.to_string()))
-            .filter(|(client_id, rendered)| {
-                self.last_client_loading_indications.get(client_id) != Some(rendered)
-            })
+            .filter_map(|(client_id, load)| load.render_if_changed().map(|f| (*client_id, f)))
             .collect();
-        for (client_id, rendered) in client_frames {
-            self.last_client_loading_indications
-                .insert(client_id, rendered.clone());
-            self.handle_plugin_bytes(client_id, rendered.into_bytes());
+        for (client_id, frame) in client_frames {
+            self.handle_plugin_bytes(client_id, frame.into_bytes());
         }
     }
 }
@@ -546,11 +575,8 @@ impl Pane for PluginPane {
     }
     fn add_client(&mut self, client_id: ClientId) {
         if !self.grids.contains_key(&client_id) {
-            let bytes = if let Some(indication) = self.client_loading_indications.get(&client_id) {
-                let rendered = indication.to_string();
-                self.last_client_loading_indications
-                    .insert(client_id, rendered.clone());
-                rendered.into_bytes()
+            let bytes = if let Some(load) = self.client_loads.get_mut(&client_id) {
+                load.render().into_bytes()
             } else if !self.loading_indication.ended || self.loading_indication.is_error() {
                 self.loading_indication.to_string().into_bytes()
             } else {
@@ -1394,8 +1420,7 @@ impl PluginPane {
         self.should_render.insert(client_id, should_render);
     }
     fn clear_client_loading_indications(&mut self) {
-        self.client_loading_indications.clear();
-        self.last_client_loading_indications.clear();
+        self.client_loads.clear();
     }
     fn handle_plugin_bytes_for_all_clients(&mut self, bytes: VteBytes) {
         let client_ids: Vec<ClientId> = self.grids.keys().copied().collect();

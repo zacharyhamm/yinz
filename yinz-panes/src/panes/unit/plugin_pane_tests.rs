@@ -981,3 +981,29 @@ fn a_plugin_wide_error_or_reload_replaces_a_clients_own_loading_indication() {
         );
     }
 }
+
+// A client attaching while the plugin is still loading for everyone has an indicator of its own as
+// well as the plugin-wide one; only its own may draw in its grid, or the two take turns
+// overwriting each other on every tick.
+#[test]
+fn a_client_attaching_mid_load_shows_only_its_own_loading_indication() {
+    let mut pane = test_plugin_pane(5, 60, Offset::default());
+    let attached = ClientId::new(1);
+    let attaching = ClientId::new(2);
+    pane.add_client(attached);
+    pane.start_loading_indication(visible_loading("everyone"));
+    pane.add_client(attaching);
+    pane.start_client_loading_indication(attaching, visible_loading("newcomer"));
+
+    pane.progress_animation_offset();
+    assert!(
+        screen_of(&pane, attached).starts_with("Loading everyone"),
+        "{}",
+        screen_of(&pane, attached)
+    );
+    assert!(
+        screen_of(&pane, attaching).starts_with("Loading newcomer"),
+        "{}",
+        screen_of(&pane, attaching)
+    );
+}
