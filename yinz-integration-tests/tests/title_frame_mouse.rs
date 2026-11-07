@@ -159,8 +159,12 @@ fn mouse_click_floating_ribbon_in_status_bar_opens_a_floating_pane() {
     let floating_terminal = yinz.expect_pty_spawn();
     floating_terminal.output(PROMPT);
 
-    let grid_snapshot = yinz.wait_until("a floating pane appeared", |grid_snapshot| {
-        grid_snapshot.contains("STAGGERED") && grid_snapshot.contains("┌")
+    // The frame renders before the pane's own output, so wait for the prompt inside it too.
+    // Only the floating pane draws a left border; the tiled pane's prompt starts its line.
+    let grid_snapshot = yinz.wait_until("a floating pane showed its prompt", |grid_snapshot| {
+        grid_snapshot.contains("STAGGERED")
+            && grid_snapshot.contains("┌")
+            && grid_snapshot.contains("│$ ")
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
