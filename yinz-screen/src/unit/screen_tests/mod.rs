@@ -20,7 +20,7 @@ use yinz_types::internal_ids::TabPosition;
 use yinz_types::internal_ids::TerminalId;
 
 use insta::assert_snapshot;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use yinz_cli::args::CliAction;
 use yinz_config::config::Config;
 use yinz_config::screen_config::ScreenConfig;
@@ -284,6 +284,9 @@ struct FakeInputOutput {
     tty_stdin_bytes: TtyStdinBytes,
     render_backlog: RenderBacklogs,
     render_ready: RenderReadyCallbacks,
+    /// How many upcoming `write_private_file` calls fail, as the real backend's do for an
+    /// unsafe dump folder.
+    failing_private_writes: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl TerminalIo for FakeInputOutput {
@@ -408,6 +411,23 @@ impl ServerEnvironment for FakeInputOutput {
                 .insert(filename, contents);
         }
         Ok(())
+    }
+    fn write_private_file(&mut self, buf: String, path: &Path) -> Result<()> {
+        let fail = self
+            .failing_private_writes
+            .try_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |remaining| remaining.checked_sub(1),
+            )
+            .is_ok();
+        if fail {
+            return Err(anyhow!(
+                "refusing to write {}: the dump folder is not private",
+                path.display()
+            ));
+        }
+        self.write_to_file(buf, Some(path.to_string_lossy().into_owned()))
     }
 }
 

@@ -844,7 +844,7 @@ impl TiledPanes {
                     return false;
                 }
                 let geom = pane.current_geom();
-                !(geom.is_stacked() && geom.rows.is_fixed())
+                !geom.is_collapsed_in_stack()
             })
             .map(|(pane_id, _pane)| *pane_id)
             .collect()
@@ -958,6 +958,10 @@ impl TiledPanes {
                     log::error!("Failed to find position and size of stack");
                     return false;
                 };
+                // A fixed-height stack keeps its rows as one unit; splitting it is not supported.
+                if position_and_size_of_stack.rows.is_fixed() {
+                    return false;
+                }
                 full_pane_size = position_and_size_of_stack;
             }
 
@@ -990,6 +994,10 @@ impl TiledPanes {
                     log::error!("Failed to find position and size of stack");
                     return false;
                 };
+                // A fixed-height stack keeps its rows as one unit; splitting it is not supported.
+                if position_and_size_of_stack.rows.is_fixed() {
+                    return false;
+                }
                 full_pane_size = position_and_size_of_stack;
             }
 
@@ -1435,8 +1443,7 @@ impl TiledPanes {
                 let should_draw_pane_frames =
                     self.pane_frame_style.draws_full_frames() && !pane_is_no_ui_fullscreen;
                 let pane_is_stacked = pane.current_geom().is_stacked();
-                let pane_is_one_liner_in_stack =
-                    pane_is_stacked && pane.current_geom().rows.is_fixed();
+                let pane_is_one_liner_in_stack = pane.current_geom().is_collapsed_in_stack();
                 let pane_is_selectable = pane.selectable();
                 let show_help_text = active_panes.iter().any(|(client_id, pane_id)| {
                     pane_id == &pane.pid()
@@ -3392,12 +3399,11 @@ fn apply_frame(ctx: &FrameContext, pane: &mut Box<dyn Pane>) {
         pane.set_content_offset(Offset::default());
     } else {
         let mut position_and_size = pane.current_geom();
-        let is_stacked = position_and_size.is_stacked();
-        let is_flexible = !position_and_size.rows.is_fixed();
+        let is_expanded_in_stack = position_and_size.is_expanded_in_stack();
         // A collapsed stack member is a single title row with no content of its
         // own, so it never reserves a title row. A fixed-size pane outside a stack
         // does: its title is drawn over its own top row.
-        let is_one_liner_in_stack = is_stacked && !is_flexible;
+        let is_one_liner_in_stack = position_and_size.is_collapsed_in_stack();
         let pane_is_borderless = pane.borderless();
         if let Some(position_and_size_of_stack) = position_and_size
             .stacked
@@ -3410,7 +3416,7 @@ fn apply_frame(ctx: &FrameContext, pane: &mut Box<dyn Pane>) {
         let reserve_title_row = if ctx.draws_titles {
             !pane_is_borderless && !is_one_liner_in_stack
         } else {
-            is_stacked && is_flexible
+            is_expanded_in_stack
         };
         if reserve_title_row {
             pane.set_content_offset(Offset::shift_right_top_and_bottom(

@@ -104,3 +104,128 @@ fn migration_keeps_overlay_terminal_output_and_ownership() {
         .dump_screen(true, None)
         .contains("overlay terminal survives"));
 }
+
+/// A second tiled terminal, scrolled up with two chunks of output queued behind the scroll.
+fn tab_with_scrolled_second_pane() -> (Tab, TerminalId) {
+    let mut tab = create_new_tab(Size { cols: 80, rows: 20 }, false);
+    let pid = TerminalId::new(2);
+    tab.new_pane(
+        PaneId::Terminal(pid),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(ClientId::new(1)),
+        None,
+    )
+    .unwrap();
+    tab.handle_pty_bytes(pid, b"line\r\n".repeat(30)).unwrap();
+    tab.scroll_terminal_up(pid).unwrap();
+    assert!(tab
+        .get_pane_with_id(PaneId::Terminal(pid))
+        .unwrap()
+        .is_scrolled());
+    tab.handle_pty_bytes(pid, b"QUEUED-".to_vec()).unwrap();
+    tab.handle_pty_bytes(pid, b"OUTPUT".to_vec()).unwrap();
+    assert_eq!(tab.pending_vte_events[&pid].len(), 2);
+    (tab, pid)
+}
+
+#[test]
+fn closing_a_scrolled_pane_leaves_no_queued_output_to_block_migration() {
+    let (mut tab, pid) = tab_with_scrolled_second_pane();
+    tab.pids_waiting_resize.insert(pid);
+    tab.close_pane(PaneId::Terminal(pid), false, None);
+    assert!(!tab.has_pane_with_pid(&PaneId::Terminal(pid)));
+    assert!(tab.pending_vte_events.is_empty());
+    assert!(!tab.pids_waiting_resize.contains(&pid));
+    tab.migration_state().unwrap();
+}
+
+#[test]
+fn closing_a_scrolled_pane_explicitly_leaves_no_queued_output() {
+    let (mut tab, pid) = tab_with_scrolled_second_pane();
+    tab.pids_waiting_resize.insert(pid);
+    assert_eq!(
+        tab.close_pane_explicitly(PaneId::Terminal(pid), None),
+        vec![PaneId::Terminal(pid)]
+    );
+    assert!(tab.pending_vte_events.is_empty());
+    assert!(!tab.pids_waiting_resize.contains(&pid));
+    tab.migration_state().unwrap();
+}
+
+#[test]
+fn extracting_a_scrolled_pane_takes_its_queued_output_along() {
+    let (mut tab, pid) = tab_with_scrolled_second_pane();
+    let pane = tab
+        .extract_pane_leaving_tab(PaneId::Terminal(pid), true)
+        .unwrap();
+    assert!(tab.pending_vte_events.is_empty());
+    tab.migration_state().unwrap();
+    assert!(!pane.is_scrolled());
+    assert!(pane.dump_screen(true, None).contains("QUEUED-OUTPUT"));
+}
+
+#[test]
+fn floating_a_scrolled_pane_keeps_its_scroll_and_queued_output() {
+    let (mut tab, pid) = tab_with_scrolled_second_pane();
+    tab.toggle_pane_embed_or_floating_for_pane_id(PaneId::Terminal(pid), None)
+        .unwrap();
+    assert!(tab.pane_id_is_floating(&PaneId::Terminal(pid)));
+    assert!(tab
+        .get_pane_with_id(PaneId::Terminal(pid))
+        .unwrap()
+        .is_scrolled());
+    assert_eq!(tab.pending_vte_events[&pid].len(), 2);
+}
+
+#[test]
+fn migration_drops_queued_output_of_a_pane_that_has_left() {
+    let mut tab = create_new_tab(Size { cols: 80, rows: 10 }, false);
+    tab.pending_vte_events
+        .insert(TerminalId::new(9), vec![b"orphan".to_vec()]);
+    assert!(tab.migration_state().is_err());
+    tab.prepare_migration().unwrap();
+    assert!(tab.pending_vte_events.is_empty());
+    tab.migration_state().unwrap();
+}
+
+#[test]
+fn replacing_a_scrolled_pane_leaves_no_queued_output() {
+    let (mut tab, pid) = tab_with_scrolled_second_pane();
+    tab.pids_waiting_resize.insert(pid);
+    let replacement = tab
+        .build_pane(PaneId::Terminal(TerminalId::new(3)), None, None, None)
+        .unwrap();
+    tab.close_pane_and_replace_with_other_pane(PaneId::Terminal(pid), replacement, None);
+    assert!(!tab.has_pane_with_pid(&PaneId::Terminal(pid)));
+    assert!(tab.pending_vte_events.is_empty());
+    assert!(!tab.pids_waiting_resize.contains(&pid));
+    tab.migration_state().unwrap();
+}
+
+#[test]
+fn suppressed_panes_leaving_a_closing_tab_take_their_queued_output_along() {
+    let (mut tab, pid) = tab_with_scrolled_second_pane();
+    tab.suppress_pane_and_replace_with_pid(
+        PaneId::Terminal(pid),
+        PaneId::Terminal(TerminalId::new(3)),
+        yinz_bus::pty::ReplacedPane::Suppress,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(tab.suppressed_panes.contains_key(&PaneId::Terminal(pid)));
+    assert_eq!(tab.pending_vte_events[&pid].len(), 2);
+    let mut extracted = tab.extract_suppressed_panes();
+    assert!(tab.pending_vte_events.is_empty());
+    let pane = extracted
+        .remove(&PaneId::Terminal(pid))
+        .expect("the suppressed pane leaves with the closing tab")
+        .pane;
+    assert!(!pane.is_scrolled());
+    assert!(pane.dump_screen(true, None).contains("QUEUED-OUTPUT"));
+}

@@ -179,8 +179,7 @@ impl Tab {
                                    point: &Position,
                                    stacked_pane_ids_under_flexible_pane: &HashSet<PaneId>|
          -> bool {
-            let is_flexible_in_stack =
-                p.render_geom().is_stacked() && !p.render_geom().rows.is_fixed();
+            let is_flexible_in_stack = p.render_geom().is_expanded_in_stack();
             let is_stacked_under = stacked_pane_ids_under_flexible_pane.contains(&p.pid());
             let geom_to_compare_against =
                 if is_stacked_under && !self.pane_frame_style.draws_full_frames() {

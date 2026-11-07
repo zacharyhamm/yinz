@@ -1487,32 +1487,53 @@ fn split_space(
         None
     };
 
+    // Percentages resolve against the whole space less this split's fixed parts.
+    let percent_base = total_split_dimension_space
+        .as_usize()
+        .saturating_sub(total_fixed_size);
+    let mut fixed_parent_shares =
+        fixed_parent_flexible_shares(&sizes, split_dimension_space, percent_base, minimum)
+            .into_iter();
+
+    let resolved = |mut dimension: Dimension| {
+        dimension.adjust_inner(percent_base);
+        dimension
+    };
+
     let mut total_pane_size = 0;
     for (&size, _part) in sizes.iter().zip(&*layout.children) {
-        let mut split_dimension = match size {
-            Some(SplitSize::Percent(percent)) => Dimension::percent(percent as f64),
+        let split_dimension = match size {
+            Some(SplitSize::Percent(percent)) => resolved(Dimension::percent(percent as f64)),
             Some(SplitSize::Fixed(size)) => Dimension::fixed(size),
-            None => {
-                let free_percent = if let Some(p) = split_dimension_space.as_percent() {
-                    p - sizes
+            None => match split_dimension_space.as_percent() {
+                Some(p) => {
+                    let free_percent = p - sizes
                         .iter()
                         .map(|&s| match s {
                             Some(SplitSize::Percent(ip)) => ip as f64,
                             _ => 0.0,
                         })
-                        .sum::<f64>()
-                } else {
-                    panic!("Implicit sizing within fixed-size panes is not supported");
-                };
-                Dimension::percent(free_percent / flex_parts as f64)
+                        .sum::<f64>();
+                    resolved(Dimension::percent(free_percent / flex_parts as f64))
+                },
+                None => {
+                    let share = fixed_parent_shares
+                        .next()
+                        .ok_or(LayoutError::InsufficientSplitSpace)?;
+                    if layout.children_are_stacked {
+                        // The expanded member's constraint sizes the whole stack for the pane
+                        // resizer (`PaneGeom::is_expanded_in_stack`), so it holds the stack's
+                        // fixed height while the member fills the rows the title rows leave.
+                        let mut dimension = Dimension::fixed(split_dimension_space.as_usize());
+                        dimension.set_inner(share);
+                        dimension
+                    } else {
+                        Dimension::fixed(share)
+                    }
+                },
             },
         };
 
-        split_dimension.adjust_inner(
-            total_split_dimension_space
-                .as_usize()
-                .saturating_sub(total_fixed_size),
-        );
         total_pane_size += split_dimension.as_usize();
 
         let geom = match layout.children_split_direction {
@@ -1573,6 +1594,53 @@ fn split_space(
         pane_positions.push((layout, *space_to_split));
     }
     Ok(pane_positions)
+}
+
+/// Sizes for the flexible (`None`) parts of a split whose space is a fixed number of cells, in
+/// order.
+///
+/// A fixed space cannot be divided by percentage, so the flexible parts share what the fixed and
+/// percent parts leave: equally, with the remainder going to the last one so the shares add up
+/// exactly. Each share is at least `minimum`; any overflow that causes is taken back from the
+/// percent parts by `adjust_geoms_for_rounding_errors`. A percent-sized space returns nothing.
+fn fixed_parent_flexible_shares(
+    sizes: &[Option<SplitSize>],
+    split_dimension_space: Dimension,
+    percent_base: usize,
+    minimum: usize,
+) -> Vec<usize> {
+    if !split_dimension_space.is_fixed() {
+        return Vec::new();
+    }
+    let flex_parts = sizes.iter().filter(|s| s.is_none()).count();
+    if flex_parts == 0 {
+        return Vec::new();
+    }
+    let taken: usize = sizes
+        .iter()
+        .map(|size| match size {
+            Some(SplitSize::Fixed(fixed)) => *fixed,
+            Some(SplitSize::Percent(percent)) => {
+                let mut dimension = Dimension::percent(*percent as f64);
+                dimension.adjust_inner(percent_base);
+                dimension.as_usize()
+            },
+            None => 0,
+        })
+        .sum();
+    let free = split_dimension_space.as_usize().saturating_sub(taken);
+    let share = free / flex_parts;
+    let remainder = free % flex_parts;
+    (0..flex_parts)
+        .map(|index| {
+            let extra = if index + 1 == flex_parts {
+                remainder
+            } else {
+                0
+            };
+            (share + extra).max(minimum)
+        })
+        .collect()
 }
 
 fn adjust_geoms_for_rounding_errors(

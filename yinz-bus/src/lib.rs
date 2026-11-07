@@ -26,6 +26,7 @@ pub mod pty;
 pub mod pty_writer;
 pub mod route;
 pub mod screen;
+pub mod scrollback_dump;
 pub mod server_instruction;
 pub mod session_layout_metadata;
 pub mod thread_bus;

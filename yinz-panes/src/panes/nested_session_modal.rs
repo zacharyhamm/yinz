@@ -11,6 +11,7 @@
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 use yinz_types::style::Style;
+use yinz_types::text::clean_string_from_control_and_linebreak;
 
 use crate::output::CharacterChunk;
 use crate::panes::terminal_character::{
@@ -379,6 +380,11 @@ fn guest_modal_layout(
     selected: usize,
     shortcuts: &GuestModalShortcuts,
 ) -> GuestModalLayout {
+    // The name comes from a guest's announce frame and its characters are drawn onto the user's
+    // terminal as-is, so a control character here would reach it as an escape sequence. The
+    // protocol already rejects such names; this keeps the modal safe whatever it is handed.
+    let session_name = clean_string_from_control_and_linebreak(session_name);
+    let session_name = session_name.as_str();
     if columns < 20 {
         return guest_modal_fallback_layout(columns, rows, styles, session_name);
     }

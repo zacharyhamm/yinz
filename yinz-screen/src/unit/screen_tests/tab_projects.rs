@@ -395,6 +395,59 @@ fn undoing_a_rename_hands_the_tab_back_to_its_project() {
     assert_eq!(name_of(&screen, TabId::new(0)), "agent");
 }
 
+/// A key or `UpdateTabName` carrying bytes that are not UTF-8 (a Latin-1 terminal, a stray
+/// high byte) used to fail `update_active_tab_name`, and the `?` chain up to
+/// `screen_thread_main` ended the session. The bytes are decoded lossily instead.
+#[test]
+fn non_utf8_input_in_rename_mode_is_decoded_lossily() {
+    let client_id = crate::ClientId::new(1);
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+
+    enter_mode(&mut screen, InputMode::RenameTab);
+    type_in_rename_mode(&mut screen, &["\0", "a"]);
+    let handled = screen
+        .write_character(
+            None,
+            vec![b'c', b'a', b'f', 0xe9],
+            false,
+            client_id,
+            &HashMap::new(),
+            None,
+        )
+        .expect("a non-UTF-8 key in rename mode must not fail the screen thread");
+    assert!(handled);
+    screen
+        .update_active_tab_name(vec![0xff, b'!'], client_id)
+        .expect("a non-UTF-8 UpdateTabName must not fail the screen thread");
+    assert_eq!(name_of(&screen, TabId::new(0)), "acaf\u{FFFD}\u{FFFD}!");
+
+    enter_mode(&mut screen, InputMode::Normal);
+    assert_eq!(name_of(&screen, TabId::new(0)), "acaf\u{FFFD}\u{FFFD}!");
+}
+
+/// The pane-rename counterpart: `RenamePane` keys and `UpdatePaneName` reach
+/// `Tab::update_active_pane_name`, which decodes lossily too.
+#[test]
+fn non_utf8_input_in_pane_rename_mode_is_decoded_lossily() {
+    let client_id = crate::ClientId::new(1);
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+
+    enter_mode(&mut screen, InputMode::RenamePane);
+    let tab = screen.get_tab_by_id_mut(TabId::new(0)).expect("TEST");
+    tab.update_active_pane_name(b"\0".to_vec(), client_id)
+        .expect("TEST");
+    tab.update_active_pane_name(vec![b'v', 0xc3, b'm'], client_id)
+        .expect("a non-UTF-8 pane name must not fail the rename");
+    let title = screen
+        .with_pane(PaneId::Terminal(crate::TerminalId::new(1)), |pane| {
+            pane.custom_title()
+        })
+        .expect("TEST");
+    assert_eq!(title.as_deref(), Some("v\u{FFFD}m"));
+}
+
 /// A warped pane's default caption ("Pane #3") arrives as a caption, not a name, so a lone
 /// warped pane lends its tab nothing and the project still names it.
 #[test]

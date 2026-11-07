@@ -171,6 +171,8 @@ impl Pty {
         // not follow the pane out.
         self.originating_plugins.remove(&terminal_id);
         self.terminal_launch_commands.remove(&terminal_id);
+        // An editor carried away still has its scrollback dump open, so it is not deleted.
+        self.scrollback_dumps.remove(&terminal_id);
     }
 
     /// Take a supervisor over from another session (or from a server that died)

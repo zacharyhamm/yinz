@@ -599,6 +599,9 @@ pub struct Pty {
     awaiting_placement: HashMap<TerminalId, PendingPlacement>,
     /// Actions that wait for process startup as well as placement.
     pending_start_completions: HashMap<TerminalId, NotificationEnd>,
+    /// Scrollback dumps opened in an in-place editor, keyed by that editor's pane. Each is
+    /// deleted when its pane closes or fails to start; a pane warped away keeps its file.
+    scrollback_dumps: HashMap<TerminalId, PathBuf>,
     /// Failed launches keep reruns queued until the writer discards old input.
     pending_write_cancellations: HashMap<TerminalId, u64>,
     /// Per pane, the rerun off-thread now and the ones waiting behind it.
@@ -680,6 +683,7 @@ impl Pty {
             pending_terminal_spawns: HashMap::new(),
             awaiting_placement: HashMap::new(),
             pending_start_completions: HashMap::new(),
+            scrollback_dumps: HashMap::new(),
             pending_write_cancellations: HashMap::new(),
             reruns: HashMap::new(),
             next_rerun_generation: 0,
@@ -1456,6 +1460,67 @@ impl Pty {
         }
     }
 
+    /// Open a scrollback dump in an editor pane that replaces the target pane in place.
+    ///
+    /// From here the dump belongs to that editor pane: it is deleted when the pane closes,
+    /// including after a failed start, or right away if the pane cannot be set up at all.
+    pub(crate) fn open_scrollback_editor(
+        &mut self,
+        scrollback_dump: PathBuf,
+        line_number: Option<usize>,
+        client_tab_index_or_pane_id: ClientTabIndexOrPaneId,
+        completion_tx: Option<NotificationEnd>,
+    ) -> Result<()> {
+        let err_context = || "failed to open in-place editor for client".to_string();
+
+        let terminal_action = self.prepare_terminal_action(
+            Some(TerminalAction::OpenFile(OpenFilePayload::new(
+                scrollback_dump.clone(),
+                line_number,
+                None,
+            ))),
+            client_tab_index_or_pane_id,
+        );
+        let terminal_id = match self.reserve_terminal_id() {
+            Ok(terminal_id) => terminal_id,
+            Err(error) => {
+                yinz_bus::scrollback_dump::remove_scrollback_dump(&scrollback_dump).non_fatal();
+                return Err(error).with_context(err_context);
+            },
+        };
+        self.scrollback_dumps.insert(terminal_id, scrollback_dump);
+        if let Some(completion) = completion_tx {
+            self.pending_start_completions
+                .insert(terminal_id, completion);
+        }
+        let opened = self
+            .bus
+            .senders
+            .send_to_screen(ScreenInstruction::OpenInPlaceEditor(
+                PaneId::Terminal(terminal_id),
+                client_tab_index_or_pane_id,
+            ))
+            .and_then(|()| {
+                self.defer_spawn(SpawnJob::Terminal(PendingTerminalSpawn {
+                    terminal_id,
+                    terminal_action,
+                    generation: 0,
+                }))
+            })
+            .with_context(err_context);
+        if opened.is_err() {
+            self.remove_scrollback_dump(terminal_id);
+        }
+        opened
+    }
+
+    /// Delete the scrollback dump the editor in this pane was opened on, if it has one.
+    fn remove_scrollback_dump(&mut self, terminal_id: TerminalId) {
+        if let Some(path) = self.scrollback_dumps.remove(&terminal_id) {
+            yinz_bus::scrollback_dump::remove_scrollback_dump(&path).non_fatal();
+        }
+    }
+
     pub(crate) fn close_pane(&mut self, id: PaneId) -> Result<()> {
         let err_context = || format!("failed to close for pane {id:?}");
         match id {
@@ -1486,6 +1551,7 @@ impl Pty {
                 self.signal_pane_child(id, ChildSignal::Hup);
                 self.id_to_child_pid.remove(&id);
                 self.terminal_launch_commands.remove(&id);
+                self.remove_scrollback_dump(id);
                 self.pane_activity_flags.remove(&id);
                 self.forget_terminal_cwd(id);
                 self.forget_terminal_host(id);
@@ -1704,6 +1770,10 @@ impl Drop for Pty {
             self.close_pane(PaneId::Terminal(id))
                 .with_context(|| format!("failed to close pane {id}"))
                 .non_fatal();
+        }
+        // Editors whose process this session no longer tracks still leave no dump behind.
+        for path in std::mem::take(&mut self.scrollback_dumps).into_values() {
+            yinz_bus::scrollback_dump::remove_scrollback_dump(&path).non_fatal();
         }
     }
 }

@@ -19,7 +19,6 @@ anyhow = { workspace = true }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 log = { workspace = true }
 unicode-width = { workspace = true }
-uuid = { workspace = true }
 
 [target.'cfg(unix)'.dev-dependencies]
 nix = { workspace = true, features = ["process", "signal"] }

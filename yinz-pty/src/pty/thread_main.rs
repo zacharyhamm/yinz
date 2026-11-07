@@ -16,9 +16,8 @@ use yinz_bus::warp::ReleasedPaneForWarp;
 use yinz_runtime::errors::prelude::*;
 use yinz_session::session_serialization;
 use yinz_types::diagnostics::ContextType;
-use yinz_types::input::command::{OpenFilePayload, RunCommand, TerminalAction};
+use yinz_types::input::command::{RunCommand, TerminalAction};
 use yinz_types::input::layout::{Layout, Run};
-use yinz_types::pane_id::PaneId;
 
 pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
     pty.register_child_state_callback();
@@ -136,40 +135,17 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 )?;
             },
             PtyInstruction::OpenInPlaceEditor(
-                temp_file,
+                scrollback_dump,
                 line_number,
                 client_tab_index_or_pane_id,
-                _completion_tx,
+                completion_tx,
             ) => {
-                let err_context = || "failed to open in-place editor for client".to_string();
-
-                let terminal_action = pty.prepare_terminal_action(
-                    Some(TerminalAction::OpenFile(OpenFilePayload::new(
-                        temp_file,
-                        line_number,
-                        None,
-                    ))),
+                pty.open_scrollback_editor(
+                    scrollback_dump,
+                    line_number,
                     client_tab_index_or_pane_id,
-                );
-                let terminal_id = pty.reserve_terminal_id()?;
-                if let Some(completion) = _completion_tx {
-                    pty.pending_start_completions
-                        .insert(terminal_id, completion);
-                }
-                pty.bus
-                    .senders
-                    .send_to_screen(ScreenInstruction::OpenInPlaceEditor(
-                        PaneId::Terminal(terminal_id),
-                        client_tab_index_or_pane_id,
-                    ))
-                    .with_context(err_context)?;
-                pty.defer_spawn(super::SpawnJob::Terminal(
-                    yinz_bus::pty::PendingTerminalSpawn {
-                        terminal_id,
-                        terminal_action,
-                        generation: 0,
-                    },
-                ))?;
+                    completion_tx,
+                )?;
             },
             PtyInstruction::UpdateActivePane(pane_id, client_id) => {
                 pty.set_active_pane(pane_id, client_id);

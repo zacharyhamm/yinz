@@ -191,3 +191,122 @@ fn repeated_host_contact_is_only_first_contact_once() {
     assert!(scheduler.note_host_contact(start));
     assert!(!scheduler.note_host_contact(start + Duration::from_millis(1000)));
 }
+
+fn announce_bytes(session_name: &str) -> Vec<u8> {
+    proto::NestedSessionMessage {
+        payload: Some(proto::nested_session_message::Payload::Announce(
+            proto::Announce {
+                session_name: session_name.to_owned(),
+                capabilities: vec![],
+            },
+        )),
+    }
+    .encode_to_vec()
+}
+
+fn announce_ack_bytes(ancestry: &[&str]) -> Vec<u8> {
+    proto::NestedSessionMessage {
+        payload: Some(proto::nested_session_message::Payload::AnnounceAck(
+            proto::AnnounceAck {
+                ancestry: ancestry.iter().map(|name| (*name).to_owned()).collect(),
+                capabilities: vec![],
+                descend_keys: vec![],
+            },
+        )),
+    }
+    .encode_to_vec()
+}
+
+fn ancestry_update_bytes(ancestry: &[&str]) -> Vec<u8> {
+    proto::NestedSessionMessage {
+        payload: Some(proto::nested_session_message::Payload::AncestryUpdate(
+            proto::AncestryUpdate {
+                ancestry: ancestry.iter().map(|name| (*name).to_owned()).collect(),
+            },
+        )),
+    }
+    .encode_to_vec()
+}
+
+const UNSAFE_SESSION_NAMES: &[&str] = &[
+    "evil\x1b]52;c;aGk=\x07",
+    "bell\x07",
+    "\x1b[2J",
+    "line\nbreak",
+    "carriage\rreturn",
+    "c1\u{9b}31m",
+    "separator\u{2028}",
+    "",
+    "   ",
+    ".",
+    "..",
+    "has/slash",
+];
+
+#[test]
+fn announce_with_unsafe_session_name_is_rejected() {
+    for name in UNSAFE_SESSION_NAMES {
+        assert_eq!(decode_payload(&announce_bytes(name)), None, "{name:?}");
+    }
+    let too_long = "a".repeat(MAX_NESTED_SESSION_NAME_BYTES + 1);
+    assert_eq!(decode_payload(&announce_bytes(&too_long)), None);
+}
+
+#[test]
+fn ancestry_with_unsafe_session_name_is_rejected() {
+    for name in UNSAFE_SESSION_NAMES {
+        let ancestry = ["outer", name];
+        assert_eq!(
+            decode_payload(&announce_ack_bytes(&ancestry)),
+            None,
+            "{name:?}"
+        );
+        assert_eq!(
+            decode_payload(&ancestry_update_bytes(&ancestry)),
+            None,
+            "{name:?}"
+        );
+    }
+}
+
+#[test]
+fn announce_and_ancestry_with_ordinary_names_are_accepted() {
+    let longest = "a".repeat(MAX_NESTED_SESSION_NAME_BYTES);
+    for name in [
+        "main",
+        "my-session_2",
+        "brave crocodile",
+        "日本語",
+        longest.as_str(),
+    ] {
+        assert_eq!(
+            decode_payload(&announce_bytes(name)),
+            Some(NestedSessionMessage::Announce {
+                session_name: SessionName::new(name),
+                capabilities: vec![],
+            })
+        );
+        assert_eq!(
+            decode_payload(&ancestry_update_bytes(&["outer", name])),
+            Some(NestedSessionMessage::AncestryUpdate {
+                ancestry: vec![SessionName::new("outer"), SessionName::new(name)],
+            })
+        );
+        assert_eq!(
+            decode_payload(&announce_ack_bytes(&[name])),
+            Some(NestedSessionMessage::AnnounceAck {
+                ancestry: vec![SessionName::new(name)],
+                capabilities: vec![],
+                descend_keys: vec![],
+            })
+        );
+    }
+    assert_eq!(
+        decode_payload(&announce_ack_bytes(&[])),
+        Some(NestedSessionMessage::AnnounceAck {
+            ancestry: vec![],
+            capabilities: vec![],
+            descend_keys: vec![],
+        })
+    );
+}

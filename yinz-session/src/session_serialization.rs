@@ -1444,6 +1444,10 @@ fn get_domain_row_constraint(
                 if let Some(size) = geom.geom.rows.as_percent() {
                     percent += size;
                     fixed += geom.geom.rows.as_usize();
+                } else if geom.geom.is_stacked() {
+                    // A fixed-height stack's expanded member holds the whole stack's height in
+                    // its constraint; count the rows each member shows.
+                    fixed += geom.geom.rows.as_usize();
                 } else if let Constraint::Fixed(size) = geom.geom.rows.constraint {
                     // Collapsed chrome keeps its configured height in the constraint.
                     fixed += size;

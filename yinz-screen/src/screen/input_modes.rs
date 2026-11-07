@@ -62,12 +62,19 @@ impl Screen {
                     self.log_and_report_session_state()?;
                 }
             },
-            Some(InputMode::RenameTab) => self.update_active_tab_name(bytes, client_id)?,
+            Some(InputMode::RenameTab) => self
+                .update_active_tab_name(bytes, client_id)
+                .context("failed to paste into the tab name")
+                .non_fatal(),
             Some(InputMode::RenamePane) => {
                 active_tab_and_connected_client_id!(
-                    self, client_id, |tab: &mut Tab, client_id: ClientId| {
+                    self,
+                    client_id,
+                    |tab: &mut Tab, client_id: ClientId| {
                         tab.update_active_pane_name(bytes, client_id)
-                    }, ?
+                            .context("failed to paste into the pane name")
+                            .non_fatal();
+                    }
                 );
                 self.log_and_report_session_state()?;
             },
@@ -139,7 +146,9 @@ impl Screen {
         match client_input_mode {
             Some(InputMode::RenameTab) => {
                 if is_typable_text(&raw_bytes) {
-                    self.update_active_tab_name(raw_bytes, client_id)?;
+                    self.update_active_tab_name(raw_bytes, client_id)
+                        .context("failed to type into the tab name")
+                        .non_fatal();
                     state_changed = true;
                 }
             },

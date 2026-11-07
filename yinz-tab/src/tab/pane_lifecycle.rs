@@ -30,9 +30,23 @@ use yinz_types::input::command::RunCommand;
 use yinz_types::internal_ids::TerminalId;
 use yinz_types::pane_size::Offset;
 use yinz_types::pane_size::PaneGeom;
+use yinz_types::pane_tabs::PaneTabInfo;
 
 impl Tab {
     pub fn close_pane(
+        &mut self,
+        id: PaneId,
+        ignore_suppressed_panes: bool,
+        exit_status: Option<i32>,
+    ) {
+        self.close_pane_inner(id, ignore_suppressed_panes, exit_status);
+        // `ignore_suppressed_panes` marks a same-tab move: the pane comes back and keeps its
+        // queued output. Otherwise a closed pane's leftovers would block migration.
+        if !ignore_suppressed_panes {
+            self.forget_departed_terminal(id);
+        }
+    }
+    fn close_pane_inner(
         &mut self,
         id: PaneId,
         ignore_suppressed_panes: bool,
@@ -172,6 +186,9 @@ impl Tab {
             self.repair_focus_after_pane_removal();
         }
     }
+    /// Take a pane out of this tab's layout. A pane that comes back to this tab keeps its scroll
+    /// position and the output queued behind it; one leaving the tab goes through
+    /// [`Self::extract_pane_leaving_tab`].
     pub fn extract_pane(
         &mut self,
         id: PaneId,
@@ -181,9 +198,46 @@ impl Tab {
             .pane_tabs_of(id)
             .map(|tabs| self.pane_tabs[&tabs].info.pane_id)
             .unwrap_or(id);
+        // Structural moves must take the owning container, never an individual child.
+        if self.overlay_panes.multipane_info(&id).is_some() {
+            return None;
+        }
         let mut pane = self.extract_pane_inner(id, dont_swap_if_suppressed)?;
         self.attach_pane_tabs_transfer(&mut pane);
         Some(pane)
+    }
+
+    /// [`Self::extract_pane`] for a pane that leaves this tab. Output queued while it was
+    /// scrolled is keyed by this tab and cannot follow it, so it goes into the pane's grid first,
+    /// along with that of the hidden pane tabs it carries.
+    pub fn extract_pane_leaving_tab(
+        &mut self,
+        id: PaneId,
+        dont_swap_if_suppressed: bool,
+    ) -> Option<Box<dyn Pane>> {
+        let tabs = self.pane_tabs_of(id);
+        let id = tabs
+            .map(|tabs| self.pane_tabs[&tabs].info.pane_id)
+            .unwrap_or(id);
+        if self.overlay_panes.multipane_info(&id).is_some() {
+            return None;
+        }
+        let leaving: Vec<PaneId> = tabs
+            .and_then(|tabs| self.pane_tabs.get(&tabs))
+            .map(|tabs| {
+                tabs.info
+                    .tabs
+                    .iter()
+                    .filter_map(PaneTabInfo::pane_id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        for leaving in leaving.into_iter().chain([id]) {
+            if let PaneId::Terminal(pid) = leaving {
+                self.flush_pending_vte_events(pid).non_fatal();
+            }
+        }
+        self.extract_pane(id, dont_swap_if_suppressed)
     }
 
     fn extract_pane_inner(
@@ -191,10 +245,6 @@ impl Tab {
         id: PaneId,
         dont_swap_if_suppressed: bool,
     ) -> Option<Box<dyn Pane>> {
-        // Structural moves must take the owning container, never an individual child.
-        if self.overlay_panes.multipane_info(&id).is_some() {
-            return None;
-        }
         let id_stands_in_for_a_pane = self.stands_in_for_a_pane(id).is_some();
         if self.pane_is_stack_list_member(&id)
             && (dont_swap_if_suppressed || !id_stands_in_for_a_pane)
@@ -526,6 +576,7 @@ impl Tab {
                 .is_some_and(|container| container.pane_ids().any(|pane| pane == *closing))
             {
                 self.pending_command_respawns.remove(closing);
+                self.forget_departed_terminal(*closing);
                 self.announce_pane_closed(*closing);
             } else {
                 self.close_pane(*closing, false, None);
@@ -1187,7 +1238,21 @@ impl Tab {
         false
     }
 
+    /// Take the suppressed panes that leave with a closing tab. Output queued while one was
+    /// scrolled is keyed by this tab, so it goes into the pane's grid first.
     pub fn extract_suppressed_panes(&mut self) -> SuppressedPanes {
+        let leaving: Vec<TerminalId> = self
+            .suppressed_panes
+            .keys()
+            .filter(|id| !self.stack_list_of_member.contains_key(id))
+            .filter_map(|id| match id {
+                PaneId::Terminal(pid) => Some(*pid),
+                PaneId::Plugin(_) => None,
+            })
+            .collect();
+        for pid in leaving {
+            self.flush_pending_vte_events(pid).non_fatal();
+        }
         let stack_list_members = &self.stack_list_of_member;
         self.suppressed_panes
             .extract_if(|key, _| !stack_list_members.contains_key(key))

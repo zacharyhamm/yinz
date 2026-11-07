@@ -487,7 +487,7 @@ impl Tab {
                     {
                         top &= other.y >= geom.y;
                         bottom &= other.y <= geom.y;
-                        under |= other.y < geom.y && other.rows.is_percent();
+                        under |= other.y < geom.y && other.is_expanded_in_stack();
                     }
                 }
             }
@@ -740,7 +740,7 @@ impl Tab {
                         && other.x == geom.x
                         && other.cols == geom.cols
                         && other.y < geom.y
-                        && other.rows.is_percent()
+                        && other.is_expanded_in_stack()
                 });
             if stacked_under {
                 title.y = title.y.saturating_sub(pane.get_content_offset().bottom);

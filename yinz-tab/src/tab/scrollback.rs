@@ -7,8 +7,7 @@ use crate::pty::ClientTabIndexOrPaneId;
 use crate::pty::PtyInstruction;
 use crate::route::NotificationEnd;
 use crate::ClientId;
-use std::env::temp_dir;
-use uuid::Uuid;
+use yinz_bus::scrollback_dump::{new_scrollback_dump_path, remove_scrollback_dump};
 use yinz_panes::pane::Pane;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::internal_ids::TerminalId;
@@ -120,108 +119,106 @@ impl Tab {
         client_id: ClientId,
         completion_tx: Option<NotificationEnd>,
     ) -> Result<()> {
-        let err_context = || format!("failed to edit scrollback for client {client_id}");
-
-        let mut file = temp_dir();
-        file.push(format!("{}.dump", Uuid::new_v4()));
-        self.dump_active_terminal_screen(
-            Some(String::from(file.to_string_lossy())),
-            client_id,
-            true,
-        )
-        .with_context(err_context)?;
-        let line_number = self
-            .get_active_pane(client_id)
-            .and_then(|a_t| a_t.get_line_number());
-        self.senders
-            .send_to_pty(PtyInstruction::OpenInPlaceEditor(
-                file,
-                line_number,
-                ClientTabIndexOrPaneId::ClientId(client_id),
-                completion_tx,
-            ))
-            .with_context(err_context)
+        self.edit_active_scrollback(client_id, false, completion_tx)
     }
     pub fn edit_scrollback_raw(
         &mut self,
         client_id: ClientId,
         completion_tx: Option<NotificationEnd>,
     ) -> Result<()> {
-        let err_context = || format!("failed to edit scrollback for client {client_id}");
-
-        let mut file = temp_dir();
-        file.push(format!("{}.dump", Uuid::new_v4()));
-        self.dump_with_ansi_active_terminal_screen(
-            Some(String::from(file.to_string_lossy())),
-            client_id,
-            true,
-        )
-        .with_context(err_context)?;
+        self.edit_active_scrollback(client_id, true, completion_tx)
+    }
+    fn edit_active_scrollback(
+        &mut self,
+        client_id: ClientId,
+        ansi: bool,
+        completion_tx: Option<NotificationEnd>,
+    ) -> Result<()> {
+        let dump = if ansi {
+            self.get_dump_with_ansi_active_terminal_screen(client_id, true)
+        } else {
+            self.get_dump_active_terminal_screen(client_id, true)
+        };
         let line_number = self
             .get_active_pane(client_id)
             .and_then(|a_t| a_t.get_line_number());
-        self.senders
-            .send_to_pty(PtyInstruction::OpenInPlaceEditor(
-                file,
-                line_number,
-                ClientTabIndexOrPaneId::ClientId(client_id),
-                completion_tx,
-            ))
-            .with_context(err_context)
+        self.open_scrollback_in_editor(
+            dump,
+            line_number,
+            ClientTabIndexOrPaneId::ClientId(client_id),
+            completion_tx,
+        )
+        .with_context(|| format!("failed to edit scrollback for client {client_id}"))
     }
     pub fn edit_scrollback_for_pane_with_id(
         &mut self,
         pane_id: PaneId,
         completion_tx: Option<NotificationEnd>,
     ) -> Result<()> {
-        if let PaneId::Terminal(_terminal_pane_id) = pane_id {
-            self.make_hidden_stack_list_member_visible(pane_id);
-            let mut file = temp_dir();
-            file.push(format!("{}.dump", Uuid::new_v4()));
-            self.dump_terminal_screen(Some(String::from(file.to_string_lossy())), pane_id, true)
-                .non_fatal();
-            let line_number = self
-                .get_pane_with_id(pane_id)
-                .and_then(|a_t| a_t.get_line_number());
-            self.senders.send_to_pty(PtyInstruction::OpenInPlaceEditor(
-                file,
-                line_number,
-                ClientTabIndexOrPaneId::PaneId(pane_id),
-                completion_tx,
-            ))
-        } else {
-            log::error!("Editing plugin pane scrollback is currently unsupported.");
-            Ok(())
-        }
+        self.edit_pane_scrollback(pane_id, false, completion_tx)
     }
     pub fn edit_scrollback_raw_for_pane_with_id(
         &mut self,
         pane_id: PaneId,
         completion_tx: Option<NotificationEnd>,
     ) -> Result<()> {
-        if let PaneId::Terminal(_terminal_pane_id) = pane_id {
-            self.make_hidden_stack_list_member_visible(pane_id);
-            let mut file = temp_dir();
-            file.push(format!("{}.dump", Uuid::new_v4()));
-            self.dump_with_ansi_terminal_screen(
-                Some(String::from(file.to_string_lossy())),
-                pane_id,
-                true,
-            )
-            .non_fatal();
-            let line_number = self
-                .get_pane_with_id(pane_id)
-                .and_then(|a_t| a_t.get_line_number());
-            self.senders.send_to_pty(PtyInstruction::OpenInPlaceEditor(
-                file,
+        self.edit_pane_scrollback(pane_id, true, completion_tx)
+    }
+    fn edit_pane_scrollback(
+        &mut self,
+        pane_id: PaneId,
+        ansi: bool,
+        completion_tx: Option<NotificationEnd>,
+    ) -> Result<()> {
+        if !matches!(pane_id, PaneId::Terminal(_)) {
+            log::error!("Editing plugin pane scrollback is currently unsupported.");
+            return Ok(());
+        }
+        self.make_hidden_stack_list_member_visible(pane_id);
+        let dump = if ansi {
+            self.get_dump_with_ansi_terminal_screen(pane_id, true)
+        } else {
+            self.get_dump_terminal_screen(pane_id, true)
+        }
+        .unwrap_or_default();
+        let line_number = self
+            .get_pane_with_id(pane_id)
+            .and_then(|a_t| a_t.get_line_number());
+        self.open_scrollback_in_editor(
+            dump,
+            line_number,
+            ClientTabIndexOrPaneId::PaneId(pane_id),
+            completion_tx,
+        )
+        .with_context(|| format!("failed to edit scrollback for pane {pane_id:?}"))
+    }
+    /// Write `dump` to a new private file and ask the pty thread to open it in an editor that
+    /// replaces `target` in place. The pty thread owns the file from then on and deletes it
+    /// when the editor pane closes.
+    fn open_scrollback_in_editor(
+        &mut self,
+        dump: String,
+        line_number: Option<usize>,
+        target: ClientTabIndexOrPaneId,
+        completion_tx: Option<NotificationEnd>,
+    ) -> Result<()> {
+        let file = new_scrollback_dump_path();
+        self.os_api
+            .write_private_file(dump, &file)
+            .context("failed to write scrollback dump")?;
+        let sent = self
+            .senders
+            .send_to_pty(PtyInstruction::OpenInPlaceEditor(
+                file.clone(),
                 line_number,
-                ClientTabIndexOrPaneId::PaneId(pane_id),
+                target,
                 completion_tx,
             ))
-        } else {
-            log::error!("Editing plugin pane scrollback is currently unsupported.");
-            Ok(())
+            .context("failed to ask for a scrollback editor");
+        if sent.is_err() {
+            remove_scrollback_dump(&file).non_fatal();
         }
+        sent
     }
     pub fn scroll_active_terminal_up(&mut self, client_id: ClientId) {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {

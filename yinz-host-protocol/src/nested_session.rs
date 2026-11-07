@@ -220,6 +220,41 @@ fn direction_from_proto(direction: i32) -> Option<Direction> {
     }
 }
 
+/// The longest session name a nested-session frame may carry, in bytes. A session name becomes a
+/// socket file name, so a real one is far shorter than a file name's 255-byte limit.
+pub const MAX_NESTED_SESSION_NAME_BYTES: usize = 255;
+
+/// Whether `name` may come off the wire as a session name.
+///
+/// Frames arrive in pane output (a guest's `Announce`) or terminal input (a host's ancestry), so
+/// any program can forge one, and the host draws a guest's name straight onto the user's terminal.
+/// A control character there would reach the outer terminal as an escape sequence, so this
+/// rejects them, along with what `yinz_session::sessions::validate_session_name` rejects that a
+/// frame can check without the IPC crate (which depends on this one): blank names, `.` and `..`,
+/// and `/`.
+pub fn is_valid_nested_session_name(name: &str) -> bool {
+    !name.trim().is_empty()
+        && name.len() <= MAX_NESTED_SESSION_NAME_BYTES
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name
+            .chars()
+            .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
+}
+
+fn session_name_from_proto(name: String) -> Result<SessionName, ()> {
+    if is_valid_nested_session_name(&name) {
+        Ok(name.into())
+    } else {
+        Err(())
+    }
+}
+
+fn ancestry_from_proto(ancestry: Vec<String>) -> Result<Vec<SessionName>, ()> {
+    ancestry.into_iter().map(session_name_from_proto).collect()
+}
+
 impl From<NestedSessionMessage> for proto::NestedSessionMessage {
     fn from(message: NestedSessionMessage) -> Self {
         use proto::nested_session_message::Payload;
@@ -289,7 +324,7 @@ impl TryFrom<proto::NestedSessionMessage> for NestedSessionMessage {
         use proto::nested_session_message::Payload;
         match message.payload {
             Some(Payload::Announce(announce)) => Ok(NestedSessionMessage::Announce {
-                session_name: announce.session_name.into(),
+                session_name: session_name_from_proto(announce.session_name)?,
                 capabilities: capabilities_from_proto(&announce.capabilities),
             }),
             Some(Payload::FocusHost(focus_host)) => Ok(NestedSessionMessage::FocusHost {
@@ -303,7 +338,7 @@ impl TryFrom<proto::NestedSessionMessage> for NestedSessionMessage {
             Some(Payload::Pong(_)) => Ok(NestedSessionMessage::Pong),
             Some(Payload::Bye(_)) => Ok(NestedSessionMessage::Bye),
             Some(Payload::AnnounceAck(announce_ack)) => Ok(NestedSessionMessage::AnnounceAck {
-                ancestry: announce_ack.ancestry.into_iter().map(Into::into).collect(),
+                ancestry: ancestry_from_proto(announce_ack.ancestry)?,
                 capabilities: capabilities_from_proto(&announce_ack.capabilities),
                 descend_keys: keys_from_proto(&announce_ack.descend_keys),
             }),
@@ -318,11 +353,7 @@ impl TryFrom<proto::NestedSessionMessage> for NestedSessionMessage {
             },
             Some(Payload::AncestryUpdate(ancestry_update)) => {
                 Ok(NestedSessionMessage::AncestryUpdate {
-                    ancestry: ancestry_update
-                        .ancestry
-                        .into_iter()
-                        .map(Into::into)
-                        .collect(),
+                    ancestry: ancestry_from_proto(ancestry_update.ancestry)?,
                 })
             },
             Some(Payload::Ping(_)) => Ok(NestedSessionMessage::Ping),

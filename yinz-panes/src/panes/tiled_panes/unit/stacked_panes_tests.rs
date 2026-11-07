@@ -1390,3 +1390,47 @@ fn stack_bounds_preserve_full_height_and_constraint() {
         }
     }
 }
+
+#[test]
+fn break_pane_out_of_a_stack_too_small_to_split_leaves_it_whole() {
+    let mut mock_panes: HashMap<PaneId, &mut Box<dyn Pane>> = HashMap::new();
+    // Three members in two rows of a fixed-height stack: no row is left to break out.
+    mock_stacked_pane!(
+        PaneId::Terminal(crate::TerminalId::new(1)),
+        Dimension::fixed(1),
+        1,
+        0,
+        0,
+        Some(1),
+        mock_panes
+    );
+    mock_stacked_pane!(
+        PaneId::Terminal(crate::TerminalId::new(2)),
+        Dimension::fixed(1),
+        1,
+        0,
+        1,
+        Some(2),
+        mock_panes
+    );
+    mock_stacked_pane!(
+        PaneId::Terminal(crate::TerminalId::new(3)),
+        Dimension::fixed(2),
+        0,
+        0,
+        2,
+        Some(3),
+        mock_panes
+    );
+    let mock_panes = Rc::new(RefCell::new(mock_panes));
+    let geoms = |panes: &Rc<RefCell<HashMap<PaneId, &mut Box<dyn Pane>>>>| {
+        let mut geoms: Vec<PaneGeom> = panes.borrow().values().map(|p| p.current_geom()).collect();
+        geoms.sort_by_key(|geom| geom.logical_position);
+        geoms
+    };
+    let before = geoms(&mock_panes);
+    assert!(StackedPanes::new(mock_panes.clone())
+        .break_pane_out_of_stack(&PaneId::Terminal(crate::TerminalId::new(1)))
+        .is_none());
+    assert_eq!(geoms(&mock_panes), before);
+}

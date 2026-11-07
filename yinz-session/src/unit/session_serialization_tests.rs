@@ -1685,3 +1685,55 @@ fn ssh_default_shell_roundtrips() {
     );
     assert_eq!(command.cwd, Some("/remote/work".into()));
 }
+
+#[test]
+fn a_fixed_height_stack_keeps_its_height_when_serialized() {
+    // A fixed-height stack's expanded member carries the whole stack's height (10) in its
+    // constraint while showing only the rows left after the two title rows (8).
+    let mut expanded_rows = Dimension::fixed(10);
+    expanded_rows.set_inner(8);
+    let member = |y: usize, rows: Dimension| PaneLayoutManifest {
+        geom: PaneGeom {
+            x: 0,
+            y,
+            rows,
+            cols: Dimension::percent(100.0),
+            stacked: Some(0),
+            is_pinned: false,
+            logical_position: None,
+        },
+        ..Default::default()
+    };
+    let mut below_rows = Dimension::percent(100.0);
+    below_rows.set_inner(30);
+    let tab_layout_manifest = TabLayoutManifest {
+        tiled_panes: vec![
+            member(0, Dimension::fixed(1)),
+            member(1, expanded_rows),
+            member(9, Dimension::fixed(1)),
+            PaneLayoutManifest {
+                geom: PaneGeom {
+                    x: 0,
+                    y: 10,
+                    rows: below_rows,
+                    cols: Dimension::percent(100.0),
+                    stacked: None,
+                    is_pinned: false,
+                    logical_position: None,
+                },
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let global_layout_manifest = GlobalLayoutManifest {
+        tabs: vec![("fixed stack".to_owned(), tab_layout_manifest)],
+        ..Default::default()
+    };
+    let kdl = serialize_session_layout(global_layout_manifest).unwrap();
+    assert!(
+        kdl.0.contains("pane size=10 stacked=true"),
+        "a 10-row stack must serialize as size=10:\n{}",
+        kdl.0
+    );
+}

@@ -1547,10 +1547,7 @@ impl MouseHandler {
 
         let is_stacked_one_liner = tab
             .get_pane_with_id(pane_id)
-            .map(|p| {
-                let geom = p.current_geom();
-                geom.is_stacked() && geom.rows.is_fixed()
-            })
+            .map(|p| p.current_geom().is_collapsed_in_stack())
             .unwrap_or(false);
         if is_stacked_one_liner {
             return Self::execute_update_hover(tab, Some(pane_id), Some(position), client_id);

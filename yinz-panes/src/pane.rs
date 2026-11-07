@@ -810,7 +810,7 @@ pub trait Pane {
                 && offset.top > 0
                 && self.rows().saturating_sub(offset.top + offset.bottom) > 1
                 && self.cols() > offset.left + offset.right
-                && !(self.current_geom().is_stacked() && self.current_geom().rows.is_fixed()),
+                && !self.current_geom().is_collapsed_in_stack(),
         )
     }
 

@@ -586,7 +586,7 @@ impl Tab {
         for (id, pane) in self.tiled_panes.get_panes() {
             let geom = pane.position_and_size();
             if let Some(stack_id) = geom.stacked {
-                let is_expanded = !geom.rows.is_fixed();
+                let is_expanded = geom.is_expanded_in_stack();
                 stacks
                     .entry(stack_id)
                     .or_default()

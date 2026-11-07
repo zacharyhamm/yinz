@@ -9,6 +9,32 @@ fn make_server() -> ServerOsInputOutput {
     get_server_os_input().expect("failed to create server os input")
 }
 
+/// The real backend must not inherit the trait's capturing default: a scrollback dump is
+/// created fresh, owner-only, in a private folder, and never replaces an existing file.
+#[cfg(unix)]
+#[test]
+fn private_files_are_written_owner_only_and_never_replace_one() {
+    use std::os::unix::fs::PermissionsExt;
+    use yinz_bus::os_input_output::ServerEnvironment;
+
+    let mut server = make_server();
+    let root = tempfile::tempdir().expect("create test folder");
+    let folder = root.path().join("dumps");
+    let path = folder.join("one.dump");
+    server
+        .write_private_file("scrollback".into(), &path)
+        .expect("write private file");
+    let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&folder), 0o700);
+    assert_eq!(mode(&path), 0o600);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "scrollback");
+
+    server
+        .write_private_file("replacement".into(), &path)
+        .expect_err("an existing file is not overwritten");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "scrollback");
+}
+
 #[test]
 fn command_discovery_hook_receives_current_session_identity() {
     let original = std::env::var_os("YINZ_SESSION_NAME");

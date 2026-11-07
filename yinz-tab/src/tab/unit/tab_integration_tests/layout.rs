@@ -814,3 +814,155 @@ fn bulk_focus_events_are_unique_and_only_for_connected_clients() {
     assert_eq!(active.get(&first), Some(&left));
     assert!(tty_stdin.lock().unwrap().is_empty());
 }
+
+/// Tiled geoms sorted top to bottom, checking that they tile `rows` rows and that the pane below
+/// the fixed parent starts at row 10.
+fn assert_fixed_parent_keeps_ten_rows(tab: &Tab, rows: usize, what: &str) {
+    let mut geoms: Vec<yinz_types::pane_size::PaneGeom> = tab
+        .get_tiled_panes()
+        .map(|(_, pane)| pane.position_and_size())
+        .collect();
+    geoms.sort_by_key(|geom| geom.y);
+    let mut y = 0;
+    for geom in &geoms {
+        assert_eq!(geom.y, y, "{what} at {rows} rows: {geoms:#?}");
+        y += geom.rows.as_usize();
+    }
+    assert_eq!(y, rows, "{what} at {rows} rows: {geoms:#?}");
+    let last = geoms.last().unwrap();
+    assert_eq!(last.y, 10, "{what} at {rows} rows: {geoms:#?}");
+}
+
+#[test]
+fn fixed_size_parents_keep_their_size_with_flexible_children() {
+    // Each layout puts 10 rows of flexible children in a fixed parent, above a flexible pane.
+    for layout in [
+        r#"layout { pane size=10 stacked=true { pane; pane; pane; }; pane; }"#,
+        r#"layout { pane size=10 split_direction="horizontal" { pane; pane; }; pane; }"#,
+    ] {
+        for rows in [40, 60, 30] {
+            let mut tab = create_new_tab_with_layout(
+                Size {
+                    cols: 121,
+                    rows: 40,
+                },
+                ModeInfo::default(),
+                layout,
+            );
+            tab.resize_whole_tab(Size { cols: 121, rows }).unwrap();
+            assert_fixed_parent_keeps_ten_rows(&tab, rows, layout);
+        }
+    }
+}
+
+#[test]
+fn fixed_height_stack_keeps_its_height_through_the_pane_resizer() {
+    let layout = r#"layout { pane size=10 stacked=true { pane; pane; pane; }; pane; }"#;
+    // The resizer collects its constraints in a randomly seeded set, so repeat to try several
+    // insertion orders.
+    for attempt in 0..16 {
+        let mut tab = create_new_tab_with_layout(
+            Size {
+                cols: 121,
+                rows: 40,
+            },
+            ModeInfo::default(),
+            layout,
+        );
+        // A damaged swap layout is not reapplied on resize: the pane resizer alone lays out the
+        // tab, from the constraints the panes carry.
+        tab.swap_layouts.set_is_tiled_damaged();
+        let what = format!("{layout} (attempt {attempt})");
+        for rows in [60, 30, 45] {
+            tab.resize_whole_tab(Size { cols: 121, rows }).unwrap();
+            assert_fixed_parent_keeps_ten_rows(&tab, rows, &what);
+        }
+
+        // Moving the expanded member keeps the stack's height too.
+        let stacked: Vec<PaneId> = {
+            let mut stacked: Vec<_> = tab
+                .get_tiled_panes()
+                .filter(|(_, pane)| pane.position_and_size().is_stacked())
+                .map(|(id, pane)| (pane.position_and_size().y, *id))
+                .collect();
+            stacked.sort();
+            stacked.into_iter().map(|(_, id)| id).collect()
+        };
+        assert_eq!(stacked.len(), 3, "{what}");
+        tab.tiled_panes.expand_pane_in_stack(stacked[0]);
+        for rows in [50, 35] {
+            tab.resize_whole_tab(Size { cols: 121, rows }).unwrap();
+            assert_fixed_parent_keeps_ten_rows(&tab, rows, &what);
+        }
+        let first = tab
+            .get_tiled_panes()
+            .find(|(id, _)| **id == stacked[0])
+            .map(|(_, pane)| pane.position_and_size())
+            .unwrap();
+        assert!(first.is_expanded_in_stack(), "{what}: {first:#?}");
+        assert_eq!(
+            (first.y, first.rows.as_usize()),
+            (0, 8),
+            "{what}: {first:#?}"
+        );
+    }
+}
+
+/// Every pane outside a stack whose rows are fixed shows exactly the rows its constraint names.
+fn assert_fixed_constraints_match_their_rows(tab: &Tab, what: &str) {
+    for (id, pane) in tab.get_tiled_panes() {
+        let geom = pane.position_and_size();
+        if let yinz_types::pane_size::Constraint::Fixed(fixed) = geom.rows.constraint
+            && !geom.is_stacked()
+        {
+            assert_eq!(fixed, geom.rows.as_usize(), "{what}: {id:?} {geom:#?}");
+        }
+    }
+}
+
+#[test]
+fn breaking_a_pane_out_of_a_fixed_height_stack_keeps_its_height() {
+    let layout = r#"layout { pane size=10 stacked=true { pane; pane; pane; }; pane; }"#;
+    let client_id = ClientId::new(1);
+    // The expanded member at the bottom breaks out upwards; one higher up breaks out downwards.
+    for expand in [None, Some(0), Some(1)] {
+        let mut tab = create_new_tab_with_layout(
+            Size {
+                cols: 121,
+                rows: 40,
+            },
+            ModeInfo::default(),
+            layout,
+        );
+        let stacked: Vec<PaneId> = {
+            let mut stacked: Vec<_> = tab
+                .get_tiled_panes()
+                .filter(|(_, pane)| pane.position_and_size().is_stacked())
+                .map(|(id, pane)| (pane.position_and_size().y, *id))
+                .collect();
+            stacked.sort();
+            stacked.into_iter().map(|(_, id)| id).collect()
+        };
+        assert_eq!(stacked.len(), 3, "{layout}");
+        if let Some(index) = expand {
+            tab.tiled_panes.expand_pane_in_stack(stacked[index]);
+        }
+        tab.focus_pane_with_id(stacked[0], false, false, client_id)
+            .unwrap();
+        let what = format!("{layout} expanding {expand:?}");
+        tab.resize(client_id, ResizeStrategy::new(Resize::Decrease, None))
+            .unwrap();
+        let broken_out = tab
+            .get_tiled_panes()
+            .filter(|(id, pane)| stacked.contains(id) && !pane.position_and_size().is_stacked())
+            .count();
+        assert_eq!(broken_out, 1, "{what}");
+        assert_fixed_parent_keeps_ten_rows(&tab, 40, &what);
+        assert_fixed_constraints_match_their_rows(&tab, &what);
+        for rows in [60, 30, 45] {
+            tab.resize_whole_tab(Size { cols: 121, rows }).unwrap();
+            assert_fixed_parent_keeps_ten_rows(&tab, rows, &what);
+            assert_fixed_constraints_match_their_rows(&tab, &what);
+        }
+    }
+}

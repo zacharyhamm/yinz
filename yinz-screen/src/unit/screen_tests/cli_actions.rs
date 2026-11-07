@@ -734,6 +734,11 @@ pub fn send_cli_edit_scrollback_action() {
         ) = instruction
         {
             assert_eq!(scrollback_contents_file, &PathBuf::from(&dumped_file_name));
+            assert!(
+                yinz_bus::scrollback_dump::is_scrollback_dump(scrollback_contents_file),
+                "the dump must live in Yinz's private folder: {}",
+                scrollback_contents_file.display()
+            );
             assert_eq!(terminal_id, &Some(1));
             assert_eq!(
                 client_id,
@@ -743,6 +748,61 @@ pub fn send_cli_edit_scrollback_action() {
         }
     }
     assert!(found_instruction);
+}
+
+#[test]
+pub fn failed_scrollback_dump_write_keeps_the_session() {
+    let size = Size { cols: 80, rows: 20 };
+    // A client id that is not connected takes the macro's first-client fallback, the path
+    // that used to propagate the error and end the screen thread.
+    let client_id = ClientId::new(10);
+    let initial_layout = TiledPaneLayout {
+        children_split_direction: SplitDirection::Vertical,
+        children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
+        ..Default::default()
+    };
+    let mut mock_screen = MockScreen::new(size);
+    mock_screen
+        .os_input
+        .failing_private_writes
+        .store(1, std::sync::atomic::Ordering::SeqCst);
+    let session_metadata = mock_screen.clone_session_metadata();
+    let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
+    let received_pty_instructions = Watched::new(vec![]);
+    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
+    let pty_thread = log_actions_in_thread!(
+        received_pty_instructions,
+        PtyInstruction::Exit,
+        pty_receiver
+    );
+    let edit = || CliAction::EditScrollback {
+        pane_id: None,
+        ansi: false,
+    };
+    // The first dump write fails; the second must still be handled by a live screen thread.
+    send_cli_action_to_server(&session_metadata, edit(), client_id);
+    send_cli_action_to_server(&session_metadata, edit(), client_id);
+    let editors_opened = received_pty_instructions.wait_until(
+        "the second scrollback edit to open an editor",
+        yinz_test_support::default_timeout(),
+        |instructions| {
+            let opened = instructions
+                .iter()
+                .filter(|instruction| matches!(instruction, PtyInstruction::OpenInPlaceEditor(..)))
+                .count();
+            (opened > 0).then_some(opened)
+        },
+    );
+    mock_screen.teardown(vec![pty_thread, screen_thread]);
+    assert_eq!(
+        editors_opened, 1,
+        "the failed write must not open an editor"
+    );
+    assert_eq!(
+        mock_screen.os_input.fake_filesystem.lock().unwrap().len(),
+        1,
+        "only the second dump is written"
+    );
 }
 
 #[test]

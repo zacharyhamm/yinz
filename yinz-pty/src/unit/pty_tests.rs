@@ -5527,3 +5527,79 @@ fn migration_preparation_reports_pending_spawn_without_blocking_completion() {
     pty.pending_terminal_spawns.clear();
     assert_eq!(poll(&mut pty), MigrationPreparation::Ready(inventory));
 }
+
+/// Write a real scrollback dump, as the tab does before asking for an editor.
+fn write_scrollback_dump() -> PathBuf {
+    let path = yinz_bus::scrollback_dump::new_scrollback_dump_path();
+    yinz_bus::scrollback_dump::write_private_file(&path, b"scrollback").unwrap();
+    path
+}
+
+fn open_scrollback_editor(pty: &mut Pty, dump: &std::path::Path) -> Result<()> {
+    pty.open_scrollback_editor(
+        dump.to_path_buf(),
+        Some(3),
+        ClientTabIndexOrPaneId::ClientId(crate::ClientId::new(1)),
+        None,
+    )
+}
+
+#[test]
+fn closing_a_scrollback_editor_deletes_its_dump() {
+    let os_api = MockOsApi::new();
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(os_api);
+    let dump = write_scrollback_dump();
+    open_scrollback_editor(&mut pty, &dump).unwrap();
+    let editor = screen_rx
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            ScreenInstruction::OpenInPlaceEditor(pane, _) => Some(pane),
+            _ => None,
+        })
+        .expect("screen is asked to place the editor");
+    assert!(dump.exists(), "the editor still needs its dump");
+
+    // Screen sends this when the editor exits, as for any pane whose process ends.
+    pty.close_pane(editor).unwrap();
+    assert!(!dump.exists(), "the dump must go with its editor");
+    assert!(pty.scrollback_dumps.is_empty());
+}
+
+#[test]
+fn a_scrollback_editor_that_cannot_be_reserved_deletes_its_dump() {
+    let os_api = MockOsApi::new();
+    *os_api.fail_reservations.lock().unwrap() = true;
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api);
+    let dump = write_scrollback_dump();
+    open_scrollback_editor(&mut pty, &dump).expect_err("the reservation fails");
+    assert!(!dump.exists());
+    assert!(pty.scrollback_dumps.is_empty());
+}
+
+#[test]
+fn ending_the_session_deletes_open_scrollback_dumps() {
+    let os_api = MockOsApi::new();
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api);
+    let dump = write_scrollback_dump();
+    open_scrollback_editor(&mut pty, &dump).unwrap();
+    drop(pty);
+    assert!(!dump.exists());
+}
+
+#[test]
+fn a_released_scrollback_editor_keeps_its_dump() {
+    let os_api = MockOsApi::new();
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api);
+    let dump = write_scrollback_dump();
+    open_scrollback_editor(&mut pty, &dump).unwrap();
+    let editor = *pty.scrollback_dumps.keys().next().unwrap();
+    pty.forget_released_terminal(editor);
+    // Cancel the placement wait the way a close would, without touching the dump record.
+    pty.awaiting_placement.clear();
+    drop(pty);
+    assert!(
+        dump.exists(),
+        "the editor that left still has its file open"
+    );
+    std::fs::remove_file(&dump).unwrap();
+}

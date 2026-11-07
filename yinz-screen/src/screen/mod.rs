@@ -2333,9 +2333,11 @@ impl Screen {
 
         match client_id {
             Some(client_id) => {
-                let s = str::from_utf8(&buf)
-                    .with_context(|| format!("failed to construct tab name from buf: {buf:?}"))
-                    .with_context(err_context)?;
+                // Input bytes are not guaranteed to be UTF-8 (a raw key from a legacy
+                // terminal, a paste, an `UpdateTabName` from a client). Decode lossily, as
+                // `RenameTab` and pane renames do, so a stray byte cannot fail the screen thread.
+                let decoded = String::from_utf8_lossy(&buf);
+                let s: &str = &decoded;
                 let finish_empty_rename = s.is_empty()
                     && self
                         .mode_info
@@ -3570,7 +3572,7 @@ impl Screen {
                     .chain(t.get_floating_panes())
                     .any(|(id, _)| *id == pane_id_of_existing_pane);
                 let carried_respawn = t.take_pending_respawn(pane_id_of_existing_pane);
-                t.extract_pane(pane_id_of_existing_pane, true)
+                t.extract_pane_leaving_tab(pane_id_of_existing_pane, true)
                     .map(|pane| (pane, carried_respawn, retains_tab))
             })
             .with_context(|| format!("failed to take pane {pane_id_of_existing_pane:?}"))?;
@@ -3682,7 +3684,7 @@ impl Screen {
             for pane_id in &pane_ids_to_stack {
                 if tab.has_pane_with_pid(pane_id) {
                     let carried_respawn = tab.take_pending_respawn(*pane_id);
-                    match tab.extract_pane(*pane_id, false) {
+                    match tab.extract_pane_leaving_tab(*pane_id, false) {
                         Some(pane) => {
                             panes_to_stack.push(pane);
                             if let Some(entry) = carried_respawn {

@@ -90,6 +90,30 @@ impl Tab {
         }
         Ok(())
     }
+    /// Feed output queued while a pane was scrolled into its grid, scrolling the pane to the
+    /// bottom first, as an overflow of the queue would. A pane leaves the tab through here so
+    /// its output goes with it: the queue is keyed by this tab and cannot follow the pane.
+    /// An entry whose pane is already gone is dropped.
+    pub(super) fn flush_pending_vte_events(&mut self, pid: TerminalId) -> Result<()> {
+        if !self.pending_vte_events.contains_key(&pid) {
+            return Ok(());
+        }
+        if let Some(pane) = self.get_pane_with_id_mut(PaneId::Terminal(pid)) {
+            pane.clear_scroll();
+        }
+        self.process_pending_vte_events(pid)
+            .with_context(|| format!("failed to flush queued output of pane {pid}"))
+    }
+    /// Drop the output queue and pending resize of a pane that is no longer in this tab.
+    /// A pane that is still here keeps both.
+    pub(super) fn forget_departed_terminal(&mut self, id: PaneId) {
+        if let PaneId::Terminal(pid) = id
+            && !self.has_pane_with_pid(&id)
+        {
+            self.pending_vte_events.remove(&pid);
+            self.pids_waiting_resize.remove(&pid);
+        }
+    }
     /// Deliver a forwarded host reply (or cache-fallback synthesis,
     /// or a locally-answered query payload) to a pane that is currently
     /// forward-paused. The reply bytes are written to the pane's PTY

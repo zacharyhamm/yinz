@@ -316,6 +316,9 @@ pub enum PtyInstruction {
         generation: u64,
         placement: Option<(yinz_types::pane_size::TerminalSize, TabId)>,
     },
+    /// Open a scrollback dump from [`crate::scrollback_dump`] in an editor that replaces the
+    /// target pane. The editor pane owns the dump: the pty thread deletes it when that pane
+    /// closes or cannot be started.
     OpenInPlaceEditor(
         PathBuf,
         Option<usize>,

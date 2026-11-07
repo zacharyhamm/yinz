@@ -2360,7 +2360,7 @@ impl Tab {
             self.drop_stack_list_ledger(id, &members);
         }
         ids.iter()
-            .filter_map(|id| self.extract_pane(*id, true))
+            .filter_map(|id| self.extract_pane_leaving_tab(*id, true))
             .collect()
     }
 
@@ -3033,9 +3033,10 @@ impl Tab {
     }
 
     pub fn update_active_pane_name(&mut self, buf: Vec<u8>, client_id: ClientId) -> Result<()> {
-        let err_context =
-            || format!("failed to update name of active pane to '{buf:?}' for client {client_id}");
-        let s = str::from_utf8(&buf).with_context(err_context)?;
+        // Not every byte sequence a client sends is UTF-8; decode lossily, as `rename` does,
+        // rather than failing the rename.
+        let decoded = String::from_utf8_lossy(&buf);
+        let s: &str = &decoded;
         self.get_active_pane_mut(client_id)
             .with_context(|| format!("no active pane found for client {client_id}"))
             .map(|active_pane| {
@@ -4323,6 +4324,13 @@ impl Tab {
                 self.process_pending_vte_events(pid)
                     .context("drain scrolled terminal for session update")?;
             }
+        }
+        // Whatever is left belongs to no pane listed above: flush it into a pane that is
+        // still here, or drop it with a pane that has gone.
+        let leftover: Vec<_> = self.pending_vte_events.keys().copied().collect();
+        for pid in leftover {
+            self.flush_pending_vte_events(pid)
+                .context("drain leftover terminal output for session update")?;
         }
         Ok(())
     }

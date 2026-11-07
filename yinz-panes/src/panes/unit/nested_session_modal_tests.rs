@@ -472,3 +472,46 @@ fn center_pad_centers_and_clamps() {
     assert_eq!(center_modal_pad(30, 30), 0);
     assert_eq!(center_modal_pad(40, 30), 0);
 }
+
+#[test]
+fn control_characters_in_the_session_name_are_not_rendered() {
+    let style = Style::default();
+    let shortcuts = sample_shortcuts();
+    let name = "evil\x1b]52;c;aGk=\x07\u{9b}2J\nname";
+    // the full modal, the short-row fallback and the narrow fallback all draw the name
+    for (columns, rows) in [(80, 30), (80, 5), (18, 20)] {
+        let chunks = guest_modal_chunks(columns, rows, 0, 0, &style, name, 0, &shortcuts);
+        let rendered = rendered_text(&chunks);
+        assert!(
+            !rendered.chars().any(char::is_control),
+            "control character rendered at {columns}x{rows}: {rendered:?}"
+        );
+    }
+    let chunks = guest_modal_chunks(80, 30, 0, 0, &style, name, 0, &shortcuts);
+    assert!(rendered_text(&chunks).contains("Nested Yinz session detected: evil]52;c;aGk=2Jname"));
+}
+
+#[test]
+fn hit_test_lays_out_a_control_laden_name_like_its_cleaned_form() {
+    let style = Style::default();
+    let shortcuts = sample_shortcuts();
+    let (columns, rows) = (80, 30);
+    let hits = |name: &str| -> Vec<Option<usize>> {
+        (0..rows)
+            .map(|row| {
+                guest_modal_option_at_content_row(rows, columns, row, &style, name, 0, &shortcuts)
+            })
+            .collect()
+    };
+    // Enough control characters that, counted as raw width, the title row would outgrow the
+    // hint row and widen the block, rewrapping the explanations and moving the options.
+    let controls = "\x1b\x07\u{9b}\x7f".repeat(10);
+    let laden = format!("a{controls}b");
+    let as_wide = format!("a{}b", "x".repeat(controls.chars().count()));
+    assert_ne!(
+        hits(&as_wide),
+        hits("ab"),
+        "the surface must be one where a name this long moves the options"
+    );
+    assert_eq!(hits(&laden), hits("ab"));
+}

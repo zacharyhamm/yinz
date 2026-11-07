@@ -308,7 +308,7 @@ impl<'a> PaneResizer<'a> {
     fn get_span(&self, direction: SplitDirection, pane: &dyn Pane) -> Option<Span> {
         let position_and_size = {
             let pas = pane.current_geom();
-            if pas.is_stacked() && pas.rows.is_percent() {
+            if pas.is_expanded_in_stack() {
                 // this is the main pane of the stack
                 StackedPanes::new(self.panes.clone()).position_and_size_of_stack(&pane.pid())
             } else if pas.is_stacked() {

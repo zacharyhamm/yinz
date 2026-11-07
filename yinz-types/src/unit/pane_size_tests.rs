@@ -46,6 +46,14 @@ fn split_out_never_panics(tc: hegel::TestCase) {
     );
 }
 
+#[test]
+fn split_out_of_a_fixed_dimension_moves_its_rows() {
+    let mut dimension = Dimension::fixed(10);
+    let split_out = dimension.split_out(3.0);
+    assert_eq!(split_out, Dimension::fixed(3));
+    assert_eq!(dimension, Dimension::fixed(7));
+}
+
 #[hegel::test]
 fn adjust_coordinates_keeps_the_geom_inside_the_viewport(tc: hegel::TestCase) {
     let viewport = Viewport {

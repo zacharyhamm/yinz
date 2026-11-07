@@ -1725,6 +1725,9 @@ impl ServerEnvironment for ServerOsInputOutput {
         };
         write!(f, "{}", buf).with_context(err_context)
     }
+    fn write_private_file(&mut self, buf: String, path: &Path) -> Result<()> {
+        yinz_bus::scrollback_dump::write_private_file(path, buf.as_bytes())
+    }
 }
 
 pub fn get_server_os_input() -> Result<ServerOsInputOutput, std::io::Error> {

@@ -236,7 +236,7 @@ impl Screen {
                 .values_mut()
                 .find(|tab| tab.has_pane_with_pid(&pane_id))
             {
-                tab.extract_pane(pane_id, true);
+                tab.extract_pane_leaving_tab(pane_id, true);
             }
             pending.waiting_for_pane.remove(&pane_id);
             self.bus

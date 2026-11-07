@@ -234,8 +234,11 @@ impl Dimension {
                 split_out_dimension
             },
             Constraint::Fixed(fixed) => {
+                // The rows split out leave this dimension, as in the percent branch: the two
+                // together must still span what this one did.
                 let split_out_value = fixed / by as usize;
                 self.constraint = Constraint::Fixed(fixed - split_out_value);
+                self.inner = self.inner.saturating_sub(split_out_value);
                 Self::fixed(split_out_value)
             },
         }
@@ -439,6 +442,21 @@ impl PaneGeom {
     }
     pub fn is_stacked(&self) -> bool {
         self.stacked.is_some()
+    }
+    /// Whether this is a stack member collapsed to its one-row title.
+    ///
+    /// Collapsed members are always `Dimension::fixed(1)`. A fixed constraint alone does not mark
+    /// one: the expanded member's rows carry the constraint of the whole stack, which is fixed for
+    /// a stack inside a fixed-size pane.
+    pub fn is_collapsed_in_stack(&self) -> bool {
+        self.is_stacked() && matches!(self.rows.constraint, Constraint::Fixed(1))
+    }
+    /// Whether this is the expanded member of a stack.
+    ///
+    /// Its rows hold the rows it shows, under the constraint of the whole stack: a percentage, or
+    /// the stack's height when the stack has a fixed size.
+    pub fn is_expanded_in_stack(&self) -> bool {
+        self.is_stacked() && !matches!(self.rows.constraint, Constraint::Fixed(1))
     }
 }
 

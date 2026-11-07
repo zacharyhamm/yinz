@@ -436,6 +436,15 @@ pub trait ServerEnvironment: Send + Sync {
     }
     /// Writes the given buffer to a string
     fn write_to_file(&mut self, buf: String, file: Option<String>) -> Result<()>;
+    /// Write `buf` to a new file at `path` that only this user can read, inside a private
+    /// folder, refusing to replace or follow anything already there.
+    ///
+    /// The real backend overrides this with [`crate::scrollback_dump::write_private_file`].
+    /// The default records the write through [`Self::write_to_file`] so in-process test
+    /// backends can capture it like any other dump; production backends must not keep it.
+    fn write_private_file(&mut self, buf: String, path: &Path) -> Result<()> {
+        self.write_to_file(buf, Some(path.to_string_lossy().into_owned()))
+    }
 }
 
 /// The complete server OS boundary. Consumers use a capability trait when they need only one part.

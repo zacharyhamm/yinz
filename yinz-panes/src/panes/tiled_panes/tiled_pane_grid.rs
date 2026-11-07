@@ -1631,9 +1631,7 @@ impl<'a> TiledPaneGrid<'a> {
         let panes = self.panes.borrow();
         let flexible_pane_in_stack: Vec<(&PaneId, &&mut Box<dyn Pane>)> = panes
             .iter()
-            .filter(|(_, p)| {
-                p.selectable() && p.current_geom().is_stacked() && !p.current_geom().rows.is_fixed()
-            })
+            .filter(|(_, p)| p.selectable() && p.current_geom().is_expanded_in_stack())
             .collect();
         flexible_pane_in_stack
             .iter()

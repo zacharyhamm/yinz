@@ -168,7 +168,7 @@ impl<'a> StackedPanes<'a> {
         let all_stacked_pane_positions = self.positions_in_stack(pane_id_in_stack).ok()?;
         all_stacked_pane_positions
             .iter()
-            .find(|(_pid, p)| p.rows.is_percent())
+            .find(|(_pid, p)| p.is_expanded_in_stack())
             .map(|(pid, _p)| *pid)
     }
     pub fn position_and_size_of_stack(&self, id: &PaneId) -> Option<PaneGeom> {
@@ -177,8 +177,13 @@ impl<'a> StackedPanes<'a> {
         let (_, last_pane_in_stack) = all_stacked_pane_positions.last()?;
         let full_stack_height =
             (last_pane_in_stack.y - first_pane_in_stack.y) + last_pane_in_stack.rows.as_usize();
+        // The expanded member's constraint is the whole stack's. A fixed-height stack is pinned to
+        // the rows it spans, so the pane resizer keeps it at that height.
         let mut rows = match self.position_of_flexible_pane(&all_stacked_pane_positions) {
-            Ok(position) => all_stacked_pane_positions.get(position)?.1.rows,
+            Ok(position) => match all_stacked_pane_positions.get(position)?.1.rows {
+                rows if rows.is_percent() => rows,
+                _ => Dimension::fixed(full_stack_height),
+            },
             Err(_) => Dimension::fixed(full_stack_height),
         };
         rows.set_inner(full_stack_height);
@@ -293,7 +298,7 @@ impl<'a> StackedPanes<'a> {
         let err_context = || "Cannot determine if pane is one liner or not".to_string();
         let panes = self.panes.borrow();
         let pane_to_close = panes.get(id).with_context(err_context)?;
-        Ok(pane_to_close.position_and_size().rows.is_fixed())
+        Ok(pane_to_close.position_and_size().is_collapsed_in_stack())
     }
     fn positions_in_stack(&self, id: &PaneId) -> Result<Vec<(PaneId, PaneGeom)>> {
         // find the full stack of panes around the given id, sorted by pane location top to bottom
@@ -348,7 +353,7 @@ impl<'a> StackedPanes<'a> {
         let err_context = || "Failed to find position of flexible pane".to_string();
         all_stacked_pane_positions
             .iter()
-            .position(|(_pid, p)| p.rows.is_percent())
+            .position(|(_pid, p)| p.is_expanded_in_stack())
             .with_context(err_context)
     }
     pub fn fill_space_over_pane_in_stack(&mut self, id: &PaneId) -> Result<bool> {
@@ -378,7 +383,7 @@ impl<'a> StackedPanes<'a> {
                 let positions_in_stack = self.positions_in_stack(&pane_id)?;
                 for (pane_id, pane_geom) in positions_in_stack {
                     seen.insert(pane_id);
-                    if pane_geom.rows.is_percent() {
+                    if pane_geom.is_expanded_in_stack() {
                         // this is the flexible pane
                         current_pane_is_above_stack = false;
                         continue;
@@ -420,9 +425,10 @@ impl<'a> StackedPanes<'a> {
         let err_context = || "Failed to add pane to stack".to_string();
         let all_stacks = self.get_all_stacks()?;
         for stack in all_stacks {
-            if let Some((id_of_flexible_pane_in_stack, _flexible_pane_in_stack)) = stack
-                .iter()
-                .find(|(_p_id, p)| !p.rows.is_fixed() && p.rows.as_usize() > MIN_TERMINAL_HEIGHT)
+            if let Some((id_of_flexible_pane_in_stack, _flexible_pane_in_stack)) =
+                stack.iter().find(|(_p_id, p)| {
+                    p.is_expanded_in_stack() && p.rows.as_usize() > MIN_TERMINAL_HEIGHT
+                })
             {
                 self.make_lowest_pane_in_stack_flexible(id_of_flexible_pane_in_stack)?;
                 let all_stacked_pane_positions =
@@ -454,7 +460,7 @@ impl<'a> StackedPanes<'a> {
         let stack = self.positions_in_stack(pane_id).with_context(err_context)?;
         if let Some((id_of_flexible_pane_in_stack, _flexible_pane_in_stack)) = stack
             .iter()
-            .find(|(_p_id, p)| !p.rows.is_fixed() && p.rows.as_usize() > MIN_TERMINAL_HEIGHT)
+            .find(|(_p_id, p)| p.is_expanded_in_stack() && p.rows.as_usize() > MIN_TERMINAL_HEIGHT)
         {
             self.make_lowest_pane_in_stack_flexible(id_of_flexible_pane_in_stack)?;
             let all_stacked_pane_positions =
@@ -485,7 +491,7 @@ impl<'a> StackedPanes<'a> {
             return None;
         };
         stack.iter().find_map(|(_p_id, p)| {
-            if !p.rows.is_fixed() {
+            if p.is_expanded_in_stack() {
                 // this is the flexible pane
                 Some(p.rows.as_usize().saturating_sub(MIN_TERMINAL_HEIGHT))
             } else {
@@ -780,7 +786,7 @@ impl<'a> StackedPanes<'a> {
         let flexible_pane_id_is_on_the_bottom = all_stacked_pane_positions
             .iter()
             .last()
-            .map(|(_, last_pane_geom_in_stack)| last_pane_geom_in_stack.rows.is_percent())
+            .map(|(_, last_pane_geom_in_stack)| last_pane_geom_in_stack.is_expanded_in_stack())
             .unwrap_or(false);
         let (
             mut new_position_and_size_of_stack,
@@ -797,6 +803,13 @@ impl<'a> StackedPanes<'a> {
                 &mut all_stacked_pane_positions,
             )?
         };
+        // Too small a stack to give the broken-out pane a row and keep one per remaining member:
+        // leave it whole rather than lay out empty panes.
+        if position_and_size_of_broken_out_pane.rows.as_usize() == 0
+            || new_position_and_size_of_stack.rows.as_usize() < all_stacked_pane_positions.len()
+        {
+            return None;
+        }
         let stack_id = all_stacked_pane_positions
             .first()
             .and_then(|(_, first_geom)| first_geom.stacked)?;
@@ -995,9 +1008,7 @@ impl<'a> StackedPanes<'a> {
         let panes = self.panes.borrow();
         let all_flexible_panes_in_stack: Vec<PaneId> = panes
             .iter()
-            .filter(|(_pid, p)| {
-                p.position_and_size().is_stacked() && !p.position_and_size().rows.is_fixed()
-            })
+            .filter(|(_pid, p)| p.position_and_size().is_expanded_in_stack())
             .map(|(pid, _p)| *pid)
             .collect();
         let mut stacks = vec![];

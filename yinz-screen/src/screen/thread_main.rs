@@ -909,13 +909,16 @@ pub fn screen_thread_main(
                         screen,
                         client_id,
                         |tab: &mut Tab, client_id: ClientId| {
+                            // A dump that cannot be written (for example, an unsafe dump
+                            // folder) or an editor that cannot be requested fails this one
+                            // edit, not the session.
                             if ansi {
                                 tab.edit_scrollback_raw(client_id, completion_tx)
                             } else {
                                 tab.edit_scrollback(client_id, completion_tx)
                             }
-                        },
-                        ?
+                            .non_fatal();
+                        }
                     );
                     screen.render()?;
                     screen.log_and_report_session_state()?;
@@ -1449,7 +1452,11 @@ pub fn screen_thread_main(
                     active_tab_and_connected_client_id!(
                         screen,
                         client_id,
-                        |tab: &mut Tab, client_id: ClientId| tab.update_active_pane_name(c, client_id), ?
+                        |tab: &mut Tab, client_id: ClientId| {
+                            tab.update_active_pane_name(c, client_id)
+                                .context("failed to update the pane name")
+                                .non_fatal();
+                        }
                     );
                     screen.render()?;
                     screen.log_and_report_session_state()?;
@@ -1789,7 +1796,10 @@ pub fn screen_thread_main(
                     } else {
                         // the action ends here, dropping completion_tx will release anything
                         // waiting for it
-                        screen.update_active_tab_name(c, client_id)?;
+                        screen
+                            .update_active_tab_name(c, client_id)
+                            .context("failed to update the tab name")
+                            .non_fatal();
                         screen.render()?;
                     }
                 },

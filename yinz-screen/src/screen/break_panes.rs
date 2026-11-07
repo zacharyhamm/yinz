@@ -40,7 +40,7 @@ impl Screen {
         let tab = self.tabs.get_mut(&source)?;
         let original = tab.placement_for_extraction(pane_id);
         let respawn = tab.take_pending_respawn(pane_id);
-        match tab.extract_pane(pane_id, true) {
+        match tab.extract_pane_leaving_tab(pane_id, true) {
             Some(pane) => Some((source, original, pane, respawn)),
             _ => {
                 if let Some(entry) = respawn {
@@ -159,7 +159,7 @@ impl Screen {
         let placement = active_tab.placement_for_extraction(active_pane_id);
         let carried_respawn = active_tab.take_pending_respawn(active_pane_id);
         let active_pane = active_tab
-            .extract_pane(active_pane_id, false)
+            .extract_pane_leaving_tab(active_pane_id, false)
             .with_context(err_context)?;
         let active_pane_run_instruction = active_pane.invoked_with().clone();
         let tab_index = self.get_new_tab_id();
@@ -249,7 +249,7 @@ impl Screen {
                 let carried_respawn = tab.take_pending_respawn(pane_id);
                 // here we pass None instead of the client_id we have because we do not need to
                 // necessarily trigger a relayout for this tab
-                match tab.extract_pane(pane_id, true) {
+                match tab.extract_pane_leaving_tab(pane_id, true) {
                     Some(pane) => {
                         extracted_panes.push((placement, pane, carried_respawn));
                         break;
@@ -376,7 +376,7 @@ impl Screen {
                 let overlay_carry = active_tab.overlay_carry_for(active_pane_id);
                 let carried_respawn = active_tab.take_pending_respawn(active_pane_id);
                 let active_pane = active_tab
-                    .extract_pane(active_pane_id, false)
+                    .extract_pane_leaving_tab(active_pane_id, false)
                     .with_context(err_context)?;
                 (
                     active_pane_id,

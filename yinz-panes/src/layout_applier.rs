@@ -2061,8 +2061,7 @@ pub fn arrangement_layout(
             let index = positions
                 .iter()
                 .position(|(_, geom)| {
-                    geom.is_stacked()
-                        && !geom.rows.is_fixed()
+                    geom.is_expanded_in_stack()
                         && geom.rows.as_usize() > crate::pane::MIN_TERMINAL_HEIGHT
                 })
                 .context("no room for excess panes in project layout")?;
@@ -2076,7 +2075,7 @@ pub fn arrangement_layout(
         .context("failed to position panes in layout")?;
     if positions.iter().any(|(_, geom)| {
         geom.cols.as_usize() < crate::pane::MIN_TERMINAL_WIDTH
-            || ((!geom.is_stacked() || !geom.rows.is_fixed())
+            || (!geom.is_collapsed_in_stack()
                 && geom.rows.as_usize() < crate::pane::MIN_TERMINAL_HEIGHT)
     }) {
         return Err(anyhow!("project layout does not fit this tab"));

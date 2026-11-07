@@ -1084,6 +1084,7 @@ impl Tab {
                 .senders
                 .send_to_screen(ScreenInstruction::NotifyPaneClosedToSubscribers { pane_id });
             drop(replaced_pane);
+            self.forget_departed_terminal(pane_id);
         }
     }
     /// Hand `pane` back when `pane_id_to_replace` holds a slot it can take. Otherwise park it
