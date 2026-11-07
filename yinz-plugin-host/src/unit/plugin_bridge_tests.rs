@@ -8779,3 +8779,52 @@ fn client_timezone_broadcast_and_subscription_replay_preserve_recipient_context(
         );
     }
 }
+
+/// The web plugin's target is recorded through this hook, so it must name the id before guest
+/// initialization is queued, and name an instance that is already running.
+#[test]
+fn a_background_start_announces_its_id_before_the_guest_initializes() {
+    let mut test = TestBridge::new();
+    let client = ClientId::new(1);
+    let id = PluginId::new(test.bridge.next_plugin_id);
+    test.bridge.plugin_executor.register_plugin(id);
+    let release = test.hold_executor(id);
+    let path = test._dirs[0].path().join("web.scm");
+    std::fs::write(&path, "(void)").unwrap();
+    let declaration = RunPluginOrAlias::RunPlugin(RunPlugin {
+        location: RunPluginLocation::File(path),
+        ..Default::default()
+    });
+    let map = test.bridge.plugin_map.clone();
+    let mut announced = None;
+    let (started, _) = test
+        .bridge
+        .start_background_plugin_then(declaration.clone(), client, true, |id| {
+            assert!(
+                map.lock().unwrap().list_plugins().is_empty(),
+                "announced before any instance exists"
+            );
+            announced = Some(id);
+        })
+        .unwrap();
+    assert_eq!(started, id);
+    assert_eq!(announced, Some(id));
+    assert!(
+        test.bridge
+            .loading_plugins
+            .iter()
+            .any(|(loading, _)| *loading == id),
+        "the load is queued behind the held executor"
+    );
+    release.send(()).unwrap();
+    test.settle(id);
+
+    let mut again = None;
+    let (existing, _) = test
+        .bridge
+        .start_background_plugin_then(declaration, client, true, |id| again = Some(id))
+        .unwrap();
+    assert_eq!(existing, id);
+    assert_eq!(again, Some(id), "a running instance is announced too");
+    test.bridge.unload_plugin(id).unwrap();
+}

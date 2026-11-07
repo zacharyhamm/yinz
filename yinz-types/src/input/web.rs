@@ -3,7 +3,7 @@
 //! ```kdl
 //! web {
 //!     enabled true
-//!     // bind "127.0.0.1"
+//!     // address "127.0.0.1"
 //!     // port 7419
 //!     // plugin "web"
 //!     // allowed_hosts "box.tail1234.ts.net"
@@ -22,7 +22,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_WEB_BIND: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+pub const DEFAULT_WEB_ADDRESS: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 pub const DEFAULT_WEB_PORT: u16 = 7419;
 pub const DEFAULT_WEB_PLUGIN: &str = "web";
 pub const DEFAULT_WEB_SESSION_DAYS: u32 = 30;
@@ -33,11 +33,12 @@ pub const DEFAULT_WEB_HTTPS_PORT_HINT: u16 = 7443;
 pub struct WebConfig {
     /// Default false.
     pub enabled: Option<bool>,
-    /// An IP address; default `127.0.0.1`.
-    pub bind: Option<String>,
+    /// The listen IP address; default `127.0.0.1`. Named `address` rather than `bind`, which
+    /// the configuration editor keys as a keybinding.
+    pub address: Option<String>,
     /// Default 7419; 0 binds an ephemeral port.
     pub port: Option<u16>,
-    /// Required for a non-loopback `bind`.
+    /// Required for a non-loopback `address`.
     pub allow_non_loopback: Option<bool>,
     /// Alias or URL of the route plugin; default alias `web`.
     pub plugin: Option<String>,
@@ -68,7 +69,7 @@ impl WebConfig {
         }
         WebConfig {
             enabled: other.enabled.or(self.enabled),
-            bind: other.bind.or(self.bind),
+            address: other.address.or(self.address),
             port: other.port.or(self.port),
             allow_non_loopback: other.allow_non_loopback.or(self.allow_non_loopback),
             plugin: other.plugin.or(self.plugin),
@@ -87,17 +88,22 @@ impl WebConfig {
 
     /// The listen address. A non-loopback address requires `allow_non_loopback true`.
     pub fn bind_addr(&self) -> Result<SocketAddr, String> {
-        let ip = match self.bind.as_deref().map(str::trim) {
-            None => DEFAULT_WEB_BIND,
-            Some(text) => text
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .parse::<IpAddr>()
-                .map_err(|_| format!("web bind '{text}' is not an IP address"))?,
+        let ip = match self.address.as_deref().map(str::trim) {
+            None => DEFAULT_WEB_ADDRESS,
+            Some(text) => {
+                // `[::1]` is accepted for an IPv6 address, but only with both brackets.
+                let unbracketed = text
+                    .strip_prefix('[')
+                    .and_then(|inner| inner.strip_suffix(']'))
+                    .unwrap_or(text);
+                unbracketed
+                    .parse::<IpAddr>()
+                    .map_err(|_| format!("web address '{text}' is not an IP address"))?
+            },
         };
         if !ip.is_loopback() && self.allow_non_loopback != Some(true) {
             return Err(format!(
-                "web bind '{ip}' is not a loopback address; add `allow_non_loopback true` to \
+                "web address '{ip}' is not a loopback address; add `allow_non_loopback true` to \
                  listen on it"
             ));
         }
@@ -121,7 +127,7 @@ impl WebConfig {
         self.https_port_hint.unwrap_or(DEFAULT_WEB_HTTPS_PORT_HINT)
     }
 
-    /// Every rule a config file is held to: the bind address and the session lifetime.
+    /// Every rule a config file is held to: the listen address and the session lifetime.
     pub fn validate(&self) -> Result<(), String> {
         self.bind_addr()?;
         if let Some(days) = self.session_days

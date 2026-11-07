@@ -36,14 +36,22 @@ impl WebRequests {
         };
         let client = bridge.get_first_client_id().unwrap_or(client);
         self.last_start = Some(Instant::now());
+        // The target is recorded before the guest initializes, so the web plugin can publish
+        // its site from `load`.
+        let host = &self.host;
         let started = bridge
-            .start_background_plugin(params.plugin.clone(), client, true)
+            .start_background_plugin_then(params.plugin.clone(), client, true, |id| {
+                host.set_target(Some(id));
+            })
             .context("start the web plugin");
-        if let Ok((id, _owner)) = &started {
-            self.target = Some(*id);
-            self.host.set_target(Some(*id));
+        match started {
+            Ok((id, _owner)) => self.target = Some(id),
+            Err(error) => {
+                self.target = None;
+                self.host.set_target(None);
+                Err::<(), _>(error).non_fatal();
+            },
         }
-        started.non_fatal();
     }
 
     /// Hand one request to the web plugin, or answer it as unavailable.
@@ -55,6 +63,14 @@ impl WebRequests {
         client: ClientId,
         _shutdown: tokio::sync::mpsc::Sender<()>,
     ) {
+        if self.params.is_none() {
+            drop(request);
+            reply.send(WebReply::Unavailable {
+                reason: "web plugin unavailable".into(),
+                retry_after_s: 5,
+            });
+            return;
+        }
         if self.target.is_none() {
             self.activate(bridge, client);
             reply.send(WebReply::Unavailable {

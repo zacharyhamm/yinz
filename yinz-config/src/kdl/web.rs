@@ -8,7 +8,7 @@ use crate::kdl_parsing_error;
 use yinz_types::input::web::WebConfig;
 
 const BOOLEANS: [&str; 2] = ["enabled", "allow_non_loopback"];
-const STRINGS: [&str; 2] = ["bind", "plugin"];
+const STRINGS: [&str; 2] = ["address", "plugin"];
 const LISTS: [&str; 3] = ["allowed_hosts", "allowed_origins", "tailscale_users"];
 const NUMBERS: [&str; 3] = ["port", "session_days", "https_port_hint"];
 
@@ -26,14 +26,12 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<WebConfig, ConfigError> {
     let Some(children) = block.children() else {
         return Ok(web);
     };
+    // Scalar settings seen so far; a repeat is an error rather than a silent override. List
+    // settings may repeat, each line adding values.
+    let mut seen = std::collections::HashSet::new();
     for node in children.nodes() {
         let name = node.name().value();
-        // An empty child block is tolerated: the configuration editor writes one for a node
-        // named `bind`, which it otherwise treats as a keybinding.
-        let has_children = node
-            .children()
-            .is_some_and(|children| !children.nodes().is_empty());
-        if has_children || node.entries().iter().any(|entry| entry.name().is_some()) {
+        if node.children().is_some() || node.entries().iter().any(|entry| entry.name().is_some()) {
             return Err(kdl_parsing_error!(
                 format!("web {name} takes plain values only"),
                 node
@@ -57,6 +55,10 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<WebConfig, ConfigError> {
             list.extend(strings);
             continue;
         }
+        let scalar = BOOLEANS.iter().chain(&STRINGS).chain(&NUMBERS);
+        if scalar.into_iter().any(|scalar| *scalar == name) && !seen.insert(name) {
+            return Err(kdl_parsing_error!(format!("web {name} is set twice"), node));
+        }
         let [value] = values.as_slice() else {
             return Err(kdl_parsing_error!(
                 format!("web {name} takes exactly one value"),
@@ -77,7 +79,7 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<WebConfig, ConfigError> {
                 .ok_or_else(|| kdl_parsing_error!(format!("web {name} takes a string"), node))?
                 .to_owned();
             match name {
-                "bind" => web.bind = Some(text),
+                "address" => web.address = Some(text),
                 _ => web.plugin = Some(text),
             }
         } else if NUMBERS.contains(&name) {
@@ -140,8 +142,8 @@ pub(crate) fn to_kdl(web: &WebConfig) -> Option<KdlNode> {
     if let Some(enabled) = web.enabled {
         push("enabled", vec![KdlValue::Bool(enabled)]);
     }
-    if let Some(bind) = &web.bind {
-        push("bind", vec![KdlValue::String(bind.clone())]);
+    if let Some(address) = &web.address {
+        push("address", vec![KdlValue::String(address.clone())]);
     }
     if let Some(port) = web.port {
         push("port", vec![KdlValue::Base10(i64::from(port))]);

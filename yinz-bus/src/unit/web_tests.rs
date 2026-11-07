@@ -132,3 +132,23 @@ fn web_agent_ref_round_trips_through_json() {
         "s"
     );
 }
+
+#[test]
+fn web_agent_view_call_debug_hides_the_request() {
+    let call = AgentViewCall {
+        plugin_id: PluginId::new(3),
+        client: ClientId::new(1),
+        generation: Some(2),
+        id: "req-7".into(),
+        request: r#"{"op":"prompt","text":"secret prompt"}"#.into(),
+    };
+    let printed = format!("{call:?}");
+    assert!(!printed.contains("secret prompt"), "{printed}");
+    assert!(printed.contains("req-7"), "{printed}");
+    assert!(
+        printed.contains(&format!("request_len: {}", call.request.len())),
+        "{printed}"
+    );
+    let instruction = format!("{:?}", WebInstruction::AgentView(Box::new(call)));
+    assert!(!instruction.contains("secret prompt"), "{instruction}");
+}

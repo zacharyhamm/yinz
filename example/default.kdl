@@ -363,7 +363,7 @@ hooks {
 //
 // web {
 //     enabled true
-//     // bind "127.0.0.1"
+//     // address "127.0.0.1"
 //     // port 7419
 //     // plugin "web"                                   // alias or URL of the route plugin
 //     // allowed_hosts "box.tail1234.ts.net"

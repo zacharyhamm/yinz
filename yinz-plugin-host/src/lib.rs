@@ -480,7 +480,10 @@ pub fn plugin_thread_main(
                 });
             },
             PluginInstruction::Web(yinz_bus::web::WebInstruction::Activate) => {
-                web_requests.activate(&mut plugin_bridge, initiating_client_id);
+                // Not during live-update quiescence; the next request after resume activates.
+                if update_pause.is_none() {
+                    web_requests.activate(&mut plugin_bridge, initiating_client_id);
+                }
             },
             PluginInstruction::Web(yinz_bus::web::WebInstruction::Request { request, reply }) => {
                 if update_pause.is_some() {

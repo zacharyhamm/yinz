@@ -31,6 +31,5 @@ tokio-util = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 yinz-test-support = { path = "../yinz-test-support" }

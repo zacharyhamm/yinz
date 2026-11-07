@@ -5,11 +5,15 @@
 
 use super::Screen;
 use yinz_bus::web::{WebAgentRef, WebLiveAgent};
+use yinz_runtime::errors::prelude::*;
 
 impl Screen {
     /// Answer every live agent the palette would list.
     pub(super) fn web_live_agents(&mut self, reply: crossbeam::channel::Sender<Vec<WebLiveAgent>>) {
-        let _ = reply.send(Vec::new());
+        reply
+            .send(Vec::new())
+            .map_err(|_| anyhow!("web reply receiver dropped"))
+            .non_fatal();
     }
 
     /// Focus `agent` for the first connected client, as the palette would.
@@ -18,9 +22,12 @@ impl Screen {
         agent: WebAgentRef,
         reply: crossbeam::channel::Sender<Result<(), String>>,
     ) {
-        let _ = reply.send(Err(format!(
-            "Agent {} cannot be focused from the web in this build",
-            agent.id
-        )));
+        reply
+            .send(Err(format!(
+                "Agent {} cannot be focused from the web in this build",
+                agent.id
+            )))
+            .map_err(|_| anyhow!("web reply receiver dropped"))
+            .non_fatal();
     }
 }

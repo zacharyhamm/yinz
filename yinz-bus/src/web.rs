@@ -69,7 +69,7 @@ pub enum WebInstruction {
 
 /// One `PluginCommand::AgentView`, with what is needed to route its reply back as
 /// `CustomMessage("agent-view-response", {"id","reply"})`.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AgentViewCall {
     pub plugin_id: PluginId,
     pub client: ClientId,
@@ -77,6 +77,19 @@ pub struct AgentViewCall {
     pub id: String,
     /// The JSON operation (`{"op":"list"}`, …).
     pub request: String,
+}
+
+/// Prints the request's length only: it can carry prompt text.
+impl std::fmt::Debug for AgentViewCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentViewCall")
+            .field("plugin_id", &self.plugin_id)
+            .field("client", &self.client)
+            .field("generation", &self.generation)
+            .field("id", &self.id)
+            .field("request_len", &self.request.len())
+            .finish()
+    }
 }
 
 /// The plugin thread's web input. `Some` only when the session's `web { }` block enables it.

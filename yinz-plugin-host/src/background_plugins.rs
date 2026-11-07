@@ -107,9 +107,23 @@ impl PluginBridge {
 
     pub(crate) fn start_background_plugin(
         &mut self,
+        declaration: RunPluginOrAlias,
+        client: ClientId,
+        independent: bool,
+    ) -> Result<(PluginId, ClientId)> {
+        self.start_background_plugin_then(declaration, client, independent, |_| {})
+    }
+
+    /// [`Self::start_background_plugin`], calling `before_load` with the plugin's id before a new
+    /// instance is queued, so the caller can record that id before guest initialization runs on
+    /// the executor. An instance already running is announced as well. When the load is refused
+    /// before an instance exists, the announced id is never used.
+    pub(crate) fn start_background_plugin_then(
+        &mut self,
         mut declaration: RunPluginOrAlias,
         client: ClientId,
         independent: bool,
+        before_load: impl FnOnce(PluginId),
     ) -> Result<(PluginId, ClientId)> {
         declaration.populate_run_plugin_if_needed(&self.plugin_aliases.lock().unwrap());
         let run = declaration
@@ -124,8 +138,12 @@ impl PluginBridge {
                     == run.configuration.without_caller_context()
         });
         let (id, owner) = if let Some((id, _)) = existing {
+            before_load(id);
             (id, self.get_first_client_id().unwrap_or(client))
         } else {
+            // `load_plugin` takes this id before it queues guest initialization.
+            let announced = self.next_plugin_id();
+            before_load(announced);
             // A background start: a plugin that declares a pane gets a parked record, which the
             // ledger records before the executor can enter guest initialization.
             let (id, owner) = self.load_plugin(
@@ -141,6 +159,7 @@ impl PluginBridge {
                     client_id: client,
                 },
             )?;
+            debug_assert_eq!(id, announced, "load_plugin used another plugin id");
             if !independent {
                 self.independent_plugin_ids.remove(&id);
             }

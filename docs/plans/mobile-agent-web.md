@@ -31,7 +31,7 @@ The plan starts from the **parity-reuse** proposal, because it reuses the most n
 ### 1.1 Crate: new `yinz-web/` (library)
 
 - Dependencies: `yinz-types`, `yinz-runtime`, `hyper = { version = "1", default-features = false, features = ["server","http1"] }`, `hyper-util = { version = "0.1", default-features = false, features = ["tokio","server-graceful"] }`, `http = "1"` (1.5.0 is already locked), `http-body-util = "0.1"`, `bytes`, `tokio` (workspace, plus `sync`), `tokio-util` (workspace, for `CancellationToken`), `argon2 = { version = "0.5", default-features = false, features = ["alloc","password-hash"] }`, `getrandom = "0.4"` (already locked at 0.4.3), `sha2` (workspace), `base64 = "0.22"`, `zeroize`, `serde`, `serde_json`, `libc`, `tempfile`.
-  - `argon2 0.5.3` uses `blake2 0.10`/`digest 0.10`, which are already in the lock. `hyper-1.12.0` and `hyper-util-0.1.21` are already in the local registry. `hmac` is not needed.
+  - `argon2 0.5.3` uses `blake2 0.10`/`digest 0.10`; WS-A added them to the lock (they were not there before). `hyper-1.12.0` and `hyper-util-0.1.21` are already in the local registry. `hmac` is not needed.
 - It does **not** depend on `yinz-bus`. `yinz-server` connects it to the plugin thread through the `Backend` trait, which keeps its unit tests free of threads.
 - Modules (`yinz-web/src/`):
 
@@ -53,17 +53,18 @@ The plan starts from the **parity-reuse** proposal, because it reuses the most n
 
 ```rust
 // yinz-web/src/server.rs
+pub type DispatchFuture = Pin<Box<dyn Future<Output = Option<yinz_types::web::WebReply>> + Send>>;
 pub trait Backend: Send + Sync + 'static {
     /// None = the reply slot was dropped (plugin thread exited or instance disposed) → 503.
-    fn dispatch(&self, request: yinz_types::web::WebRequest)
-        -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<yinz_types::web::WebReply>> + Send>>;
+    fn dispatch(&self, request: yinz_types::web::WebRequest) -> DispatchFuture;
     fn site(&self) -> Option<std::sync::Arc<yinz_types::web::Site>>;
     fn quiesced(&self) -> bool;          // senders.session_update_quiesced
     fn activate(&self);                  // sent once per successful bind: load the web plugin
     fn session_name(&self) -> String;    // read per call (sessions can be renamed)
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WebSettings {
-    pub bind: std::net::SocketAddr,          // 127.0.0.1:7419
+    pub bind: std::net::SocketAddr,          // 127.0.0.1:7419, from WebConfig::bind_addr()
     pub allowed_hosts: Vec<String>,          // extra exact hosts, added to loopback + *.ts.net
     pub allowed_origins: Vec<String>,        // extra exact "https://host:port"
     pub tailscale_users: Vec<String>,        // empty = off
@@ -76,7 +77,13 @@ pub struct WebSettings {
     pub max_connections: usize,              // 64
 }
 impl WebSettings { pub fn from_config(c: &yinz_types::input::web::WebConfig, data_dir: &Path) -> Result<Self>; }
-#[derive(Clone, Debug)]
+// Defaults for the fields above, used by from_config:
+pub const DEFAULT_GET_TIMEOUT: Duration;     // 15 s
+pub const DEFAULT_POST_TIMEOUT: Duration;    // 45 s
+pub const DEFAULT_HEADER_TIMEOUT: Duration;  // 10 s
+pub const DEFAULT_RETRY_INTERVAL: Duration;  // 3 s
+pub const DEFAULT_MAX_CONNECTIONS: usize;    // 64
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WebStatus { Disabled, WaitingForPassword, Quiesced, Binding { attempts: u32, last_error: String }, Serving { addr: SocketAddr }, Stopped }
 pub struct WebServer { /* CancellationToken, watch::Receiver<WebStatus>, Arc<State> */ }
 impl WebServer {
@@ -88,6 +95,8 @@ impl WebServer {
 impl Drop for WebServer { fn drop(&mut self) { self.stop() } }
 ```
 
+`yinz-web/src/lib.rs` re-exports `Backend, DispatchFuture, WebServer, WebSettings, WebStatus`. The modules `server`, `listener_file` and `auth` are `pub` (the CLI reads listener files); the others are private. As WS-A left it, `WebServer` holds only the `CancellationToken` and `watch::Receiver<WebStatus>`, and `start` is a stub that never listens and reports `Stopped`; B adds `Arc<State>` and the listener.
+
 All state lives in one `Arc<State>` per `WebServer`: limiter, session cache, request-id counter (an `AtomicU64` seeded randomly) and argon2 semaphore. Nothing is `static`.
 
 ### 1.3 Lifecycle
@@ -96,7 +105,7 @@ All state lives in one `Arc<State>` per `WebServer`: limiter, session cache, req
   - if `config.web.enabled()`, build `PluginBackend` (new file `yinz-server/src/web.rs`);
   - call `WebServer::start(settings, backend, get_tokio_runtime().handle())`;
   - store the result in the new field `SessionMetaData.web_server: Option<yinz_web::WebServer>` (`:159`).
-  - A bad `bind` or `port` value is logged with `.non_fatal()` and the server does not start.
+  - A bad `address` or `port` value is logged with `.non_fatal()` and the server does not start.
 - **Stop.** In `impl Drop for SessionMetaData` (`:319`), immediately after `self.shutdown.begin()`, call `self.web_server.take();`. Dropping cancels; the listener task drops the `TcpListener`, which frees the port at once, then drains connections for 2 s in the background and aborts them. **Drop never blocks.**
 - **Desired-state loop (`listener.rs`).** The loop re-evaluates every 1 s while bound, and every `retry_interval` plus jitter otherwise:
 
@@ -124,12 +133,12 @@ All state lives in one `Arc<State>` per `WebServer`: limiter, session cache, req
 The type lives in **`yinz-types/src/input/web.rs`**, next to `hooks.rs`. It is a field on `Config`, not `Options`, so it stays off the client↔server protobuf.
 
 ```rust
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebConfig {
     pub enabled: Option<bool>,             // default false
-    pub bind: Option<String>,              // default "127.0.0.1"
+    pub address: Option<String>,           // an IP address, default "127.0.0.1" (not `bind`: see below)
     pub port: Option<u16>,                 // default 7419; 0 = ephemeral
-    pub allow_non_loopback: Option<bool>,  // required for a non-loopback bind
+    pub allow_non_loopback: Option<bool>,  // required for a non-loopback address
     pub plugin: Option<String>,            // alias or URL; default alias "web"
     pub allowed_hosts: Vec<String>,
     pub allowed_origins: Vec<String>,
@@ -142,13 +151,24 @@ impl WebConfig {
     pub fn enabled(&self) -> bool;                    // enabled == Some(true)
     pub fn bind_addr(&self) -> Result<SocketAddr, String>; // validates loopback rule
     pub fn plugin_or_default(&self) -> String;        // "web"
+    pub fn session_days_or_default(&self) -> u32;     // 30
+    pub fn https_port_hint_or_default(&self) -> u16;  // 7443
+    pub fn validate(&self) -> Result<(), String>;     // bind_addr() and the 1..=90 day range
 }
+pub const DEFAULT_WEB_ADDRESS: IpAddr;               // 127.0.0.1
+pub const DEFAULT_WEB_PORT: u16;                     // 7419
+pub const DEFAULT_WEB_PLUGIN: &str;                  // "web"
+pub const DEFAULT_WEB_SESSION_DAYS: u32;             // 30
+pub const WEB_SESSION_DAYS_RANGE: RangeInclusive<u32>; // 1..=90
+pub const DEFAULT_WEB_HTTPS_PORT_HINT: u16;          // 7443
 ```
+
+The listen-address setting is **`address`**, not `bind`: the configuration editor keys every node named `bind` as a keybinding, so `["web","bind"]` could never be edited by path. `address` must be an IP address (`"localhost"` is rejected); `[::1]` is accepted only with both brackets. List settings accept several values per line and repeated lines; a repeated scalar setting is a config error ("web port is set twice"). Child blocks and properties are rejected.
 
 ```kdl
 web {
     enabled true
-    // bind "127.0.0.1"
+    // address "127.0.0.1"
     // port 7419
     // plugin "web"                                   // alias or URL of the route plugin
     // allowed_hosts "box.tail1234.ts.net"
@@ -159,7 +179,7 @@ web {
 }
 ```
 
-**When the server is enabled:** `web.enabled == Some(true)` and `bind_addr()` succeeds. A non-loopback address without `allow_non_loopback true` is rejected in `from_kdl` as a config error. A password file is a *serving* condition (§1.3), not a *start* condition.
+**When the server is enabled:** `web.enabled == Some(true)` and `bind_addr()` succeeds. A non-loopback address without `allow_non_loopback true`, or `session_days` outside 1..=90, is a config error: `Config::from_kdl` runs `WebConfig::validate()` on the merged config, which also covers edits made through the config editor. A password file is a *serving* condition (§1.3), not a *start* condition.
 
 Files (WS-A):
 - `yinz-types/src/input/web.rs` (new) and `yinz-types/src/input/mod.rs`.
@@ -167,7 +187,7 @@ Files (WS-A):
 - `yinz-config/src/kdl/mod.rs`:
   - in `Config::from_kdl` near `:1159`, add `single_top_level_block(&kdl_config, "web")`;
   - in `to_kdl` near `:1217`, push the block only when it differs from the default. This is required, because live update rebuilds the config from the effective text.
-- `yinz-config/src/kdl/web.rs` (new): `WebConfig::{from_kdl,to_kdl}`, modelled on `UiConfig::from_kdl` (`kdl/mod.rs:1510`).
+- `yinz-config/src/kdl/web.rs` (new): `WebConfig` lives in yinz-types, so yinz-config cannot give it inherent methods. The KDL code is two free functions, `pub(crate) fn from_kdl(&KdlNode) -> Result<WebConfig, ConfigError>` and `pub(crate) fn to_kdl(&WebConfig) -> Option<KdlNode>` (`None` for the default), modelled on `UiConfig::from_kdl` (`kdl/mod.rs:1510`).
 - `yinz-config/src/editor.rs`: add `"web"` arms at **both** `:816` (`apply`) and `:897`.
 - `yinz-config/assets/config/default.kdl`:
   - a commented `// web { … }` example;
@@ -175,7 +195,7 @@ Files (WS-A):
 - `example/default.kdl`: the same commented example.
 - `yinz-config/src/kdl/unit/duplicate_blocks.rs:5`: add `"web"` to `BLOCKS` and bump the array length. Add `yinz-config/src/kdl/unit/web.rs` (new). Review snapshots.
 
-**Plugin-thread input.** `plugin_thread_main` gains one trailing parameter, `web: Option<yinz_bus::web::WebPluginParams>`. It is `Some` only when web is enabled. The call site is `yinz-server/src/lib.rs:3244-3266`.
+**Plugin-thread input.** `plugin_thread_main` gains one trailing parameter, `web: Option<yinz_bus::web::WebPluginParams>`. It is `Some` only when web is enabled. The call site is around `yinz-server/src/lib.rs:3264` (WS-A passes `None`).
 
 ```rust
 pub struct WebPluginParams { pub plugin: RunPluginOrAlias, pub site: yinz_types::web::SiteHandle }
@@ -238,7 +258,17 @@ impl Auth {
 }
 pub struct SessionInfo { pub id: String, pub label: String, pub expires_at_ms: i64 }
 pub struct AuthResponse { pub status: u16, pub json: serde_json::Value, pub retry_after_s: Option<u64> }
+// Types named above, as WS-A defined them:
+pub trait Clock: Send + Sync { fn now_ms(&self) -> i64; }  pub struct SystemClock;
+pub struct AuthConfig { pub session_days: u32 }
+pub enum PasswordStateKind { Missing, Invalid, Ready }
+pub enum AuthError { Unauthenticated, PasswordNotReady }
+pub struct RateLimited { pub retry_after_s: u64 }
+// in password: Verifier { phc, verifier_id, updated_at_ms } (Debug hides phc);
+//              PasswordState { Missing, Invalid(String), Ready(Verifier) }
 ```
+
+WS-A's stub bodies deny everything: `read_state` returns `Missing`, `verify` returns false, `write`/`revoke_sessions`/`clear` return errors, login answers 503 `no_password`, and logout, logout-all and session answer 401 `unauthenticated`.
 
 On day one, WS-B creates `auth/mod.rs` with these exact signatures and deny-all bodies. WS-G replaces the bodies.
 
@@ -406,14 +436,15 @@ impl Debug for ReplySlot { "ReplySlot" }
     Activate,
     AgentView(Box<AgentViewCall>),
 }
-#[derive(Clone, Debug)] pub struct AgentViewCall { pub plugin_id: PluginId, pub client: ClientId, pub generation: Option<u64>, pub id: String, pub request: String }
+#[derive(Clone)] pub struct AgentViewCall { pub plugin_id: PluginId, pub client: ClientId, pub generation: Option<u64>, pub id: String, pub request: String }
+impl Debug for AgentViewCall { /* every field but `request`, which can carry prompt text; prints request_len */ }
 pub struct WebPluginParams { pub plugin: RunPluginOrAlias, pub site: SiteHandle }   // Clone, Debug
 // Screen DTOs (§4.1)
 pub struct WebLiveAgent { … }  pub struct WebLiveHeader { … }  pub struct WebAgentRef { … }
 ```
 
 **Bus variants (WS-A):**
-- `PluginInstruction::Web(web::WebInstruction)` in `yinz-bus/src/plugins.rs`; add `PluginContext::Web` and the arm in `From<&PluginInstruction>` (`plugins.rs:~485`); add the name in `yinz-types/src/diagnostics.rs`.
+- `PluginInstruction::Web(web::WebInstruction)` in `yinz-bus/src/plugins.rs`; add `PluginContext::Web` (it resolves by name, so `From<&PluginInstruction>` needs no hand-written arm); add the name in `yinz-types/src/diagnostics.rs`.
 - `ScreenInstruction::WebLiveAgents { reply: crossbeam::channel::Sender<Vec<WebLiveAgent>> }` and `ScreenInstruction::WebFocusAgent { agent: WebAgentRef, reply: crossbeam::channel::Sender<Result<(), String>> }` in `yinz-bus/src/screen.rs`, with `ScreenContext` arms.
 
 **`PluginBackend`** (`yinz-server/src/web.rs`, WS-B):
@@ -426,25 +457,30 @@ pub struct WebLiveAgent { … }  pub struct WebLiveHeader { … }  pub struct We
 ### 3.2 Plugin thread (`yinz-plugin-host/src/web_requests.rs`, new, WS-C)
 
 ```rust
-pub(crate) struct WebRequests { params: Option<WebPluginParams>, target: Option<PluginId>, last_start: Option<Instant> }
+pub(crate) struct WebRequests { params: Option<WebPluginParams>, host: WebHost, target: Option<PluginId>, last_start: Option<Instant> }
 impl WebRequests {
     pub fn new(params: Option<WebPluginParams>, host: &WebHost) -> Self;
     pub fn activate(&mut self, bridge: &mut PluginBridge, client: ClientId);
-    pub fn request(&mut self, bridge: &mut PluginBridge, req: Box<WebRequest>, reply: ReplySlot, client: ClientId, shutdown: Sender<()>);
+    pub fn request(&mut self, bridge: &mut PluginBridge, req: Box<WebRequest>, reply: ReplySlot, client: ClientId,
+                   shutdown: tokio::sync::mpsc::Sender<()>);
 }
+```
+
+WS-A built `activate` in full; `request` is a stub that answers `Unavailable{"web plugin unavailable", 5}` when `params` is `None`, `Unavailable{"starting", 1}` (after `activate`) when there is no target, and otherwise `Unavailable{"web plugin unavailable", 5}`. C replaces the last case with steps 3 and 4 below.
 ```
 
 The plugin-thread loop (`lib.rs`) owns it as a local value, like `update_pause`. It is never global.
 
-**`Activate`:**
+**`Activate`:** the `lib.rs` arm skips it while `update_pause.is_some()`; the next `Request` after resume activates through step 2.
 1. If `params` is `None`, do nothing.
-2. Otherwise call `bridge.start_background_plugin(params.plugin, bridge.get_first_client_id().unwrap_or(initiating_client_id), true)`.
-3. Record `target = Some(id)` and set `WebHost::set_target(Some(id))`.
+2. Otherwise call `bridge.start_background_plugin_then(params.plugin, bridge.get_first_client_id().unwrap_or(initiating_client_id), true, |id| host.set_target(Some(id)))`.
+   - `start_background_plugin_then` calls the closure with the plugin's id **before** `load_plugin` queues guest initialization on the executor (and with the existing id when an instance already runs). The target is therefore set before the guest's `load` runs, so a web plugin may call `HttpAssets`/`HttpPublish` from `load`, and C's `is_target` gate sees it.
+3. On `Ok`, record `target = Some(id)`. On `Err`, clear both `target` and the `WebHost` target.
 
 The web plugin therefore loads only in the session that actually holds the port.
 
 **`Request`:**
-1. If `update_pause.is_some()`, reply `Unavailable{"session update in progress", 5}`.
+1. If `update_pause.is_some()`, reply `Unavailable{"session update in progress", 5}`. This check is in the `lib.rs` arm, not in `WebRequests`. If `params` is `None`, reply `Unavailable{"web plugin unavailable", 5}`.
 2. If there is no target, call `activate`, then reply `Unavailable{"starting", 1}`.
 3. If the target instance is missing, or every instance `is_unavailable()`:
    - reply `Unavailable{"web plugin unavailable", 5}`;
@@ -470,7 +506,7 @@ The web plugin therefore loads only in the session that actually holds the port.
 - Do not hold the plugin-map lock across the call longer than palette does.
 
 **`AgentView`:** see D6 and §4.2. The arm in `lib.rs`:
-1. If `update_pause` is set, deliver `{"id":…, "error":{"code":"paused",…}}`.
+1. If `update_pause` is set, deliver `{"id":…, "reply":{"error":{"code":"paused",…}}}` — the same shape as a normal reply, so E reads `reply.error` in both cases.
 2. Otherwise:
    ```rust
    let t = native_tasks.start();
@@ -500,7 +536,8 @@ pub(crate) type WebPending = HashMap<u64, ReplySlot>;
 
 - `PluginEnv` (`plugin_map.rs:799`) gains `pub(crate) web: WebHost` (cloned from the bridge, like `panes`) and `pub(crate) web_pending: Arc<Mutex<WebPending>>` (fresh per instance).
   - **VERIFY** every place a `PluginEnv` is built, including named workers in `background_worker.rs`. A worker gets an empty `web_pending` and cannot answer requests.
-- Publishing only happens when `is_target(id)`. If `site.generation != generation`, it starts a fresh `Site`.
+- Publishing only happens when `is_target(id)` and the session has a `SiteHandle`. If `site.generation != generation` (or another plugin id published it), it starts a fresh `Site`.
+- **As WS-A left it:** `web_host.rs` exists with this API and a working body. `plugin_thread_main` creates the `WebHost` and hands it to `WebRequests`, but does not yet pass it to `PluginBridge`/`PluginEnv`; that is C's. `WebPending`, `is_target`, `publish_assets`, `publish_page` and `retire` carry `#[expect(dead_code, reason = …)]`. **C must delete each `#[expect]` as it starts using the item, or `cargo x lint` fails** (an unfulfilled expectation is an error).
 - Dispose: in `SteelPlugin::dispose_with_cleanup` (`steel/mod.rs:440`), next to `clear_agent_providers` (`:509`), clear `web_pending` (slots drop, so waiting requests get 503 at once) and call `web.retire(generation)`.
 
 ### 3.4 Steel-only host commands (WS-A types; WS-C handlers)
@@ -524,6 +561,9 @@ Required edits for each command:
 - `yinz-types/src/diagnostics.rs` and `docs/PLUGIN_PROTOCOL.md`.
 - `yinz_exports/permissions.rs`: all four map to `PermissionType::RunCommands`, next to `AgentControl` at `:283`.
 - Identity gates: `HttpAssets`, `HttpPublish` and `AgentView` additionally require `env.plugin_config.is_builtin() || env.web.is_target(env.plugin_id)`; otherwise the guest gets the error "reserved for the configured web plugin". `HttpRespond` is gated by `web_pending` membership.
+  - **Where:** the command arms in `yinz_exports.rs` call `web::is_web_plugin(env)` in `yinz_exports/web.rs`, which also holds the error text as `web::RESERVED`. WS-A's body returns only `env.plugin_config.is_builtin()`; **C adds `|| env.web.is_target(env.plugin_id)` there** once `PluginEnv.web` exists. The `AgentView` arm (final) already calls it.
+  - Handler signatures in `yinz_exports/web.rs`: `respond(&mut PluginEnv, request_id: u64, response: String) -> Result<()>`, `assets(&mut PluginEnv, prefix: String, directory: String) -> Result<()>`, `publish(&mut PluginEnv, path: String, content_type: String, body: String) -> Result<()>`.
+  - Protobuf: `plugin_command.rs` refuses all four with "Web commands are Steel-only".
 
 **`HttpRespond` handler** (`yinz-plugin-host/src/yinz_exports/web.rs`, new, WS-C). The `response` string is JSON:
 ```json
@@ -621,7 +661,7 @@ pub struct WebLiveAgent {
 pub struct WebLiveHeader { pub name: String, pub status: String, pub location: String, pub task: String, pub project: String, pub session_id: Option<String> }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WebAgentRef { pub id: String, pub kind: String, pub session_id: String }
-impl WebLiveAgent { pub fn matches(&self, r: &WebAgentRef) -> bool; } // id + kind + session_id equal (non-empty)
+impl WebLiveAgent { pub fn matches(&self, r: &WebAgentRef) -> bool; } // id == r.id, pane.agent.kind == r.kind, pane.agent.session_id == r.session_id; all three non-empty (no separate kind/session_id fields)
 ```
 
 **Refactors in place in `yinz-screen/src/screen/palette_history.rs`.** Each helper is extracted from existing code and the palette is switched to call it, so the palette and the web view stay identical:
@@ -1056,6 +1096,19 @@ This follows CLAUDE.md: tests go in adjacent `unit/` directories, test runs are 
   - This is a sequential handoff of stub files, not shared ownership. After A, `lib.rs`, `yinz_exports.rs` and `thread_main.rs` belong to nobody else.
 - **Provides:** every type in §3.1 and §4.1, the command shapes in §3.4, `WebConfig`.
 - **Tests:** the Config, Bus and Wire rows in §8.
+
+#### WS-A as built (read before starting B–G)
+
+The sections above are updated in place; this list collects what differs from the original plan.
+- **Config (§1.4):** the listen setting is `address`, not `bind`; `WebConfig` derives `Eq` and gains `validate()`, `session_days_or_default()`, `https_port_hint_or_default()` and the `DEFAULT_WEB_*`/`WEB_SESSION_DAYS_RANGE` constants; the KDL code is the free functions `kdl::web::{from_kdl, to_kdl}`; a repeated scalar setting is an error.
+- **Derives on seam types (§3.1):** `WebReply`, `WebResponse`, `StaticFile` and `Site` also derive `Clone, PartialEq, Eq`; `WebAuth` and `WebRequest` add `PartialEq, Eq`; `SiteHandle` and `AgentViewCall` have hand-written `Debug` impls that print no bodies or secrets; `WebLiveHeader` derives `PartialEq, Eq`.
+- **Plugin thread (§3.2):** the update-pause check is in the `lib.rs` arms (both `Request` and `Activate`); the paused `AgentView` reply is `{"id", "reply": {"error": {"code": "paused"}}}`; `activate` sets the `WebHost` target before guest initialization through `PluginBridge::start_background_plugin_then`.
+- **WebHost (§3.3):** already built; C wires it into `PluginBridge`/`PluginEnv` and deletes each `#[expect(dead_code)]` as it uses the item.
+- **Identity gate (§3.4):** C changes `yinz_exports/web.rs` `is_web_plugin`.
+- **yinz-web (§1.2):** `DispatchFuture` alias, the `DEFAULT_*` timeout constants, derives on `WebSettings`/`WebStatus`, module visibility, and the auth helper types in §2.1.
+- **Steel:** `web.scm` and `web_app.scm` are comment-only placeholders that are not evaluated; evaluating them in `Runtime::new` is E's.
+- **Dependencies:** `hyper-util` features `["tokio","server","server-graceful","http1"]`; `http`, `bytes` features `["std"]`; `zeroize` `["alloc"]`; `getrandom` default features off. Lock side effects: `rand_core` 0.6.3 → 0.6.4, and eleven Windows-only crates moved to the already-locked `windows-sys` 0.60.2.
+- The alias `yinz:web` is safe before F lands: builtin tags are checked when a plugin loads, not when config is parsed.
 
 ### WS-B: HTTP server and server wiring (plus the final integration test and docs)
 

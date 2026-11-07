@@ -1,6 +1,7 @@
 use super::*;
 use std::net::SocketAddr;
 use yinz_types::configuration::{Node, Patch};
+use yinz_types::input::layout::RunPluginOrAlias;
 use yinz_types::input::web::WebConfig;
 
 fn parse(text: &str) -> Result<Config, ConfigError> {
@@ -17,7 +18,7 @@ fn error_message(text: &str) -> String {
 const FULL: &str = r#"
 web {
     enabled true
-    bind "127.0.0.1"
+    address "127.0.0.1"
     port 0
     plugin "file:/tmp/my-web.scm"
     allowed_hosts "box.tail1234.ts.net" "other.example"
@@ -36,7 +37,7 @@ fn web_block_parses_every_field() {
         web,
         WebConfig {
             enabled: Some(true),
-            bind: Some("127.0.0.1".into()),
+            address: Some("127.0.0.1".into()),
             port: Some(0),
             allow_non_loopback: None,
             plugin: Some("file:/tmp/my-web.scm".into()),
@@ -112,23 +113,26 @@ fn web_fragments_merge_field_by_field() {
 }
 
 #[test]
-fn web_non_loopback_bind_needs_the_opt_in() {
-    let message = error_message("web {\n enabled true\n bind \"0.0.0.0\"\n}\n");
+fn web_non_loopback_address_needs_the_opt_in() {
+    let message = error_message("web {\n enabled true\n address \"0.0.0.0\"\n}\n");
     assert!(message.contains("allow_non_loopback"), "{message}");
-    let web = parse("web {\n bind \"0.0.0.0\"\n allow_non_loopback true\n port 8080\n}\n")
+    let web = parse("web {\n address \"0.0.0.0\"\n allow_non_loopback true\n port 8080\n}\n")
         .expect("opted in")
         .web;
     assert_eq!(
         web.bind_addr(),
         Ok("0.0.0.0:8080".parse::<SocketAddr>().unwrap())
     );
-    let v6 = parse("web {\n bind \"::1\"\n}\n")
-        .expect("ipv6 loopback")
-        .web;
-    assert_eq!(
-        v6.bind_addr(),
-        Ok("[::1]:7419".parse::<SocketAddr>().unwrap())
-    );
+    for text in ["::1", "[::1]"] {
+        let v6 = parse(&format!("web {{\n address \"{text}\"\n}}\n"))
+            .expect("ipv6 loopback")
+            .web;
+        assert_eq!(
+            v6.bind_addr(),
+            Ok("[::1]:7419".parse::<SocketAddr>().unwrap()),
+            "{text}"
+        );
+    }
 }
 
 #[test]
@@ -137,7 +141,20 @@ fn web_rejects_bad_values() {
         ("web {\n port 70000\n}\n", "not a port"),
         ("web {\n port -1\n}\n", "not a port"),
         ("web {\n port \"80\"\n}\n", "whole number"),
-        ("web {\n bind \"localhost\"\n}\n", "not an IP address"),
+        ("web {\n address \"localhost\"\n}\n", "not an IP address"),
+        ("web {\n address \"[::1\"\n}\n", "not an IP address"),
+        ("web {\n address \"127.0.0.1]\"\n}\n", "not an IP address"),
+        ("web {\n address \"[[::1]]\"\n}\n", "not an IP address"),
+        (
+            "web {\n enabled true\n enabled false\n}\n",
+            "web enabled is set twice",
+        ),
+        (
+            "web {\n address \"127.0.0.1\"\n address \"::1\"\n}\n",
+            "web address is set twice",
+        ),
+        ("web {\n port 1\n port 2\n}\n", "web port is set twice"),
+        ("web {\n port 1 {\n }\n}\n", "plain values only"),
         ("web {\n session_days 0\n}\n", "session_days"),
         ("web {\n session_days 91\n}\n", "session_days"),
         ("web {\n enabled \"yes\"\n}\n", "true or false"),
@@ -185,38 +202,93 @@ fn web_editor_applies_and_removes_entries() {
     assert_eq!(removed.web.port, None);
     assert_eq!(removed.web.enabled, Some(true));
 
-    // `bind` is the keybinding node name to the editor's path keys, so a whole-block edit.
-    let block = Patch {
-        reset: false,
-        path: vec!["web".into()],
-        node: Some(Node {
-            name: "web".into(),
-            arguments: vec![],
-            properties: Default::default(),
-            children: vec![patch(&["bind"], Some(serde_json::json!("0.0.0.0")))
-                .node
-                .unwrap()],
-        }),
-    };
-    let refused =
-        crate::editor::apply(&config, &[block]).expect_err("the loopback rule applies to edits");
+    let refused = crate::editor::apply(
+        &config,
+        &[patch(
+            &["web", "address"],
+            Some(serde_json::json!("0.0.0.0")),
+        )],
+    )
+    .expect_err("the loopback rule applies to edits");
     assert!(refused.contains("allow_non_loopback"), "{refused}");
+
+    let addressed = crate::editor::apply(
+        &edited,
+        &[patch(&["web", "address"], Some(serde_json::json!("::1")))],
+    )
+    .expect("address is edited by path");
+    assert_eq!(addressed.web.address.as_deref(), Some("::1"));
+    let replaced = crate::editor::apply(
+        &addressed,
+        &[patch(
+            &["web", "address"],
+            Some(serde_json::json!("127.0.0.1")),
+        )],
+    )
+    .expect("a second edit replaces the address");
+    assert_eq!(replaced.web.address.as_deref(), Some("127.0.0.1"));
+}
+
+/// The commented-out `web { }` example in a config file, with one level of `// ` removed: the
+/// block itself is enabled and the settings inside it stay commented.
+fn uncommented_web_example(text: &str) -> String {
+    let start = text.find("\n// web {\n").expect("a commented web example") + 1;
+    let end = start + text[start..].find("\n// }\n").expect("the example's end") + "\n// }\n".len();
+    text[start..end]
+        .lines()
+        .map(|line| line.strip_prefix("// ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[test]
 fn web_example_configs_parse() {
-    Config::from_kdl(include_str!("../../../../example/default.kdl"), None)
-        .expect("example/default.kdl parses");
+    for (name, text) in [
+        (
+            "example/default.kdl",
+            include_str!("../../../../example/default.kdl"),
+        ),
+        (
+            "assets/config/default.kdl",
+            include_str!("../../../assets/config/default.kdl"),
+        ),
+    ] {
+        Config::from_kdl(text, None).unwrap_or_else(|error| panic!("{name} parses: {error:?}"));
+        let example = uncommented_web_example(text);
+        let web = parse(&example)
+            .unwrap_or_else(|error| panic!("{name}'s web example parses: {error:?}\n{example}"))
+            .web;
+        assert_eq!(web.enabled, Some(true), "{name}");
+        // Every other line is a commented setting; with its `// ` removed it must parse too.
+        let every = example
+            .lines()
+            .map(|line| {
+                let line = line.trim_start();
+                let line = line.strip_prefix("// ").unwrap_or(line);
+                line.split(" //").next().unwrap_or(line)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let full = parse(&every)
+            .unwrap_or_else(|error| panic!("{name}'s full web example parses: {error:?}\n{every}"))
+            .web;
+        assert_eq!(full.address.as_deref(), Some("127.0.0.1"), "{name}");
+        assert_eq!(full.session_days, Some(30), "{name}");
+    }
     let defaults = Config::from_default_assets().expect("default.kdl parses");
-    assert!(
-        defaults.plugins.aliases.contains_key("web"),
-        "the shipped config names the web route plugin"
-    );
+    let alias = defaults
+        .plugins
+        .aliases
+        .get("web")
+        .expect("the shipped config names the web route plugin");
     assert!(
         !defaults
             .background_plugins
             .iter()
-            .any(|plugin| format!("{plugin:?}").contains("\"web\"")),
+            .any(|plugin| match plugin {
+                RunPluginOrAlias::Alias(declared) => declared.name == "web",
+                RunPluginOrAlias::RunPlugin(run) => run.location == alias.location,
+            }),
         "the web plugin is loaded on activation, never at session start"
     );
 }
