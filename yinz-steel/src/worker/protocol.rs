@@ -32,6 +32,8 @@ pub(super) enum Operation {
     Update(Value),
     Pipe(Value),
     Palette(Value),
+    /// One authenticated web request for the SDK's `yinz-web-dispatch`.
+    Web(Value),
     Render(usize, usize),
     Unload,
     Output,

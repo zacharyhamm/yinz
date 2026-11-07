@@ -635,6 +635,27 @@ impl Runtime {
         self.changed("palette", message)
     }
 
+    /// Runs the SDK's `yinz-web-dispatch` through the async lifecycle, so deferred handlers
+    /// keep running on later ticks. The guest replies with an `HttpRespond` host command,
+    /// not through the return value. User code cannot shadow this with a callback name.
+    pub fn web(&mut self, request: Value) -> Result<bool> {
+        let hook = self
+            .optional_function("yinz-web-dispatch")?
+            .unwrap_or(SteelVal::BoolV(false));
+        Ok(matches!(
+            self.call_optional(
+                "yinz-async-lifecycle",
+                vec![
+                    SteelVal::StringV("web".into()),
+                    hook,
+                    SteelVal::ListV(vec![to_scheme(&request)?].into()),
+                    SteelVal::BoolV(false),
+                ],
+            )?,
+            Some(SteelVal::BoolV(true))
+        ))
+    }
+
     fn changed(&mut self, name: &str, value: Value) -> Result<bool> {
         Ok(matches!(
             self.lifecycle(name, vec![to_scheme(&value)?])?,

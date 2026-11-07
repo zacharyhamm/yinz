@@ -179,6 +179,10 @@ impl WorkerRuntime {
     pub fn palette(&mut self, message: Value) -> Result<bool> {
         self.changed(Operation::Palette(message))
     }
+    /// Delivers one web request; the guest answers with an `HttpRespond` host command.
+    pub fn web(&mut self, request: Value) -> Result<bool> {
+        self.changed(Operation::Web(request))
+    }
     pub fn render(&mut self, rows: usize, columns: usize) -> Result<String> {
         self.text(Operation::Render(rows, columns))
     }

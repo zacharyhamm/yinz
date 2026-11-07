@@ -86,6 +86,7 @@ fn execute(runtime: &mut Runtime, operation: Operation) -> Result<Output> {
         Operation::Update(event) => Output::Changed(runtime.update(event)?),
         Operation::Pipe(message) => Output::Changed(runtime.pipe(message)?),
         Operation::Palette(message) => Output::Changed(runtime.palette(message)?),
+        Operation::Web(request) => Output::Changed(runtime.web(request)?),
         Operation::Render(rows, columns) => Output::Text(runtime.render(rows, columns)?),
         Operation::Unload => {
             runtime.unload()?;
