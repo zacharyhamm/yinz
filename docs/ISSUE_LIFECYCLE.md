@@ -159,32 +159,79 @@ object on stdout. The behavior also logs the readable result and publishes the
 `handoff` resource, including the issue snapshot, plan version or commit,
 assignment identity, decision and supporting evidence.
 
-The driver runs initial triage, planning and plan review automatically. Unresolved
-high/critical findings return an `authorize_plan_revision` handoff with the current
-plan, review findings and proposed next version. Repeated `drive` calls return the
-same pending proposal without launching a planner. To authorize exactly that
-revision, pass an input file containing the handoff ID and the user's actual request:
+The driver runs initial triage, planning and plan review automatically. The first
+blocking review gets one automatic targeted revision and review. Its allowance and
+complete assignment are reserved atomically before launch, once per requirements
+generation. Resume, rollback, restart, manual planning and command reinvocation do
+not replenish it. A refresh with genuinely changed requirements starts a new
+generation with an initial plan and one automatic revision. Plan versions remain
+monotonic across generations.
+
+Remaining high/critical findings return `authorize_plan_revision` with the current
+plan, original review, effective findings, history, revision responses and proposed
+next version. Repeated `drive` calls reuse this handoff without launching workers.
+The controller can inspect cited code and record supported dispositions without
+asking the user:
+
+```json
+{
+  "planVersion": 2,
+  "reviewFingerprint": "<fingerprint from the current handoff>",
+  "dispositions": [{
+    "findingId": "caller-validation",
+    "disposition": "rejected",
+    "rationale": "The cited caller already validates input before dispatch.",
+    "evidence": ["src/caller.rs:42-51 validates input before invoking dispatch"]
+  }]
+}
+```
+
+Pass this input to `adjudicate-plan`, then `drive` again. Dispositions are
+`resolved`, `rejected`, or `downgraded`; downgrades require a lower corrected
+`severity`. Each requires a rationale and nonempty evidence. Explain the source
+inspection and judgment. An accepted unresolved high/critical risk remains blocked
+for user direction; it cannot be marked resolved merely to advance. The original
+review is preserved, and dispositions are stored separately, applicable only to
+the matching plan and review fingerprint. Stale inputs and mutations while a
+worker or saved reservation is unresolved are rejected. The fingerprint fences changed plans, reviews and requirements generations.
+Rollback that retains the current review also retains its applicable dispositions;
+removed or changed review evidence cannot use them.
+
+To authorize one further targeted revision, pass this input to `drive`:
 
 ```json
 {
   "revisionApproval": {
     "handoffId": "<id from the current authorize_plan_revision handoff>",
-    "request": "<the user's actual authorization for this revision>"
+    "request": "<the user's exact instructions and authorization for this revision>"
   }
 }
 ```
 
-The authorization and its exact planner assignment are saved before dispatch.
-Resume with `drive` after interruption; it reuses the authorized assignment and
-reviews the resulting version automatically. Any remaining blockers require a
-new authorization. There is no automatic revision budget or blanket approval.
-Automatic planning after refresh or rollback also requires this handoff when
-any prior plan version exists. Changed requirements, lifecycle state or assignments
-invalidate old proposals and prevent reusing authorization. Blank requests and
-approvals for other handoff types are rejected. Manual `plan`, `agent` planning,
-`rollback` and `restart-agent` retain their existing behavior. Previously running
-planners may finish and import their results without new authorization; existing
-records need no migration and stop before the next automatic revision.
+The authorization and complete planner assignment, including the exact user
+request, are saved before dispatch. Resume reuses that assignment and reviews the
+resulting version. Remaining blockers require supported adjudication or another
+explicit authorization. Changed requirements, lifecycle state or assignments
+invalidate old proposals. Blank requests and approvals for other handoff types
+are rejected. Manual planning and explicit rollback/restart remain available but
+do not restore the automatic allowance. Restart instructions reach the replacement
+worker, and accumulated feedback survives subsequent revisions.
+
+Optional `planningContext` records accumulated feedback, accepted decisions,
+prior plans and reviews, revision summaries and adjudications. Historical evidence
+is separate from the current review and never satisfies approval gates. New
+revisions must summarize changes and respond to every blocking finding as
+`addressed`, `disputed`, or `unresolved`, with rationale and evidence. Reviewers
+receive the previous plan, findings, responses and current plan, verify fixes,
+and check for new defects. Workers must read the skill's
+[planning standards](../.agents/skills/issue-lifecycle/references/planning.md) and
+[review standards](../.agents/skills/issue-lifecycle/references/review.md).
+
+Existing records need no rewrite: new fields are optional, and saved prompts,
+snapshots and in-flight assignments keep their original contracts. Legacy plans
+beyond version one are treated as having used the allowance; legacy first-version
+plans may receive one automatic revision. Already-recorded revision authorizations
+remain usable. Newly dispatched revision workers use the richer result contract.
 
 A clear review returns `approve_plan`. Revision authorization does not approve
 implementation: record that separate approval explicitly with `approve`.
@@ -447,8 +494,9 @@ hash.
 | Command               | Input fields                                                                                                                                                                       |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Triage result         | `classification`: `bug`, `feature`, `maintenance`, or `security`; `summary`: investigation and acceptance criteria.                                                                |
-| Plan result           | `summary`; nonempty `steps`, each with unique `id`, `description`, and `files`; `testingStrategy`; optional `assumptions`. Include risks in the relevant description.              |
-| Plan review result    | `planVersion`; `findings`, each with unique `id`, `severity`, `description`, and optional `resolution`.                                                                            |
+| Plan result           | `summary`; nonempty `steps`, each with unique `id`, `description`, and `files`; `testingStrategy`; optional `assumptions`. Revisions also require `revision`: `summary`, `responses` (`findingId`, `status`, `rationale`, nonempty `evidence`) and `acceptedDecisions`. Include risks in step descriptions.              |
+| Plan review result    | `planVersion`; `findings`, each with unique `id`, `severity`, `description`, and optional `resolution`. Blocking findings require `requirement`, `mechanism`, and nonempty source `evidence`. Reopened findings need `reopening: {rationale, evidence}` with new evidence.                                                                            |
+| `adjudicate-plan`     | Current `planVersion`, `reviewFingerprint`, and nonempty `dispositions`: `findingId`, `disposition`, `rationale`, nonempty `evidence`; `severity` required only for downgrades. |
 | `approve`             | `planVersion`; `request`: the user's authorization in its actual scope.                                                                                                            |
 | `implement`           | Absolute `worktree` path; `branch`. An existing matching worktree is adopted.                                                                                                      |
 | Implementation result | `summary`; full `commit` corresponding to the clean issue worktree.                                                                                                                |
@@ -647,9 +695,9 @@ evidence, restart invalidation, Agenda and Yinz adapters, prompt correlation,
 local Git locking and recovery. Agent adapter tests use an injected Yinz runner.
 The installed Swamp smoke test drives planning through review to a handoff,
 resumes an ordinary timeout on its original submission, and proves that resuming
-the handoff does not submit duplicate prompts. It also checks that one revision
-authorization permits one new version and review, remaining blockers need fresh
-authorization, and implementation approval stays separate. Integration smoke tests use a
+the handoff does not submit duplicate prompts. It also checks one automatic revision, one further revision per explicit
+authorization, adjudication of continued blockers, and eventual plan-approval
+handoff without duplicate submissions. Implementation approval stays separate. Integration smoke tests use a
 fake `cargo` executable to exercise
 gate ordering and failure recovery without running Yinz's full Rust suites.
 These checks do not establish that a live provider launched or that the full CI

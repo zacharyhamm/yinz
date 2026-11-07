@@ -40,9 +40,8 @@ const Empty = z.object({}).strip();
 const IntegrateArgs = z.object({ skipCiRequest: z.string().trim().default("") })
   .strip();
 
-async function mutableState(context: Context) {
-  await assertNoPendingAgent(context);
-  return loadState(context);
+function mutableState(context: Context) {
+  return assertNoPendingAgent(context);
 }
 
 async function currentIssue(state: LifecycleState, allowCompleted = false) {
@@ -100,7 +99,7 @@ function recordedTransition<K extends keyof typeof ActionSchemas>(
 /** Local behavior; the issue's state and every decision are versioned Swamp data. */
 export const behavior = {
   type: "@yinz/issue-lifecycle",
-  version: "2026.11.04.2",
+  version: "2026.11.07.1",
   globalArguments: GlobalArgsSchema,
   resources: {
     driver: {
@@ -189,6 +188,10 @@ export const behavior = {
     review_plan: recordedTransition(
       "review_plan",
       "Record adversarial findings for the current plan",
+    ),
+    adjudicate_plan: recordedTransition(
+      "adjudicate_plan",
+      "Record evidence-based controller dispositions for the exact current plan review",
     ),
     approve: recordedTransition(
       "approve",

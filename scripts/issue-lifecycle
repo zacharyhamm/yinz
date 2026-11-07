@@ -14,7 +14,7 @@ from issue_lifecycle.workspace import agenda_workspace, local_environment
 
 
 METHODS = (
-    "start", "status", "triage", "plan", "review-plan", "approve", "implement",
+    "start", "status", "triage", "plan", "review-plan", "adjudicate-plan", "approve", "implement",
     "review-code", "ready", "merge", "repair", "refresh", "summarize", "agent", "resume-agent", "discard-agent",
     "rollback", "resume-rollback", "restart-agent", "drive",
 )

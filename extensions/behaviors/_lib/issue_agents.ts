@@ -1,13 +1,21 @@
 /** Assign lifecycle work to visible Yinz panes and import correlated structured results. */
+import { join } from "node:path";
 import { z } from "npm:zod@4.6.7";
 import {
   ActionSchemas,
+  initialPlanning,
+  previousPlanFindings,
   readAgenda,
+  recordFeedback,
+  refreshIssue,
   reopenAgenda,
+  RevisionPlanSchema,
   RollbackInputSchema,
   rollbackState,
   StateSchema,
   transition,
+  UserRequestSchema,
+  validatePlanReview,
 } from "./lifecycle.ts";
 import {
   type Context,
@@ -38,6 +46,7 @@ const Role = z.enum([
 ]);
 export const AgentInputSchema = z.object({
   role: Role,
+  request: UserRequestSchema.optional(),
   session: z.string().trim().min(1),
   // Optional while decoding saved settings and tasks from older lifecycles.
   control: ControlIdentitySchema.optional(),
@@ -57,6 +66,8 @@ export const AgentTaskSchema = z.object({
   config: AgentConfigSchema,
   prompt: z.string().min(1),
   promptDigest: z.string().regex(/^[0-9a-f]{64}$/),
+  contractVersion: z.literal(2).optional(),
+  request: z.string().min(1).optional(),
   before: StateSchema,
   next: StateSchema.optional(),
   createdAt: z.iso.datetime(),
@@ -70,7 +81,7 @@ export const AgentTaskSchema = z.object({
   ]),
   supersededBy: z.uuid().optional(),
   discard: z.object({
-    request: z.string().trim().min(1),
+    request: UserRequestSchema,
     confirmedStopped: z.literal(true),
   }).strict().optional(),
   message: z.string().optional(),
@@ -80,7 +91,7 @@ export const AgentTaskSchema = z.object({
 type Task = z.infer<typeof AgentTaskSchema>;
 const RestartInput = Input.extend({
   taskId: z.uuid(),
-  request: z.string().trim().min(1),
+  request: UserRequestSchema,
 });
 export const RecoverySchema = z.object({
   id: z.uuid(),
@@ -147,20 +158,47 @@ const RoleSchemas = {
   review_code: ActionSchemas.review_code,
 };
 
+async function savedRevisions(context: Context) {
+  const reservation = z.object({
+    assignment: AgentTaskSchema,
+    previousAssignmentId: z.uuid().optional(),
+  });
+  return z.object({
+    automaticRevision: reservation.optional(),
+    revisionAuthorization: reservation.optional(),
+  }).parse(await context.readResource("driver") ?? {});
+}
+
+/** Returns the current state once no assignment or reservation is unresolved. */
 export async function assertNoPendingAgent(context: Context) {
   await assertNoPendingRecovery(context);
   const raw = await context.readResource("agent-task");
-  if (raw !== null && raw !== undefined) {
-    const task = AgentTaskSchema.parse(raw);
+  const task = raw == null ? undefined : AgentTaskSchema.parse(raw);
+  const driver = await savedRevisions(context);
+  const state = await loadState(context);
+  for (
+    const saved of [driver.automaticRevision, driver.revisionAuthorization]
+  ) {
     if (
-      (task.status === "completed" && task.cleanup === "pending") ||
-      !["completed", "discarded", "superseded"].includes(task.status)
+      saved && saved.assignment.id !== task?.id &&
+      saved.previousAssignmentId === task?.id &&
+      JSON.stringify(saved.assignment.before) === JSON.stringify(state)
     ) {
       throw new Error(
-        `Pane task ${task.behaviorName} is unresolved; use resume-agent, or an explicitly requested rollback/restart-agent`,
+        "Reserved pane assignment is unresolved; resume drive or explicitly roll back/restart",
       );
     }
   }
+  if (
+    task &&
+    ((task.status === "completed" && task.cleanup === "pending") ||
+      !["completed", "discarded", "superseded"].includes(task.status))
+  ) {
+    throw new Error(
+      `Pane task ${task.behaviorName} is unresolved; use resume-agent, or an explicitly requested rollback/restart-agent`,
+    );
+  }
+  return state;
 }
 
 async function assertNoPendingRecovery(context: Context) {
@@ -185,7 +223,9 @@ function taskPrompt(
   role: z.infer<typeof Role>,
   state: z.infer<typeof StateSchema>,
   cwd: string,
+  references: string,
   commit?: string,
+  request?: string,
 ) {
   const instructions = {
     triage:
@@ -208,8 +248,33 @@ function taskPrompt(
       : "This is investigation or review: do not edit source files, Git refs, or configuration.",
     "Finish this task in the foreground. Do not leave background subagents or jobs running when returning your answer.",
     instructions,
+    ...(["plan", "review_plan"].includes(role)
+      ? [
+        `Read ${join(references, "planning.md")} and ${
+          join(references, "review.md")
+        } before working.`,
+        "Preserve unaffected steps, accepted decisions and tradeoffs. Historical context is not current approval evidence. Reuse finding IDs for persistent concerns; reopening a disposed concern requires new source evidence and an explanation of why its prior disposition no longer holds.",
+        role === "plan" && !initialPlanning(state)
+          ? "This is a targeted revision. Include revision.summary, acceptedDecisions and a response (addressed, disputed with evidence, or unresolved) to each blocking finding."
+          : "Check correctness, scope and unnecessary complexity. Every blocker needs an affected requirement, concrete failure mechanism and source evidence. Missing implementation details, preferences or speculative concerns alone are not high severity.",
+        ...(role === "review_plan"
+          ? [
+            "Compare the previous plan, review findings, revision responses and current plan in planningContext. Verify fixes and inspect for new defects. Do not invent resolutions or discard prior accepted tradeoffs.",
+          ]
+          : []),
+      ]
+      : []),
+    ...(request
+      ? ["Exact user instructions for this assignment:", request]
+      : []),
     "Return exactly one JSON object matching this schema, without Markdown fences or extra prose:",
-    JSON.stringify(z.toJSONSchema(RoleSchemas[role])),
+    JSON.stringify(
+      z.toJSONSchema(
+        role === "plan" && !initialPlanning(state)
+          ? RevisionPlanSchema
+          : RoleSchemas[role],
+      ),
+    ),
     "Current lifecycle snapshot (issue requirements and recorded evidence):",
     JSON.stringify(state),
     ...(commit ? [`The commit being reviewed is ${commit}.`] : []),
@@ -353,6 +418,29 @@ async function applyResult(
     );
   }
   const evidence = RoleSchemas[task.role].parse(response);
+  if (task.contractVersion === 2) {
+    if (task.role === "plan" && !initialPlanning(task.before)) {
+      const { revision } = RevisionPlanSchema.parse(response);
+      const prior = previousPlanFindings(task.before);
+      for (
+        const finding of prior.filter((f) =>
+          ["high", "critical"].includes(f.severity) && !f.resolution
+        )
+      ) {
+        if (!revision.responses.some((r) => r.findingId === finding.id)) {
+          throw new Error(
+            `Revision must respond to blocking finding ${finding.id}`,
+          );
+        }
+      }
+    }
+    if (task.role === "review_plan") {
+      validatePlanReview(
+        current,
+        evidence as z.infer<typeof ActionSchemas.review_plan>,
+      );
+    }
+  }
   let next = current;
   if (task.role === "implement" || task.role === "review_code") {
     const commit = z.object({ commit: z.string() }).parse(evidence).commit;
@@ -378,7 +466,11 @@ async function applyResult(
     }
   }
   if (task.role !== "implement") {
-    next = transition(current, task.role, evidence);
+    const source = structuredClone(current);
+    if (task.request) {
+      recordFeedback(source, task.request, source.planVersion);
+    }
+    next = transition(source, task.role, evidence);
   }
   const applying: Task = {
     ...task,
@@ -475,8 +567,23 @@ export async function prepareTask(
   if (commit && promptState.implementation) {
     promptState.implementation.head = commit;
   }
-  const prompt = taskPrompt(args.role, promptState, cwd, commit);
-  const { role: _role, ...options } = args;
+  // Issue worktrees may predate the shared standards; read the control checkout's.
+  const references = join(
+    state.implementation ? await dependencies.realPath(context.repoDir) : cwd,
+    ".agents",
+    "skills",
+    "issue-lifecycle",
+    "references",
+  );
+  const prompt = taskPrompt(
+    args.role,
+    promptState,
+    cwd,
+    references,
+    commit,
+    args.request,
+  );
+  const { role: _role, request: _request, ...options } = args;
   const config = AgentConfigSchema.parse({
     ...options,
     cwd,
@@ -486,6 +593,8 @@ export async function prepareTask(
     id: dependencies.id(),
     behaviorName: `issue-agent-${dependencies.id()}`,
     role: args.role,
+    contractVersion: 2,
+    ...(args.request ? { request: args.request } : {}),
     config,
     prompt,
     promptDigest: await promptDigest(prompt),
@@ -652,18 +761,35 @@ async function beginRecovery(
     true,
   );
   const id = dependencies.id();
-  const next = rollbackState(source, input.step, id);
+  let next = rollbackState(source, input.step, id);
   if (fresh.digest !== before.issue.digest) {
     if (input.step !== "triage") {
       throw new Error(
         "Agenda requirements changed; roll back to triage to replace stale prerequisite evidence",
       );
     }
-    next.issue = fresh;
+    next = refreshIssue(next, fresh);
   }
+  // Preserve instructions from superseded work even if its result was never imported.
+  const reservations = await savedRevisions(context);
+  for (
+    const previous of [
+      task,
+      reservations.automaticRevision?.assignment,
+      reservations.revisionAuthorization?.assignment,
+    ]
+  ) {
+    if (
+      previous?.request &&
+      previous.before.issue.digest === before.issue.digest
+    ) {
+      recordFeedback(next, previous.request, previous.before.planVersion);
+    }
+  }
+  recordFeedback(next, input.request, next.planVersion);
   let replacement: Task | undefined;
   if (restart) {
-    const { taskId: _taskId, request: _request, ...options } = restart;
+    const { taskId: _taskId, ...options } = restart;
     replacement = await prepareTask(
       context,
       Input.parse(options),
@@ -804,11 +930,10 @@ export function createAgentMethods(
       execute: (input: z.infer<typeof Input>, context: IssueAgentContext) =>
         dependencies.withIssue(context, async () => {
           const args = Input.parse(input);
-          await assertNoPendingAgent(context);
           const task = await prepareTask(
             context,
             args,
-            await loadState(context),
+            await assertNoPendingAgent(context),
             dependencies,
           );
           return runTask(context, task, dependencies);

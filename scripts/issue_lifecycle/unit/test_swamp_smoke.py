@@ -30,7 +30,7 @@ class InstalledSwampSmokeTest(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.repo = self.root / "repo"
         self.repo.mkdir()
-        for directory in ("extensions", "models", "workflows"):
+        for directory in ("extensions", "models", "workflows", ".agents"):
             if (SOURCE / directory).exists():
                 shutil.copytree(SOURCE / directory, self.repo / directory, ignore=shutil.ignore_patterns("unit", "__pycache__"))
         for name in (".swamp.yaml", ".gitignore"):
@@ -123,9 +123,11 @@ else:
         if "Adversarially review the current plan" in stdin:
             evidence = {"planVersion":snapshot["plan"]["version"], "findings":[]}
             if snapshot["plan"]["version"] <= int(os.environ.get("YINZ_SMOKE_BLOCKED_VERSIONS", "0")):
-                evidence["findings"] = [{"id":"coverage", "severity":"high", "description":"Cover the missing caller"}]
+                evidence["findings"] = [{"id":"coverage", "severity":"high", "description":"Cover the missing caller", "requirement":"Marker covers caller", "mechanism":"Caller can miss the marker", "evidence":["marker.txt"]}]
         elif "Develop or revise a concrete implementation plan" in stdin:
             evidence = {"summary":"Add the disposable fixture marker.","steps":[{"id":"marker","description":"Create marker.txt","files":["marker.txt"]}],"testingStrategy":"Inspect marker contents with focused fixture checks.","assumptions":["The marker is the complete fixture requirement."]}
+            if "This is a targeted revision" in stdin:
+                evidence["revision"] = {"summary":"Kept marker scope and checked the caller", "responses":[{"findingId":"coverage", "status":"disputed", "rationale":"The fixture has only one caller", "evidence":["marker.txt"]}], "acceptedDecisions":["One fixture marker is sufficient"]}
         else:
             assert "Investigate the issue" in stdin
             evidence = {"classification":"maintenance","summary":"Add a smoke marker; acceptance requires the marker on local main."}
@@ -229,11 +231,11 @@ print(json.dumps(response))
 
     def test_installed_revision_approval_is_single_use(self):
         self.lifecycle("start")
-        self.env["YINZ_SMOKE_BLOCKED_VERSIONS"] = "2"
+        self.env["YINZ_SMOKE_BLOCKED_VERSIONS"] = "3"
         handoff = json.loads(self.lifecycle("drive", {"agent": {"session": "smoke", "kind": "claude"}}))
         self.assertEqual(handoff["decision"], "authorize_plan_revision")
-        self.assertEqual(handoff["planVersion"], 1)
-        self.assertEqual(handoff["proposedPlanVersion"], 2)
+        self.assertEqual(handoff["planVersion"], 2)
+        self.assertEqual(handoff["proposedPlanVersion"], 3)
         self.assertIn("Cover the missing caller", handoff["presentation"])
         calls = self.yinz_log.read_text()
         self.assertEqual(json.loads(self.lifecycle("drive"))["id"], handoff["id"])
@@ -241,8 +243,8 @@ print(json.dumps(response))
         approval = {"handoffId": handoff["id"], "request": "Revise this disposable plan once"}
         revised = json.loads(self.lifecycle("drive", {"revisionApproval": approval}))
         self.assertEqual(revised["decision"], "authorize_plan_revision")
-        self.assertEqual(revised["planVersion"], 2)
-        self.assertEqual(revised["proposedPlanVersion"], 3)
+        self.assertEqual(revised["planVersion"], 3)
+        self.assertEqual(revised["proposedPlanVersion"], 4)
         self.assertNotEqual(revised["id"], handoff["id"])
         calls = self.yinz_log.read_text()
         self.assertEqual(json.loads(self.lifecycle("drive"))["id"], revised["id"])
@@ -251,9 +253,13 @@ print(json.dumps(response))
         self.assertIn("stale", stale["reason"])
         self.assertEqual(self.yinz_log.read_text(), calls)
         proposal = json.loads(self.lifecycle("drive"))
-        reviewed = json.loads(self.lifecycle("drive", {"revisionApproval": {
-            "handoffId": proposal["id"], "request": "Revise once more to resolve the remaining finding",
-        }}))
+        self.lifecycle("adjudicate-plan", {
+            "planVersion": 3, "reviewFingerprint": proposal["reviewFingerprint"],
+            "dispositions": [{"findingId": "coverage", "disposition": "rejected",
+                              "rationale": "Inspected fixture source: marker is the entire caller contract",
+                              "evidence": ["marker.txt and the smoke fixture acceptance requirement"]}],
+        })
+        reviewed = json.loads(self.lifecycle("drive"))
         self.assertEqual(reviewed["decision"], "approve_plan")
         self.assertEqual(reviewed["planVersion"], 3)
         self.assertNotIn("approval", self.state())
@@ -261,6 +267,13 @@ print(json.dumps(response))
         prompts = [json.loads(line) for line in self.yinz_log.read_text().splitlines()
                    if json.loads(line)["args"][3] == "prompt"]
         self.assertEqual(len(prompts), 7)
+        self.assertIn(approval["request"], prompts[5]["stdin"])
+        self.assertIn("Kept marker scope", reviewed["presentation"])
+        self.assertIn("Inspected fixture source", reviewed["presentation"])
+        self.assertEqual(reviewed["state"]["planReview"]["findings"][0]["severity"], "high")
+        calls = self.yinz_log.read_text()
+        self.assertEqual(json.loads(self.lifecycle("drive"))["id"], reviewed["id"])
+        self.assertEqual(self.yinz_log.read_text(), calls)
         self.lifecycle("approve", {"planVersion": 3, "request": "Implement the reviewed fixture plan"})
         self.assertEqual(json.loads(self.lifecycle("drive"))["decision"], "prepare_worktree")
 

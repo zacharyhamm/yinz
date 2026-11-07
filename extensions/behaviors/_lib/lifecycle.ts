@@ -1,7 +1,12 @@
+import { createHash } from "node:crypto";
 import { z } from "npm:zod@4.6.7";
 
 const Text = z.string().trim().min(1);
 const Commit = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
+export const UserRequestSchema = z.string().min(1).refine(
+  (request) => !!request.trim(),
+  "Too small: request must not be blank",
+);
 const Workspace = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/);
 
 export const IssueSchema = z.object({
@@ -18,12 +23,34 @@ export const FindingSchema = z.object({
   severity: z.enum(["low", "medium", "high", "critical"]),
   description: Text,
   resolution: Text.optional(),
+  requirement: Text.optional(),
+  mechanism: Text.optional(),
+  evidence: z.array(Text).optional(),
+  reopening: z.object({ rationale: Text, evidence: z.array(Text).min(1) })
+    .strict().optional(),
 }).strict();
+const Severities = FindingSchema.shape.severity.options;
 const FindingsSchema = z.array(FindingSchema).refine(
   (findings) =>
     new Set(findings.map((finding) => finding.id)).size === findings.length,
   "Finding IDs must be unique",
 );
+export const RevisionSchema = z.object({
+  summary: Text,
+  responses: z.array(
+    z.object({
+      findingId: Text,
+      status: z.enum(["addressed", "disputed", "unresolved"]),
+      rationale: Text,
+      evidence: z.array(Text).min(1),
+    }).strict(),
+  ).refine(
+    (responses) =>
+      new Set(responses.map((r) => r.findingId)).size === responses.length,
+    "Respond to each finding only once",
+  ),
+  acceptedDecisions: z.array(Text),
+}).strict();
 const PlanContentSchema = z.object({
   summary: Text,
   steps: z.array(
@@ -38,7 +65,12 @@ const PlanContentSchema = z.object({
   ),
   testingStrategy: Text,
   assumptions: z.array(Text).optional(),
+  revision: RevisionSchema.optional(),
 }).strict();
+/** Result contract for a plan revision dispatched with the current worker contract. */
+export const RevisionPlanSchema = PlanContentSchema.extend({
+  revision: RevisionSchema,
+});
 export const PlanSchema = PlanContentSchema.extend({
   version: z.number().int().positive(),
 });
@@ -47,9 +79,49 @@ const PlanReviewSchema = z.object({
   planVersion: z.number().int().positive(),
   findings: FindingsSchema,
 }).strict();
+const DispositionSchema = z.object({
+  findingId: Text,
+  disposition: z.enum(["resolved", "rejected", "downgraded"]),
+  rationale: Text,
+  evidence: z.array(Text).min(1),
+  severity: FindingSchema.shape.severity.optional(),
+}).strict().refine(
+  (d) => d.disposition === "downgraded" ? !!d.severity : !d.severity,
+  "Only downgrades require a corrected severity",
+);
+export const AdjudicationSchema = z.object({
+  planVersion: z.number().int().positive(),
+  reviewFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+  dispositions: z.array(DispositionSchema).min(1).refine(
+    (ds) => new Set(ds.map((d) => d.findingId)).size === ds.length,
+    "Disposition IDs must be unique",
+  ),
+}).strict();
+const PlanningContextSchema = z.object({
+  generation: z.number().int().nonnegative(),
+  initialPlanVersion: z.number().int().nonnegative(),
+  automaticRevisionConsumed: z.boolean(),
+  userFeedback: z.array(
+    z.object({
+      request: z.string().min(1),
+      planVersion: z.number().int().nonnegative(),
+    }).strict(),
+  ),
+  history: z.array(
+    z.object({
+      generation: z.number().int().nonnegative(),
+      plan: PlanSchema,
+      review: PlanReviewSchema.optional(),
+      reviewFingerprint: z.string().optional(),
+      adjudications: z.array(AdjudicationSchema),
+    }).strict(),
+  ),
+  adjudications: z.array(AdjudicationSchema),
+  acceptedDecisions: z.array(Text),
+}).strict();
 const ApprovalSchema = z.object({
   planVersion: z.number().int().positive(),
-  request: Text,
+  request: UserRequestSchema,
 }).strict();
 const ImplementationSchema = z.object({
   worktree: Text,
@@ -106,6 +178,7 @@ export const StateSchema = z.object({
     "done",
   ]),
   planVersion: z.number().int().nonnegative(),
+  planningContext: PlanningContextSchema.optional(),
   // Fences evidence from an earlier attempt even when rollback restores the same phase.
   rollbackId: z.uuid().optional(),
   classification: z.object({
@@ -120,7 +193,7 @@ export const StateSchema = z.object({
   mergeAuthorization: z.object({
     commit: Commit,
     planVersion: z.number().int().positive(),
-    request: Text,
+    request: UserRequestSchema,
   }).optional(),
   attempt: AttemptSchema.optional(),
   receipt: ReceiptSchema.optional(),
@@ -128,6 +201,184 @@ export const StateSchema = z.object({
   lastFailure: Text.optional(),
 });
 export type LifecycleState = z.infer<typeof StateSchema>;
+
+/** Lazily upgrade live state only; saved snapshots and prompts remain untouched. */
+export function planningContext(state: LifecycleState) {
+  return state.planningContext ??= {
+    generation: 0,
+    initialPlanVersion: 0,
+    automaticRevisionConsumed: state.planVersion > 1,
+    userFeedback: [],
+    history: [],
+    adjudications: [],
+    acceptedDecisions: [],
+  };
+}
+/** Record a user's planning instruction once per plan version. */
+export function recordFeedback(
+  state: LifecycleState,
+  request: string,
+  planVersion: number,
+): void {
+  const { userFeedback } = planningContext(state);
+  if (
+    !userFeedback.some((feedback) =>
+      feedback.request === request && feedback.planVersion === planVersion
+    )
+  ) userFeedback.push({ request, planVersion });
+}
+export function planningGeneration(state: LifecycleState): string {
+  return `${state.issue.digest}:${state.planningContext?.generation ?? 0}`;
+}
+export function initialPlanning(state: LifecycleState): boolean {
+  return state.planVersion === (state.planningContext?.initialPlanVersion ?? 0);
+}
+export function archivePlanning(state: LifecycleState): void {
+  const context = planningContext(state);
+  if (!state.plan) return;
+  const entry = {
+    generation: context.generation,
+    plan: state.plan,
+    ...(state.planReview
+      ? {
+        review: state.planReview,
+        reviewFingerprint: reviewFingerprint(state),
+      }
+      : {}),
+    adjudications: context.adjudications.filter((a) =>
+      a.planVersion === state.plan!.version
+    ),
+  };
+  const samePlan = (old: (typeof context.history)[number]) =>
+    old.generation === entry.generation &&
+    JSON.stringify(old.plan) === JSON.stringify(entry.plan);
+  if (!entry.review && context.history.some(samePlan)) return;
+  // Keep one entry per plan and review: a reviewed entry supersedes its
+  // unreviewed one, and later adjudications extend it instead of duplicating it.
+  const index = context.history.findIndex((old) =>
+    samePlan(old) &&
+    (!old.review || JSON.stringify(old.review) === JSON.stringify(entry.review))
+  );
+  if (index >= 0) context.history[index] = structuredClone(entry);
+  else context.history.push(structuredClone(entry));
+}
+export function reviewFingerprint(state: LifecycleState): string {
+  return createHash("sha256").update(JSON.stringify({
+    generation: planningGeneration(state),
+    plan: state.plan,
+    review: state.planReview,
+  })).digest("hex");
+}
+function applyDispositions(
+  findings: z.infer<typeof FindingsSchema>,
+  adjudications: z.infer<typeof AdjudicationSchema>[],
+  fingerprint?: string,
+) {
+  const dispositions = adjudications.filter((a) =>
+    a.reviewFingerprint === fingerprint
+  ).flatMap((a) => a.dispositions);
+  // Dispositions accumulate: a later downgrade never erases an earlier resolution.
+  return findings.map((finding) =>
+    dispositions.filter((d) => d.findingId === finding.id).reduce(
+      (current, d) =>
+        d.disposition === "downgraded"
+          ? { ...current, severity: d.severity! }
+          : { ...current, resolution: d.rationale },
+      finding,
+    )
+  );
+}
+export function effectivePlanFindings(state: LifecycleState) {
+  return applyDispositions(
+    state.planReview?.findings ?? [],
+    state.planningContext?.adjudications ?? [],
+    reviewFingerprint(state),
+  );
+}
+/** Latest review in this generation, including after a planning rollback. */
+export function previousPlanFindings(state: LifecycleState) {
+  if (state.planReview) return effectivePlanFindings(state);
+  const prior = state.planningContext?.history.findLast((h) =>
+    h.generation === state.planningContext?.generation && h.review
+  );
+  return prior
+    ? applyDispositions(
+      prior.review!.findings,
+      prior.adjudications,
+      prior.reviewFingerprint,
+    )
+    : [];
+}
+export function validatePlanReview(
+  state: LifecycleState,
+  review: z.infer<typeof PlanReviewSchema>,
+) {
+  const generation = state.planningContext?.generation ?? 0;
+  const history = [
+    ...(state.planningContext?.history ?? []).filter((h) =>
+      h.generation === generation
+    ),
+    ...(state.planReview
+      ? [{
+        review: state.planReview,
+        reviewFingerprint: reviewFingerprint(state),
+        adjudications: state.planningContext?.adjudications ?? [],
+      }]
+      : []),
+  ];
+  for (const finding of review.findings) {
+    if (
+      ["high", "critical"].includes(finding.severity) && !finding.resolution &&
+      (!finding.requirement || !finding.mechanism || !finding.evidence?.length)
+    ) {
+      throw new Error(
+        `Blocking finding ${finding.id} needs a requirement, failure mechanism and source evidence`,
+      );
+    }
+    let seen = false;
+    let closed = false;
+    let downgraded = false;
+    let severity: (typeof Severities)[number] | undefined;
+    const oldEvidence: string[] = [];
+    for (const entry of history) {
+      if (!entry.review) continue;
+      const prior = applyDispositions(
+        entry.review.findings,
+        entry.adjudications,
+        entry.reviewFingerprint,
+      )
+        .find((f) => f.id === finding.id);
+      if (prior) {
+        seen = true;
+        closed = !!prior.resolution;
+        severity = prior.severity;
+        downgraded ||= prior.severity !==
+          entry.review.findings.find((f) => f.id === finding.id)!.severity;
+        oldEvidence.push(
+          ...(prior.evidence ?? []),
+          ...(prior.reopening?.evidence ?? []),
+        );
+      } else if (seen) closed = true;
+      oldEvidence.push(...entry.adjudications.flatMap((a) =>
+        a.dispositions
+          .filter((d) => d.findingId === finding.id).flatMap((d) => d.evidence)
+      ));
+    }
+    // Escalating an open finding is ordinary review; only exceeding a
+    // controller downgrade reopens its disposition.
+    const raised = downgraded && severity !== undefined &&
+      Severities.indexOf(finding.severity) > Severities.indexOf(severity);
+    if (
+      (closed || raised) && !finding.resolution &&
+      (!finding.reopening ||
+        !finding.reopening.evidence.some((e) => !oldEvidence.includes(e)))
+    ) {
+      throw new Error(
+        `Reopening ${finding.id} requires new evidence and a rationale addressing its prior disposition`,
+      );
+    }
+  }
+}
 
 export const LifecycleStepSchema = z.enum([
   "triage",
@@ -142,7 +393,7 @@ export const LifecycleStepSchema = z.enum([
 ]);
 export const RollbackInputSchema = z.object({
   step: LifecycleStepSchema,
-  request: Text,
+  request: UserRequestSchema,
 }).strict();
 
 /** Rewind decisions, not source files or Git refs. Earlier evidence remains required. */
@@ -174,6 +425,7 @@ export function rollbackState(
       );
     }
   }
+  archivePlanning(state);
   state.rollbackId = z.uuid().parse(id);
   delete state.outcome;
   delete state.lastFailure;
@@ -216,6 +468,7 @@ export const ActionSchemas = {
   triage: StateSchema.shape.classification.unwrap().strict(),
   plan: PlanContentSchema,
   review_plan: PlanReviewSchema,
+  adjudicate_plan: AdjudicationSchema,
   approve: ApprovalSchema,
   implement: ImplementationSchema.omit({ head: true }).strict(),
   review_code: CodeReviewSchema,
@@ -298,6 +551,11 @@ export function refreshIssue(
       "Repair the active merge attempt before refreshing its issue",
     );
   }
+  archivePlanning(state);
+  const context = planningContext(state);
+  context.generation += 1;
+  context.initialPlanVersion = state.planVersion;
+  context.automaticRevisionConsumed = false;
   state.issue = next;
   state.phase = "triaging";
   delete state.classification;
@@ -335,6 +593,17 @@ export function transition(
         "ready",
       ]);
       const content = ActionSchemas.plan.parse(args);
+      archivePlanning(state);
+      const context = planningContext(state);
+      if (!initialPlanning(state)) context.automaticRevisionConsumed = true;
+      if (content.revision) {
+        context.acceptedDecisions = [
+          ...new Set([
+            ...context.acceptedDecisions,
+            ...content.revision.acceptedDecisions,
+          ]),
+        ];
+      }
       state.planVersion += 1;
       state.plan = { ...content, version: state.planVersion };
       state.phase = "planning";
@@ -348,7 +617,42 @@ export function transition(
       requirePhase(state, ["planning"]);
       const review = ActionSchemas.review_plan.parse(args);
       requirePlan(state, review.planVersion);
+      archivePlanning(state);
       state.planReview = review;
+      break;
+    }
+    case "adjudicate_plan": {
+      requirePhase(state, ["planning"]);
+      const adjudication = AdjudicationSchema.parse(args);
+      requirePlan(state, adjudication.planVersion);
+      if (
+        !state.planReview ||
+        adjudication.reviewFingerprint !== reviewFingerprint(state)
+      ) {
+        throw new Error(
+          "Adjudication must reference the current review fingerprint; stale evidence",
+        );
+      }
+      if (
+        state.planningContext?.adjudications.some((previous) =>
+          JSON.stringify(previous) === JSON.stringify(adjudication)
+        )
+      ) break;
+      const findings = effectivePlanFindings(state);
+      for (const disposition of adjudication.dispositions) {
+        const finding = findings.find((f) => f.id === disposition.findingId);
+        if (!finding) {
+          throw new Error(`Unknown finding ${disposition.findingId}`);
+        }
+        if (
+          disposition.disposition === "downgraded" &&
+          Severities.indexOf(disposition.severity!) >=
+            Severities.indexOf(finding.severity)
+        ) {
+          throw new Error("A downgrade must lower the current severity");
+        }
+      }
+      planningContext(state).adjudications.push(adjudication);
       break;
     }
     case "approve": {
@@ -361,7 +665,7 @@ export function transition(
       ) {
         throw new Error("The current plan needs a review before approval");
       }
-      requireResolved(state.planReview.findings);
+      requireResolved(effectivePlanFindings(state));
       state.approval = approval;
       state.phase = "approved";
       break;

@@ -2,14 +2,18 @@ import {
   completeAgenda,
   createState,
   digestIssue,
+  effectivePlanFindings,
   type Issue,
   type LifecycleState,
   LifecycleStepSchema,
+  previousPlanFindings,
   readAgenda,
   refreshIssue,
   reopenAgenda,
+  reviewFingerprint,
   rollbackState,
   transition,
+  validatePlanReview,
 } from "../_lib/lifecycle.ts";
 
 function assert(
@@ -276,6 +280,11 @@ Deno.test("approval requires review and resolution of high or critical findings"
       resolution: "Serialize merges with a shared lock",
     }],
   });
+  // Rolling back approval retains the current review and its supported dispositions.
+  equal(
+    effectivePlanFindings(rollbackState(state, "approve", crypto.randomUUID())),
+    effectivePlanFindings(state),
+  );
   equal(
     transition(state, "approve", { planVersion: 1, request: "Implement" })
       .phase,
@@ -633,4 +642,282 @@ Deno.test("Agenda completion is idempotent, checks the description, and never re
       });
     }), "description changed");
   equal(writes, 0);
+});
+
+Deno.test("adjudications preserve the review, gate by effective severity and reject stale or invalid dispositions", () => {
+  const findings = ["resolved", "rejected", "downgraded"].map((id) => ({
+    id,
+    severity: "high",
+    description: id,
+    requirement: "Correct caller behavior",
+    mechanism: "Caller bypasses validation",
+    evidence: ["src/lib.rs:42"],
+  }));
+  const original = transition(planned(), "review_plan", {
+    planVersion: 1,
+    findings,
+  });
+  const input = {
+    planVersion: 1,
+    reviewFingerprint: reviewFingerprint(original),
+    dispositions: findings.map((f) => ({
+      findingId: f.id,
+      disposition: f.id,
+      rationale: "Inspected the guarded caller",
+      evidence: ["src/caller.rs:20 checks the input"],
+      ...(f.id === "downgraded" ? { severity: "medium" } : {}),
+    })),
+  };
+  const state = transition(original, "adjudicate_plan", input);
+  equal(state.planReview, original.planReview);
+  equal(
+    effectivePlanFindings(state).map((f) =>
+      !!f.resolution || f.severity === "medium"
+    ),
+    [true, true, true],
+  );
+  equal(
+    transition(state, "approve", { planVersion: 1, request: "Implement" })
+      .phase,
+    "approved",
+  );
+  rejects(
+    () =>
+      transition(original, "approve", { planVersion: 1, request: "Implement" }),
+    "Resolve high/critical",
+  );
+  for (
+    const stale of [
+      transition(original, "plan", plan),
+      transition(original, "review_plan", { planVersion: 1, findings: [] }),
+      rollbackState(original, "review_plan", crypto.randomUUID()),
+    ]
+  ) {
+    rejects(() => transition(stale, "adjudicate_plan", input), "current");
+    assert(effectivePlanFindings(stale).every((f) => !f.resolution));
+  }
+  rejects(() =>
+    transition(original, "adjudicate_plan", {
+      ...input,
+      dispositions: [{ ...input.dispositions[0], findingId: "unknown" }],
+    }), "Unknown finding");
+  rejects(() =>
+    transition(original, "adjudicate_plan", {
+      ...input,
+      dispositions: [{ ...input.dispositions[2], severity: "critical" }],
+    }), "lower");
+  rejects(() =>
+    transition(original, "adjudicate_plan", {
+      ...input,
+      dispositions: [{ ...input.dispositions[0], evidence: [] }],
+    }), "Too small");
+  rejects(() =>
+    transition(original, "adjudicate_plan", {
+      ...input,
+      dispositions: [{ ...input.dispositions[0], disposition: "accepted" }],
+    }), "Invalid option");
+});
+
+Deno.test("reopening an adjudicated or fixed concern requires new evidence addressing its disposition", () => {
+  const finding = {
+    id: "caller",
+    severity: "high" as const,
+    description: "Caller gap",
+    requirement: "Validate input",
+    mechanism: "Caller bypasses the guard",
+    evidence: ["src/lib.rs:42"],
+  };
+  let state = transition(planned(), "review_plan", {
+    planVersion: 1,
+    findings: [finding],
+  });
+  state = transition(state, "adjudicate_plan", {
+    planVersion: 1,
+    reviewFingerprint: reviewFingerprint(state),
+    dispositions: [{
+      findingId: "caller",
+      disposition: "rejected",
+      rationale: "Guard exists",
+      evidence: ["src/caller.rs:20"],
+    }],
+  });
+  const review = { planVersion: 1, findings: [finding] };
+  rejects(() => validatePlanReview(state, review), "Reopening caller");
+  state = transition(state, "plan", plan);
+  equal(
+    state.planningContext?.history.findLast((h) => h.adjudications.length)
+      ?.adjudications[0].dispositions[0].disposition,
+    "rejected",
+  );
+  rejects(
+    () => validatePlanReview(state, { ...review, planVersion: 2 }),
+    "Reopening caller",
+  );
+  rejects(
+    () =>
+      validatePlanReview(state, {
+        planVersion: 2,
+        findings: [{
+          ...finding,
+          reopening: { rationale: "Still broken", evidence: ["src/lib.rs:42"] },
+        }],
+      }),
+    "new evidence",
+  );
+  validatePlanReview(state, {
+    planVersion: 2,
+    findings: [{
+      ...finding,
+      reopening: {
+        rationale: "The guard excludes the remote caller",
+        evidence: ["src/remote.rs:81"],
+      },
+    }],
+  });
+  const fixed = transition(
+    transition(transition(planned(), "review_plan", review), "plan", plan),
+    "review_plan",
+    { planVersion: 2, findings: [] },
+  );
+  rejects(
+    () => validatePlanReview(fixed, { ...review, planVersion: 2 }),
+    "Reopening caller",
+  );
+});
+
+Deno.test("refresh alone renews the allowance and history never becomes current review evidence", () => {
+  let state = transition(planned(), "review_plan", {
+    planVersion: 1,
+    findings: [],
+  });
+  state = transition(state, "plan", plan);
+  assert(state.planningContext?.automaticRevisionConsumed);
+  state = rollbackState(state, "plan", crypto.randomUUID());
+  assert(state.planningContext?.automaticRevisionConsumed);
+  const unchanged = refreshIssue(state, issue);
+  assert(unchanged.planningContext?.automaticRevisionConsumed);
+  state = refreshIssue(state, {
+    ...issue,
+    note: "New requirement",
+    digest: "e".repeat(64),
+  });
+  equal(state.planningContext?.generation, 1);
+  equal(state.planningContext?.automaticRevisionConsumed, false);
+  equal(state.planReview, undefined);
+  assert(state.planningContext!.history.length > 0);
+  state = transition(state, "triage", {
+    classification: "feature",
+    summary: "Investigated",
+  });
+  state = transition(state, "plan", plan);
+  equal(state.planVersion, 3);
+  equal(state.planningContext?.automaticRevisionConsumed, false);
+  rejects(
+    () => transition(state, "approve", { planVersion: 3, request: "Approve" }),
+    "needs a review",
+  );
+});
+
+Deno.test("a reopened concern can persist, and downgraded findings retain their disposition across a planning rollback", () => {
+  const finding = {
+    id: "gap",
+    severity: "high" as const,
+    description: "Caller gap",
+    requirement: "Validate caller",
+    mechanism: "Caller can skip validation",
+    evidence: ["src/caller.rs:20"],
+  };
+  let state = transition(planned(), "review_plan", {
+    planVersion: 1,
+    findings: [finding],
+  });
+  const input = {
+    planVersion: 1,
+    reviewFingerprint: reviewFingerprint(state),
+    dispositions: [{
+      findingId: "gap",
+      disposition: "downgraded",
+      severity: "medium",
+      rationale: "Bounded impact",
+      evidence: ["src/guard.rs:10"],
+    }],
+  };
+  state = transition(state, "adjudicate_plan", input);
+  equal(transition(state, "adjudicate_plan", input), state);
+  validatePlanReview(state, {
+    planVersion: 1,
+    findings: [{ ...finding, severity: "medium" }],
+  });
+  rejects(
+    () => validatePlanReview(state, { planVersion: 1, findings: [finding] }),
+    "new evidence",
+  );
+  const rolled = rollbackState(state, "plan", crypto.randomUUID());
+  equal(previousPlanFindings(rolled)[0].severity, "medium");
+  state = transition(state, "plan", plan);
+  const reopened = {
+    planVersion: 2,
+    findings: [{
+      ...finding,
+      reopening: {
+        rationale: "Remote callers affect all sessions",
+        evidence: ["src/remote.rs:81"],
+      },
+    }],
+  };
+  validatePlanReview(state, reopened);
+  state = transition(state, "review_plan", reopened);
+  state = transition(state, "plan", plan);
+  validatePlanReview(state, { planVersion: 3, findings: [finding] });
+});
+
+Deno.test("open findings may escalate, dispositions accumulate, and history keeps one entry per review", () => {
+  const finding = {
+    id: "gap",
+    severity: "medium" as const,
+    description: "Caller gap",
+  };
+  let state = transition(planned(), "review_plan", {
+    planVersion: 1,
+    findings: [finding],
+  });
+  validatePlanReview(state, {
+    planVersion: 1,
+    findings: [{
+      ...finding,
+      severity: "high",
+      requirement: "Validate caller",
+      mechanism: "Caller can skip validation",
+      evidence: ["src/caller.rs:20"],
+    }],
+  });
+  const fingerprint = reviewFingerprint(state);
+  const disposition = {
+    findingId: "gap",
+    rationale: "Guard exists",
+    evidence: ["src/guard.rs:10"],
+  };
+  state = transition(state, "adjudicate_plan", {
+    planVersion: 1,
+    reviewFingerprint: fingerprint,
+    dispositions: [{ ...disposition, disposition: "rejected" }],
+  });
+  state = transition(state, "adjudicate_plan", {
+    planVersion: 1,
+    reviewFingerprint: fingerprint,
+    dispositions: [{
+      ...disposition,
+      disposition: "downgraded",
+      severity: "low",
+    }],
+  });
+  equal(effectivePlanFindings(state)[0].resolution, "Guard exists");
+  equal(effectivePlanFindings(state)[0].severity, "low");
+  state = transition(state, "plan", plan);
+  state = transition(state, "review_plan", { planVersion: 2, findings: [] });
+  state = transition(state, "plan", plan);
+  equal(
+    state.planningContext!.history.map((h) => [h.plan.version, !!h.review]),
+    [[1, true], [2, true]],
+  );
 });

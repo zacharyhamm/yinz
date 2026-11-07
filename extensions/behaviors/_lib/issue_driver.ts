@@ -13,27 +13,42 @@ import {
   resumeTask,
   runTask,
 } from "./issue_agents.ts";
-import { FindingSchema, StateSchema } from "./lifecycle.ts";
+import {
+  effectivePlanFindings,
+  FindingSchema,
+  initialPlanning,
+  planningGeneration,
+  reviewFingerprint,
+  StateSchema,
+  UserRequestSchema,
+} from "./lifecycle.ts";
 import { type Handle, loadState } from "./runtime.ts";
 import { AgentResponseSchema, ControlIdentitySchema } from "./yinz_agent.ts";
 
-const Settings = AgentInputSchema.omit({ role: true });
+const Settings = AgentInputSchema.omit({ role: true, request: true });
 export const DriveInputSchema = z.object({
   agent: Settings.optional(),
   control: ControlIdentitySchema.optional(),
   revisionApproval: z.object({
     handoffId: z.uuid(),
-    request: z.string().trim().min(1),
+    request: UserRequestSchema,
   }).strict().optional(),
 })
   .strip();
+const AutomaticRevisionSchema = z.object({
+  generation: z.string(),
+  assignment: AgentTaskSchema,
+  previousAssignmentId: z.uuid().optional(),
+  recoveryId: z.uuid().optional(),
+}).strict();
 export const DriverSchema = z.object({
   agent: Settings.optional(),
   assignmentId: z.uuid().optional(),
   implementation: AgentTaskSchema.optional(),
+  automaticRevision: AutomaticRevisionSchema.optional(),
   revisionAuthorization: z.object({
     handoffId: z.uuid(),
-    request: z.string().trim().min(1),
+    request: UserRequestSchema,
     createdAt: z.iso.datetime(),
     assignment: AgentTaskSchema,
     previousAssignmentId: z.uuid().optional(),
@@ -62,6 +77,7 @@ export const HandoffSchema = z.object({
   proposedPlanVersion: z.number().int().positive().optional(),
   planVersion: z.number().int().positive().optional(),
   commit: z.string().optional(),
+  reviewFingerprint: z.string().optional(),
   presentation: z.string().min(1),
 }).strict();
 type Handoff = z.infer<typeof HandoffSchema>;
@@ -88,6 +104,82 @@ function present(handoff: Omit<Handoff, "presentation">) {
       `Proposed next plan version: ${handoff.proposedPlanVersion}`,
       `To authorize this one revision, call drive with revisionApproval: {handoffId: "${handoff.id}", request: "<the user's actual authorization>"}.`,
       "Revision authorization does not approve implementation or merge.",
+      ...(state.planReview && state.plan
+        ? [
+          `Alternatively, inspect cited code and record supported dispositions with adjudicate-plan using planVersion ${state.plan.version} and reviewFingerprint ${
+            reviewFingerprint(state)
+          }. Accepted unresolved high/critical risks still require user direction.`,
+        ]
+        : []),
+    );
+  }
+  if (state.planningContext) {
+    const context = state.planningContext;
+    if (context.userFeedback.length) {
+      lines.push(
+        "Recorded user feedback:",
+        ...context.userFeedback.map((f) =>
+          `- At plan ${f.planVersion}: ${f.request}`
+        ),
+      );
+    }
+    if (context.acceptedDecisions.length) {
+      lines.push(
+        "Accepted planning decisions:",
+        ...context.acceptedDecisions.map((decision) => `- ${decision}`),
+      );
+    }
+    if (context.history.length) {
+      lines.push("Planning history (not current approval evidence):");
+    }
+    for (const entry of context.history) {
+      lines.push(
+        `- Generation ${entry.generation}, plan ${entry.plan.version}: ${entry.plan.summary}`,
+      );
+      for (const finding of entry.review?.findings ?? []) {
+        lines.push(
+          `  ${finding.id} (${finding.severity}): ${finding.description}${
+            finding.resolution ? ` Resolved: ${finding.resolution}` : ""
+          }`,
+        );
+      }
+      if (entry.plan.revision) {
+        lines.push(`  Revision: ${entry.plan.revision.summary}`);
+      }
+    }
+    for (const adjudication of context.adjudications) {
+      for (const disposition of adjudication.dispositions) {
+        lines.push(
+          `Plan ${adjudication.planVersion} disposition, ${disposition.findingId}: ${disposition.disposition}${
+            disposition.severity ? ` to ${disposition.severity}` : ""
+          }. ${disposition.rationale} Evidence: ${
+            disposition.evidence.join("; ")
+          }`,
+        );
+      }
+    }
+  }
+  if (state.plan?.revision) {
+    lines.push(
+      `Revision changes: ${state.plan.revision.summary}`,
+      "Finding responses and disagreements:",
+    );
+    for (const response of state.plan.revision.responses) {
+      lines.push(
+        `- ${response.findingId}: ${response.status}. ${response.rationale} Evidence: ${
+          response.evidence.join("; ")
+        }`,
+      );
+    }
+  }
+  if (state.planReview) {
+    lines.push(
+      "Effective current plan findings:",
+      ...effectivePlanFindings(state).map((f) =>
+        `- ${f.id}: ${f.severity}${
+          f.resolution ? `, resolved: ${f.resolution}` : ", unresolved"
+        }`
+      ),
     );
   }
   if (state.classification) {
@@ -125,6 +217,12 @@ function present(handoff: Omit<Handoff, "presentation">) {
         ? review.findings.map((finding) =>
           `- ${finding.severity} ${finding.id}: ${finding.description}${
             finding.resolution ? ` Resolution: ${finding.resolution}` : ""
+          }${
+            finding.requirement ? ` Requirement: ${finding.requirement}` : ""
+          }${finding.mechanism ? ` Failure: ${finding.mechanism}` : ""}${
+            finding.evidence?.length
+              ? ` Evidence: ${finding.evidence.join("; ")}`
+              : ""
           }`
         )
         : ["- No findings."]),
@@ -267,6 +365,9 @@ async function drive(
         reason,
         createdAt: dependencies.now(),
         state,
+        ...(state.planReview
+          ? { reviewFingerprint: reviewFingerprint(state) }
+          : {}),
         ...(assignment ? { assignment } : {}),
         ...(implementation ? { implementation } : {}),
         ...(recovery ? { recoveryId: recovery.id } : {}),
@@ -332,7 +433,10 @@ async function drive(
       // A saved revision may not have reached the agent-task write yet. Keep
       // its selected settings instead of adopting the preceding review's config.
       !(driver.assignmentId === driver.revisionAuthorization?.assignment.id &&
-        currentTask.id === driver.revisionAuthorization?.previousAssignmentId)
+        currentTask.id ===
+          driver.revisionAuthorization?.previousAssignmentId) &&
+      !(driver.assignmentId === driver.automaticRevision?.assignment.id &&
+        currentTask.id === driver.automaticRevision?.previousAssignmentId)
     ) {
       const { cwd: _cwd, stackWorkers: _stackWorkers, ...original } =
         currentTask.config;
@@ -389,7 +493,7 @@ async function drive(
         }
         const assignment = await prepareTask(
           context,
-          { ...driver.agent, role: "plan" },
+          { ...driver.agent, role: "plan", request: approval.request },
           state,
           dependencies,
         );
@@ -455,7 +559,7 @@ async function drive(
           !state.planReview ||
           state.planReview.planVersion !== state.plan.version
         ) role = "review_plan";
-        else if (blockedFindings(state.planReview.findings)) {
+        else if (blockedFindings(effectivePlanFindings(state))) {
           role = "plan";
         } else {
           return await handoff(
@@ -553,21 +657,47 @@ async function drive(
       }
 
       let next: Task;
-      if (role === "plan" && state.planVersion > 0) {
+      if (role === "plan" && !initialPlanning(state)) {
         const authorization = driver.revisionAuthorization;
-        if (
-          !authorization ||
-          authorization.previousAssignmentId !== assignment?.id ||
-          authorization.recoveryId !== recovery?.id ||
-          JSON.stringify(authorization.assignment.before) !==
-            JSON.stringify(state)
+        const automatic = driver.automaticRevision;
+        const applicable = (
+          reservation: typeof automatic | typeof authorization,
+        ) =>
+          reservation && reservation.previousAssignmentId === assignment?.id &&
+          reservation.recoveryId === recovery?.id &&
+          JSON.stringify(reservation.assignment.before) ===
+            JSON.stringify(state);
+        if (applicable(authorization)) next = authorization!.assignment;
+        else if (applicable(automatic)) next = automatic!.assignment;
+        else if (
+          state.planReview && blockedFindings(effectivePlanFindings(state)) &&
+          !(state.planningContext?.automaticRevisionConsumed ??
+            state.planVersion > 1) &&
+          automatic?.generation !== planningGeneration(state)
         ) {
+          if (!driver.agent) {
+            throw new Error("Select agent settings before revising");
+          }
+          next = await prepareTask(
+            context,
+            { ...driver.agent, role },
+            state,
+            dependencies,
+          );
+          // Reserve the generation's allowance with the exact assignment in one write.
+          // This survives failures before agent-task persistence and is never cleared by rollback.
+          driver.automaticRevision = {
+            generation: planningGeneration(state),
+            assignment: next,
+            ...(assignment ? { previousAssignmentId: assignment.id } : {}),
+            ...(recovery ? { recoveryId: recovery.id } : {}),
+          };
+        } else {
           return await handoff(
             "authorize_plan_revision",
-            "Explicit authorization is required to create one more plan version and review it",
+            "The automatic revision is unavailable; adjudicate supported findings or explicitly authorize one targeted revision and review",
           );
         }
-        next = authorization.assignment;
       } else {
         if (!driver.agent) {
           throw new Error(

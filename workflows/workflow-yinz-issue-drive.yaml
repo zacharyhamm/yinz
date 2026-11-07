@@ -1,6 +1,6 @@
 id: bbb39e5e-47f8-45d7-9fa5-3f97c08bf1c8
 name: yinz-issue-drive
-description: Drive foreground pane work to a concrete human handoff or blocker.
+description: Drive pane work with one automatic revision per requirements generation, then hand off for adjudication or explicit revision authorization.
 tags: {}
 inputs:
   type: object

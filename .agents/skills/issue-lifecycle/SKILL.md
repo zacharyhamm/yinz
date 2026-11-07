@@ -76,18 +76,39 @@ assumptions and review; or delivered change, code review and verification).
 For a blocker, explain the recorded cause and the recovery needed. Do not promise
 to wake the controller after its turn or session ends; that is outside this flow.
 
-The driver automatically runs initial triage, planning and review. Unresolved
-high/critical plan findings stop at `authorize_plan_revision` with the current
-plan, findings and proposed next version. Present that concrete handoff and
-obtain the user's explicit authorization for one revision before continuing.
-Record it with `drive` input
-`{revisionApproval: {handoffId, request}}`, using the exact handoff ID and the
-user's actual request. Authorization is saved with one planner assignment;
-ordinary `drive` resume reuses it and automatically reviews the resulting version.
-Remaining blockers require a new handoff and authorization. Never infer blanket
-approval or repeat approval for an already authorized assignment. Automatic
-planning after refresh or rollback is also gated if a prior plan version exists.
-Manual planning, rollback and restart commands retain their existing behavior.
+The driver automatically runs initial triage, planning and review, followed by
+at most one targeted revision and review when blockers remain. The allowance is
+reserved with the exact assignment before launch, once per requirements generation.
+Resume, rollback, restart, manual planning and command reinvocation never replenish
+it. Only a refresh with genuinely changed requirements starts a new generation.
+Legacy first-version plans may receive one automatic revision; later legacy versions
+are treated as having consumed it. Existing revision authorizations remain valid.
+
+After that allowance, unresolved high/critical findings stop at
+`authorize_plan_revision`, including prior findings, decisions, revision changes
+and disagreements. Inspect cited source and adjudicate supported findings with
+`adjudicate-plan`: pass the current `planVersion`, `reviewFingerprint` from the
+handoff, and `dispositions` with `findingId`, `disposition` (`resolved`, `rejected`
+or `downgraded`), `rationale`, and nonempty source `evidence`; a downgrade also
+requires the corrected `severity`. Explain the judgment and what code you inspected.
+The controller may record supported dispositions without asking the user. Keep the
+original review intact. Never call an accepted unresolved high/critical risk
+resolved: it remains blocked for user direction. Stale adjudications and mutations
+during unresolved assignments are rejected. Then `drive` again to obtain the next
+handoff.
+
+If another revision is needed, present the concrete handoff and obtain explicit
+authorization for exactly one targeted revision. Record it with `drive` input
+`{revisionApproval: {handoffId, request}}`, using the exact handoff ID and user's
+actual request. The complete assignment includes that request and is saved before
+dispatch. Resume reuses it and reviews the resulting version. Never infer blanket
+approval or ask again for an already authorized assignment.
+
+Planners and reviewers must read [planning standards](references/planning.md) and
+[review standards](references/review.md). Preserve unaffected steps, accepted
+tradeoffs and finding IDs. Reopening a disposed concern requires new evidence
+explaining why its previous disposition no longer holds. Historical context never
+substitutes for current review evidence.
 
 Revision authorization does not authorize implementation or merge. The driver
 stops separately for explicit approval of the reviewed plan and worktree
@@ -98,8 +119,8 @@ It never records approval, merge authorization or a CI waiver on its own.
    criteria, scope and reproduction evidence against the affected source.
 2. **Plan:** the driver runs role `plan` for concrete steps, affected files, risks and
    development test selection, then role `review_plan` for adversarial review.
-   Before dispatching each automatic revision, present its approval handoff and
-   record authorization for that one revision. A revised plan needs a fresh review.
+   The driver allows one automatic targeted revision; further revisions need
+   individual authorization. Every revised plan needs a fresh review.
 3. **Approve and implement:** record authorization for the reviewed plan, then
    create or adopt a local issue worktree. Existing approval in this session is
    sufficient; do not ask again. If authorization is missing, present the
