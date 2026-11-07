@@ -4171,19 +4171,26 @@ impl Screen {
             // for the already bound conversation after the agent has reported ready, so
             // a prompt can capture the identity before it arrives. Accept that derived
             // ID once, then pin it for the remaining stages. Any other ID, provider or
-            // conversation still fails closed below.
+            // conversation still fails closed below. The derivation trims the conversation,
+            // so this comparison does too.
             if operation.prompt.is_some()
                 && operation.agent.run_id.is_none()
                 && let Some(conversation) = operation
                     .agent
                     .session_id
                     .as_deref()
+                    .map(str::trim)
                     .filter(|id| !id.is_empty())
                 && let Some(status) = &status
                 && status.agent.kind == operation.agent.kind
                 && status.agent.session_id == operation.agent.session_id
-                && status.agent.run_id.as_deref()
-                    == Some(format!("{}:{conversation}", operation.agent.kind).as_str())
+                && status
+                    .agent
+                    .run_id
+                    .as_deref()
+                    .and_then(|id| id.strip_prefix(operation.agent.kind.as_str()))
+                    .and_then(|id| id.strip_prefix(':'))
+                    == Some(conversation)
             {
                 operation.agent.run_id = status.agent.run_id.clone();
             }
