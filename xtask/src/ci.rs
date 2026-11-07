@@ -244,46 +244,40 @@ fn cross() -> anyhow::Result<PathBuf> {
 fn check(sh: &Shell) -> anyhow::Result<()> {
     let mut failed: Vec<&str> = Vec::new();
 
-    if let Err(error) = crate::metadata::check_dependency_boundaries(sh) {
+    let boundaries = crate::metadata::check_dependency_boundaries(sh);
+    if let Err(error) = &boundaries {
         eprintln!("Dependency boundaries: {error:#}");
-        failed.push("dependency boundaries");
     }
-    if let Err(error) = crate::integration_test::check_shared_features(sh) {
+    record_phase(&mut failed, "dependency boundaries", boundaries.is_ok());
+    let features = crate::integration_test::check_shared_features(sh);
+    if let Err(error) = &features {
         eprintln!("Integration-test features: {error:#}");
-        failed.push("integration-test features");
     }
+    record_phase(&mut failed, "integration-test features", features.is_ok());
 
-    if crate::format::format(sh, flags::Format { check: true }).is_err() {
-        failed.push("format --check");
-    }
-    if crate::lint::lint(
+    let format = crate::format::format(sh, flags::Format { check: true });
+    record_phase(&mut failed, "format --check", format.is_ok());
+    let lint = crate::lint::lint(
         sh,
         flags::Lint {
             fix: false,
             args: vec![],
         },
-    )
-    .is_err()
-    {
-        failed.push("lint");
-    }
-    if crate::test::test(sh, flags::Test { args: vec![] }).is_err() {
-        failed.push("test");
-    }
+    );
+    record_phase(&mut failed, "lint", lint.is_ok());
+    let test = crate::test::test(sh, flags::Test { args: vec![] });
+    record_phase(&mut failed, "test", test.is_ok());
 
     {
         let _threads = sh.push_env("NEXTEST_TEST_THREADS", "16");
-        if crate::integration_test::integration_test(
+        let integration = crate::integration_test::integration_test(
             sh,
             flags::IntegrationTest {
                 serial: false,
                 args: vec![],
             },
-        )
-        .is_err()
-        {
-            failed.push("integration-test");
-        }
+        );
+        record_phase(&mut failed, "integration-test", integration.is_ok());
     }
 
     if failed.is_empty() {
@@ -295,4 +289,22 @@ fn check(sh: &Shell) -> anyhow::Result<()> {
     crate::status(&msg);
     println!("\n{msg}");
     Err(anyhow::anyhow!("checks failed: {}", failed.join(", ")))
+}
+
+/// The line `ci check` prints when a phase finishes.
+///
+/// The issue lifecycle parses these lines from the merge-gate log
+/// (`scripts/issue_lifecycle/git_ops.py`, `summarize_ci_log`) to record per-phase results, so a
+/// phase that never reports is distinguishable from one that passed.
+fn phase_marker(name: &str, passed: bool) -> String {
+    let status = if passed { "passed" } else { "failed" };
+    format!(">> ci phase {name}: {status}")
+}
+
+/// Report one finished phase and remember it when it failed.
+fn record_phase<'a>(failed: &mut Vec<&'a str>, name: &'a str, passed: bool) {
+    println!("{}", phase_marker(name, passed));
+    if !passed {
+        failed.push(name);
+    }
 }

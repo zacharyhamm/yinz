@@ -54,6 +54,27 @@ def print_checklist(name, verification):
               f"in {check['durationMs'] / 1000:.1f}s; {detail}", file=sys.stderr)
 
 
+def print_merge_failure(name, state):
+    """Point at the failed gate's evidence; a later pass must not hide it."""
+    attempt = (state or {}).get("attempt") or {}
+    failure = next((entry for entry in (state or {}).get("mergeFailures", [])
+                    if entry["attemptId"] == attempt.get("id")), None)
+    if failure is None:
+        return
+    print(f"Merge attempt {failure['attemptId']} failed: {failure['summary']}", file=sys.stderr)
+    for phase in failure.get("phases", []):
+        print(f"- [{'x' if phase['status'] == 'passed' else ' '}] {phase['name']}", file=sys.stderr)
+    if failure.get("failedTests"):
+        more = failure.get("failedTestsTruncated")
+        print("Failed tests: " + ", ".join(failure["failedTests"]) + (f" (+{more} more)" if more else ""),
+              file=sys.stderr)
+    if failure.get("log"):
+        print(f"Log: {failure['log']}", file=sys.stderr)
+    print(f"Output: swamp data query 'modelName == {json.dumps(name)} && name == "
+          f"{json.dumps(failure['logResource'])}' --select content", file=sys.stderr)
+    print("Investigate the cause, then run repair with it; a flake is a defect.", file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--control", type=Path, default=Path(__file__).resolve().parent.parent)
@@ -139,6 +160,14 @@ def main():
         print_checklist(name, verification)
         print(json.dumps(verification))
         return 0 if verification["status"] == "passed" else 2
+    if args.command == "merge":
+        code = subprocess.run(command, input=json.dumps(inputs), text=True, cwd=control, env=env).returncode
+        if code:
+            try:
+                print_merge_failure(name, query_resource(name, "state", tail, control, env))
+            except (ValueError, KeyError, TypeError) as error:
+                print(f"issue-lifecycle: cannot read the merge failure: {error}", file=sys.stderr)
+        return code
     if args.command != "drive":
         return subprocess.run(command, input=json.dumps(inputs), text=True, cwd=control, env=env).returncode
     # Keep the controller attached until it has the concrete handoff. Workflow

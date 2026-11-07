@@ -15,6 +15,7 @@ import {
   effectivePlanFindings,
   initialPlanning,
   type LifecycleState,
+  recordMergeFailure,
   refreshIssue,
   transition,
 } from "../_lib/lifecycle.ts";
@@ -3238,4 +3239,103 @@ Deno.test("legacy workers retain implementation/control selection and pending ta
     );
     equal((await loadState(h.context)).workerWorktree, undefined);
   }
+});
+
+Deno.test("driver blocks a failed merge attempt with its evidence and keeps it listed after a later merge", async () => {
+  let state = transition(implementing(), "review_code", {
+    planVersion: 1,
+    commit: head,
+    steps: [{ id: "fix", status: "implemented" }],
+    findings: [],
+  });
+  state = transition(verify(state), "ready", {
+    commit: head,
+    mergeRequest: "Merge",
+  });
+  const id = "d6da10b0-c980-4b82-b920-640238095f1a";
+  state = transition(state, "begin_merge", {
+    attempt: { id, originalHead: head, startedAt: timestamp },
+  });
+  const failure = {
+    attemptId: id,
+    at: timestamp,
+    originalCommit: head,
+    summary: "phases failed: test; tests: demo tests::flaky; exit 101",
+    failure: "cargo x ci check failed",
+    ciStatus: "failed",
+    log: "/repo/.git/yinz-lifecycle/merges/d6da/ci-check.log",
+    logResource: `merge-log-${id}`,
+    exitCode: 101,
+    phases: [
+      { name: "lint", status: "passed" as const },
+      { name: "test", status: "failed" as const },
+    ],
+    failedTests: ["demo tests::flaky"],
+    failedTestsTruncated: 3,
+  };
+  state = recordMergeFailure(state, failure);
+  const h = harness(state);
+  await h.drive.execute({}, h.context);
+  const blocked = result(h);
+  equal(blocked.decision, "blocked");
+  assert(
+    blocked.reason.startsWith(
+      `Merge attempt ${id} failed: ${failure.summary}; log: ${failure.log}. Read the log and run repair`,
+    ),
+    blocked.reason,
+  );
+  for (
+    const text of [
+      "Merge attempts:",
+      "phases: lint passed, test failed",
+      "failed tests: demo tests::flaky (+3 more in the log)",
+      `log: ${failure.log}`,
+      `name == "merge-log-${id}"`,
+    ]
+  ) {
+    assert(blocked.presentation.includes(text), blocked.presentation);
+  }
+  equal(h.calls.length, 0);
+  // After repair and a passing attempt, the earlier failure is still listed.
+  const merged = transition(state, "merged", {
+    receipt: {
+      attemptId: id,
+      originalCommit: head,
+      rebasedCommit: "e".repeat(40),
+      baseCommit: "b".repeat(40),
+      mergedCommit: "e".repeat(40),
+      worktree: "/repo/issue",
+      branch: "issue-85",
+      ciStatus: "passed",
+      mergedAt: timestamp,
+    },
+  });
+  const later = harness({
+    ...merged,
+    receipt: {
+      ...merged.receipt!,
+      attemptId: "e6da10b0-c980-4b82-b920-640238095f1a",
+      previousAttempts: [
+        {
+          attemptId: "f6da10b0-c980-4b82-b920-640238095f1a",
+          summary: "exit 1",
+        },
+        { attemptId: id, summary: failure.summary, log: failure.log },
+      ],
+    },
+  });
+  await later.drive.execute({}, later.context);
+  const summary = result(later);
+  equal(summary.decision, "summarize");
+  for (
+    const text of [
+      "- f6da10b0-c980-4b82-b920-640238095f1a: failed; exit 1",
+      `- ${id} at ${timestamp}: ${failure.summary}`,
+      `- e6da10b0-c980-4b82-b920-640238095f1a: merged ${"e".repeat(40)}`,
+    ]
+  ) {
+    assert(summary.presentation.includes(text), summary.presentation);
+  }
+  // A failure recorded in state is listed once, not again from the receipt.
+  equal(summary.presentation.split(`- ${id}`).length, 2);
 });

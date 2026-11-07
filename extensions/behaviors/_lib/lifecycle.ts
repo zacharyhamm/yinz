@@ -284,6 +284,31 @@ export const AttemptSchema = z.object({
   skipCiRequest: Text.optional(),
   startedAt: z.iso.datetime(),
 }).strict();
+/** One failed merge attempt, kept as a fact across repair, rollback and later merges. */
+export const MergeFailureSchema = z.object({
+  attemptId: z.uuid(),
+  at: z.iso.datetime(),
+  originalCommit: Commit,
+  summary: Text,
+  failure: Text,
+  ciStatus: Text,
+  // The merge-gate log under the repository's lifecycle directory, when CI ran.
+  log: Text.optional(),
+  // The Swamp copy of the helper's output for the whole attempt.
+  logResource: Text,
+  exitCode: z.number().int().nullable().optional(),
+  phases: z.array(
+    z.object({ name: Text, status: z.enum(["passed", "failed"]) }).strict(),
+  ),
+  failedTests: z.array(Text),
+  failedTestsTruncated: z.number().int().positive().optional(),
+}).strict();
+export type MergeFailure = z.infer<typeof MergeFailureSchema>;
+export const PreviousAttemptSchema = z.object({
+  attemptId: z.uuid(),
+  summary: Text,
+  log: Text.optional(),
+}).strict();
 export const ReceiptSchema = z.object({
   attemptId: z.uuid(),
   originalCommit: Commit,
@@ -295,6 +320,7 @@ export const ReceiptSchema = z.object({
   ciStatus: z.enum(["passed", "skipped"]),
   skipCiRequest: Text.optional(),
   mergedAt: z.iso.datetime(),
+  previousAttempts: z.array(PreviousAttemptSchema).optional(),
 }).strict();
 export const StateSchema = z.object({
   issue: IssueSchema,
@@ -331,6 +357,7 @@ export const StateSchema = z.object({
   }).optional(),
   attempt: AttemptSchema.optional(),
   receipt: ReceiptSchema.optional(),
+  mergeFailures: z.array(MergeFailureSchema).optional(),
   outcome: z.object({ outcomeMet: z.literal(true), summary: Text }).optional(),
   lastFailure: Text.optional(),
 });
@@ -661,6 +688,43 @@ function requireResolved(findings: z.infer<typeof FindingsSchema>): void {
   }
 }
 
+/** The recorded failure of the active merge attempt, if it has one. */
+export function activeMergeFailure(
+  state: LifecycleState,
+): MergeFailure | undefined {
+  const id = state.attempt?.id;
+  return id
+    ? state.mergeFailures?.find((failure) => failure.attemptId === id)
+    : undefined;
+}
+
+export function describeMergeFailure(failure: MergeFailure): string {
+  return `Merge attempt ${failure.attemptId} failed: ${failure.summary}` +
+    (failure.log ? `; log: ${failure.log}` : "");
+}
+
+/**
+ * Record the active attempt's failed receipt once. A retry of the same failed
+ * attempt keeps the original evidence instead of its "create a new attempt" error.
+ */
+export function recordMergeFailure(
+  current: LifecycleState,
+  failure: MergeFailure,
+): LifecycleState {
+  const state = StateSchema.parse(current);
+  const parsed = MergeFailureSchema.parse(failure);
+  if (
+    !state.attempt || parsed.attemptId !== state.attempt.id ||
+    parsed.originalCommit !== state.attempt.originalHead
+  ) {
+    throw new Error("Merge failure must belong to the active attempt");
+  }
+  if (activeMergeFailure(state)) return state;
+  state.mergeFailures = [...(state.mergeFailures ?? []), parsed];
+  state.lastFailure = describeMergeFailure(parsed);
+  return state;
+}
+
 function clearReview(state: LifecycleState): void {
   delete state.codeReview;
   delete state.verification;
@@ -985,9 +1049,13 @@ export function transition(
     case "repair": {
       requirePhase(state, ["implementing", "ready"]);
       const { reason } = ActionSchemas.repair.parse(args);
+      const failure = activeMergeFailure(state);
       clearReview(state);
       state.phase = "implementing";
-      state.lastFailure = reason;
+      // The implement agent sees lastFailure; give it the gate's evidence too.
+      state.lastFailure = failure
+        ? `${reason}\n\n${describeMergeFailure(failure)}`
+        : reason;
       break;
     }
     case "merged": {

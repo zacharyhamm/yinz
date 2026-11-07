@@ -725,6 +725,38 @@ omit that input:
   --item "$AGENDA_ITEM_ID" merge
 ```
 
+### Merge-gate evidence
+
+Each merge attempt keeps its evidence in the repository's shared Git directory,
+next to its receipt:
+
+| Path                                             | Contents                                                    |
+| ------------------------------------------------ | ----------------------------------------------------------- |
+| `yinz-lifecycle/merges/<attemptId>.json`         | The attempt's receipt: status, commits, CI result, failure. |
+| `yinz-lifecycle/merges/<attemptId>/ci-check.log` | The complete `cargo x ci check` output, stdout and stderr.  |
+
+The gate's output still streams to the terminal and to the Swamp file
+`merge-log-<attemptId>`; the log file outlives both. `cargo x ci check` prints
+`>> ci phase <name>: passed|failed` after each phase. The receipt's `ci` object
+records `log`, `exitCode`, `phases` (only phases that reported; a phase without
+a marker never counts as passed), `failedTests` (nextest failure, timeout and
+signal lines plus failed doctests, at most 50 with `failedTestsTruncated`
+counting the rest) and a one-line `summary`. An interrupted gate records the
+partial log with a null exit code.
+
+A receipt for a new attempt lists the same issue's earlier failed attempts in
+`previousAttempts`, so a later pass cannot hide a flake. Lifecycle state keeps
+every failed attempt in `mergeFailures`, which survives repair, rollback and
+the eventual merge; the merged receipt carries `previousAttempts`. `status`
+therefore shows a failed-then-passed sequence.
+
+When `merge` fails, the launcher prints the attempt's phases, failed tests and
+log path. `drive` returns a `blocked` handoff naming the summary and log, and
+its presentation lists every merge attempt. `repair` appends the failed
+attempt's summary and log to its reason in `lastFailure`, which the next
+implementation worker receives. Retrying the failed attempt does not overwrite
+that evidence.
+
 ## Parallel development and serialized integration
 
 Multiple issues can be planned, developed and reviewed independently. Swamp
@@ -766,7 +798,7 @@ history.
 | A review finds blockers                                                   | Repair the plan or implementation, then record a fresh review.                                                                        |
 | Integration is waiting                                                    | Let the current integration finish; do not remove its lock file.                                                                      |
 | Rebase conflicts                                                          | Inspect the retained worktree and resolve the conflict deliberately; record and review the result before retrying integration.        |
-| The CI gate fails                                                         | Diagnose and fix the failure in the issue worktree; retain the failure evidence and retry with current review evidence.               |
+| The CI gate fails                                                         | Read the recorded log and failed tests, `repair` with the cause, fix it in the issue worktree and retry with current review evidence. |
 | The integration process is interrupted                                    | Inspect Git and the persisted run to determine whether rebase, verification or merge completed before resuming.                       |
 | The local merge landed but Agenda completion failed                       | Verify the recorded merge and retry close-out without merging again.                                                                  |
 | The outcome does not meet the issue                                       | Keep the Agenda task open and record what remains.                                                                                    |
@@ -788,7 +820,9 @@ python3 -m unittest discover -s scripts/issue_lifecycle/unit -p 'test_workspace.
 python3 -m unittest discover -s scripts/issue_lifecycle/unit -p 'test_swamp_smoke.py'
 ```
 
-The latter requires installed Swamp and Agenda commands and uses a disposable
+The smoke test also fails one merge gate through its Cargo stub, then checks
+the failed receipt, log path, blocked handoff, repair and both attempts in
+status after a passing merge. The smoke test requires installed Swamp and Agenda commands and uses a disposable
 repository and Agenda data directory.
 
 The focused tests exercise state transitions, automatic role dispatch and plan

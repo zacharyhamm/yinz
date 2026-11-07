@@ -234,7 +234,7 @@ function taskPrompt(
     review_plan:
       "Adversarially review the current plan against the actual code, including whether its checks are correct argv, focused, safe to run unattended, and cover the changed behavior and affected callers. Return planVersion and every actionable finding. Do not approve the plan or invent resolutions. An empty findings array is appropriate only after a real review found none.",
     implement:
-      "Implement the approved plan in this existing issue worktree. Run focused checks following AGENTS.md, investigate failures, and commit the intended changes on the existing feature branch. Return a summary and the full resulting commit hash. Do not rebase, merge, push, or run the full CI gate here.",
+      "Implement the approved plan in this existing issue worktree. Run focused checks following AGENTS.md, investigate failures, and commit the intended changes on the existing feature branch. Return a summary and the full resulting commit hash. Do not rebase, merge, push, or run the full CI gate here. If lastFailure records a failed merge gate, read its log first and fix the cause, selecting focused tests that reproduce it; treat a flake or timeout as a defect, not something a rerun resolves.",
     review_code:
       "Review the committed diff against local main and the approved plan. Cover each plan step exactly once, justify deviations, and record code findings and any preliminary checks you actually ran. Preliminary checks are advisory; the lifecycle runs the plan's checks itself. Do not invent passing checks. Return the supplied full commit hash and planVersion.",
   }[role];

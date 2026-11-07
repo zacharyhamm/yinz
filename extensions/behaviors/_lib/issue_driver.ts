@@ -14,9 +14,12 @@ import {
   runTask,
 } from "./issue_agents.ts";
 import {
+  activeMergeFailure,
+  describeMergeFailure,
   effectivePlanFindings,
   FindingSchema,
   initialPlanning,
+  type LifecycleState,
   mergeGate,
   planningGeneration,
   reviewFingerprint,
@@ -95,6 +98,52 @@ function blockedFindings(findings: z.infer<typeof FindingSchema>[] = []) {
   return findings.some((finding) =>
     ["high", "critical"].includes(finding.severity) && !finding.resolution
   );
+}
+
+/** Every failed merge attempt, so a later pass cannot hide a flake. */
+function mergeAttemptLines(state: LifecycleState, issueName: string) {
+  const failures = state.mergeFailures ?? [];
+  const recorded = new Set(failures.map((failure) => failure.attemptId));
+  // A receipt can name failures from before this state recorded them.
+  const earlier = (state.receipt?.previousAttempts ?? []).filter((attempt) =>
+    !recorded.has(attempt.attemptId)
+  );
+  if (!failures.length && !earlier.length) return [];
+  const lines = ["Merge attempts:"];
+  for (const attempt of earlier) {
+    lines.push(
+      `- ${attempt.attemptId}: failed; ${attempt.summary}` +
+        (attempt.log ? `; log: ${attempt.log}` : ""),
+    );
+  }
+  for (const failure of failures) {
+    lines.push(`- ${failure.attemptId} at ${failure.at}: ${failure.summary}`);
+    if (failure.phases.length) {
+      lines.push(
+        `  phases: ${
+          failure.phases.map((phase) => `${phase.name} ${phase.status}`).join(
+            ", ",
+          )
+        }`,
+      );
+    }
+    if (failure.failedTests.length) {
+      lines.push(
+        `  failed tests: ${failure.failedTests.join(", ")}` +
+          (failure.failedTestsTruncated
+            ? ` (+${failure.failedTestsTruncated} more in the log)`
+            : ""),
+      );
+    }
+    if (failure.log) lines.push(`  log: ${failure.log}`);
+    lines.push(`  output: ${checkLogQuery(issueName, failure.logResource)}`);
+  }
+  if (state.receipt) {
+    lines.push(
+      `- ${state.receipt.attemptId}: merged ${state.receipt.mergedCommit}`,
+    );
+  }
+  return lines;
 }
 
 function present(
@@ -299,6 +348,7 @@ function present(
       "The full CI gate runs during authorized integration unless the user explicitly waives it.",
     );
   }
+  lines.push(...mergeAttemptLines(state, issueName));
   if (handoff.assignment) {
     lines.push(
       `Worker: ${handoff.assignment.role}, task ${handoff.assignment.id}, behavior ${handoff.assignment.behaviorName}`,
@@ -728,6 +778,15 @@ async function drive(
           role = "review_code";
         } else role = "implement";
       } else if (state.phase === "ready") {
+        const failure = activeMergeFailure(state);
+        if (failure) {
+          return await handoff(
+            "blocked",
+            `${
+              describeMergeFailure(failure)
+            }. Read the log and run repair with the cause; treat a flake or timeout as a defect, not a reason to retry`,
+          );
+        }
         return await handoff(
           "integrate",
           "Merge authorization is recorded; run merge with the required CI gate (a waiver requires its own explicit user request)",

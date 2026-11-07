@@ -70,6 +70,15 @@ assert sys.argv[1:] == ["x", "ci", "check"], sys.argv
 head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
 with pathlib.Path(os.environ["YINZ_SMOKE_CARGO_LOG"]).open("a") as log:
     log.write(json.dumps({"args":sys.argv[1:],"head":head,"cwd":os.getcwd(),"stub":True}) + "\\n")
+print(">> ci phase format --check: passed")
+fail_once = os.environ.get("YINZ_SMOKE_CARGO_FAIL_ONCE")
+if fail_once and not pathlib.Path(fail_once).exists():
+    pathlib.Path(fail_once).touch()
+    print("        FAIL [   0.019s] (1/4) smoke-fixture tests::flaky_marker")
+    print(">> ci phase test: failed")
+    print("\\n>> Failed: test")
+    sys.exit(101)
+print(">> ci phase test: passed")
 ''')
         for program in ("claude", "codex", "muse", "pi", "agy"):
             self.stub(program, 'import sys\nraise SystemExit("A coding CLI must be launched through Yinz, never headlessly, in this smoke test")\n')
@@ -389,6 +398,81 @@ print(json.dumps(response))
         self.assertFalse(self.agenda("item", "show", str(self.item_id))["item"]["completed"])
         self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), receipt["mergedCommit"])
         self.assertEqual(self.git(self.repo, "status", "--short"), "")
+
+    def reviewed_and_ready(self, worktree, request):
+        commit = self.git(worktree, "rev-parse", "HEAD")
+        self.lifecycle("review-code", {
+            "planVersion": 1, "commit": commit,
+            "steps": [{"id": "marker", "status": "implemented"}], "findings": [],
+        })
+        self.assertEqual(json.loads(self.lifecycle("verify"))["status"], "passed")
+        self.lifecycle("ready", {"commit": commit, "mergeRequest": request})
+        return commit
+
+    def test_installed_failed_merge_gate_is_recorded_blocked_and_kept_after_a_later_pass(self):
+        self.env["YINZ_SMOKE_CARGO_FAIL_ONCE"] = str(self.root / "cargo-failed-once")
+        worktree = self.root / "gate-worktree"
+        self.git(self.repo, "worktree", "add", "-b", "gate-issue", str(worktree))
+        self.lifecycle("start", cwd=worktree)
+        self.lifecycle("triage", {"classification": "maintenance", "summary": "Add the smoke marker."})
+        self.lifecycle("plan", {
+            "summary": "Add the disposable fixture's marker.",
+            "steps": [{"id": "marker", "description": "Create marker.txt", "files": ["marker.txt"]}],
+            "testingStrategy": "Exercise merge-gate failure recording with an explicit Cargo stub.",
+            "checks": [{"id": "marker", "command": ["grep", "-c", "smoke marker", "marker.txt"], "covers": ["marker"]}],
+        })
+        self.lifecycle("review-plan", {"planVersion": 1, "findings": []})
+        self.lifecycle("approve", {"planVersion": 1, "request": "Approve the disposable smoke fixture plan."})
+        self.lifecycle("implement", {"worktree": str(worktree), "branch": "gate-issue"})
+        (worktree / "marker.txt").write_text("smoke marker\n")
+        self.git(worktree, "add", "marker.txt")
+        self.git(worktree, "commit", "-m", "add smoke marker")
+        self.reviewed_and_ready(worktree, "Merge the disposable smoke fixture locally.")
+        launcher = [sys.executable, str(self.repo / "scripts" / "issue-lifecycle"), "--control", str(self.repo),
+                    "--item", str(self.item_id)]
+        failed_run = subprocess.run([*launcher, "merge"], cwd=self.repo, env=self.env, text=True,
+                                    capture_output=True, timeout=120)
+        self.assertNotEqual(failed_run.returncode, 0)
+        state = self.state()
+        [failure] = state["mergeFailures"]
+        self.assertEqual(failure["attemptId"], state["attempt"]["id"])
+        self.assertEqual(failure["phases"], [{"name": "format --check", "status": "passed"},
+                                             {"name": "test", "status": "failed"}])
+        self.assertEqual(failure["failedTests"], ["smoke-fixture tests::flaky_marker"])
+        self.assertEqual(failure["summary"], "phases failed: test; tests: smoke-fixture tests::flaky_marker; exit 101")
+        log = Path(failure["log"])
+        self.assertEqual(log, self.repo / ".git" / "yinz-lifecycle" / "merges" / failure["attemptId"] / "ci-check.log")
+        self.assertIn("tests::flaky_marker", log.read_text())
+        receipt = json.loads(log.parent.with_suffix(".json").read_text())
+        self.assertEqual((receipt["status"], receipt["ci"]["status"]), ("failed", "failed"))
+        self.assertEqual(receipt["ci"]["phases"], failure["phases"])
+        # The launcher points the operator at the evidence.
+        for text in (f"Merge attempt {failure['attemptId']} failed: {failure['summary']}", f"Log: {log}",
+                     "- [ ] test", "Failed tests: smoke-fixture tests::flaky_marker"):
+            self.assertIn(text, failed_run.stderr)
+        blocked = json.loads(self.lifecycle("drive"))
+        self.assertEqual(blocked["decision"], "blocked")
+        self.assertIn(f"log: {log}", blocked["reason"])
+        self.assertIn("Merge attempts:", blocked["presentation"])
+        self.lifecycle("repair", {"reason": "Fix the flaky marker test before merging again."})
+        repaired = self.state()
+        self.assertEqual(repaired["phase"], "implementing")
+        self.assertIn(str(log), repaired["lastFailure"])
+        (worktree / "marker.txt").write_text("smoke marker\nfixed\n")
+        self.git(worktree, "commit", "-am", "fix the flaky marker")
+        self.reviewed_and_ready(worktree, "Merge the repaired smoke fixture locally.")
+        self.lifecycle("merge")
+        merged = self.state()
+        self.assertEqual(merged["phase"], "merged")
+        self.assertEqual(merged["mergeFailures"], [failure])
+        self.assertEqual(merged["receipt"]["previousAttempts"],
+                         [{"attemptId": failure["attemptId"], "summary": failure["summary"], "log": str(log)}])
+        self.assertNotEqual(merged["receipt"]["attemptId"], failure["attemptId"])
+        self.assertEqual(len(self.cargo_log.read_text().splitlines()), 2)
+        summary = json.loads(self.lifecycle("drive"))
+        self.assertEqual(summary["decision"], "summarize")
+        self.assertIn(f"- {failure['attemptId']} at ", summary["presentation"])
+        self.assertIn(f"- {merged['receipt']['attemptId']}: merged", summary["presentation"])
 
 
 if __name__ == "__main__":

@@ -17,6 +17,8 @@ import uuid
 
 
 RUNNER = Path(__file__).resolve().parents[1] / "git_ops.py"
+sys.path.insert(0, str(RUNNER.parent))
+import git_ops  # noqa: E402
 
 
 class GitIntegrationTests(unittest.TestCase):
@@ -105,6 +107,9 @@ if os.environ.get("YINZ_TEST_RECURRING_ISSUE"):
     item = json.loads(agenda.read_text())
     item["item"]["assignments"].append({"category": 2, "item": 7, "source": "explicit", "value": {"date": {"temporal": {"kind": "floating"}, "recurrence": {"frequency": "daily"}}}})
     agenda.write_text(json.dumps(item))
+if os.environ.get("YINZ_TEST_CI_OUTPUT"):
+    sys.stdout.write(os.environ["YINZ_TEST_CI_OUTPUT"])
+    sys.stdout.flush()
 event("end")
 sys.exit(int(os.environ.get("YINZ_TEST_CI_EXIT", "0")))
 ''')
@@ -198,7 +203,14 @@ sys.exit(int(os.environ.get("YINZ_TEST_CI_EXIT", "0")))
         self.assertNotEqual(result["rebasedCommit"], original)
         self.assertEqual(self.git(worktree, "rev-parse", "HEAD^"), base)
         self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), result["mergedCommit"])
-        self.assertEqual(result["ci"], {"command": ["cargo", "x", "ci", "check"], "status": "passed"})
+        log = Path(result["ci"].pop("log"))
+        self.assertEqual(log, self.repo / ".git" / "yinz-lifecycle" / "merges" / request["attemptId"] / "ci-check.log")
+        self.assertTrue(log.is_file())
+        self.assertEqual(result["ci"], {
+            "command": ["cargo", "x", "ci", "check"], "status": "passed", "exitCode": 0,
+            "phases": [], "failedTests": [], "summary": "no phase results; exit 0",
+        })
+        result["ci"]["log"] = str(log)
         self.assertEqual(self.run_request(request), result)
         self.assertEqual(len(self.event_rows()), 2, "retry must not rerun CI")
 
@@ -441,12 +453,88 @@ sys.exit(int(os.environ.get("YINZ_TEST_CI_EXIT", "0")))
         worktree = self.branch("issue-a")
         base = self.git(self.repo, "rev-parse", "HEAD")
         request = self.request(worktree)
-        self.run_request(request, env={"YINZ_TEST_CI_EXIT": "9"}, success=False)
+        output = (
+            ">> ci phase format --check: passed\n"
+            "        FAIL [   0.019s] (1/4) yinz-server tests::flaky\n"
+            ">> ci phase test: failed\n"
+            "     Summary [   0.020s] 4 tests run: 3 passed, 1 failed\n"
+            "        FAIL [   0.019s] (1/4) yinz-server tests::flaky\n"
+            "\n>> Failed: test\n"
+        )
+        process = subprocess.run(
+            [sys.executable, str(RUNNER)], input=json.dumps(request), text=True, capture_output=True,
+            env={**self.env, "YINZ_TEST_CI_EXIT": "9", "YINZ_TEST_CI_OUTPUT": output}, timeout=30,
+        )
+        self.assertEqual(process.returncode, 1)
+        self.assertIn("tests::flaky", process.stderr, "gate output must still stream")
         self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), base)
-        self.assertEqual(self.receipt(request)["status"], "failed")
-        self.assertEqual(self.receipt(request)["ci"]["status"], "failed")
+        receipt = self.receipt(request)
+        self.assertEqual(receipt["status"], "failed")
+        ci = receipt["ci"]
+        self.assertEqual(ci["status"], "failed")
+        self.assertEqual(ci["exitCode"], 9)
+        self.assertEqual(ci["phases"], [{"name": "format --check", "status": "passed"}, {"name": "test", "status": "failed"}])
+        self.assertEqual(ci["failedTests"], ["yinz-server tests::flaky"])
+        self.assertEqual(ci["summary"], "phases failed: test; tests: yinz-server tests::flaky; exit 9")
+        self.assertEqual(Path(ci["log"]).read_text(), output)
+        self.assertEqual(receipt["failure"], f"cargo x ci check failed: {ci['summary']}; log: {ci['log']}")
+        self.assertEqual(json.loads(process.stdout)["error"], receipt["failure"])
         self.run_request(request, success=False)
         self.assertEqual(len(self.event_rows()), 2)
+
+    def test_failed_receipt_is_readable_while_the_merge_lock_is_held(self):
+        worktree = self.branch("issue-a")
+        failed = self.request(worktree)
+        self.run_request(failed, env={"YINZ_TEST_CI_EXIT": "1"}, success=False)
+        merged = self.run_request(self.request(worktree, skipCiRequest="Skip this test merge."))
+        import fcntl
+        peek = {"action": "receipt", "repoPath": str(self.repo), "failedOnly": True}
+        with (self.repo / ".git" / "yinz-lifecycle" / "merge.lock").open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            receipt = self.run_request({**peek, "attemptId": failed["attemptId"]})
+            other = self.run_request({**peek, "attemptId": merged["attemptId"]})
+            missing = self.run_request({**peek, "attemptId": str(uuid.uuid4())})
+        self.assertEqual(receipt, self.receipt(failed))
+        self.assertEqual(other["status"], "not_failed")
+        self.assertEqual(missing["status"], "missing")
+
+    def test_new_attempt_receipts_keep_earlier_failed_attempts_of_the_same_issue(self):
+        worktree = self.branch("issue-a")
+        other = self.branch("issue-b")
+        failed = self.request(worktree)
+        output = ">> ci phase test: failed\n     TIMEOUT [  60.004s] (2/9) yinz-screen tests::slow\n"
+        self.run_request(failed, env={"YINZ_TEST_CI_EXIT": "101", "YINZ_TEST_CI_OUTPUT": output}, success=False)
+        self.run_request(self.request(other), env={"YINZ_TEST_CI_EXIT": "1"}, success=False)
+        first = self.receipt(failed)
+        self.assertNotIn("previousAttempts", first)
+        merges = self.repo / ".git" / "yinz-lifecycle" / "merges"
+        (merges / f"{uuid.uuid4()}.json").write_text("not json")
+        passed = self.run_request(self.request(worktree))
+        self.assertEqual(passed["status"], "merged")
+        self.assertEqual(passed["previousAttempts"], [{
+            "attemptId": failed["attemptId"], "timestamp": first["timestamp"], "failure": first["failure"],
+            "ci": {key: first["ci"][key] for key in ("status", "summary", "log", "exitCode", "phases", "failedTests")},
+        }])
+        self.assertEqual(passed["previousAttempts"][0]["ci"]["failedTests"], ["yinz-screen tests::slow"])
+        self.assertTrue(Path(passed["previousAttempts"][0]["ci"]["log"]).is_file())
+        self.assertEqual(self.receipt({"attemptId": passed["attemptId"]})["previousAttempts"], passed["previousAttempts"])
+
+    def test_receipts_without_gate_details_remain_valid_and_malformed_details_are_rejected(self):
+        worktree = self.branch("issue-a")
+        request = self.request(worktree)
+        result = self.run_request(request)
+        path = self.repo / ".git" / "yinz-lifecycle" / "merges" / f"{request['attemptId']}.json"
+        legacy = {**result, "ci": {"status": "passed", "command": ["cargo", "x", "ci", "check"]}}
+        path.write_text(json.dumps(legacy))
+        self.assertEqual(self.receipt(request)["ci"], legacy["ci"])
+        for ci in ({"phases": [{"name": "lint", "status": "skipped"}]}, {"failedTests": [1]}, {"exitCode": "1"}):
+            with self.subTest(ci=ci):
+                path.write_text(json.dumps({**legacy, "ci": {**legacy["ci"], **ci}}))
+                error = self.run_request({"action": "receipt", "repoPath": str(self.repo), "attemptId": request["attemptId"]}, success=False)
+                self.assertIn("invalid CI", error["error"])
+        path.write_text(json.dumps({**legacy, "previousAttempts": [{"ci": {}}]}))
+        error = self.run_request({"action": "receipt", "repoPath": str(self.repo), "attemptId": request["attemptId"]}, success=False)
+        self.assertIn("attempt history", error["error"])
 
     def test_concurrent_integrations_serialize_rebase_ci_and_merge(self):
         first_tree = self.branch("issue-a")
@@ -632,7 +720,11 @@ sys.exit(int(os.environ.get("YINZ_TEST_CI_EXIT", "0")))
         self.assertIn("cancelled", json.loads(stdout)["error"])
         with self.assertRaises(ProcessLookupError):
             os.kill(child_pid, 0)
-        self.assertEqual(self.receipt(request)["status"], "failed")
+        receipt = self.receipt(request)
+        self.assertEqual(receipt["status"], "failed")
+        self.assertIsNone(receipt["ci"]["exitCode"])
+        self.assertTrue(receipt["ci"]["summary"].endswith("interrupted"))
+        self.assertTrue(Path(receipt["ci"]["log"]).is_file(), "cancellation keeps the partial log")
         result = self.run_request(self.request(second_tree, skipCiRequest="Skip this test merge."))
         self.assertEqual(result["status"], "merged")
 
@@ -803,6 +895,68 @@ sys.exit(int(os.environ.get("YINZ_TEST_CI_EXIT", "0")))
             code, result, log = self.run_check(self.check_request(worktree, ["/usr/bin/true"]))
         self.assertEqual((code, result["exitCode"]), (0, 0), log)
         self.assertNotIn("lock", log)
+
+
+class CiLogSummaryTests(unittest.TestCase):
+    def summarize(self, text, code=1):
+        with tempfile.TemporaryDirectory(prefix="yinz-ci-log-") as directory:
+            log = Path(directory) / "ci-check.log"
+            log.write_bytes(text.encode())
+            return git_ops.summarize_ci_log(log, code)
+
+    def test_phase_markers_and_nextest_failures_are_extracted_once_in_order(self):
+        result = self.summarize(
+            ">> ci phase dependency boundaries: passed\n"
+            "\x1b[1;31m        FAIL\x1b[0m [   0.019s] (1/4) nt-probe tests::bad\n"
+            "    test tests::bad ... FAILED\n"
+            "     SIGSEGV [   0.184s] (3/4) nt-probe tests::segv\n"
+            "        SLOW [>  1.000s] (\u2500\u2500\u2500) nt-probe tests::slow\n"
+            "     TIMEOUT [   2.007s] (4/4) nt-probe tests::slow\n"
+            "  TRY 2 FAIL [   0.010s] (5/5) nt-probe tests::retried\n"
+            "test src/lib.rs - f (line 1) ... FAILED\n"
+            ">> ci phase test: failed\r\n"
+            "     Summary [   2.008s] 4 tests run: 1 passed, 2 failed, 1 timed out, 0 skipped\n"
+            "        FAIL [   0.019s] (1/4) nt-probe tests::bad\n"
+            ">> ci phase integration-test: passed\n",
+            101,
+        )
+        self.assertEqual(result["phases"], [
+            {"name": "dependency boundaries", "status": "passed"},
+            {"name": "test", "status": "failed"},
+            {"name": "integration-test", "status": "passed"},
+        ])
+        self.assertEqual(result["failedTests"], [
+            "nt-probe tests::bad", "nt-probe tests::segv", "nt-probe tests::slow",
+            "nt-probe tests::retried", "src/lib.rs - f (line 1)",
+        ])
+        self.assertEqual(result["exitCode"], 101)
+        self.assertEqual(
+            result["summary"],
+            "phases failed: test; tests: nt-probe tests::bad, nt-probe tests::segv, nt-probe tests::slow, "
+            "nt-probe tests::retried, src/lib.rs - f (line 1); exit 101",
+        )
+
+    def test_passing_gate_counts_its_phases(self):
+        result = self.summarize(">> ci phase lint: passed\n>> ci phase test: passed\n\n>> All checks passed\n", 0)
+        self.assertEqual(result["summary"], "2 phases passed; exit 0")
+        self.assertEqual(result["failedTests"], [])
+
+    def test_missing_markers_fall_back_to_the_last_output_line(self):
+        result = self.summarize("Compiling xtask\nerror: could not compile `xtask`\n\n", 101)
+        self.assertEqual(result["phases"], [])
+        self.assertEqual(result["summary"], "no phase results; last output: error: could not compile `xtask`; exit 101")
+
+    def test_many_failures_are_truncated_with_a_count(self):
+        lines = "".join(f"        FAIL [   0.001s] crate tests::t{index}\n" for index in range(git_ops.FAILED_TEST_LIMIT + 7))
+        result = self.summarize(lines)
+        self.assertEqual(len(result["failedTests"]), git_ops.FAILED_TEST_LIMIT)
+        self.assertEqual(result["failedTestsTruncated"], 7)
+        self.assertIn(f"(+{git_ops.FAILED_TEST_LIMIT + 2} more)", result["summary"])
+
+    def test_missing_log_is_an_interrupted_gate_without_results(self):
+        result = git_ops.summarize_ci_log(Path("/nonexistent/ci-check.log"), None)
+        self.assertEqual(result["summary"], "no phase results; interrupted")
+
 
 if __name__ == "__main__":
     unittest.main()

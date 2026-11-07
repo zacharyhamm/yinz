@@ -9,6 +9,7 @@ import {
   mergeGate,
   previousPlanFindings,
   readAgenda,
+  recordMergeFailure,
   refreshIssue,
   reopenAgenda,
   reviewFingerprint,
@@ -807,6 +808,87 @@ Deno.test("repair retains approved plan but requires fresh code review and merge
       transition(repaired, "ready", { commit: head, mergeRequest: "Merge" }),
     "reviewed commit",
   );
+});
+
+Deno.test("a failed merge attempt is recorded once and survives repair, a later merge and rollback", () => {
+  const attempt = {
+    id: "a6da10b0-c980-4b82-b920-640238095f1a",
+    originalHead: head,
+    startedAt: "2026-11-03T12:00:00Z",
+  };
+  const started = transition(ready(), "begin_merge", { attempt });
+  const failure = {
+    attemptId: attempt.id,
+    at: "2026-11-03T12:30:00.000Z",
+    originalCommit: head,
+    summary: "phases failed: test; tests: demo tests::flaky; exit 101",
+    failure: "cargo x ci check failed: phases failed: test",
+    ciStatus: "failed",
+    log: "/repo/.git/yinz-lifecycle/merges/a6da/ci-check.log",
+    logResource: `merge-log-${attempt.id}`,
+    exitCode: 101,
+    phases: [{ name: "test", status: "failed" as const }],
+    failedTests: ["demo tests::flaky"],
+  };
+  rejects(
+    () => recordMergeFailure(ready(), failure),
+    "active attempt",
+  );
+  rejects(
+    () =>
+      recordMergeFailure(started, { ...failure, originalCommit: changedHead }),
+    "active attempt",
+  );
+  const failed = recordMergeFailure(started, failure);
+  equal(failed.mergeFailures, [failure]);
+  equal(
+    failed.lastFailure,
+    `Merge attempt ${attempt.id} failed: ${failure.summary}; log: ${failure.log}`,
+  );
+  // A retry of the failed attempt keeps the original evidence.
+  const retried = recordMergeFailure(
+    { ...failed, lastFailure: "This attempt failed; create a new attempt" },
+    { ...failure, summary: "This attempt failed" },
+  );
+  equal(retried.mergeFailures, [failure]);
+  rejects(() => transition(failed, "plan", plan), "active merge attempt");
+  const repaired = transition(failed, "repair", { reason: "Fix the flake" });
+  equal(repaired.mergeFailures, [failure]);
+  equal(
+    repaired.lastFailure,
+    `Fix the flake\n\nMerge attempt ${attempt.id} failed: ${failure.summary}; log: ${failure.log}`,
+  );
+  assert(!repaired.attempt);
+  const second = transition(ready(), "begin_merge", {
+    attempt: { ...attempt, id: "b6da10b0-c980-4b82-b920-640238095f1a" },
+  });
+  const merged = transition(
+    { ...second, mergeFailures: repaired.mergeFailures },
+    "merged",
+    {
+      receipt: {
+        attemptId: "b6da10b0-c980-4b82-b920-640238095f1a",
+        originalCommit: head,
+        rebasedCommit: changedHead,
+        baseCommit: "e".repeat(40),
+        mergedCommit: changedHead,
+        worktree: "/tmp/issue-85",
+        branch: "issue-85",
+        ciStatus: "passed",
+        mergedAt: "2026-11-03T13:00:00Z",
+        previousAttempts: [{
+          attemptId: attempt.id,
+          summary: failure.summary,
+          log: failure.log,
+        }],
+      },
+    },
+  );
+  equal(merged.mergeFailures, [failure]);
+  equal(merged.receipt?.previousAttempts?.[0].attemptId, attempt.id);
+  equal(rollbackState(merged, "implement", crypto.randomUUID()).mergeFailures, [
+    failure,
+  ]);
 });
 
 Deno.test("issue digest includes exact description and identity in deterministic key order", async () => {

@@ -189,7 +189,13 @@ not replace the shared integration boundary.
 A failed or interrupted step is not evidence of completion. Inspect state, the
 exact workflow run and Git before retrying. Keep the worktree intact for
 diagnosis. Resolve conflicts and verification failures in that worktree, record
-the repair and refresh review evidence before retrying integration. Do not
+the repair and refresh review evidence before retrying integration. When the
+merge gate fails, show the user the attempt's summary, failed phases and tests,
+and the log path from the launcher output or the `blocked` handoff
+(`<git-common-dir>/yinz-lifecycle/merges/<attemptId>/ci-check.log`). Read the
+log, then pass the cause to `repair`. A flake or timeout is a defect to fix, not
+a reason to retry; earlier failed attempts stay in `mergeFailures` and in the
+next receipt's `previousAttempts`. Do not
 silently abort a rebase, reset changes, delete branches, force a merge or remove
 a lock file held by another process.
 

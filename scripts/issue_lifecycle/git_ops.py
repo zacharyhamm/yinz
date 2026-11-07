@@ -20,6 +20,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
@@ -41,6 +42,18 @@ _lock_fd = None
 CI_COMMAND = ["cargo", "x", "ci", "check"]
 # A hung plan check would otherwise hold the issue lock indefinitely.
 CHECK_TIMEOUT_SECONDS = 3600
+CI_LOG_NAME = "ci-check.log"
+# Receipts and handoffs list failing tests; the log keeps every one.
+FAILED_TEST_LIMIT = 50
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+# `cargo x ci check` prints one marker per finished phase (xtask/src/ci.rs, phase_marker).
+PHASE_MARKER = re.compile(r">> ci phase (.+): (passed|failed)")
+# nextest final statuses, e.g. `FAIL [   0.019s] (1/4) yinz-server tests::name`.
+NEXTEST_FAILURE = re.compile(
+    r"\s*(?:TRY \d+ )?(FAIL|TIMEOUT|ABORT|LEAK-FAIL|SIG[A-Z0-9]+)\s+\[[^\]]*\]\s+(?:\([^)]*\)\s+)?(\S+)\s+(\S+)\s*"
+)
+# Unindented libtest results: doctests, or the fallback when nextest is missing.
+LIBTEST_FAILURE = re.compile(r"test (.+?) \.\.\. FAILED")
 
 
 def now():
@@ -57,15 +70,21 @@ def check_cancelled():
         raise Cancelled("Operation cancelled; inspect the worktree before retrying")
 
 
-def stop_process(process):
-    """Reap the command group before the caller releases its merge lock."""
+def stop_process(process, *, drained=False):
+    """Reap the command group before the caller releases its merge lock.
+
+    A drained process has a pump thread reading its output, so only wait for it.
+    """
     for sig, timeout in ((signal.SIGTERM, 3), (signal.SIGKILL, 3)):
         try:
             os.killpg(process.pid, sig)
         except ProcessLookupError:
             pass
         try:
-            process.communicate(timeout=timeout)
+            if drained:
+                process.wait(timeout=timeout)
+            else:
+                process.communicate(timeout=timeout)
             # Descendants may outlive a shell which exits on SIGTERM.
             try:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -74,17 +93,24 @@ def stop_process(process):
             return
         except subprocess.TimeoutExpired:
             continue
-    process.communicate()
+    if drained:
+        process.wait()
+    else:
+        process.communicate()
 
 
-def command(args, cwd, *, check=True, capture=True, reap_group=False, timeout=None):
-    check_cancelled()
+def child_environment():
     environment = {**local_environment(), "GIT_EDITOR": "/usr/bin/true", "GIT_SEQUENCE_EDITOR": "/usr/bin/true"}
     for variable in (
         "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
         "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE",
     ):
         environment.pop(variable, None)
+    return environment
+
+
+def command(args, cwd, *, check=True, capture=True, reap_group=False, timeout=None):
+    check_cancelled()
     # Children do not inherit stdin: every protocol request belongs to us.
     process = subprocess.Popen(
         args,
@@ -95,7 +121,7 @@ def command(args, cwd, *, check=True, capture=True, reap_group=False, timeout=No
         text=True,
         start_new_session=True,
         pass_fds=() if _lock_fd is None else (_lock_fd,),
-        env=environment,
+        env=child_environment(),
     )
     deadline = None if timeout is None else time.monotonic() + timeout
     try:
@@ -122,6 +148,147 @@ def command(args, cwd, *, check=True, capture=True, reap_group=False, timeout=No
         detail = (stderr or stdout or "see command output").strip()
         raise LifecycleError(f"{' '.join(args)} failed ({process.returncode}): {detail}")
     return process.returncode, (stdout or "").strip(), (stderr or "").strip()
+
+
+def copy_output(source, log):
+    """Copy a command's output to the log and to our stderr until end of file.
+
+    The log is the durable record, so a closed or broken stderr stops only the
+    stream, never the copy or the drain that keeps the command from blocking.
+    """
+    stream = getattr(sys.stderr, "buffer", None)
+    try:
+        while chunk := os.read(source.fileno(), 65536):
+            try:
+                log.write(chunk)
+                log.flush()
+            except (OSError, ValueError):
+                pass
+            if stream is not None:
+                try:
+                    stream.write(chunk)
+                    stream.flush()
+                except (OSError, ValueError):
+                    stream = None
+    finally:
+        source.close()
+
+
+def run_logged(args, cwd, log):
+    """Run a command, streaming its combined output to stderr and to log.
+
+    Returns the exit code. Cancellation stops the command's process group and
+    keeps the partial log.
+    """
+    check_cancelled()
+    with log.open("wb") as file:
+        process = subprocess.Popen(
+            args,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            pass_fds=() if _lock_fd is None else (_lock_fd,),
+            env=child_environment(),
+        )
+        pump = threading.Thread(target=copy_output, args=(process.stdout, file), daemon=True)
+        pump.start()
+        try:
+            while True:
+                check_cancelled()
+                try:
+                    process.wait(timeout=0.1)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+        except BaseException:
+            stop_process(process, drained=True)
+            raise
+        finally:
+            # A leftover descendant would hold the pipe, and with it the pump, open.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            pump.join(timeout=10)
+            if pump.is_alive():
+                print(f"Output of {' '.join(args)} is still held open; the log may be incomplete",
+                      file=sys.stderr, flush=True)
+    return process.returncode
+
+
+def summarize_ci_log(log, returncode):
+    """Extract per-phase results and failing tests from a merge-gate log."""
+    phases = []
+    tests = []
+    seen = set()
+    last = ""
+    try:
+        with log.open(encoding="utf-8", errors="replace") as file:
+            for raw in file:
+                line = ANSI_ESCAPE.sub("", raw).rstrip("\r\n")
+                if line.strip():
+                    last = line.strip()
+                if marker := PHASE_MARKER.fullmatch(line):
+                    phases.append({"name": marker[1], "status": marker[2]})
+                    continue
+                if failure := NEXTEST_FAILURE.fullmatch(line):
+                    name = f"{failure[2]} {failure[3]}"
+                elif failure := LIBTEST_FAILURE.fullmatch(line):
+                    name = failure[1]
+                else:
+                    continue
+                # nextest repeats each failure in its final summary.
+                if name not in seen:
+                    seen.add(name)
+                    tests.append(name)
+    except FileNotFoundError:
+        pass
+    failed = [phase["name"] for phase in phases if phase["status"] == "failed"]
+    parts = []
+    if failed:
+        parts.append("phases failed: " + ", ".join(failed))
+    elif phases:
+        parts.append(f"{len(phases)} phases passed")
+    if tests:
+        shown = ", ".join(tests[:5])
+        parts.append(f"tests: {shown}" + (f" (+{len(tests) - 5} more)" if len(tests) > 5 else ""))
+    if not phases:
+        parts.append("no phase results" + (f"; last output: {last[:200]}" if last else ""))
+    parts.append("interrupted" if returncode is None else f"exit {returncode}")
+    result = {
+        "exitCode": returncode,
+        "phases": phases,
+        "failedTests": tests[:FAILED_TEST_LIMIT],
+        "summary": "; ".join(parts),
+    }
+    if len(tests) > FAILED_TEST_LIMIT:
+        result["failedTestsTruncated"] = len(tests) - FAILED_TEST_LIMIT
+    return result
+
+
+def previous_attempts(receipts, issue_key, current):
+    """Summaries of this issue's earlier failed attempts, oldest first."""
+    found = []
+    for candidate in sorted(receipts.glob("*.json")):
+        if candidate.stem == current:
+            continue
+        try:
+            value = json.loads(candidate.read_text())
+        except (OSError, ValueError) as error:
+            print(f"Skipping unreadable merge receipt {candidate.name}: {error}", file=sys.stderr, flush=True)
+            continue
+        if not isinstance(value, dict) or value.get("issueKey") != issue_key or value.get("status") != "failed":
+            continue
+        ci = value.get("ci") if isinstance(value.get("ci"), dict) else {}
+        found.append({
+            "attemptId": value.get("attemptId", candidate.stem),
+            "timestamp": value.get("timestamp"),
+            "failure": value.get("failure"),
+            "ci": {key: ci[key] for key in ("status", "summary", "log", "exitCode", "phases", "failedTests") if key in ci},
+        })
+    return sorted(found, key=lambda entry: str(entry.get("timestamp") or ""))
 
 
 def git(path, *args, check=True):
@@ -500,6 +667,13 @@ def attempt_path(directory, request):
     return receipts / f"{attempt}.json"
 
 
+def attempt_log(path):
+    """The merge-gate log beside an attempt's receipt."""
+    directory = path.with_suffix("")
+    directory.mkdir(exist_ok=True)
+    return directory / CI_LOG_NAME
+
+
 def save_receipt(path, receipt):
     receipt["timestamp"] = now()
     fd, temporary = tempfile.mkstemp(prefix=".receipt-", dir=path.parent)
@@ -534,9 +708,41 @@ def reconcile(repo, path):
     return receipt
 
 
+def is_text_list(value):
+    return isinstance(value, list) and all(isinstance(entry, str) for entry in value)
+
+
+def validate_ci_details(ci):
+    """Type-check the optional merge-gate details; older receipts omit them."""
+    if not isinstance(ci, dict):
+        raise LifecycleError("Merge receipt has an invalid CI result")
+    for key, check in (
+        ("log", lambda value: isinstance(value, str) and bool(value)),
+        ("summary", lambda value: isinstance(value, str)),
+        ("exitCode", lambda value: value is None or type(value) is int),
+        ("failedTests", is_text_list),
+        ("failedTestsTruncated", lambda value: type(value) is int and value > 0),
+        ("phases", lambda value: isinstance(value, list) and all(
+            isinstance(phase, dict) and set(phase) == {"name", "status"} and isinstance(phase["name"], str)
+            and phase["status"] in ("passed", "failed") for phase in value)),
+    ):
+        if key in ci and not check(ci[key]):
+            raise LifecycleError(f"Merge receipt has an invalid CI {key}")
+
+
 def validate_receipt(receipt):
     if not isinstance(receipt, dict) or receipt.get("status") not in ("verified", "merged", "failed"):
         raise LifecycleError("Invalid merge receipt status")
+    if "ci" in receipt:
+        validate_ci_details(receipt["ci"])
+    history = receipt.get("previousAttempts", [])
+    if not isinstance(history, list) or any(
+        not isinstance(entry, dict) or not isinstance(entry.get("attemptId"), str) for entry in history
+    ):
+        raise LifecycleError("Merge receipt has an invalid attempt history")
+    for entry in history:
+        if "ci" in entry:
+            validate_ci_details(entry["ci"])
     if receipt["status"] in ("verified", "merged"):
         ci = receipt.get("ci", {})
         if not isinstance(ci, dict) or ci.get("command") != CI_COMMAND or ci.get("status") not in ("passed", "skipped"):
@@ -552,6 +758,19 @@ def validate_receipt(receipt):
 
 def receipt_action(request):
     repo, common = canonical_repo(text_field(request, "repoPath"))
+    if request.get("failedOnly") is True:
+        # A failed receipt is terminal and replaced atomically, so it needs no
+        # lock. Waiting for one would block on the next queued merge's gate.
+        directory = common / "yinz-lifecycle"
+        directory.mkdir(exist_ok=True)
+        path = attempt_path(directory, request)
+        if not path.is_file():
+            return {"status": "missing", "attemptId": request["attemptId"]}
+        receipt = json.loads(path.read_text())
+        validate_receipt(receipt)
+        if receipt["status"] != "failed":
+            return {"status": "not_failed", "attemptId": request["attemptId"]}
+        return receipt
     with merge_lock(common) as directory:
         path = attempt_path(directory, request)
         if not path.is_file():
@@ -630,6 +849,9 @@ def integrate(request):
         }
         if skip:
             result["ci"]["request"] = skip
+        history = previous_attempts(path.parent, result["issueKey"], request["attemptId"])
+        if history:
+            result["previousAttempts"] = history
         try:
             if state["branch"] != branch or state["head"] != expected:
                 raise LifecycleError("Issue branch or HEAD differs from the reviewed commit")
@@ -644,8 +866,16 @@ def integrate(request):
             clean(worktree)
             isolated_target(worktree)
             if not skip:
-                result["ci"]["status"] = "running"
-                command(CI_COMMAND, worktree, capture=False)
+                log = attempt_log(path)
+                result["ci"].update(status="running", log=str(log))
+                code = None
+                try:
+                    code = run_logged(CI_COMMAND, worktree, log)
+                finally:
+                    # Record what the log shows even when the gate was interrupted.
+                    result["ci"].update(summarize_ci_log(log, code))
+                if code:
+                    raise LifecycleError(f"{' '.join(CI_COMMAND)} failed: {result['ci']['summary']}; log: {log}")
                 result["ci"]["status"] = "passed"
             # Only preserve reusable verification for the commit and clean
             # worktree that were checked, including changes made by CI itself.
@@ -659,7 +889,8 @@ def integrate(request):
             if result.get("status") not in ("verified", "merged"):
                 if result["ci"]["status"] == "running":
                     result["ci"]["status"] = "failed"
-                result.update(status="failed", failure=str(error))
+                # The lifecycle rejects an empty failure, which would drop this evidence.
+                result.update(status="failed", failure=str(error) or type(error).__name__)
                 save_receipt(path, result)
             raise
 

@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { z } from "npm:zod@4.6.7";
 import {
   type LifecycleState,
+  type MergeFailure,
+  MergeFailureSchema,
   ReceiptSchema,
   StateSchema,
 } from "./lifecycle.ts";
@@ -49,29 +51,84 @@ export const InspectionSchema = z.object({
 });
 
 const Commit = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
-export const GitReceiptSchema = z.object({
-  status: z.literal("merged"),
+const CiCommand = z.tuple([
+  z.literal("cargo"),
+  z.literal("x"),
+  z.literal("ci"),
+  z.literal("check"),
+]);
+// Merge-gate details from git_ops.py; receipts written before them omit them.
+const GateDetails = {
+  log: z.string().min(1).optional(),
+  exitCode: z.number().int().nullable().optional(),
+  phases: z.array(z.object({
+    name: z.string().min(1),
+    status: z.enum(["passed", "failed"]),
+  })).optional(),
+  failedTests: z.array(z.string().min(1)).optional(),
+  failedTestsTruncated: z.number().int().positive().optional(),
+  summary: z.string().optional(),
+};
+const GitPreviousAttemptSchema = z.object({
+  attemptId: z.uuid(),
+  failure: z.string().nullable().optional(),
+  ci: z.object({ summary: z.string().optional(), log: z.string().optional() })
+    .loose().optional(),
+}).loose();
+const GitAttemptFields = {
   attemptId: z.uuid(),
   issueKey: z.string(),
   issueDigest: z.string(),
   worktree: z.string(),
   branch: z.string(),
   originalCommit: Commit,
+  previousAttempts: z.array(GitPreviousAttemptSchema).optional(),
+};
+export const GitReceiptSchema = z.object({
+  ...GitAttemptFields,
+  status: z.literal("merged"),
   baseCommit: Commit,
   rebasedCommit: Commit,
   mergedCommit: Commit,
   mergedAt: z.string(),
   ci: z.object({
     status: z.enum(["passed", "skipped"]),
-    command: z.tuple([
-      z.literal("cargo"),
-      z.literal("x"),
-      z.literal("ci"),
-      z.literal("check"),
-    ]),
+    command: CiCommand,
     request: z.string().optional(),
+    ...GateDetails,
   }),
 });
+export const GitFailedReceiptSchema = z.object({
+  ...GitAttemptFields,
+  status: z.literal("failed"),
+  failure: z.string().min(1),
+  timestamp: z.string(),
+  ci: z.object({
+    status: z.string().min(1),
+    command: CiCommand,
+    request: z.string().optional(),
+    ...GateDetails,
+  }),
+});
+
+/** The Swamp file that holds the helper's output for one merge attempt. */
+export function mergeLogName(attemptId: string) {
+  return `merge-log-${attemptId}`;
+}
+
+function assertIssue(
+  receipt: { issueKey: string; issueDigest: string },
+  state: LifecycleState,
+) {
+  if (
+    receipt.issueKey !== `${state.issue.workspace}/${state.issue.itemId}` ||
+    receipt.issueDigest !== state.issue.digest
+  ) {
+    throw new Error(
+      "Merge receipt belongs to a different issue or description",
+    );
+  }
+}
 
 async function sha256(text: string): Promise<string> {
   const hash = await crypto.subtle.digest(
@@ -336,14 +393,13 @@ export async function invalidateHandoff(context: Context) {
 
 export function normalizeReceipt(raw: unknown, state: LifecycleState) {
   const receipt = GitReceiptSchema.parse(raw);
-  if (
-    receipt.issueKey !== `${state.issue.workspace}/${state.issue.itemId}` ||
-    receipt.issueDigest !== state.issue.digest
-  ) {
-    throw new Error(
-      "Merge receipt belongs to a different issue or description",
-    );
-  }
+  assertIssue(receipt, state);
+  const previous = receipt.previousAttempts?.map((attempt) => ({
+    attemptId: attempt.attemptId,
+    summary: attempt.ci?.summary?.trim() || attempt.failure?.trim() ||
+      "failed",
+    ...(attempt.ci?.log ? { log: attempt.ci.log } : {}),
+  }));
   const normalized = ReceiptSchema.parse({
     attemptId: receipt.attemptId,
     originalCommit: receipt.originalCommit,
@@ -355,6 +411,7 @@ export function normalizeReceipt(raw: unknown, state: LifecycleState) {
     ciStatus: receipt.ci.status,
     ...(receipt.ci.request ? { skipCiRequest: receipt.ci.request } : {}),
     mergedAt: new Date(receipt.mergedAt).toISOString(),
+    ...(previous?.length ? { previousAttempts: previous } : {}),
   });
   if (
     state.receipt &&
@@ -364,4 +421,40 @@ export function normalizeReceipt(raw: unknown, state: LifecycleState) {
     throw new Error("Git receipt no longer matches the recorded merge receipt");
   }
   return normalized;
+}
+
+/** Bind a failed Git receipt to the active attempt and keep its gate evidence. */
+export function normalizeFailure(
+  raw: unknown,
+  state: LifecycleState,
+): MergeFailure {
+  const receipt = GitFailedReceiptSchema.parse(raw);
+  assertIssue(receipt, state);
+  if (
+    !state.attempt || receipt.attemptId !== state.attempt.id ||
+    receipt.originalCommit !== state.attempt.originalHead ||
+    receipt.worktree !== state.implementation?.worktree ||
+    receipt.branch !== state.implementation?.branch
+  ) {
+    throw new Error(
+      "Failed merge receipt must match the active attempt and implementation",
+    );
+  }
+  const { ci } = receipt;
+  return MergeFailureSchema.parse({
+    attemptId: receipt.attemptId,
+    at: new Date(receipt.timestamp).toISOString(),
+    originalCommit: receipt.originalCommit,
+    summary: ci.summary?.trim() || receipt.failure,
+    failure: receipt.failure,
+    ciStatus: ci.status,
+    ...(ci.log ? { log: ci.log } : {}),
+    logResource: mergeLogName(receipt.attemptId),
+    ...(ci.exitCode !== undefined ? { exitCode: ci.exitCode } : {}),
+    phases: ci.phases ?? [],
+    failedTests: ci.failedTests ?? [],
+    ...(ci.failedTestsTruncated
+      ? { failedTestsTruncated: ci.failedTestsTruncated }
+      : {}),
+  });
 }

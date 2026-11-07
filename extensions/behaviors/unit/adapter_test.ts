@@ -12,6 +12,7 @@ import {
   gitOperation,
   issueName,
   loadState,
+  normalizeFailure,
   normalizeReceipt,
   saveState,
   withIssue,
@@ -597,6 +598,210 @@ Deno.test("verify runs approved checks at the reviewed commit and refuses a move
   }
 });
 
+Deno.test("a failed merge gate is recorded with its log, survives repair and appears in the next receipt", async () => {
+  const repo = await tempRepo();
+  const saved = Object.fromEntries(
+    ["PATH", "CARGO_HOME", "CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR"].map(
+      (name) => [name, Deno.env.get(name)],
+    ),
+  );
+  const commit = (cwd: string, message: string) =>
+    git(
+      cwd,
+      "-c",
+      "user.name=Lifecycle Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "--allow-empty",
+      "-m",
+      message,
+    );
+  const revParse = async (cwd: string) =>
+    new TextDecoder().decode(
+      (await new Deno.Command("git", {
+        cwd,
+        args: ["rev-parse", "HEAD"],
+        stdout: "piped",
+      }).output()).stdout,
+    ).trim();
+  try {
+    // Merging needs a clean main checkout; keep test fixtures out of it.
+    await Deno.writeTextFile(
+      join(repo, ".gitignore"),
+      "bin/\nworktrees/\ncargo-home/\n__pycache__/\n",
+    );
+    await git(repo, "add", ".gitignore");
+    await commit(repo, "Ignore fixtures");
+    const bin = join(repo, "bin");
+    await Deno.mkdir(bin);
+    await Deno.mkdir(join(repo, "cargo-home"));
+    const envelope = {
+      schema_version: 0,
+      item: {
+        id: issue.itemId,
+        kind: "task",
+        text: issue.text,
+        note: issue.note,
+        completed: false,
+        blocked: false,
+        discarded_at: null,
+        assignments: [],
+      },
+    };
+    await Deno.writeTextFile(
+      join(bin, "agenda"),
+      `#!/bin/sh\ncat <<'AGENDA_JSON'\n${
+        JSON.stringify(envelope)
+      }\nAGENDA_JSON\n`,
+    );
+    // The first gate fails one test; later gates pass.
+    const counter = join(repo, "cargo-home", "calls");
+    await Deno.writeTextFile(
+      join(bin, "cargo"),
+      `#!/usr/bin/env python3
+import pathlib, sys
+assert sys.argv[1:] == ["x", "ci", "check"]
+counter = pathlib.Path(${JSON.stringify(counter)})
+calls = int(counter.read_text()) if counter.exists() else 0
+counter.write_text(str(calls + 1))
+print(">> ci phase lint: passed")
+if calls == 0:
+    print("        FAIL [   0.019s] (1/4) demo tests::flaky")
+    print(">> ci phase test: failed")
+    print("\\n>> Failed: test")
+    sys.exit(101)
+print(">> ci phase test: passed")
+print("\\n>> All checks passed")
+`,
+    );
+    await Deno.chmod(join(bin, "agenda"), 0o755);
+    await Deno.chmod(join(bin, "cargo"), 0o755);
+    Deno.env.set("PATH", `${bin}:${saved.PATH ?? ""}`);
+    Deno.env.set("CARGO_HOME", join(repo, "cargo-home"));
+    Deno.env.delete("CARGO_TARGET_DIR");
+    Deno.env.delete("CARGO_BUILD_TARGET_DIR");
+    let state = transition(
+      createState({ ...issue, digest: await digestIssue(issue) }),
+      "triage",
+      { classification: "bug", summary: "Confirmed reproduction" },
+    );
+    state = transition(state, "plan", {
+      summary: "Add a marker",
+      steps: [{ id: "marker", description: "Add marker", files: ["m.txt"] }],
+      testingStrategy: "Inspect the marker",
+      checks: [{ id: "true", command: ["true"], covers: ["marker"] }],
+    });
+    state = transition(state, "review_plan", { planVersion: 1, findings: [] });
+    state = transition(state, "approve", { planVersion: 1, request: "Go" });
+    const fixture = fakeContext(repo, state);
+    const worktree = join(repo, "worktrees", "issue-85");
+    await behavior.methods.implement.execute(
+      { worktree, branch: "issue-85" },
+      fixture.context,
+    );
+    // Review, verify and authorize the worktree's current commit.
+    const authorize = async () => {
+      const head = await revParse(worktree);
+      fixture.resources.set(
+        "state",
+        transition(await loadState(fixture.context), "review_code", {
+          planVersion: 1,
+          commit: head,
+          steps: [{ id: "marker", status: "implemented" }],
+          findings: [],
+        }),
+      );
+      await behavior.methods.verify.execute({}, fixture.context);
+      fixture.resources.set(
+        "state",
+        transition(await loadState(fixture.context), "ready", {
+          commit: head,
+          mergeRequest: "Merge it",
+        }),
+      );
+    };
+    await commit(worktree, "First attempt");
+    await authorize();
+    await rejects(
+      () =>
+        behavior.methods.integrate.execute(
+          { skipCiRequest: "" },
+          fixture.context,
+        ),
+      "cargo x ci check failed: phases failed: test; tests: demo tests::flaky; exit 101; log: ",
+    );
+    const failed = await loadState(fixture.context);
+    const [failure] = failed.mergeFailures!;
+    equal(failed.mergeFailures!.length, 1);
+    equal(failure.attemptId, failed.attempt!.id);
+    equal(failure.phases, [
+      { name: "lint", status: "passed" },
+      { name: "test", status: "failed" },
+    ]);
+    equal(failure.failedTests, ["demo tests::flaky"]);
+    equal(failure.exitCode, 101);
+    equal(failure.logResource, `merge-log-${failure.attemptId}`);
+    assert(
+      (await Deno.readTextFile(failure.log!)).includes("tests::flaky"),
+      "the merge-gate log is readable at the recorded path",
+    );
+    assert(
+      fixture.files.get(failure.logResource)!.text.includes("tests::flaky"),
+      "the Swamp log still receives the streamed output",
+    );
+    equal(
+      failed.lastFailure,
+      `Merge attempt ${failure.attemptId} failed: ${failure.summary}; log: ${failure.log}`,
+    );
+    // Retrying the failed attempt keeps the original evidence.
+    await rejects(
+      () =>
+        behavior.methods.integrate.execute(
+          { skipCiRequest: "" },
+          fixture.context,
+        ),
+      "create a new attempt",
+    );
+    equal(await loadState(fixture.context), failed);
+    await behavior.methods.repair.execute(
+      { reason: "Fix the flaky test" },
+      fixture.context,
+    );
+    const repaired = await loadState(fixture.context);
+    equal(repaired.phase, "implementing");
+    equal(repaired.mergeFailures, failed.mergeFailures);
+    assert(
+      repaired.lastFailure!.startsWith("Fix the flaky test\n\n") &&
+        repaired.lastFailure!.includes(failure.log!),
+      repaired.lastFailure,
+    );
+    await commit(worktree, "Fix the flake");
+    await authorize();
+    await behavior.methods.integrate.execute(
+      { skipCiRequest: "" },
+      fixture.context,
+    );
+    const merged = await loadState(fixture.context);
+    equal(merged.phase, "merged");
+    equal(merged.mergeFailures, failed.mergeFailures);
+    equal(merged.receipt!.previousAttempts, [{
+      attemptId: failure.attemptId,
+      summary: failure.summary,
+      log: failure.log,
+    }]);
+    equal(await Deno.readTextFile(counter), "2");
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) Deno.env.delete(name);
+      else Deno.env.set(name, value);
+    }
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
 Deno.test("long Agenda workspace names produce stable bounded behavior names", async () => {
   const workspace = "a".repeat(64);
   const name = await issueName(workspace, Number.MAX_SAFE_INTEGER);
@@ -648,6 +853,82 @@ Deno.test("existing merge receipt is bound to stored attempt and commit evidence
   );
   await rejects(
     () => normalizeReceipt({ ...raw, issueKey: "default/86" }, state),
+    "different issue",
+  );
+});
+
+Deno.test("failed merge receipts bind to the active attempt and keep gate evidence", async () => {
+  const attempt = {
+    id: "a6da10b0-c980-4b82-b920-640238095f1a",
+    originalHead: "a".repeat(40),
+    startedAt: "2026-11-03T12:00:00.000Z",
+  };
+  const state: LifecycleState = {
+    ...createState(issue),
+    phase: "ready",
+    attempt,
+    implementation: { worktree: "/tmp/issue-85", branch: "issue-85" },
+  };
+  const raw = {
+    status: "failed",
+    attemptId: attempt.id,
+    issueKey: "default/85",
+    issueDigest: issue.digest,
+    worktree: "/tmp/issue-85",
+    branch: "issue-85",
+    originalCommit: attempt.originalHead,
+    baseCommit: "c".repeat(40),
+    rebasedCommit: "b".repeat(40),
+    failure: "cargo x ci check failed: phases failed: lint; exit 1; log: /x",
+    timestamp: "2026-11-03T12:30:00+00:00",
+    ci: {
+      status: "failed",
+      command: ["cargo", "x", "ci", "check"],
+      log: "/x",
+      exitCode: 1,
+      phases: [{ name: "lint", status: "failed" }],
+      failedTests: [],
+      summary: "phases failed: lint; exit 1",
+    },
+  };
+  equal(normalizeFailure(raw, state), {
+    attemptId: attempt.id,
+    at: "2026-11-03T12:30:00.000Z",
+    originalCommit: attempt.originalHead,
+    summary: "phases failed: lint; exit 1",
+    failure: raw.failure,
+    ciStatus: "failed",
+    log: "/x",
+    logResource: `merge-log-${attempt.id}`,
+    exitCode: 1,
+    phases: [{ name: "lint", status: "failed" }],
+    failedTests: [],
+  });
+  // A failure before CI (a rebase conflict) has no gate details.
+  const conflict = normalizeFailure({
+    ...raw,
+    failure: "git rebase failed",
+    ci: { status: "not_run", command: ["cargo", "x", "ci", "check"] },
+  }, state);
+  equal([conflict.summary, conflict.log, conflict.phases], [
+    "git rebase failed",
+    undefined,
+    [],
+  ]);
+  await rejects(
+    () =>
+      normalizeFailure({
+        ...raw,
+        attemptId: "b6da10b0-c980-4b82-b920-640238095f1a",
+      }, state),
+    "active attempt",
+  );
+  await rejects(
+    () => normalizeFailure({ ...raw, worktree: "/tmp/other" }, state),
+    "active attempt",
+  );
+  await rejects(
+    () => normalizeFailure({ ...raw, issueKey: "default/86" }, state),
     "different issue",
   );
 });

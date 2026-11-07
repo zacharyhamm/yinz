@@ -16,7 +16,9 @@ import {
   completeAgenda,
   createState,
   type LifecycleState,
+  type MergeFailure,
   readAgenda,
+  recordMergeFailure,
   refreshIssue,
   StateSchema,
   transition,
@@ -29,6 +31,8 @@ import {
   inspect,
   InspectionSchema,
   loadState,
+  mergeLogName,
+  normalizeFailure,
   normalizeReceipt,
   saveState,
   withIssue,
@@ -103,7 +107,7 @@ function recordedTransition<K extends keyof typeof ActionSchemas>(
 /** Local behavior; the issue's state and every decision are versioned Swamp data. */
 export const behavior = {
   type: "@yinz/issue-lifecycle",
-  version: "2026.11.07.1",
+  version: "2026.11.07.2",
   globalArguments: GlobalArgsSchema,
   resources: {
     driver: {
@@ -416,7 +420,7 @@ export const behavior = {
               ...(attempt.skipCiRequest
                 ? { skipCiRequest: attempt.skipCiRequest }
                 : {}),
-            }, `merge-log-${attempt.id}`);
+            }, mergeLogName(attempt.id));
             const receipt = normalizeReceipt(raw, state);
             return await saveState(
               context,
@@ -426,12 +430,17 @@ export const behavior = {
           } catch (error) {
             // Keep intent and failure evidence. repair checks the durable Git receipt
             // before clearing them, including a merge interrupted before Swamp saved it.
-            await saveState(context, "merge_failed", {
-              ...state,
-              lastFailure: error instanceof Error
-                ? error.message
-                : String(error),
-            });
+            const message = error instanceof Error
+              ? error.message
+              : String(error);
+            const failure = await failedReceipt(context, state, attempt.id);
+            await saveState(
+              context,
+              "merge_failed",
+              failure
+                ? recordMergeFailure(state, failure)
+                : { ...state, lastFailure: message },
+            );
             throw error;
           }
         }),
@@ -460,3 +469,33 @@ export const behavior = {
     },
   },
 };
+
+/**
+ * The active attempt's failed Git receipt, or undefined when Git recorded no
+ * failure (a lock timeout before the attempt began) or cannot be read now.
+ * It reads without the merge lock, which the next queued merge may hold.
+ */
+async function failedReceipt(
+  context: Context,
+  state: LifecycleState,
+  attemptId: string,
+): Promise<MergeFailure | undefined> {
+  try {
+    const raw = await gitOperation(context, {
+      action: "receipt",
+      attemptId,
+      failedOnly: true,
+    });
+    const { status } = z.object({ status: z.string() }).loose().parse(raw);
+    return status === "failed" ? normalizeFailure(raw, state) : undefined;
+  } catch (error) {
+    context.logger.info(
+      "Cannot read the failed merge receipt for {issue}: {error}",
+      {
+        issue: context.definition.name,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    return undefined;
+  }
+}
