@@ -1,0 +1,26 @@
+id: 22b9fbc8-2856-4caf-8c94-10d0aca50085
+name: yinz-issue-verify
+description: Run the approved plan's checks in the issue worktree at the reviewed commit, outside the merge lock.
+tags: {}
+inputs:
+  type: object
+  required: [issueName]
+  additionalProperties: false
+  properties:
+    issueName:
+      type: string
+jobs:
+  - name: verification
+    steps:
+      - name: run-plan-checks
+        task:
+          type: behavior
+          behavior: ${{ inputs.issueName }}
+          methodName: verify
+          inputs: {}
+        dependsOn: []
+        weight: 0
+        allowFailure: false
+    dependsOn: []
+    weight: 0
+version: 1

@@ -51,7 +51,25 @@ export const RevisionSchema = z.object({
   ),
   acceptedDecisions: z.array(Text),
 }).strict();
-const PlanContentSchema = z.object({
+const CheckId = z.string().regex(
+  /^[a-z0-9][a-z0-9_-]{0,47}$/,
+  "Check IDs use lowercase letters, digits, '-' and '_' (at most 48 characters)",
+);
+const Argument = z.string().refine(
+  (value) => !value.includes("\0"),
+  "Command arguments cannot contain NUL",
+);
+/** One deterministic development check. The lifecycle runs argv verbatim, without a shell. */
+export const CheckSchema = z.object({
+  id: CheckId,
+  command: z.array(Argument).min(1).refine(
+    (argv) => (argv[0] ?? "x").trim().length > 0,
+    "The command's executable must be nonempty",
+  ),
+  covers: z.array(Text).min(1),
+}).strict();
+export type Check = z.infer<typeof CheckSchema>;
+const PlanBaseSchema = z.object({
   summary: Text,
   steps: z.array(
     z.object({
@@ -66,15 +84,54 @@ const PlanContentSchema = z.object({
   testingStrategy: Text,
   assumptions: z.array(Text).optional(),
   revision: RevisionSchema.optional(),
+  // Optional only for plans recorded before structured checks existed. Never
+  // empty: isLegacyPlan treats any array as verifiable.
+  checks: z.array(CheckSchema).min(1).optional(),
 }).strict();
-/** Result contract for a plan revision dispatched with the current worker contract. */
-export const RevisionPlanSchema = PlanContentSchema.extend({
-  revision: RevisionSchema,
+const CheckedPlanSchema = PlanBaseSchema.extend({
+  checks: z.array(CheckSchema).min(1),
 });
-export const PlanSchema = PlanContentSchema.extend({
+function validateChecks(
+  plan: z.infer<typeof CheckedPlanSchema>,
+  context: z.RefinementCtx,
+) {
+  const ids = new Set(plan.checks.map((check) => check.id));
+  if (ids.size !== plan.checks.length) {
+    context.addIssue({
+      code: "custom",
+      path: ["checks"],
+      message: "Check IDs must be unique",
+    });
+  }
+  const steps = new Set(plan.steps.map((step) => step.id));
+  for (const [index, check] of plan.checks.entries()) {
+    const unknown = check.covers.filter((id) => !steps.has(id));
+    if (unknown.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["checks", index, "covers"],
+        message: `Check ${check.id} covers unknown plan steps: ${
+          unknown.join(", ")
+        }`,
+      });
+    }
+  }
+}
+/** New plans must declare the checks the lifecycle runs before merge authorization. */
+const PlanContentSchema = CheckedPlanSchema.superRefine(validateChecks);
+/** Result contract for a plan revision dispatched with the current worker contract. */
+export const RevisionPlanSchema = CheckedPlanSchema.extend({
+  revision: RevisionSchema,
+}).superRefine(validateChecks);
+export const PlanSchema = PlanBaseSchema.extend({
   version: z.number().int().positive(),
 });
 export type Plan = z.infer<typeof PlanSchema>;
+
+/** Plans recorded before structured checks keep the reviewer-reported gate. */
+export function isLegacyPlan(plan: Plan): boolean {
+  return !plan.checks;
+}
 const PlanReviewSchema = z.object({
   planVersion: z.number().int().positive(),
   findings: FindingsSchema,
@@ -147,6 +204,80 @@ const CodeReviewSchema = z.object({
     }).strict(),
   ).optional(),
 }).strict();
+const CheckResultSchema = CheckSchema.extend({
+  // Null when the executable could not be started.
+  exitCode: z.number().int().nullable(),
+  durationMs: z.number().int().nonnegative(),
+  // Exactly one of: the stored output, or why the check was not run.
+  log: z.string().min(1).optional(),
+  skipped: Text.optional(),
+  worktreeUnchanged: z.boolean(),
+  // Set when the Git helper stopped the check at its time limit.
+  timedOut: z.literal(true).optional(),
+  status: z.enum(["passed", "failed"]),
+}).strict().refine(
+  (result) => (result.log === undefined) !== (result.skipped === undefined),
+  "A check result has either a log or a skip reason",
+).refine(
+  (result) => !result.timedOut || result.exitCode === null,
+  "A timed-out check has no exit code",
+).refine(
+  (result) => !result.skipped || result.status === "failed",
+  "A skipped check cannot pass",
+);
+/** One lifecycle-run verification of the plan's checks at an exact commit. */
+export const VerificationSchema = z.object({
+  id: z.uuid(),
+  planVersion: z.number().int().positive(),
+  commit: Commit,
+  branch: Text,
+  startedAt: z.iso.datetime(),
+  finishedAt: z.iso.datetime(),
+  status: z.enum(["passed", "failed"]),
+  checks: z.array(CheckResultSchema).min(1),
+}).strict();
+export type Verification = z.infer<typeof VerificationSchema>;
+
+/**
+ * The deterministic evidence a merge of the reviewed commit requires. `ready`,
+ * `drive` and the handoff summary all read this, so they cannot disagree.
+ */
+export type MergeGate =
+  | { kind: "legacy"; failedPreliminary: boolean }
+  | { kind: "unverified" }
+  | { kind: "failed"; verification: Verification }
+  | { kind: "passed"; verification: Verification };
+
+export function mergeGate(
+  plan: Plan,
+  review: Pick<
+    z.infer<typeof CodeReviewSchema>,
+    "commit" | "preliminaryChecks"
+  >,
+  verification: Verification | undefined,
+): MergeGate {
+  if (isLegacyPlan(plan)) {
+    return {
+      kind: "legacy",
+      failedPreliminary: review.preliminaryChecks?.some((check) =>
+        check.result === "failed"
+      ) ?? false,
+    };
+  }
+  if (
+    !verification || verification.commit !== review.commit ||
+    verification.planVersion !== plan.version
+  ) {
+    return { kind: "unverified" };
+  }
+  return { kind: verification.status, verification };
+}
+
+export function failedCheckIds(verification: Verification): string[] {
+  return verification.checks
+    .filter((check) => check.status === "failed")
+    .map((check) => check.id);
+}
 export const AttemptSchema = z.object({
   id: z.uuid(),
   originalHead: Commit,
@@ -192,6 +323,7 @@ export const StateSchema = z.object({
   approval: ApprovalSchema.optional(),
   implementation: ImplementationSchema.optional(),
   codeReview: CodeReviewSchema.optional(),
+  verification: VerificationSchema.optional(),
   mergeAuthorization: z.object({
     commit: Commit,
     planVersion: z.number().int().positive(),
@@ -441,6 +573,7 @@ export function rollbackState(
   if (index <= 6) delete state.mergeAuthorization;
   if (index <= 5) {
     delete state.codeReview;
+    delete state.verification;
     if (state.implementation) delete state.implementation.head;
   }
   if (index <= 3) delete state.approval;
@@ -474,6 +607,7 @@ export const ActionSchemas = {
   approve: ApprovalSchema,
   implement: ImplementationSchema.omit({ head: true }).strict(),
   review_code: CodeReviewSchema,
+  verify: z.object({ verification: VerificationSchema }).strict(),
   ready: z.object({ commit: Commit, mergeRequest: Text }).strict(),
   begin_merge: z.object({ attempt: AttemptSchema }).strict(),
   repair: z.object({ reason: Text }).strict(),
@@ -529,6 +663,7 @@ function requireResolved(findings: z.infer<typeof FindingsSchema>): void {
 
 function clearReview(state: LifecycleState): void {
   delete state.codeReview;
+  delete state.verification;
   delete state.mergeAuthorization;
   delete state.attempt;
   if (state.implementation) delete state.implementation.head;
@@ -739,6 +874,60 @@ export function transition(
       state.phase = "implementing";
       break;
     }
+    case "verify": {
+      requirePhase(state, ["implementing"]);
+      const { verification } = ActionSchemas.verify.parse(args);
+      const plan = requirePlan(state, verification.planVersion);
+      if (!plan.checks) {
+        throw new Error(
+          "This legacy plan has no structured checks to verify; revise the plan to add checks",
+        );
+      }
+      if (
+        !state.codeReview || state.codeReview.planVersion !== plan.version ||
+        state.approval?.planVersion !== plan.version || !state.implementation
+      ) {
+        throw new Error(
+          "Verification requires a code review of the approved plan's implementation",
+        );
+      }
+      if (
+        verification.commit !== state.codeReview.commit ||
+        state.implementation.head !== verification.commit ||
+        verification.branch !== state.implementation.branch
+      ) {
+        throw new Error(
+          "Verification must run at the reviewed commit on the issue branch",
+        );
+      }
+      if (
+        verification.checks.length !== plan.checks.length ||
+        verification.checks.some((result, index) => {
+          const check = plan.checks![index];
+          return result.id !== check.id ||
+            JSON.stringify(result.command) !== JSON.stringify(check.command) ||
+            JSON.stringify(result.covers) !== JSON.stringify(check.covers);
+        })
+      ) {
+        throw new Error(
+          "Verification must run every plan check exactly as approved, in order",
+        );
+      }
+      const consistent =
+        verification.checks.every((result) =>
+          (result.status === "passed") ===
+            (result.exitCode === 0 && result.worktreeUnchanged)
+        ) &&
+        (verification.status === "passed") ===
+          verification.checks.every((result) => result.status === "passed");
+      if (!consistent) {
+        throw new Error(
+          "Verification status must follow its recorded exit codes and worktree checks",
+        );
+      }
+      state.verification = verification;
+      break;
+    }
     case "ready": {
       requirePhase(state, ["implementing"]);
       const ready = ActionSchemas.ready.parse(args);
@@ -754,13 +943,22 @@ export function transition(
         );
       }
       requireResolved(state.codeReview.findings);
-      if (
-        state.codeReview.preliminaryChecks?.some((check) =>
-          check.result === "failed"
-        )
-      ) {
+      const gate = mergeGate(plan, state.codeReview, state.verification);
+      if (gate.kind === "legacy" && gate.failedPreliminary) {
         throw new Error(
           "Resolve failed preliminary checks before requesting a merge",
+        );
+      }
+      if (gate.kind === "unverified") {
+        throw new Error(
+          "Run verify for the reviewed commit before requesting a merge",
+        );
+      }
+      if (gate.kind === "failed") {
+        throw new Error(
+          `Verification failed for ${
+            failedCheckIds(gate.verification).join(", ")
+          }; repair and verify a new reviewed commit, or rerun verify`,
         );
       }
       state.mergeAuthorization = {

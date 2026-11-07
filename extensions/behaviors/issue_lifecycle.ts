@@ -33,6 +33,7 @@ import {
   saveState,
   withIssue,
 } from "./_lib/runtime.ts";
+import { runVerification } from "./_lib/verification.ts";
 
 // Swamp delivers globals alongside method arguments. Strip them here; the
 // pure transitions still validate their own inputs with strict schemas.
@@ -152,6 +153,14 @@ export const behavior = {
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 100,
+      streaming: true,
+    },
+    "check-log": {
+      description:
+        "Output of one deterministic plan check in a verification run",
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 1000,
       streaming: true,
     },
   },
@@ -275,6 +284,26 @@ export const behavior = {
       "review_code",
       "Record coverage of every plan step at a committed HEAD",
     ),
+    verify: {
+      kind: "action",
+      description:
+        "Run the approved plan's checks in the issue worktree at the reviewed commit, outside the merge lock",
+      arguments: Empty,
+      execute: (_args: Record<string, never>, context: Context) =>
+        withIssue(context, async () => {
+          const state = await mutableState(context);
+          await currentIssue(state);
+          if (!state.codeReview) {
+            throw new Error("Record a code review before verifying");
+          }
+          await reviewedHead(context, state, state.codeReview.commit);
+          return runVerification(context, state, {
+            gitOperation,
+            id: () => crypto.randomUUID(),
+            now: () => new Date().toISOString(),
+          });
+        }),
+    },
     ready: recordedTransition(
       "ready",
       "Authorize the reviewed commit for rebase, final CI and merge",

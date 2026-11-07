@@ -15,6 +15,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -38,6 +39,8 @@ class Cancelled(LifecycleError):
 _cancelled = False
 _lock_fd = None
 CI_COMMAND = ["cargo", "x", "ci", "check"]
+# A hung plan check would otherwise hold the issue lock indefinitely.
+CHECK_TIMEOUT_SECONDS = 3600
 
 
 def now():
@@ -74,7 +77,7 @@ def stop_process(process):
     process.communicate()
 
 
-def command(args, cwd, *, check=True, capture=True):
+def command(args, cwd, *, check=True, capture=True, reap_group=False, timeout=None):
     check_cancelled()
     environment = {**local_environment(), "GIT_EDITOR": "/usr/bin/true", "GIT_SEQUENCE_EDITOR": "/usr/bin/true"}
     for variable in (
@@ -94,9 +97,12 @@ def command(args, cwd, *, check=True, capture=True):
         pass_fds=() if _lock_fd is None else (_lock_fd,),
         env=environment,
     )
+    deadline = None if timeout is None else time.monotonic() + timeout
     try:
         while True:
             check_cancelled()
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(args, timeout)
             try:
                 stdout, stderr = process.communicate(timeout=0.1)
                 break
@@ -105,6 +111,13 @@ def command(args, cwd, *, check=True, capture=True):
     except BaseException:
         stop_process(process)
         raise
+    if reap_group:
+        # A leftover descendant would hold our stderr, and with it the caller's
+        # log stream, open after the command itself has exited.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     if check and process.returncode:
         detail = (stderr or stdout or "see command output").strip()
         raise LifecycleError(f"{' '.join(args)} failed ({process.returncode}): {detail}")
@@ -651,6 +664,73 @@ def integrate(request):
             raise
 
 
+def worktree_matches(worktree, branch, head):
+    """True when the worktree is still clean at the expected branch and commit."""
+    try:
+        clean(worktree)
+        current = git(worktree, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)[1]
+        return current == branch and git(worktree, "rev-parse", "HEAD")[1] == head
+    except (LifecycleError, OSError):
+        # An unborn HEAD, a removed worktree or a broken Git link is a change.
+        return False
+
+
+def run_check(request):
+    """Run one approved plan check at the reviewed commit, outside the merge lock.
+
+    A nonzero exit is a result, not a protocol failure. Output goes to stderr,
+    which the caller stores as the check's log.
+    """
+    repo, common = canonical_repo(text_field(request, "repoPath"))
+    worktree, other_common = canonical_repo(text_field(request, "worktree"))
+    if other_common != common:
+        raise LifecycleError("The worktree belongs to another Git repository")
+    branch = text_field(request, "expectedBranch")
+    branch_name(repo, branch)
+    expected = text_field(request, "expectedHead")
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", expected):
+        raise LifecycleError("expectedHead must be a full commit hash")
+    argv = request.get("argv")
+    if (
+        not isinstance(argv, list) or not argv
+        or any(not isinstance(value, str) or "\x00" in value for value in argv)
+        or not argv[0].strip()
+    ):
+        raise LifecycleError("argv must be a nonempty list of strings without NUL")
+    timeout = request.get("timeoutSeconds", CHECK_TIMEOUT_SECONDS)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not timeout > 0:
+        raise LifecycleError("timeoutSeconds must be a positive number")
+    if git(worktree, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)[1] != branch:
+        raise LifecycleError("Issue worktree is not on the reviewed branch")
+    if git(worktree, "rev-parse", "HEAD")[1] != expected:
+        raise LifecycleError("Issue HEAD differs from the reviewed commit")
+    isolated_target(worktree)
+    clean(worktree)
+    print(f"$ {shlex.join(argv)}", file=sys.stderr, flush=True)
+    started = time.monotonic()
+    timed_out = False
+    try:
+        code = command(argv, worktree, check=False, capture=False, reap_group=True, timeout=timeout)[0]
+    except subprocess.TimeoutExpired:
+        # command() has already stopped the check's whole process group.
+        print(f"Timed out after {timeout:g} s; stopped the check's process group", file=sys.stderr, flush=True)
+        code = None
+        timed_out = True
+    except OSError as error:
+        # Includes ENOEXEC and E2BIG, not only a missing or non-executable file.
+        print(f"Cannot start {argv[0]}: {error}", file=sys.stderr, flush=True)
+        code = None
+    duration = int((time.monotonic() - started) * 1000)
+    unchanged = worktree_matches(worktree, branch, expected)
+    print(f"exit {code} after {duration} ms", file=sys.stderr, flush=True)
+    if not unchanged:
+        print("The check changed the worktree, branch or HEAD", file=sys.stderr, flush=True)
+    result = {"exitCode": code, "durationMs": duration, "worktreeUnchanged": unchanged}
+    if timed_out:
+        result["timedOut"] = True
+    return result
+
+
 def main():
     signal.signal(signal.SIGINT, cancel)
     signal.signal(signal.SIGTERM, cancel)
@@ -659,7 +739,8 @@ def main():
         if not isinstance(request, dict):
             raise LifecycleError("Request must be a JSON object")
         actions = {"inspect": inspect, "claim": claim, "confirm": confirm, "prepare": prepare, "integrate": integrate,
-                   "receipt": receipt_action, "agenda-workspace": configured_workspace}
+                   "receipt": receipt_action, "agenda-workspace": configured_workspace,
+                   "check": run_check}
         action = request.get("action")
         if not isinstance(action, str) or action not in actions:
             raise LifecycleError(f"Unknown action: {action}")

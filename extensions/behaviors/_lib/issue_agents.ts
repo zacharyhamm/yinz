@@ -231,13 +231,13 @@ function taskPrompt(
     triage:
       "Investigate the issue against the source. Reproduce a bug when practical. Return its classification and an evidence-based summary, including acceptance criteria and uncertainties.",
     plan:
-      "Develop or revise a concrete implementation plan from the issue and investigation. Address existing review findings. Include affected files, risks in step descriptions, assumptions, and focused development checks. Full cargo x ci check is mandatory later in the merge gate unless the user explicitly waives it.",
+      "Develop or revise a concrete implementation plan from the issue and investigation. Address existing review findings. Include affected files, risks in step descriptions, assumptions, and a testingStrategy explaining the test selection. Return checks: focused development checks selected per AGENTS.md (never unfiltered full suites), each with a short id, an argv array run verbatim without a shell in the issue worktree, and the plan step IDs it covers. The lifecycle runs every check at the reviewed commit and requires them to pass before merge authorization. Full cargo x ci check is mandatory later in the merge gate unless the user explicitly waives it.",
     review_plan:
-      "Adversarially review the current plan against the actual code. Return planVersion and every actionable finding. Do not approve the plan or invent resolutions. An empty findings array is appropriate only after a real review found none.",
+      "Adversarially review the current plan against the actual code, including whether its checks are correct argv, focused, safe to run unattended, and cover the changed behavior and affected callers. Return planVersion and every actionable finding. Do not approve the plan or invent resolutions. An empty findings array is appropriate only after a real review found none.",
     implement:
       "Implement the approved plan in this existing issue worktree. Run focused checks following AGENTS.md, investigate failures, and commit the intended changes on the existing feature branch. Return a summary and the full resulting commit hash. Do not rebase, merge, push, or run the full CI gate here.",
     review_code:
-      "Review the committed diff against local main and the approved plan. Cover each plan step exactly once, justify deviations, and record code findings and actual preliminary checks. Do not invent passing checks. Return the supplied full commit hash and planVersion.",
+      "Review the committed diff against local main and the approved plan. Cover each plan step exactly once, justify deviations, and record code findings and any preliminary checks you actually ran. Preliminary checks are advisory; the lifecycle runs the plan's checks itself. Do not invent passing checks. Return the supplied full commit hash and planVersion.",
   }[role];
   return [
     "You are working on one Yinz issue lifecycle task in a visible Yinz pane.",

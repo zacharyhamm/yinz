@@ -11,8 +11,9 @@ flowchart LR
     A[Agenda issue] --> T[Triage]
     T --> P[Plan and review]
     P --> I[Approved implementation]
-    I --> R[Code review and targeted checks]
-    R --> M[Merge authorization]
+    I --> R[Code review]
+    R --> C[Deterministic plan checks]
+    C --> M[Merge authorization]
     M --> Q[Wait for integration lock]
     Q --> B[Rebase onto local main]
     B --> V[Full CI gate]
@@ -20,6 +21,7 @@ flowchart LR
     F --> S[Outcome and Agenda completion]
     P -->|Revise| P
     R -->|Fix findings| I
+    C -->|Failure| I
     B -->|Conflict| I
     V -->|Failure| I
 ```
@@ -255,10 +257,12 @@ A clear review returns `approve_plan`. Revision authorization does not approve
 implementation: record that separate approval explicitly with `approve`.
 The `prepare_worktree` handoff requires `implement` to adopt the recorded worker
 worktree.
-After preparation, `drive` runs implementation and code review and returns
-`authorize_merge` with the delivered change, review coverage and actual verification
-results. Code blockers or failed checks return `blocked` for repair and fresh
-review. `ready`, `merge` and `summarize` remain explicit operator operations.
+After preparation, `drive` runs implementation and code review, then runs the
+plan's checks at the reviewed commit (see
+[Deterministic verification](#deterministic-verification)). It returns
+`authorize_merge` with the delivered change, review coverage and a checklist built
+from that verification run. Code blockers or failed checks return `blocked` for
+repair and fresh review. `ready`, `merge` and `summarize` remain explicit operator operations.
 The driver never infers revision approval, implementation approval, merge
 authorization or a CI waiver.
 
@@ -280,18 +284,19 @@ control and diagnostics, using their existing inputs.
 | `status`                        | Inspect the current state before deciding what to do next.                                                            |
 | `refresh`                       | Re-read a changed Agenda description and invalidate planning evidence that no longer covers it.                       |
 | `agent` with role `triage`      | Investigate the issue in a pane and import classification, acceptance criteria and reproduction evidence.             |
-| `agent` with role `plan`        | Generate concrete steps, affected files, risks and development test strategy; revisions need fresh review.            |
+| `agent` with role `plan`        | Generate concrete steps, affected files, risks, test strategy and structured checks; revisions need fresh review.     |
 | `agent` with role `review_plan` | Review the current plan against the code and import findings.                                                         |
 | `approve`                       | Record the user's authorization for the reviewed plan.                                                                |
 | `implement`                     | Adopt the recorded worker worktree (legacy issues may create one).                                                                    |
 | `agent` with role `implement`   | Implement and commit the approved plan in the existing issue worktree, running focused checks.                        |
-| `agent` with role `review_code` | Review the committed implementation and import plan conformance, deviations and observed verification.                |
+| `agent` with role `review_code` | Review the committed implementation and import plan conformance, deviations and advisory reviewer checks.             |
+| `verify`                        | Run `yinz-issue-verify`: the plan's checks at the reviewed commit, recording exit codes, durations and logs.          |
 | `resume-agent`                  | Retrieve the original submission or reconcile already-applied evidence; never resubmit or relaunch.                   |
 | `rollback`                      | Explicitly return to any lifecycle step, archive the previous assignment and downstream decisions, and reopen Agenda. |
 | `restart-agent`                 | Roll back to a worker step and dispatch a fresh assignment with the requested session and provider. |
 | `resume-rollback`               | Finish an interrupted rollback and resume its saved replacement assignment, if any. |
 | `discard-agent`                 | Discard unusable completed evidence, a confirmed stopped failure, or a resource-free rejected launch, with an operator reason and confirmation. |
-| `ready`                         | Record authorization to integrate the reviewed change.                                                                |
+| `ready`                         | Record authorization to integrate the reviewed change; requires passing verification of that commit.                  |
 | `merge`                         | Run `yinz-issue-merge`; serialize rebase, full CI and local fast-forward merge, recording the result.                 |
 | `repair`                        | Record repair work after an integration failure and return to development and review.                                 |
 | `summarize`                     | Record the delivered outcome and complete the Agenda task only when merged and `outcomeMet` is true.                  |
@@ -527,13 +532,14 @@ hash.
 | Command               | Input fields                                                                                                                                                                       |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Triage result         | `classification`: `bug`, `feature`, `maintenance`, or `security`; `summary`: investigation and acceptance criteria.                                                                |
-| Plan result           | `summary`; nonempty `steps`, each with unique `id`, `description`, and `files`; `testingStrategy`; optional `assumptions`. Revisions also require `revision`: `summary`, `responses` (`findingId`, `status`, `rationale`, nonempty `evidence`) and `acceptedDecisions`. Include risks in step descriptions.              |
+| Plan result           | `summary`; nonempty `steps`, each with unique `id`, `description`, and `files`; `testingStrategy`; nonempty `checks`; optional `assumptions`. Revisions also require `revision`: `summary`, `responses` (`findingId`, `status`, `rationale`, nonempty `evidence`) and `acceptedDecisions`. Include risks in step descriptions.              |
 | Plan review result    | `planVersion`; `findings`, each with unique `id`, `severity`, `description`, and optional `resolution`. Blocking findings require `requirement`, `mechanism`, and nonempty source `evidence`. Reopened findings need `reopening: {rationale, evidence}` with new evidence.                                                                            |
 | `adjudicate-plan`     | Current `planVersion`, `reviewFingerprint`, and nonempty `dispositions`: `findingId`, `disposition`, `rationale`, nonempty `evidence`; `severity` required only for downgrades. |
 | `approve`             | `planVersion`; `request`: the user's authorization in its actual scope.                                                                                                            |
 | `implement`           | Recorded absolute `worktree` path; its existing feature `branch`. The matching worktree is adopted.                                                                                                      |
 | Implementation result | `summary`; full `commit` corresponding to the clean issue worktree.                                                                                                                |
-| Code review result    | `planVersion`; `commit`; `steps` covering plan step IDs with `status` of `implemented` or `deviated`; `findings`; optional `preliminaryChecks`. A deviation needs `justification`. |
+| Code review result    | `planVersion`; `commit`; `steps` covering plan step IDs with `status` of `implemented` or `deviated`; `findings`; optional advisory `preliminaryChecks`. A deviation needs `justification`. |
+| `verify`              | No input. Runs the current plan's checks at the reviewed commit.                                                                                                                   |
 | `ready`               | `commit`; `mergeRequest`: the user's authorization to merge this change.                                                                                                           |
 | `merge`               | Normally no input. An explicitly requested exception uses `skipCiRequest`.                                                                                                         |
 | `repair`              | `reason`: what failed and what was repaired.                                                                                                                                       |
@@ -541,9 +547,17 @@ hash.
 
 Finding severities are `low`, `medium`, `high` and `critical`. Unresolved high
 or critical findings block advancement. An empty findings array means a review
-actually found no findings; it is not a way to skip reviewing. Each preliminary
-check has `command`, `result` (`passed`, `failed` or `skipped`), and `summary`
-describing the observed result and reason for the test selection.
+actually found no findings; it is not a way to skip reviewing.
+
+Each plan check has a unique `id` (lowercase letters, digits, `-` and `_`, at
+most 48 characters), a `command` argv array, and `covers`, the plan step IDs it
+exercises. The lifecycle runs the argv verbatim without a shell, so write
+`["cargo", "x", "test", "-p", "yinz-server", "-E", "test(/^tabs::/)"]` rather
+than a quoted command line. Select focused checks following `AGENTS.md`; do not
+list unfiltered full suites, which the merge gate already runs.
+
+Each reviewer preliminary check has `command`, `result` (`passed`, `failed` or
+`skipped`), and `summary`. They are advisory evidence for plans with checks.
 
 For example, a plan result can be:
 
@@ -557,7 +571,14 @@ For example, a plan result can be:
             "files": ["yinz-server/src/"]
         }
     ],
-    "testingStrategy": "Run the focused regression and affected caller tests during development; run the full gate during integration."
+    "testingStrategy": "Run the focused regression and affected caller tests during development; run the full gate during integration.",
+    "checks": [
+        {
+            "id": "session-regression",
+            "command": ["cargo", "x", "test", "-p", "yinz-server", "-E", "test(/session/)"],
+            "covers": ["session-fix"]
+        }
+    ]
 }
 ```
 
@@ -631,6 +652,52 @@ nonempty final message and no background work remains. `state` retains launch,
 pane, conversation and submission identity; `observation` records live status
 separately. A completed provider turn is evidence of an answer, not proof that
 the requested code is correct; lifecycle review and verification still apply.
+
+## Deterministic verification
+
+The `review_code` worker's `preliminaryChecks` are its own report. Merge
+authorization instead depends on a verification the lifecycle runs itself:
+
+1. After a code review without unresolved high/critical findings, `drive` runs
+   every check from the approved plan, in order, in the issue worktree. The
+   operator `verify` command (the `yinz-issue-verify` workflow) does the same.
+2. Before each check, the Git helper requires the clean worktree to be on the
+   issue branch at the reviewed commit and to have its own `target/`. Checks run
+   outside the repository merge lock, so they do not wait for another issue's
+   integration.
+3. Each check records its exit code, duration and output. A check that leaves
+   the worktree dirty or moves its branch or HEAD fails. So does a check the Git
+   helper refuses to run, with the refusal as its reason. Later checks are then
+   recorded as not run, because they would no longer test the reviewed tree.
+   Every other check runs even after a failure, so the checklist is complete.
+   When a check exits, the helper kills any processes it left in its process
+   group, so a background child cannot hold the log open. A check still
+   running after one hour is stopped with its whole process group and fails as
+   timed out, with no exit code; later checks still run.
+4. The run is saved as `verification` in the issue state, bound to the plan
+   version, branch and commit. Each check's output is a `check-log` file named
+   `check-log-<verification id>-<check id>`. Retrieve it with the query shown
+   in the checklist:
+
+   ```sh
+   swamp data query 'modelName == "issue-<workspace>-<item>" && name == "check-log-<id>-<check>"' \
+     --select content --repo-dir "$LIFECYCLE_REPO"
+   ```
+
+`ready` requires a passing verification of the reviewed commit and current plan.
+Any new plan, worktree adoption, code review, repair, refresh or rollback to
+`review_code` or earlier discards it, so a repaired commit must be reviewed and
+verified again. Rolling back only `ready` keeps the verification of the
+unchanged commit. A failed run returns a `blocked` handoff naming each failing
+check and its log. `drive` never reruns a failed verification automatically.
+For an environment failure at the same commit, run `verify` explicitly; every
+run remains in the event history. The launcher prints the checklist on stderr,
+the verification JSON on stdout, and exits 2 when it failed.
+
+Plans recorded before structured checks existed have no `checks`. They keep the
+earlier gate: `ready` rejects failed reviewer preliminary checks, and the handoff
+states that no deterministic verification ran. New plans and revisions must
+include checks.
 
 ## Development checks and the merge gate
 

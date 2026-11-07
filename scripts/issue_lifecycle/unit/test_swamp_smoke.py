@@ -125,7 +125,7 @@ else:
             if snapshot["plan"]["version"] <= int(os.environ.get("YINZ_SMOKE_BLOCKED_VERSIONS", "0")):
                 evidence["findings"] = [{"id":"coverage", "severity":"high", "description":"Cover the missing caller", "requirement":"Marker covers caller", "mechanism":"Caller can miss the marker", "evidence":["marker.txt"]}]
         elif "Develop or revise a concrete implementation plan" in stdin:
-            evidence = {"summary":"Add the disposable fixture marker.","steps":[{"id":"marker","description":"Create marker.txt","files":["marker.txt"]}],"testingStrategy":"Inspect marker contents with focused fixture checks.","assumptions":["The marker is the complete fixture requirement."]}
+            evidence = {"summary":"Add the disposable fixture marker.","steps":[{"id":"marker","description":"Create marker.txt","files":["marker.txt"]}],"testingStrategy":"Inspect marker contents with focused fixture checks.","checks":[{"id":"marker","command":["grep","-q","smoke marker","marker.txt"],"covers":["marker"]}],"assumptions":["The marker is the complete fixture requirement."]}
             if "This is a targeted revision" in stdin:
                 evidence["revision"] = {"summary":"Kept marker scope and checked the caller", "responses":[{"findingId":"coverage", "status":"disputed", "rationale":"The fixture has only one caller", "evidence":["marker.txt"]}], "acceptedDecisions":["One fixture marker is sufficient"]}
         else:
@@ -323,6 +323,7 @@ print(json.dumps(response))
             "summary": "Add the disposable fixture's marker.",
             "steps": [{"id": "marker", "description": "Create marker.txt", "files": ["marker.txt"]}],
             "testingStrategy": "Exercise the merge protocol using an explicit Cargo stub; this is not Rust verification.",
+            "checks": [{"id": "marker", "command": ["grep", "-c", "smoke marker", "marker.txt"], "covers": ["marker"]}],
         })
         self.lifecycle("review-plan", {"planVersion": 1, "findings": []})
         self.lifecycle("approve", {"planVersion": 1, "request": "Approve the disposable smoke fixture plan."})
@@ -341,7 +342,22 @@ print(json.dumps(response))
             "steps": [{"id": "marker", "status": "implemented"}], "findings": [],
             "preliminaryChecks": [{"command": "inspect fixture marker", "result": "passed", "summary": "marker.txt contains the expected fixture text."}],
         })
-        self.lifecycle("ready", {"commit": original, "mergeRequest": "Merge the disposable smoke fixture locally."})
+        ready = {"commit": original, "mergeRequest": "Merge the disposable smoke fixture locally."}
+        launcher = [sys.executable, str(self.repo / "scripts" / "issue-lifecycle"), "--control", str(self.repo), "--item", str(self.item_id)]
+        refused = subprocess.run([*launcher, "ready", "--input-file", "-"], input=json.dumps(ready), cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=120)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("Run verify for the reviewed commit", refused.stdout + refused.stderr)
+        verification = json.loads(self.lifecycle("verify"))
+        self.assertEqual(verification["status"], "passed")
+        self.assertEqual(verification["commit"], original)
+        self.assertEqual(self.state()["verification"], verification)
+        [check] = verification["checks"]
+        self.assertEqual((check["id"], check["exitCode"]), ("marker", 0))
+        name = f"issue-lifecycle-test-{self.item_id}"
+        log = json.loads(self.command(["swamp", "data", "query", f"modelName == {json.dumps(name)} && name == {json.dumps(check['log'])}", "--select", "content", "--json"]))
+        self.assertEqual(len(log["results"]), 1)
+        self.assertIn("$ grep -c 'smoke marker' marker.txt\n1\nexit 0 after", log["results"][0])
+        self.lifecycle("ready", ready)
         self.lifecycle("merge")
         merged = self.state()
         self.assertEqual(merged["phase"], "merged")

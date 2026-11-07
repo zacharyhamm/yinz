@@ -86,6 +86,11 @@ function implementing(): LifecycleState {
       files: ["src/lib.rs"],
     }],
     testingStrategy: "Affected tests",
+    checks: [{
+      id: "focused",
+      command: ["cargo", "x", "test", "-p", "demo"],
+      covers: ["fix"],
+    }],
   });
   state = transition(state, "review_plan", { planVersion: 1, findings: [] });
   state = transition(state, "approve", {
@@ -95,6 +100,29 @@ function implementing(): LifecycleState {
   return transition(state, "implement", {
     worktree: "/repo/issue",
     branch: "issue-85",
+  });
+}
+
+function verify(state: LifecycleState): LifecycleState {
+  const id = "c6da10b0-c980-4b82-b920-640238095f1a";
+  return transition(state, "verify", {
+    verification: {
+      id,
+      planVersion: state.plan!.version,
+      commit: state.codeReview!.commit,
+      branch: state.implementation!.branch,
+      startedAt: timestamp,
+      finishedAt: timestamp,
+      status: "passed",
+      checks: state.plan!.checks!.map((check) => ({
+        ...check,
+        exitCode: 0,
+        durationMs: 10,
+        log: `check-log-${id}-${check.id}`,
+        worktreeUnchanged: true,
+        status: "passed",
+      })),
+    },
   });
 }
 
@@ -136,6 +164,17 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
     reopenError: undefined as string | undefined,
     reopened: 0,
     receipt: { status: "missing" } as unknown,
+    checkCalls: [] as {
+      request: Record<string, unknown>;
+      log?: string;
+      spec?: string;
+    }[],
+    checkOutcome: (_request: Record<string, unknown>) =>
+      ({ exitCode: 0, durationMs: 1200, worktreeUnchanged: true }) as {
+        exitCode: number | null;
+        durationMs: number;
+        worktreeUnchanged: boolean;
+      },
     agentRunner: undefined as YinzRunner | undefined,
     agendaReads: 0,
     controlTab: 0,
@@ -327,7 +366,11 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
       return Promise.resolve(controls.agenda);
     },
     inspect: () => Promise.resolve(controls.repo),
-    gitOperation: () => Promise.resolve(controls.receipt),
+    gitOperation: (_context, request, log, spec) => {
+      if (request.action !== "check") return Promise.resolve(controls.receipt);
+      controls.checkCalls.push({ request, log, spec });
+      return Promise.resolve(controls.checkOutcome(request));
+    },
     reopenAgenda: () => {
       controls.reopened++;
       return controls.reopenError
@@ -1137,6 +1180,11 @@ Deno.test("explicit restart supersedes every worker outcome without querying or 
       summary: "New plan",
       steps: [{ id: "fix", description: "Fix it", files: [] }],
       testingStrategy: "Focused tests",
+      checks: [{
+        id: "focused",
+        command: ["cargo", "x", "test", "-p", "demo"],
+        covers: ["fix"],
+      }],
     };
     const h = harness(initial, evidence);
     h.controls.childPhase = "waiting";
@@ -1429,7 +1477,10 @@ Deno.test("rollback reconciles a landed merge before clearing an interrupted att
     steps: [{ id: "fix", status: "implemented" }],
     findings: [],
   });
-  state = transition(state, "ready", { commit: head, mergeRequest: "Merge" });
+  state = transition(verify(state), "ready", {
+    commit: head,
+    mergeRequest: "Merge",
+  });
   const attempt = {
     id: "a6da10b0-c980-4b82-b920-640238095f1b",
     originalHead: head,
@@ -1550,7 +1601,32 @@ const driverPlan = {
   steps: [{ id: "fix", description: "Repair and test", files: ["src/lib.rs"] }],
   testingStrategy: "Focused regression and affected caller tests",
   assumptions: ["The recorded reproduction covers the affected caller"],
+  checks: [
+    {
+      id: "regression",
+      command: ["cargo", "x", "test", "-p", "demo", "-E", "test(/^fix::/)"],
+      covers: ["fix"],
+    },
+    {
+      id: "caller",
+      command: ["cargo", "x", "test", "caller"],
+      covers: ["fix"],
+    },
+  ],
 };
+function driverImplementing(): LifecycleState {
+  let state = transition(createState(issue), "triage", triage);
+  state = transition(state, "plan", driverPlan);
+  state = transition(state, "review_plan", { planVersion: 1, findings: [] });
+  state = transition(state, "approve", {
+    planVersion: 1,
+    request: "Implement this plan",
+  });
+  return transition(state, "implement", {
+    worktree: "/repo/issue",
+    branch: "issue-85",
+  });
+}
 function driverEvidence(
   task: ReturnType<typeof AgentTaskSchema.parse>,
 ): unknown {
@@ -1933,28 +2009,231 @@ Deno.test("driver requires worktree preparation after explicit approval, then im
   equal(h.calls.length, 2);
 });
 
-Deno.test("driver returns code blockers and failed verification instead of requesting merge authorization", async () => {
-  for (const failedCheck of [false, true]) {
-    const h = harness(implementing());
+Deno.test("driver returns code review blockers instead of running checks or requesting merge authorization", async () => {
+  const h = harness(implementing());
+  h.controls.evidenceForRole = (task) =>
+    task.role === "review_code"
+      ? {
+        ...driverEvidence(task) as object,
+        findings: [{
+          id: "bug",
+          severity: "high",
+          description: "Race remains",
+        }],
+      }
+      : driverEvidence(task);
+  await h.drive.execute({ agent: options }, h.context);
+  equal(result(h).decision, "blocked");
+  assert(result(h).reason.includes("code review blockers"));
+  equal(h.controls.checkCalls.length, 0);
+});
+
+Deno.test("driver runs every plan check at the reviewed commit and presents a checklist from the run", async () => {
+  const h = harness(driverImplementing());
+  // Reviewer-reported failures are advisory once the plan has checks.
+  h.controls.evidenceForRole = (task) =>
+    task.role === "review_code"
+      ? {
+        ...driverEvidence(task) as object,
+        preliminaryChecks: [{
+          command: "regression",
+          result: "failed",
+          summary: "Reviewer saw a failure",
+        }],
+      }
+      : driverEvidence(task);
+  h.controls.checkOutcome = (request) => ({
+    exitCode: 0,
+    durationMs: (request.argv as string[]).length * 1000,
+    worktreeUnchanged: true,
+  });
+  await h.drive.execute({ agent: options }, h.context);
+  const handoff = result(h);
+  equal(handoff.decision, "authorize_merge");
+  const state = await loadState(h.context);
+  const verification = state.verification!;
+  equal(verification.status, "passed");
+  equal(verification.commit, head);
+  equal(verification.planVersion, 1);
+  equal(
+    h.controls.checkCalls.map(({ request, log, spec }) => ({
+      request,
+      log,
+      spec,
+    })),
+    driverPlan.checks.map((check) => ({
+      request: {
+        action: "check",
+        worktree: "/repo/issue",
+        expectedBranch: "issue-85",
+        expectedHead: head,
+        argv: check.command,
+      },
+      log: `check-log-${verification.id}-${check.id}`,
+      spec: "check-log",
+    })),
+  );
+  for (
+    const text of [
+      `Verification ${verification.id}: passed at ${head} (plan version 1)`,
+      "- [x] regression: cargo x test -p demo -E 'test(/^fix::/)' -> exit 0 in 7.0s (covers fix).",
+      "- [x] caller: cargo x test caller -> exit 0 in 4.0s (covers fix).",
+      `Log: swamp data query 'modelName == "issue-default-85" && name == "check-log-${verification.id}-regression"' --select content`,
+      "Reviewer-reported checks (advisory):",
+      "- regression: failed. Reviewer saw a failure",
+      "Checks (run verbatim in the issue worktree before merge authorization):",
+    ]
+  ) assert(handoff.presentation.includes(text), text);
+  // A resumed drive reuses the verification instead of running checks again.
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "authorize_merge");
+  equal(h.controls.checkCalls.length, 2);
+});
+
+Deno.test("driver blocks on a failed check, names its log, and never reruns it automatically", async () => {
+  const h = harness(driverImplementing());
+  h.controls.evidenceForRole = driverEvidence;
+  h.controls.checkOutcome = (request) => ({
+    exitCode: (request.argv as string[]).includes("caller") ? 101 : 0,
+    durationMs: 50,
+    worktreeUnchanged: true,
+  });
+  await h.drive.execute({ agent: options }, h.context);
+  const handoff = result(h);
+  equal(handoff.decision, "blocked");
+  const verification = (await loadState(h.context)).verification!;
+  equal(verification.status, "failed");
+  assert(handoff.reason.includes(`Verification ${verification.id} failed`));
+  assert(
+    handoff.reason.includes(
+      `caller (exit 101; log: swamp data query 'modelName == "issue-default-85" && name == "check-log-${verification.id}-caller"' --select content)`,
+    ),
+    handoff.reason,
+  );
+  assert(!handoff.reason.includes("regression ("));
+  assert(handoff.presentation.includes("- [ ] caller:"));
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "blocked");
+  equal(h.controls.checkCalls.length, 2);
+});
+
+Deno.test("a check that changes the worktree fails and later checks are recorded as not run", async () => {
+  const h = harness(driverImplementing());
+  h.controls.evidenceForRole = driverEvidence;
+  h.controls.checkOutcome = () => {
+    // The real worktree is left dirty, so the review would otherwise look stale.
+    h.controls.repo = { ...h.controls.repo, clean: false };
+    return { exitCode: 0, durationMs: 50, worktreeUnchanged: false };
+  };
+  await h.drive.execute({ agent: options }, h.context);
+  equal(result(h).decision, "blocked");
+  equal(h.controls.checkCalls.length, 1);
+  const [first, second] = (await loadState(h.context)).verification!.checks;
+  equal([first.status, second.status], ["failed", "failed"]);
+  assert(!second.log && second.skipped?.includes("regression changed"));
+  const { reason, presentation } = result(h);
+  assert(
+    reason.includes("regression (exit 0; changed the worktree, branch or HEAD"),
+    reason,
+  );
+  assert(reason.includes("no longer clean at the reviewed commit"), reason);
+  assert(!reason.includes("stale"), reason);
+  // A skipped check did not itself change the worktree.
+  assert(
+    presentation.split("\n").some((line) =>
+      line.startsWith("- [ ] caller:") &&
+      !line.includes("; changed the worktree, branch or HEAD")
+    ),
+    presentation,
+  );
+});
+
+Deno.test("a check the Git helper refuses is recorded as failed instead of discarding the run", async () => {
+  const h = harness(driverImplementing());
+  h.controls.evidenceForRole = driverEvidence;
+  h.controls.checkOutcome = () => {
+    throw new Error("Worktree is not clean: /repo/issue");
+  };
+  await h.drive.execute({ agent: options }, h.context);
+  const verification = (await loadState(h.context)).verification!;
+  equal(verification.status, "failed");
+  equal(
+    verification.checks.map((check) => check.skipped),
+    [
+      "Could not run: Worktree is not clean: /repo/issue",
+      "Not run: check regression could not run",
+    ],
+  );
+  equal(result(h).decision, "blocked");
+  assert(
+    result(h).reason.includes(
+      "regression (Could not run: Worktree is not clean: /repo/issue)",
+    ),
+    result(h).reason,
+  );
+});
+
+Deno.test("a check stopped at its time limit fails as timed out and later checks still run", async () => {
+  const h = harness(driverImplementing());
+  h.controls.evidenceForRole = driverEvidence;
+  h.controls.checkOutcome = (request) =>
+    (request.argv as string[]).includes("caller")
+      ? { exitCode: 0, durationMs: 50, worktreeUnchanged: true }
+      : {
+        exitCode: null,
+        durationMs: 3_600_000,
+        worktreeUnchanged: true,
+        timedOut: true,
+      };
+  await h.drive.execute({ agent: options }, h.context);
+  equal(h.controls.checkCalls.length, 2);
+  const verification = (await loadState(h.context)).verification!;
+  equal(verification.status, "failed");
+  equal(
+    verification.checks.map((check) => [check.status, check.timedOut]),
+    [["failed", true], ["passed", undefined]],
+  );
+  const { decision, reason, presentation } = result(h);
+  equal(decision, "blocked");
+  assert(reason.includes("regression (timed out; log:"), reason);
+  assert(!reason.includes("caller ("), reason);
+  assert(
+    presentation.includes(
+      "- [ ] regression: cargo x test -p demo -E 'test(/^fix::/)' -> timed out in 3600.0s",
+    ),
+    presentation,
+  );
+});
+
+Deno.test("legacy plans keep the reviewer-reported gate without deterministic verification", async () => {
+  for (const failed of [false, true]) {
+    const state = implementing();
+    delete state.plan!.checks;
+    const h = harness(state);
     h.controls.evidenceForRole = (task) =>
       task.role === "review_code"
         ? {
           ...driverEvidence(task) as object,
-          findings: failedCheck
-            ? []
-            : [{ id: "bug", severity: "high", description: "Race remains" }],
           preliminaryChecks: [{
             command: "regression",
-            result: failedCheck ? "failed" : "passed",
+            result: failed ? "failed" : "passed",
             summary: "Recorded result",
           }],
         }
         : driverEvidence(task);
     await h.drive.execute({ agent: options }, h.context);
-    equal(result(h).decision, "blocked");
-    assert(
-      result(h).reason.includes("code review blockers or failed verification"),
-    );
+    equal(h.controls.checkCalls.length, 0);
+    if (failed) {
+      equal(result(h).decision, "blocked");
+      assert(result(h).reason.includes("failed verification"));
+    } else {
+      equal(result(h).decision, "authorize_merge");
+      assert(
+        result(h).presentation.includes(
+          "No deterministic verification: plan version 1 predates structured checks.",
+        ),
+      );
+    }
   }
 });
 

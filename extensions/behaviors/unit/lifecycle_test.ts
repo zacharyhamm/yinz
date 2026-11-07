@@ -6,6 +6,7 @@ import {
   type Issue,
   type LifecycleState,
   LifecycleStepSchema,
+  mergeGate,
   previousPlanFindings,
   readAgenda,
   refreshIssue,
@@ -14,6 +15,7 @@ import {
   rollbackState,
   transition,
   validatePlanReview,
+  VerificationSchema,
 } from "../_lib/lifecycle.ts";
 
 function assert(
@@ -72,7 +74,57 @@ const plan = {
     { id: "docs", description: "Document the behavior", files: ["README.md"] },
   ],
   testingStrategy: "Run the affected crate tests",
+  checks: [
+    {
+      id: "crate",
+      command: ["cargo", "x", "test", "-p", "demo"],
+      covers: ["fix"],
+    },
+    { id: "docs", command: ["test", "-s", "README.md"], covers: ["docs"] },
+  ],
 };
+function verification(
+  state: LifecycleState,
+  outcomes: { exitCode: number | null; worktreeUnchanged?: boolean }[] = [
+    { exitCode: 0 },
+    { exitCode: 0 },
+  ],
+  commit = head,
+) {
+  const id = "b6da10b0-c980-4b82-b920-640238095f1a";
+  const checks = state.plan!.checks!.map((check, index) => {
+    const { exitCode, worktreeUnchanged = true } = outcomes[index];
+    return {
+      ...check,
+      exitCode,
+      durationMs: 1500,
+      log: `check-log-${id}-${check.id}`,
+      worktreeUnchanged,
+      status: exitCode === 0 && worktreeUnchanged ? "passed" : "failed",
+    };
+  });
+  return {
+    verification: {
+      id,
+      planVersion: state.plan!.version,
+      commit,
+      branch: state.implementation!.branch,
+      startedAt: "2026-11-03T11:00:00.000Z",
+      finishedAt: "2026-11-03T11:05:00.000Z",
+      status: checks.every((check) => check.status === "passed")
+        ? "passed"
+        : "failed",
+      checks,
+    },
+  };
+}
+function reviewed(): LifecycleState {
+  return transition(implementing(), "review_code", review);
+}
+function verified(): LifecycleState {
+  const state = reviewed();
+  return transition(state, "verify", verification(state));
+}
 const review = {
   planVersion: 1,
   commit: head,
@@ -105,11 +157,10 @@ function implementing(): LifecycleState {
   });
 }
 function ready(): LifecycleState {
-  return transition(
-    transition(implementing(), "review_code", review),
-    "ready",
-    { commit: head, mergeRequest: "Merge this issue" },
-  );
+  return transition(verified(), "ready", {
+    commit: head,
+    mergeRequest: "Merge this issue",
+  });
 }
 
 function done(): LifecycleState {
@@ -332,27 +383,20 @@ Deno.test("code review covers every plan step once and explains deviations", () 
   equal(accepted.codeReview?.steps[1].status, "deviated");
 });
 
-Deno.test("merge authorization binds the reviewed commit and rejects failed checks", () => {
-  const reviewed = transition(implementing(), "review_code", review);
+function legacy(state: LifecycleState): LifecycleState {
+  const copy = structuredClone(state);
+  delete copy.plan!.checks;
+  return copy;
+}
+
+Deno.test("merge authorization binds the reviewed commit and rejects findings", () => {
   rejects(
     () =>
-      transition(reviewed, "ready", {
+      transition(verified(), "ready", {
         commit: changedHead,
         mergeRequest: "Merge",
       }),
     "reviewed commit",
-  );
-  const failed = transition(implementing(), "review_code", {
-    ...review,
-    preliminaryChecks: [{
-      command: "cargo x test selected_test",
-      result: "failed",
-      summary: "Behavior regression",
-    }],
-  });
-  rejects(
-    () => transition(failed, "ready", { commit: head, mergeRequest: "Merge" }),
-    "failed preliminary",
   );
   const finding = transition(implementing(), "review_code", {
     ...review,
@@ -363,8 +407,251 @@ Deno.test("merge authorization binds the reviewed commit and rejects failed chec
     }],
   });
   rejects(
-    () => transition(finding, "ready", { commit: head, mergeRequest: "Merge" }),
+    () =>
+      transition(
+        transition(finding, "verify", verification(finding)),
+        "ready",
+        { commit: head, mergeRequest: "Merge" },
+      ),
     "Resolve high/critical",
+  );
+});
+
+Deno.test("new plans require structured checks that cover existing steps", () => {
+  const triaged = transition(createState(issue), "triage", {
+    classification: "bug",
+    summary: "Confirmed reproduction",
+  });
+  const { checks: _checks, ...withoutChecks } = plan;
+  rejects(() => transition(triaged, "plan", withoutChecks), "checks");
+  rejects(
+    () => transition(triaged, "plan", { ...plan, checks: [] }),
+    "checks",
+  );
+  rejects(
+    () =>
+      transition(triaged, "plan", {
+        ...plan,
+        checks: [plan.checks[0], { ...plan.checks[1], id: "crate" }],
+      }),
+    "Check IDs must be unique",
+  );
+  rejects(
+    () =>
+      transition(triaged, "plan", {
+        ...plan,
+        checks: [{ ...plan.checks[0], covers: ["fix", "missing"] }],
+      }),
+    "covers unknown plan steps: missing",
+  );
+  for (const command of [[], [""], ["cargo", "a\0b"]]) {
+    rejects(
+      () =>
+        transition(triaged, "plan", {
+          ...plan,
+          checks: [{ ...plan.checks[0], command }],
+        }),
+      "command",
+    );
+  }
+  rejects(
+    () =>
+      transition(triaged, "plan", {
+        ...plan,
+        checks: [{ ...plan.checks[0], id: "Bad ID" }],
+      }),
+    "Check IDs",
+  );
+});
+
+Deno.test("verification is bound to the reviewed commit, branch, plan and exact checks", () => {
+  const state = reviewed();
+  rejects(
+    () =>
+      transition(state, "verify", verification(state, undefined, changedHead)),
+    "reviewed commit",
+  );
+  const branch = verification(state);
+  branch.verification.branch = "other-branch";
+  rejects(() => transition(state, "verify", branch), "issue branch");
+  const version = verification(state);
+  version.verification.planVersion = 2;
+  rejects(() => transition(state, "verify", version), "current plan version");
+  const reordered = verification(state);
+  reordered.verification.checks.reverse();
+  rejects(() => transition(state, "verify", reordered), "exactly as approved");
+  const edited = verification(state);
+  edited.verification.checks[0].command = ["/usr/bin/true"];
+  rejects(() => transition(state, "verify", edited), "exactly as approved");
+  const dropped = verification(state);
+  dropped.verification.checks.pop();
+  rejects(() => transition(state, "verify", dropped), "exactly as approved");
+  const lying = verification(state, [{ exitCode: 1 }, { exitCode: 0 }]);
+  lying.verification.status = "passed";
+  rejects(() => transition(state, "verify", lying), "exit codes");
+  const dirty = verification(state, [
+    { exitCode: 0, worktreeUnchanged: false },
+    { exitCode: 0 },
+  ]);
+  dirty.verification.checks[0].status = "passed";
+  rejects(() => transition(state, "verify", dirty), "exit codes");
+  rejects(
+    () => transition(implementing(), "verify", verification(state)),
+    "code review",
+  );
+  rejects(
+    () => transition(legacy(state), "verify", verification(state)),
+    "legacy plan",
+  );
+  // An empty list would be neither legacy nor verifiable.
+  const empty = structuredClone(state);
+  empty.plan!.checks = [];
+  rejects(() => transition(empty, "verify", verification(state)), "checks");
+});
+
+Deno.test("ready requires a passing verification of the reviewed commit; reviewer checks are advisory", () => {
+  const state = reviewed();
+  rejects(
+    () => transition(state, "ready", { commit: head, mergeRequest: "Merge" }),
+    "Run verify",
+  );
+  const failed = transition(
+    state,
+    "verify",
+    verification(state, [{ exitCode: 0 }, { exitCode: 2 }]),
+  );
+  equal(failed.verification?.status, "failed");
+  rejects(
+    () => transition(failed, "ready", { commit: head, mergeRequest: "Merge" }),
+    "Verification failed for docs",
+  );
+  // An explicit rerun at the same commit replaces the failed run.
+  const rerun = transition(failed, "verify", verification(failed));
+  equal(rerun.verification?.status, "passed");
+  equal(
+    transition(rerun, "ready", { commit: head, mergeRequest: "Merge" }).phase,
+    "ready",
+  );
+  const advisory = transition(implementing(), "review_code", {
+    ...review,
+    preliminaryChecks: [{
+      command: "cargo x test selected_test",
+      result: "failed",
+      summary: "Reviewer saw a failure",
+    }],
+  });
+  equal(
+    transition(
+      transition(advisory, "verify", verification(advisory)),
+      "ready",
+      { commit: head, mergeRequest: "Merge" },
+    ).phase,
+    "ready",
+  );
+});
+
+Deno.test("mergeGate is the single ready/verified rule", () => {
+  const state = reviewed();
+  const gate = (value: LifecycleState) =>
+    mergeGate(value.plan!, value.codeReview!, value.verification);
+  equal(gate(state), { kind: "unverified" });
+  const passed = verified();
+  equal(gate(passed).kind, "passed");
+  const failed = transition(
+    state,
+    "verify",
+    verification(state, [{ exitCode: 0 }, { exitCode: 2 }]),
+  );
+  equal(gate(failed).kind, "failed");
+  // A verification of another commit or plan version is not current evidence.
+  for (
+    const stale of [
+      { ...passed.verification!, commit: changedHead },
+      { ...passed.verification!, planVersion: 2 },
+    ]
+  ) {
+    equal(
+      mergeGate(passed.plan!, passed.codeReview!, stale),
+      { kind: "unverified" },
+    );
+  }
+  equal(gate(legacy(passed)), { kind: "legacy", failedPreliminary: false });
+  equal(
+    mergeGate(legacy(passed).plan!, {
+      ...passed.codeReview!,
+      preliminaryChecks: [{
+        command: "cargo x test selected_test",
+        result: "failed",
+        summary: "Behavior regression",
+      }],
+    }, undefined),
+    { kind: "legacy", failedPreliminary: true },
+  );
+});
+
+Deno.test("a timed-out check result has no exit code and cannot pass", () => {
+  const { verification: record } = verification(reviewed(), [
+    { exitCode: null },
+    { exitCode: 0 },
+  ]);
+  const timedOut = structuredClone(record);
+  Object.assign(timedOut.checks[0], { timedOut: true });
+  assert(VerificationSchema.safeParse(timedOut).success);
+  const withExit = structuredClone(timedOut);
+  Object.assign(withExit.checks[0], { exitCode: 0 });
+  assert(!VerificationSchema.safeParse(withExit).success);
+});
+
+Deno.test("legacy plans without checks keep the reviewer-reported gate", () => {
+  const state = legacy(reviewed());
+  equal(
+    transition(state, "ready", { commit: head, mergeRequest: "Merge" }).phase,
+    "ready",
+  );
+  const failed = legacy(transition(implementing(), "review_code", {
+    ...review,
+    preliminaryChecks: [{
+      command: "cargo x test selected_test",
+      result: "failed",
+      summary: "Behavior regression",
+    }],
+  }));
+  rejects(
+    () => transition(failed, "ready", { commit: head, mergeRequest: "Merge" }),
+    "failed preliminary",
+  );
+});
+
+Deno.test("verification goes stale after repair, a new review, a new plan, refresh or rollback", () => {
+  const state = verified();
+  const stale = [
+    transition(state, "repair", { reason: "Fix a flaky check" }),
+    transition(state, "review_code", { ...review, commit: changedHead }),
+    transition(state, "plan", plan),
+    transition(state, "implement", {
+      worktree: "/tmp/issue-85",
+      branch: "issue-85",
+    }),
+    refreshIssue(state, { ...issue, note: "Changed", digest: "d".repeat(64) }),
+    rollbackState(state, "review_code", "a6da10b0-c980-4b82-b920-640238095f1c"),
+    rollbackState(state, "implement", "a6da10b0-c980-4b82-b920-640238095f1d"),
+  ];
+  for (const next of stale) {
+    assert(!next.verification, JSON.stringify(next));
+    rejects(
+      () => transition(next, "ready", { commit: head, mergeRequest: "Merge" }),
+      "",
+    );
+  }
+  // Rolling back only the merge decision keeps verification of the same commit.
+  const authorized = transition(state, "ready", {
+    commit: head,
+    mergeRequest: "Merge",
+  });
+  equal(
+    rollbackState(authorized, "ready", "a6da10b0-c980-4b82-b920-640238095f1e")
+      .verification,
+    state.verification,
   );
 });
 

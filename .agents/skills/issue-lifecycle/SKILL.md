@@ -130,8 +130,11 @@ It never records approval, merge authorization or a CI waiver on its own.
 
 1. **Triage:** the driver runs role `triage` to investigate the problem, acceptance
    criteria, scope and reproduction evidence against the affected source.
-2. **Plan:** the driver runs role `plan` for concrete steps, affected files, risks and
-   development test selection, then role `review_plan` for adversarial review.
+2. **Plan:** the driver runs role `plan` for concrete steps, affected files, risks,
+   development test selection and structured `checks` (argv arrays the lifecycle
+   runs verbatim, each naming the steps it covers), then role `review_plan` for
+   adversarial review. Present the checks with the plan: approving the plan
+   approves running them.
    The driver allows one automatic targeted revision; further revisions need
    individual authorization. Every revised plan needs a fresh review.
 3. **Approve and implement:** record authorization for the reviewed plan, then
@@ -146,9 +149,17 @@ It never records approval, merge authorization or a CI waiver on its own.
 5. **Review code:** the driver runs role `review_code` against the committed worktree.
    Swamp imports the role-specific structured result only after validating the
    original task, plan and commit. Repairs require fresh review evidence.
-6. **Prepare to merge:** show the resulting change and verification evidence.
-   Record the user's authorization with `ready`; existing explicit merge
-   authorization counts. Do not treat plan approval as merge authorization.
+6. **Verify and prepare to merge:** after a clean code review, the driver runs
+   the plan's checks in the issue worktree at the reviewed commit, outside the
+   merge lock, recording each exit code, duration and log. Show the resulting
+   change and the verification checklist from that run; reviewer-reported checks
+   are advisory. A failed check blocks with its log; repair it in the worktree
+   with a new reviewed commit. `drive` never reruns a failed verification; run
+   `verify` explicitly only for an environment failure at the same commit.
+   Record the user's authorization with `ready`, which requires a passing
+   verification of the exact commit; existing explicit merge authorization
+   counts. Do not treat plan approval as merge authorization. Plans recorded
+   before structured checks keep the reviewer-reported gate and say so.
 7. **Integrate:** run `merge` from the control checkout. It serializes rebase,
    `cargo x ci check` and local fast-forward merge with a shared coordinator and
    a Git-repository lock. Full CI is the merge gate for this lifecycle. Skip it

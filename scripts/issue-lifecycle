@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 
@@ -16,7 +17,7 @@ from issue_lifecycle.workspace import agenda_workspace, local_environment
 METHODS = (
     "start", "status", "triage", "plan", "review-plan", "adjudicate-plan", "approve", "implement",
     "review-code", "ready", "merge", "repair", "refresh", "summarize", "agent", "resume-agent", "discard-agent",
-    "rollback", "resume-rollback", "restart-agent", "drive",
+    "rollback", "resume-rollback", "restart-agent", "drive", "verify",
 )
 
 
@@ -25,6 +26,33 @@ def issue_name(workspace, item):
     if len(name) <= 64:
         return name
     return f"issue-{hashlib.sha256(workspace.encode()).hexdigest()[:24]}-{item}"
+
+
+def query_state(name, tail, control, env):
+    query = subprocess.run([
+        "swamp", "data", "query", f"modelName == {json.dumps(name)} && name == 'state'",
+        "--select", "content", "--json", *tail,
+    ], text=True, cwd=control, env=env, capture_output=True)
+    if query.returncode:
+        raise ValueError(query.stderr + query.stdout)
+    records = json.loads(query.stdout)["results"]
+    if len(records) != 1:
+        raise ValueError("expected exactly one current lifecycle state")
+    return records[0]
+
+
+def print_checklist(name, verification):
+    print(f"Verification {verification['id']}: {verification['status']} at {verification['commit']}", file=sys.stderr)
+    for check in verification["checks"]:
+        mark = "x" if check["status"] == "passed" else " "
+        code = "(could not start)" if check["exitCode"] is None else check["exitCode"]
+        outcome = "not run" if check.get("skipped") else "timed out" if check.get("timedOut") else f"exit {code}"
+        if not check.get("skipped") and not check["worktreeUnchanged"]:
+            outcome += ", changed the worktree, branch or HEAD"
+        detail = check.get("skipped") or (
+            f"log: swamp data query 'modelName == {json.dumps(name)} && name == {json.dumps(check['log'])}' --select content")
+        print(f"- [{mark}] {check['id']}: {shlex.join(check['command'])} -> {outcome} "
+              f"in {check['durationMs'] / 1000:.1f}s; {detail}", file=sys.stderr)
 
 
 def main():
@@ -72,7 +100,7 @@ def main():
             "swamp", "data", "query", f"modelName == {json.dumps(name)} && (name == 'state' || name == 'agent-task' || name == 'recovery' || name == 'driver' || name == 'handoff')",
             "--select", "content", "--json", *tail,
         ], cwd=control, env=env).returncode
-    if args.command in ("start", "merge", "drive"):
+    if args.command in ("start", "merge", "drive", "verify"):
         workflow = "yinz-issue-" + args.command
         validation = subprocess.run(["swamp", "workflow", "validate", workflow, "--json", *tail], cwd=control, env=env, text=True, capture_output=True)
         if validation.returncode:
@@ -83,6 +111,10 @@ def main():
                 parser.error("start takes no method inputs")
             inputs = {"workspace": workspace, "itemId": args.item, "issueName": name,
                       "workerWorktree": worker_worktree}
+        elif args.command == "verify":
+            if inputs:
+                parser.error("verify takes no method inputs")
+            inputs = {"issueName": name}
         elif args.command == "merge":
             if set(inputs) - {"skipCiRequest"}:
                 parser.error("merge accepts only skipCiRequest")
@@ -95,6 +127,16 @@ def main():
     else:
         method = {"agent": "run_agent", "resume-agent": "resume_agent"}.get(args.command, args.command.replace("-", "_"))
         command = ["swamp", "behavior", "run", name, method, "--stdin", *tail]
+    if args.command == "verify":
+        result = subprocess.run(command, input=json.dumps(inputs), text=True, cwd=control, env=env, stdout=sys.stderr)
+        if result.returncode:
+            return result.returncode
+        verification = query_state(name, tail, control, env).get("verification")
+        if not verification:
+            raise ValueError("verify recorded no verification; inspect the exact workflow run")
+        print_checklist(name, verification)
+        print(json.dumps(verification))
+        return 0 if verification["status"] == "passed" else 2
     if args.command != "drive":
         return subprocess.run(command, input=json.dumps(inputs), text=True, cwd=control, env=env).returncode
     # Keep the controller attached until it has the concrete handoff. Workflow

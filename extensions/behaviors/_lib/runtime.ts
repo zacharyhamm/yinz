@@ -99,6 +99,7 @@ export async function gitOperation(
   context: Context,
   request: Record<string, unknown>,
   logName?: string,
+  logSpec = "command-log",
 ): Promise<unknown> {
   context.signal.throwIfAborted();
   const child = new Deno.Command("python3", {
@@ -126,7 +127,7 @@ export async function gitOperation(
   const output = new Response(child.stdout).text();
   const errors = Promise.resolve().then<string | Handle>(() =>
     logName
-      ? context.createFileWriter("command-log", logName).writeStream(
+      ? context.createFileWriter(logSpec, logName).writeStream(
         child.stderr,
       )
       : new Response(child.stderr).text()

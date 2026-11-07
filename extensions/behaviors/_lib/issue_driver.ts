@@ -17,12 +17,20 @@ import {
   effectivePlanFindings,
   FindingSchema,
   initialPlanning,
+  mergeGate,
   planningGeneration,
   reviewFingerprint,
   StateSchema,
   UserRequestSchema,
 } from "./lifecycle.ts";
 import { type Handle, loadState } from "./runtime.ts";
+import {
+  checkLogQuery,
+  checkOutcome,
+  displayCommand,
+  runVerification,
+  verificationChecklist,
+} from "./verification.ts";
 import { AgentResponseSchema, ControlIdentitySchema } from "./yinz_agent.ts";
 
 const Settings = AgentInputSchema.omit({ role: true, request: true });
@@ -89,7 +97,10 @@ function blockedFindings(findings: z.infer<typeof FindingSchema>[] = []) {
   );
 }
 
-function present(handoff: Omit<Handoff, "presentation">) {
+function present(
+  handoff: Omit<Handoff, "presentation">,
+  issueName: string,
+) {
   const state = handoff.state;
   const lines = [
     `Issue ${state.issue.workspace}/${state.issue.itemId}: ${state.issue.text}`,
@@ -195,7 +206,20 @@ function present(handoff: Omit<Handoff, "presentation">) {
         `- ${step.id}: ${step.description} (${step.files.join(", ")})`,
       );
     }
-    lines.push(`Tests: ${state.plan.testingStrategy}`, "Assumptions:");
+    lines.push(`Tests: ${state.plan.testingStrategy}`);
+    if (state.plan.checks) {
+      lines.push(
+        "Checks (run verbatim in the issue worktree before merge authorization):",
+        ...state.plan.checks.map((check) =>
+          `- ${check.id}: ${displayCommand(check.command)} (covers ${
+            check.covers.join(", ")
+          })`
+        ),
+      );
+    } else {
+      lines.push("Checks: none; this legacy plan predates structured checks.");
+    }
+    lines.push("Assumptions:");
     lines.push(
       ...(state.plan.assumptions?.length
         ? state.plan.assumptions.map((value) => `- ${value}`)
@@ -246,6 +270,24 @@ function present(handoff: Omit<Handoff, "presentation">) {
       );
     }
     lines.push("Verification results:");
+    const gate = state.plan &&
+      mergeGate(state.plan, state.codeReview, state.verification);
+    if (gate?.kind === "legacy") {
+      lines.push(
+        `- No deterministic verification: plan version ${
+          state.plan!.version
+        } predates structured checks.`,
+      );
+    } else if (gate?.kind === "passed" || gate?.kind === "failed") {
+      lines.push(...verificationChecklist(issueName, gate.verification));
+    } else {
+      lines.push("- The plan's checks have not run for this commit.");
+    }
+    lines.push(
+      gate?.kind === "legacy"
+        ? "Reviewer-reported checks:"
+        : "Reviewer-reported checks (advisory):",
+    );
     lines.push(
       ...(state.codeReview.preliminaryChecks?.length
         ? state.codeReview.preliminaryChecks.map((check) =>
@@ -377,7 +419,10 @@ async function drive(
         ...(state.plan ? { planVersion: state.plan.version } : {}),
         ...(state.codeReview ? { commit: state.codeReview.commit } : {}),
       };
-      result = HandoffSchema.parse({ ...value, presentation: present(value) });
+      result = HandoffSchema.parse({
+        ...value,
+        presentation: present(value, context.definition.name),
+      });
     }
     // Publish the handle even when cached so this invocation returns a concrete result.
     handles.push(await context.writeResource("handoff", "handoff", result));
@@ -591,23 +636,64 @@ async function drive(
           throw new Error("Issue worktree branch changed");
         }
         if (state.codeReview) {
+          const atReview = repo.clean && repo.head === state.codeReview.commit;
+          const gate = mergeGate(
+            state.plan,
+            state.codeReview,
+            state.verification,
+          );
+          // A check that dirtied or moved the worktree makes the review look
+          // stale. Its recorded failure is the actionable explanation.
           if (
-            !repo.clean || repo.head !== state.codeReview.commit ||
+            (!atReview && gate.kind !== "failed") ||
             state.codeReview.planVersion !== state.plan.version
           ) {
             throw new Error(
               "Code review evidence is stale for the current worktree commit",
             );
           }
-          if (
-            blockedFindings(state.codeReview.findings) ||
-            state.codeReview.preliminaryChecks?.some((check) =>
-              check.result === "failed"
-            )
-          ) {
+          if (blockedFindings(state.codeReview.findings)) {
             return await handoff(
               "blocked",
-              "Resolve code review blockers or failed verification, then obtain fresh review evidence",
+              "Resolve code review blockers, then obtain fresh review evidence",
+            );
+          }
+          if (gate.kind === "legacy" && gate.failedPreliminary) {
+            return await handoff(
+              "blocked",
+              "Resolve failed verification, then obtain fresh review evidence",
+            );
+          }
+          if (gate.kind === "unverified") {
+            // Deterministic and authorization-free. Run inline: this method
+            // already holds the issue lock that a nested method would need.
+            handles.push(
+              ...(await runVerification(context, state, dependencies))
+                .dataHandles,
+            );
+            continue;
+          }
+          if (gate.kind === "failed") {
+            const { verification } = gate;
+            const failures = verification.checks
+              .filter((check) => check.status === "failed")
+              .map((check) =>
+                `${check.id} (${
+                  check.skipped ??
+                    `${checkOutcome(check)}; log: ${
+                      checkLogQuery(context.definition.name, check.log!)
+                    }`
+                })`
+              );
+            return await handoff(
+              "blocked",
+              `Verification ${verification.id} failed at ${verification.commit}: ${
+                failures.join("; ")
+              }. Repair and obtain review of a new commit, or rerun verify explicitly for an environment failure${
+                atReview
+                  ? ""
+                  : ". The worktree is no longer clean at the reviewed commit; restore it before rerunning verify"
+              }`,
             );
           }
           return await handoff(

@@ -684,5 +684,125 @@ sys.exit(int(os.environ.get("YINZ_TEST_CI_EXIT", "0")))
         self.assertFalse(self.events.exists())
 
 
+    def check_request(self, worktree, argv, **overrides):
+        return {
+            "action": "check", "repoPath": str(self.repo), "worktree": str(worktree),
+            "expectedBranch": self.git(worktree, "branch", "--show-current"),
+            "expectedHead": self.git(worktree, "rev-parse", "HEAD"),
+            "argv": argv, **overrides,
+        }
+
+    def run_check(self, request, *, env=None):
+        result = subprocess.run(
+            [sys.executable, str(RUNNER)], input=json.dumps(request), text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**self.env, **(env or {})}, timeout=30,
+        )
+        return result.returncode, json.loads(result.stdout), result.stderr
+
+    def test_check_reports_exit_code_duration_and_log_without_raising(self):
+        worktree = self.branch("issue-a")
+        code, result, log = self.run_check(self.check_request(
+            worktree, ["sh", "-c", 'printf "%s|" "$0" "$1"; echo; exit 7', "a b", "$HOME;"]))
+        self.assertEqual(code, 0, log)
+        self.assertEqual(result["exitCode"], 7)
+        self.assertTrue(result["worktreeUnchanged"])
+        self.assertGreaterEqual(result["durationMs"], 0)
+        # argv is passed verbatim: no shell splitting or expansion of arguments.
+        self.assertIn("a b|$HOME;|", log)
+        self.assertIn("exit 7 after", log)
+        code, result, _ = self.run_check(self.check_request(worktree, ["/usr/bin/true"]))
+        self.assertEqual((code, result["exitCode"]), (0, 0))
+
+    def test_check_reports_a_missing_executable_as_a_failed_result(self):
+        worktree = self.branch("issue-a")
+        code, result, log = self.run_check(self.check_request(worktree, ["yinz-no-such-command"]))
+        self.assertEqual(code, 0, log)
+        self.assertIsNone(result["exitCode"])
+        self.assertIn("Cannot start yinz-no-such-command", log)
+        # A file without a shebang fails exec with ENOEXEC, which is also a result.
+        script = self.root / "no-shebang"
+        script.write_text("echo hi\n")
+        script.chmod(0o755)
+        code, result, log = self.run_check(self.check_request(worktree, [str(script)]))
+        self.assertEqual(code, 0, log)
+        self.assertIsNone(result["exitCode"])
+        self.assertIn("Cannot start", log)
+
+    def test_check_reaps_descendants_that_would_hold_its_log_open(self):
+        worktree = self.branch("issue-a")
+        started = time.monotonic()
+        code, result, log = self.run_check(self.check_request(worktree, ["sh", "-c", "sleep 60 & exit 0"]))
+        self.assertLess(time.monotonic() - started, 20, log)
+        self.assertEqual((code, result["exitCode"]), (0, 0), log)
+        self.assertNotIn("timedOut", result)
+
+    def test_check_times_out_and_stops_its_process_group(self):
+        worktree = self.branch("issue-a")
+        for argv in (["sh", "-c", "sleep 60"], ["sh", "-c", "sleep 60 & sleep 60"]):
+            started = time.monotonic()
+            code, result, log = self.run_check(self.check_request(worktree, argv, timeoutSeconds=1))
+            self.assertLess(time.monotonic() - started, 20, log)
+            self.assertEqual(code, 0, log)
+            self.assertIsNone(result["exitCode"])
+            self.assertIs(result["timedOut"], True)
+            self.assertTrue(result["worktreeUnchanged"])
+            self.assertIn("Timed out after 1 s", log)
+
+    def test_check_rejects_an_invalid_timeout(self):
+        worktree = self.branch("issue-a")
+        for value in (0, -1, "x", True):
+            code, result, _ = self.run_check(self.check_request(worktree, ["/usr/bin/true"], timeoutSeconds=value))
+            self.assertNotEqual(code, 0)
+            self.assertIn("timeoutSeconds", result["error"])
+
+    def test_check_detects_a_command_that_changes_the_worktree(self):
+        worktree = self.branch("issue-a")
+        for argv in (
+            ["sh", "-c", "echo new > untracked.txt"],
+            ["git", "commit", "--allow-empty", "-m", "moved"],
+        ):
+            request = self.check_request(worktree, argv)
+            code, result, log = self.run_check(request)
+            self.assertEqual((code, result["exitCode"]), (0, 0), log)
+            self.assertFalse(result["worktreeUnchanged"])
+            self.assertIn("changed the worktree", log)
+            (worktree / "untracked.txt").unlink(missing_ok=True)
+
+    def test_check_requires_the_clean_reviewed_commit_and_isolated_target(self):
+        worktree = self.branch("issue-a")
+        marker = self.root / "ran"
+        argv = ["touch", str(marker)]
+        cases = [
+            (self.check_request(worktree, argv, expectedHead="0" * 40), {}, "reviewed commit"),
+            (self.check_request(worktree, argv, expectedBranch="other"), {}, "reviewed branch"),
+            (self.check_request(worktree, []), {}, "argv"),
+            (self.check_request(worktree, ["cargo", "a\x00b"]), {}, "argv"),
+            (self.check_request(worktree, argv), {"CARGO_TARGET_DIR": str(self.root / "shared")}, "target directory overrides"),
+        ]
+        for request, env, message in cases:
+            code, result, _ = self.run_check(request, env=env)
+            self.assertNotEqual(code, 0)
+            self.assertIn(message, result["error"])
+        (worktree / "dirty.txt").write_text("dirty")
+        code, result, _ = self.run_check(self.check_request(worktree, argv))
+        self.assertNotEqual(code, 0)
+        self.assertIn("not clean", result["error"])
+        (worktree / "dirty.txt").unlink()
+        (worktree / "target").symlink_to(self.root / "shared-target")
+        code, result, _ = self.run_check(self.check_request(worktree, argv))
+        self.assertIn("real target", result["error"])
+        self.assertFalse(marker.exists())
+
+    def test_check_runs_while_the_merge_lock_is_held(self):
+        worktree = self.branch("issue-a")
+        directory = self.repo / ".git" / "yinz-lifecycle"
+        directory.mkdir(exist_ok=True)
+        import fcntl
+        with (directory / "merge.lock").open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            code, result, log = self.run_check(self.check_request(worktree, ["/usr/bin/true"]))
+        self.assertEqual((code, result["exitCode"]), (0, 0), log)
+        self.assertNotIn("lock", log)
+
 if __name__ == "__main__":
     unittest.main()

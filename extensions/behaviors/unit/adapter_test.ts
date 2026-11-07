@@ -60,6 +60,7 @@ function fakeContext(repoDir: string, initial: unknown = null) {
     name: string;
     value: Record<string, unknown>;
   }[] = [];
+  const files = new Map<string, { spec: string; text: string }>();
   const controller = new AbortController();
   const context: Context = {
     repoDir,
@@ -74,14 +75,14 @@ function fakeContext(repoDir: string, initial: unknown = null) {
       resources.set(name, value);
       return Promise.resolve({ name });
     },
-    createFileWriter: (_spec, name) => ({
+    createFileWriter: (spec, name) => ({
       writeStream: async (stream) => {
-        await stream.pipeTo(new WritableStream({ write() {} }));
+        files.set(name, { spec, text: await new Response(stream).text() });
         return { name };
       },
     }),
   };
-  return { context, controller, resources, writes };
+  return { context, controller, resources, writes, files };
 }
 
 async function git(cwd: string, ...args: string[]): Promise<void> {
@@ -279,6 +280,11 @@ Deno.test("lifecycle origin and implementation adoption canonicalize aliases and
       summary: "Repair behavior",
       steps: [{ id: "fix", description: "Repair and test", files: [] }],
       testingStrategy: "Focused tests",
+      checks: [{
+        id: "focused",
+        command: ["cargo", "x", "test", "-p", "demo"],
+        covers: ["fix"],
+      }],
     };
     const approve = (state: LifecycleState) => {
       state = transition(state, "plan", plan);
@@ -443,6 +449,147 @@ Deno.test("lifecycle origin and implementation adoption canonicalize aliases and
     );
     equal(fixture.writes.length, restartWrites);
     equal(await ownedBy(abandonedPath), confirmed);
+  } finally {
+    if (previousPath === undefined) Deno.env.delete("PATH");
+    else Deno.env.set("PATH", previousPath);
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("verify runs approved checks at the reviewed commit and refuses a moved or dirty worktree", async () => {
+  const repo = await tempRepo();
+  const previousPath = Deno.env.get("PATH");
+  try {
+    const bin = join(repo, "bin");
+    await Deno.mkdir(bin);
+    const agenda = join(bin, "agenda");
+    const envelope = {
+      schema_version: 0,
+      item: {
+        id: issue.itemId,
+        kind: "task",
+        text: issue.text,
+        note: issue.note,
+        completed: false,
+        blocked: false,
+        discarded_at: null,
+        assignments: [],
+      },
+    };
+    await Deno.writeTextFile(
+      agenda,
+      `#!/bin/sh\ncat <<'AGENDA_JSON'\n${
+        JSON.stringify(envelope)
+      }\nAGENDA_JSON\n`,
+    );
+    await Deno.chmod(agenda, 0o755);
+    Deno.env.set("PATH", `${bin}:${previousPath ?? ""}`);
+    let state = transition(
+      createState({ ...issue, digest: await digestIssue(issue) }),
+      "triage",
+      { classification: "bug", summary: "Confirmed reproduction" },
+    );
+    state = transition(state, "plan", {
+      summary: "Add a marker",
+      steps: [{ id: "marker", description: "Add marker", files: ["m.txt"] }],
+      testingStrategy: "Inspect the marker",
+      checks: [
+        {
+          id: "contents",
+          command: ["grep", "-c", "marker", "m.txt"],
+          covers: ["marker"],
+        },
+        {
+          id: "quoting",
+          command: ["sh", "-c", 'printf "%s\\n" "$0"; exit 3', "a b; c"],
+          covers: ["marker"],
+        },
+      ],
+    });
+    state = transition(state, "review_plan", { planVersion: 1, findings: [] });
+    state = transition(state, "approve", { planVersion: 1, request: "Go" });
+    const fixture = fakeContext(repo, state);
+    const worktree = join(repo, "worktrees", "issue-85");
+    await behavior.methods.implement.execute(
+      { worktree, branch: "issue-85" },
+      fixture.context,
+    );
+    await Deno.writeTextFile(join(worktree, "m.txt"), "marker\n");
+    await git(worktree, "add", "m.txt");
+    await git(
+      worktree,
+      "-c",
+      "user.name=Lifecycle Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "-m",
+      "Add marker",
+    );
+    const head = new TextDecoder().decode(
+      (await new Deno.Command("git", {
+        cwd: worktree,
+        args: ["rev-parse", "HEAD"],
+        stdout: "piped",
+      }).output()).stdout,
+    ).trim();
+    fixture.resources.set(
+      "state",
+      transition(await loadState(fixture.context), "review_code", {
+        planVersion: 1,
+        commit: head,
+        steps: [{ id: "marker", status: "implemented" }],
+        findings: [],
+      }),
+    );
+    await behavior.methods.verify.execute({}, fixture.context);
+    const verification = (await loadState(fixture.context)).verification!;
+    equal(verification.commit, head);
+    equal(verification.status, "failed");
+    equal(
+      verification.checks.map((check) => [check.exitCode, check.status]),
+      [[0, "passed"], [3, "failed"]],
+    );
+    const contents = fixture.files.get(verification.checks[0].log!)!;
+    equal(contents.spec, "check-log");
+    assert(
+      contents.text.includes("$ grep -c marker m.txt\n1\n"),
+      contents.text,
+    );
+    // argv reaches the command verbatim, without shell splitting.
+    const quoting = fixture.files.get(verification.checks[1].log!)!.text;
+    assert(quoting.includes("\na b; c\nexit 3 after"), quoting);
+    // An explicit rerun replaces the failed record at the same commit.
+    await behavior.methods.verify.execute({}, fixture.context);
+    const rerun = (await loadState(fixture.context)).verification!;
+    assert(rerun.id !== verification.id);
+    const before = await loadState(fixture.context);
+    await Deno.writeTextFile(join(worktree, "untracked.txt"), "dirty\n");
+    await rejects(
+      () => behavior.methods.verify.execute({}, fixture.context),
+      "clean implementation worktree's current commit",
+    );
+    await Deno.remove(join(worktree, "untracked.txt"));
+    await git(
+      worktree,
+      "-c",
+      "user.name=Lifecycle Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "Unreviewed change",
+    );
+    await rejects(
+      () => behavior.methods.verify.execute({}, fixture.context),
+      "clean implementation worktree's current commit",
+    );
+    equal(await loadState(fixture.context), before);
   } finally {
     if (previousPath === undefined) Deno.env.delete("PATH");
     else Deno.env.set("PATH", previousPath);
