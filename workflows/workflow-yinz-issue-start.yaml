@@ -4,7 +4,7 @@ description: Capture an Agenda task in its own durable local development lifecyc
 tags: {}
 inputs:
   type: object
-  required: [workspace, itemId, issueName]
+  required: [workspace, itemId, issueName, workerWorktree]
   additionalProperties: false
   properties:
     workspace:
@@ -12,6 +12,8 @@ inputs:
     itemId:
       type: integer
     issueName:
+      type: string
+    workerWorktree:
       type: string
 jobs:
   - name: capture
@@ -25,7 +27,8 @@ jobs:
           globalArgs:
             workspace: ${{ inputs.workspace }}
             itemId: ${{ inputs.itemId }}
-          inputs: {}
+          inputs:
+            workerWorktree: ${{ inputs.workerWorktree }}
         dependsOn: []
         weight: 0
         allowFailure: false

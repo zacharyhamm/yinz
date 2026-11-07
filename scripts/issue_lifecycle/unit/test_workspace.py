@@ -16,10 +16,20 @@ class WorkspaceTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="yinz-lifecycle-vault-")
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.control = self.root / "control"
         self.control.mkdir()
         (self.control / ".swamp.yaml").write_text("tools: []\n")
+        subprocess.run(["git", "init", "--initial-branch=main", str(self.control)],
+                       check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(self.control), "-c", "user.name=Test",
+                        "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false",
+                        "commit", "--allow-empty", "-m", "Fixture"], check=True, capture_output=True)
+        self.origin = self.root / "feature"
+        subprocess.run(["git", "-C", str(self.control), "worktree", "add", "-b", "feature",
+                        str(self.origin)], check=True, capture_output=True)
+        self.subdir = self.origin / "nested"
+        self.subdir.mkdir()
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.log = self.root / "calls.jsonl"
@@ -48,9 +58,9 @@ else:
                     "TEST_VAULT_LOG": str(self.log), "TEST_VAULT_VALUE": str(self.value),
                     "SWAMP_SERVER_URL": "http://must-not-use.invalid", "SWAMP_REPO_DIR": "/wrong"}
 
-    def launch(self, command="status", *args):
+    def launch(self, command="status", *args, cwd=None):
         return subprocess.run([sys.executable, str(LAUNCHER), "--control", str(self.control),
-                               "--item", "7", command, *args], cwd=self.root, env=self.env,
+                               "--item", "7", command, *args], cwd=cwd or self.subdir, env=self.env,
                               capture_output=True, text=True, timeout=10)
 
     def calls(self):
@@ -68,7 +78,27 @@ else:
     def test_start_passes_vault_workspace_as_issue_identity(self):
         result = self.launch("start")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.calls()[-1]["input"], {"workspace": "work", "itemId": 7, "issueName": "issue-work-7"})
+        self.assertEqual(self.calls()[-1]["input"], {"workspace": "work", "itemId": 7, "issueName": "issue-work-7",
+                                                   "workerWorktree": str(self.origin.resolve())})
+        self.assertTrue(all(call["cwd"] == str(self.control.resolve()) for call in self.calls()))
+        self.assertTrue(all(call["args"][call["args"].index("--repo-dir") + 1] == str(self.control.resolve())
+                            for call in self.calls()))
+
+    def test_later_invocations_do_not_supply_an_origin(self):
+        self.launch("start")
+        for command in ("drive", "agent", "restart-agent", "resume-agent", "resume-rollback"):
+            with self.subTest(command=command):
+                result = self.launch(command, cwd=self.control)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                dispatched = next(call["input"] for call in reversed(self.calls()) if "input" in call)
+                self.assertNotIn("workerWorktree", dispatched)
+                self.assertNotIn("workerWorktree", dispatched.get("drive", {}))
+
+    def test_start_outside_git_does_not_dispatch(self):
+        result = self.launch("start", cwd=self.root)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("start must be invoked from a Git worktree", result.stderr)
+        self.assertFalse(self.log.exists())
 
     def test_explicit_workspace_is_an_assertion(self):
         result = self.launch("status", "--workspace", "other")

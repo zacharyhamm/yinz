@@ -183,12 +183,18 @@ Deno.test("existing lifecycle start resumes without writing or consulting Agenda
   try {
     const state = createState(issue);
     const fixture = fakeContext(repo, state);
-    const result = await behavior.methods.start.execute({}, fixture.context);
+    const result = await behavior.methods.start.execute({
+      workerWorktree: repo,
+    }, fixture.context);
     equal(result.dataHandles, []);
     equal(fixture.writes, []);
     fixture.resources.set("state", {});
     await rejects(
-      () => behavior.methods.start.execute({}, fixture.context),
+      () =>
+        behavior.methods.start.execute(
+          { workerWorktree: repo },
+          fixture.context,
+        ),
       "Invalid input",
     );
     equal(fixture.writes, []);
@@ -223,7 +229,11 @@ Deno.test("vault workspace mismatch blocks lifecycle work before Agenda or state
     const fixture = fakeContext(repo, createState(issue));
     await Deno.writeTextFile(join(repo, "vault-workspace"), "other");
     await rejects(
-      () => behavior.methods.start.execute({}, fixture.context),
+      () =>
+        behavior.methods.start.execute(
+          { workerWorktree: repo },
+          fixture.context,
+        ),
       "does not match",
     );
     equal(fixture.writes, []);
@@ -232,7 +242,7 @@ Deno.test("vault workspace mismatch blocks lifecycle work before Agenda or state
   }
 });
 
-Deno.test("implementation retries canonicalize aliases, including after plan revision", async () => {
+Deno.test("lifecycle origin and implementation adoption canonicalize aliases and reject conflicts", async () => {
   const repo = await tempRepo();
   const previousPath = Deno.env.get("PATH");
   try {
@@ -314,6 +324,61 @@ Deno.test("implementation retries canonicalize aliases, including after plan rev
       );
       equal(await loadState(fixture.context), state);
     }
+    // A fresh lifecycle captures a canonical linked worktree root, even when
+    // a direct caller supplies an alias/subdirectory. Repeated start is a no-op.
+    const nested = join(args.worktree, "nested");
+    await Deno.mkdir(nested);
+    fixture.resources.set("state", null);
+    await behavior.methods.start.execute(
+      { workerWorktree: nested },
+      fixture.context,
+    );
+    const started = await loadState(fixture.context);
+    equal(started.workerWorktree, canonical);
+    const writeCount = fixture.writes.length;
+    await behavior.methods.start.execute(
+      { workerWorktree: repo },
+      fixture.context,
+    );
+    equal(await loadState(fixture.context), started);
+    equal(fixture.writes.length, writeCount);
+    const approved = approve(transition(started, "triage", {
+      classification: "bug",
+      summary: "Confirmed reproduction",
+    }));
+    fixture.resources.set("state", approved);
+    const owners = join(repo, ".git", "yinz-lifecycle", "worktree-owners.json");
+    const ownershipBefore = await Deno.readTextFile(owners);
+    await rejects(
+      () =>
+        behavior.methods.implement.execute({
+          worktree: repo,
+          branch: "conflict",
+        }, fixture.context),
+      "Implementation must adopt the recorded worker worktree",
+    );
+    const missing = join(repo, "must-not-create");
+    await rejects(
+      () =>
+        behavior.methods.implement.execute({
+          worktree: missing,
+          branch: "conflict",
+        }, fixture.context),
+      "No such file",
+    );
+    equal(await loadState(fixture.context), approved);
+    equal(await Deno.readTextFile(owners), ownershipBefore);
+    const branch = await new Deno.Command("git", {
+      cwd: repo,
+      args: ["show-ref", "--verify", "--quiet", "refs/heads/conflict"],
+    }).output();
+    assert(!branch.success);
+    await behavior.methods.implement.execute(args, fixture.context);
+    equal(
+      (await loadState(fixture.context)).implementation?.worktree,
+      canonical,
+    );
+    equal((await loadState(fixture.context)).workerWorktree, canonical);
     await git(repo, "show-ref", "--verify", "refs/heads/issue-85");
   } finally {
     if (previousPath === undefined) Deno.env.delete("PATH");

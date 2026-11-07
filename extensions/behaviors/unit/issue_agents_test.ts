@@ -1242,7 +1242,7 @@ Deno.test("rollback keeps applied evidence in its history and reopens close-out"
 });
 
 Deno.test("interrupted rollback blocks other mutations and resumes without requiring the old worker", async () => {
-  const h = harness();
+  const h = harness(createState(issue, "/repo/origin"));
   h.controls.runError = "session disappeared";
   await rejects(
     () =>
@@ -1250,6 +1250,8 @@ Deno.test("interrupted rollback blocks other mutations and resumes without requi
     "session disappeared",
   );
   const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  equal(old.config.cwd, "/repo/origin");
+  h.context.repoDir = "/repo/later-invocation";
   const args = {
     ...options,
     role: "triage" as const,
@@ -1277,6 +1279,11 @@ Deno.test("interrupted rollback blocks other mutations and resumes without requi
   );
   await h.methods.resume_rollback.execute({}, h.context);
   equal(h.calls.length, 2);
+  equal(h.calls.map((call) => call.arguments?.cwd), [
+    "/repo/origin",
+    "/repo/origin",
+  ]);
+  equal((await loadState(h.context)).workerWorktree, "/repo/origin");
   equal(
     AgentTaskSchema.parse(h.resources.get("agent-task")).status,
     "completed",
@@ -2899,4 +2906,73 @@ Deno.test("restart preserves feedback from a reserved revision that never dispat
   await h.drive.execute({}, h.context);
   equal(result(h).decision, "authorize_plan_revision");
   equal(result(h).planVersion, 3);
+});
+
+Deno.test("origin persists across all worker roles, later drive and explicit restart", async () => {
+  const origin = "/repo/issue";
+  const h = harness(createState(issue, origin));
+  h.controls.evidenceForRole = driverEvidence;
+  await h.drive.execute({ agent: options }, h.context);
+  equal(dispatchedRoles(h), ["triage", "plan", "review_plan"]);
+  let state = await loadState(h.context);
+  equal(state.workerWorktree, origin);
+  state = transition(state, "approve", {
+    planVersion: 1,
+    request: "Implement",
+  });
+  state = transition(state, "implement", {
+    worktree: origin,
+    branch: "issue-85",
+  });
+  h.resources.set("state", state);
+  h.context.repoDir = "/repo/later-invocation";
+  await h.drive.execute({}, h.context);
+  equal(dispatchedRoles(h), [
+    "triage",
+    "plan",
+    "review_plan",
+    "implement",
+    "review_code",
+  ]);
+  const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  const restart = {
+    ...options,
+    role: "plan" as const,
+    taskId: old.id,
+    request: "Restart planning",
+  };
+  await h.methods.restart_agent.execute(restart, h.context);
+  await h.methods.restart_agent.execute(restart, h.context);
+  await h.drive.execute({}, h.context);
+  // Recovery persists its replacement before runTask saves it again; count
+  // actual child calls rather than the duplicate running-task writes.
+  equal(h.calls.length, 7);
+  assert(h.calls.every((call) => call.arguments?.cwd === origin));
+  equal((await loadState(h.context)).workerWorktree, origin);
+  equal((await loadState(h.context)).planVersion, 2);
+});
+
+Deno.test("legacy workers retain implementation/control selection and pending tasks keep saved config", async () => {
+  for (const initial of [createState(issue), implementing()]) {
+    const h = harness(initial);
+    h.controls.evidenceForRole = driverEvidence;
+    h.controls.runError = "Interrupted submission";
+    const role = initial.implementation ? "implement" : "triage";
+    const expected = initial.implementation?.worktree ?? h.context.repoDir;
+    await rejects(
+      () => h.methods.run_agent.execute({ ...options, role }, h.context),
+      "Interrupted submission",
+    );
+    const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    equal(original.config.cwd, expected);
+    h.context.repoDir = "/repo/later-invocation";
+    h.controls.runError = undefined;
+    await h.methods.resume_agent.execute({}, h.context);
+    equal(h.calls.map((call) => call.arguments?.cwd), [expected, expected]);
+    equal(
+      AgentTaskSchema.parse(h.resources.get("agent-task")).config,
+      original.config,
+    );
+    equal((await loadState(h.context)).workerWorktree, undefined);
+  }
 });

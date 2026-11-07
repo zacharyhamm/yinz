@@ -37,6 +37,8 @@ import {
 // Swamp delivers globals alongside method arguments. Strip them here; the
 // pure transitions still validate their own inputs with strict schemas.
 const Empty = z.object({}).strip();
+const StartArgs = z.object({ workerWorktree: z.string().trim().min(1) })
+  .strip();
 const IntegrateArgs = z.object({ skipCiRequest: z.string().trim().default("") })
   .strip();
 
@@ -159,8 +161,8 @@ export const behavior = {
       kind: "create",
       description:
         "Capture a pending Agenda issue, or return its existing lifecycle unchanged",
-      arguments: Empty,
-      execute: (_args: Record<string, never>, context: Context) =>
+      arguments: StartArgs,
+      execute: (args: z.infer<typeof StartArgs>, context: Context) =>
         withIssue(context, async () => {
           const previous = await context.readResource("state");
           if (previous !== null && previous !== undefined) {
@@ -174,7 +176,15 @@ export const behavior = {
             context.globalArgs.workspace,
             context.globalArgs.itemId,
           );
-          return saveState(context, "start", createState(issue));
+          const origin = await inspect(
+            context,
+            StartArgs.parse(args).workerWorktree,
+          );
+          return saveState(
+            context,
+            "start",
+            createState(issue, origin.worktree),
+          );
         }),
     },
     triage: recordedTransition(
@@ -199,7 +209,8 @@ export const behavior = {
     ),
     implement: {
       kind: "update",
-      description: "Create or adopt the issue's local feature worktree",
+      description:
+        "Adopt the recorded worker worktree for implementation (legacy issues may create one)",
       arguments: ActionSchemas.implement.strip(),
       execute: (
         args: z.infer<typeof ActionSchemas.implement>,
@@ -208,9 +219,9 @@ export const behavior = {
         withIssue(context, async () => {
           const state = await mutableState(context);
           await currentIssue(state);
-          // Existing implementations store prepare's canonical path. Resolve
-          // aliases for retries, while allowing new worktrees not to exist yet.
-          const implementation = state.implementation
+          // New lifecycles adopt their existing origin. Only legacy lifecycles
+          // without an implementation may still create a worktree.
+          const implementation = state.workerWorktree || state.implementation
             ? { ...args, worktree: await Deno.realPath(args.worktree) }
             : args;
           // Validate the phase and approval before creating a branch or worktree.

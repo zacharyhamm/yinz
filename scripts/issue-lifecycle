@@ -37,6 +37,14 @@ def main():
     args = parser.parse_args()
     if (args.workspace is not None and not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", args.workspace)) or not 0 < args.item <= 2**53 - 1:
         parser.error("invalid Agenda workspace or item ID")
+    # Capture the caller's worktree before dispatching Swamp in the control checkout.
+    worker_worktree = None
+    if args.command == "start":
+        origin = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                                capture_output=True, text=True)
+        if origin.returncode:
+            parser.error("start must be invoked from a Git worktree")
+        worker_worktree = str(Path(origin.stdout.strip()).resolve(strict=True))
     control = args.control.resolve(strict=True)
     if not (control / ".swamp.yaml").is_file():
         parser.error("control checkout has no .swamp.yaml; select the initialized Yinz checkout")
@@ -73,7 +81,8 @@ def main():
         if args.command == "start":
             if inputs:
                 parser.error("start takes no method inputs")
-            inputs = {"workspace": workspace, "itemId": args.item, "issueName": name}
+            inputs = {"workspace": workspace, "itemId": args.item, "issueName": name,
+                      "workerWorktree": worker_worktree}
         elif args.command == "merge":
             if set(inputs) - {"skipCiRequest"}:
                 parser.error("merge accepts only skipCiRequest")

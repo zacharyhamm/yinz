@@ -167,6 +167,8 @@ export const ReceiptSchema = z.object({
 }).strict();
 export const StateSchema = z.object({
   issue: IssueSchema,
+  // Absent only in legacy states, which retain implementation/control selection.
+  workerWorktree: Text.optional(),
   phase: z.enum([
     "triaging",
     "classified",
@@ -480,8 +482,16 @@ export const ActionSchemas = {
 };
 export type LifecycleAction = keyof typeof ActionSchemas;
 
-export function createState(issue: Issue): LifecycleState {
-  return StateSchema.parse({ issue, phase: "triaging", planVersion: 0 });
+export function createState(
+  issue: Issue,
+  workerWorktree?: string,
+): LifecycleState {
+  return StateSchema.parse({
+    issue,
+    workerWorktree,
+    phase: "triaging",
+    planVersion: 0,
+  });
 }
 
 function requirePhase(
@@ -676,6 +686,13 @@ export function transition(
       const plan = requirePlan(state);
       if (state.approval?.planVersion !== plan.version) {
         throw new Error("Approve the current plan first");
+      }
+      if (
+        state.workerWorktree && state.workerWorktree !== implementation.worktree
+      ) {
+        throw new Error(
+          "Implementation must adopt the recorded worker worktree",
+        );
       }
       if (
         state.implementation &&

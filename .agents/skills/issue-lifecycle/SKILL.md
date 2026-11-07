@@ -24,6 +24,15 @@ Select one canonical control checkout containing the Swamp definitions. Use its
 an issue worktree. Pass `--control` when invoking a different copy of the
 launcher. Do not initialize separate lifecycle stores in each worktree.
 
+Run `start` from the intended worker Git worktree, or a subdirectory of it;
+create the feature worktree first if needed. The lifecycle saves its canonical
+root as `workerWorktree`. Every new worker uses that directory across roles,
+revisions, later drive/resume, explicit restarts and rollback recovery. Later
+launcher invocations from other checkouts and repeated `start` do not replace
+it. Pending tasks retain their saved configuration. Swamp storage remains in
+the control checkout. Legacy states without this field retain their existing
+implementation-worktree/control-checkout selection; do not infer a new origin.
+
 Use the installed `swamp` and `agenda` commands. Check their help before using
 unfamiliar flags. Use JSON for machine reads. The control checkout's Swamp vault
 `default` stores the workspace under `AGENDA_WORKSPACE`; the launcher reads it
@@ -122,8 +131,9 @@ It never records approval, merge authorization or a CI waiver on its own.
    The driver allows one automatic targeted revision; further revisions need
    individual authorization. Every revised plan needs a fresh review.
 3. **Approve and implement:** record authorization for the reviewed plan, then
-   create or adopt a local issue worktree. Existing approval in this session is
-   sufficient; do not ask again. If authorization is missing, present the
+   adopt the recorded worker worktree and its existing feature branch. A conflicting
+   implementation path is rejected before Git preparation. Existing approval in
+   this session is sufficient; do not ask again. If authorization is missing, present the
    concrete reviewed plan and explain the decision needed before proceeding.
 4. **Develop:** the driver runs role `implement` in the prepared issue worktree. The
    worker implements and commits the plan and runs targeted tests. Fix defects
@@ -224,8 +234,8 @@ fresh requirements, including implementation reports that leave lifecycle state
 unchanged.
 
 If the merge landed but Agenda close-out failed, resume close-out from the merge
-receipt rather than merging again. Existing ad-hoc work can be adopted, but it
-still needs a real plan, review and verification; never fabricate evidence to
+receipt rather than merging again. Existing ad-hoc work in the recorded worktree
+can be adopted, but it still needs a real plan, review and verification; never fabricate evidence to
 advance the phase.
 
 This lifecycle performs no PR creation, push, fetch, remote merge, deployment or

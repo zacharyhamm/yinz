@@ -570,7 +570,9 @@ async function drive(
       } else if (state.phase === "approved") {
         return await handoff(
           "prepare_worktree",
-          "Prepare or adopt the issue worktree with implement, then drive the approved plan",
+          state.workerWorktree
+            ? `Adopt the recorded worker worktree ${state.workerWorktree} with implement, then drive the approved plan`
+            : "Prepare or adopt the issue worktree with implement, then drive the approved plan",
         );
       } else if (state.phase === "implementing") {
         if (

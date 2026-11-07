@@ -58,6 +58,14 @@ identity from the workspace and item ID, hashing long workspace names to stay
 within Swamp's 64-character name limit. Use the launcher instead of constructing
 behavior names yourself.
 
+Invoke `start` from the Git worktree where all lifecycle workers should run;
+subdirectories are supported. The launcher passes that root through
+`yinz-issue-start`, and the lifecycle records its canonical `workerWorktree`.
+Direct workflow calls must supply `workerWorktree` too. Repeated `start` returns
+existing state unchanged. Later commands may run from another checkout without
+changing the saved worker directory. Swamp commands and storage still use the
+canonical control checkout.
+
 The examples use these shell variables:
 
 ```sh
@@ -107,7 +115,8 @@ agenda --workspace "$AGENDA_WORKSPACE" --json info
 agenda --workspace "$AGENDA_WORKSPACE" --json item show "$AGENDA_ITEM_ID"
 ```
 
-Start and inspect it:
+Start from the intended feature worktree (create it first if needed), then
+inspect it:
 
 ```sh
 "$LIFECYCLE_REPO/scripts/issue-lifecycle" \
@@ -235,7 +244,8 @@ remain usable. Newly dispatched revision workers use the richer result contract.
 
 A clear review returns `approve_plan`. Revision authorization does not approve
 implementation: record that separate approval explicitly with `approve`.
-The `prepare_worktree` handoff requires `implement` to create or adopt the worktree.
+The `prepare_worktree` handoff requires `implement` to adopt the recorded worker
+worktree.
 After preparation, `drive` runs implementation and code review and returns
 `authorize_merge` with the delivered change, review coverage and actual verification
 results. Code blockers or failed checks return `blocked` for repair and fresh
@@ -256,7 +266,7 @@ control and diagnostics, using their existing inputs.
 
 | Launcher command                | Evidence and effect                                                                                                   |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `start`                         | Read the Agenda issue and establish its workspace/item identity and description snapshot through `yinz-issue-start`.  |
+| `start`                         | Read the Agenda issue and record its identity, description and invoking worktree through `yinz-issue-start`.  |
 | `drive`                         | Run missing workers or resume their original submissions through `yinz-issue-drive`, returning a human handoff or blocker. |
 | `status`                        | Inspect the current state before deciding what to do next.                                                            |
 | `refresh`                       | Re-read a changed Agenda description and invalidate planning evidence that no longer covers it.                       |
@@ -264,7 +274,7 @@ control and diagnostics, using their existing inputs.
 | `agent` with role `plan`        | Generate concrete steps, affected files, risks and development test strategy; revisions need fresh review.            |
 | `agent` with role `review_plan` | Review the current plan against the code and import findings.                                                         |
 | `approve`                       | Record the user's authorization for the reviewed plan.                                                                |
-| `implement`                     | Create an issue worktree or adopt an existing one.                                                                    |
+| `implement`                     | Adopt the recorded worker worktree (legacy issues may create one).                                                                    |
 | `agent` with role `implement`   | Implement and commit the approved plan in the existing issue worktree, running focused checks.                        |
 | `agent` with role `review_code` | Review the committed implementation and import plan conformance, deviations and observed verification.                |
 | `resume-agent`                  | Retrieve the original submission or reconcile already-applied evidence; never resubmit or relaunch.                   |
@@ -322,19 +332,26 @@ permission mode keeps provider defaults; no permission bypass is selected
 automatically.
 
 The lifecycle supplies the prompt and working directory from its recorded state.
-It uses the existing implementation worktree when present, otherwise the control
-checkout. `implement` and `review_code` roles require the approved plan and an
-issue worktree first. The operator's `implement` command creates or adopts that
-worktree; the `implement` agent role performs the coding. Workers receive their
-output schema in the prompt. Reviews must return actual evidence, and
-implementation must return the clean worktree's full committed HEAD.
+Every new worker uses `workerWorktree`, including triage, planning, reviews,
+implementation, explicit restarts and rollback replacements. Drive and recovery
+retain that directory; pending tasks resume their original saved configuration.
+`implement` and `review_code` require the approved plan and implementation
+preparation first. The operator's `implement` command adopts the recorded
+worktree and its existing feature branch; a conflicting path is rejected before
+Git preparation. Branch, approval and merge checks still apply. Starting on
+`main` does not bypass the requirement for a feature branch at implementation.
+The `implement` agent role performs the coding. Workers receive their output
+schema in the prompt. Reviews must return actual evidence, and implementation
+must return the clean worktree's full committed HEAD.
 
-The assigned directory and prompt are not an enforced checkout execution boundary.
-Current location reports do not establish where individual tool commands ran.
-Issue 26's [execution-boundary proof](plans/issue-26-checkout-boundary-proof.md)
-records reproducible Linux counterexamples, the platform/provider coverage gaps,
-and the blocking requirements for an enforced policy. That experiment does not
-change launch behavior or qualify existing cwd-only results as execution proof.
+Legacy lifecycle states without `workerWorktree` keep their previous selection:
+the implementation worktree when present, otherwise the control checkout. Their
+implementation preparation may still create or adopt a worktree. Resuming or
+repeating `start` does not invent an origin for these states.
+
+This is spawn-directory selection. The earlier
+[execution-boundary experiment](plans/issue-26-checkout-boundary-proof.md) is
+superseded historical research and is not a gate for this behavior.
 
 Codex, Muse and AGY require current, fully wired Yinz hooks before launch. The
 behavior checks `yinz hooks status --agent KIND` and reports missing or stale
@@ -505,7 +522,7 @@ hash.
 | Plan review result    | `planVersion`; `findings`, each with unique `id`, `severity`, `description`, and optional `resolution`. Blocking findings require `requirement`, `mechanism`, and nonempty source `evidence`. Reopened findings need `reopening: {rationale, evidence}` with new evidence.                                                                            |
 | `adjudicate-plan`     | Current `planVersion`, `reviewFingerprint`, and nonempty `dispositions`: `findingId`, `disposition`, `rationale`, nonempty `evidence`; `severity` required only for downgrades. |
 | `approve`             | `planVersion`; `request`: the user's authorization in its actual scope.                                                                                                            |
-| `implement`           | Absolute `worktree` path; `branch`. An existing matching worktree is adopted.                                                                                                      |
+| `implement`           | Recorded absolute `worktree` path; its existing feature `branch`. The matching worktree is adopted.                                                                                                      |
 | Implementation result | `summary`; full `commit` corresponding to the clean issue worktree.                                                                                                                |
 | Code review result    | `planVersion`; `commit`; `steps` covering plan step IDs with `status` of `implemented` or `deviated`; `findings`; optional `preliminaryChecks`. A deviation needs `justification`. |
 | `ready`               | `commit`; `mergeRequest`: the user's authorization to merge this change.                                                                                                           |
@@ -542,7 +559,8 @@ clean review of its first version, the corresponding plan-review result is:
 { "planVersion": 1, "findings": [] }
 ```
 
-An `implement` input names the desired local branch and absolute worktree path:
+An `implement` input names the recorded worker worktree and its existing local
+feature branch:
 
 ```json
 {

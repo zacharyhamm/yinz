@@ -1,11 +1,11 @@
 # Issue 26: checkout execution boundary proof
 
-Status: **blocked at approved plan v3, step `prove-portable-execution-boundary`**.
-This is a capability experiment and a blocking design result, not an implemented
-checkout policy. The issue's execution-scoping acceptance criterion is unmet.
-The remaining plan steps depend on a viable boundary and have not been integrated.
-No lifecycle evidence format, launcher behavior, provider support, or ordinary
-pane behavior changes in this commit.
+Status: **superseded historical research**. The corrected issue 26 scope is
+spawn-directory selection: save the invoking worktree and reuse it for new
+lifecycle workers, with implementation adopting that worktree. This experiment
+and earlier plans v1–v5 are not implementation requirements or acceptance gates
+for that scope. The measured findings below are preserved as research into the
+separate question of enforced execution boundaries.
 
 ## Reproduce the foreground experiment
 

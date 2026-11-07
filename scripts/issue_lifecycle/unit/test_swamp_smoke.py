@@ -190,11 +190,11 @@ print(json.dumps(response))
         selection = ["--workspace", "lifecycle-test"] if workspace else []
         return json.loads(self.command(["agenda", "--json", *selection, *args]))
 
-    def lifecycle(self, method, inputs=None):
+    def lifecycle(self, method, inputs=None, cwd=None):
         command = [sys.executable, str(self.repo / "scripts" / "issue-lifecycle"), "--control", str(self.repo), "--item", str(self.item_id), method]
         if inputs is not None:
             command.extend(["--input-file", "-"])
-        return self.command(command, stdin=json.dumps(inputs) if inputs is not None else None)
+        return self.command(command, stdin=json.dumps(inputs) if inputs is not None else None, cwd=cwd)
 
     def state(self):
         document = json.loads(self.lifecycle("status"))
@@ -205,7 +205,13 @@ print(json.dumps(response))
 
     def test_installed_foreground_planning_handoff_and_resume(self):
         self.command(["swamp", "workflow", "validate", "yinz-issue-drive", "--json"])
-        self.lifecycle("start")
+        worktree = self.root / "origin"
+        self.git(self.repo, "worktree", "add", "-b", "origin", str(worktree))
+        nested = worktree / "nested"
+        nested.mkdir()
+        self.lifecycle("start", cwd=nested)
+        self.lifecycle("start")  # A later caller in control cannot replace the origin.
+        self.assertEqual(self.state()["workerWorktree"], str(worktree.resolve()))
         self.env["YINZ_SMOKE_TIMEOUT"] = "1"
         handoff = json.loads(self.lifecycle("drive", {"agent": {"session": "smoke", "kind": "claude"}}))
         self.assertEqual(handoff["decision"], "approve_plan")
@@ -217,6 +223,8 @@ print(json.dumps(response))
         self.assertNotIn("implementation", self.state())
         calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
         self.assertEqual([call["args"][3] for call in calls], ["list-panes", "spawn", "wait", "prompt", "wait", "list-panes", "close-completed"] + ["list-panes", "spawn", "wait", "prompt", "list-panes", "close-completed"] * 2)
+        spawns = [call["args"] for call in calls if call["args"][3] == "spawn"]
+        self.assertTrue(all(args[args.index("--cwd") + 1] == str(worktree.resolve()) for args in spawns))
         prompts = [call for call in calls if call["args"][3] == "prompt"]
         observed = calls[4]["args"]
         submitted = prompts[0]["args"]
@@ -283,12 +291,14 @@ print(json.dumps(response))
         rejected = subprocess.run(
             ["swamp", "workflow", "run", "yinz-issue-start", "--stdin"],
             input=json.dumps({"workspace": "other", "itemId": self.item_id,
-                              "issueName": f"issue-other-{self.item_id}"}),
+                              "issueName": f"issue-other-{self.item_id}", "workerWorktree": str(self.repo)}),
             cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=30,
         )
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("Vault Agenda workspace does not match", rejected.stdout + rejected.stderr)
-        self.lifecycle("start")
+        worktree = self.root / "issue-worktree"
+        self.git(self.repo, "worktree", "add", "-b", "smoke-issue", str(worktree))
+        self.lifecycle("start", cwd=worktree)
         self.assertEqual(self.state()["phase"], "triaging")
         self.lifecycle("agent", {"role": "triage", "session": "smoke", "kind": "claude"})
         state = self.state()
@@ -314,7 +324,6 @@ print(json.dumps(response))
         })
         self.lifecycle("review-plan", {"planVersion": 1, "findings": []})
         self.lifecycle("approve", {"planVersion": 1, "request": "Approve the disposable smoke fixture plan."})
-        worktree = self.root / "issue-worktree"
         self.lifecycle("implement", {"worktree": str(worktree), "branch": "smoke-issue"})
         (worktree / "marker.txt").write_text("smoke marker\n")
         self.git(worktree, "add", "marker.txt")

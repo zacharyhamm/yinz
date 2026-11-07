@@ -539,7 +539,7 @@ export async function prepareTask(
     );
   }
   const cwd = await dependencies.realPath(
-    state.implementation?.worktree ?? context.repoDir,
+    state.workerWorktree ?? state.implementation?.worktree ?? context.repoDir,
   );
   let commit: string | undefined;
   if (args.role === "implement" || args.role === "review_code") {
