@@ -1306,9 +1306,10 @@ pub fn start_server_impl(
                             let text = cli_assets.update_configuration.as_ref().context(
                                 "replacement server is missing its effective configuration",
                             )?;
-                            let config = Config::from_kdl(text, None)
+                            let mut config = Config::from_kdl(text, None)
                                 .map_err(|error| anyhow!("{error}"))
                                 .context("restore replacement configuration")?;
+                            yinz_config::cli_assets::attach_themes(&mut config, &cli_assets);
                             let layout = update::replacement_layout(&cli_assets)?;
                             return Ok((config, layout));
                         }

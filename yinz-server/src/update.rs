@@ -233,11 +233,24 @@ fn dispatch(
         .clone();
     match &request.command {
         Command::RestoreClients { clients } => {
+            let targets_this_update = |assets: &yinz_types::input::cli_assets::CliAssets| {
+                assets.update_target.as_deref() == Some(request.operation.as_str())
+            };
+            // Decoding reads theme files; keep it outside the session-state write lock.
+            let assets = state
+                .read()
+                .to_anyhow()
+                .context("read update startup assets")?
+                .update_startup_assets
+                .clone()
+                .filter(targets_this_update)
+                .context("client restoration belongs to a different update target")?;
             let mut saved = Vec::new();
             for client in clients {
-                let config = Config::from_kdl(&client.configuration, None)
+                let mut config = Config::from_kdl(&client.configuration, None)
                     .map_err(|error| anyhow!("{error}"))
                     .context("decode restored client configuration")?;
+                yinz_config::cli_assets::attach_themes(&mut config, &assets);
                 saved.push((client.id, config, client.mode));
             }
             let mut state = state
@@ -248,8 +261,7 @@ fn dispatch(
                 state
                     .update_startup_assets
                     .as_ref()
-                    .and_then(|a| a.update_target.as_deref())
-                    == Some(request.operation.as_str()),
+                    .is_some_and(targets_this_update),
                 "client restoration belongs to a different update target"
             );
             for (client, configuration, mode) in saved {
@@ -760,3 +772,7 @@ impl MigrationLayout {
 #[cfg(test)]
 #[path = "unit/source_update_status.rs"]
 mod source_update_status_tests;
+
+#[cfg(test)]
+#[path = "unit/update_restore_clients.rs"]
+mod restore_clients_tests;

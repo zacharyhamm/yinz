@@ -1,11 +1,26 @@
 use yinz_types::data::LayoutInfo;
 use {
-    crate::assets::get_default_themes, crate::config::Config, crate::theme::Themes,
-    yinz_runtime::home::find_default_config_dir, yinz_runtime::home::get_theme_dir,
-    yinz_types::input::layout::Layout,
+    crate::config::Config, yinz_runtime::errors::prelude::*,
+    yinz_runtime::home::find_default_config_dir, yinz_types::input::layout::Layout,
 };
 
 use yinz_types::input::cli_assets::CliAssets;
+
+/// Merges the built-in themes beneath `config`'s own `themes` block and the user's theme
+/// directory above it. An unreadable theme directory is logged and skipped.
+///
+/// Serialized configuration omits file-sourced themes, so a configuration rebuilt from its own
+/// KDL - as an in-place update's replacement server does - needs this to regain them.
+pub fn attach_themes(config: &mut Config, assets: &CliAssets) {
+    crate::config::apply_themes(
+        config,
+        assets.configuration_options.clone(),
+        assets.config_dir.clone(),
+    )
+    .map_err(|error| anyhow!("{error}"))
+    .context("load the user's theme directory")
+    .non_fatal();
+}
 
 pub fn load_config_and_layout(assets: &CliAssets) -> anyhow::Result<(Config, Layout)> {
     let config = {
@@ -85,26 +100,7 @@ pub fn load_config_and_layout(assets: &CliAssets) -> anyhow::Result<(Config, Lay
         layout.recursively_add_start_suspended(Some(false));
     }
 
-    config_with_merged_layout_opts.themes =
-        get_default_themes().merge(config_with_merged_layout_opts.themes);
-
-    let user_theme_dir = assets
-        .configuration_options
-        .as_ref()
-        .and_then(|o| o.theme_dir.clone())
-        .or_else(|| {
-            config_with_merged_layout_opts
-                .options
-                .theme_dir
-                .clone()
-                .or_else(|| {
-                    get_theme_dir(assets.config_dir.clone().or_else(find_default_config_dir))
-                })
-                .filter(|dir| dir.exists())
-        });
-    if let Some(themes) = user_theme_dir.and_then(|u| Themes::from_dir(u).ok()) {
-        config_with_merged_layout_opts.themes = config_with_merged_layout_opts.themes.merge(themes);
-    }
+    attach_themes(&mut config_with_merged_layout_opts, assets);
 
     let config = config_with_merged_layout_opts
         .resolve_plugin_repositories(
@@ -114,3 +110,7 @@ pub fn load_config_and_layout(assets: &CliAssets) -> anyhow::Result<(Config, Lay
         .map_err(|error| anyhow::anyhow!("failed to resolve plugin repositories: {error}"))?;
     Ok((config, layout))
 }
+
+#[cfg(test)]
+#[path = "unit/cli_assets_tests.rs"]
+mod tests;

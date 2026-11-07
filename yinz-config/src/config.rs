@@ -1458,7 +1458,7 @@ pub fn apply_themes(
         None => config.options.clone(),
     };
 
-    config.themes = crate::assets::get_default_themes().merge(config.themes.clone());
+    config.themes = crate::assets::get_default_themes().merge(std::mem::take(&mut config.themes));
 
     let user_theme_dir = config_options.theme_dir.clone().or_else(|| {
         home::get_theme_dir(config_dir.clone().or_else(home::find_default_config_dir))

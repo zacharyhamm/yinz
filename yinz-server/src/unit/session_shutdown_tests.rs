@@ -236,7 +236,7 @@ fn failed_worker_spawns_preserve_partial_startup_until_the_server_queue_disconne
     }
 }
 
-fn empty_session() -> SessionMetaData {
+pub(crate) fn empty_session() -> SessionMetaData {
     SessionMetaData {
         shutdown: Shutdown::default(),
         senders: ThreadSenders::default(),
