@@ -595,13 +595,22 @@ fn settle_background(observation: &Observation) -> Option<bool> {
     let status = observation.claude_status.as_ref()?;
     let deadline = Instant::now() + BACKGROUND_SETTLE;
     loop {
-        let current = status.current(process, &observation.hook.session_id)?;
-        if current != "busy" || Instant::now() >= deadline {
-            return working(&current);
+        let settled = Instant::now() >= deadline;
+        match status.current(process, &observation.hook.session_id) {
+            Some(current) if current != "busy" || settled => return working(&current),
+            Some(_) => {},
+            // A missing registry is no signal, but an existing record can be read mid-rewrite;
+            // a confirmation without a signal would replace an older turn's background status.
+            None if settled || !status.path.exists() => return None,
+            None => {},
         }
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+/// How long a background watch tolerates an unreadable or unrecognized registry record
+/// before treating Claude's status signal as lost.
+const BACKGROUND_SIGNAL_GRACE: Duration = Duration::from_secs(2);
 
 /// After a turn confirmed with background work, report once the registry shows Claude idle.
 /// Any other end of observation also reports, so a lost signal degrades to hook-derived state.
@@ -613,14 +622,25 @@ fn watch_background(
         let mut system = System::new();
         let deadline =
             Instant::now() + Duration::from_millis(yinz_types::agent::control::MAX_TIMEOUT_MS);
-        while Instant::now() < deadline
-            && alive(&mut system, observation).is_ok()
-            && status
+        let mut unknown_since = None;
+        while Instant::now() < deadline && alive(&mut system, observation).is_ok() {
+            match status
                 .current(process, &observation.hook.session_id)
                 .as_deref()
                 .and_then(working)
-                == Some(true)
-        {
+            {
+                Some(true) => unknown_since = None,
+                Some(false) => break,
+                // A read can land between a rewrite's truncation and its contents. Only a
+                // record that stays unreadable or unrecognized counts as a lost signal.
+                None => {
+                    if unknown_since.get_or_insert_with(Instant::now).elapsed()
+                        >= BACKGROUND_SIGNAL_GRACE
+                    {
+                        break;
+                    }
+                },
+            }
             std::thread::sleep(Duration::from_millis(100));
         }
     }

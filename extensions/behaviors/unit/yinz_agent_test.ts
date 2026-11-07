@@ -429,17 +429,25 @@ Deno.test("missing final text does not mark mismatched or active submissions ter
 });
 
 Deno.test("background interim completion waits for the original conversation's final idle answer", async () => {
-  const h = harness([
-    spawned,
-    ready(),
-    completed({ background_tasks: ["worker-1"], message: "Working" }),
-    { ...ready(), message: "Final answer" },
-  ]);
-  await runAgent({ prompt: "Fix it" }, h.context, h.dependencies);
-  equal(h.calls[3].state?.phase, "background");
-  assert(h.calls[3].args.includes("--until"));
-  assert(!h.calls[3].args.includes("--submission"));
-  equal(h.records.get("result")?.message, "Final answer");
+  for (
+    const patch of [
+      { background_tasks: ["worker-1"] },
+      { background: true },
+      { agents: [{ ...agent(), background: true }] },
+    ]
+  ) {
+    const h = harness([
+      spawned,
+      ready(),
+      completed({ ...patch, message: "Working" }),
+      { ...ready(), message: "Final answer" },
+    ]);
+    await runAgent({ prompt: "Fix it" }, h.context, h.dependencies);
+    equal(h.calls[3].state?.phase, "background");
+    assert(h.calls[3].args.includes("--until"));
+    assert(!h.calls[3].args.includes("--submission"));
+    equal(h.records.get("result")?.message, "Final answer");
+  }
 });
 
 Deno.test("empty background completion is terminal and cannot reuse interim text on resume", async () => {

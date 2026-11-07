@@ -133,6 +133,10 @@ pub(super) fn recovered_observation(
     }
 }
 
+/// Reaps recovered prompts' turn observers while this observer runs. When it exits they
+/// are deliberately left running: each is a detached (`setsid`) observer of its own prompt
+/// that ends on its own and must still deliver its completion or background-idle report.
+/// Init reaps them once orphaned.
 #[derive(Default)]
 struct CompletionChildren(Vec<Child>);
 
@@ -154,14 +158,6 @@ impl CompletionChildren {
             }
         }
         Ok(())
-    }
-}
-
-impl Drop for CompletionChildren {
-    fn drop(&mut self) {
-        for child in &mut self.0 {
-            stop_observer(child);
-        }
     }
 }
 

@@ -25,6 +25,18 @@ export const RunArgsSchema = z.object({
   prompt: z.string().min(1).refine((value) => value.trim().length > 0),
 }).strip();
 export const EmptySchema = z.object({}).strip();
+/**
+ * Yinz reports Claude background work as `background: true`; older builds listed
+ * task IDs in `background_tasks`. Fold the flag into the list so every background
+ * check, including persisted state, sees either form.
+ */
+function foldBackground<
+  T extends { background: boolean; background_tasks: string[] },
+>(value: T): T {
+  return value.background && value.background_tasks.length === 0
+    ? { ...value, background_tasks: ["background"] }
+    : value;
+}
 const AgentStatusSchema = z.object({
   pane_id: Pane,
   session: Text,
@@ -38,8 +50,9 @@ const AgentStatusSchema = z.object({
   status_available: z.boolean(),
   prompt_supported: z.boolean(),
   not_ready_reason: z.string().nullable().optional(),
+  background: z.boolean().default(false),
   background_tasks: z.array(z.string()).default([]),
-});
+}).transform(foldBackground);
 export const AgentResponseSchema = z.object({
   outcome: Text,
   agents: z.array(AgentStatusSchema).default([]),
@@ -57,8 +70,9 @@ export const AgentResponseSchema = z.object({
   prompt_delivery: z.enum(["not_sent", "started"]).optional(),
   acknowledged: z.boolean().default(false),
   turn_id: z.string().nullable().optional(),
+  background: z.boolean().default(false),
   background_tasks: z.array(z.string()).default([]),
-});
+}).transform(foldBackground);
 type AgentResponse = z.infer<typeof AgentResponseSchema>;
 
 export const AgentStateSchema = z.object({

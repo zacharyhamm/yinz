@@ -1434,7 +1434,7 @@ fn recovery_observer_reaps_multiple_completion_children_while_still_running() {
 }
 
 #[test]
-fn recovery_observer_cleans_up_live_children_on_shutdown_and_failure() {
+fn recovery_observer_leaves_live_children_running_on_shutdown_and_failure() {
     for failure in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("turn.jsonl");
@@ -1463,8 +1463,11 @@ fn recovery_observer_cleans_up_live_children_on_shutdown_and_failure() {
                 if !pids.is_empty() && failure {
                     return Err(anyhow!("injected spawn failure"));
                 }
-                let child = Command::new("/usr/bin/cat")
-                    .stdin(Stdio::piped())
+                // Not stdin-driven: the observer drops its handle on exit, and a closed
+                // pipe would end the child on its own before liveness is checked.
+                let child = Command::new("sleep")
+                    .arg("600")
+                    .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .spawn()
                     .unwrap();
@@ -1475,8 +1478,21 @@ fn recovery_observer_cleans_up_live_children_on_shutdown_and_failure() {
         );
         assert_eq!(result.is_err(), failure);
         assert_eq!(pids.len(), if failure { 1 } else { 2 });
+        // A completion observer may be watching background work for hours; the
+        // recovery observer's exit must not cut off its final report.
         for pid in pids {
-            assert_observer_child_reaped(pid);
+            let pid = pid as libc::pid_t;
+            // SAFETY: pid is this test's unreaped child; no status output is requested.
+            assert_eq!(
+                unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) },
+                0,
+                "completion observer {pid} survives the recovery observer"
+            );
+            // SAFETY: pid is this test's live, unreaped child.
+            assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+            // SAFETY: pid is this test's child; no status output is requested.
+            assert_eq!(unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) }, pid);
+            assert_observer_child_reaped(pid as u32);
         }
     }
 }
