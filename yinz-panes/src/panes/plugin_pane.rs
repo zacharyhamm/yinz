@@ -235,12 +235,9 @@ impl ClientLoad {
     }
     /// `render`, unless it would draw the same frame as last time.
     fn render_if_changed(&mut self) -> Option<String> {
-        let frame = self.indication.to_string();
-        if self.last_rendered.as_deref() == Some(frame.as_str()) {
-            return None;
-        }
-        self.last_rendered = Some(frame.clone());
-        Some(frame)
+        let previous = self.last_rendered.take();
+        let frame = self.render();
+        (previous.as_deref() != Some(frame.as_str())).then_some(frame)
     }
 }
 
@@ -265,7 +262,8 @@ impl PluginPaneControl for PluginPane {
             self.clear_client_loading_indications();
         }
         self.loading_indication.merge(loading_indication);
-        self.handle_plugin_bytes_for_all_clients(
+        // After an error the client loads are gone, so this reaches every client then.
+        self.handle_plugin_bytes_for_clients_without_own_load(
             self.loading_indication.to_string().as_bytes().to_vec(),
         );
     }
@@ -329,17 +327,7 @@ impl PluginPaneControl for PluginPane {
             if self.last_loading_indication.as_deref() != Some(rendered.as_str()) {
                 let bytes = rendered.as_bytes().to_vec();
                 self.last_loading_indication = Some(rendered);
-                // Not into a grid with a load of its own: the two indicators would take turns
-                // overwriting each other there on every tick.
-                let client_ids: Vec<ClientId> = self
-                    .grids
-                    .keys()
-                    .filter(|client_id| !self.client_loads.contains_key(client_id))
-                    .copied()
-                    .collect();
-                for client_id in client_ids {
-                    self.handle_plugin_bytes(client_id, bytes.clone());
-                }
+                self.handle_plugin_bytes_for_clients_without_own_load(bytes);
             }
         }
         // Each client's own load animates in its grid alone, compared the same way.
@@ -1421,6 +1409,19 @@ impl PluginPane {
     }
     fn clear_client_loading_indications(&mut self) {
         self.client_loads.clear();
+    }
+    /// The plugin-wide indicator's frame, kept out of any grid with a load of its own: the two
+    /// indicators would take turns overwriting each other there.
+    fn handle_plugin_bytes_for_clients_without_own_load(&mut self, bytes: VteBytes) {
+        let client_ids: Vec<ClientId> = self
+            .grids
+            .keys()
+            .filter(|client_id| !self.client_loads.contains_key(client_id))
+            .copied()
+            .collect();
+        for client_id in client_ids {
+            self.handle_plugin_bytes(client_id, bytes.clone());
+        }
     }
     fn handle_plugin_bytes_for_all_clients(&mut self, bytes: VteBytes) {
         let client_ids: Vec<ClientId> = self.grids.keys().copied().collect();

@@ -1006,4 +1006,12 @@ fn a_client_attaching_mid_load_shows_only_its_own_loading_indication() {
         "{}",
         screen_of(&pane, attaching)
     );
+
+    // The load for everyone ending must not draw its last frame over the newcomer's own.
+    plugin_frame(&mut pane, attached, b"rendered");
+    assert!(
+        screen_of(&pane, attaching).starts_with("Loading newcomer"),
+        "{}",
+        screen_of(&pane, attaching)
+    );
 }
