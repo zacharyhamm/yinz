@@ -2476,6 +2476,28 @@ pub fn screen_thread_main(
                     }
                     screen.render()?;
                 },
+                ScreenInstruction::StartClientPluginLoadingIndication(
+                    pid,
+                    client_id,
+                    loading_indication,
+                ) => {
+                    if !screen.start_client_plugin_loading_indication(
+                        pid,
+                        client_id,
+                        loading_indication.clone(),
+                    ) {
+                        pending
+                            .waiting_for_pane
+                            .entry(PaneId::Plugin(pid))
+                            .or_default()
+                            .push(ScreenInstruction::StartClientPluginLoadingIndication(
+                                pid,
+                                client_id,
+                                loading_indication,
+                            ));
+                    }
+                    screen.render()?;
+                },
                 // No replay queue for a plugin whose pane does not exist yet, unlike the loading
                 // *indication* above: with the offset derived from elapsed time there is nothing to
                 // replay. The plugin stays registered and the next frame after its pane appears simply

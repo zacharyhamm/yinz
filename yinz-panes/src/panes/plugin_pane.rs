@@ -120,6 +120,13 @@ pub struct PluginPane {
     last_loading_indication: Option<String>,
     invoked_with: Option<Run>,
     loading_indication: LoadingIndication,
+    /// Instances loading for one client while the plugin keeps running for the others - a client
+    /// attaching to a session. Shown in that client's grid alone: the other clients' rendered
+    /// content is theirs to keep, and their instances will not re-render it when the newcomer's
+    /// load finishes (a state update that changes nothing for them draws nothing).
+    client_loading_indications: HashMap<ClientId, LoadingIndication>,
+    /// Per client, what `last_loading_indication` is for the plugin-wide indicator.
+    last_client_loading_indications: HashMap<ClientId, String>,
     debug: bool,
     arrow_fonts: bool,
     styled_underlines: bool,
@@ -199,6 +206,8 @@ impl PluginPane {
             last_loading_indication: None,
             invoked_with,
             loading_indication,
+            client_loading_indications: HashMap::new(),
+            last_client_loading_indications: HashMap::new(),
             debug,
             arrow_fonts,
             styled_underlines,
@@ -228,12 +237,19 @@ impl PluginPaneControl for PluginPane {
         if self.loading_indication.ended && !loading_indication.is_error() {
             return;
         }
+        if loading_indication.is_error() {
+            // An error is shown to every client, and a client's own loading dots must not
+            // animate over it.
+            self.clear_client_loading_indications();
+        }
         self.loading_indication.merge(loading_indication);
         self.handle_plugin_bytes_for_all_clients(
             self.loading_indication.to_string().as_bytes().to_vec(),
         );
     }
     fn start_loading_indication(&mut self, loading_indication: LoadingIndication) {
+        // A load for every client (the first, or a reload) supersedes any one client's.
+        self.clear_client_loading_indications();
         for grid in self.grids.values_mut() {
             grid.reset_terminal_state();
         }
@@ -244,25 +260,69 @@ impl PluginPaneControl for PluginPane {
             self.loading_indication.to_string().as_bytes().to_vec(),
         );
     }
+    fn start_client_loading_indication(
+        &mut self,
+        client_id: ClientId,
+        loading_indication: LoadingIndication,
+    ) {
+        if self.loading_indication.is_error() {
+            // The plugin-wide error stays up; it says more than "Loading" would.
+            return;
+        }
+        let mut indication =
+            LoadingIndication::new(self.pane_title.clone()).with_colors(self.style.colors);
+        indication.merge(loading_indication);
+        let rendered = indication.to_string();
+        self.client_loading_indications
+            .insert(client_id, indication);
+        // A client the screen has not attached yet has no grid; `add_client` draws the
+        // indication when it gets one.
+        if let Some(grid) = self.grids.get_mut(&client_id) {
+            grid.reset_terminal_state();
+            self.vte_parsers.remove(&client_id);
+            self.kitty_interceptors.remove(&client_id);
+            self.last_client_loading_indications
+                .insert(client_id, rendered.clone());
+            self.handle_plugin_bytes(client_id, rendered.into_bytes());
+        }
+    }
+    fn end_client_loading_indication(&mut self, client_id: ClientId) {
+        self.client_loading_indications.remove(&client_id);
+        self.last_client_loading_indications.remove(&client_id);
+    }
     fn progress_animation_offset(&mut self) {
-        if self.loading_indication.ended {
-            return;
+        if !self.loading_indication.ended {
+            // The shared clock ticks far faster than the indicator changes, so this is a no-op on
+            // most frames - without the comparison a 16ms clock would repaint the whole plugin
+            // grid sixty times a second to draw the same four characters.
+            //
+            // Compared on the rendered string rather than on the dot count, because the dot count
+            // is not the only thing that moves: the indicator draws nothing at all for its first
+            // 400ms (see `LoadingIndication::fmt`), and gating on the count alone would skip the
+            // frame where it first becomes visible and then sit on that decision until the next
+            // dot.
+            let rendered = self.loading_indication.to_string();
+            if self.last_loading_indication.as_deref() != Some(rendered.as_str()) {
+                let bytes = rendered.as_bytes().to_vec();
+                self.last_loading_indication = Some(rendered);
+                self.handle_plugin_bytes_for_all_clients(bytes);
+            }
         }
-        // The shared clock ticks far faster than the indicator changes, so this is a no-op on most
-        // frames - without the comparison a 16ms clock would repaint the whole plugin grid sixty
-        // times a second to draw the same four characters.
-        //
-        // Compared on the rendered string rather than on the dot count, because the dot count is
-        // not the only thing that moves: the indicator draws nothing at all for its first 400ms
-        // (see `LoadingIndication::fmt`), and gating on the count alone would skip the frame where
-        // it first becomes visible and then sit on that decision until the next dot.
-        let rendered = self.loading_indication.to_string();
-        if self.last_loading_indication.as_deref() == Some(rendered.as_str()) {
-            return;
+        // Each client's own load animates in its grid alone, compared the same way.
+        let client_frames: Vec<(ClientId, String)> = self
+            .client_loading_indications
+            .iter()
+            .filter(|(client_id, _)| self.grids.contains_key(client_id))
+            .map(|(client_id, indication)| (*client_id, indication.to_string()))
+            .filter(|(client_id, rendered)| {
+                self.last_client_loading_indications.get(client_id) != Some(rendered)
+            })
+            .collect();
+        for (client_id, rendered) in client_frames {
+            self.last_client_loading_indications
+                .insert(client_id, rendered.clone());
+            self.handle_plugin_bytes(client_id, rendered.into_bytes());
         }
-        let bytes = rendered.as_bytes().to_vec();
-        self.last_loading_indication = Some(rendered);
-        self.handle_plugin_bytes_for_all_clients(bytes);
     }
 }
 
@@ -486,7 +546,12 @@ impl Pane for PluginPane {
     }
     fn add_client(&mut self, client_id: ClientId) {
         if !self.grids.contains_key(&client_id) {
-            let bytes = if !self.loading_indication.ended || self.loading_indication.is_error() {
+            let bytes = if let Some(indication) = self.client_loading_indications.get(&client_id) {
+                let rendered = indication.to_string();
+                self.last_client_loading_indications
+                    .insert(client_id, rendered.clone());
+                rendered.into_bytes()
+            } else if !self.loading_indication.ended || self.loading_indication.is_error() {
                 self.loading_indication.to_string().into_bytes()
             } else {
                 vec![]
@@ -497,6 +562,7 @@ impl Pane for PluginPane {
     }
     fn remove_client(&mut self, client_id: ClientId) {
         self.text_being_pasted.remove(&Some(client_id));
+        self.end_client_loading_indication(client_id);
         self.grids.remove(&client_id);
         self.vte_parsers.remove(&client_id);
         self.kitty_interceptors.remove(&client_id);
@@ -1326,6 +1392,10 @@ impl PluginPane {
     }
     fn set_client_should_render(&mut self, client_id: ClientId, should_render: bool) {
         self.should_render.insert(client_id, should_render);
+    }
+    fn clear_client_loading_indications(&mut self) {
+        self.client_loading_indications.clear();
+        self.last_client_loading_indications.clear();
     }
     fn handle_plugin_bytes_for_all_clients(&mut self, bytes: VteBytes) {
         let client_ids: Vec<ClientId> = self.grids.keys().copied().collect();

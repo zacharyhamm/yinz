@@ -1792,3 +1792,92 @@ fn failed_destination_sizing_preserves_committed_follow_state_and_retires_source
         1
     );
 }
+
+// Regression test: a client attaching loads its own instance of each non-shared plugin, and that
+// load used to raise the plugin-wide loading indication, which wiped the plugin's pane for every
+// client already attached. Their instances are only sent state that has not changed once the
+// newcomer's instance is up, so they drew nothing and kept showing "Loading tab-bar..." until
+// something unrelated changed.
+#[test]
+fn a_client_attaching_leaves_other_clients_plugin_content_intact() {
+    use crate::ui::loading_indication::LoadingIndication;
+    let size = Size { cols: 80, rows: 24 };
+    let attached = ClientId::new(1);
+    let attaching = ClientId::new(2);
+    let (mut screen, _capture) = create_new_screen_with_theme_capture(size);
+    new_tab(&mut screen, 1, TabId::new(0));
+    add_pane_to_tab(&mut screen, TabId::new(0), PaneId::Plugin(PLUGIN_2), false);
+    let plugin_frame = |screen: &mut Screen, client: ClientId, bytes: &[u8]| {
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .handle_plugin_bytes(PLUGIN_2, client, bytes.to_vec())
+            .unwrap();
+    };
+    plugin_frame(&mut screen, attached, b"attached-tab-bar");
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grids: HashMap<ClientId, Grid> = [attached, attaching]
+        .into_iter()
+        .map(|client| (client, grid_for_render_snapshot(size)))
+        .collect();
+    // Each client's whole view after the frame, not just what the frame redrew.
+    let mut frame = |screen: &mut Screen| -> HashMap<ClientId, String> {
+        screen.render_to_clients().unwrap();
+        for (instruction, _) in receiver.try_iter() {
+            if let ServerInstruction::Render(Some(rendered)) = instruction {
+                for (client, output) in rendered {
+                    if let Some(grid) = grids.get_mut(&client) {
+                        take_snapshot_and_cursor_coordinates(&output, grid);
+                    }
+                }
+            }
+        }
+        grids
+            .iter()
+            .map(|(client, grid)| (*client, grid.dump_screen(false)))
+            .collect()
+    };
+    assert!(frame(&mut screen)[&attached].contains("attached-tab-bar"));
+
+    screen.add_client(attaching).unwrap();
+    // Past the indicator's grace period, so it draws at once.
+    let loading = LoadingIndication::new("tab-bar".into())
+        .with_started_at(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    super::super::replay_pending_plugin_events(
+        &mut screen,
+        vec![ScreenInstruction::StartClientPluginLoadingIndication(
+            PLUGIN_2, attaching, loading,
+        )],
+    )
+    .unwrap();
+    assert!(screen.progress_plugin_loading_offset(PLUGIN_2));
+    let views = frame(&mut screen);
+    let attached_view = &views[&attached];
+    assert!(
+        attached_view.contains("attached-tab-bar"),
+        "{attached_view}"
+    );
+    assert!(!attached_view.contains("Loading"), "{attached_view}");
+    let attaching_view = &views[&attaching];
+    assert!(
+        attaching_view.contains("Loading tab-bar"),
+        "{attaching_view}"
+    );
+
+    plugin_frame(&mut screen, attaching, b"attaching-tab-bar");
+    screen.progress_plugin_loading_offset(PLUGIN_2);
+    let views = frame(&mut screen);
+    let attached_view = &views[&attached];
+    assert!(
+        attached_view.contains("attached-tab-bar"),
+        "{attached_view}"
+    );
+    assert!(!attached_view.contains("Loading"), "{attached_view}");
+    let attaching_view = &views[&attaching];
+    assert!(
+        attaching_view.contains("attaching-tab-bar"),
+        "{attaching_view}"
+    );
+    assert!(!attaching_view.contains("Loading"), "{attaching_view}");
+}

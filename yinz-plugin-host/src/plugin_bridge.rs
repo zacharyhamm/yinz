@@ -2273,6 +2273,25 @@ impl PluginBridge {
                 .send_to_background_jobs(BackgroundJob::AnimatePluginLoading(*plugin_id));
         }
     }
+    /// Like `start_plugin_loading_indication`, for `client_id`'s instance alone: the plugin keeps
+    /// running for the other clients, whose panes go on showing what it rendered for them.
+    fn start_client_plugin_loading_indication(
+        &self,
+        plugin_id: PluginId,
+        client_id: ClientId,
+        loading_indication: &LoadingIndication,
+    ) {
+        let _ = self
+            .senders
+            .send_to_screen(ScreenInstruction::StartClientPluginLoadingIndication(
+                plugin_id,
+                client_id,
+                loading_indication.clone(),
+            ));
+        let _ = self
+            .senders
+            .send_to_background_jobs(BackgroundJob::AnimatePluginLoading(plugin_id));
+    }
     pub fn post_messages_to_plugin_worker(
         &mut self,
         plugin_id: PluginId,

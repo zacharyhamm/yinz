@@ -3272,6 +3272,19 @@ impl Tab {
             plugin_pane.start_loading_indication(loading_indication);
         }
     }
+    pub fn start_client_plugin_loading_indication(
+        &mut self,
+        pid: PluginId,
+        client_id: ClientId,
+        loading_indication: LoadingIndication,
+    ) {
+        if let Some(plugin_pane) = self
+            .get_pane_with_id_mut(PaneId::Plugin(pid))
+            .and_then(|pane| pane.plugin_control_mut())
+        {
+            plugin_pane.start_client_loading_indication(client_id, loading_indication);
+        }
+    }
     pub fn progress_plugin_loading_offset(&mut self, pid: PluginId) {
         if let Some(plugin_pane) = self
             .get_pane_with_id_mut(PaneId::Plugin(pid))

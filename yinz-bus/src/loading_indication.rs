@@ -34,6 +34,12 @@ impl LoadingIndication {
             ..Default::default()
         }
     }
+    /// Date the load from `started_at` rather than from now: the dots and the grace before the
+    /// indication shows count from there.
+    pub fn with_started_at(mut self, started_at: Instant) -> Self {
+        self.started_at = Some(started_at);
+        self
+    }
     pub fn set_name(&mut self, plugin_name: String) {
         self.plugin_name = plugin_name;
     }

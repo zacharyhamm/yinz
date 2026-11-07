@@ -585,6 +585,9 @@ pub enum ScreenInstruction {
     UpdatePluginLocation(PluginId, yinz_types::input::layout::RunPluginLocation),
     UpdatePluginLoadingStage(PluginId, LoadingIndication), // u32 - plugin_id
     StartPluginLoadingIndication(PluginId, LoadingIndication), // u32 - plugin_id
+    /// A loading indication for one client's instance of a plugin that keeps running for the
+    /// other clients - a client attaching. Only that client's view of the pane shows it.
+    StartClientPluginLoadingIndication(PluginId, ClientId, LoadingIndication),
     /// Start and stop taking loading-indicator frames from the shared animation clock for this
     /// plugin. The dots themselves are derived from elapsed time, so these only say *whether* the
     /// plugin is still loading.

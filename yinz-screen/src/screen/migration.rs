@@ -232,6 +232,7 @@ impl Screen {
                 | ScreenInstruction::UpdatePluginLocation(..)
                 | ScreenInstruction::UpdatePluginLoadingStage(..)
                 | ScreenInstruction::StartPluginLoadingIndication(..)
+                | ScreenInstruction::StartClientPluginLoadingIndication(..)
                 | ScreenInstruction::StartPluginLoadingAnimation(..)
                 | ScreenInstruction::StopPluginLoadingAnimation(..)
                 | ScreenInstruction::SetSelectable(..)

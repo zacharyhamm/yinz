@@ -578,12 +578,59 @@ fn a_client_attaching_to_a_headless_plugin_shows_no_loading_for_it() {
     assert!(
         !log.iter().any(|i| matches!(
             i,
-            ScreenInstruction::StartPluginLoadingIndication(id, _) if *id == plugin
+            ScreenInstruction::StartPluginLoadingIndication(id, _)
+                | ScreenInstruction::StartClientPluginLoadingIndication(id, ..) if *id == plugin
         )),
         "{:?}",
         session.logged()
     );
     assert!(added(&log, plugin).is_empty());
+}
+
+// Regression test: a client attaching used to raise the plugin-wide loading indication for
+// every plugin it loads an instance of, wiping what the plugin had rendered for the clients
+// already attached - who were then left on "Loading ..." until their own instances happened to
+// render again.
+#[test]
+#[serial(plugin_tests)]
+fn a_client_attaching_to_a_plugin_pane_shows_loading_for_that_client_alone() {
+    let session = Session::new();
+    let plugin = PluginId::new(0);
+    let attaching = ClientId::new(2);
+    answer(session.launch(session.write("declared.scm", DECLARED)));
+    wait_for_render_containing(&session.log, "declared pane");
+    let attached_at = session.log.lock().len();
+    session
+        .sender
+        .send(PluginInstruction::AddClient(attaching))
+        .unwrap();
+    session
+        .log
+        .wait_until("the new client's instance", default_timeout(), |log| {
+            log[attached_at..]
+                .iter()
+                .any(|i| matches!(i, ScreenInstruction::RequestStateUpdateForPlugins))
+                .then_some(())
+        });
+    let log = session.log.lock().clone();
+    let attach = &log[attached_at..];
+    assert!(
+        attach.iter().any(|i| matches!(
+            i,
+            ScreenInstruction::StartClientPluginLoadingIndication(id, client, _)
+                if *id == plugin && *client == attaching
+        )),
+        "{:?}",
+        session.logged()
+    );
+    assert!(
+        !attach.iter().any(|i| matches!(
+            i,
+            ScreenInstruction::StartPluginLoadingIndication(id, _) if *id == plugin
+        )),
+        "{:?}",
+        session.logged()
+    );
 }
 
 #[test]

@@ -4202,6 +4202,24 @@ impl Screen {
         }
         false
     }
+    fn start_client_plugin_loading_indication(
+        &mut self,
+        plugin_id: PluginId,
+        client_id: ClientId,
+        loading_indication: LoadingIndication,
+    ) -> bool {
+        for tab in self.tabs.values_mut() {
+            if tab.has_plugin(plugin_id) {
+                tab.start_client_plugin_loading_indication(
+                    plugin_id,
+                    client_id,
+                    loading_indication,
+                );
+                return true;
+            }
+        }
+        false
+    }
     fn progress_plugin_loading_offset(&mut self, plugin_id: PluginId) -> bool {
         for tab in self.tabs.values_mut() {
             if tab.has_plugin(plugin_id) {
@@ -4862,6 +4880,22 @@ fn replay_pending_plugin_events(
                 if !screen.start_plugin_loading_indication(plugin_id, loading_indication) {
                     log::error!(
                         "Could not replay pending loading indication for missing plugin {plugin_id}"
+                    );
+                }
+                screen.render()?;
+            },
+            ScreenInstruction::StartClientPluginLoadingIndication(
+                plugin_id,
+                client_id,
+                loading_indication,
+            ) => {
+                if !screen.start_client_plugin_loading_indication(
+                    plugin_id,
+                    client_id,
+                    loading_indication,
+                ) {
+                    log::error!(
+                        "Could not replay pending client loading indication for missing plugin {plugin_id}"
                     );
                 }
                 screen.render()?;

@@ -1560,10 +1560,17 @@ impl PluginBridge {
             self.cached_resizes_for_pending_plugins
                 .insert(plugin_id, (rows, columns));
 
-            // A headless plugin has no pane to show this client's instance loading in.
+            // A headless plugin has no pane to show this client's instance loading in. The others
+            // show it in this client's view alone: the plugin still runs for the clients already
+            // attached, and wiping their views would leave them blank until their own instances
+            // happened to render again - a state update that changes nothing for them does not.
             if self.panes.lock().unwrap().surface(plugin_id) != Some(Surface::Headless) {
                 let loading_indication = LoadingIndication::new(run_plugin.location.to_string());
-                self.start_plugin_loading_indication(&[plugin_id], &loading_indication);
+                self.start_client_plugin_loading_indication(
+                    plugin_id,
+                    client_id,
+                    &loading_indication,
+                );
             }
             self.loading_plugins.insert((plugin_id, run_plugin.clone()));
 

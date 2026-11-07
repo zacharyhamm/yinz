@@ -230,6 +230,7 @@ pub enum ScreenContext {
     StartPluginLoadingAnimation,
     StopPluginLoadingAnimation,
     StartPluginLoadingIndication,
+    StartClientPluginLoadingIndication,
     RequestStateUpdateForPlugins,
     LaunchOrFocusPlugin,
     LaunchPlugin,

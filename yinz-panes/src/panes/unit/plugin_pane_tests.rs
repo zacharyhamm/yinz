@@ -881,3 +881,103 @@ fn a_plugins_kitty_replies_are_dropped_rather_than_queued_for_a_pty_it_does_not_
     assert!(grid.pending_messages_to_pty.is_empty());
     assert!(grid.pending_forwarded_queries.is_empty());
 }
+
+/// A load old enough to be past the indicator's grace period, so it draws at once.
+fn visible_loading(name: &str) -> LoadingIndication {
+    LoadingIndication::new(name.into())
+        .with_started_at(Instant::now() - std::time::Duration::from_secs(1))
+}
+
+/// What `Tab::handle_plugin_bytes` does with a frame a client's instance rendered.
+fn plugin_frame(pane: &mut PluginPane, client: ClientId, bytes: &[u8]) {
+    let mut ended = LoadingIndication::default();
+    ended.ended = true;
+    pane.update_loading_indication(ended);
+    pane.end_client_loading_indication(client);
+    pane.handle_plugin_bytes(client, bytes.to_vec());
+}
+
+fn screen_of(pane: &PluginPane, client: ClientId) -> String {
+    pane.dump_screen(false, Some(client)).trim_end().to_owned()
+}
+
+// Regression test: a client attaching loads its own instance of every non-shared plugin, and
+// that load used to raise the plugin-wide loading indication, wiping the tab bar of every client
+// already attached. Their instances get a state update that changes nothing once the newcomer's
+// instance is up, so they never drew it again and sat on "Loading tab-bar..." indefinitely.
+#[test]
+fn a_client_attaching_shows_loading_only_in_its_own_view() {
+    let mut pane = test_plugin_pane(5, 40, Offset::default());
+    let attached = ClientId::new(1);
+    let attaching = ClientId::new(2);
+    pane.add_client(attached);
+    pane.start_loading_indication(visible_loading("tab-bar"));
+    plugin_frame(&mut pane, attached, b"tab one | tab two");
+
+    pane.add_client(attaching);
+    pane.start_client_loading_indication(attaching, visible_loading("tab-bar"));
+    assert_eq!(screen_of(&pane, attached), "tab one | tab two");
+    assert!(
+        screen_of(&pane, attaching).starts_with("Loading tab-bar"),
+        "{}",
+        screen_of(&pane, attaching)
+    );
+
+    // The animation clock ticks while the attaching client's instance loads.
+    pane.progress_animation_offset();
+    assert_eq!(screen_of(&pane, attached), "tab one | tab two");
+
+    plugin_frame(&mut pane, attaching, b"tab one | tab two (attaching)");
+    pane.progress_animation_offset();
+    assert_eq!(screen_of(&pane, attached), "tab one | tab two");
+    assert_eq!(screen_of(&pane, attaching), "tab one | tab two (attaching)");
+}
+
+#[test]
+fn a_client_loading_indication_that_precedes_its_grid_is_drawn_when_it_attaches() {
+    let mut pane = test_plugin_pane(5, 40, Offset::default());
+    let attached = ClientId::new(1);
+    let attaching = ClientId::new(2);
+    pane.add_client(attached);
+    plugin_frame(&mut pane, attached, b"rendered");
+
+    pane.start_client_loading_indication(attaching, visible_loading("tab-bar"));
+    assert!(!pane.grids.contains_key(&attaching));
+    pane.add_client(attaching);
+    assert!(screen_of(&pane, attaching).starts_with("Loading tab-bar"));
+    assert_eq!(screen_of(&pane, attached), "rendered");
+}
+
+#[test]
+fn a_plugin_wide_error_or_reload_replaces_a_clients_own_loading_indication() {
+    let mut pane = test_plugin_pane(5, 60, Offset::default());
+    let attached = ClientId::new(1);
+    let attaching = ClientId::new(2);
+    pane.add_client(attached);
+    plugin_frame(&mut pane, attached, b"rendered");
+    pane.add_client(attaching);
+    pane.start_client_loading_indication(attaching, visible_loading("tab-bar"));
+
+    let mut error = LoadingIndication::new("tab-bar".into());
+    error.indicate_loading_error("boom".into());
+    pane.update_loading_indication(error);
+    // The client's dots must not animate back over the error.
+    pane.progress_animation_offset();
+    for client in [attached, attaching] {
+        assert!(screen_of(&pane, client).contains("boom"), "{client:?}");
+    }
+
+    let mut pane = test_plugin_pane(5, 60, Offset::default());
+    pane.add_client(attached);
+    plugin_frame(&mut pane, attached, b"rendered");
+    pane.add_client(attaching);
+    pane.start_client_loading_indication(attaching, visible_loading("tab-bar"));
+    pane.start_loading_indication(visible_loading("reloaded"));
+    for client in [attached, attaching] {
+        assert!(
+            screen_of(&pane, client).starts_with("Loading reloaded"),
+            "{client:?}: {}",
+            screen_of(&pane, client)
+        );
+    }
+}

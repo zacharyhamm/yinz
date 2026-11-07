@@ -126,6 +126,15 @@ pub trait PluginPaneControl {
     fn update_plugin_location(&mut self, location: RunPluginLocation);
     fn update_loading_indication(&mut self, loading_indication: LoadingIndication);
     fn start_loading_indication(&mut self, loading_indication: LoadingIndication);
+    /// A load of the plugin's instance for `client_id` alone, while the plugin keeps running for
+    /// the other clients: only that client's grid shows it.
+    fn start_client_loading_indication(
+        &mut self,
+        client_id: ClientId,
+        loading_indication: LoadingIndication,
+    );
+    /// `client_id`'s instance rendered: its own loading indication, if any, is over.
+    fn end_client_loading_indication(&mut self, client_id: ClientId);
     fn progress_animation_offset(&mut self);
 }
 

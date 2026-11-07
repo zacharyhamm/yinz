@@ -75,6 +75,7 @@ impl Tab {
             loading.ended = true;
             if let Some(control) = plugin_pane.plugin_control_mut() {
                 control.update_loading_indication(loading);
+                control.end_client_loading_indication(client_id);
             }
             plugin_pane.handle_plugin_bytes(client_id, bytes);
         }
