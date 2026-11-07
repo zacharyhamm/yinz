@@ -25,8 +25,12 @@ an issue worktree. Pass `--control` when invoking a different copy of the
 launcher. Do not initialize separate lifecycle stores in each worktree.
 
 Run `start` from the intended worker Git worktree, or a subdirectory of it;
-create the feature worktree first if needed. The lifecycle saves its canonical
-root as `workerWorktree`. Every new worker uses that directory across roles,
+create the feature worktree first if needed. The lifecycle claims the
+worktree for the issue and saves its canonical root as `workerWorktree`. It
+refuses the main checkout (a worktree on `main`) and any worktree another issue
+already claimed. A claim becomes permanent once `start` saves state, so each
+worktree serves one issue; another issue's `start` reclaims a claim whose
+`start` never saved state. Every new worker uses that directory across roles,
 revisions, later drive/resume, explicit restarts and rollback recovery. Later
 launcher invocations from other checkouts and repeated `start` do not replace
 it. Pending tasks retain their saved configuration. Swamp storage remains in

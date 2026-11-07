@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -249,6 +250,168 @@ sys.exit(int(os.environ.get("YINZ_TEST_CI_EXIT", "0")))
         result = self.run_request(self.request(worktree, issueKey="default:different"), success=False)
         self.assertIn("already belongs to issue", result["error"])
         self.assertFalse(self.events.exists())
+
+    def owners(self):
+        path = self.repo / ".git" / "yinz-lifecycle" / "worktree-owners.json"
+        return json.loads(path.read_text())["owners"] if path.exists() else []
+
+    def claim(self, worktree, issue_key, *, success=True, action="claim"):
+        return self.run_request({"action": action, "repoPath": str(self.repo), "worktree": str(worktree),
+                                 "issueKey": issue_key}, success=success)
+
+    def confirm(self, worktree, issue_key, *, success=True):
+        return self.claim(worktree, issue_key, success=success, action="confirm")
+
+    def write_owners(self, owners):
+        directory = self.repo / ".git" / "yinz-lifecycle"
+        directory.mkdir(exist_ok=True)
+        (directory / "worktree-owners.json").write_text(json.dumps({"owners": owners}))
+
+    def feature_worktree(self, name):
+        worktree = self.root / name
+        self.git(self.repo, "worktree", "add", "-b", name, str(worktree))
+        return worktree
+
+    def test_claim_reserves_canonical_worktree_for_one_issue(self):
+        worktree = self.feature_worktree("origin")
+        nested = worktree / "nested"
+        nested.mkdir()
+        canonical = str(worktree.resolve())
+        self.assertEqual(self.claim(nested, "default/1"), {"worktree": canonical})
+        pending = [{"issueKey": "default/1", "worktree": canonical, "pending": True}]
+        self.assertEqual(self.owners(), pending)
+        self.claim(worktree, "default/1")
+        self.assertEqual(self.owners(), pending)
+        self.assertEqual(self.confirm(nested, "default/1"), {"worktree": canonical})
+        self.assertEqual(self.owners(), [{"issueKey": "default/1", "worktree": canonical}])
+        # Claiming again never downgrades a confirmed claim to a reclaimable one.
+        self.claim(worktree, "default/1")
+        self.assertEqual(self.owners(), [{"issueKey": "default/1", "worktree": canonical}])
+        result = self.claim(worktree, "default/2", success=False)
+        self.assertIn("already belongs to issue default/1", result["error"])
+        # Another issue's prepare cannot adopt the claimed worktree on any branch.
+        result = self.run_request({"action": "prepare", "repoPath": str(self.repo), "worktree": canonical,
+                                   "branch": "origin", "issueKey": "default/2"}, success=False)
+        self.assertIn("already belongs to issue default/1", result["error"])
+        self.assertEqual(self.owners(), [{"issueKey": "default/1", "worktree": canonical}])
+
+    def test_claim_rejects_worktrees_owned_by_prepared_issues(self):
+        worktree = self.branch("issue-a")
+        before = self.owners()
+        result = self.claim(worktree, "default/other", success=False)
+        self.assertIn("already belongs to issue default:issue-a", result["error"])
+        self.assertEqual(self.owners(), before)
+        # The owning legacy issue may claim its own prepared worktree without a new entry.
+        self.claim(worktree, "default:issue-a")
+        self.assertEqual(self.owners(), before)
+
+    def test_claim_replaces_orphaned_start_claim_of_same_issue(self):
+        first = self.feature_worktree("first")
+        second = self.feature_worktree("second")
+        self.claim(first, "default/1")
+        self.claim(second, "default/1")
+        self.assertEqual(self.owners(), [{"issueKey": "default/1", "worktree": str(second.resolve()), "pending": True}])
+        self.claim(first, "default/2")
+
+    def test_claim_reclaims_pending_claim_of_idle_issue(self):
+        worktree = self.feature_worktree("origin")
+        canonical = str(worktree.resolve())
+        self.claim(worktree, "default/1")
+        # Issue 1's start ended before confirming, so it never saved state.
+        self.claim(worktree, "default/2")
+        self.assertEqual(self.owners(), [{"issueKey": "default/2", "worktree": canonical, "pending": True}])
+        # The abandoned issue learns it lost the worktree instead of sharing it.
+        result = self.confirm(worktree, "default/1", success=False)
+        self.assertIn("was lost; it may have been reclaimed by issue default/2", result["error"])
+        self.confirm(worktree, "default/2")
+        self.assertEqual(self.owners(), [{"issueKey": "default/2", "worktree": canonical}])
+
+    def test_claim_refuses_pending_claim_of_running_issue(self):
+        worktree = self.feature_worktree("origin")
+        self.claim(worktree, "default/1")
+        before = self.owners()
+        issues = self.repo / ".git" / "yinz-lifecycle" / "issues"
+        issues.mkdir(exist_ok=True)
+        digest = hashlib.sha256("default/1".encode()).hexdigest()
+        # Hold issue 1's lifecycle lock as its in-progress start would.
+        with (issues / f"{digest}.lock").open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            result = self.claim(worktree, "default/2", success=False)
+        self.assertIn("issue default/1's start in progress", result["error"])
+        self.assertEqual(self.owners(), before)
+        self.claim(worktree, "default/2")
+        self.assertEqual([owner["issueKey"] for owner in self.owners()], ["default/2"])
+
+    def test_claim_never_reclaims_confirmed_claim(self):
+        worktree = self.feature_worktree("origin")
+        self.claim(worktree, "default/1")
+        self.confirm(worktree, "default/1")
+        before = self.owners()
+        result = self.claim(worktree, "default/2", success=False)
+        self.assertIn("already belongs to issue default/1", result["error"])
+        self.assertEqual(self.owners(), before)
+
+    def test_confirm_requires_this_issues_claim(self):
+        worktree = self.feature_worktree("origin")
+        result = self.confirm(worktree, "default/1", success=False)
+        self.assertIn("was lost; it may have been reclaimed by another issue", result["error"])
+        self.assertEqual(self.owners(), [])
+
+    def test_confirm_keeps_prepared_ownership(self):
+        worktree = self.branch("issue-a")
+        before = self.owners()
+        self.confirm(worktree, "default:issue-a")
+        self.assertEqual(self.owners(), before)
+
+    def test_owner_registry_rejects_invalid_pending_entries(self):
+        worktree = self.feature_worktree("origin")
+        canonical = str(worktree.resolve())
+        for entry in ({"issueKey": "default/1", "worktree": canonical, "pending": False},
+                      {"issueKey": "default/1", "worktree": canonical, "branch": "origin", "pending": True}):
+            self.write_owners([entry])
+            result = self.claim(worktree, "default/2", success=False)
+            self.assertIn("Invalid worktree ownership registry", result["error"])
+
+    def test_claim_rejects_the_main_checkout(self):
+        result = self.claim(self.repo, "default/1", success=False)
+        self.assertIn("not the main checkout", result["error"])
+        self.assertEqual(self.owners(), [])
+
+    def test_claim_rejects_detached_head(self):
+        worktree = self.root / "detached"
+        self.git(self.repo, "worktree", "add", "--detach", str(worktree))
+        result = self.claim(worktree, "default/1", success=False)
+        self.assertIn("detached HEAD", result["error"])
+        self.assertEqual(self.owners(), [])
+
+    def test_claim_rejects_branch_owned_by_another_issue(self):
+        owned = self.branch("issue-a")
+        self.git(self.repo, "worktree", "remove", str(owned))
+        moved = self.root / "moved"
+        self.git(self.repo, "worktree", "add", str(moved), "issue-a")
+        before = self.owners()
+        result = self.claim(moved, "default/other", success=False)
+        self.assertIn("already belongs to issue default:issue-a", result["error"])
+        self.assertEqual(self.owners(), before)
+
+    def test_prepare_upgrades_start_claim_to_full_ownership(self):
+        worktree = self.feature_worktree("origin")
+        canonical = str(worktree.resolve())
+        request = {"action": "prepare", "repoPath": str(self.repo), "worktree": canonical,
+                   "branch": "origin", "issueKey": "default/1"}
+        full = [{"issueKey": "default/1", "worktree": canonical, "branch": "origin"}]
+        # A legacy confirmed claim, then a current pending one, both upgrade.
+        for confirmed in (True, False):
+            self.write_owners([])
+            self.claim(worktree, "default/1")
+            if confirmed:
+                self.confirm(worktree, "default/1")
+            self.run_request(request)
+            self.run_request(request)
+            self.assertEqual(self.owners(), full)
+        # Confirming after the upgrade keeps the prepared entry unchanged.
+        self.confirm(worktree, "default/1")
+        self.assertEqual(self.owners(), full)
 
     def test_git_routing_environment_cannot_redirect_operations(self):
         worktree = self.branch("issue-a")

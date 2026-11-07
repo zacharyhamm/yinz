@@ -238,7 +238,9 @@ print(json.dumps(response))
         self.assertEqual(len(self.yinz_log.read_text().splitlines()), len(calls))
 
     def test_installed_revision_approval_is_single_use(self):
-        self.lifecycle("start")
+        worktree = self.root / "revision"
+        self.git(self.repo, "worktree", "add", "-b", "revision", str(worktree))
+        self.lifecycle("start", cwd=worktree)
         self.env["YINZ_SMOKE_BLOCKED_VERSIONS"] = "3"
         handoff = json.loads(self.lifecycle("drive", {"agent": {"session": "smoke", "kind": "claude"}}))
         self.assertEqual(handoff["decision"], "authorize_plan_revision")

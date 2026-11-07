@@ -95,6 +95,8 @@ else:
                 self.assertNotIn("workerWorktree", dispatched.get("drive", {}))
 
     def test_start_outside_git_does_not_dispatch(self):
+        # A temporary directory beneath an unrelated checkout must not be discovered.
+        self.env["GIT_CEILING_DIRECTORIES"] = str(self.root.parent)
         result = self.launch("start", cwd=self.root)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("start must be invoked from a Git worktree", result.stderr)

@@ -61,8 +61,17 @@ behavior names yourself.
 Invoke `start` from the Git worktree where all lifecycle workers should run;
 subdirectories are supported. The launcher passes that root through
 `yinz-issue-start`, and the lifecycle records its canonical `workerWorktree`.
-Direct workflow calls must supply `workerWorktree` too. Repeated `start` returns
-existing state unchanged. Later commands may run from another checkout without
+Direct workflow calls must supply `workerWorktree` too. Before saving any state,
+`start` claims that worktree for the issue in the repository's ownership registry
+(`yinz-lifecycle/worktree-owners.json` in the common Git directory). It refuses a
+worktree on `main`, a detached HEAD, and a worktree or branch claimed by another
+issue. A claim stays pending until `start` saves the issue's state, then
+becomes permanent, so each worktree serves one issue. A pending claim means
+that issue's `start` ended without saving state: another issue's `start`
+reclaims it when that issue is not running, and refuses while its `start` is
+still in progress. A retried `start` for the same issue replaces its own
+pending claim elsewhere. Repeated `start` returns existing state unchanged and
+confirms the claim if it was left pending. Later commands may run from another checkout without
 changing the saved worker directory. Swamp commands and storage still use the
 canonical control checkout.
 
@@ -115,8 +124,8 @@ agenda --workspace "$AGENDA_WORKSPACE" --json info
 agenda --workspace "$AGENDA_WORKSPACE" --json item show "$AGENDA_ITEM_ID"
 ```
 
-Start from the intended feature worktree (create it first if needed), then
-inspect it:
+Start from the intended feature worktree (create it first if needed; the main
+checkout is refused), then inspect it:
 
 ```sh
 "$LIFECYCLE_REPO/scripts/issue-lifecycle" \
@@ -266,7 +275,7 @@ control and diagnostics, using their existing inputs.
 
 | Launcher command                | Evidence and effect                                                                                                   |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `start`                         | Read the Agenda issue and record its identity, description and invoking worktree through `yinz-issue-start`.  |
+| `start`                         | Read the Agenda issue, claim the invoking feature worktree, and record its identity, description and worktree through `yinz-issue-start`. |
 | `drive`                         | Run missing workers or resume their original submissions through `yinz-issue-drive`, returning a human handoff or blocker. |
 | `status`                        | Inspect the current state before deciding what to do next.                                                            |
 | `refresh`                       | Re-read a changed Agenda description and invalidate planning evidence that no longer covers it.                       |
@@ -338,8 +347,8 @@ retain that directory; pending tasks resume their original saved configuration.
 `implement` and `review_code` require the approved plan and implementation
 preparation first. The operator's `implement` command adopts the recorded
 worktree and its existing feature branch; a conflicting path is rejected before
-Git preparation. Branch, approval and merge checks still apply. Starting on
-`main` does not bypass the requirement for a feature branch at implementation.
+Git preparation. Implementation upgrades the issue's start claim to ownership of
+the worktree and its branch. Branch, approval and merge checks still apply.
 The `implement` agent role performs the coding. Workers receive their output
 schema in the prompt. Reviews must return actual evidence, and implementation
 must return the clean worktree's full committed HEAD.

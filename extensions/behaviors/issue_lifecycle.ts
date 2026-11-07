@@ -39,6 +39,7 @@ import {
 const Empty = z.object({}).strip();
 const StartArgs = z.object({ workerWorktree: z.string().trim().min(1) })
   .strip();
+const ClaimSchema = z.object({ worktree: z.string().min(1) });
 const IntegrateArgs = z.object({ skipCiRequest: z.string().trim().default("") })
   .strip();
 
@@ -164,27 +165,54 @@ export const behavior = {
       arguments: StartArgs,
       execute: (args: z.infer<typeof StartArgs>, context: Context) =>
         withIssue(context, async () => {
+          const issueKey =
+            `${context.globalArgs.workspace}/${context.globalArgs.itemId}`;
           const previous = await context.readResource("state");
           if (previous !== null && previous !== undefined) {
-            await loadState(context);
-            context.logger.info("Resuming existing issue {issue}", {
-              issue: context.definition.name,
-            });
+            const existing = await loadState(context);
+            // A start that saved state but stopped before confirming left its
+            // claim pending, and so reclaimable; confirm it now.
+            if (existing.workerWorktree) {
+              await gitOperation(context, {
+                action: "confirm",
+                worktree: existing.workerWorktree,
+                issueKey,
+              });
+            }
+            // Repeated start never replaces the origin; say which one workers keep.
+            context.logger.info(
+              "Resuming existing issue {issue}; workers keep {worktree}",
+              {
+                issue: context.definition.name,
+                worktree: existing.workerWorktree ?? "the legacy selection",
+              },
+            );
             return { dataHandles: [] };
           }
           const issue = await readAgenda(
             context.globalArgs.workspace,
             context.globalArgs.itemId,
           );
-          const origin = await inspect(
-            context,
-            StartArgs.parse(args).workerWorktree,
+          // Claim the origin before saving state, so a worktree serves one issue.
+          // The claim stays reclaimable until the saved state confirms it.
+          const origin = ClaimSchema.parse(
+            await gitOperation(context, {
+              action: "claim",
+              worktree: StartArgs.parse(args).workerWorktree,
+              issueKey,
+            }),
           );
-          return saveState(
+          const saved = await saveState(
             context,
             "start",
             createState(issue, origin.worktree),
           );
+          await gitOperation(context, {
+            action: "confirm",
+            worktree: origin.worktree,
+            issueKey,
+          });
+          return saved;
         }),
     },
     triage: recordedTransition(

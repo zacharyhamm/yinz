@@ -20,7 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 import uuid
 
@@ -193,10 +193,117 @@ def prepare(request):
             git(repo, "worktree", "add", "-b", branch, str(desired), "refs/heads/main")
             state = inspect(request)
         owner = {"issueKey": issue_key, "worktree": str(desired), "branch": branch}
-        if owner not in owners:
-            owners.append(owner)
+
+        def superseded(entry):
+            # The full entry supersedes this issue's start claim on the same worktree.
+            return entry == owner or (
+                "branch" not in entry and entry["issueKey"] == issue_key and entry["worktree"] == str(desired)
+            )
+
+        if owner not in owners or any(superseded(entry) and entry != owner for entry in owners):
+            owners = [entry for entry in owners if not superseded(entry)] + [owner]
             save_receipt(directory / "worktree-owners.json", {"owners": owners})
         return state
+
+
+def claim_target(request):
+    _, common = canonical_repo(text_field(request, "repoPath"))
+    worktree, other_common = canonical_repo(text_field(request, "worktree"))
+    if other_common != common:
+        raise LifecycleError("The worktree belongs to another Git repository")
+    return common, worktree, text_field(request, "issueKey")
+
+
+@contextmanager
+def issue_idle(directory, issue_key):
+    """Yield whether another issue's lifecycle lock is free, holding it while True."""
+    issues = directory / "issues"
+    issues.mkdir(exist_ok=True)
+    # The same lock withIssue holds for the whole of each lifecycle method.
+    digest = hashlib.sha256(issue_key.encode()).hexdigest()
+    with (issues / f"{digest}.lock").open("a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def claim(request):
+    """Reserve the worker worktree for an issue before its lifecycle state exists.
+
+    The claim stays pending until start saves state and confirms it. Another
+    issue's start reclaims a pending claim whose issue is not running, because
+    that issue's start ended without saving state.
+    """
+    common, worktree, issue_key = claim_target(request)
+    branch = git(worktree, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)[1]
+    if branch == "main":
+        raise LifecycleError("Run start from a feature worktree, not the main checkout")
+    if not branch:
+        # Implementation adopts this worktree's branch; a detached HEAD has none.
+        raise LifecycleError("Run start from a worktree on a feature branch, not a detached HEAD")
+    with merge_lock(common, 60, name="worktree-ownership", label="worktree ownership") as directory:
+        owners = read_owners(directory)
+        conflicts = [
+            owner for owner in owners
+            if owner["issueKey"] != issue_key
+            and (owner["worktree"] == str(worktree) or owner.get("branch") == branch)
+        ]
+        for owner in conflicts:
+            if not owner.get("pending"):
+                raise LifecycleError(
+                    f"Worktree or branch already belongs to issue {owner['issueKey']} at {owner['worktree']}"
+                )
+        with ExitStack() as held:
+            # flock is per open file, so lock each owning issue once.
+            for owner_key in dict.fromkeys(owner["issueKey"] for owner in conflicts):
+                if not held.enter_context(issue_idle(directory, owner_key)):
+                    raise LifecycleError(
+                        f"Worktree is being claimed by issue {owner_key}'s start in progress; retry later"
+                    )
+            # Start claims only when no state exists, under the issue lock, so this
+            # issue's start claims elsewhere are orphans from a failed state save.
+            kept = [
+                owner for owner in owners
+                if owner not in conflicts
+                and not (owner["issueKey"] == issue_key and "branch" not in owner
+                         and owner["worktree"] != str(worktree))
+            ]
+            if not any(owner["issueKey"] == issue_key and owner["worktree"] == str(worktree) for owner in kept):
+                kept.append({"issueKey": issue_key, "worktree": str(worktree), "pending": True})
+            if kept != owners:
+                save_receipt(directory / "worktree-owners.json", {"owners": kept})
+            for owner in conflicts:
+                print(f"Reclaimed worktree {worktree} from issue {owner['issueKey']}, whose start never saved state",
+                      file=sys.stderr, flush=True)
+    return {"worktree": str(worktree)}
+
+
+def confirm(request):
+    """Make an issue's start claim permanent once its lifecycle state is saved."""
+    common, worktree, issue_key = claim_target(request)
+    with merge_lock(common, 60, name="worktree-ownership", label="worktree ownership") as directory:
+        owners = read_owners(directory)
+        mine = [owner for owner in owners if owner["issueKey"] == issue_key and owner["worktree"] == str(worktree)]
+        if not mine:
+            holder = next((owner["issueKey"] for owner in owners if owner["worktree"] == str(worktree)), None)
+            raise LifecycleError(
+                f"Worktree claim for issue {issue_key} at {worktree} was lost; it may have been reclaimed"
+                + (f" by issue {holder}" if holder else " by another issue")
+            )
+        pending = [owner for owner in mine if owner.get("pending")]
+        if pending:
+            kept = [owner for owner in owners if owner not in pending]
+            # A prepared or already confirmed entry keeps the claim permanent by itself.
+            if len(pending) == len(mine):
+                kept.append({"issueKey": issue_key, "worktree": str(worktree)})
+            save_receipt(directory / "worktree-owners.json", {"owners": kept})
+    return {"worktree": str(worktree)}
 
 
 def read_owners(directory):
@@ -205,11 +312,14 @@ def read_owners(directory):
         return []
     value = json.loads(path.read_text())
     owners = value.get("owners") if isinstance(value, dict) else None
+    # A start claim omits branch; prepare replaces it with a full entry. Only a
+    # start claim may be pending, until start saves state and confirms it.
     if not isinstance(owners, list) or any(
         not isinstance(owner, dict) or any(
             not isinstance(owner.get(key), str) or not owner[key]
-            for key in ("issueKey", "worktree", "branch")
-        ) for owner in owners
+            for key in ("issueKey", "worktree", *(("branch",) if "branch" in owner else ()))
+        ) or ("pending" in owner and (owner["pending"] is not True or "branch" in owner))
+        for owner in owners
     ):
         raise LifecycleError("Invalid worktree ownership registry")
     return owners
@@ -217,7 +327,12 @@ def read_owners(directory):
 
 def assert_owner(owners, issue_key, worktree, branch):
     for owner in owners:
-        if owner["worktree"] == worktree or owner["branch"] == branch:
+        if "branch" not in owner:
+            if owner["worktree"] == worktree and owner["issueKey"] != issue_key:
+                raise LifecycleError(
+                    f"Worktree already belongs to issue {owner['issueKey']} at {owner['worktree']}"
+                )
+        elif owner["worktree"] == worktree or owner["branch"] == branch:
             if owner != {"issueKey": issue_key, "worktree": worktree, "branch": branch}:
                 raise LifecycleError(
                     f"Worktree or branch already belongs to issue {owner['issueKey']} at {owner['worktree']}"
@@ -543,7 +658,7 @@ def main():
         request = json.load(sys.stdin)
         if not isinstance(request, dict):
             raise LifecycleError("Request must be a JSON object")
-        actions = {"inspect": inspect, "prepare": prepare, "integrate": integrate,
+        actions = {"inspect": inspect, "claim": claim, "confirm": confirm, "prepare": prepare, "integrate": integrate,
                    "receipt": receipt_action, "agenda-workspace": configured_workspace}
         action = request.get("action")
         if not isinstance(action, str) or action not in actions:

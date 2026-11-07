@@ -342,13 +342,38 @@ Deno.test("lifecycle origin and implementation adoption canonicalize aliases and
     );
     equal(await loadState(fixture.context), started);
     equal(fixture.writes.length, writeCount);
+    // A fresh start refuses the main checkout and worktrees owned by another
+    // issue before writing any state or claim.
+    const owners = join(repo, ".git", "yinz-lifecycle", "worktree-owners.json");
+    const other = join(repo, "worktrees", "other");
+    await git(repo, "worktree", "add", "-b", "other", other);
+    const registry = JSON.parse(await Deno.readTextFile(owners));
+    registry.owners.push({
+      issueKey: "default/99",
+      worktree: await Deno.realPath(other),
+    });
+    await Deno.writeTextFile(owners, JSON.stringify(registry));
+    const ownershipBefore = await Deno.readTextFile(owners);
+    fixture.resources.set("state", null);
+    for (
+      const [workerWorktree, message] of [
+        [repo, "not the main checkout"],
+        [other, "already belongs to issue default/99"],
+      ]
+    ) {
+      await rejects(
+        () =>
+          behavior.methods.start.execute({ workerWorktree }, fixture.context),
+        message,
+      );
+      equal(fixture.writes.length, writeCount);
+      equal(await Deno.readTextFile(owners), ownershipBefore);
+    }
     const approved = approve(transition(started, "triage", {
       classification: "bug",
       summary: "Confirmed reproduction",
     }));
     fixture.resources.set("state", approved);
-    const owners = join(repo, ".git", "yinz-lifecycle", "worktree-owners.json");
-    const ownershipBefore = await Deno.readTextFile(owners);
     await rejects(
       () =>
         behavior.methods.implement.execute({
@@ -380,6 +405,44 @@ Deno.test("lifecycle origin and implementation adoption canonicalize aliases and
     );
     equal((await loadState(fixture.context)).workerWorktree, canonical);
     await git(repo, "show-ref", "--verify", "refs/heads/issue-85");
+    // Another issue's start claim that never saved state is reclaimed, and
+    // the new start confirms its own claim once its state is saved.
+    const abandoned = join(repo, "worktrees", "abandoned");
+    await git(repo, "worktree", "add", "-b", "abandoned", abandoned);
+    const abandonedPath = await Deno.realPath(abandoned);
+    const ownedBy = async (worktree: string) =>
+      JSON.parse(await Deno.readTextFile(owners)).owners.filter((
+        owner: { worktree: string },
+      ) => owner.worktree === worktree);
+    const seeded = JSON.parse(await Deno.readTextFile(owners));
+    seeded.owners.push({
+      issueKey: "default/99",
+      worktree: abandonedPath,
+      pending: true,
+    });
+    await Deno.writeTextFile(owners, JSON.stringify(seeded));
+    fixture.resources.set("state", null);
+    await behavior.methods.start.execute(
+      { workerWorktree: abandoned },
+      fixture.context,
+    );
+    const restarted = await loadState(fixture.context);
+    equal(restarted.workerWorktree, abandonedPath);
+    const confirmed = [{ issueKey: "default/85", worktree: abandonedPath }];
+    equal(await ownedBy(abandonedPath), confirmed);
+    // Repeated start confirms a claim left pending after its state was saved.
+    const pending = JSON.parse(await Deno.readTextFile(owners));
+    pending.owners = pending.owners.map((owner: { worktree: string }) =>
+      owner.worktree === abandonedPath ? { ...owner, pending: true } : owner
+    );
+    await Deno.writeTextFile(owners, JSON.stringify(pending));
+    const restartWrites = fixture.writes.length;
+    await behavior.methods.start.execute(
+      { workerWorktree: abandoned },
+      fixture.context,
+    );
+    equal(fixture.writes.length, restartWrites);
+    equal(await ownedBy(abandonedPath), confirmed);
   } finally {
     if (previousPath === undefined) Deno.env.delete("PATH");
     else Deno.env.set("PATH", previousPath);
