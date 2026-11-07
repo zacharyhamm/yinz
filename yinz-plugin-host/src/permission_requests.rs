@@ -1,9 +1,31 @@
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    /// A test's permission cache, read in place of the user's own when a request starts. Per
+    /// thread, so a test never changes the cache seen by tests running beside it.
+    pub(crate) static TEST_PERMISSION_CACHE: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The cache a new request consults before it asks a person.
+fn request_permission_cache() -> PermissionCache {
+    #[cfg(test)]
+    {
+        if let Some(path) = TEST_PERMISSION_CACHE.with(|path| path.borrow().clone()) {
+            return PermissionCache::from_path_or_default(Some(path));
+        }
+    }
+    PermissionCache::from_path_or_default(None)
+}
+
 pub(super) struct PendingPermission {
     identity: RunPlugin,
     pub permissions: Vec<PermissionType>,
     recipients: HashSet<(PluginId, PluginInstanceId, ClientId)>,
+    /// An answer already decided, by a person or the permission cache, whose delivery waits
+    /// for initialization to finish. Such a request no longer needs anyone.
+    decided: Option<PermissionStatus>,
 }
 
 impl PendingPermission {
@@ -13,6 +35,10 @@ impl PendingPermission {
 
     pub(super) fn contains_plugin(&self, plugin: PluginId) -> bool {
         self.recipients.iter().any(|(id, _, _)| *id == plugin)
+    }
+
+    pub(super) fn is_decided(&self) -> bool {
+        self.decided.is_some()
     }
 }
 
@@ -60,13 +86,12 @@ impl PluginBridge {
                 identity: run.clone(),
                 permissions: permissions.clone(),
                 recipients: HashSet::from([(plugin_id, instance_id, client_id)]),
+                decided: None,
             },
         );
         self.cache_plugin_events(plugin_id);
         let caller = self.plugin_callers.remove(&plugin_id);
-        if PermissionCache::from_path_or_default(None)
-            .check_permissions(run.location.to_string(), &permissions)
-        {
+        if request_permission_cache().check_permissions(run.location.to_string(), &permissions) {
             return self.answer_permissions(request_id, PermissionStatus::Granted, None, shutdown);
         }
         let mut prompt =
@@ -153,6 +178,9 @@ impl PluginBridge {
                         .non_fatal();
                 },
             ) {
+                if let Some(pending) = self.permission_requests.get_mut(&token) {
+                    pending.decided = Some(status);
+                }
                 return Ok(());
             }
         }

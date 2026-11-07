@@ -925,6 +925,119 @@ fn permission_answer_keeps_events_cached_until_every_client_is_initialized() {
     }
 }
 
+/// Starts a permission request while another client's initialization holds the plugin's
+/// executor, so the bridge must defer any answer until that load finishes. With `cache`, the
+/// request finds its permissions already granted there, as a previously accepted plugin does.
+fn request_while_initializing(
+    test: &mut TestBridge,
+    cache: Option<&std::path::Path>,
+    shutdown: &tokio::sync::mpsc::Sender<()>,
+) -> (PluginId, HeldLoad) {
+    let id = PluginId::new(1);
+    let first = ClientId::new(1);
+    test.connect(&[first, ClientId::new(2)]);
+    let context = test.context(1, 1, SOURCE);
+    test.load(context).unwrap();
+    let context = test.context(1, 2, SOURCE);
+    test.bridge.loading_plugins.insert((id, run_plugin()));
+    let held = HeldLoad::start(test, context);
+    let instance = test.instance_id(id, first);
+    if let Some(cache) = cache {
+        let run = test.bridge.run_plugin_of_plugin_id(id).unwrap();
+        let location = test.bridge.loaded_plugin_identity(id, run).location;
+        let mut granted = PermissionCache::from_path_or_default(Some(cache.to_path_buf()));
+        granted.grant(location.to_string(), vec![PermissionType::RunCommands]);
+        granted.write_to_file().unwrap();
+    }
+    crate::plugin_bridge::permission_requests::TEST_PERMISSION_CACHE
+        .with(|path| *path.borrow_mut() = cache.map(std::path::Path::to_path_buf));
+    let requested = test.bridge.request_permissions(
+        id,
+        instance,
+        first,
+        vec![PermissionType::RunCommands],
+        shutdown.clone(),
+    );
+    crate::plugin_bridge::permission_requests::TEST_PERMISSION_CACHE
+        .with(|path| *path.borrow_mut() = None);
+    requested.unwrap();
+    (id, held)
+}
+
+fn poll_update_readiness(test: &TestBridge) -> Option<Result<(), String>> {
+    let (reply, receiver) = mpsc::channel();
+    let mut readiness =
+        crate::update_quiescence::Readiness::new("operation".into(), &test.bridge, reply);
+    readiness
+        .poll(&test.bridge)
+        .then(|| receiver.recv().unwrap())
+}
+
+#[test]
+fn update_readiness_waits_for_a_cached_permission_grant_deferred_by_initialization() {
+    let mut test = TestBridge::new();
+    let cache = test._dirs[0].path().join("permissions.kdl");
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    let (id, held) = request_while_initializing(&mut test, Some(&cache), &shutdown);
+    assert!(
+        !test
+            .receiver::<ScreenInstruction>()
+            .try_iter()
+            .any(|(instruction, _)| matches!(
+                instruction,
+                ScreenInstruction::RequestPluginPermissions(..)
+            )),
+        "a cached grant needs no person"
+    );
+    // The cached grant is decided, but its delivery waits for initialization.
+    assert_eq!(test.bridge.permission_requests.len(), 1);
+    assert_eq!(
+        poll_update_readiness(&test),
+        None,
+        "a decided permission answer is a load still in progress, not a repair"
+    );
+    held.finish().0.unwrap();
+    test.bridge
+        .apply_cached_events(vec![id], false, shutdown.clone())
+        .unwrap();
+    test.settle(id);
+    assert_eq!(poll_update_readiness(&test), None);
+    let answers: Vec<_> = test
+        .receiver::<PluginInstruction>()
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::PermissionAnswer {
+                request_id,
+                status,
+                cache_path,
+            } => Some((request_id, status, cache_path)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(answers.len(), 1);
+    for (request_id, status, cache_path) in answers {
+        assert_eq!(status, PermissionStatus::Granted);
+        test.bridge
+            .answer_permissions(request_id, status, cache_path, shutdown.clone())
+            .unwrap();
+    }
+    test.settle(id);
+    assert!(test.bridge.permission_requests.is_empty());
+    assert_eq!(poll_update_readiness(&test), Some(Ok(())));
+}
+
+#[test]
+fn update_readiness_fails_promptly_while_initializing_for_a_permission_needing_a_person() {
+    let mut test = TestBridge::new();
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    let (_, held) = request_while_initializing(&mut test, None, &shutdown);
+    let error = poll_update_readiness(&test)
+        .expect("a person's answer must not wait for the update deadline")
+        .unwrap_err();
+    assert!(error.contains("requires permissions"), "{error}");
+    held.finish().0.unwrap();
+}
+
 #[test]
 fn configuration_cache_retires_departed_and_headless_owners() {
     for attached in [false, true] {

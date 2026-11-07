@@ -251,12 +251,17 @@ impl PluginBridge {
                 )));
             }
         }
+        let requests = |id: PluginId| {
+            self.permission_requests
+                .values()
+                .filter(move |pending| pending.contains_plugin(id))
+        };
+        // Only a request awaiting a person blocks the commit; one the cache or a person
+        // already answered is delivered once initialization finishes, like a load in progress.
         if let Some(id) = plugins.iter().find(|id| {
-            self.plugin_ids_waiting_for_permission_request.contains(id)
-                || self
-                    .permission_requests
-                    .values()
-                    .any(|pending| pending.contains_plugin(**id))
+            requests(**id).any(|pending| !pending.is_decided())
+                || (self.plugin_ids_waiting_for_permission_request.contains(id)
+                    && requests(**id).next().is_none())
         }) {
             return Some(Err(format!(
                 "plugin {id} requires permissions before update can commit"
@@ -266,6 +271,7 @@ impl PluginBridge {
             .loading_plugins
             .iter()
             .any(|(id, _)| plugins.contains(id))
+            || plugins.iter().any(|id| requests(*id).next().is_some())
         {
             return None;
         }
