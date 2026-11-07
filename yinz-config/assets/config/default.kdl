@@ -423,6 +423,11 @@ plugins {
     project-store location="yinz:project-store" {
         shared true
     }
+    // The mobile web interface's route plugin. Only the session serving
+    // `web { enabled true }` loads it, so it is not in load_plugins.
+    web location="yinz:web" {
+        shared true
+    }
 }
 
 // Plugins to load in the background when a new session starts
@@ -456,6 +461,23 @@ load_plugins {
 //     agent_exit "yinz:agent-exit"            // opened in place of an exited agent pane
 //     agent_waiting "file:my-policy.scm"       // headless: a plugin in the plugin folder
 //     context_menu "yinz:context-menu"        // answers right-clicks, with context_menu_on_right_click true
+// }
+
+// The mobile web interface: a phone-friendly view of every local session's agents,
+// served on localhost for `tailscale serve` to expose to your tailnet only (never
+// `tailscale funnel`). Set a password first with `yinz set-password`. Off by default.
+// (Requires restart)
+//
+// web {
+//     enabled true
+//     // bind "127.0.0.1"
+//     // port 7419
+//     // plugin "web"                                   // alias or URL of the route plugin
+//     // allowed_hosts "box.tail1234.ts.net"
+//     // allowed_origins "https://box.tail1234.ts.net:7443"
+//     // tailscale_users "me@github"
+//     // session_days 30
+//     // https_port_hint 7443
 // }
 
 // Choose what to do when yinz receives SIGTERM, SIGINT, SIGQUIT or SIGHUP

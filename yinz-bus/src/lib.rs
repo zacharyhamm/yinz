@@ -31,6 +31,7 @@ pub mod server_instruction;
 pub mod session_layout_metadata;
 pub mod thread_bus;
 pub mod warp;
+pub mod web;
 
 pub use server_instruction::ServerInstruction;
 

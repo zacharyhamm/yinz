@@ -14,5 +14,6 @@ workspace = true
 # parser. A default-off feature on `yinz-tile` could not do this: `xtask` builds every plugin in
 # one cargo invocation, which unifies features across all of them.
 yinz-tile = { path = "../yinz-tile" }
-pulldown-cmark = { version = "0.13.4", default-features = false }
+# `html` for `html::render_safe`, the web interface's sanitized Markdown renderer.
+pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
 unicode-width = { workspace = true }

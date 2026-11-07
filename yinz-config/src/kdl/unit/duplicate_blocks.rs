@@ -2,7 +2,7 @@ use super::*;
 
 /// The top-level config blocks that `Config::from_kdl` reads by name. A second block of the
 /// same name in one file used to be silently ignored, because the lookup returned the first.
-const BLOCKS: [&str; 8] = [
+const BLOCKS: [&str; 9] = [
     "keybinds",
     "themes",
     "plugins",
@@ -11,6 +11,7 @@ const BLOCKS: [&str; 8] = [
     "hooks",
     "ui",
     "env",
+    "web",
 ];
 
 fn duplicate_block_error(name: &str) -> (String, KdlError) {

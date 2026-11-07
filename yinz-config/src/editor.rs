@@ -604,6 +604,7 @@ fn to_kdl(node: &Node, depth: usize, parent: Option<&str>) -> Result<KdlNode, St
             node.name.as_str(),
             "env"
                 | "ui"
+                | "web"
                 | "themes"
                 | "plugins"
                 | "load_plugins"
@@ -814,6 +815,7 @@ pub fn apply(config: &Config, patches: &[Patch]) -> Result<Config, String> {
             "context_menu" => section.context_menu = config.context_menu.clone(),
             "env" => section.env = config.env.clone(),
             "ui" => section.ui = config.ui,
+            "web" => section.web = config.web.clone(),
             _ if catalog.iter().any(|s| s.name == root) => {},
             _ => return Err(format!("Unknown configuration section: {root}")),
         }
@@ -895,6 +897,7 @@ pub fn apply(config: &Config, patches: &[Patch]) -> Result<Config, String> {
             "context_menu" => result.context_menu = parsed.context_menu,
             "env" => result.env = parsed.env,
             "ui" => result.ui = parsed.ui,
+            "web" => result.web = parsed.web,
             _ => result.options = parsed.options,
         }
     }

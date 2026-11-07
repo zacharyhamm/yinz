@@ -1733,6 +1733,23 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             id: strings(tc),
             request: strings(tc),
         },
+        CommandType::HttpRespond => PluginCommand::HttpRespond {
+            request_id: u64s(tc),
+            response: strings(tc),
+        },
+        CommandType::HttpAssets => PluginCommand::HttpAssets {
+            prefix: strings(tc),
+            directory: strings(tc),
+        },
+        CommandType::HttpPublish => PluginCommand::HttpPublish {
+            path: strings(tc),
+            content_type: strings(tc),
+            body: strings(tc),
+        },
+        CommandType::AgentView => PluginCommand::AgentView {
+            id: strings(tc),
+            request: strings(tc),
+        },
         CommandType::ProjectConfigWrite => PluginCommand::ProjectConfigWrite {
             directory: strings(tc).into(),
             source: strings(tc),

@@ -626,7 +626,11 @@ mod props {
     /// everywhere else, and a field the payload *does* carry going missing still fails.
     fn as_the_plugin_wire_carries_it(command: PluginCommand) -> Option<PluginCommand> {
         Some(match command {
-            PluginCommand::CommandPalette(..) => return None,
+            PluginCommand::CommandPalette(..)
+            | PluginCommand::HttpRespond { .. }
+            | PluginCommand::HttpAssets { .. }
+            | PluginCommand::HttpPublish { .. }
+            | PluginCommand::AgentView { .. } => return None,
             carried @ (PluginCommand::Subscribe(_)
             | PluginCommand::PaneTabs(..)
             | PluginCommand::CreateMultipane(..)
@@ -1002,5 +1006,52 @@ fn source_and_release_update_commands_remain_distinct_on_the_wire() {
         let proto = ProtobufPluginCommand::try_from(original.clone()).unwrap();
         assert!(proto.payload.is_none());
         assert_eq!(PluginCommand::try_from(proto).unwrap(), original);
+    }
+}
+
+#[test]
+fn web_plugin_commands_decode_from_steel_json_and_stay_off_protobuf() {
+    let cases = [
+        (
+            serde_json::json!({"HttpRespond": {"request_id": 17, "response": "{\"status\":200}"}}),
+            PluginCommand::HttpRespond {
+                request_id: 17,
+                response: "{\"status\":200}".to_owned(),
+            },
+        ),
+        (
+            serde_json::json!({"HttpAssets": {"prefix": "/static/", "directory": "builtin:web/static"}}),
+            PluginCommand::HttpAssets {
+                prefix: "/static/".to_owned(),
+                directory: "builtin:web/static".to_owned(),
+            },
+        ),
+        (
+            serde_json::json!({"HttpPublish": {
+                "path": "/login",
+                "content_type": "text/html; charset=utf-8",
+                "body": "<!doctype html>"
+            }}),
+            PluginCommand::HttpPublish {
+                path: "/login".to_owned(),
+                content_type: "text/html; charset=utf-8".to_owned(),
+                body: "<!doctype html>".to_owned(),
+            },
+        ),
+        (
+            serde_json::json!({"AgentView": {"id": "rpc:view:1", "request": "{\"op\":\"list\"}"}}),
+            PluginCommand::AgentView {
+                id: "rpc:view:1".to_owned(),
+                request: "{\"op\":\"list\"}".to_owned(),
+            },
+        ),
+    ];
+    for (wire, expected) in cases {
+        let decoded: PluginCommand = serde_json::from_value(wire.clone()).expect("decode");
+        assert_eq!(decoded, expected, "{wire}");
+        assert_eq!(
+            ProtobufPluginCommand::try_from(decoded).expect_err("protobuf refuses web commands"),
+            "Web commands are Steel-only"
+        );
     }
 }

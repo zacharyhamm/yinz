@@ -344,6 +344,9 @@ plugins {
     status-bar location="yinz:status-bar"
     strider location="yinz:strider"
     tab-bar location="yinz:tab-bar"
+    web location="yinz:web" {
+        shared true
+    }
 }
 
 // Plugins to load in the background when a new session starts

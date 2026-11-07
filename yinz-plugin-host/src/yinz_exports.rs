@@ -61,6 +61,9 @@ mod sessions;
 #[cfg(test)]
 #[path = "unit/validation_tests.rs"]
 mod validation_tests;
+mod web;
+#[path = "web_agents.rs"]
+pub(crate) mod web_agents;
 
 use crate::plugin_map::PluginEnv;
 use crate::plugin_panes::Surface;
@@ -437,6 +440,38 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                         .context("deliver agent response")
                         .non_fatal();
                 });
+            },
+            PluginCommand::HttpRespond {
+                request_id,
+                response,
+            } => web::respond(env, request_id, response)?,
+            PluginCommand::HttpAssets { prefix, directory } => {
+                anyhow::ensure!(web::is_web_plugin(env), web::RESERVED);
+                web::assets(env, prefix, directory)?;
+            },
+            PluginCommand::HttpPublish {
+                path,
+                content_type,
+                body,
+            } => {
+                anyhow::ensure!(web::is_web_plugin(env), web::RESERVED);
+                web::publish(env, path, content_type, body)?;
+            },
+            PluginCommand::AgentView { id, request } => {
+                anyhow::ensure!(web::is_web_plugin(env), web::RESERVED);
+                env.senders
+                    .send_to_plugin(PluginInstruction::Web(
+                        yinz_bus::web::WebInstruction::AgentView(Box::new(
+                            yinz_bus::web::AgentViewCall {
+                                plugin_id: env.plugin_id,
+                                client: env.client_id,
+                                generation: env.generation,
+                                id,
+                                request,
+                            },
+                        )),
+                    ))
+                    .context("send agent view request to the plugin thread")?;
             },
             PluginCommand::PaneTabs(mut command) => {
                 if let yinz_types::pane_tabs::PaneTabsCommand::Mount { layout, .. } = &mut command {

@@ -62,3 +62,5 @@ pub mod session_destination;
 pub mod session_update;
 
 pub mod session_migration;
+
+pub mod web;

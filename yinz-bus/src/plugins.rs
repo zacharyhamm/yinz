@@ -195,6 +195,8 @@ pub enum PluginInstruction {
     PluginPalette(crate::command_palette::Delivery),
     PaletteAgent(Box<crate::command_palette::AgentRequest>),
     PaletteAgentLabels(crate::command_palette::AgentLabelsRequest),
+    /// Mobile web interface: requests, activation and agent-view calls. See `crate::web`.
+    Web(crate::web::WebInstruction),
     PluginEvent(PluginId, ClientId, u64, Event),
     ClientTimezoneSnapshot {
         plugin_id: PluginId,

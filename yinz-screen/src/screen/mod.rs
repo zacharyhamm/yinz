@@ -148,6 +148,7 @@ mod tab_layout;
 mod tabs;
 mod thread_main;
 mod warp_ops;
+mod web_agents;
 
 pub(crate) use crate::tab::CopyOptions;
 #[cfg(test)]

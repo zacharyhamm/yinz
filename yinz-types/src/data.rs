@@ -2860,6 +2860,31 @@ pub enum PluginCommand {
         id: String,
         request: String,
     },
+    /// Steel-only. Answers one web request delivered to this instance. `response` is JSON:
+    /// `{"status":200,"headers":{…},"body":"…"}`.
+    HttpRespond {
+        request_id: u64,
+        response: String,
+    },
+    /// Steel-only. Freezes `directory` (plugin-relative, or `builtin:web/static`) under URL
+    /// `prefix`. Reserved for the configured web plugin.
+    HttpAssets {
+        prefix: String,
+        directory: String,
+    },
+    /// Steel-only. Publishes a public, pre-rendered page (at most 512 KiB). Reserved for the
+    /// configured web plugin.
+    HttpPublish {
+        path: String,
+        content_type: String,
+        body: String,
+    },
+    /// Steel-only. Native agent-view operation; replies with `CustomMessage`
+    /// `"agent-view-response"` carrying `{"id","reply"}`. Reserved for the configured web plugin.
+    AgentView {
+        id: String,
+        request: String,
+    },
     RunCommand(
         Vec<String>,              // command
         BTreeMap<String, String>, // env_variables

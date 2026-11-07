@@ -282,6 +282,10 @@ pub(super) fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::UpdateYinzFromSource
         | CommandType::YinzUpdateStatus
         | CommandType::AgentControl
+        | CommandType::HttpRespond
+        | CommandType::HttpAssets
+        | CommandType::HttpPublish
+        | CommandType::AgentView
         | CommandType::RegisterProjectProvider
         | CommandType::GetProjectProviders
         | CommandType::ValidateProjectMatch

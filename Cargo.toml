@@ -39,6 +39,7 @@ yinz-process = { path = "yinz-process", version = "0.1.2-alpha.10" }
 yinz-codex = { workspace = true }
 yinz-muse = { workspace = true }
 yinz-steel = { workspace = true }
+yinz-web = { workspace = true }
 tokio = { workspace = true }
 yinz-client = { path = "yinz-client/", version = "0.1.2-alpha.10" }
 yinz-server = { path = "yinz-server/", version = "0.1.2-alpha.10" }
@@ -122,6 +123,7 @@ members = [
     "yinz-tile-markdown",
     "yinz-tile-utils",
     "yinz-test-support",
+    "yinz-web",
     "xtask",
     ".",
 ]
@@ -179,6 +181,7 @@ yinz-host-protocol = { path = "yinz-host-protocol", version = "0.1.2-alpha.10" }
 yinz-codex = { path = "yinz-codex", version = "0.1.2-alpha.10" }
 yinz-muse = { path = "yinz-muse", version = "0.1.2-alpha.10" }
 yinz-terminal-graphics = { path = "yinz-terminal-graphics", version = "0.1.2-alpha.10" }
+yinz-web = { path = "yinz-web", version = "0.1.2-alpha.10" }
 ansi_term = { version = "0.12.1", default-features = false }
 anyhow = { version = "1.0.70", default-features = false, features = ["backtrace", "std"] }
 async-trait = { version = "0.1", default-features = false }
@@ -241,6 +244,18 @@ names = { version = "0.14.0", default-features = false }
 include_dir = { version = "0.7.3", default-features = false }
 # Match the digest features enabled by the Codex WebSocket client in both build graphs.
 sha2 = "0.11"
+# The mobile web interface (`yinz-web`): an HTTP/1 server on hyper, without hyper's client or
+# HTTP/2, and argon2id password hashing without the `rand`/`std` features (salts come from
+# getrandom).
+hyper = { version = "1.12", default-features = false, features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["tokio", "server", "server-graceful", "http1"] }
+http = { version = "1.5", default-features = false, features = ["std"] }
+http-body-util = { version = "0.1.5", default-features = false }
+bytes = { version = "1.11", default-features = false, features = ["std"] }
+argon2 = { version = "0.5.3", default-features = false, features = ["alloc", "password-hash"] }
+getrandom = { version = "0.4.3", default-features = false }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+zeroize = { version = "1.8", default-features = false, features = ["alloc"] }
 
 [profile.dev]
 debug = "line-tables-only"

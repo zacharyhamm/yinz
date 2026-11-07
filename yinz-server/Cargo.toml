@@ -29,6 +29,7 @@ yinz-pty = { path = "../yinz-pty", version = "0.1.2-alpha.10" }
 yinz-screen = { path = "../yinz-screen", version = "0.1.2-alpha.10" }
 yinz-terminal = { path = "../yinz-terminal", version = "0.1.2-alpha.10" }
 yinz-process = { path = "../yinz-process", version = "0.1.2-alpha.10" }
+yinz-web = { workspace = true }
 interprocess = { workspace = true }
 log = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }

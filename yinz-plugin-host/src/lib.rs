@@ -25,6 +25,8 @@ mod plugin_map;
 mod plugin_panes;
 pub(crate) mod response;
 mod watch_filesystem;
+mod web_host;
+mod web_requests;
 mod yinz_exports;
 use log::info;
 pub use yinz_bus::plugins::*;
@@ -113,6 +115,8 @@ pub fn plugin_thread_main(
     // rename reaches plugins loaded after it.
     server_session: ServerSession,
     update_operation: Option<String>,
+    // `Some` only when the session's `web { }` block enables the mobile web interface.
+    web: Option<yinz_bus::web::WebPluginParams>,
 ) -> Result<()> {
     info!("Plugin main thread starts");
     let mut notification_policy = None;
@@ -155,6 +159,8 @@ pub fn plugin_thread_main(
     // The background plugins below and the first layout's plugins are loaded for the first
     // client before its `AddClient`, and must share its attachment token.
     plugin_bridge.reserve_client(initiating_client_id);
+    let web_host = web_host::WebHost::new(web.as_ref().map(|params| params.site.clone()));
+    let mut web_requests = web_requests::WebRequests::new(web, &web_host);
     let _data_watch_poller = plugin_bridge.start_data_watch_polling()?;
     let clipboard_writer = clipboard_history::start_worker(
         Arc::new(PluginDataStore::new(&data_dir)),
@@ -471,6 +477,70 @@ pub fn plugin_thread_main(
                     let _shutdown = shutdown;
                     let _native_task = native_task;
                     yinz_exports::palette_agents::handle(*request, &senders, &data);
+                });
+            },
+            PluginInstruction::Web(yinz_bus::web::WebInstruction::Activate) => {
+                web_requests.activate(&mut plugin_bridge, initiating_client_id);
+            },
+            PluginInstruction::Web(yinz_bus::web::WebInstruction::Request { request, reply }) => {
+                if update_pause.is_some() {
+                    reply.send(yinz_types::web::WebReply::Unavailable {
+                        reason: "session update in progress".into(),
+                        retry_after_s: 5,
+                    });
+                    continue;
+                }
+                web_requests.request(
+                    &mut plugin_bridge,
+                    request,
+                    reply,
+                    initiating_client_id,
+                    shutdown_send.clone(),
+                );
+            },
+            PluginInstruction::Web(yinz_bus::web::WebInstruction::AgentView(call)) => {
+                let call = *call;
+                let deliver = |senders: &yinz_bus::thread_bus::ThreadSenders,
+                               call: &yinz_bus::web::AgentViewCall,
+                               reply: serde_json::Value| {
+                    senders
+                        .send_to_plugin(PluginInstruction::for_plugin_event(
+                            call.plugin_id,
+                            call.client,
+                            call.generation,
+                            Event::CustomMessage(
+                                "agent-view-response".into(),
+                                serde_json::json!({"id": call.id, "reply": reply}).to_string(),
+                            ),
+                        ))
+                        .context("deliver agent view response")
+                        .non_fatal();
+                };
+                if update_pause.is_some() {
+                    deliver(
+                        &bus.senders,
+                        &call,
+                        serde_json::json!({"error": {
+                            "code": "paused",
+                            "message": "session update has paused agent actions; retry after reconnect",
+                        }}),
+                    );
+                    continue;
+                }
+                let native_task = native_tasks.start();
+                let senders = bus.senders.clone();
+                let data = palette_data.clone();
+                let shutdown = shutdown_send.clone();
+                yinz_bus::global_async_runtime::get_tokio_runtime().spawn_blocking(move || {
+                    let _shutdown = shutdown;
+                    let _native_task = native_task;
+                    let reply = yinz_exports::web_agents::handle(
+                        &call.request,
+                        call.client,
+                        &senders,
+                        &data,
+                    );
+                    deliver(&senders, &call, reply);
                 });
             },
             PluginInstruction::PaletteAgentLabels(request) => {

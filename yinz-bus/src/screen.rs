@@ -1034,6 +1034,15 @@ pub enum ScreenInstruction {
         yinz_types::agent::control::AgentRequest,
         std::sync::mpsc::Sender<yinz_types::agent::control::AgentResponse>,
     ),
+    /// Every live agent the palette would list, as plain web DTOs.
+    WebLiveAgents {
+        reply: crossbeam::channel::Sender<Vec<crate::web::WebLiveAgent>>,
+    },
+    /// Focus a live agent for the first connected client, as the palette would.
+    WebFocusAgent {
+        agent: crate::web::WebAgentRef,
+        reply: crossbeam::channel::Sender<Result<(), String>>,
+    },
     ResolveAgentTab {
         placement: yinz_types::agent::control::AgentPlacement,
         invoked_with: Option<Run>,

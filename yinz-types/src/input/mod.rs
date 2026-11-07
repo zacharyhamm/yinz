@@ -8,3 +8,4 @@ pub mod keybinds;
 pub mod layout;
 pub mod options;
 pub mod plugins;
+pub mod web;

@@ -3308,6 +3308,8 @@ fn init_session(
                 client_id,
                 plugin_session,
                 update_operation,
+                // The mobile web interface is wired by the server's web module.
+                None,
             )
             .fatal()
         }

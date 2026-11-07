@@ -122,6 +122,11 @@ interface CommandArgs {
   CancelPluginTest: string;
   CheckPlugin: {name: string; source: string; mode: PluginCheckMode};
   AgentControl: {id: string; request: string};
+  /** Steel-only web interface commands; see "Web interface commands". */
+  HttpRespond: {request_id: number; response: string};
+  HttpAssets: {prefix: string; directory: string};
+  HttpPublish: {path: string; content_type: string; body: string};
+  AgentView: {id: string; request: string};
   Subscribe: EventType[]; Unsubscribe: EventType[]; SetSelectable: boolean;
   ShowCursor: [Integer, Integer] | null; GetPluginIds: undefined; GetCellPixelSize: undefined; GetClientTimezone: {client_id?: number}; GetPluginIdsForUrl: string; GetPluginInfo: number | null; Pick: PickCommand; GetPluginIdsForUrlWithConfiguration: { url: string; configuration: Record<string, string> }; GetYinzVersion: undefined;
   OpenFile: [FileToOpen, StringMap]; OpenFileFloating: [FileToOpen, FloatingPaneCoordinates | null, StringMap];
@@ -898,6 +903,29 @@ response may carry the previous windows, plan, and original observation time.
 These values are stale. Claude observations are cached for five minutes, and
 rate-limited checks back off from 15 minutes to one hour while honoring longer
 `Retry-After` delays.
+
+## Web interface commands
+
+Four commands serve the mobile web interface. They are Steel-only: the
+protobuf wire refuses them with "Web commands are Steel-only". Each requires
+`RunCommands`.
+
+- `HttpRespond {request_id, response}` answers one web request delivered to
+  this instance. `response` is JSON:
+  `{"status":200,"headers":{"content-type":"…"},"body":"…"}`. An unknown or
+  already answered `request_id` is ignored.
+- `HttpAssets {prefix, directory}` freezes a directory of static assets
+  (plugin-relative, or `builtin:web/static`) under a URL prefix such as
+  `/static/`.
+- `HttpPublish {path, content_type, body}` publishes a public, pre-rendered
+  page such as `/` or `/login`.
+- `AgentView {id, request}` runs a native agent-view operation. The reply
+  arrives as `CustomMessage("agent-view-response", {"id", "reply"})`, where
+  `reply` is `{"ok": …}` or `{"error": {"code", "message"}}`.
+
+`HttpAssets`, `HttpPublish` and `AgentView` are reserved for the configured
+web plugin (`web { plugin … }`) and builtin plugins; any other plugin gets the
+error "reserved for the configured web plugin".
 
 ### Directory project resolution
 

@@ -3755,6 +3755,10 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
     fn try_from(plugin_command: PluginCommand) -> Result<Self, &'static str> {
         match plugin_command {
             PluginCommand::CommandPalette(..) => Err("Command palettes are Deno-only"),
+            PluginCommand::HttpRespond { .. }
+            | PluginCommand::HttpAssets { .. }
+            | PluginCommand::HttpPublish { .. }
+            | PluginCommand::AgentView { .. } => Err("Web commands are Steel-only"),
             PluginCommand::Subscribe(subscriptions) => {
                 let subscriptions: ProtobufEventNameList = subscriptions.try_into()?;
                 Ok(ProtobufPluginCommand {

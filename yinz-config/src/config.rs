@@ -20,6 +20,7 @@ use yinz_types::input::hooks::Hooks;
 use yinz_types::input::keybinds::Keybinds;
 use yinz_types::input::layout::RunPluginOrAlias;
 use yinz_types::input::options::Options;
+use yinz_types::input::web::WebConfig;
 use {yinz_types::input::plugins::PluginAliases, yinz_types::input::plugins::PluginsConfigError};
 
 pub const DEFAULT_CONFIG_FILE_NAME: &str = "config.kdl";
@@ -54,6 +55,9 @@ pub struct Config {
     /// The items a right-click menu offers before its hook plugin has had its say; see
     /// `input::context_menu`.
     pub context_menu: ContextMenu,
+    /// The mobile web interface; see `input::web`. Read at session start.
+    #[serde(default)]
+    pub web: WebConfig,
 }
 
 #[derive(Error, Debug, Serialize, Deserialize)]

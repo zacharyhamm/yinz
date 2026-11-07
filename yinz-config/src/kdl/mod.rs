@@ -1,5 +1,6 @@
 mod kdl_layout_parser;
 mod overlay_tab_plugins;
+mod web;
 use kdl_layout_parser::KdlLayoutParser;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use strum::IntoEnumIterator;
@@ -1160,6 +1161,14 @@ impl Config {
             let config_ui = UiConfig::from_kdl(kdl_ui_config)?;
             config.ui = config.ui.merge(config_ui);
         }
+        if let Some(kdl_web) = single_top_level_block(&kdl_config, "web")? {
+            let parsed_web = web::from_kdl(kdl_web)?;
+            config.web = config.web.merge(parsed_web);
+            config
+                .web
+                .validate()
+                .map_err(|error| kdl_parsing_error!(error, kdl_web))?;
+        }
         if let Some(env_config) = single_top_level_block(&kdl_config, "env")? {
             let config_env = environment_variables_from_kdl(env_config)?;
             config.env = config.env.merge(config_env);
@@ -1216,6 +1225,10 @@ impl Config {
 
         if let Some(ui_config) = self.ui.to_kdl() {
             document.nodes_mut().push(ui_config);
+        }
+
+        if let Some(web) = web::to_kdl(&self.web) {
+            document.nodes_mut().push(web);
         }
 
         if let Some(env) = environment_variables_to_kdl(&self.env) {

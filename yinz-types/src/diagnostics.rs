@@ -299,6 +299,8 @@ pub enum ScreenContext {
     SetPaneColor,
     AgentControl,
     AgentControlReply,
+    WebLiveAgents,
+    WebFocusAgent,
     ResolveAgentTab,
     CleanupAgentTab,
     AgentSpawned,
@@ -532,6 +534,8 @@ pub enum PluginContext {
     HighlightClicked,
     GrantPermissionsToLocation,
     PluginFailed,
+    /// Mobile web interface requests, activation and agent-view calls.
+    Web,
 }
 
 /// Stack call representations corresponding to the different types of [`ClientInstruction`]s.
