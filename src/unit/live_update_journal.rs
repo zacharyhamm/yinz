@@ -228,7 +228,8 @@ fn old_journals_default_to_stable_and_reject_prerelease_starts() {
 }
 
 /// A replacement starts at the size the session had when it froze, not the size its source
-/// server's first client had at startup - which no resize ever updates.
+/// server's first client had at startup - which no resize ever updates. Likewise it takes the
+/// file themes the source last held, not any its own startup assets inherited.
 #[test]
 fn replacement_assets_start_at_the_frozen_session_size() {
     use yinz_types::{
@@ -258,9 +259,11 @@ fn replacement_assets_start_at_the_frozen_session_size() {
         assets: yinz_types::input::cli_assets::CliAssets {
             terminal_window_size: startup,
             supports_in_place_update: true,
+            update_themes: Some("stale".into()),
             ..Default::default()
         },
         configuration: serde_json::Value::String(String::new()),
+        themes: Some("carried".into()),
         clients: vec![],
     });
     let frozen = |display_size| SessionMigrationInventory {
@@ -285,6 +288,7 @@ fn replacement_assets_start_at_the_frozen_session_size() {
     assert_eq!(assets.terminal_window_size, current);
     assert_eq!(assets.update_target.as_deref(), Some(operation.as_str()));
     assert!(!assets.supports_in_place_update);
+    assert_eq!(assets.update_themes.as_deref(), Some("carried"));
 
     // A source from before the size was recorded keeps its startup size.
     store.journal.migration = Some(frozen(None));

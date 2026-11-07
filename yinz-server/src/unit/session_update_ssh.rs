@@ -292,6 +292,7 @@ impl Session {
         assets.update_target = Some(operation.into());
         assets.update_source_session = Some(source.session.clone().into());
         assets.update_configuration = Some(source.configuration.as_str().unwrap().into());
+        assets.update_themes = source.themes.clone();
         assets.configuration_options = None;
         assets.layout = None;
         peer.writer

@@ -59,6 +59,7 @@ impl BuildFixture {
             running_binary_sha256: None,
             assets: Default::default(),
             configuration: serde_json::json!({}),
+            themes: None,
             clients: vec![],
         };
         Self {

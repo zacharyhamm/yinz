@@ -134,6 +134,7 @@ impl<'a> StartupContext<'a> {
             update_source_session: None,
             update_configuration: None,
             update_layout: None,
+            update_themes: None,
             update_resume: self.cli_args.update_resume.clone().zip(
                 self.cli_args
                     .update_source_client
@@ -184,6 +185,7 @@ impl<'a> StartupContext<'a> {
                             update_source_session: None,
                             update_configuration: None,
                             update_layout: None,
+                            update_themes: None,
                             update_resume: self.cli_args.update_resume.clone().zip(
                                 self.cli_args
                                     .update_source_client

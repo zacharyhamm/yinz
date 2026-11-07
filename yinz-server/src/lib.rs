@@ -1309,7 +1309,12 @@ pub fn start_server_impl(
                             let mut config = Config::from_kdl(text, None)
                                 .map_err(|error| anyhow!("{error}"))
                                 .context("restore replacement configuration")?;
-                            yinz_config::cli_assets::attach_themes(&mut config, &cli_assets);
+                            yinz_config::cli_assets::restore_themes(
+                                &mut config,
+                                cli_assets.update_themes.as_deref(),
+                                &cli_assets,
+                            )
+                            .context("restore replacement themes")?;
                             let layout = update::replacement_layout(&cli_assets)?;
                             return Ok((config, layout));
                         }

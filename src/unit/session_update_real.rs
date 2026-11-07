@@ -221,6 +221,7 @@ fn target_at(
     assets.update_target = Some(operation.into());
     assets.update_source_session = Some(source.session.clone().into());
     assets.update_configuration = Some(source.configuration.as_str().unwrap().to_owned());
+    assets.update_themes = source.themes.clone();
     assets.configuration_options = None;
     assets.layout = None;
     if let Some(size) = size {
@@ -1175,6 +1176,113 @@ fn live_update_preserves_layout_defaults_for_new_tabs() {
         .send_client_msg(ClientToServerMsg::KillSession)
         .unwrap();
     assert_server_exited(inventory.server_pid);
+}
+
+/// The configuration KDL a source hands its replacement omits theme-directory themes. The source
+/// sends the ones it holds alongside, so the replacement keeps them even after the file is gone.
+#[test]
+fn live_update_carries_theme_directory_themes_to_the_replacement() {
+    let session = Session::new();
+    yinz_steel_builtins::install(
+        &yinz_steel_builtins::asset_dir(),
+        &session.0.path().join("data/yinz"),
+    )
+    .unwrap();
+    fs::write(
+        session.0.path().join("config.kdl"),
+        "detachable_panes true\nload_plugins clear-defaults=true\n",
+    )
+    .unwrap();
+    let themes = session.0.path().join("config/themes");
+    fs::create_dir_all(&themes).unwrap();
+    let theme_file = themes.join("carried.kdl");
+    fs::write(
+        &theme_file,
+        "themes { carried-across-update { fg 1; bg 2; red 3; green 4; blue 5; yellow 6; \
+         magenta 7; orange 8; cyan 9; black 10; white 11; }; }\n",
+    )
+    .unwrap();
+    session.success(&[
+        "--layout-string",
+        r#"layout { tab name="existing" { pane command="/bin/cat"; }; }"#,
+        "attach",
+        "--create-background",
+        NAME,
+    ]);
+    session.wait_for_panes(false);
+    let operation = uuid::Uuid::new_v4().to_string();
+    let mut source = Peer::connect(&session.socket());
+    let inventory: Inventory = serde_json::from_value(
+        source
+            .request(&operation, UpdateCommand::Inventory)
+            .unwrap(),
+    )
+    .unwrap();
+    let carried = inventory
+        .themes
+        .clone()
+        .expect("the source carries its file themes");
+    assert!(carried.contains("carried-across-update"), "{carried}");
+    assert!(
+        !inventory
+            .configuration
+            .as_str()
+            .unwrap()
+            .contains("carried-across-update"),
+        "the configuration KDL itself omits file themes"
+    );
+    fs::remove_file(&theme_file).unwrap();
+
+    source
+        .request(&operation, UpdateCommand::PrepareMigration)
+        .unwrap();
+    let snapshot = session.0.path().join("theme-snapshot.json");
+    source
+        .request(
+            &operation,
+            UpdateCommand::ReleaseMigration {
+                snapshot: snapshot.clone(),
+            },
+        )
+        .unwrap();
+    let (mut destination, _socket) = target(&session, &inventory, &operation);
+    let restored: Inventory = serde_json::from_value(
+        destination
+            .request(&operation, UpdateCommand::Inventory)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(restored.themes.as_deref(), Some(carried.as_str()));
+    destination
+        .request(&operation, UpdateCommand::AdoptMigration { snapshot })
+        .unwrap();
+    source
+        .request(
+            &operation,
+            UpdateCommand::RenameSession {
+                name: "retired-update".into(),
+            },
+        )
+        .unwrap();
+    destination
+        .request(
+            &operation,
+            UpdateCommand::RenameSession { name: NAME.into() },
+        )
+        .unwrap();
+    destination
+        .request(&operation, UpdateCommand::FinishMigration)
+        .unwrap();
+    source
+        .sender
+        .send_client_msg(ClientToServerMsg::KillSession)
+        .unwrap();
+    assert_server_exited(inventory.server_pid);
+    destination
+        .sender
+        .send_client_msg(ClientToServerMsg::KillSession)
+        .unwrap();
+    assert_server_exited(restored.server_pid);
 }
 
 #[test]

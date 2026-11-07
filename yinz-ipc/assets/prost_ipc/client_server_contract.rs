@@ -1589,6 +1589,9 @@ pub struct CliAssets {
     pub update_layout: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, tag="21")]
     pub supports_source_update: bool,
+    /// File-sourced themes for update_configuration, which omits them. Older sources omit it.
+    #[prost(string, optional, tag="22")]
+    pub update_themes: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

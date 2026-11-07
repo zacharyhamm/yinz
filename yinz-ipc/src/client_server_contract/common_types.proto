@@ -968,6 +968,8 @@ message CliAssets {
   optional string update_configuration = 19;
   optional string update_layout = 20;
   bool supports_source_update = 21;
+  // File-sourced themes for update_configuration, which omits them. Older sources omit it.
+  optional string update_themes = 22;
 }
 
 message LayoutInfo {

@@ -82,6 +82,7 @@ impl Discovery {
                                     running_binary_sha256: None,
                                     assets: Default::default(),
                                     configuration: serde_json::json!(""),
+                                    themes: None,
                                     clients: clients.clone(),
                                 })
                                 .unwrap(),
@@ -185,6 +186,7 @@ fn prerelease_capability_refusal_is_terminal_before_preparation() {
             supports_source_update: false,
             resumed: None,
             configuration: String::new(),
+            themes: None,
             mode: Default::default(),
         }])
         .unwrap_err();

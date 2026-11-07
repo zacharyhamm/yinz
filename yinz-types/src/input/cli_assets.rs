@@ -43,4 +43,8 @@ pub struct CliAssets {
     /// Serialized effective layout for private replacement bootstrap, including tab templates.
     #[serde(default)]
     pub update_layout: Option<String>,
+    /// File-sourced themes for `update_configuration`, which omits them; see
+    /// `yinz_config::cli_assets::file_themes_to_string`. Older sources leave this absent.
+    #[serde(default)]
+    pub update_themes: Option<String>,
 }

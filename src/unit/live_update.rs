@@ -229,6 +229,7 @@ fn manual_source_commit_requires_pinned_digest_and_source_identity_capability() 
         supports_source_update: true,
         resumed: None,
         configuration: String::new(),
+        themes: None,
         mode: Default::default(),
     };
     for clients in [[client(1), client(2)], [client(2), client(1)]] {

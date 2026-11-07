@@ -111,6 +111,7 @@ fn inventory(
                     .is_some_and(|a| a.supports_source_update),
                 resumed: state.resumed_updates.get(&id).cloned(),
                 configuration: String::new(),
+                themes: None,
                 mode: Default::default(),
             })
             .collect();
@@ -132,18 +133,25 @@ fn inventory(
             .context("encode effective session layout")?,
     );
     for client in &mut clients {
-        client.configuration = session
+        let configuration = session
             .session_configuration
-            .get_client_configuration(&client.id)
+            .get_client_configuration(&client.id);
+        client.configuration = configuration
             .to_string(false)
             .map_err(|error| anyhow!("{error}"))
             .context("encode client update configuration")?;
+        client.themes = Some(yinz_config::cli_assets::file_themes_to_string(
+            &configuration,
+        ));
         client.mode = session
             .current_input_modes
             .get(&client.id)
             .copied()
             .unwrap_or_default();
     }
+    let effective_configuration = session
+        .session_configuration
+        .get_client_configuration(&effective_client);
     Ok(session_update::Inventory {
         session: session.senders.session.current().to_string(),
         server_pid: std::process::id(),
@@ -154,13 +162,14 @@ fn inventory(
         assets,
         clients,
         configuration: serde_json::Value::String(
-            session
-                .session_configuration
-                .get_client_configuration(&effective_client)
+            effective_configuration
                 .to_string(false)
                 .map_err(|error| anyhow!("{error}"))
                 .context("encode effective session configuration")?,
         ),
+        themes: Some(yinz_config::cli_assets::file_themes_to_string(
+            &effective_configuration,
+        )),
     })
 }
 
@@ -236,7 +245,8 @@ fn dispatch(
             let targets_this_update = |assets: &yinz_types::input::cli_assets::CliAssets| {
                 assets.update_target.as_deref() == Some(request.operation.as_str())
             };
-            // Decoding reads theme files; keep it outside the session-state write lock.
+            // Sources that predate carried themes make decoding read theme files; keep it
+            // outside the session-state write lock.
             let assets = state
                 .read()
                 .to_anyhow()
@@ -250,7 +260,12 @@ fn dispatch(
                 let mut config = Config::from_kdl(&client.configuration, None)
                     .map_err(|error| anyhow!("{error}"))
                     .context("decode restored client configuration")?;
-                yinz_config::cli_assets::attach_themes(&mut config, &assets);
+                yinz_config::cli_assets::restore_themes(
+                    &mut config,
+                    client.themes.as_deref(),
+                    &assets,
+                )
+                .context("restore client themes")?;
                 saved.push((client.id, config, client.mode));
             }
             let mut state = state

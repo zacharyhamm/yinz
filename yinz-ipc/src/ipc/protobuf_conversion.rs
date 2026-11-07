@@ -1103,6 +1103,7 @@ impl From<yinz_types::input::cli_assets::CliAssets>
             }),
             update_configuration: cli_assets.update_configuration,
             update_layout: cli_assets.update_layout,
+            update_themes: cli_assets.update_themes,
             timezone: cli_assets.timezone,
         }
     }
@@ -1146,6 +1147,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::CliAssets>
                 .context("decode client update resume identity")?,
             update_configuration: cli_assets.update_configuration,
             update_layout: cli_assets.update_layout,
+            update_themes: cli_assets.update_themes,
             timezone: cli_assets.timezone,
         })
     }

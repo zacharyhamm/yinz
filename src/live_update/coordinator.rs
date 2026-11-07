@@ -984,6 +984,7 @@ pub(super) fn execute_release(
             .context("missing source inventory")?;
         original.clients = frozen.clients;
         original.configuration = frozen.configuration;
+        original.themes = frozen.themes;
         store.save()?;
         publish_participants(store, source)?;
         start_replacement(store)
@@ -1356,6 +1357,7 @@ pub(super) fn replacement_assets(
             .context("missing effective configuration")?
             .to_owned(),
     );
+    assets.update_themes = source.themes.clone();
     assets.configuration_options = None;
     assets.layout = None;
     assets.update_target = Some(journal.operation.clone());

@@ -138,6 +138,7 @@ fn stalled_update_preparation_reports_pending_work_and_runs_failure_cleanup() {
             running_binary_sha256: None,
             assets: Default::default(),
             configuration: serde_json::json!(""),
+            themes: None,
             clients: vec![],
         };
         let server = Server::new(socket.clone(), inventory.clone(), stall_reply);

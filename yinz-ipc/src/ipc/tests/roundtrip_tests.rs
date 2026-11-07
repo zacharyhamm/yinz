@@ -248,6 +248,7 @@ fn test_client_messages() {
                 supports_source_update: true,
                 resumed: Some(("operation".into(), ClientId::new(7))),
                 configuration: "default_mode \"locked\"\n".into(),
+                themes: Some("themes {\n}\n".into()),
                 mode: InputMode::Locked,
             }],
         },
@@ -810,6 +811,7 @@ fn test_client_messages() {
             update_source_session: None,
             update_configuration: None,
             update_layout: None,
+            update_themes: None,
             update_resume: None,
         },
     });
@@ -837,6 +839,7 @@ fn test_client_messages() {
             update_source_session: None,
             update_configuration: None,
             update_layout: None,
+            update_themes: None,
             update_resume: None,
         },
     });
@@ -934,6 +937,7 @@ fn test_client_messages() {
             update_source_session: None,
             update_configuration: None,
             update_layout: None,
+            update_themes: None,
             update_resume: None,
         },
     });
@@ -6176,6 +6180,7 @@ fn attach_without_session_request_capability_decodes_as_unsupported() {
     assert!(!json.supports_source_update);
     assert!(json.update_target.is_none() && json.update_source_session.is_none());
     assert!(json.update_resume.is_none() && json.update_configuration.is_none());
+    assert!(json.update_themes.is_none());
     assert!(json.timezone.is_none());
 }
 
@@ -6227,6 +6232,7 @@ fn update_wire_messages_preserve_operation_correlation_and_restart_source() {
                 serde_json::to_string(&yinz_types::input::layout::Layout::default()).unwrap(),
             ),
             update_configuration: Some("default_mode \"locked\"\n".into()),
+            update_themes: Some("themes {\n}\n".into()),
             ..Default::default()
         },
         tab_number_to_focus: None,

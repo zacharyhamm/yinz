@@ -1800,14 +1800,18 @@ impl Themes {
         Ok(themes)
     }
     pub fn to_kdl(&self) -> Option<KdlNode> {
+        // we do not serialize themes that have been defined in external files so as not to
+        // clog up the configuration file definitions
+        self.to_kdl_where(|_, theme| !theme.sourced_from_external_file)
+    }
+    /// A `themes` node holding every theme `include` selects, or `None` when it selects none.
+    pub fn to_kdl_where(&self, include: impl Fn(&str, &Theme) -> bool) -> Option<KdlNode> {
         let mut theme_node = KdlNode::new("themes");
         let mut themes = KdlDocument::new();
         let mut has_themes = false;
         let sorted_themes: BTreeMap<String, Theme> = self.inner().clone().into_iter().collect();
         for (theme_name, theme) in sorted_themes {
-            if theme.sourced_from_external_file {
-                // we do not serialize themes that have been defined in external files so as not to
-                // clog up the configuration file definitions
+            if !include(&theme_name, &theme) {
                 continue;
             }
             has_themes = true;

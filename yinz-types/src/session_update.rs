@@ -92,6 +92,9 @@ pub struct Client {
     pub supports_source_update: bool,
     pub resumed: Option<(String, ClientId)>,
     pub configuration: String,
+    /// File-sourced themes for `configuration`, which omits them. Older sources leave this absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub themes: Option<String>,
     pub mode: crate::data::InputMode,
 }
 
@@ -107,6 +110,9 @@ pub struct Inventory {
     pub running_binary_sha256: Option<String>,
     pub assets: CliAssets,
     pub configuration: serde_json::Value,
+    /// File-sourced themes for `configuration`, which omits them. Older sources leave this absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub themes: Option<String>,
     pub clients: Vec<Client>,
 }
 
