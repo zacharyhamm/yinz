@@ -81,7 +81,7 @@ impl Updates {
                 ParticipantRequest::Publish { operation } => {
                     self.published = Some(operation.clone())
                 },
-                ParticipantRequest::Rollback { operation }
+                ParticipantRequest::Rollback { operation, .. }
                     if self.published.as_deref() == Some(operation) =>
                 {
                     self.published = None

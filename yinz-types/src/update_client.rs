@@ -40,6 +40,12 @@ pub enum ParticipantRequest {
     },
     Rollback {
         operation: String,
+        /// The coordinator sent `Prepare` but never recorded its success. Preparation cannot
+        /// stage over another operation's active journal, so such a journal proves this
+        /// operation left nothing to roll back. Omitted on the wire when false, so peers
+        /// without this field exchange the same request.
+        #[serde(default, skip_serializing_if = "is_false")]
+        prepare_unconfirmed: bool,
     },
     Commit {
         operation: String,
@@ -54,10 +60,14 @@ impl ParticipantRequest {
             | Self::Prepare { operation, .. }
             | Self::Status { operation }
             | Self::Publish { operation }
-            | Self::Rollback { operation }
+            | Self::Rollback { operation, .. }
             | Self::Commit { operation } => Some(operation),
         }
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -112,3 +122,7 @@ pub struct Reply {
     pub token: String,
     pub result: Result<ClientReply, String>,
 }
+
+#[cfg(test)]
+#[path = "unit/update_client.rs"]
+mod tests;

@@ -295,9 +295,17 @@ pub(crate) fn participate(invocation: ParticipantInvocation) -> Result<serde_jso
             let operation = request
                 .operation()
                 .context("participant operation is missing")?;
-            let mut transaction = if matches!(request, ParticipantRequest::Rollback { .. }) {
-                let Some(transaction) =
-                    update::transaction::Transaction::lookup(&executable, &data_dir, operation)?
+            let mut transaction = if let ParticipantRequest::Rollback {
+                prepare_unconfirmed,
+                ..
+            } = request
+            {
+                let Some(transaction) = update::transaction::Transaction::lookup_for_rollback(
+                    &executable,
+                    &data_dir,
+                    operation,
+                    prepare_unconfirmed,
+                )?
                 else {
                     return serde_json::to_value(update::transaction::Status::RolledBack)
                         .context("encode untouched installation status");

@@ -38,6 +38,7 @@ fn repeated_requests_return_original_result_and_conflicting_tokens_are_rejected(
             "publish",
             ClientRequest::Participant(ParticipantRequest::Rollback {
                 operation: "operation-1".into(),
+                prepare_unconfirmed: false,
             })
         )
         .is_err());
@@ -175,6 +176,7 @@ fn old_publication_reply_cannot_rearm_restart_after_rollback() {
         "rollback",
         ParticipantRequest::Rollback {
             operation: "op".into(),
+            prepare_unconfirmed: false,
         },
     );
     updates.poll("rollback").unwrap();
@@ -202,6 +204,7 @@ fn lost_helper_acknowledgement_is_settled_before_later_rollback() {
         "rollback",
         ParticipantRequest::Rollback {
             operation: "old".into(),
+            prepare_unconfirmed: false,
         },
     );
     updates.poll("rollback").unwrap();

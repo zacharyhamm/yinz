@@ -1179,6 +1179,13 @@ fn participant(
     }
 }
 
+/// A participant asked to prepare whose success was never recorded may not have staged
+/// anything. Its rollback treats another operation's active journal as nothing to undo
+/// instead of a recovery failure. Every later state keeps the strict ownership check.
+fn prepare_unconfirmed(participant: &Participant) -> bool {
+    participant.state == "preparing"
+}
+
 fn rollback_participant(
     source: &mut Connection,
     store: &Store,
@@ -1187,6 +1194,7 @@ fn rollback_participant(
     let participant = &store.journal.participants[index];
     let request = ParticipantRequest::Rollback {
         operation: store.journal.operation.clone(),
+        prepare_unconfirmed: prepare_unconfirmed(participant),
     };
     if !matches!(participant.route, Route::Client(_)) {
         return self::participant(source, &store.journal, index, request);
@@ -1708,6 +1716,7 @@ fn recreate_source(store: &mut Store) -> Result<Connection> {
         }
         let request = ParticipantRequest::Rollback {
             operation: operation.clone(),
+            prepare_unconfirmed: prepare_unconfirmed(participant),
         };
         let invocation = ParticipantInvocation {
             executable: participant.installation.executable.clone(),

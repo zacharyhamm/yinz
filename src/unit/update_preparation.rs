@@ -181,3 +181,157 @@ fn stalled_update_preparation_reports_pending_work_and_runs_failure_cleanup() {
             .any(|command| matches!(command, Command::ReleaseMigration { .. })));
     }
 }
+
+/// An installation that another, unfinished update has already prepared, as when a remote
+/// session's update publishes a client host's installation before that host's own session
+/// starts updating.
+struct ForeignInstallation {
+    _directory: tempfile::TempDir,
+    executable: PathBuf,
+    data_dir: PathBuf,
+}
+
+impl ForeignInstallation {
+    const OWNER: &str = "06f0f3ef-e66c-4b97-a1c1-6c00f74edb45";
+
+    fn new() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let release = directory.path().join("release");
+        std::fs::create_dir_all(release.join("plugins/builtins")).unwrap();
+        std::fs::write(release.join("yinz"), b"foreign binary").unwrap();
+        std::fs::write(release.join("plugins/builtins/main.scm"), b"foreign plugin").unwrap();
+        let executable = directory.path().join("yinz");
+        std::fs::write(&executable, b"installed binary").unwrap();
+        let data_dir = directory.path().join("data");
+        std::fs::create_dir_all(data_dir.join("plugins/builtins")).unwrap();
+        std::fs::write(
+            data_dir.join("plugins/builtins/main.scm"),
+            b"installed plugin",
+        )
+        .unwrap();
+        let mut foreign = update::transaction::Transaction::prepare(
+            &release,
+            &executable,
+            &data_dir,
+            Self::OWNER,
+        )
+        .unwrap();
+        foreign.publish().unwrap();
+        Self {
+            _directory: directory,
+            executable: executable.canonicalize().unwrap(),
+            data_dir,
+        }
+    }
+
+    fn assert_untouched(&self) {
+        assert_eq!(std::fs::read(&self.executable).unwrap(), b"foreign binary");
+        assert_eq!(
+            std::fs::read(self.data_dir.join("plugins/builtins/main.scm")).unwrap(),
+            b"foreign plugin"
+        );
+        let foreign =
+            update::transaction::Transaction::lookup(&self.executable, &self.data_dir, Self::OWNER)
+                .unwrap()
+                .expect("the other update still owns its installation");
+        assert_eq!(foreign.status(), update::transaction::Status::Published);
+    }
+}
+
+/// Recovers a session update whose single installation another update owns, starting from the
+/// journal a failed preparation leaves behind with its participant in `state`.
+fn recover_installation_owned_by_another_update(state: &str) -> (Store, Result<()>) {
+    let installation = ForeignInstallation::new();
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("session");
+    let operation = uuid::Uuid::new_v4().to_string();
+    // This is how the participant's preparation fails.
+    let release = root.path().join("release");
+    std::fs::create_dir_all(release.join("plugins/builtins")).unwrap();
+    std::fs::write(release.join("yinz"), b"new binary").unwrap();
+    let error = update::transaction::Transaction::prepare(
+        &release,
+        &installation.executable,
+        &installation.data_dir,
+        &operation,
+    )
+    .err()
+    .expect("another unfinished update owns the installation");
+    assert!(
+        format!("{error:#}").contains(&format!(
+            "installation belongs to unfinished update {}",
+            ForeignInstallation::OWNER
+        )),
+        "{error:#}"
+    );
+    let mut store = Store::open(&socket, root.path(), &operation).unwrap();
+    let inventory = Inventory {
+        session: "session".into(),
+        server_pid: std::process::id(),
+        server_instance: "source".into(),
+        executable: installation.executable.clone(),
+        running_version: "1.0.0".into(),
+        running_binary_sha256: None,
+        assets: Default::default(),
+        configuration: serde_json::json!(""),
+        themes: None,
+        clients: vec![],
+    };
+    store.journal.source = Some(inventory.clone());
+    store.journal.participants.push(Participant {
+        installation: Installation {
+            host: "host".into(),
+            executable: installation.executable.clone(),
+            data_dir: installation.data_dir.clone(),
+            running_version: "1.0.0".into(),
+            installed_version: "1.0.0".into(),
+            target: "target".into(),
+            capabilities: crate::live_update::capabilities(),
+        },
+        route: Route::Server,
+        state: state.into(),
+    });
+    store
+        .journal
+        .errors
+        .push(format!("Preparation failed: {error:#}"));
+    store.phase(Phase::Prepare).unwrap();
+    let server = Server::new(socket.clone(), inventory, false);
+    let mut source = Connection::connect(&socket).unwrap();
+    let result = recover(&mut store, &mut source, None);
+    installation.assert_untouched();
+    if result.is_ok() {
+        assert!(server
+            .commands
+            .lock()
+            .iter()
+            .any(|command| matches!(command, Command::AbortMigration)));
+    }
+    (store, result)
+}
+
+#[test]
+fn failed_preparation_recovery_leaves_another_updates_installation_and_reopens_the_source() {
+    let (store, result) = recover_installation_owned_by_another_update("preparing");
+    result.unwrap();
+    assert_eq!(store.journal.phase, Phase::Failed);
+    assert!(store.journal.source_restored);
+    assert_eq!(store.journal.participants[0].state, "rolled_back");
+}
+
+#[test]
+fn confirmed_preparation_recovery_still_refuses_another_updates_installation() {
+    // Only an unconfirmed preparation may conclude it staged nothing here.
+    let (store, result) = recover_installation_owned_by_another_update("prepared");
+    let error = format!("{:#}", result.unwrap_err());
+    assert!(
+        error.contains(&format!(
+            "installation journal belongs to operation {}",
+            ForeignInstallation::OWNER
+        )),
+        "{error}"
+    );
+    assert_eq!(store.journal.phase, Phase::RecoveryRequired);
+    assert!(!store.journal.source_restored);
+    assert_eq!(store.journal.participants[0].state, "prepared");
+}

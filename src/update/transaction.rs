@@ -403,12 +403,28 @@ impl Transaction {
         data_dir: &Path,
         operation: &str,
     ) -> Result<Option<Self>> {
+        Self::lookup_for_rollback(executable, data_dir, operation, false)
+    }
+
+    /// Like [`Self::lookup`], but when `prepare_unconfirmed` (this operation's preparation
+    /// never reported success), another operation's active journal also means absence:
+    /// preparation refuses to stage over an active journal, so this operation can own nothing
+    /// here. That journal and its files are left exactly as they are.
+    pub(crate) fn lookup_for_rollback(
+        executable: &Path,
+        data_dir: &Path,
+        operation: &str,
+        prepare_unconfirmed: bool,
+    ) -> Result<Option<Self>> {
         let location = Location::lock(executable, data_dir)?;
         let Some(journal) = location.read_journal()? else {
             location.check_claim(operation)?;
             return Ok(None);
         };
         if journal.operation != operation {
+            if prepare_unconfirmed && !journal.status.terminal() {
+                return Ok(None);
+            }
             anyhow::ensure!(
                 journal.status.terminal(),
                 "installation journal belongs to operation {}",
