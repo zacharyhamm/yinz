@@ -963,8 +963,8 @@ fn symlink_loops_in_protected_paths_do_not_hang_the_guard() {
 fn assert_protected(env: &mut PluginEnv, commands: impl IntoIterator<Item = PluginCommand>) {
     for command in commands {
         let description = format!("{command:?}");
-        let error = fs_mutation_error(env, command)
-            .unwrap_or_else(|| panic!("{description} was allowed"));
+        let error =
+            fs_mutation_error(env, command).unwrap_or_else(|| panic!("{description} was allowed"));
         assert!(error.contains(PROTECTED_STATE), "{description}: {error}");
     }
 }

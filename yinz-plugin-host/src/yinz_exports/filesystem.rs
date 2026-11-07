@@ -583,7 +583,8 @@ impl ProtectedState {
                 self.on_the_way.insert(id);
             }
         } else if let Some(folder) = real_id {
-            self.missing.push((folder, missing.iter().map(|name| fold_name(name)).collect()));
+            self.missing
+                .push((folder, missing.iter().map(|name| fold_name(name)).collect()));
         }
         Some(missing.iter().fold(real, |path, name| path.join(name)))
     }
@@ -608,7 +609,6 @@ fn path_steps(path: &Path) -> impl DoubleEndedIterator<Item = PathStep> + '_ {
         std::path::Component::Normal(name) => Some(PathStep::Name(name.to_os_string())),
     })
 }
-
 
 /// Re-spell a real path in the virtual root the plugin used, so that a listing can be fed back in.
 fn virtual_path(env: &PluginEnv, real: &Path, requested: &Path) -> PathBuf {
