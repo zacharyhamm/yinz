@@ -334,6 +334,47 @@ fn update_transaction_lookup_distinguishes_absence_from_another_active_operation
 }
 
 #[test]
+fn update_transaction_unconfirmed_rollback_leaves_another_operations_claim() {
+    let installation = Installation::new(true);
+    installation.prepare().publish().unwrap();
+    // Another executable sharing the data directory has no journal, but its preparation is
+    // refused by the first operation's claim.
+    let other_binary = installation.binary.with_file_name("other-yinz");
+    fs::write(&other_binary, b"other binary").unwrap();
+    let refused = Transaction::prepare(
+        &installation.source,
+        &other_binary,
+        &installation.data,
+        "operation-2",
+    )
+    .err()
+    .expect("the first operation claims the shared data directory");
+    assert!(
+        format!("{refused:#}")
+            .contains("builtin installation belongs to unfinished update operation-1"),
+        "{refused:#}"
+    );
+    assert!(Transaction::lookup_for_rollback(
+        &other_binary,
+        &installation.data,
+        "operation-2",
+        false
+    )
+    .is_err());
+    assert!(Transaction::lookup_for_rollback(
+        &other_binary,
+        &installation.data,
+        "operation-2",
+        true
+    )
+    .unwrap()
+    .is_none());
+    assert_eq!(fs::read(&other_binary).unwrap(), b"other binary");
+    installation.assert_new();
+    assert_eq!(installation.open().status(), Status::Published);
+}
+
+#[test]
 fn update_transaction_finished_binary_can_update_another_data_directory() {
     let installation = Installation::new(true);
     let mut transaction = installation.prepare();

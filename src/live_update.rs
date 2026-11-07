@@ -305,7 +305,8 @@ pub(crate) fn participate(invocation: ParticipantInvocation) -> Result<serde_jso
                     &data_dir,
                     operation,
                     prepare_unconfirmed,
-                )?
+                )
+                .context("look up installation journal for rollback")?
                 else {
                     return serde_json::to_value(update::transaction::Status::RolledBack)
                         .context("encode untouched installation status");

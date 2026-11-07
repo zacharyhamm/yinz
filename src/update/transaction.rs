@@ -407,9 +407,11 @@ impl Transaction {
     }
 
     /// Like [`Self::lookup`], but when `prepare_unconfirmed` (this operation's preparation
-    /// never reported success), another operation's active journal also means absence:
-    /// preparation refuses to stage over an active journal, so this operation can own nothing
-    /// here. That journal and its files are left exactly as they are.
+    /// never reported success), another operation's ownership also means absence. Preparation
+    /// records this operation's journal before staging anything, and refuses to do so over
+    /// another operation's active journal or data-directory claim. Without this operation's
+    /// journal it can own nothing here, and the other operation's journal, claim and files are
+    /// left exactly as they are.
     pub(crate) fn lookup_for_rollback(
         executable: &Path,
         data_dir: &Path,
@@ -418,11 +420,13 @@ impl Transaction {
     ) -> Result<Option<Self>> {
         let location = Location::lock(executable, data_dir)?;
         let Some(journal) = location.read_journal()? else {
-            location.check_claim(operation)?;
+            if !prepare_unconfirmed {
+                location.check_claim(operation)?;
+            }
             return Ok(None);
         };
         if journal.operation != operation {
-            if prepare_unconfirmed && !journal.status.terminal() {
+            if prepare_unconfirmed {
                 return Ok(None);
             }
             anyhow::ensure!(
