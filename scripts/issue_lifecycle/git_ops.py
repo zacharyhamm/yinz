@@ -670,6 +670,8 @@ def worktree_matches(worktree, branch, head):
         clean(worktree)
         current = git(worktree, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)[1]
         return current == branch and git(worktree, "rev-parse", "HEAD")[1] == head
+    except Cancelled:
+        raise
     except (LifecycleError, OSError):
         # An unborn HEAD, a removed worktree or a broken Git link is a change.
         return False

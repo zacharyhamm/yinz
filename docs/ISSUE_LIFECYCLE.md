@@ -247,11 +247,12 @@ and check for new defects. Workers must read the skill's
 [planning standards](../.agents/skills/issue-lifecycle/references/planning.md) and
 [review standards](../.agents/skills/issue-lifecycle/references/review.md).
 
-Existing records need no rewrite: new fields are optional, and saved prompts,
-snapshots and in-flight assignments keep their original contracts. Legacy plans
-beyond version one are treated as having used the allowance; legacy first-version
-plans may receive one automatic revision. Already-recorded revision authorizations
-remain usable. Newly dispatched revision workers use the richer result contract.
+Existing records need no rewrite: new fields are optional, and saved prompts and
+snapshots are kept. Results are always validated against the current contract;
+an in-flight assignment launched under an older prompt may need a restart. Legacy
+plans beyond version one are treated as having used the allowance; legacy
+first-version plans may receive one automatic revision. Already-recorded revision
+authorizations remain usable.
 
 A clear review returns `approve_plan`. Revision authorization does not approve
 implementation: record that separate approval explicitly with `approve`.

@@ -3065,8 +3065,8 @@ Deno.test("revision and restart deliver exact feedback and cumulative context", 
   equal(state.planVersion, 4);
 });
 
-Deno.test("new revision contracts reject missing responses while old assignments import unchanged", async () => {
-  for (const legacy of [false, true]) {
+Deno.test("revisions reject missing responses", async () => {
+  {
     const h = harness(blockedInitialPlan(), driverPlan);
     h.controls.runError = "Interrupted observation";
     await rejects(
@@ -3074,26 +3074,13 @@ Deno.test("new revision contracts reject missing responses while old assignments
         h.methods.run_agent.execute({ ...options, role: "plan" }, h.context),
       "Interrupted observation",
     );
-    const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
-    const prompt = task.prompt;
-    if (legacy) delete task.contractVersion;
-    h.resources.set("agent-task", task);
     h.controls.runError = undefined;
     h.controls.evidence = driverPlan;
-    if (legacy) {
-      await h.methods.resume_agent.execute({}, h.context);
-      equal((await loadState(h.context)).planVersion, 2);
-      equal(
-        AgentTaskSchema.parse(h.resources.get("agent-task")).prompt,
-        prompt,
-      );
-    } else {
-      await rejects(
-        () => h.methods.resume_agent.execute({}, h.context),
-        "revision",
-      );
-      equal((await loadState(h.context)).planVersion, 1);
-    }
+    await rejects(
+      () => h.methods.resume_agent.execute({}, h.context),
+      "revision",
+    );
+    equal((await loadState(h.context)).planVersion, 1);
   }
   const h = harness(blockedInitialPlan());
   h.controls.evidenceForRole = (task) => ({
@@ -3126,7 +3113,7 @@ Deno.test("legacy first plans get one automatic revision and later versions get 
   }
 });
 
-Deno.test("a saved legacy revision authorization resumes its original contract and prompt", async () => {
+Deno.test("a saved revision authorization resumes its original prompt", async () => {
   const h = harness();
   h.controls.evidenceForRole = blockedPlanEvidence;
   await h.drive.execute({ agent: options }, h.context);
@@ -3134,13 +3121,10 @@ Deno.test("a saved legacy revision authorization resumes its original contract a
   await h.drive.execute({ revisionApproval: revisionApproval(h) }, h.context);
   const driver = DriverSchema.parse(h.resources.get("driver"));
   const task = driver.revisionAuthorization!.assignment;
-  delete task.contractVersion;
   delete task.request;
-  task.prompt = "Original legacy planner prompt; return the old plan contract";
+  task.prompt = "Original saved planner prompt";
   task.promptDigest = await promptDigest(task.prompt);
   h.resources.set("driver", driver);
-  h.controls.evidenceForRole = (task) =>
-    task.role === "plan" ? driverPlan : blockedPlanEvidence(task);
   await h.drive.execute({}, h.context);
   equal(result(h).decision, "authorize_plan_revision");
   equal(result(h).planVersion, 3);

@@ -66,7 +66,6 @@ export const AgentTaskSchema = z.object({
   config: AgentConfigSchema,
   prompt: z.string().min(1),
   promptDigest: z.string().regex(/^[0-9a-f]{64}$/),
-  contractVersion: z.literal(2).optional(),
   request: z.string().min(1).optional(),
   before: StateSchema,
   next: StateSchema.optional(),
@@ -418,28 +417,26 @@ async function applyResult(
     );
   }
   const evidence = RoleSchemas[task.role].parse(response);
-  if (task.contractVersion === 2) {
-    if (task.role === "plan" && !initialPlanning(task.before)) {
-      const { revision } = RevisionPlanSchema.parse(response);
-      const prior = previousPlanFindings(task.before);
-      for (
-        const finding of prior.filter((f) =>
-          ["high", "critical"].includes(f.severity) && !f.resolution
-        )
-      ) {
-        if (!revision.responses.some((r) => r.findingId === finding.id)) {
-          throw new Error(
-            `Revision must respond to blocking finding ${finding.id}`,
-          );
-        }
+  if (task.role === "plan" && !initialPlanning(task.before)) {
+    const { revision } = RevisionPlanSchema.parse(response);
+    const prior = previousPlanFindings(task.before);
+    for (
+      const finding of prior.filter((f) =>
+        ["high", "critical"].includes(f.severity) && !f.resolution
+      )
+    ) {
+      if (!revision.responses.some((r) => r.findingId === finding.id)) {
+        throw new Error(
+          `Revision must respond to blocking finding ${finding.id}`,
+        );
       }
     }
-    if (task.role === "review_plan") {
-      validatePlanReview(
-        current,
-        evidence as z.infer<typeof ActionSchemas.review_plan>,
-      );
-    }
+  }
+  if (task.role === "review_plan") {
+    validatePlanReview(
+      current,
+      evidence as z.infer<typeof ActionSchemas.review_plan>,
+    );
   }
   let next = current;
   if (task.role === "implement" || task.role === "review_code") {
@@ -593,7 +590,6 @@ export async function prepareTask(
     id: dependencies.id(),
     behaviorName: `issue-agent-${dependencies.id()}`,
     role: args.role,
-    contractVersion: 2,
     ...(args.request ? { request: args.request } : {}),
     config,
     prompt,

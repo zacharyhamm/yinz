@@ -692,7 +692,7 @@ async function drive(
               }. Repair and obtain review of a new commit, or rerun verify explicitly for an environment failure${
                 atReview
                   ? ""
-                  : ". The worktree is no longer clean at the reviewed commit; restore it before rerunning verify"
+                  : ". The worktree is no longer clean at the reviewed commit: obtain review of its new commit, or restore the reviewed commit before rerunning verify"
               }`,
             );
           }

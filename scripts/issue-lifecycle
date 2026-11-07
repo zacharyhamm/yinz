@@ -28,17 +28,16 @@ def issue_name(workspace, item):
     return f"issue-{hashlib.sha256(workspace.encode()).hexdigest()[:24]}-{item}"
 
 
-def query_state(name, tail, control, env):
+def query_resource(name, resource, tail, control, env):
+    """Return the issue's single current record of one resource, or None."""
     query = subprocess.run([
-        "swamp", "data", "query", f"modelName == {json.dumps(name)} && name == 'state'",
+        "swamp", "data", "query", f"modelName == {json.dumps(name)} && name == {json.dumps(resource)}",
         "--select", "content", "--json", *tail,
     ], text=True, cwd=control, env=env, capture_output=True)
     if query.returncode:
         raise ValueError(query.stderr + query.stdout)
     records = json.loads(query.stdout)["results"]
-    if len(records) != 1:
-        raise ValueError("expected exactly one current lifecycle state")
-    return records[0]
+    return records[0] if len(records) == 1 else None
 
 
 def print_checklist(name, verification):
@@ -131,7 +130,10 @@ def main():
         result = subprocess.run(command, input=json.dumps(inputs), text=True, cwd=control, env=env, stdout=sys.stderr)
         if result.returncode:
             return result.returncode
-        verification = query_state(name, tail, control, env).get("verification")
+        state = query_resource(name, "state", tail, control, env)
+        if state is None:
+            raise ValueError("expected exactly one current lifecycle state")
+        verification = state.get("verification")
         if not verification:
             raise ValueError("verify recorded no verification; inspect the exact workflow run")
         print_checklist(name, verification)
@@ -144,17 +146,9 @@ def main():
     result = subprocess.run(command, input=json.dumps(inputs), text=True, cwd=control, env=env, stdout=sys.stderr)
     if result.returncode:
         return result.returncode
-    query = subprocess.run([
-        "swamp", "data", "query", f"modelName == {json.dumps(name)} && name == 'handoff'",
-        "--select", "content", "--json", *tail,
-    ], text=True, cwd=control, env=env, capture_output=True)
-    if query.returncode:
-        sys.stderr.write(query.stderr + query.stdout)
-        return query.returncode
-    records = json.loads(query.stdout)["results"]
-    if len(records) != 1 or records[0].get("status") != "current":
+    handoff = query_resource(name, "handoff", tail, control, env)
+    if handoff is None or handoff.get("status") != "current":
         raise ValueError("drive did not return a current handoff; inspect the exact workflow run")
-    handoff = records[0]
     print(handoff["presentation"], file=sys.stderr)
     print(json.dumps(handoff))
     return 0
