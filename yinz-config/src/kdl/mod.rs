@@ -1809,11 +1809,12 @@ impl Themes {
         let mut theme_node = KdlNode::new("themes");
         let mut themes = KdlDocument::new();
         let mut has_themes = false;
-        let sorted_themes: BTreeMap<String, Theme> = self.inner().clone().into_iter().collect();
+        let sorted_themes: BTreeMap<&String, &Theme> = self
+            .inner()
+            .iter()
+            .filter(|(theme_name, theme)| include(theme_name, theme))
+            .collect();
         for (theme_name, theme) in sorted_themes {
-            if !include(&theme_name, &theme) {
-                continue;
-            }
             has_themes = true;
             let mut current_theme_node = KdlNode::new(theme_name.clone());
             let mut current_theme_node_children = KdlDocument::new();

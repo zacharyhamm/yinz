@@ -246,14 +246,20 @@ fn dispatch(
                 assets.update_target.as_deref() == Some(request.operation.as_str())
             };
             // Sources that predate carried themes make decoding read theme files; keep it
-            // outside the session-state write lock.
+            // outside the session-state write lock. Rereading needs only where themes live,
+            // not the startup assets' serialized configuration and layout.
             let assets = state
                 .read()
                 .to_anyhow()
                 .context("read update startup assets")?
                 .update_startup_assets
-                .clone()
-                .filter(targets_this_update)
+                .as_ref()
+                .filter(|assets| targets_this_update(assets))
+                .map(|assets| yinz_types::input::cli_assets::CliAssets {
+                    config_dir: assets.config_dir.clone(),
+                    configuration_options: assets.configuration_options.clone(),
+                    ..Default::default()
+                })
                 .context("client restoration belongs to a different update target")?;
             let mut saved = Vec::new();
             for client in clients {
