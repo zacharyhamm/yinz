@@ -580,10 +580,18 @@ impl Screen {
                     // The process is already released. Never send ClosePane for
                     // a live terminal: that would terminate its supervisor.
                     let pane_id = pane.pid();
-                    if matches!(pane_id, PaneId::Plugin(_)) || pane.is_held() {
+                    // A held pane went to the new server with its scrollback dump, if any.
+                    let retire = match pane_id {
+                        PaneId::Plugin(_) => Some(PtyInstruction::ClosePane(pane_id, None)),
+                        PaneId::Terminal(_) if pane.is_held() => {
+                            Some(PtyInstruction::CloseDepartedPane(pane_id))
+                        },
+                        PaneId::Terminal(_) => None,
+                    };
+                    if let Some(retire) = retire {
                         self.bus
                             .senders
-                            .send_to_pty(PtyInstruction::ClosePane(pane_id, None))
+                            .send_to_pty(retire)
                             .context("retire source pane without a process")
                             .non_fatal();
                     }

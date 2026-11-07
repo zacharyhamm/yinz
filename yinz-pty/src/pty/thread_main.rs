@@ -227,6 +227,15 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     })
                     .with_context(|| format!("failed to close pane {:?}", id))?;
             },
+            PtyInstruction::CloseDepartedPane(id) => {
+                pty.close_departed_pane(id)
+                    .and_then(|_| {
+                        pty.bus
+                            .senders
+                            .send_to_server(ServerInstruction::UnblockInputThread)
+                    })
+                    .with_context(|| format!("failed to close departed pane {id:?}"))?;
+            },
             PtyInstruction::CloseTab(ids) => {
                 pty.close_tab(ids)
                     .and_then(|_| {

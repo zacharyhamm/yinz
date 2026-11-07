@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use yinz_runtime::consts::YINZ_TMP_DIR;
 use yinz_runtime::errors::prelude::*;
+use yinz_types::input::command::RunCommand;
 
 /// The private folder that holds every scrollback dump.
 pub fn scrollback_dump_dir() -> PathBuf {
@@ -26,6 +27,27 @@ pub fn is_scrollback_dump(path: &Path) -> bool {
         && path
             .extension()
             .is_some_and(|extension| extension == "dump")
+}
+
+/// The dump an editor command was opened on, if it names one.
+///
+/// An editor pane's command is what follows it through a warp, a migration, a rollback or a
+/// `pty-host adopt`, so the session that ends up holding the pane learns from it that the dump
+/// is now its to delete. Most editors take the path as an argument of its own; Helix is passed
+/// `path:line` (see `build_command`), so a trailing `:<digits>` is also tried without it.
+pub fn scrollback_dump_in_command(command: &RunCommand) -> Option<PathBuf> {
+    command.args.iter().find_map(|arg| {
+        let without_line = arg
+            .rsplit_once(':')
+            .filter(|(_, line)| !line.is_empty() && line.bytes().all(|b| b.is_ascii_digit()))
+            .map(|(path, _)| path);
+        [Some(arg.as_str()), without_line]
+            .into_iter()
+            .flatten()
+            .map(Path::new)
+            .find(|path| is_scrollback_dump(path))
+            .map(Path::to_path_buf)
+    })
 }
 
 /// Write `contents` to a new file at `path` that only this user can read.

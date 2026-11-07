@@ -5603,3 +5603,90 @@ fn a_released_scrollback_editor_keeps_its_dump() {
     );
     std::fs::remove_file(&dump).unwrap();
 }
+
+fn scrollback_editor_command(dump: &std::path::Path) -> RunCommand {
+    RunCommand {
+        command: PathBuf::from("vim"),
+        args: vec!["+3".to_owned(), dump.to_str().unwrap().to_owned()],
+        ..Default::default()
+    }
+}
+
+fn held_scrollback_editor(dump: &std::path::Path) -> WarpedPane {
+    WarpedPane {
+        held: Some(yinz_types::data::HeldTerminal {
+            command: scrollback_editor_command(dump),
+            first_run: true,
+            exit_status: None,
+        }),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_session_that_takes_a_scrollback_editor_deletes_its_dump() {
+    // Adoption and reruns both record the pane's command through `track_launch`.
+    let os_api = MockOsApi::new();
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api);
+    let dump = write_scrollback_dump();
+    let editor = TerminalId::new(7);
+    pty.track_launch(editor, &scrollback_editor_command(&dump));
+    assert_eq!(pty.scrollback_dumps.get(&editor), Some(&dump));
+
+    pty.close_pane(PaneId::Terminal(editor)).unwrap();
+    assert!(!dump.exists(), "the dump must go with its editor");
+}
+
+#[test]
+fn an_adopted_held_scrollback_editor_owns_its_dump() {
+    let os_api = MockOsApi::new();
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api);
+    let dump = write_scrollback_dump();
+    let adopted = pty.adopt_terminal(&held_scrollback_editor(&dump)).unwrap();
+    assert_eq!(pty.scrollback_dumps.get(&adopted.terminal_id), Some(&dump));
+
+    pty.close_pane(PaneId::Terminal(adopted.terminal_id))
+        .unwrap();
+    assert!(!dump.exists(), "the dump must go with its editor");
+}
+
+#[test]
+fn a_held_scrollback_editor_that_departs_keeps_its_dump() {
+    let os_api = MockOsApi::new();
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api);
+    let dump = write_scrollback_dump();
+    let adopted = pty.adopt_terminal(&held_scrollback_editor(&dump)).unwrap();
+
+    pty.close_departed_pane(PaneId::Terminal(adopted.terminal_id))
+        .unwrap();
+    assert!(pty.scrollback_dumps.is_empty());
+    drop(pty);
+    assert!(
+        dump.exists(),
+        "the session that took the pane owns the dump"
+    );
+    std::fs::remove_file(&dump).unwrap();
+}
+
+#[test]
+fn a_held_scrollback_editor_given_back_keeps_its_dump() {
+    let os_api = MockOsApi::new();
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api);
+    let dump = write_scrollback_dump();
+    let payload = WarpedTab {
+        tiled_panes: vec![
+            held_scrollback_editor(&dump),
+            // An invalid handoff fails after the editor was adopted, so it is given back.
+            WarpedPane {
+                control_socket: "/invalid".into(),
+                ..held_scrollback_editor(&dump)
+            },
+        ],
+        ..Default::default()
+    };
+    assert!(pty.adopt_tab(&payload).is_err());
+    assert!(pty.scrollback_dumps.is_empty());
+    drop(pty);
+    assert!(dump.exists(), "the sending session takes the editor back");
+    std::fs::remove_file(&dump).unwrap();
+}

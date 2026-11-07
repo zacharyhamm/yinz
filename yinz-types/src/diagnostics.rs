@@ -413,6 +413,7 @@ pub enum PtyContext {
     NewTab,
     OverrideLayout,
     ClosePane,
+    CloseDepartedPane,
     CloseTab,
     ReleaseTerminalForWarp,
     AdoptTerminal,

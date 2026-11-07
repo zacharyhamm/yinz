@@ -7,7 +7,7 @@ pub(super) use super::pending_events::{replay_pending_pane_event, PendingEvents}
 use yinz_runtime::errors::prelude::*;
 use yinz_types::internal_ids::TabId;
 
-use super::{active_tab, active_tab_and_connected_client_id, Screen, ScreenInstruction};
+use super::{active_tab_and_connected_client_id, Screen, ScreenInstruction};
 use crate::background_jobs::BackgroundJob;
 use crate::notifications::denormalize_notification_response;
 use crate::os_input_output::ResizeCache;
@@ -376,13 +376,22 @@ pub fn screen_thread_main(
                     match client_tab_index_or_pane_id {
                         ClientTabIndexOrPaneId::ClientId(client_id)
                         | ClientTabIndexOrPaneId::ClientIdNoFocus(client_id) => {
-                            active_tab!(screen, client_id, |tab: &mut Tab| tab
-                            .replace_active_pane_with_editor_pane(pid, client_id), ?);
+                            // An editor that finds no pane to replace is closed, as in the
+                            // pane-id case below, so its process and scrollback dump go too.
+                            let placed = screen.get_active_tab_mut(client_id).and_then(|tab| {
+                                tab.replace_active_pane_with_editor_pane(pid, client_id)
+                            });
+                            if let Err(error) = placed {
+                                screen.forget_unplaced_pane(pid, format!("{error:#}"));
+                            }
                         },
                         ClientTabIndexOrPaneId::TabIndex(_tab_index)
                         | ClientTabIndexOrPaneId::TabIndexNoFocus(_tab_index)
                         | ClientTabIndexOrPaneId::TabIndexForClient(_tab_index, _) => {
-                            log::error!("Cannot OpenInPlaceEditor with a TabIndex");
+                            screen.forget_unplaced_pane(
+                                pid,
+                                "cannot open an in-place editor with a tab index".to_owned(),
+                            );
                         },
                         ClientTabIndexOrPaneId::PaneId(pane_id_to_replace)
                         | ClientTabIndexOrPaneId::PaneIdOrClient(pane_id_to_replace, _) => {

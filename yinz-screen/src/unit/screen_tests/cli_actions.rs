@@ -2710,3 +2710,49 @@ pub fn send_cli_launch_or_focus_plugin_action_when_plugin_is_already_loaded_for_
         "Plugin Load instruction should not be sent for an already loaded plugin"
     );
 }
+
+#[test]
+pub fn an_in_place_editor_with_nowhere_to_go_is_closed() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut mock_screen = MockScreen::new(size);
+    let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
+    let received_pty_instructions = Watched::new(vec![]);
+    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
+    let pty_thread = log_actions_in_thread!(
+        received_pty_instructions,
+        PtyInstruction::Exit,
+        pty_receiver
+    );
+    let no_active_tab = PaneId::Terminal(crate::TerminalId::new(8));
+    let tab_index = PaneId::Terminal(crate::TerminalId::new(9));
+    // Client 10 is not connected, so it has no active tab.
+    for (editor, target) in [
+        (
+            no_active_tab,
+            ClientTabIndexOrPaneId::ClientId(ClientId::new(10)),
+        ),
+        (
+            tab_index,
+            ClientTabIndexOrPaneId::TabIndex(yinz_types::internal_ids::TabId::new(0)),
+        ),
+    ] {
+        mock_screen
+            .to_screen
+            .send(ScreenInstruction::OpenInPlaceEditor(editor, target))
+            .unwrap();
+    }
+    // The second close arriving also shows the first did not end the screen thread.
+    received_pty_instructions.wait_until(
+        "both unplaced editors to be closed",
+        yinz_test_support::default_timeout(),
+        |instructions| {
+            let closed = |editor| {
+                instructions.iter().any(|instruction| {
+                    matches!(instruction, PtyInstruction::ClosePane(id, None) if *id == editor)
+                })
+            };
+            (closed(no_active_tab) && closed(tab_index)).then_some(())
+        },
+    );
+    mock_screen.teardown(vec![pty_thread, screen_thread]);
+}

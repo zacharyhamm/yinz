@@ -171,7 +171,8 @@ impl Pty {
         // not follow the pane out.
         self.originating_plugins.remove(&terminal_id);
         self.terminal_launch_commands.remove(&terminal_id);
-        // An editor carried away still has its scrollback dump open, so it is not deleted.
+        // An editor carried away still has its scrollback dump open, so it is not deleted; the
+        // session that takes the pane claims it from the editor's command.
         self.scrollback_dumps.remove(&terminal_id);
     }
 
@@ -219,6 +220,8 @@ impl Pty {
             };
             let mut cmd = held.command.clone();
             cmd.originating_plugin = None;
+            // A held pane starts nothing, so `track_launch` never sees its command.
+            self.claim_scrollback_dump(terminal_id, &cmd);
             self.bus
                 .senders
                 .send_to_screen(ScreenInstruction::UpdatePaneHost(
@@ -406,7 +409,9 @@ impl Pty {
     pub(crate) fn give_back_adopted(&mut self, terminal_id: TerminalId, held: bool) {
         self.warp_recovery.remove(&terminal_id);
         if held {
-            self.close_pane(PaneId::Terminal(terminal_id)).non_fatal();
+            // The sending session takes the pane back, and its dump with it.
+            self.close_departed_pane(PaneId::Terminal(terminal_id))
+                .non_fatal();
             return;
         }
         if let Err(e) =

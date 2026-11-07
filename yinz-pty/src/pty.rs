@@ -600,7 +600,9 @@ pub struct Pty {
     /// Actions that wait for process startup as well as placement.
     pending_start_completions: HashMap<TerminalId, NotificationEnd>,
     /// Scrollback dumps opened in an in-place editor, keyed by that editor's pane. Each is
-    /// deleted when its pane closes or fails to start; a pane warped away keeps its file.
+    /// deleted when its pane closes or fails to start. A pane handed to another session is
+    /// forgotten here without deleting its file, and the session that takes it claims the dump
+    /// from the editor's command (`claim_scrollback_dump`).
     scrollback_dumps: HashMap<TerminalId, PathBuf>,
     /// Failed launches keep reruns queued until the writer discards old input.
     pending_write_cancellations: HashMap<TerminalId, u64>,
@@ -1421,8 +1423,29 @@ impl Pty {
     }
     /// Record what a pane's command says about the pane itself, each time one starts in it.
     fn track_launch(&mut self, terminal_id: TerminalId, command: &RunCommand) {
+        self.claim_scrollback_dump(terminal_id, command);
         self.terminal_launch_commands
             .insert(terminal_id, command.clone());
+    }
+
+    /// Take ownership of the scrollback dump an editor command was opened on.
+    ///
+    /// A dump moves with its editor's command, so a pane adopted from another session (or
+    /// rerun after being stranded) names its own dump; from here this session deletes it when
+    /// the pane closes. The session it came from forgot it when it let the pane go.
+    pub(crate) fn claim_scrollback_dump(&mut self, terminal_id: TerminalId, command: &RunCommand) {
+        if let Some(dump) = yinz_bus::scrollback_dump::scrollback_dump_in_command(command) {
+            self.scrollback_dumps.insert(terminal_id, dump);
+        }
+    }
+
+    /// Close a held pane that has moved to another session. Its dump went with it, so it is
+    /// forgotten rather than deleted.
+    pub(crate) fn close_departed_pane(&mut self, id: PaneId) -> Result<()> {
+        if let PaneId::Terminal(terminal_id) = id {
+            self.scrollback_dumps.remove(&terminal_id);
+        }
+        self.close_pane(id)
     }
 
     /// The remote check comes first, and deliberately so. For a remote pane

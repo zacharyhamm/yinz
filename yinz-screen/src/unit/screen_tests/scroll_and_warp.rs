@@ -4636,6 +4636,8 @@ fn warp_mixed_tab_keeps_terminal_8_distinct_from_status_bar_plugin_8() {
         .try_iter()
         .filter_map(|(i, _)| match i {
             PtyInstruction::ClosePane(id, _) => Some(id),
+            // A departed held terminal is closed without deleting a scrollback dump it took.
+            PtyInstruction::CloseDepartedPane(id @ PaneId::Terminal(_)) => Some(id),
             _ => None,
         })
         .collect();

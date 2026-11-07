@@ -940,7 +940,7 @@ impl Screen {
             if payload.held.is_some() {
                 self.bus
                     .senders
-                    .send_to_pty(PtyInstruction::ClosePane(pane.pid(), None))
+                    .send_to_pty(PtyInstruction::CloseDepartedPane(pane.pid()))
                     .non_fatal();
             }
             self.notify_warp_departure(pane.pid());
@@ -1258,7 +1258,7 @@ impl Screen {
             {
                 self.bus
                     .senders
-                    .send_to_pty(PtyInstruction::ClosePane(id, None))
+                    .send_to_pty(PtyInstruction::CloseDepartedPane(id))
                     .non_fatal();
             }
             self.notify_warp_departure(id);

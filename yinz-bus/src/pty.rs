@@ -358,6 +358,10 @@ pub enum PtyInstruction {
         Option<NotificationEnd>,
     ),
     ClosePane(PaneId, Option<NotificationEnd>),
+    /// Close a held pane that has moved to another session, as `ClosePane` does, except that
+    /// its scrollback dump (if it is an editor) is not deleted: the session that took the pane
+    /// now owns the dump.
+    CloseDepartedPane(PaneId),
     CloseTab(Vec<PaneId>),
     /// Give a pane's supervisor up so another session can take it, keeping the
     /// child alive. The opposite of `ClosePane` in the one way that matters.

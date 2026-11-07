@@ -723,6 +723,10 @@ impl Tab {
             }
         }
     }
+    /// Open the editor pane `pid` in place of `client_id`'s active pane.
+    ///
+    /// An error means the editor was not placed, and the caller has to forget its pane id so
+    /// the pty thread closes it.
     pub fn replace_active_pane_with_editor_pane(
         &mut self,
         pid: PaneId,
@@ -744,33 +748,27 @@ impl Tab {
                     self.tiled_panes
                         .replace_active_pane(Box::new(new_pane), client_id)
                 };
-                match replaced_pane {
-                    Some(replaced_pane) => {
-                        self.track_stack_list_member_id_swap(
-                            replaced_pane.pid(),
-                            PaneId::Terminal(pid),
-                        );
-                        self.insert_scrollback_editor_replaced_pane(replaced_pane, pid);
-                        self.get_active_pane(client_id)
-                            .with_context(|| format!("no active pane found for client {client_id}"))
-                            .and_then(|current_active_pane| {
-                                resize_pty!(
-                                    current_active_pane,
-                                    self.os_api,
-                                    self.senders,
-                                    self.character_cell_size
-                                )
-                            })
-                            .with_context(err_context)?;
-                    },
-                    None => {
-                        Err::<(), _>(anyhow!(
-                            "Could not find editor pane to replace - is no pane focused?"
-                        ))
-                        .with_context(err_context)
-                        .non_fatal();
-                    },
-                }
+                let Some(replaced_pane) = replaced_pane else {
+                    return Err(anyhow!(
+                        "Could not find editor pane to replace - is no pane focused?"
+                    ))
+                    .with_context(err_context);
+                };
+                self.track_stack_list_member_id_swap(replaced_pane.pid(), PaneId::Terminal(pid));
+                self.insert_scrollback_editor_replaced_pane(replaced_pane, pid);
+                // The editor is placed now, so a failed resize is not a failure to place it.
+                self.get_active_pane(client_id)
+                    .with_context(|| format!("no active pane found for client {client_id}"))
+                    .and_then(|current_active_pane| {
+                        resize_pty!(
+                            current_active_pane,
+                            self.os_api,
+                            self.senders,
+                            self.character_cell_size
+                        )
+                    })
+                    .with_context(err_context)
+                    .non_fatal();
             },
             PaneId::Plugin(_pid) => {
                 // TBD, currently unsupported
@@ -778,6 +776,10 @@ impl Tab {
         }
         Ok(())
     }
+    /// Open the editor pane `pid` in place of `pane_id_to_replace`.
+    ///
+    /// An error means the editor was not placed, and the caller has to forget its pane id so
+    /// the pty thread closes it.
     pub fn replace_pane_with_editor_pane(
         &mut self,
         pid: PaneId,
@@ -822,9 +824,8 @@ impl Tab {
                         self.insert_scrollback_editor_replaced_pane(replaced_pane, pid);
                     },
                     None => {
-                        Err::<(), _>(anyhow!("Could not find editor pane to replace"))
-                            .with_context(err_context)
-                            .non_fatal();
+                        return Err(anyhow!("Could not find editor pane to replace"))
+                            .with_context(err_context);
                     },
                 }
             },

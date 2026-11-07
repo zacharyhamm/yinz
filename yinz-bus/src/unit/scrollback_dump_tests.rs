@@ -23,6 +23,49 @@ fn only_dump_paths_count_as_dumps() {
     ));
 }
 
+fn editor_command(args: &[&str]) -> RunCommand {
+    RunCommand {
+        command: PathBuf::from("vim"),
+        args: args.iter().map(|arg| arg.to_string()).collect(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn an_editor_command_names_its_dump() {
+    let dump = new_scrollback_dump_path();
+    let path = dump.to_str().expect("dump paths are UTF-8");
+    assert_eq!(
+        scrollback_dump_in_command(&editor_command(&["+12", path])),
+        Some(dump.clone())
+    );
+    // Helix is passed `path:line`.
+    assert_eq!(
+        scrollback_dump_in_command(&editor_command(&[&format!("{path}:12")])),
+        Some(dump)
+    );
+}
+
+#[test]
+fn commands_without_a_dump_name_none() {
+    let outside = "/tmp/notes.dump".to_string();
+    let not_a_dump = scrollback_dump_dir().join("notes.txt");
+    let not_a_line = format!("{}:x", new_scrollback_dump_path().display());
+    for args in [
+        vec!["+12"],
+        vec![outside.as_str()],
+        vec![not_a_dump.to_str().unwrap()],
+        vec![not_a_line.as_str()],
+        vec![],
+    ] {
+        assert_eq!(
+            scrollback_dump_in_command(&editor_command(&args)),
+            None,
+            "{args:?}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn private_files_are_owner_only_in_an_owner_only_folder() {

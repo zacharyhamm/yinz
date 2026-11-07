@@ -1555,3 +1555,22 @@ fn reconnect_preserves_focus_in_an_inactive_tab() {
         assert_eq!(screen.get_active_pane_id(&returning), Some(pane));
     }
 }
+
+#[test]
+fn an_editor_with_no_active_pane_to_replace_is_not_placed() {
+    let mut screen = create_new_screen(
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        true,
+        true,
+    );
+    new_tab(&mut screen, 1, TabId::new(1));
+    let editor = PaneId::Terminal(crate::TerminalId::new(4));
+    let tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
+    // No pane in this tab is focused for client 2.
+    tab.replace_active_pane_with_editor_pane(editor, crate::ClientId::new(2))
+        .expect_err("there is no pane to replace, so the caller must forget the editor");
+    assert!(!tab.get_all_pane_ids().contains(&editor));
+}
