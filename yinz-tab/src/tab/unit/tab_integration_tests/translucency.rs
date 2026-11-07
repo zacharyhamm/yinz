@@ -391,6 +391,41 @@ fn translucent_overlay_created_during_sync_keeps_completed_text_until_unlock() {
 }
 
 #[test]
+fn a_synchronized_frame_that_never_ends_lapses_without_more_output() {
+    let mut tab =
+        create_new_tab_without_pane_frames(Size { cols: 60, rows: 20 }, ModeInfo::default());
+    paint(&mut tab, 1, 'a');
+    let mut history = String::new();
+    frame(&mut tab, &mut history);
+    assert_eq!(tab.sync_output_deadline(), None);
+    tab.handle_pty_bytes(TerminalId::new(1), b"\x1b[?2026h".to_vec())
+        .unwrap();
+    paint(&mut tab, 1, 'b');
+    let mut output = Output::default();
+    tab.render(&mut output, None).unwrap();
+    // The held frame paints nothing.
+    let held = output.serialize().unwrap();
+    assert!(held
+        .get(&ClientId::new(1))
+        .is_none_or(|bytes| !bytes.contains("bbbb")));
+    assert_eq!(
+        tab.active_terminal_is_mid_frame(ClientId::new(1)),
+        Some(true)
+    );
+    let deadline = tab.sync_output_deadline().unwrap();
+    assert!(!tab.expire_sync_output(deadline - std::time::Duration::from_millis(1)));
+    assert!(tab.expire_sync_output(deadline));
+    assert_eq!(tab.sync_output_deadline(), None);
+    assert_eq!(
+        tab.active_terminal_is_mid_frame(ClientId::new(1)),
+        Some(false)
+    );
+    let lapsed = frame(&mut tab, &mut history);
+    assert!(lapsed.contains("bbbb"), "{lapsed}");
+    assert!(!lapsed.contains("aaaa"), "{lapsed}");
+}
+
+#[test]
 fn translucent_overlay_beyond_original_fullscreen_bounds_retains_idle_text() {
     for floating in [false, true] {
         let mut tab =

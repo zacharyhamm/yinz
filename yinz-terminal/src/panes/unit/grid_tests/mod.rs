@@ -1347,6 +1347,7 @@ mod osc133_selection;
 mod redraw_scrollback;
 mod scroll_region_and_forwarding;
 mod sixel_and_ui;
+mod synchronized_output;
 mod vttest;
 mod wide_chars;
 

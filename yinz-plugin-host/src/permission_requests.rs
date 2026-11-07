@@ -1,4 +1,5 @@
 use super::*;
+use crate::plugin_map::PermissionInstance;
 
 #[cfg(test)]
 thread_local! {
@@ -202,19 +203,27 @@ impl PluginBridge {
         let mut answered = HashSet::new();
         let mut granted = false;
         for (plugin_id, instance_id, client) in pending.recipients {
-            let runtime = self
+            let target = self
                 .plugin_map
                 .lock()
                 .unwrap()
                 .permission_instance(plugin_id, instance_id);
-            let Some((owner, runtime)) = runtime else {
+            let Some(PermissionInstance {
+                owner,
+                runtime,
+                host,
+                workers,
+            }) = target
+            else {
                 continue;
             };
-            let mut instance = runtime.lock().unwrap();
-            let env = instance.env_mut();
+            // Never the instance's guest lock: a guest call holds it for as long as it runs, and
+            // only this thread can deliver the cancellation that stops one. The permission set
+            // and the worker coordinator are shared with the runtime and change here at once,
+            // ahead of the callbacks queued below.
             if answered.insert((plugin_id, instance_id)) {
                 // Denial answers the FIFO head, preserving all earlier grants.
-                let mut permissions = env.permissions.lock().unwrap().clone().unwrap_or_default();
+                let mut permissions = host.permissions().unwrap_or_default();
                 if status == PermissionStatus::Granted {
                     if !granted {
                         // Save before callbacks can issue synchronous queries to this thread.
@@ -231,13 +240,18 @@ impl PluginBridge {
                     }
                     permissions.extend(pending.permissions.iter().copied());
                 }
-                env.set_permissions(permissions);
-                if let Some(workers) = &env.workers {
-                    workers.permission_answer(env, &pending.permissions, status);
+                host.set_permissions(permissions);
+                if let Some(workers) = &workers {
+                    workers.permission_answer(
+                        &self.senders,
+                        plugin_id,
+                        owner,
+                        &pending.permissions,
+                        status,
+                    );
                 }
             }
-            let shared = env.plugin_config.is_shared();
-            drop(instance);
+            let shared = host.shared;
             let shutdown = shutdown.clone();
             self.plugin_executor.execute_for_plugin_tagged(
                 plugin_id,

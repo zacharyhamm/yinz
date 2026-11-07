@@ -166,11 +166,13 @@ pub fn screen_thread_main(
                 screen.sync_animation_clock(Instant::now())?;
             }
             screen.expire_notification_requests(Instant::now())?;
+            screen.expire_sync_output(Instant::now())?;
         }
         let deadline = if !screen.migration_blocks_normal_work() {
             [
                 screen.agent_control_deadline(),
                 screen.notification_deadline(),
+                screen.sync_output_deadline(),
             ]
             .into_iter()
             .flatten()

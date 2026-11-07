@@ -31,8 +31,7 @@ fn check_frames(deadline: Option<Instant>) {
         budget.reserve(frame.len()).unwrap();
         tx.send(ClientInstruction::Render(frame.into())).unwrap();
     }
-    let (input_tx, input_rx): channels::ChannelWithContext<InputInstruction> =
-        channels::unbounded();
+    let (input_tx, input_rx) = crate::input_handler::input_control_channel();
     let producer = std::thread::spawn({
         let budget = budget.clone();
         move || {
@@ -100,8 +99,7 @@ fn expiry_clears_without_a_server_render_and_does_not_clear_again_for_a_late_fra
     let budget = Arc::new(RenderBudget::new(100));
     let (tx, rx) = channels::unbounded();
     let tx = SenderWithContext::new(tx);
-    let (input_tx, input_rx): channels::ChannelWithContext<InputInstruction> =
-        channels::unbounded();
+    let (input_tx, input_rx) = crate::input_handler::input_control_channel();
     let started = Instant::now();
     let producer = std::thread::spawn({
         let os = os.clone();
@@ -174,7 +172,7 @@ fn animation_write_failure_returns_a_client_error() {
     let os = FakeClientOsApi::new().with_stdout_error(std::io::ErrorKind::BrokenPipe);
     let budget = Arc::new(RenderBudget::new(100));
     let (tx, rx) = channels::unbounded();
-    let (input_tx, _) = channels::unbounded();
+    let (input_tx, _input_rx) = crate::input_handler::input_control_channel();
     // Keep the receiver connected while it waits for the timed redraw.
     let outcome = run(
         &os,
@@ -201,7 +199,7 @@ fn controls_and_exit_do_not_wait_for_the_splash_or_write_deferred_frames() {
     tx.send(ClientInstruction::SetMouseMode(true)).unwrap();
     tx.send(ClientInstruction::Exit(ExitReason::Normal))
         .unwrap();
-    let (input_tx, input_rx) = channels::unbounded();
+    let (input_tx, input_rx) = crate::input_handler::input_control_channel();
     let outcome = run(
         &os,
         &budget,
@@ -226,7 +224,7 @@ fn run(
     budget: &Arc<RenderBudget>,
     splash: Option<crate::splash::Splash>,
     rx: &channels::Receiver<(ClientInstruction, yinz_types::diagnostics::ErrorContext)>,
-    input_tx: channels::Sender<(InputInstruction, yinz_types::diagnostics::ErrorContext)>,
+    input_tx: crate::input_handler::InputControlSender,
 ) -> crate::ClientOutcome {
     run_with_saver(os, budget, splash, rx, input_tx, None)
 }
@@ -236,7 +234,7 @@ fn run_with_saver(
     budget: &Arc<RenderBudget>,
     splash: Option<crate::splash::Splash>,
     rx: &channels::Receiver<(ClientInstruction, yinz_types::diagnostics::ErrorContext)>,
-    input_tx: channels::Sender<(InputInstruction, yinz_types::diagnostics::ErrorContext)>,
+    input_tx: crate::input_handler::InputControlSender,
     screensaver: Option<crate::screensaver::Screensaver>,
 ) -> crate::ClientOutcome {
     let nested = NestedReannounce::spawn(Box::new(FakeClientOsApi::new()), "splash-test".into());
@@ -255,7 +253,7 @@ fn run_with_saver(
         os_input: os,
         command_is_executing: &mut CommandIsExecuting::new(),
         stdin_ansi_parser: &Arc::new(Mutex::new(StdinAnsiParser::new())),
-        send_input_instructions: &SenderWithContext::new(input_tx),
+        send_input_control: &input_tx,
         nested_reannounce: &nested,
         teardown: ClientTeardown::new(24, false),
         synchronised_output: Some(SyncOutput::Csi),
@@ -282,7 +280,7 @@ fn screensaver_drains_background_frames_and_restores_on_wake() {
     let activity = saver.activity.clone();
     let (tx, rx) = channels::unbounded();
     let tx = SenderWithContext::new(tx);
-    let (input_tx, _input_rx) = channels::unbounded();
+    let (input_tx, _input_rx) = crate::input_handler::input_control_channel();
     budget.reserve(7).unwrap();
     tx.send(ClientInstruction::Render("initial".into()))
         .unwrap();

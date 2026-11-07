@@ -203,9 +203,18 @@ impl Tab {
         completion_tx: Option<NotificationEnd>,
     ) -> Result<()> {
         let file = new_scrollback_dump_path();
-        self.os_api
+        if let Err(error) = self
+            .os_api
             .write_private_file(dump, &file)
-            .context("failed to write scrollback dump")?;
+            .context("failed to write scrollback dump")
+        {
+            // The caller logs this rather than failing the session, so the action's waiter
+            // (`yinz action edit-scrollback`) has to hear about it here or it reports success.
+            if let Some(mut completion) = completion_tx {
+                completion.set_error_message(format!("{error:#}"));
+            }
+            return Err(error);
+        }
         let sent = self
             .senders
             .send_to_pty(PtyInstruction::OpenInPlaceEditor(

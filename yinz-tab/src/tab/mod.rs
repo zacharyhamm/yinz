@@ -1896,6 +1896,38 @@ impl Tab {
         }
     }
 
+    fn rendered_panes(&self) -> impl Iterator<Item = (&PaneId, &Box<dyn Pane>)> {
+        self.tiled_panes
+            .get_panes()
+            .chain(self.floating_panes.get_panes())
+            .chain(self.overlay_panes.get_panes())
+    }
+    /// The earliest moment a synchronized-output lock held by one of this tab's on-screen panes
+    /// lapses. A suppressed pane checks its own lock when it is rendered again.
+    pub fn sync_output_deadline(&self) -> Option<Instant> {
+        self.rendered_panes()
+            .filter_map(|(_, pane)| pane.sync_output_deadline())
+            .min()
+    }
+    /// Releases the synchronized-output locks that lapsed by `now`. Returns true if a pane
+    /// needs a render.
+    pub fn expire_sync_output(&mut self, now: Instant) -> bool {
+        let lapsed: Vec<PaneId> = self
+            .rendered_panes()
+            .filter(|(_, pane)| {
+                pane.sync_output_deadline()
+                    .is_some_and(|deadline| deadline <= now)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        let mut expired = false;
+        for pane_id in lapsed {
+            if let Some(pane) = self.rendered_pane_mut(pane_id) {
+                expired |= pane.expire_sync_output(now);
+            }
+        }
+        expired
+    }
     pub fn active_terminal_is_mid_frame(&self, client_id: ClientId) -> Option<bool> {
         let active_pane_id = self.get_active_pane_id(client_id)?;
         let active_terminal = self.rendered_pane(active_pane_id)?;

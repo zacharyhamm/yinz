@@ -83,6 +83,12 @@ const BASE64_DECODER: GeneralPurpose = GeneralPurpose::new(
 const MAX_TRACKED_NOTIFICATION_IDS: usize = 256;
 const MAX_NOTIFICATION_ASSEMBLY_BYTES: usize = 4096;
 const MAX_DCS_PAYLOAD_BYTES: usize = 1024 * 1024;
+/// How long synchronized output (DECSET 2026) may hold a frame back. An application killed
+/// between the begin and end markers, or `cat` of a file that contains the begin marker, never
+/// sends the end marker, so the lock has to lapse on its own. One second is the long end of what
+/// other terminals use (roughly 150 ms to 1 s): a real frame finishes far sooner, even when it
+/// arrives over several reads from a slow remote link, while a stuck pane recovers in a moment.
+pub const SYNCHRONIZED_OUTPUT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 // The notification wire types live with the rest of the pane/host protocol. The pub re-exports
 // keep `panes::grid::{namespace_notification_id, PendingNotification}` working for the pane layer,
@@ -600,7 +606,9 @@ pub struct Grid {
     sixel_host_support: bool,
     pub changed_colors: Option<[Option<AnsiCode>; 256]>,
     pub should_render: bool,
-    pub lock_renders: bool,
+    /// While synchronized output holds renders back, when that lock lapses. Process-local: a
+    /// migrated lock is restored with a fresh deadline.
+    render_lock_deadline: Option<std::time::Instant>,
     // Completed content: synchronized output may mutate the viewport before a forced repaint.
     completed_text: Vec<Vec<CharacterChunk>>,
     completed_sixel: Vec<SixelImageChunk>,
@@ -1041,7 +1049,7 @@ impl Grid {
             arrow_fonts,
             styled_underlines,
             osc8_hyperlinks,
-            lock_renders: false,
+            render_lock_deadline: None,
             completed_text: vec![],
             completed_sixel: vec![],
             completed_kitty: vec![],
@@ -1084,7 +1092,7 @@ impl Grid {
     /// client whose render has already consumed the changes. Only valid with no output in
     /// between.
     pub fn replay_last_render(&mut self) {
-        if self.lock_renders {
+        if self.is_mid_frame() {
             // A locked grid only ever renders its whole completed text, which leaves the
             // changed lines for after the unlock.
             self.repaint_completed_text = true;
@@ -2087,7 +2095,8 @@ impl Grid {
         style: &Style,
     ) -> Result<Option<RenderedGridFrame>> {
         let forced_repaint = std::mem::take(&mut self.repaint_completed_text);
-        if self.lock_renders {
+        self.expire_sync_output(std::time::Instant::now());
+        if self.render_lock_deadline.is_some() {
             if !forced_repaint {
                 return Ok(None);
             }
@@ -2356,8 +2365,28 @@ impl Grid {
             Some((self.cursor.x, self.cursor.y))
         }
     }
+    /// Whether synchronized output is holding renders back.
     pub fn is_mid_frame(&self) -> bool {
-        self.lock_renders
+        self.is_mid_frame_at(std::time::Instant::now())
+    }
+    fn is_mid_frame_at(&self, now: std::time::Instant) -> bool {
+        self.render_lock_deadline
+            .is_some_and(|deadline| now < deadline)
+    }
+    /// When the synchronized-output lock lapses, if one is held. The screen wakes up then, so a
+    /// pane whose application never ends its frame repaints without waiting for more output.
+    pub fn sync_output_deadline(&self) -> Option<std::time::Instant> {
+        self.render_lock_deadline
+    }
+    /// Releases a synchronized-output lock that lapsed by `now`, as if the frame had ended.
+    /// Returns true if it did; the grid is then marked for rendering.
+    pub fn expire_sync_output(&mut self, now: std::time::Instant) -> bool {
+        if self.render_lock_deadline.is_none() || self.is_mid_frame_at(now) {
+            return false;
+        }
+        self.unlock_renders();
+        self.should_render = true;
+        true
     }
     /// Clears all buffers with text for a current screen
     pub fn clear_screen(&mut self) {
@@ -3261,6 +3290,13 @@ impl Grid {
         let kitty_image_store = self.kitty_grid.kitty_image_store.clone();
         self.kitty_grid = KittyGrid::new(self.character_cell_size.clone(), kitty_image_store);
         self.kitty_parser.abort_pending();
+        // A reset ends any frame in progress: the application that began it is gone or has
+        // started over, and would otherwise leave the pane showing its last completed frame.
+        self.unlock_renders();
+        self.repaint_completed_text = false;
+        self.completed_text.clear();
+        self.clear_completed_sixel();
+        self.completed_kitty.clear();
     }
     /// `reset_terminal_state`, except what is on screen is scrolled into `lines_above` and the
     /// scrollback survives, so a command respawned in this pane appends to the transcript
@@ -3677,6 +3713,12 @@ impl Grid {
         }
     }
     pub fn lock_renders(&mut self) {
+        let now = std::time::Instant::now();
+        // Repeating the begin marker keeps the original deadline, so an application cannot hold
+        // a frame back forever by sending it over and over.
+        if self.is_mid_frame_at(now) {
+            return;
+        }
         self.kitty_grid
             .protect_completed_frame(&self.completed_kitty);
         if let Some(alternate) = self.alternate_screen_state.as_mut() {
@@ -3684,10 +3726,10 @@ impl Grid {
                 .kitty_grid
                 .protect_completed_frame(&self.completed_kitty);
         }
-        self.lock_renders = true;
+        self.render_lock_deadline = Some(now + SYNCHRONIZED_OUTPUT_TIMEOUT);
     }
     pub fn unlock_renders(&mut self) {
-        self.lock_renders = false;
+        self.render_lock_deadline = None;
     }
     pub fn update_theme(&mut self, theme: Styling) {
         self.style.colors = theme;

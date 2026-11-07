@@ -1002,6 +1002,26 @@ impl Tab {
         AcceptedPane::Accepted
     }
 
+    /// Whether [`Self::accept_extracted_pane`] would take a pane arriving with `placement`.
+    ///
+    /// Asked by callers *before* they take a pane out of its tab, so a refusal leaves the pane
+    /// exactly where it was rather than relying on a put-back that cannot restore its old slot in
+    /// the source's tiled layout. An overlay is not on a layer and does not tile, so it never runs
+    /// out of room.
+    pub fn has_room_for_extracted_pane(&mut self, placement: &ExtractedPanePlacement) -> bool {
+        match placement {
+            ExtractedPanePlacement::Overlay(..) => true,
+            ExtractedPanePlacement::Floating => {
+                self.floating_panes.find_room_for_new_pane().is_some()
+            },
+            ExtractedPanePlacement::FloatingDefault { min_height } => self
+                .floating_panes
+                .find_room_for_new_pane()
+                .is_some_and(|geometry| geometry.rows.as_usize() >= *min_height),
+            ExtractedPanePlacement::Tiled => self.tiled_panes.has_room_for_new_pane(),
+        }
+    }
+
     /// Take a pane extracted from another tab, or hand it back if there is no room.
     ///
     /// `add_tiled_pane`/`add_floating_pane` take the box by value and return `Ok(())`
@@ -1021,6 +1041,9 @@ impl Tab {
         placement: ExtractedPanePlacement,
     ) -> AcceptedPane {
         let pane_id = pane.pid();
+        if !self.has_room_for_extracted_pane(&placement) {
+            return AcceptedPane::NoRoom(pane);
+        }
         match placement {
             ExtractedPanePlacement::Overlay(overlay_placement, carry) => {
                 // no room check: an overlay is not on a layer and does not tile, so there is nothing
@@ -1034,14 +1057,6 @@ impl Tab {
                     .non_fatal();
             },
             ExtractedPanePlacement::Floating | ExtractedPanePlacement::FloatingDefault { .. } => {
-                let Some(geometry) = self.floating_panes.find_room_for_new_pane() else {
-                    return AcceptedPane::NoRoom(pane);
-                };
-                if matches!(placement, ExtractedPanePlacement::FloatingDefault { min_height }
-                    if geometry.rows.as_usize() < min_height)
-                {
-                    return AcceptedPane::NoRoom(pane);
-                }
                 let keep_geometry = matches!(placement, ExtractedPanePlacement::Floating);
                 let floating_pane_coordinates = FloatingPaneCoordinates {
                     x: keep_geometry.then(|| PercentOrFixed::Fixed(pane.x())),
@@ -1058,9 +1073,6 @@ impl Tab {
                     .non_fatal();
             },
             ExtractedPanePlacement::Tiled => {
-                if !self.tiled_panes.has_room_for_new_pane() {
-                    return AcceptedPane::NoRoom(pane);
-                }
                 let new_geom = PaneGeom::from(&self.size);
                 pane.set_geom(new_geom);
                 self.add_tiled_pane(pane, pane_id, false, None).non_fatal();

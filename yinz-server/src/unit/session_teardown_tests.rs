@@ -988,3 +988,158 @@ fn router_spawn_failure_retires_the_registered_client() {
     assert_eq!(connections.load(Ordering::SeqCst), 0);
     assert_ne!(state.write().unwrap().new_client(), Some(client_id));
 }
+
+/// A detached session and the client attaching to it, set up as `AttachClient` leaves them before
+/// the screen answers: the client already counts as interactive and has a configuration and mode.
+struct AttachingClient {
+    session: Arc<RwLock<Option<SessionMetaData>>>,
+    state: Arc<RwLock<SessionState>>,
+    client: ClientId,
+    screen_rx: channels::Receiver<(ScreenInstruction, ErrorContext)>,
+    plugin_rx: channels::Receiver<(PluginInstruction, ErrorContext)>,
+}
+
+fn detached_session_with_attaching_client() -> AttachingClient {
+    let (screen_tx, screen_rx) = channels::unbounded();
+    let (plugin_tx, plugin_rx) = channels::unbounded();
+    let mut session = session_with(
+        SenderWithContext::new(screen_tx),
+        SenderWithContext::new(plugin_tx),
+    );
+    let state = Arc::new(RwLock::new(SessionState::new()));
+    let attaching = {
+        let mut state = state.write().unwrap();
+        let attaching = state.new_client().unwrap();
+        state.attach_interactive(attaching, true);
+        attaching
+    };
+    session
+        .session_configuration
+        .set_client_runtime_configuration(attaching, Config::default());
+    session
+        .current_input_modes
+        .insert(attaching, InputMode::Normal);
+    AttachingClient {
+        session: Arc::new(RwLock::new(Some(session))),
+        state,
+        client: attaching,
+        screen_rx,
+        plugin_rx,
+    }
+}
+
+/// The screen can reject an attachment after `AttachClient` counted the client as interactive.
+/// Removing it then left a detached session with no interactive client, and the server shut the
+/// whole session down as if its last client had quit.
+#[test]
+fn a_rejected_attachment_to_a_detached_session_leaves_the_session_running() {
+    let AttachingClient {
+        session,
+        state,
+        client: attaching,
+        screen_rx,
+        plugin_rx,
+    } = detached_session_with_attaching_client();
+    let capture = crate::capturing_os::CapturingOs::default();
+    let mut os: Box<dyn ServerOsApi> = Box::new(capture.clone());
+
+    let ends_session = retire_departing_client(
+        attaching,
+        Departure::AttachFailed,
+        &mut os,
+        &state,
+        &session,
+    )
+    .unwrap();
+
+    assert!(!ends_session, "a rejected attachment ended the session");
+    assert!(matches!(
+        capture
+            .server_to_client_messages
+            .lock()
+            .get(&attaching)
+            .map(Vec::as_slice),
+        Some([ServerToClientMsg::Exit {
+            exit_reason: ExitReason::Error(_)
+        }])
+    ));
+    assert_eq!(&*capture.removed_clients.lock(), &[attaching]);
+    {
+        let state = state.read().unwrap();
+        assert!(!state.is_interactive(&attaching));
+        assert!(!state.supports_session_requests(&attaching));
+        assert!(state.client_ids().is_empty());
+    }
+    with_session(&session, |session| {
+        assert!(!session.current_input_modes.contains_key(&attaching));
+        assert!(session.session_configuration.runtime_config.is_empty());
+    })
+    .unwrap()
+    .expect("the session is still there");
+    assert!(screen_rx.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        ScreenInstruction::RemoveClient(id) if id == attaching
+    )));
+    assert!(plugin_rx.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        PluginInstruction::RemoveClient(id) if id == attaching
+    )));
+}
+
+#[test]
+fn the_last_interactive_client_quitting_still_ends_the_session() {
+    let AttachingClient {
+        session,
+        state,
+        client,
+        ..
+    } = detached_session_with_attaching_client();
+    let capture = crate::capturing_os::CapturingOs::default();
+    let mut os: Box<dyn ServerOsApi> = Box::new(capture.clone());
+
+    assert!(retire_departing_client(client, Departure::Quit, &mut os, &state, &session).unwrap());
+    assert!(matches!(
+        capture
+            .server_to_client_messages
+            .lock()
+            .get(&client)
+            .map(Vec::as_slice),
+        Some([ServerToClientMsg::Exit {
+            exit_reason: ExitReason::Normal
+        }])
+    ));
+}
+
+#[test]
+fn a_rejected_attachment_leaves_other_attached_clients_alone() {
+    let AttachingClient {
+        session,
+        state,
+        client: attaching,
+        ..
+    } = detached_session_with_attaching_client();
+    let attached = {
+        let mut state = state.write().unwrap();
+        let attached = state.new_client().unwrap();
+        state.attach_interactive(attached, false);
+        attached
+    };
+    let capture = crate::capturing_os::CapturingOs::default();
+    let mut os: Box<dyn ServerOsApi> = Box::new(capture.clone());
+
+    assert!(!retire_departing_client(
+        attaching,
+        Departure::AttachFailed,
+        &mut os,
+        &state,
+        &session
+    )
+    .unwrap());
+    assert!(state.read().unwrap().is_interactive(&attached));
+    assert!(capture
+        .server_to_client_messages
+        .lock()
+        .get(&attached)
+        .is_none());
+    assert_eq!(&*capture.removed_clients.lock(), &[attaching]);
+}

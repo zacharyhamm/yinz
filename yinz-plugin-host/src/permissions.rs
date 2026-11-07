@@ -1,10 +1,11 @@
 //! One permission FIFO for the parent and all of its workers.
 use crate::plugin_map::{PluginEnv, CANCELLED_BY_HOST};
 use crate::yinz_exports::run_plugin_command;
-use crate::{background_worker, ClientId, PluginInstruction};
+use crate::{background_worker, ClientId, PluginId, PluginInstruction};
 use std::collections::VecDeque;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{atomic::Ordering, Arc};
+use yinz_bus::thread_bus::ThreadSenders;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::data::PermissionType;
 use yinz_types::data::{PermissionStatus, PluginCommand};
@@ -214,9 +215,15 @@ impl background_worker::Workers {
         failure.map_or(Ok(()), Err)
     }
 
+    /// Answer the coordinator's queue head for the instance of `plugin` owned by `owner`.
+    ///
+    /// Takes the instance's identity rather than its `PluginEnv` so the plugin thread can answer
+    /// without the instance's guest lock.
     pub fn permission_answer(
         &self,
-        env: &PluginEnv,
+        senders: &ThreadSenders,
+        plugin: PluginId,
+        owner: ClientId,
         permissions: &[PermissionType],
         status: PermissionStatus,
     ) {
@@ -226,15 +233,15 @@ impl background_worker::Workers {
             .unwrap_or_else(|e| e.into_inner())
             .answered(permissions, status);
         if accepted {
-            self.wake_permissions(env);
+            self.wake_permissions(senders, plugin, owner);
         }
     }
 
-    fn wake_permissions(&self, env: &PluginEnv) {
-        env.senders
+    fn wake_permissions(&self, senders: &ThreadSenders, plugin: PluginId, owner: ClientId) {
+        senders
             .send_to_plugin(PluginInstruction::PluginTick(
-                env.plugin_id,
-                env.owner_client_id,
+                plugin,
+                owner,
                 self.parent_generation,
             ))
             .context("waking Plugin permission coordinator")
@@ -248,7 +255,7 @@ impl background_worker::Workers {
                 .unwrap_or_else(|e| e.into_inner())
                 .completions
                 .push_back(completion);
-            self.wake_permissions(env);
+            self.wake_permissions(&env.senders, env.plugin_id, env.owner_client_id);
         } else {
             self.send(
                 completion.request.generation,

@@ -66,6 +66,30 @@ impl Screen {
         self.schedule_render()
     }
 
+    /// How long until a pane's synchronized-output lock lapses. The screen thread waits no
+    /// longer than this, so a pane whose application never ends its frame still repaints.
+    pub(super) fn sync_output_deadline(&self) -> Option<std::time::Duration> {
+        let now = std::time::Instant::now();
+        self.tabs
+            .values()
+            .filter_map(|tab| tab.sync_output_deadline())
+            .min()
+            .map(|deadline| deadline.saturating_duration_since(now))
+    }
+
+    /// Releases synchronized-output locks that lapsed by `now` and renders their panes.
+    pub(super) fn expire_sync_output(&mut self, now: std::time::Instant) -> Result<()> {
+        let mut expired = false;
+        for tab in self.tabs.values_mut() {
+            expired |= tab.expire_sync_output(now);
+        }
+        if expired {
+            self.render()
+                .context("render panes whose synchronized output lapsed")?;
+        }
+        Ok(())
+    }
+
     pub(super) fn schedule_render(&mut self) -> Result<()> {
         self.sync_tab_bar_rows()?;
         // here we schedule the RenderToClients background job which debounces renders every 10ms

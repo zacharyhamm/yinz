@@ -567,6 +567,53 @@ fn remove_watcher_client(
     Ok(())
 }
 
+/// Why a client leaves through the server loop's departure arm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Departure {
+    /// The client quit, or was told to: `ClientExit` or `SignalQuit`.
+    Quit,
+    /// The screen rejected the client's attachment: `ClientAttachFailed`.
+    AttachFailed,
+}
+
+/// Tell a departing client why it is leaving, then retire it and its registrations. Returns
+/// whether the session must now end, which only a quitting client can decide: it was the last
+/// interactive client. A rejected attachment never joined the session, which was running before
+/// it arrived, perhaps detached, so removing it leaves the session as it was. The client counted
+/// as interactive from `AttachClient` on, which is why the count alone cannot decide this.
+fn retire_departing_client(
+    client_id: ClientId,
+    departure: Departure,
+    os_input: &mut Box<dyn ServerOsApi>,
+    session_state: &Arc<RwLock<SessionState>>,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+) -> Result<bool> {
+    let exit_reason = match departure {
+        Departure::Quit => ExitReason::Normal,
+        // An error, so the client says why and exits non-zero.
+        Departure::AttachFailed => ExitReason::Error(
+            "the session could not attach this client; the session is still running".to_owned(),
+        ),
+    };
+    let _ = os_input.send_to_client(client_id, ServerToClientMsg::Exit { exit_reason });
+    let is_watcher = session_state
+        .read()
+        .to_anyhow()
+        .context("access server session state")?
+        .is_watcher(&client_id);
+    if is_watcher {
+        remove_watcher_client(client_id, os_input, session_state, session_data)?;
+        return Ok(false);
+    }
+    remove_client_and_flush_forwards(client_id, os_input, session_state, session_data).non_fatal();
+    Ok(departure == Departure::Quit
+        && !session_state
+            .read()
+            .to_anyhow()
+            .context("access server session state")?
+            .active_clients_are_connected())
+}
+
 /// The live session, if there is one. `None` from server start until `FirstClientConnected`
 /// builds it, and a `yinz ls` probe, a watcher, and the `RemoveClient` that ends every route
 /// can all arrive in that window: an arm that finds no session is a no-op then. A read lock:
@@ -1863,79 +1910,65 @@ pub fn start_server_impl(
                 | ServerInstruction::SignalQuit(client_id)
                 | ServerInstruction::ClientAttachFailed(client_id) => {
                     let intentional = matches!(instruction, ServerInstruction::ClientExit(..));
+                    let departure =
+                        if matches!(instruction, ServerInstruction::ClientAttachFailed(..)) {
+                            Departure::AttachFailed
+                        } else {
+                            Departure::Quit
+                        };
                     let completion_tx = match instruction {
                         ServerInstruction::ClientExit(_, completion) => completion,
                         _ => None,
                     };
                     startup_traces_waiting_for_first_render.remove(&client_id);
-                    let _ = os_input.send_to_client(
+                    let ends_session = retire_departing_client(
                         client_id,
-                        ServerToClientMsg::Exit {
-                            exit_reason: ExitReason::Normal,
-                        },
-                    );
-
-                    // Check if this is a watcher
-                    let is_watcher = session_state
-                        .read()
-                        .to_anyhow()
-                        .context("access server session state")?
-                        .is_watcher(&client_id);
-                    if is_watcher {
-                        remove_watcher_client(
-                            client_id,
-                            &mut os_input,
-                            &session_state,
-                            &session_data,
-                        )?;
-                    } else {
-                        // Handle regular client removal
-                        remove_client!(client_id, os_input, session_state, session_data);
-                        drop(completion_tx); // cleanup is queued before the action completes
-                        if !session_state
+                        departure,
+                        &mut os_input,
+                        &session_state,
+                        &session_data,
+                    )?;
+                    // Cleanup is queued before the action completes.
+                    drop(completion_tx);
+                    // Only a quitting client can end the session; see `retire_departing_client`.
+                    if ends_session {
+                        // Refuse new connections now; join workers after leaving the server
+                        // loop, once its bounded receiver has been disconnected.
+                        if intentional && let Some(run) = &recovery_run {
+                            session_checkpoint
+                                .acknowledge_recovery(session_identity.current(), run)
+                                .non_fatal();
+                        }
+                        ownership.shutdown().non_fatal();
+                        let client_ids_to_cleanup: Vec<ClientId> = session_state
                             .read()
                             .to_anyhow()
                             .context("access server session state")?
-                            .active_clients_are_connected()
-                        {
-                            // Refuse new connections now; join workers after leaving the server
-                            // loop, once its bounded receiver has been disconnected.
-                            if intentional && let Some(run) = &recovery_run {
-                                session_checkpoint
-                                    .acknowledge_recovery(session_identity.current(), run)
-                                    .non_fatal();
-                            }
-                            ownership.shutdown().non_fatal();
-                            let client_ids_to_cleanup: Vec<ClientId> = session_state
-                                .read()
-                                .to_anyhow()
-                                .context("access server session state")?
-                                .clients
-                                .iter()
-                                .copied()
-                                .collect();
-                            // Only CLI, pipe and subscription connections remain.
-                            for client_id in client_ids_to_cleanup {
-                                remove_client!(client_id, os_input, session_state, session_data);
-                            }
-
-                            let watcher_client_ids: Vec<ClientId> = session_state
-                                .read()
-                                .to_anyhow()
-                                .context("access server session state")?
-                                .watcher_client_ids();
-                            for watcher_id in watcher_client_ids {
-                                let _ = os_input.send_to_client(
-                                    watcher_id,
-                                    ServerToClientMsg::Exit {
-                                        exit_reason: ExitReason::Normal,
-                                    },
-                                );
-                            }
-
-                            exit_reason = "the last interactive client exited";
-                            break;
+                            .clients
+                            .iter()
+                            .copied()
+                            .collect();
+                        // Only CLI, pipe and subscription connections remain.
+                        for client_id in client_ids_to_cleanup {
+                            remove_client!(client_id, os_input, session_state, session_data);
                         }
+
+                        let watcher_client_ids: Vec<ClientId> = session_state
+                            .read()
+                            .to_anyhow()
+                            .context("access server session state")?
+                            .watcher_client_ids();
+                        for watcher_id in watcher_client_ids {
+                            let _ = os_input.send_to_client(
+                                watcher_id,
+                                ServerToClientMsg::Exit {
+                                    exit_reason: ExitReason::Normal,
+                                },
+                            );
+                        }
+
+                        exit_reason = "the last interactive client exited";
+                        break;
                     }
                 },
                 ServerInstruction::RemoveClient(client_id) => {

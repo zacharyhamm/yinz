@@ -1916,7 +1916,7 @@ fn locked_repaints_keep_completed_kitty_placements_with_current_overlay_clipping
         &mut interceptor,
         &kitty_apc("a=d,d=a", &[]),
     );
-    assert!(grid.lock_renders);
+    assert!(grid.is_mid_frame());
     for overlay_x in [3, 20, 3, 20] {
         grid.render_full_viewport();
         let chunks = grid.render(2, 3, &Style::default()).unwrap().unwrap().3;

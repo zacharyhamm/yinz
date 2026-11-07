@@ -9,9 +9,9 @@ use yinz_key_codec::vendored::termwiz::input::InputEvent;
 use yinz_key_codec::vendored::termwiz::input::Modifiers;
 use yinz_key_codec::vendored::termwiz::input::MouseButtons;
 use yinz_key_codec::vendored::termwiz::input::MouseEvent as TermwizMouseEvent;
-use yinz_runtime::channels::Receiver;
 use yinz_runtime::channels::SenderWithContext;
 use yinz_runtime::channels::OPENCALLS;
+use yinz_runtime::channels::{self, Receiver, RecvError, Select, TryRecvError};
 use yinz_runtime::errors::prelude::*;
 use yinz_types::diagnostics::ContextType;
 use yinz_types::diagnostics::ErrorContext;
@@ -39,6 +39,73 @@ fn is_cancel_key(instruction: &InputInstruction) -> bool {
     }
 }
 
+/// How the client loop, and the forward-timeout runtime it arms, reach the input thread.
+///
+/// The input thread waits for room in the client loop's bounded queue (screensaver wakes,
+/// synchronized-output answers, nested-session pongs), so nothing travelling the other way may
+/// wait for room in the input thread's queue: with both queues full each thread would wait on the
+/// other forever. A forward deadline firing on the single-threaded timeout runtime must not wait
+/// either, or one full queue would hold up every other forward's deadline. This channel is
+/// therefore unbounded. What travels on it is limited by the server: a mouse-mode change per
+/// configuration update and one completion per forwarded host query, which the server dispatches
+/// one at a time.
+#[derive(Clone)]
+pub(crate) struct InputControlSender(SenderWithContext<InputInstruction>);
+
+impl InputControlSender {
+    /// Queue `instruction` for the input thread without waiting.
+    pub(crate) fn send(&self, instruction: InputInstruction) -> Result<()> {
+        self.0
+            .send(instruction)
+            .to_anyhow()
+            .context("the input thread has stopped")
+    }
+}
+
+/// The channel behind [`InputControlSender`]; its receiver goes to [`input_loop`].
+pub(crate) fn input_control_channel() -> (
+    InputControlSender,
+    Receiver<(InputInstruction, ErrorContext)>,
+) {
+    let (sender, receiver) = channels::unbounded();
+    (InputControlSender(SenderWithContext::new(sender)), receiver)
+}
+
+/// Waits for the next instruction, taking queued control instructions before queued input.
+///
+/// The client loop queues a stale forward's completion before it writes the query that opens the
+/// next forward, so preferring control keeps completions in the order the server dispatched them
+/// even though the next one may come back through the stdin thread's queue. Once the control
+/// channel disconnects only `input` is read.
+fn recv_prioritized<T>(
+    control: &mut Option<Receiver<T>>,
+    input: &Receiver<T>,
+) -> Result<T, RecvError> {
+    loop {
+        let Some(control_receiver) = control.as_ref() else {
+            return input.recv();
+        };
+        match control_receiver.try_recv() {
+            Ok(message) => return Ok(message),
+            Err(TryRecvError::Disconnected) => {
+                *control = None;
+                continue;
+            },
+            Err(TryRecvError::Empty) => {},
+        }
+        match input.try_recv() {
+            Ok(message) => return Ok(message),
+            Err(TryRecvError::Disconnected) => return Err(RecvError),
+            Err(TryRecvError::Empty) => {},
+        }
+        // Only wait here; the next pass takes from control first if both became ready.
+        let mut select = Select::new();
+        select.recv(control_receiver);
+        select.recv(input);
+        select.ready();
+    }
+}
+
 /// Forwards terminal input to the server, which owns the current mode and keybindings.
 struct InputHandler {
     os_input: Box<dyn ClientOsApi>,
@@ -48,6 +115,8 @@ struct InputHandler {
     activity: Option<crate::screensaver::SharedActivity>,
     should_exit: bool,
     receive_input_instructions: Receiver<(InputInstruction, ErrorContext)>,
+    /// Instructions from the client loop; see [`InputControlSender`].
+    receive_input_control: Option<Receiver<(InputInstruction, ErrorContext)>>,
     mouse_old_event: MouseEvent,
     mouse_mode_active: bool,
     nested_reannounce: NestedReannounce,
@@ -149,6 +218,7 @@ impl InputHandler {
         options: Options,
         send_client_instructions: SenderWithContext<ClientInstruction>,
         receive_input_instructions: Receiver<(InputInstruction, ErrorContext)>,
+        receive_input_control: Receiver<(InputInstruction, ErrorContext)>,
         nested_reannounce: NestedReannounce,
     ) -> Self {
         InputHandler {
@@ -159,6 +229,7 @@ impl InputHandler {
             activity: None,
             should_exit: false,
             receive_input_instructions,
+            receive_input_control: Some(receive_input_control),
             mouse_old_event: MouseEvent::new(),
             mouse_mode_active: false,
             nested_reannounce,
@@ -178,18 +249,19 @@ impl InputHandler {
             if self.should_exit {
                 break;
             }
-            let received = self
-                .receive_input_instructions
-                .recv()
-                .map(|(instruction, context)| {
-                    let (stamp, instruction) = match instruction {
-                        InputInstruction::FromGeneration(stamp, instruction) => {
-                            (Some(stamp), *instruction)
-                        },
-                        instruction => (None, instruction),
-                    };
-                    (stamp, instruction, context)
-                });
+            let received = recv_prioritized(
+                &mut self.receive_input_control,
+                &self.receive_input_instructions,
+            )
+            .map(|(instruction, context)| {
+                let (stamp, instruction) = match instruction {
+                    InputInstruction::FromGeneration(stamp, instruction) => {
+                        (Some(stamp), *instruction)
+                    },
+                    instruction => (None, instruction),
+                };
+                (stamp, instruction, context)
+            });
             let received = match received {
                 Ok((stamp, instruction, context)) => {
                     if let Some(control) = self.os_input.remote_recovery() {
@@ -575,6 +647,7 @@ pub(crate) fn input_loop(
     command_is_executing: CommandIsExecuting,
     send_client_instructions: SenderWithContext<ClientInstruction>,
     receive_input_instructions: Receiver<(InputInstruction, ErrorContext)>,
+    receive_input_control: Receiver<(InputInstruction, ErrorContext)>,
     nested_reannounce: NestedReannounce,
     activity: Option<crate::screensaver::SharedActivity>,
 ) {
@@ -584,6 +657,7 @@ pub(crate) fn input_loop(
         options,
         send_client_instructions,
         receive_input_instructions,
+        receive_input_control,
         nested_reannounce,
     );
     handler.activity = activity;

@@ -423,10 +423,12 @@ fn waiting_pulse_grouped_frames_boundaries_and_list_borders_keep_precedence_over
         screen.render_to_clients().unwrap();
         assert_eq!(screen.animation_clock_period(start), None);
         drain_background_jobs(&jobs);
-        screen
-            .current_pane_group
-            .borrow_mut()
-            .add_pane_id_to_group(waiting_pane, SIZE, &CLIENT);
+        screen.current_pane_group.borrow_mut().add_pane_id_to_group(
+            waiting_pane,
+            SIZE,
+            None,
+            &CLIENT,
+        );
         let (server_tx, server_rx) = channels::unbounded();
         screen.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
         let mut grid = grid_for_render_snapshot(SIZE);

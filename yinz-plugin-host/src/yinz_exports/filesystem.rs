@@ -6,8 +6,10 @@ use crate::plugin_map::PluginEnv;
 use crate::PluginInstruction;
 use anyhow::ensure;
 use prost::Message;
+use std::collections::{HashSet, VecDeque};
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::{fs, thread};
 use yinz_plugin_api::plugin_command::{
@@ -15,8 +17,12 @@ use yinz_plugin_api::plugin_command::{
     ProtobufFsEntryList, ProtobufFsListResponse, ProtobufFsMetadataResponse,
     ProtobufFsMutateResponse, ProtobufFsReadResponse,
 };
-use yinz_runtime::consts::{YINZ_PLUGIN_TMP_DIR, YINZ_TMP_LOG_DIR};
+use yinz_runtime::consts::{
+    YINZ_CONFIG_DIR_ENV, YINZ_CONFIG_FILE_ENV, YINZ_PLUGIN_PERMISSIONS_CACHE, YINZ_PLUGIN_TMP_DIR,
+    YINZ_TMP_LOG_DIR,
+};
 use yinz_runtime::errors::prelude::*;
+use yinz_runtime::home::default_config_dirs;
 use yinz_types::data::{Event, FileMetadata, PermissionType};
 
 /// The maximum number of bytes an `FsRead` will return, whatever the plugin asks for.
@@ -236,6 +242,9 @@ pub(super) fn resolve_fs_path_with_permission(
             ));
         }
     }
+    if intent == FsIntent::Write {
+        refuse_protected_host_state(env, path, &resolved.real, resolution)?;
+    }
     // Removing or renaming a root, or a folder holding one, would take every later command's
     // folder with it, and renaming onto an empty root would replace it.
     if intent == FsIntent::Write && resolution == FsPathResolution::PreserveEntry {
@@ -265,6 +274,341 @@ fn reaches_folder(
             && resolution == FsPathResolution::PreserveEntry
             && folder.starts_with(real))
 }
+
+/// Refuse a write that reaches the host state through which a plugin could grant itself more
+/// than it was given, whatever permissions it holds.
+///
+/// `/host` is often `$HOME`, and an absolute path is one `FullHdAccess` grant away, so both reach:
+/// - the permission cache, its lock and the folder it is saved through. `request_permission`
+///   grants whatever the cache lists without a prompt, so writing it turns `WriteFiles` into
+///   every other permission.
+/// - the session's config folder and file, and its layout folder. Keybindings and layouts run
+///   commands, and editing them is what `Reconfigure` and the layout commands guard.
+/// - the data folder: its installed builtins run as builtins, and `plugin-data.db` is the
+///   shared plugin database that `PluginData` and `SharedPluginData` guard.
+///
+/// Refused outright rather than behind a stronger permission: no plugin edits these through
+/// the `Fs*` commands, and each has its own guarded command. The plugin's own folders are
+/// exempt when they sit inside a protected folder; the default user plugin folder is inside
+/// the config folder, and writes there are already guarded by `AuthorPlugins`.
+///
+/// # Identity, not spelling
+///
+/// The decision compares *file identities* (device and inode), not path strings. A path
+/// string is only one of many names the kernel accepts for a file: symlinked folders and
+/// chains of them, case-insensitive lookups (the default on macOS APFS), Unicode
+/// normalization (APFS, HFS+), hard links and bind mounts all reach the same file under a
+/// spelling no list of protected spellings contains. So [`ProtectedState::gather`] walks
+/// every protected path the way a reader opens it and records the identity of each entry it
+/// meets, and the target's existing entries are compared against those identities:
+/// - a write or create (`FollowSymlink`) is refused when the target, or any folder above it,
+///   *is* a protected folder or file: it would land inside protected state.
+/// - a remove or rename end (`PreserveEntry`) is refused when the entry itself is one met on
+///   the way to protected state, link or folder: moving it swaps everything beneath it. Its
+///   parent folder is checked as a write is, so entries inside protected folders stay put.
+///
+/// Spellings remain only for what does not exist yet, where there is no identity to compare:
+/// a missing protected path is recorded as its deepest existing folder's identity plus the
+/// names below it, and a target is matched by its own deepest existing folder's identity plus
+/// its missing names, compared case-insensitively (see [`fold_name`]).
+///
+/// This is check-then-act, like the rest of [`resolve_fs_path_with_permission`]; the opens
+/// that follow use `O_NOFOLLOW` on the final entry, and nothing here widens that window.
+fn refuse_protected_host_state(
+    env: &PluginEnv,
+    path: &Path,
+    real: &Path,
+    resolution: FsPathResolution,
+) -> Result<()> {
+    let refusal = || {
+        anyhow!(
+            "'{}' is yinz's own configuration, permission or data state, which plugins cannot \
+             change",
+            path.display()
+        )
+    };
+    let protected = ProtectedState::gather(env);
+
+    // Where the target would land: its deepest existing folder, and the names below that
+    // folder which do not exist yet. A remove or rename acts on the entry, so the place it
+    // lands is its parent; the entry itself is compared by its own identity.
+    let (landing, moves_onto_missing) = match (resolution, real.parent(), real.file_name()) {
+        (FsPathResolution::PreserveEntry, Some(parent), Some(name)) => {
+            let (folder, mut missing) = deepest_existing(parent);
+            match fs::symlink_metadata(real) {
+                Ok(metadata) => {
+                    if protected.on_the_way.contains(&file_id(&metadata)) {
+                        return Err(refusal());
+                    }
+                    ((folder, missing), false)
+                },
+                Err(_) => {
+                    // On a case-insensitive folder a differently spelled entry would already
+                    // exist and be caught by identity above. A missing entry spelled like one
+                    // on the way to protected state is refused all the same, so a rename
+                    // cannot put something where a reader looks.
+                    if missing.is_empty()
+                        && let Some(folder) = folder
+                        && let Ok(metadata) = fs::metadata(folder)
+                        && protected
+                            .names
+                            .contains(&(file_id(&metadata), fold_name(name)))
+                    {
+                        return Err(refusal());
+                    }
+                    missing.push(name);
+                    ((folder, missing), true)
+                },
+            }
+        },
+        _ => (deepest_existing(real), false),
+    };
+    let (Some(folder), missing) = landing else {
+        return Ok(());
+    };
+
+    // The plugin's own folders are exempt when one sits strictly inside a protected folder,
+    // as the plugin's `/cache` sits inside the cache folder, and the target is inside it. Both
+    // sides are canonical spellings from `resolve_fs_ancestors`, so a mismatch can
+    // only withhold the exemption, never grant it to a folder outside the plugin's own.
+    let own_folders: Vec<PathBuf> = fs_roots(env)
+        .into_iter()
+        .filter(|(prefix, _)| *prefix != "/host")
+        .filter_map(|(_, root)| resolve_fs_ancestors(&root).ok())
+        .collect();
+    let in_own_folder = |protected_folder: &Path| {
+        own_folders.iter().any(|own| {
+            own != protected_folder && own.starts_with(protected_folder) && real.starts_with(own)
+        })
+    };
+
+    // Existing folders, from the deepest up: any of them being protected state means the
+    // target lands inside it.
+    for ancestor in folder.ancestors() {
+        let Ok(metadata) = fs::metadata(ancestor) else {
+            continue;
+        };
+        if protected.locations.contains(&file_id(&metadata)) && !in_own_folder(ancestor) {
+            return Err(refusal());
+        }
+    }
+
+    // Protected paths that do not exist yet, matched below the same existing folder.
+    let Ok(folder_id) = fs::metadata(folder).map(|metadata| file_id(&metadata)) else {
+        return Ok(());
+    };
+    let folded: Vec<String> = missing.iter().map(|name| fold_name(name)).collect();
+    for (protected_folder, names) in &protected.missing {
+        if *protected_folder != folder_id {
+            continue;
+        }
+        // At or below the missing protected path: writing there creates it.
+        if folded.starts_with(names) {
+            let location = missing[..names.len()]
+                .iter()
+                .fold(folder.to_path_buf(), |path, name| path.join(name));
+            if !in_own_folder(&location) {
+                return Err(refusal());
+            }
+        }
+        // Moving an entry onto a missing folder above it installs the protected path whole.
+        if moves_onto_missing && names.starts_with(&folded) {
+            return Err(refusal());
+        }
+    }
+    Ok(())
+}
+
+/// The folders and files of [`refuse_protected_host_state`] other than the permission cache.
+///
+/// Every conventional config folder is listed, not only the one that exists: creating a
+/// missing one would make it the config folder of the next session. The session's own config
+/// folder and file come from its environment, where the server records its `--config-dir` and
+/// `--config` paths for plugins.
+fn protected_host_folders(env: &PluginEnv) -> Vec<PathBuf> {
+    let session_config = [YINZ_CONFIG_DIR_ENV, YINZ_CONFIG_FILE_ENV]
+        .into_iter()
+        .filter_map(|key| env.session_env_vars.get(key))
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    session_config
+        .chain(default_config_dirs().into_iter().flatten())
+        .chain(env.layout_dir.clone())
+        .chain(Some(env.yinz_data_dir.clone()))
+        .filter(|folder| !folder.as_os_str().is_empty())
+        .collect()
+}
+
+/// A file's identity: the device and inode the kernel reaches, however the path is spelled.
+type FileId = (u64, u64);
+
+fn file_id(metadata: &fs::Metadata) -> FileId {
+    (metadata.dev(), metadata.ino())
+}
+
+/// A name folded for comparing entries that do not exist yet, where no identity is available.
+///
+/// Lowercasing approximates the case folding of case-insensitive file systems (APFS and HFS+
+/// by default), so a missing protected name and a plugin's spelling of it match whichever
+/// case either uses. It over-matches on case-sensitive file systems, which only refuses a
+/// name that differs from a protected one by case. Unicode normalization is not folded; that
+/// gap is limited to names that do not exist yet, since existing entries compare by identity.
+fn fold_name(name: &OsStr) -> String {
+    name.to_string_lossy().to_lowercase()
+}
+
+/// The deepest existing entry at or above `path`, and the names below it that do not exist,
+/// outermost first. `path` is a canonical spelling, so its lexical parents are its real ones.
+fn deepest_existing(path: &Path) -> (Option<&Path>, Vec<&OsStr>) {
+    let mut missing = vec![];
+    for ancestor in path.ancestors() {
+        // Any failure, not only `NotFound`, leaves no identity to compare; the name is then
+        // matched as a missing one, and the operation itself fails if it is unreachable.
+        if fs::symlink_metadata(ancestor).is_ok() {
+            missing.reverse();
+            return (Some(ancestor), missing);
+        }
+        if let Some(name) = ancestor.file_name() {
+            missing.push(name);
+        }
+    }
+    missing.reverse();
+    (None, missing)
+}
+
+/// The identities a plugin's target is compared against in [`refuse_protected_host_state`],
+/// gathered afresh for each check so that a folder moved since the last one is seen where it
+/// is now.
+#[derive(Default)]
+struct ProtectedState {
+    /// The protected folders and files themselves, as reached through every link.
+    locations: HashSet<FileId>,
+    /// Every existing entry met on the way to a protected path, link entries and the folders
+    /// they lead to included, and the protected entries themselves.
+    on_the_way: HashSet<FileId>,
+    /// Each entry of `on_the_way` by its folder's identity and its folded name, for a rename
+    /// onto a missing name that a reader would look up.
+    names: HashSet<(FileId, String)>,
+    /// Protected paths that do not exist yet: the identity of the deepest folder that does,
+    /// as a reader reaches it, and the folded names below it.
+    missing: Vec<(FileId, Vec<String>)>,
+}
+
+impl ProtectedState {
+    fn gather(env: &PluginEnv) -> Self {
+        let mut state = Self::default();
+        let cache = YINZ_PLUGIN_PERMISSIONS_CACHE.as_path();
+        // The cache is saved under a lock beside its real path, which a symlink can move, and
+        // staged in a temporary file in its real folder before being renamed over it, so the
+        // whole folder is protected, both as configured and where the cache really is.
+        let mut cache_paths = vec![cache.with_added_extension("lock")];
+        cache_paths.extend(cache.parent().map(Path::to_path_buf));
+        if let Some(real_cache) = state.record(cache) {
+            cache_paths.push(real_cache.with_added_extension("lock"));
+            cache_paths.extend(real_cache.parent().map(Path::to_path_buf));
+        }
+        for path in cache_paths.iter().chain(&protected_host_folders(env)) {
+            state.record(path);
+        }
+        state
+    }
+
+    /// Walk `path` as the kernel does for a reader that opens it, following its symlinks one
+    /// component at a time rather than canonicalizing it, so that a link inside another link's
+    /// target is met, and a dangling link still says where it points. Records every existing
+    /// entry met, and returns the path with every link followed. Past a missing folder or a
+    /// dangling link it continues lexically, which is where a reader would find whatever is
+    /// later created there. A relative path is taken from the server's working directory, as
+    /// the server takes it.
+    fn record(&mut self, path: &Path) -> Option<PathBuf> {
+        let path = std::path::absolute(path).ok()?;
+        let root_id = || fs::metadata("/").ok().map(|metadata| file_id(&metadata));
+        let mut pending: VecDeque<PathStep> = path_steps(&path).collect();
+        let mut real = PathBuf::from("/");
+        let mut real_id = root_id();
+        let mut missing: Vec<OsString> = vec![];
+        let mut hops = 0;
+        while let Some(step) = pending.pop_front() {
+            match step {
+                PathStep::Root => {
+                    real = PathBuf::from("/");
+                    real_id = root_id();
+                    missing.clear();
+                },
+                // Every folder in `real` is already resolved, so `..` is its lexical parent.
+                PathStep::Parent => {
+                    if missing.pop().is_none() {
+                        real.pop();
+                        real_id = fs::symlink_metadata(&real)
+                            .ok()
+                            .map(|metadata| file_id(&metadata));
+                    }
+                },
+                // Below a missing folder nothing exists to look up.
+                PathStep::Name(name) if !missing.is_empty() => missing.push(name),
+                PathStep::Name(name) => {
+                    let entry = real.join(&name);
+                    let Ok(metadata) = fs::symlink_metadata(&entry) else {
+                        missing.push(name);
+                        continue;
+                    };
+                    let id = file_id(&metadata);
+                    self.on_the_way.insert(id);
+                    if let Some(folder) = real_id {
+                        self.names.insert((folder, fold_name(&name)));
+                    }
+                    let target = (metadata.file_type().is_symlink() && hops < MAX_SYMLINK_HOPS)
+                        .then(|| fs::read_link(&entry).ok())
+                        .flatten();
+                    match target {
+                        // A relative target continues from the link's folder, which `real` is.
+                        Some(target) => {
+                            hops += 1;
+                            for step in path_steps(&target).rev() {
+                                pending.push_front(step);
+                            }
+                        },
+                        None => {
+                            real = entry;
+                            real_id = Some(id);
+                        },
+                    }
+                },
+            }
+        }
+        if missing.is_empty() {
+            if let Ok(metadata) = fs::metadata(&real) {
+                let id = file_id(&metadata);
+                self.locations.insert(id);
+                self.on_the_way.insert(id);
+            }
+        } else if let Some(folder) = real_id {
+            self.missing.push((folder, missing.iter().map(|name| fold_name(name)).collect()));
+        }
+        Some(missing.iter().fold(real, |path, name| path.join(name)))
+    }
+}
+
+/// The most symlinks [`ProtectedState::record`] follows for one path, as the kernel's own
+/// limit stops a link loop.
+const MAX_SYMLINK_HOPS: usize = 40;
+
+/// One component of a path being walked.
+enum PathStep {
+    Root,
+    Parent,
+    Name(OsString),
+}
+
+fn path_steps(path: &Path) -> impl DoubleEndedIterator<Item = PathStep> + '_ {
+    path.components().filter_map(|component| match component {
+        std::path::Component::Prefix(_) | std::path::Component::RootDir => Some(PathStep::Root),
+        std::path::Component::CurDir => None,
+        std::path::Component::ParentDir => Some(PathStep::Parent),
+        std::path::Component::Normal(name) => Some(PathStep::Name(name.to_os_string())),
+    })
+}
+
 
 /// Re-spell a real path in the virtual root the plugin used, so that a listing can be fed back in.
 fn virtual_path(env: &PluginEnv, real: &Path, requested: &Path) -> PathBuf {

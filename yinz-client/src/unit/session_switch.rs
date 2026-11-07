@@ -303,7 +303,7 @@ fn client_loop_rename_updates_current_identity_without_cancelling_preparation() 
             yinz_ipc::ipc::ExitReason::Disconnect,
         ))
         .unwrap();
-        let (input_tx, _input_rx) = channels::unbounded();
+        let (input_tx, _input_rx) = crate::input_handler::input_control_channel();
         let nested = NestedReannounce::spawn(Box::new(os.clone()), "rename-test".into());
         nested.stop();
         let outcome = ClientLoop {
@@ -315,7 +315,7 @@ fn client_loop_rename_updates_current_identity_without_cancelling_preparation() 
             os_input: &os,
             command_is_executing: &mut CommandIsExecuting::new(),
             stdin_ansi_parser: &Arc::new(std::sync::Mutex::new(StdinAnsiParser::new())),
-            send_input_instructions: &SenderWithContext::new(input_tx),
+            send_input_control: &input_tx,
             nested_reannounce: &nested,
             teardown: ClientTeardown::new(24, false),
             synchronised_output: None,
@@ -696,7 +696,7 @@ fn fatal_client_exit_reaps_preparation_children() {
             ClientInstruction::Error("fatal preparation test".into())
         };
         SenderWithContext::new(tx).send(instruction).unwrap();
-        let (input_tx, _input_rx) = channels::unbounded();
+        let (input_tx, _input_rx) = crate::input_handler::input_control_channel();
         let nested = NestedReannounce::spawn(Box::new(os.clone()), "shutdown-test".into());
         nested.stop();
         ClientLoop {
@@ -708,7 +708,7 @@ fn fatal_client_exit_reaps_preparation_children() {
             os_input: &os,
             command_is_executing: &mut CommandIsExecuting::new(),
             stdin_ansi_parser: &Arc::new(std::sync::Mutex::new(StdinAnsiParser::new())),
-            send_input_instructions: &SenderWithContext::new(input_tx),
+            send_input_control: &input_tx,
             nested_reannounce: &nested,
             teardown: ClientTeardown::new(24, false),
             synchronised_output: None,

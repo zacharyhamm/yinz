@@ -2307,12 +2307,12 @@ impl PluginBridge {
         worker_name: String,
         mut messages: Vec<(String, String)>,
     ) -> Result<()> {
+        // The map holds each instance's workers so this never waits for its guest lock.
         let worker = self
             .plugin_map
             .lock()
             .unwrap()
-            .get_running_plugin(plugin_id, Some(client_id))
-            .and_then(|plugin| plugin.lock().unwrap().env().workers.clone());
+            .workers_of(plugin_id, client_id);
         match worker {
             Some(worker) => {
                 for (message, payload) in messages.drain(..) {
@@ -2365,17 +2365,15 @@ impl PluginBridge {
             .cloned()
             .unwrap_or_default();
 
-        let running: Vec<PluginId> = self
-            .plugin_map
-            .lock()
-            .unwrap()
-            .running_plugins()
+        // Read and change each instance through the map's copy of its identity and permission
+        // set, never its guest lock, and without holding the map while normalizing (which
+        // reads the filesystem). The set is the one the runtime checks, so the grant applies
+        // to the instance's next callback.
+        let hosts = self.plugin_map.lock().unwrap().instance_hosts();
+        let running: Vec<PluginId> = hosts
             .into_iter()
-            .filter_map(|(plugin_id, _client_id, running_plugin)| {
-                let mut running_plugin = running_plugin.lock().unwrap();
-                let env = running_plugin.env();
-                let loaded_location = match (&env.plugin_config.location, &env.resolved_source_path)
-                {
+            .filter_map(|(plugin_id, _client_id, host)| {
+                let loaded_location = match (&host.location, &host.resolved_source_path) {
                     (RunPluginLocation::File(_), Some(path)) => {
                         RunPluginLocation::File(path.clone())
                     },
@@ -2390,9 +2388,7 @@ impl PluginBridge {
                 if loaded_location != location {
                     return None;
                 }
-                running_plugin
-                    .env_mut()
-                    .set_permissions(HashSet::from_iter(granted.clone()));
+                host.set_permissions(HashSet::from_iter(granted.clone()));
                 Some(plugin_id)
             })
             .collect();
@@ -2634,41 +2630,47 @@ impl PluginBridge {
         // server started.
         *self.plugin_aliases.lock().unwrap() = new_plugins.clone();
 
-        // Get all running plugins
-        let running_plugins = self.plugin_map.lock().unwrap().running_plugins();
+        // Each instance's location and last supplied configuration are the map's, read and
+        // written without the instance's guest lock: a guest call holds that for as long as it
+        // runs, and only this thread can deliver the cancellation that stops one. Normalizing
+        // reads the filesystem, so it happens with no lock held, once per alias.
+        let instances = self.plugin_map.lock().unwrap().instance_hosts();
+        let aliases: Vec<_> = new_plugins
+            .aliases
+            .values()
+            .map(|run_plugin| {
+                (
+                    self.normalize_plugin(run_plugin.clone()).location,
+                    &run_plugin.configuration,
+                )
+            })
+            .collect();
 
-        for (plugin_id, client_id, running_plugin) in running_plugins {
-            let mut running_plugin = running_plugin.lock().unwrap();
-            let plugin_env = &running_plugin.env();
-            let plugin_location = &plugin_env.plugin_config.location;
-
-            // Look up this plugin in the new config by location
-            // Note: PluginAliases is HashMap<String, RunPlugin>, so we need to iterate
-            let new_config_for_location = new_plugins
-                .aliases
-                .values()
-                .find(|run_plugin| {
-                    self.normalize_plugin((*run_plugin).clone()).location
-                        == self
-                            .normalize_plugin(RunPlugin {
-                                location: plugin_location.clone(),
-                                ..Default::default()
-                            })
-                            .location
+        for (plugin_id, client_id, host) in instances {
+            let plugin_location = self
+                .normalize_plugin(RunPlugin {
+                    location: host.location,
+                    ..Default::default()
                 })
-                .map(|run_plugin| &run_plugin.configuration);
-
-            if let Some(new_config) = new_config_for_location {
-                // Compare configurations - only fire event if changed
-                if &running_plugin.current_configuration != new_config {
-                    running_plugin.current_configuration = new_config.clone();
-                    drop(running_plugin); // Release lock before sending
-
-                    let event = Event::PluginConfigurationChanged(new_config.inner().clone());
-                    let updates = vec![(Some(plugin_id), Some(client_id), event)];
-                    self.update_plugins(updates, shutdown_send.clone())
-                        .with_context(err_context)?;
-                }
+                .location;
+            // Look up this plugin in the new config by location
+            let Some((_, new_config)) = aliases
+                .iter()
+                .find(|(location, _)| *location == plugin_location)
+            else {
+                continue;
+            };
+            // Only this thread supplies configuration, so each change is reported once.
+            let changed = self
+                .plugin_map
+                .lock()
+                .unwrap()
+                .supply_configuration(plugin_id, client_id, new_config);
+            if changed {
+                let event = Event::PluginConfigurationChanged(new_config.inner().clone());
+                let updates = vec![(Some(plugin_id), Some(client_id), event)];
+                self.update_plugins(updates, shutdown_send.clone())
+                    .with_context(err_context)?;
             }
         }
 

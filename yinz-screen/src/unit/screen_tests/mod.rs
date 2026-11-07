@@ -2119,6 +2119,7 @@ mod same_worktree;
 mod scroll_and_warp;
 mod sizing;
 mod subscribers;
+mod synchronized_output;
 mod tab_groups;
 mod tab_projects;
 mod tabs;

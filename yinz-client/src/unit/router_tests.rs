@@ -221,7 +221,7 @@ fn the_client_loop_releases_render_pressure_on_delivery_and_terminal_failure() {
                 SessionName::from("render-pressure-test"),
             );
             nested_reannounce.stop();
-            let (input_sender, _input_receiver) = channels::unbounded();
+            let (input_sender, _input_receiver) = crate::input_handler::input_control_channel();
             let outcome = ClientLoop {
                 signal_quit_supported: Default::default(),
                 recovery: &mut None,
@@ -236,7 +236,7 @@ fn the_client_loop_releases_render_pressure_on_delivery_and_terminal_failure() {
                 os_input: &os_input,
                 command_is_executing: &mut CommandIsExecuting::new(),
                 stdin_ansi_parser: &Arc::new(Mutex::new(StdinAnsiParser::new())),
-                send_input_instructions: &SenderWithContext::new(input_sender),
+                send_input_control: &input_sender,
                 nested_reannounce: &nested_reannounce,
                 teardown: ClientTeardown::new(24, false),
                 synchronised_output: None,
@@ -305,6 +305,7 @@ fn late_terminal_replies_do_not_panic_after_the_client_loop_exits() {
         drop(client_receiver);
         let (input_sender, input_receiver) = channels::unbounded();
         let input_sender = SenderWithContext::new(input_sender);
+        let (_control_sender, control_receiver) = crate::input_handler::input_control_channel();
         input_sender.send(late_reply).unwrap();
         input_sender.send(InputInstruction::Exit).unwrap();
         let nested_reannounce = NestedReannounce::spawn(
@@ -318,6 +319,7 @@ fn late_terminal_replies_do_not_panic_after_the_client_loop_exits() {
             CommandIsExecuting::new(),
             SenderWithContext::new(client_sender),
             input_receiver,
+            control_receiver,
             nested_reannounce,
             None,
         );

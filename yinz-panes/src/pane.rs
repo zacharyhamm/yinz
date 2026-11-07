@@ -257,6 +257,15 @@ pub trait Pane {
     fn is_mid_frame(&self) -> bool {
         false
     }
+    /// When this pane's synchronized-output lock lapses, if it holds one.
+    fn sync_output_deadline(&self) -> Option<Instant> {
+        None
+    }
+    /// Releases a synchronized-output lock that lapsed by `now`. Returns true if the pane now
+    /// needs a render.
+    fn expire_sync_output(&mut self, _now: Instant) -> bool {
+        false
+    }
     fn adjust_input_to_terminal(
         &mut self,
         _key_with_modifier: &Option<KeyWithModifier>,

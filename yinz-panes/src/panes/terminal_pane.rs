@@ -385,6 +385,12 @@ impl Pane for TerminalPane {
     fn is_mid_frame(&self) -> bool {
         self.grid.is_mid_frame()
     }
+    fn sync_output_deadline(&self) -> Option<std::time::Instant> {
+        self.grid.sync_output_deadline()
+    }
+    fn expire_sync_output(&mut self, now: std::time::Instant) -> bool {
+        self.grid.expire_sync_output(now)
+    }
     fn adjust_input_to_terminal(
         &mut self,
         key_with_modifier: &Option<KeyWithModifier>,
@@ -1731,7 +1737,7 @@ impl Pane for TerminalPane {
         self.check_migration()?;
         if !self.parser_boundary.is_ground()
             || !self.kitty_interceptor.is_in_ground_state()
-            || self.grid.lock_renders
+            || self.grid.is_mid_frame()
         {
             return Err(
                 "ordinary pane transfer requires a complete terminal escape sequence".into(),

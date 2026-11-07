@@ -1435,7 +1435,13 @@ impl Pty {
     /// the pane closes. The session it came from forgot it when it let the pane go.
     pub(crate) fn claim_scrollback_dump(&mut self, terminal_id: TerminalId, command: &RunCommand) {
         if let Some(dump) = yinz_bus::scrollback_dump::scrollback_dump_in_command(command) {
-            self.scrollback_dumps.insert(terminal_id, dump);
+            // A pane rerun on another dump no longer shows the one it had, and nothing else
+            // would delete that one now that its entry is replaced.
+            if let Some(previous) = self.scrollback_dumps.insert(terminal_id, dump.clone())
+                && previous != dump
+            {
+                yinz_bus::scrollback_dump::remove_scrollback_dump(&previous).non_fatal();
+            }
         }
     }
 

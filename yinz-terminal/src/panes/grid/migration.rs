@@ -389,7 +389,8 @@ impl Grid {
                 cursor: alternate.cursor.clone(),
                 supports_kitty_keyboard_protocol: alternate.supports_kitty_keyboard_protocol,
             });
-        let completed_text = self.lock_renders.then(|| {
+        let lock_renders = self.is_mid_frame();
+        let completed_text = lock_renders.then(|| {
             self.completed_text
                 .iter()
                 .map(|row| {
@@ -401,7 +402,7 @@ impl Grid {
         });
         let snapshot = Snapshot {
             format: FORMAT,
-            lock_renders: self.lock_renders,
+            lock_renders,
             completed_text,
             ui_component_bytes: self.ui_component_bytes.clone(),
             nested_frame_bytes: self.nested_frame_bytes.clone(),
@@ -548,7 +549,12 @@ impl Grid {
             .collect::<Result<Vec<_>>>()?;
         // All validation and shared-link allocation above precede mutation of the live grid.
         *self.link_handler.borrow_mut() = merged_links;
-        self.lock_renders = state.lock_renders;
+        // The source's deadline is not transferred. A restored lock starts a fresh one, so the
+        // application can still end its frame on the destination, and a lock it never ends
+        // lapses there as it would have here.
+        self.render_lock_deadline = state
+            .lock_renders
+            .then(|| std::time::Instant::now() + SYNCHRONIZED_OUTPUT_TIMEOUT);
         self.ui_component_bytes = state.ui_component_bytes;
         self.nested_frame_bytes = state.nested_frame_bytes;
         self.xtgettcap_bytes = state.xtgettcap_bytes;

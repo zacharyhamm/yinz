@@ -143,17 +143,43 @@ fn malformed_snapshot_does_not_mutate_destination() {
 #[test]
 fn migration_preserves_incomplete_frame_but_waits_for_host_reply() {
     let mut original = grid(b"content");
-    original.lock_renders = true;
+    original.lock_renders();
     let mut destination = grid(b"old");
     destination
         .restore_migration_state(original.migration_state().unwrap())
         .unwrap();
-    assert!(destination.lock_renders);
+    assert!(destination.is_mid_frame());
     assert_eq!(destination.dump_screen(true), original.dump_screen(true));
-    original.lock_renders = false;
+    original.unlock_renders();
     original.pending_messages_to_pty.push(b"reply".to_vec());
     assert!(original.validate_migration().is_err());
     assert!(original.migration_state().is_err());
+}
+
+#[test]
+fn a_restored_synchronized_frame_gets_a_fresh_deadline() {
+    let mut original = grid(b"content");
+    original.lock_renders();
+    let snapshot = original.migration_state().unwrap();
+    // The source's lock has lapsed by the time the destination restores it.
+    original.render_lock_deadline = Some(std::time::Instant::now());
+    let before = std::time::Instant::now();
+    let mut destination = grid(b"old");
+    destination.restore_migration_state(snapshot).unwrap();
+    let deadline = destination.sync_output_deadline().unwrap();
+    assert!(deadline >= before + SYNCHRONIZED_OUTPUT_TIMEOUT);
+    assert!(destination.expire_sync_output(deadline));
+    assert!(!destination.is_mid_frame());
+    // A lapsed lock is not carried to another destination.
+    let mut lapsed = grid(b"content");
+    lapsed.lock_renders();
+    lapsed.render_lock_deadline = Some(std::time::Instant::now());
+    let mut destination = grid(b"old");
+    destination
+        .restore_migration_state(lapsed.migration_state().unwrap())
+        .unwrap();
+    assert!(!destination.is_mid_frame());
+    assert_eq!(destination.sync_output_deadline(), None);
 }
 
 #[test]
@@ -165,7 +191,7 @@ fn migration_repaints_the_completed_frame_until_synchronized_output_ends() {
     let completed = original.render(3, 2, &Style::default()).unwrap().unwrap().0;
     assert!(!completed[0].selection_and_colors().is_empty());
     vte::Parser::new().advance(&mut original, b"\x1b[?2026h\x1b[H\x1b[32mpartial update ");
-    assert!(original.lock_renders);
+    assert!(original.is_mid_frame());
     let snapshot = original.migration_state().unwrap();
     original.render_full_viewport();
     let locked = original.render(3, 2, &Style::default()).unwrap().unwrap().0;

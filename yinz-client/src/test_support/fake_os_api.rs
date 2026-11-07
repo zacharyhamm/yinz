@@ -31,6 +31,8 @@ pub struct FakeClientOsApi {
     stdout_error_on: Option<Vec<u8>>,
     stdin: Option<Vec<u8>>,
     pub sent_to_server: Watched<Vec<ClientToServerMsg>>,
+    /// Every mouse-reporting change, `true` for enable, in order.
+    pub mouse_modes: Watched<Vec<bool>>,
     from_server: Arc<Mutex<VecDeque<IpcRecv<ServerToClientMsg>>>>,
     stdin_rx: Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Vec<u8>>>>>,
     signal_rx: Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SignalEvent>>>>,
@@ -51,6 +53,7 @@ impl Default for FakeClientOsApi {
             stdout_error_on: None,
             stdin: None,
             sent_to_server: Watched::default(),
+            mouse_modes: Watched::default(),
             from_server: Arc::new(Mutex::new(VecDeque::new())),
             stdin_rx: None,
             signal_rx: None,
@@ -249,9 +252,11 @@ impl TtyControl for FakeClientOsApi {
         Palette::default()
     }
     fn enable_mouse(&self) -> anyhow::Result<()> {
+        self.mouse_modes.lock().push(true);
         Ok(())
     }
     fn disable_mouse(&self) -> anyhow::Result<()> {
+        self.mouse_modes.lock().push(false);
         Ok(())
     }
 }

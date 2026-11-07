@@ -382,7 +382,7 @@ fn queued_stale_frames_and_session_switches_do_not_affect_the_replacement() {
     ] {
         tx.send(instruction).unwrap();
     }
-    let (input_tx, _input_rx) = channels::unbounded();
+    let (input_tx, _input_rx) = crate::input_handler::input_control_channel();
     let nested = NestedReannounce::spawn(Box::new(os.clone()), "generation-test".into());
     nested.stop();
     let args = Default::default();
@@ -399,7 +399,7 @@ fn queued_stale_frames_and_session_switches_do_not_affect_the_replacement() {
         os_input: &os,
         command_is_executing: &mut command,
         stdin_ansi_parser: &Arc::new(Mutex::new(StdinAnsiParser::new())),
-        send_input_instructions: &SenderWithContext::new(input_tx),
+        send_input_control: &input_tx,
         nested_reannounce: &nested,
         teardown: ClientTeardown::new(24, false),
         synchronised_output: None,

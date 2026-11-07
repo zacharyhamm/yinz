@@ -8513,3 +8513,171 @@ fn pane_preparation_publishes_before_a_newer_reload_or_retirement() {
         }
     }
 }
+
+/// An instance's guest lock, held from another thread the way a guest call that will not return
+/// holds it, for at most [`yinz_test_support::default_timeout`].
+struct HeldGuest {
+    release: std::sync::mpsc::Sender<()>,
+    outlasted: Arc<AtomicBool>,
+    holder: Option<std::thread::JoinHandle<()>>,
+}
+
+impl HeldGuest {
+    fn hold(instance: Arc<Mutex<RunningPlugin>>) -> Self {
+        let (locked, held) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let outlasted = Arc::new(AtomicBool::new(false));
+        let gave_up = outlasted.clone();
+        let holder = std::thread::spawn(move || {
+            let guard = instance.lock().unwrap();
+            locked.send(()).unwrap();
+            if released
+                .recv_timeout(yinz_test_support::default_timeout())
+                .is_err()
+            {
+                // Recorded before the lock goes, so whatever was waiting for it sees this.
+                gave_up.store(true, Ordering::SeqCst);
+            }
+            drop(guard);
+        });
+        held.recv_timeout(yinz_test_support::default_timeout())
+            .unwrap();
+        Self {
+            release,
+            outlasted,
+            holder: Some(holder),
+        }
+    }
+
+    /// Let the lock go, answering whether it was still held: that nothing had to wait it out.
+    fn release(mut self) -> bool {
+        let _ = self.release.send(());
+        if let Some(holder) = self.holder.take() {
+            holder.join().unwrap();
+        }
+        !self.outlasted.load(Ordering::SeqCst)
+    }
+}
+
+/// A guest call has no time limit, and only the plugin thread can deliver the cancellation that
+/// stops one, so nothing the plugin thread does may wait for an instance's guest lock. A config
+/// reload, a permission grant, a permission answer and a worker message all reach a busy
+/// instance here without it - and what they change still lands before its next callback, with
+/// the config change reported once.
+#[test]
+fn plugin_thread_handlers_never_wait_for_a_busy_guest() {
+    let mut test = TestBridge::new();
+    let plugin = PluginId::new(1);
+    let client = ClientId::new(1);
+    let context = test.context(
+        1,
+        1,
+        r#"
+(yinz-declare-pane)
+(define theme "none")
+(define changes 0)
+(define (load config) (yinz-command (hash "Subscribe" (list "PluginConfigurationChanged"))))
+(define (update event)
+  (when (and (hash? event) (hash-contains? event "PluginConfigurationChanged"))
+    (set! theme (hash-ref (hash-ref event "PluginConfigurationChanged") "theme"))
+    (set! changes (+ changes 1)))
+  #t)
+(define (render rows cols) (string-append "size " theme "/" (number->string changes) ";"))
+"#,
+    );
+    test.load(context).unwrap();
+    test.settle(plugin);
+    let _ = frames(&mut test, plugin);
+    let source = test._dirs[0].path().join("1.scm");
+    let instance = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(plugin, Some(client))
+        .unwrap();
+    let instance_id = test.instance_id(plugin, client);
+    let (shutdown, _shutdown_receiver) = tokio::sync::mpsc::channel(1);
+
+    let busy = HeldGuest::hold(instance.clone());
+    test.bridge
+        .grant_permissions_to_location(
+            Url::from_file_path(&source).unwrap().as_str(),
+            vec![PermissionType::ReadApplicationState],
+            shutdown.clone(),
+        )
+        .unwrap();
+    let mut aliases = PluginAliases::default();
+    aliases.aliases.insert(
+        "busy".into(),
+        RunPlugin {
+            location: RunPluginLocation::File(source.clone()),
+            configuration: PluginUserConfiguration::new(BTreeMap::from([(
+                "theme".to_owned(),
+                "light".to_owned(),
+            )])),
+            ..Default::default()
+        },
+    );
+    // Twice with the same table: the second is no change.
+    for _ in 0..2 {
+        test.bridge
+            .detect_and_notify_plugin_config_changes(&aliases, shutdown.clone())
+            .unwrap();
+    }
+    test.bridge
+        .request_permissions(
+            plugin,
+            instance_id,
+            client,
+            vec![PermissionType::RunCommands],
+            shutdown.clone(),
+        )
+        .unwrap();
+    let token = *test.bridge.permission_requests.keys().next().unwrap();
+    test.bridge
+        .answer_permissions(
+            token,
+            PermissionStatus::Granted,
+            Some(test._dirs[0].path().join("permissions.kdl")),
+            shutdown.clone(),
+        )
+        .unwrap();
+    test.bridge
+        .post_messages_to_plugin_worker(
+            plugin,
+            client,
+            "absent".into(),
+            vec![("message".into(), "payload".into())],
+        )
+        .unwrap();
+    assert!(
+        busy.release(),
+        "the plugin thread waited for a busy guest's lock"
+    );
+
+    test.settle(plugin);
+    let permissions = instance
+        .lock()
+        .unwrap()
+        .env()
+        .permissions
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_default();
+    assert_eq!(
+        permissions,
+        HashSet::from([
+            PermissionType::ReadApplicationState,
+            PermissionType::RunCommands
+        ])
+    );
+    let drawn = frames(&mut test, plugin);
+    assert_eq!(drawn.last().map(String::as_str), Some("size light/1"));
+    assert!(
+        drawn.iter().all(|frame| !frame.ends_with("/2")),
+        "{drawn:?}"
+    );
+    test.bridge.unload_plugin(plugin).unwrap();
+}

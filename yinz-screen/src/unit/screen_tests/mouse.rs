@@ -582,6 +582,124 @@ fn pane_grouping_removes_panes_that_become_nonselectable_and_stale_members() {
     );
 }
 
+/// Grouping opens the pinned multiple-select control in the tab the grouping client is in,
+/// never in a fixed tab id, and the control stays there when the client moves on.
+#[test]
+fn pane_group_control_opens_in_the_grouping_clients_tab() {
+    use crate::screen::thread_main::PendingEvents;
+    use yinz_bus::pty::ReplacedPane;
+
+    let client_id = ClientId::new(1);
+    let control = crate::PluginId::new(77);
+    for (target_tab, tab_number, other_tab_number) in [(TabId::new(0), 1, 3), (TabId::new(2), 3, 2)]
+    {
+        let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
+        let (pty_tx, pty_rx): ChannelWithContext<PtyInstruction> = channels::unbounded();
+        screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+        // Tabs need a plugin sender to build the control's pane.
+        let (plugin_tx, _plugin_rx): ChannelWithContext<PluginInstruction> = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+        // The group bookkeeping holds its own senders, taken when the screen was built.
+        *screen.current_pane_group.borrow_mut() =
+            crate::pane_groups::PaneGroups::new(screen.bus.senders.clone());
+        for (pid, tab_id) in [(1, 0), (2, 1), (3, 2)] {
+            new_tab(&mut screen, pid, TabId::new(tab_id));
+        }
+        screen
+            .go_to_tab(TabNumber::new(tab_number), client_id)
+            .unwrap();
+        assert_eq!(screen.active_tab_ids.get(&client_id), Some(&target_tab));
+
+        screen.toggle_pane_in_group(client_id).unwrap();
+        let launches: Vec<_> = pty_rx
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                PtyInstruction::FillPluginCwd(
+                    _,
+                    _,
+                    _,
+                    _,
+                    run_plugin,
+                    tab_id,
+                    _,
+                    acting_client,
+                    _,
+                    _,
+                    _,
+                    _,
+                    coordinates,
+                    _,
+                    _,
+                ) => Some((run_plugin, tab_id, acting_client, coordinates)),
+                _ => None,
+            })
+            .collect();
+        let [(run_plugin, launch_tab, acting_client, coordinates)] = launches.as_slice() else {
+            panic!("grouping must launch the control exactly once, got {launches:?}");
+        };
+        assert!(
+            format!("{run_plugin:?}").contains("multiple-select"),
+            "launched {run_plugin:?}"
+        );
+        assert_eq!(*acting_client, client_id);
+        assert_eq!(
+            *launch_tab, target_tab,
+            "the control must open in the grouping client's tab"
+        );
+
+        // The pty thread forwards the tab to the plugin thread, which answers with this.
+        let mut pending = PendingEvents::default();
+        screen
+            .add_plugin(
+                Some(true),
+                false,
+                ReplacedPane::Close,
+                run_plugin.clone(),
+                None,
+                Some(*launch_tab),
+                control,
+                None,
+                None,
+                false,
+                coordinates.clone(),
+                Some(false),
+                Some(client_id),
+                None,
+                None,
+                &mut pending,
+            )
+            .unwrap();
+        let tabs_with_control = |screen: &Screen| -> Vec<TabId> {
+            screen
+                .tabs
+                .iter()
+                .filter(|(_, tab)| tab.has_plugin(control))
+                .map(|(tab_id, _)| *tab_id)
+                .collect()
+        };
+        assert_eq!(tabs_with_control(&screen), vec![target_tab]);
+
+        // Moving to another tab and growing the group neither moves the control nor opens a
+        // second one: it stays pinned where the grouping started.
+        screen
+            .go_to_tab(TabNumber::new(other_tab_number), client_id)
+            .unwrap();
+        assert_ne!(screen.active_tab_ids.get(&client_id), Some(&target_tab));
+        screen.toggle_pane_in_group(client_id).unwrap();
+        assert_eq!(
+            screen.current_pane_group.borrow().clone_inner()[&client_id].len(),
+            2
+        );
+        assert!(
+            !pty_rx
+                .try_iter()
+                .any(|(instruction, _)| matches!(instruction, PtyInstruction::FillPluginCwd(..))),
+            "a non-empty group must not launch another control"
+        );
+        assert_eq!(tabs_with_control(&screen), vec![target_tab]);
+    }
+}
+
 #[test]
 fn mouse_focus_clears_bell_on_focused_pane() {
     let size = Size {

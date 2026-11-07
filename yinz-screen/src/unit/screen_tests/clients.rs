@@ -1681,7 +1681,7 @@ fn a_departed_client_leaves_no_history_group_or_capture_behind() {
         screen
             .current_pane_group
             .borrow_mut()
-            .toggle_pane_id_in_group(pane, size, &client);
+            .toggle_pane_id_in_group(pane, size, None, &client);
     }
     screen.remove_client(departed).unwrap();
     assert_eq!(

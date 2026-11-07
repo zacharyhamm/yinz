@@ -46,7 +46,8 @@ pub enum ServerInstruction {
     RepaintComplete(ClientId),
     UnblockInputThread,
     ClientExit(ClientId, Option<NotificationEnd>),
-    /// Attachment failed; cleanup must not dismiss recovery.
+    /// The screen rejected an attachment. The client is told and removed, but never ends the
+    /// session it was joining, and cleanup must not dismiss recovery.
     ClientAttachFailed(ClientId),
     SignalQuit(ClientId),
     RemoveClient(ClientId),

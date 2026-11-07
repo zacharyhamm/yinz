@@ -632,3 +632,68 @@ fn unsupported_conditional_termination_is_incomplete_cleanup() {
             .is_empty()
     );
 }
+
+#[test]
+fn orphan_sweep_collects_stale_sockets_instead_of_failing() {
+    // The sweep directory is shared by every session, and a SIGKILL'd supervisor
+    // leaves its socket behind. That residue is not a supervisor the sweep failed
+    // to terminate, so it must neither fail `kill-session` nor stop the sweep
+    // from reaching the supervisors that really are this session's.
+    let dir = tempfile::tempdir().expect("TEST");
+    let stale = dir.path().join("stale.sock");
+    // A real socket node with nobody listening; see
+    // `a_socket_nobody_is_listening_on_is_garbage_collected` for why not a file.
+    drop(std::os::unix::net::UnixListener::bind(&stale).expect("TEST"));
+    let requests = yinz_test_support::Watched::default();
+    let target = sweep_target(
+        &dir.path().join("target.sock"),
+        std::time::Duration::ZERO,
+        requests.clone(),
+    );
+
+    let terminated = terminate_orphans_of_session_in(dir.path(), "wanted")
+        .expect("a stale socket is not incomplete cleanup");
+
+    let ids: Vec<_> = terminated
+        .iter()
+        .map(|status| status.host_id.as_str())
+        .collect();
+    assert_eq!(ids, ["target"]);
+    assert!(
+        !stale.exists(),
+        "a socket whose owner is gone should have been unlinked"
+    );
+    target.join().expect("TEST");
+}
+
+#[test]
+fn orphan_sweep_ignores_a_supervisor_that_hangs_up_on_discovery() {
+    // Another session's supervisor, busy in its own termination grace or already
+    // shutting down, can accept the query and close without answering. Its
+    // session is unknowable and it is not this sweep's to terminate, so it is not
+    // a cleanup failure either. It is alive, so its socket must stay.
+    use protocol::ServerToHostMsg;
+    let dir = tempfile::tempdir().expect("TEST");
+    let path = dir.path().join("busy.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&path).expect("TEST");
+    let host = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("TEST");
+        assert!(matches!(
+            protocol::read_msg::<ServerToHostMsg, _>(&mut stream).expect("TEST"),
+            Some(ServerToHostMsg::Query)
+        ));
+        // Hang up without replying; the listener stays bound until the thread ends.
+        drop(stream);
+        listener
+    });
+
+    let terminated = terminate_orphans_of_session_in(dir.path(), "wanted")
+        .expect("a supervisor that hangs up on discovery is not incomplete cleanup");
+
+    assert!(terminated.is_empty());
+    let _listener = host.join().expect("TEST");
+    assert!(
+        path.exists(),
+        "a live listener's socket must never be unlinked"
+    );
+}

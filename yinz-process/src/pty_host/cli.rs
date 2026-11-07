@@ -671,14 +671,87 @@ fn terminate_orphans_of_session_in_with_progress(
     })
 }
 
+/// Connect to a supervisor's socket for the orphan sweep, or `None` when the
+/// socket is stale.
+///
+/// The sweep walks a directory every session shares, and a stale socket there is
+/// the normal residue of a `SIGKILL`'d supervisor, which never got to unlink it.
+/// That is not a supervisor the sweep failed to clean up; it is one nobody has to,
+/// so the file is collected exactly as `collect_from_checked` collects it.
+///
+/// A refused connect is only taken as proof of death once `socket_is_dead` agrees:
+/// the BSDs also refuse a connect when a live listener's backlog is full, and
+/// `ipc_connect` underneath it retries that for `IPC_CONNECT_TIMEOUT` before
+/// believing it. Anything else (a busy supervisor, a timeout) is never grounds to
+/// unlink, since that would put a live pane permanently out of reach.
+async fn connect_for_sweep(path: &Path) -> Result<Option<tokio::net::UnixStream>> {
+    match tokio::net::UnixStream::connect(path).await {
+        Ok(stream) => return Ok(Some(stream)),
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+            ) => {},
+        Err(e) => return Err(e).context("failed to connect"),
+    }
+    let probe = path.to_owned();
+    let dead = tokio::task::spawn_blocking(move || client::socket_is_dead(&probe))
+        .await
+        .context("supervisor liveness probe did not finish")?;
+    if !dead {
+        // A full backlog that drained while the probe retried it.
+        return tokio::net::UnixStream::connect(path)
+            .await
+            .map(Some)
+            .context("failed to connect");
+    }
+    // Already gone is fine: the supervisor's own cleanup, or a concurrent sweep,
+    // got there first. Failing to unlink a dead socket leaves only a dead file.
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err::<(), _>(e)
+            .with_context(|| {
+                format!(
+                    "failed to unlink stale supervisor socket {}",
+                    path.display()
+                )
+            })
+            .non_fatal(),
+        _ => {},
+    }
+    Ok(None)
+}
+
+/// Whether a request failed because the supervisor hung up on it, rather than
+/// because it answered something the sweep cannot accept.
+fn supervisor_hung_up(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<std::io::Error>().is_some_and(|e| {
+            matches!(
+                e.kind(),
+                std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+            )
+        })
+    })
+}
+
 async fn supervisor_request(
     path: &Path,
     request: &protocol::ServerToHostMsg,
 ) -> Result<protocol::HostToServerMsg> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut stream = tokio::net::UnixStream::connect(path)
         .await
         .context("failed to connect")?;
+    supervisor_exchange(&mut stream, request).await
+}
+
+async fn supervisor_exchange(
+    stream: &mut tokio::net::UnixStream,
+    request: &protocol::ServerToHostMsg,
+) -> Result<protocol::HostToServerMsg> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut request_bytes = Vec::new();
     protocol::write_msg(&mut request_bytes, request)?;
     stream
@@ -702,10 +775,27 @@ async fn supervisor_request(
 
 async fn sweep_socket(path: &Path, session: &str) -> Result<Option<HostStatus>> {
     use protocol::{HostToServerMsg, ServerToHostMsg};
-    let HostToServerMsg::Status(status) = supervisor_request(path, &ServerToHostMsg::Query).await?
-    else {
-        bail!("supervisor did not answer discovery query");
+    let Some(mut stream) = connect_for_sweep(path).await? else {
+        return Ok(None);
     };
+    // Until it answers, a supervisor's session is unknown, and the directory is
+    // shared with every other session's. One that hangs up on the query is either
+    // another session's, busy in its own termination, or one shutting down; none
+    // is a pane this sweep failed to terminate. Once a supervisor has claimed this
+    // session, every failure below counts against the cleanup.
+    let status = match supervisor_exchange(&mut stream, &ServerToHostMsg::Query).await {
+        Ok(HostToServerMsg::Status(status)) => status,
+        Ok(_) => bail!("supervisor did not answer discovery query"),
+        Err(e) if supervisor_hung_up(&e) => {
+            log::warn!(
+                "supervisor {} hung up on the discovery query; not sweeping it: {e:#}",
+                path.display()
+            );
+            return Ok(None);
+        },
+        Err(e) => return Err(e),
+    };
+    drop(stream);
     if status.attached || status.session_name.as_ref().map(SessionName::as_str) != Some(session) {
         return Ok(None);
     }

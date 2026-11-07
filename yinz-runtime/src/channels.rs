@@ -9,7 +9,7 @@ use std::sync::{
 use crate::errors::get_current_ctx;
 pub use crossbeam::channel::{
     bounded, unbounded, Receiver, RecvError, RecvTimeoutError, Select, SendError, Sender,
-    TrySendError,
+    TryRecvError, TrySendError,
 };
 use yinz_types::diagnostics::ErrorContext;
 

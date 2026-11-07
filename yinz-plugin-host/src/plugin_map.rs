@@ -46,6 +46,58 @@ pub struct PluginMap {
     resize_slots: HashMap<(PluginId, ClientId), Arc<ResizeSlot>>,
     client_cancellations: HashMap<(PluginId, ClientId), (Option<u64>, Arc<AtomicBool>)>,
     workers: HashMap<(PluginId, ClientId), Arc<crate::background_worker::Workers>>,
+    /// Each instance's [`InstanceHost`]: what the plugin thread reads and changes of it without
+    /// waiting for its guest lock.
+    instance_hosts: HashMap<(PluginId, ClientId), InstanceHost>,
+}
+
+/// The parts of one instance the plugin thread matches it by and changes, held outside its
+/// guest lock.
+///
+/// A guest call holds its instance's lock for as long as it runs, with no time limit: only a
+/// cancellation the plugin thread delivers stops it, and the guest may itself be waiting on a
+/// synchronous query the plugin thread answers. So the plugin thread never waits for that lock.
+/// A config reload, a permission grant and a permission answer find and change their instances
+/// here instead, the way a resize goes through the [`ResizeSlot`].
+#[derive(Clone)]
+pub(crate) struct InstanceHost {
+    /// The instance's `PluginEnv::plugin_config.location`, refreshed along with it.
+    pub location: RunPluginLocation,
+    /// The instance's `PluginEnv::resolved_source_path`.
+    pub resolved_source_path: Option<PathBuf>,
+    pub shared: bool,
+    /// The instance's own `PluginEnv::permissions`, which its runtime and workers read.
+    pub permissions: Arc<Mutex<Option<HashSet<PermissionType>>>>,
+    /// The last configuration supplied to this instance, which a config reload compares against
+    /// to notify it once per change. Its startup configuration remains its reload identity.
+    pub configuration: PluginUserConfiguration,
+}
+
+impl InstanceHost {
+    /// Replace the instance's permission set, which its runtime and workers check before each
+    /// command and event.
+    pub fn set_permissions(&self, permissions: HashSet<PermissionType>) {
+        self.permissions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .replace(permissions);
+    }
+
+    /// The instance's current permission set.
+    pub fn permissions(&self) -> Option<HashSet<PermissionType>> {
+        self.permissions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// An instance a permission answer reaches: see [`PluginMap::permission_instance`].
+pub(crate) struct PermissionInstance {
+    pub owner: ClientId,
+    pub runtime: Arc<Mutex<RunningPlugin>>,
+    pub host: InstanceHost,
+    pub workers: Option<Arc<crate::background_worker::Workers>>,
 }
 
 impl PluginMap {
@@ -236,15 +288,60 @@ impl PluginMap {
         }
     }
 
+    /// The live instance `instance` of `plugin`, with what a permission answer changes of it
+    /// without its guest lock.
     pub(crate) fn permission_instance(
         &self,
         plugin: PluginId,
         instance: PluginInstanceId,
-    ) -> Option<(ClientId, Arc<Mutex<RunningPlugin>>)> {
+    ) -> Option<PermissionInstance> {
         self.instance_ids.iter().find_map(|(key, id)| {
-            (key.0 == plugin && *id == instance && !self.availability[key].load(Ordering::Acquire))
-                .then(|| (key.1, self.plugin_assets[key].0.clone()))
+            if key.0 != plugin || *id != instance || self.availability[key].load(Ordering::Acquire)
+            {
+                return None;
+            }
+            Some(PermissionInstance {
+                owner: key.1,
+                runtime: self.plugin_assets.get(key)?.0.clone(),
+                host: self.instance_hosts.get(key)?.clone(),
+                workers: self.workers.get(key).cloned(),
+            })
         })
+    }
+
+    /// Every instance's [`InstanceHost`], read without any guest lock.
+    pub(crate) fn instance_hosts(&self) -> Vec<(PluginId, ClientId, InstanceHost)> {
+        self.instance_hosts
+            .iter()
+            .map(|((plugin, client), host)| (*plugin, *client, host.clone()))
+            .collect()
+    }
+
+    /// Record `configuration` as the last one supplied to the instance of `plugin` owned by
+    /// `client`, returning whether it was news to that instance. An instance that has gone since
+    /// has nothing to be told.
+    pub(crate) fn supply_configuration(
+        &mut self,
+        plugin: PluginId,
+        client: ClientId,
+        configuration: &PluginUserConfiguration,
+    ) -> bool {
+        match self.instance_hosts.get_mut(&(plugin, client)) {
+            Some(host) if host.configuration != *configuration => {
+                host.configuration = configuration.clone();
+                true
+            },
+            _ => false,
+        }
+    }
+
+    /// The named-worker handle of the instance of `plugin` owned by `client`.
+    pub(crate) fn workers_of(
+        &self,
+        plugin: PluginId,
+        client: ClientId,
+    ) -> Option<Arc<crate::background_worker::Workers>> {
+        self.workers.get(&(plugin, client)).cloned()
     }
 
     pub fn pipe_instances(&mut self) -> Vec<(RunningPluginEntry, PluginInstanceId)> {
@@ -321,6 +418,7 @@ impl PluginMap {
         self.resize_slots.retain(|(id, _), _| *id != pid);
         self.plugin_metadata.remove(&pid);
         self.workers.retain(|(id, _), _| *id != pid);
+        self.instance_hosts.retain(|(id, _), _| *id != pid);
         self.client_cancellations.retain(|(id, _), _| *id != pid);
         let mut removed = HashMap::new();
         let ids_in_plugin_map: Vec<(PluginId, ClientId)> =
@@ -349,6 +447,7 @@ impl PluginMap {
         }
         self.resize_slots.remove(&(plugin_id, client_id));
         self.workers.remove(&(plugin_id, client_id));
+        self.instance_hosts.remove(&(plugin_id, client_id));
         self.client_cancellations.remove(&(plugin_id, client_id));
         let assets = self.plugin_assets.remove(&(plugin_id, client_id))?;
         self.plugin_metadata.insert(
@@ -614,6 +713,17 @@ impl PluginMap {
             if let Some(workers) = &plugin.runtime.env().workers {
                 self.workers.insert((plugin_id, client_id), workers.clone());
             }
+            let env = plugin.env();
+            self.instance_hosts.insert(
+                (plugin_id, client_id),
+                InstanceHost {
+                    location: env.plugin_config.location.clone(),
+                    resolved_source_path: env.resolved_source_path.clone(),
+                    shared: env.plugin_config.is_shared(),
+                    permissions: env.permissions.clone(),
+                    configuration: env.plugin_config.initial_userspace_configuration.clone(),
+                },
+            );
             self.client_cancellations.insert(
                 (plugin_id, client_id),
                 (
@@ -648,6 +758,9 @@ impl PluginMap {
                 }
                 if let Some(workers) = self.workers.remove(&(plugin_id, from)) {
                     self.workers.insert((plugin_id, to), workers);
+                }
+                if let Some(host) = self.instance_hosts.remove(&(plugin_id, from)) {
+                    self.instance_hosts.insert((plugin_id, to), host);
                 }
                 if let Some(metadata) = self.plugin_metadata.get_mut(&plugin_id) {
                     metadata.owner_client_id = to;
@@ -723,6 +836,11 @@ impl PluginMap {
         let location =
             RunPluginLocation::File(path.canonicalize().unwrap_or_else(|_| path.clone()));
         metadata.config.location = location.clone();
+        for ((id, _), host) in &mut self.instance_hosts {
+            if *id == plugin_id {
+                host.location = location.clone();
+            }
+        }
         for ((id, _), (plugin, _)) in &self.plugin_assets {
             if *id == plugin_id {
                 plugin.lock().unwrap().env_mut().plugin_config.location = location.clone();
@@ -980,6 +1098,9 @@ impl PluginEnv {
         self.tab_index.is_none() || self.surface == crate::plugin_panes::Surface::Headless
     }
 
+    /// Tests set a fixture's permissions directly; the host changes a live instance's through
+    /// its [`InstanceHost`], without the guest lock.
+    #[cfg(test)]
     pub fn set_permissions(&mut self, permissions: HashSet<PermissionType>) {
         self.permissions.lock().unwrap().replace(permissions);
     }
@@ -1110,8 +1231,6 @@ impl ResizeState {
 
 pub struct RunningPlugin {
     pub instance_id: PluginInstanceId,
-    /// Last config supplied to this instance; startup config remains its reload identity.
-    pub current_configuration: PluginUserConfiguration,
     pipes_released: bool,
     pub failed: bool,
     pub pipe_requests: HashMap<String, yinz_bus::plugins::PipeRequestId>,
@@ -1143,11 +1262,6 @@ impl RunningPlugin {
         };
         Self {
             instance_id: steel.env().instance_id,
-            current_configuration: steel
-                .env()
-                .plugin_config
-                .initial_userspace_configuration
-                .clone(),
             pipes_released: false,
             failed: false,
             pipe_requests: HashMap::new(),

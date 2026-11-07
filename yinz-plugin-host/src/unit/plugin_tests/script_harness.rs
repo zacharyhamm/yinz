@@ -56,6 +56,12 @@ pub(super) struct Harness {
 }
 
 impl Harness {
+    /// The session's data folder: beside `/host`, not at it, since plugins may never write into
+    /// the data folder.
+    pub(super) fn data_dir(directory: &std::path::Path) -> PathBuf {
+        directory.join("data")
+    }
+
     pub(super) fn new(extension: &str, source: &str, status: PermissionStatus) -> Self {
         Self::with_permission_reply(extension, source, Some(status))
     }
@@ -94,7 +100,7 @@ impl Harness {
             Default::default(),
             event_sender.clone(),
             data_access,
-            Some(directory.path().to_owned()),
+            Some(Self::data_dir(directory.path())),
         );
         let server_log = Watched::new(vec![]);
         let server_logger = log_until_disconnect(&server_log, server_receiver);

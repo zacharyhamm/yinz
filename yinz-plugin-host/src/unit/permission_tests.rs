@@ -348,6 +348,911 @@ fn a_folder_holding_a_root_cannot_be_removed_or_renamed() {
     }
 }
 
+/// Run one `Fs*` mutation and return its error, or `None` when it succeeded.
+fn fs_mutation_error(env: &mut PluginEnv, command: PluginCommand) -> Option<String> {
+    env.response_sink = None;
+    run_plugin_command(env, command).unwrap();
+    let bytes: Vec<u8> = env.response_sink.take().unwrap();
+    match ProtobufFsMutateResponse::decode(bytes.as_slice())
+        .unwrap()
+        .result
+    {
+        Some(fs_mutate_response::Result::Success(true)) => None,
+        Some(fs_mutate_response::Result::Error(error)) => Some(error),
+        other => panic!("unexpected filesystem reply {other:?}"),
+    }
+}
+
+const PROTECTED_STATE: &str = "yinz's own configuration, permission or data state";
+
+/// Every grant that could plausibly unlock host state, so that refusals are not a missing one.
+fn grant_every_filesystem_permission(env: &PluginEnv) {
+    *env.permissions.lock().unwrap() = Some(HashSet::from([
+        PermissionType::ReadFiles,
+        PermissionType::WriteFiles,
+        PermissionType::FullHdAccess,
+        PermissionType::AuthorPlugins,
+        PermissionType::Reconfigure,
+    ]));
+}
+
+/// The process's cache folder, after checking that it is a test folder and not the user's.
+///
+/// The permission cache lives at a process-wide path, so a test of its guard aims real writes,
+/// renames and recursive removes at that folder. A regressed guard must not reach the user's
+/// real cache, so this fails before any of them unless `cargo x test` (or an explicit
+/// `YINZ_TEST_CACHE_DIR`) put the cache in a test folder.
+fn test_owned_cache_dir() -> &'static Path {
+    use yinz_runtime::consts::YINZ_CACHE_DIR;
+    use yinz_runtime::owned_dir::TEST_CACHE_ROOT_ENV;
+    let test_folder = std::env::var_os("YINZ_TEST_CACHE_DIR")
+        .or_else(|| std::env::var_os(TEST_CACHE_ROOT_ENV))
+        .filter(|folder| !folder.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            panic!(
+                "this test aims destructive writes at the permission cache; run it through \
+                 `cargo x test`, which gives it a test cache folder via {TEST_CACHE_ROOT_ENV}"
+            )
+        });
+    let cache = YINZ_CACHE_DIR.as_path();
+    let real_home_cache = yinz_runtime::consts::YINZ_PROJ_DIR.cache_dir();
+    assert!(
+        cache.starts_with(&test_folder) && !cache.starts_with(real_home_cache),
+        "{cache:?} is not a test cache folder under {test_folder:?}"
+    );
+    cache
+}
+
+#[test]
+fn plugins_cannot_write_the_permission_cache_or_its_lock() {
+    use yinz_runtime::consts::{YINZ_PLUGIN_PERMISSIONS_CACHE, YINZ_PLUGIN_TMP_DIR};
+    // Fails before any write unless the cache folder belongs to this test run. Nothing below
+    // writes into it: every write aimed at the cache is refused, and the allowed writes land
+    // in temp folders.
+    let cache_root = test_owned_cache_dir();
+    fs::create_dir_all(cache_root).unwrap();
+    let cache = YINZ_PLUGIN_PERMISSIONS_CACHE.clone();
+    let lock = cache.with_added_extension("lock");
+    let before = (fs::read(&cache).ok(), fs::read(&lock).ok());
+    // `/host` holds the cache folder, as it does when the plugin runs in `$HOME`. The test cache
+    // can itself live under the plugins' temp folder, where its absolute spelling would name
+    // the `/tmp` root instead, so it is reached through `/host` only.
+    let cache_dir = PathBuf::from("/host").join(cache_root.file_name().unwrap());
+    let host_cache = cache_dir.join("permissions.kdl");
+    let temp = tempfile::tempdir().unwrap();
+    let mut env = crate::test_env::test_env();
+    env.plugin_cwd = cache_root.parent().unwrap().to_owned();
+    grant_every_filesystem_permission(&env);
+
+    for (path, resolution) in [
+        (host_cache.clone(), FsPathResolution::FollowSymlink),
+        (host_cache.clone(), FsPathResolution::PreserveEntry),
+        (
+            host_cache.with_added_extension("lock"),
+            FsPathResolution::FollowSymlink,
+        ),
+        (
+            host_cache.with_added_extension("lock"),
+            FsPathResolution::PreserveEntry,
+        ),
+        // A save stages the grants in a temporary file in the cache folder, then renames it
+        // over the cache, so any other entry there can become the cache.
+        (
+            cache_dir.join(".tmpAbC123"),
+            FsPathResolution::FollowSymlink,
+        ),
+        (
+            cache_dir.join(".tmpAbC123"),
+            FsPathResolution::PreserveEntry,
+        ),
+        (
+            cache_dir.join("unrelated.txt"),
+            FsPathResolution::FollowSymlink,
+        ),
+        (
+            cache_dir.join("nested/file"),
+            FsPathResolution::FollowSymlink,
+        ),
+        // Moving the cache folder, or a folder above it, away and recreating it.
+        (cache_dir.clone(), FsPathResolution::PreserveEntry),
+        (PathBuf::from("/host"), FsPathResolution::PreserveEntry),
+    ] {
+        let error =
+            resolve_fs_path_with_permission(&env, &path, FsIntent::Write, resolution).unwrap_err();
+        assert!(
+            error.to_string().contains(PROTECTED_STATE),
+            "{path:?}: {error:#}"
+        );
+        // Reading stays a `ReadFiles` matter.
+        assert!(
+            resolve_fs_path_with_permission(&env, &path, FsIntent::Read, resolution).is_ok(),
+            "{path:?}"
+        );
+    }
+    // The plugin's own `/cache` sits inside the cache folder and stays writable.
+    env.plugin_own_cache_dir = cache_root
+        .join(format!("own-cache-test-{}", std::process::id()))
+        .join("plugin_cache");
+    for (path, resolution) in [
+        ("/cache/entry.txt", FsPathResolution::FollowSymlink),
+        ("/cache/entry.txt", FsPathResolution::PreserveEntry),
+        ("/cache/nested/entry.txt", FsPathResolution::FollowSymlink),
+    ] {
+        let result =
+            resolve_fs_path_with_permission(&env, Path::new(path), FsIntent::Write, resolution);
+        assert!(result.is_ok(), "{path}: {result:?}");
+    }
+
+    let grants = b"\"file:/evil.scm\" {\n    RunCommands\n    FullHdAccess\n}\n".to_vec();
+    let host_staging = cache_dir.join(".tmpAbC123");
+    for path in [
+        host_cache.clone(),
+        host_cache.with_added_extension("lock"),
+        host_staging.clone(),
+    ] {
+        let error = fs_mutation_error(
+            &mut env,
+            PluginCommand::FsWrite {
+                path: path.clone(),
+                contents: grants.clone(),
+                append: false,
+                create_dirs: true,
+            },
+        )
+        .unwrap();
+        assert!(error.contains(PROTECTED_STATE), "{path:?}: {error}");
+    }
+    fs::create_dir_all(&*YINZ_PLUGIN_TMP_DIR).unwrap();
+    let plugin_tmp = tempfile::tempdir_in(&*YINZ_PLUGIN_TMP_DIR).unwrap();
+    let staged = plugin_tmp.path().join("staged.kdl");
+    fs::write(&staged, &grants).unwrap();
+    let virtual_tmp = PathBuf::from("/tmp").join(plugin_tmp.path().file_name().unwrap());
+    for (from, to) in [
+        (virtual_tmp.join("staged.kdl"), host_cache.clone()),
+        (host_cache.clone(), virtual_tmp.join("moved.kdl")),
+        (virtual_tmp.join("staged.kdl"), host_staging.clone()),
+    ] {
+        let error = fs_mutation_error(
+            &mut env,
+            PluginCommand::FsRename {
+                from: from.clone(),
+                to: to.clone(),
+            },
+        )
+        .unwrap();
+        assert!(
+            error.contains(PROTECTED_STATE),
+            "{from:?} -> {to:?}: {error}"
+        );
+    }
+    let error = fs_mutation_error(
+        &mut env,
+        PluginCommand::FsRemove {
+            path: cache_dir.clone(),
+            recursive: true,
+        },
+    )
+    .unwrap();
+    assert!(error.contains(PROTECTED_STATE), "{error}");
+    assert_eq!((fs::read(&cache).ok(), fs::read(&lock).ok()), before);
+    assert!(!cache_root.join(".tmpAbC123").exists());
+    assert!(cache_root.is_dir());
+    assert!(staged.is_file());
+
+    env.plugin_cwd = temp.path().to_owned();
+    // An ordinary /host write still works.
+    assert_eq!(
+        fs_mutation_error(
+            &mut env,
+            PluginCommand::FsWrite {
+                path: PathBuf::from("/host/notes.txt"),
+                contents: b"notes".to_vec(),
+                append: false,
+                create_dirs: false,
+            },
+        ),
+        None
+    );
+    assert_eq!(fs::read(temp.path().join("notes.txt")).unwrap(), b"notes");
+}
+
+#[test]
+fn plugins_cannot_change_the_session_config_layout_or_data_folders() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let config = root.join("config");
+    let plugin_dir = config.join("plugins");
+    let data = root.join("data");
+    fs::create_dir_all(config.join("layouts")).unwrap();
+    fs::create_dir_all(&plugin_dir).unwrap();
+    fs::create_dir_all(data.join("plugins/builtins")).unwrap();
+    fs::create_dir_all(root.join("layouts")).unwrap();
+    fs::write(config.join("config.kdl"), "keybinds {}\n").unwrap();
+    fs::write(data.join("plugin-data.db"), "").unwrap();
+    std::os::unix::fs::symlink(&config, root.join("config-link")).unwrap();
+    let mut env = crate::test_env::test_env();
+    env.plugin_cwd = root.to_owned();
+    env.user_plugin_dir = Some(plugin_dir.clone());
+    env.layout_dir = Some(root.join("layouts"));
+    env.yinz_data_dir = data.clone();
+    env.session_env_vars = BTreeMap::from([
+        (
+            yinz_runtime::consts::YINZ_CONFIG_DIR_ENV.to_owned(),
+            config.display().to_string(),
+        ),
+        (
+            yinz_runtime::consts::YINZ_CONFIG_FILE_ENV.to_owned(),
+            root.join("elsewhere.kdl").display().to_string(),
+        ),
+    ]);
+    grant_every_filesystem_permission(&env);
+
+    let mut refused = vec![
+        ("/host/config/config.kdl", FsPathResolution::FollowSymlink),
+        ("/host/config/config.kdl", FsPathResolution::PreserveEntry),
+        ("config/new-folder", FsPathResolution::FollowSymlink),
+        (
+            "/host/config/layouts/run.kdl",
+            FsPathResolution::FollowSymlink,
+        ),
+        // A symlink inside /host that points into the config folder.
+        (
+            "/host/config-link/config.kdl",
+            FsPathResolution::FollowSymlink,
+        ),
+        ("/host/config", FsPathResolution::PreserveEntry),
+        ("/host/elsewhere.kdl", FsPathResolution::FollowSymlink),
+        ("/host/layouts/run.kdl", FsPathResolution::FollowSymlink),
+        ("/host/layouts", FsPathResolution::PreserveEntry),
+        ("/host/data/plugin-data.db", FsPathResolution::FollowSymlink),
+        (
+            "/host/data/plugin-data.db-wal",
+            FsPathResolution::FollowSymlink,
+        ),
+        (
+            "/host/data/plugins/builtins/strider.scm",
+            FsPathResolution::FollowSymlink,
+        ),
+        ("/host/data", FsPathResolution::PreserveEntry),
+    ]
+    .into_iter()
+    .map(|(path, resolution)| (PathBuf::from(path), resolution))
+    .collect::<Vec<_>>();
+    // The conventional config folders too, existing or not: creating one picks the config of
+    // the next session.
+    for folder in yinz_runtime::home::default_config_dirs()
+        .into_iter()
+        .flatten()
+    {
+        refused.push((folder.join("config.kdl"), FsPathResolution::FollowSymlink));
+        refused.push((folder, FsPathResolution::PreserveEntry));
+    }
+    for (path, resolution) in &refused {
+        let error =
+            resolve_fs_path_with_permission(&env, path, FsIntent::Write, *resolution).unwrap_err();
+        assert!(
+            error.to_string().contains(PROTECTED_STATE),
+            "{path:?}: {error:#}"
+        );
+    }
+
+    for (path, resolution) in [
+        ("/host/notes.txt", FsPathResolution::FollowSymlink),
+        ("/host/config-link", FsPathResolution::PreserveEntry),
+        // The user plugin folder inside the config folder stays an `AuthorPlugins` matter.
+        (
+            "/host/config/plugins/new.scm",
+            FsPathResolution::FollowSymlink,
+        ),
+        ("/plugins/new.scm", FsPathResolution::FollowSymlink),
+    ] {
+        assert!(
+            resolve_fs_path_with_permission(&env, Path::new(path), FsIntent::Write, resolution)
+                .is_ok(),
+            "{path}"
+        );
+    }
+
+    let error = fs_mutation_error(
+        &mut env,
+        PluginCommand::FsWrite {
+            path: PathBuf::from("/host/config-link/config.kdl"),
+            contents: b"keybinds { normal { bind \"x\" { Run \"sh\"; }; }; }\n".to_vec(),
+            append: false,
+            create_dirs: false,
+        },
+    )
+    .unwrap();
+    assert!(error.contains(PROTECTED_STATE), "{error}");
+    let error = fs_mutation_error(
+        &mut env,
+        PluginCommand::FsRename {
+            from: PathBuf::from("/host/config"),
+            to: PathBuf::from("/host/moved"),
+        },
+    )
+    .unwrap();
+    assert!(error.contains(PROTECTED_STATE), "{error}");
+    let error = fs_mutation_error(
+        &mut env,
+        PluginCommand::FsCreateDir {
+            path: PathBuf::from("/host/data/plugins/builtins/new"),
+            all: true,
+        },
+    )
+    .unwrap();
+    assert!(error.contains(PROTECTED_STATE), "{error}");
+    let error = fs_mutation_error(
+        &mut env,
+        PluginCommand::FsRemove {
+            path: PathBuf::from("/host/data/plugin-data.db"),
+            recursive: false,
+        },
+    )
+    .unwrap();
+    assert!(error.contains(PROTECTED_STATE), "{error}");
+    assert_eq!(
+        fs::read_to_string(config.join("config.kdl")).unwrap(),
+        "keybinds {}\n"
+    );
+    assert!(data.join("plugin-data.db").is_file());
+    assert!(!data.join("plugins/builtins/new").exists());
+
+    assert_eq!(
+        fs_mutation_error(
+            &mut env,
+            PluginCommand::FsWrite {
+                path: PathBuf::from("/plugins/new.scm"),
+                contents: b"export {};".to_vec(),
+                append: false,
+                create_dirs: false,
+            },
+        ),
+        None
+    );
+    assert_eq!(fs::read(plugin_dir.join("new.scm")).unwrap(), b"export {};");
+}
+
+/// Which protected path a symlinked folder above it carries, in
+/// [`symlinked_folders_above_protected_state_cannot_be_moved_or_removed`] and
+/// [`symlink_chains_above_protected_state_stay_protected`].
+#[derive(Clone, Copy)]
+enum ProtectedBelowLink {
+    /// The session's config folder, from `YINZ_CONFIG_DIR`.
+    Config,
+    /// The session's layout folder.
+    Layouts,
+    /// The data folder.
+    Data,
+}
+
+impl ProtectedBelowLink {
+    const ALL: [Self; 3] = [Self::Config, Self::Layouts, Self::Data];
+
+    /// A plugin env whose `/host` is `home`, holding every filesystem permission, with only
+    /// `configured` protected among the temp folder's paths.
+    fn env(self, temp: &Path, home: &Path, configured: &Path) -> PluginEnv {
+        let mut env = crate::test_env::test_env();
+        env.plugin_cwd = home.to_path_buf();
+        // Elsewhere in the temp folder, so only the case under test is protected below the link.
+        env.yinz_data_dir = temp.join("unrelated-data");
+        match self {
+            Self::Config => {
+                env.session_env_vars = BTreeMap::from([(
+                    yinz_runtime::consts::YINZ_CONFIG_DIR_ENV.to_owned(),
+                    configured.display().to_string(),
+                )]);
+            },
+            Self::Layouts => env.layout_dir = Some(configured.to_path_buf()),
+            Self::Data => env.yinz_data_dir = configured.to_path_buf(),
+        }
+        grant_every_filesystem_permission(&env);
+        env
+    }
+}
+
+#[test]
+fn symlinked_folders_above_protected_state_cannot_be_moved_or_removed() {
+    // `/host` is the home folder and a dot folder in it links to another disk, as
+    // `~/.config -> /mnt/disk/config` does. Readers open the configured path through the link,
+    // so moving the link aside and writing a fresh folder in its place swaps the state.
+    for protected in ProtectedBelowLink::ALL {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let disk = temp.path().join("disk");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(disk.join("state/yinz")).unwrap();
+        fs::write(disk.join("state/yinz/config.kdl"), "keybinds {}\n").unwrap();
+        // The link sits one folder above the protected path, so neither the path's resolved
+        // spelling nor its parent's begins with the link entry.
+        std::os::unix::fs::symlink(disk.join("state"), home.join(".state")).unwrap();
+        fs::create_dir_all(disk.join("other")).unwrap();
+        std::os::unix::fs::symlink(disk.join("other"), home.join(".other")).unwrap();
+        fs::create_dir(home.join("decoy")).unwrap();
+        let configured = home.join(".state/yinz");
+        let mut env = protected.env(temp.path(), &home, &configured);
+
+        let refusals = [
+            PluginCommand::FsRename {
+                from: PathBuf::from("/host/.state"),
+                to: PathBuf::from("/host/.state-old"),
+            },
+            // Replacing the link by renaming another folder over it.
+            PluginCommand::FsRename {
+                from: PathBuf::from("/host/decoy"),
+                to: PathBuf::from("/host/.state"),
+            },
+            PluginCommand::FsRemove {
+                path: PathBuf::from("/host/.state"),
+                recursive: false,
+            },
+            PluginCommand::FsRemove {
+                path: PathBuf::from("/host/.state"),
+                recursive: true,
+            },
+            // A relative path is `/host` too.
+            PluginCommand::FsRemove {
+                path: PathBuf::from(".state"),
+                recursive: false,
+            },
+        ];
+        for command in refusals {
+            let description = format!("{command:?}");
+            let error = fs_mutation_error(&mut env, command)
+                .unwrap_or_else(|| panic!("{description} was allowed"));
+            assert!(error.contains(PROTECTED_STATE), "{description}: {error}");
+        }
+        assert_eq!(
+            fs::read_link(home.join(".state")).unwrap(),
+            disk.join("state")
+        );
+        assert!(!home.join(".state-old").exists());
+        assert!(home.join("decoy").is_dir());
+
+        // Links and folders that hold nothing protected stay the plugin's to change.
+        assert_eq!(
+            fs_mutation_error(
+                &mut env,
+                PluginCommand::FsRename {
+                    from: PathBuf::from("/host/.other"),
+                    to: PathBuf::from("/host/.other-old"),
+                },
+            ),
+            None
+        );
+        assert_eq!(
+            fs_mutation_error(
+                &mut env,
+                PluginCommand::FsRemove {
+                    path: PathBuf::from("/host/decoy"),
+                    recursive: false,
+                },
+            ),
+            None
+        );
+        assert_eq!(
+            fs_mutation_error(
+                &mut env,
+                PluginCommand::FsWrite {
+                    path: PathBuf::from("/host/notes.txt"),
+                    contents: b"notes".to_vec(),
+                    append: false,
+                    create_dirs: false,
+                },
+            ),
+            None
+        );
+        assert!(fs::symlink_metadata(home.join(".other-old")).is_ok());
+        assert!(!home.join("decoy").exists());
+        assert_eq!(fs::read(home.join("notes.txt")).unwrap(), b"notes");
+    }
+}
+
+#[test]
+fn symlink_chains_above_protected_state_stay_protected() {
+    // A link whose target passes through another link, as GNU stow lays out a symlinked stow
+    // folder: `~/.config -> dotfiles/config` with `~/dotfiles -> ~/Dropbox/dotfiles`. Readers
+    // follow both links, so the middle one is as much a part of the path as the first.
+    for protected in ProtectedBelowLink::ALL {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        fs::create_dir_all(home.join("disk2/state/yinz")).unwrap();
+        std::os::unix::fs::symlink("disk2", home.join("hop")).unwrap();
+        std::os::unix::fs::symlink("hop/state", home.join(".state")).unwrap();
+        let configured = home.join(".state/yinz");
+        let mut env = protected.env(temp.path(), &home, &configured);
+
+        for command in [
+            PluginCommand::FsRename {
+                from: PathBuf::from("/host/hop"),
+                to: PathBuf::from("/host/hop-old"),
+            },
+            PluginCommand::FsRemove {
+                path: PathBuf::from("/host/hop"),
+                recursive: false,
+            },
+            PluginCommand::FsRemove {
+                path: PathBuf::from("/host/hop"),
+                recursive: true,
+            },
+            PluginCommand::FsRename {
+                from: PathBuf::from("/host/.state"),
+                to: PathBuf::from("/host/.state-old"),
+            },
+            PluginCommand::FsRename {
+                from: PathBuf::from("/host/disk2"),
+                to: PathBuf::from("/host/disk2-old"),
+            },
+        ] {
+            let description = format!("{command:?}");
+            let error = fs_mutation_error(&mut env, command)
+                .unwrap_or_else(|| panic!("{description} was allowed"));
+            assert!(error.contains(PROTECTED_STATE), "{description}: {error}");
+        }
+        assert_eq!(
+            fs::read_link(home.join("hop")).unwrap(),
+            PathBuf::from("disk2")
+        );
+
+        // With the middle link gone, `.state` dangles, and readers would find whatever is
+        // written where it points.
+        fs::remove_file(home.join("hop")).unwrap();
+        for path in ["/host/hop/state/yinz/config.kdl", "/host/hop/state/yinz"] {
+            let error = fs_mutation_error(
+                &mut env,
+                PluginCommand::FsWrite {
+                    path: PathBuf::from(path),
+                    contents: b"keybinds {}".to_vec(),
+                    append: false,
+                    create_dirs: true,
+                },
+            )
+            .unwrap_or_else(|| panic!("writing {path} was allowed"));
+            assert!(error.contains(PROTECTED_STATE), "{path}: {error}");
+        }
+        assert!(!home.join("hop").exists());
+        assert_eq!(
+            fs_mutation_error(
+                &mut env,
+                PluginCommand::FsWrite {
+                    path: PathBuf::from("/host/notes/today.txt"),
+                    contents: b"notes".to_vec(),
+                    append: false,
+                    create_dirs: true,
+                },
+            ),
+            None
+        );
+    }
+}
+
+#[test]
+fn symlink_loops_in_protected_paths_do_not_hang_the_guard() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    std::os::unix::fs::symlink("loop-b", home.join("loop-a")).unwrap();
+    std::os::unix::fs::symlink("loop-a", home.join("loop-b")).unwrap();
+    let configured = home.join("loop-a/yinz");
+    let mut env = ProtectedBelowLink::Layouts.env(temp.path(), &home, &configured);
+    let error = fs_mutation_error(
+        &mut env,
+        PluginCommand::FsRemove {
+            path: PathBuf::from("/host/loop-b"),
+            recursive: false,
+        },
+    )
+    .expect("removing a link in the loop was allowed");
+    assert!(error.contains(PROTECTED_STATE), "{error}");
+    assert_eq!(
+        fs_mutation_error(
+            &mut env,
+            PluginCommand::FsWrite {
+                path: PathBuf::from("/host/notes.txt"),
+                contents: b"notes".to_vec(),
+                append: false,
+                create_dirs: false,
+            },
+        ),
+        None
+    );
+}
+
+/// Assert that each command is refused as protected state.
+fn assert_protected(env: &mut PluginEnv, commands: impl IntoIterator<Item = PluginCommand>) {
+    for command in commands {
+        let description = format!("{command:?}");
+        let error = fs_mutation_error(env, command)
+            .unwrap_or_else(|| panic!("{description} was allowed"));
+        assert!(error.contains(PROTECTED_STATE), "{description}: {error}");
+    }
+}
+
+/// Assert that each command succeeds.
+fn assert_allowed(env: &mut PluginEnv, commands: impl IntoIterator<Item = PluginCommand>) {
+    for command in commands {
+        let description = format!("{command:?}");
+        assert_eq!(fs_mutation_error(env, command), None, "{description}");
+    }
+}
+
+fn write_command(path: &str, create_dirs: bool) -> PluginCommand {
+    PluginCommand::FsWrite {
+        path: PathBuf::from(path),
+        contents: b"keybinds { normal { bind \"x\" { Run \"sh\"; }; }; }\n".to_vec(),
+        append: false,
+        create_dirs,
+    }
+}
+
+fn rename_command(from: &str, to: &str) -> PluginCommand {
+    PluginCommand::FsRename {
+        from: PathBuf::from(from),
+        to: PathBuf::from(to),
+    }
+}
+
+/// A plugin env whose `/host` is `home`, holding every filesystem permission, with the session
+/// config folder at `config_dir` and nothing else protected inside the temp folder.
+fn env_with_config_dir(temp: &Path, home: &Path, config_dir: &Path) -> PluginEnv {
+    let mut env = crate::test_env::test_env();
+    env.plugin_cwd = home.to_path_buf();
+    env.yinz_data_dir = temp.join("unrelated-data");
+    env.session_env_vars = BTreeMap::from([(
+        yinz_runtime::consts::YINZ_CONFIG_DIR_ENV.to_owned(),
+        config_dir.display().to_string(),
+    )]);
+    grant_every_filesystem_permission(&env);
+    env
+}
+
+#[test]
+fn hard_links_to_protected_files_are_refused() {
+    // A hard link is the same file under another name in another folder: no spelling of the
+    // protected path leads to it, only its identity does.
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let state = temp.path().join("state");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&state).unwrap();
+    let config_file = state.join("config.kdl");
+    fs::write(&config_file, "keybinds {}\n").unwrap();
+    fs::hard_link(&config_file, home.join("alias.kdl")).unwrap();
+    let mut env = crate::test_env::test_env();
+    env.plugin_cwd = home.clone();
+    env.yinz_data_dir = temp.path().join("unrelated-data");
+    env.session_env_vars = BTreeMap::from([(
+        yinz_runtime::consts::YINZ_CONFIG_FILE_ENV.to_owned(),
+        config_file.display().to_string(),
+    )]);
+    grant_every_filesystem_permission(&env);
+
+    assert_protected(
+        &mut env,
+        [
+            write_command("/host/alias.kdl", false),
+            PluginCommand::FsWrite {
+                path: PathBuf::from("/host/alias.kdl"),
+                contents: b"\nkeybinds {}".to_vec(),
+                append: true,
+                create_dirs: false,
+            },
+        ],
+    );
+    assert_eq!(fs::read_to_string(&config_file).unwrap(), "keybinds {}\n");
+    assert_allowed(&mut env, [write_command("/host/notes.txt", false)]);
+    assert!(home.join("notes.txt").is_file());
+}
+
+#[test]
+fn a_missing_protected_config_folder_cannot_be_created() {
+    // The session's config folder does not exist yet, nor does the folder above it. Creating
+    // it, writing into it, or moving a prepared folder into its place makes it the config
+    // folder, whatever case the plugin spells it in.
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    fs::create_dir_all(home.join("staged/yinz")).unwrap();
+    fs::write(home.join("staged/yinz/config.kdl"), "keybinds {}\n").unwrap();
+    let mut env = env_with_config_dir(temp.path(), &home, &home.join(".config/yinz"));
+
+    assert_protected(
+        &mut env,
+        [
+            PluginCommand::FsCreateDir {
+                path: PathBuf::from("/host/.config/yinz"),
+                all: true,
+            },
+            write_command("/host/.config/yinz/config.kdl", true),
+            // Case folding stands in for identity until the folder exists.
+            write_command("/host/.Config/YINZ/config.kdl", true),
+            PluginCommand::FsCreateDir {
+                path: PathBuf::from("/host/.CONFIG/Yinz"),
+                all: true,
+            },
+            // Moving a prepared folder onto the missing folder above installs the config whole.
+            rename_command("/host/staged", "/host/.config"),
+            rename_command("/host/staged", "/host/.CONFIG"),
+        ],
+    );
+    assert!(!home.join(".config").exists());
+    assert!(!home.join(".Config").exists());
+    assert!(!home.join(".CONFIG").exists());
+
+    // The folder above holds nothing protected yet and may be created, but the config folder
+    // beneath it stays out of reach.
+    assert_allowed(
+        &mut env,
+        [
+            PluginCommand::FsCreateDir {
+                path: PathBuf::from("/host/.config"),
+                all: false,
+            },
+            write_command("/host/.config/other.txt", false),
+        ],
+    );
+    assert_protected(
+        &mut env,
+        [
+            PluginCommand::FsCreateDir {
+                path: PathBuf::from("/host/.config/yinz"),
+                all: false,
+            },
+            PluginCommand::FsCreateDir {
+                path: PathBuf::from("/host/.config/YINZ"),
+                all: false,
+            },
+            write_command("/host/.config/Yinz/config.kdl", true),
+            rename_command("/host/staged/yinz", "/host/.config/yinz"),
+            rename_command("/host/staged/yinz", "/host/.config/Yinz"),
+        ],
+    );
+    let created: Vec<_> = fs::read_dir(home.join(".config"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(created, vec![std::ffi::OsString::from("other.txt")]);
+    assert!(home.join("staged/yinz/config.kdl").is_file());
+}
+
+#[test]
+fn case_variant_spellings_of_protected_entries_are_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    fs::create_dir_all(home.join(".config/yinz")).unwrap();
+    fs::create_dir_all(home.join("decoy")).unwrap();
+    fs::write(home.join(".config/yinz/config.kdl"), "keybinds {}\n").unwrap();
+    let mut env = env_with_config_dir(temp.path(), &home, &home.join(".config/yinz"));
+    // On a case-sensitive file system `.CONFIG` is a different, missing folder, and on a
+    // case-insensitive one it is `.config` itself. Either way a reader looking up the config
+    // folder could be handed whatever is moved there.
+    assert_protected(
+        &mut env,
+        [
+            rename_command("/host/decoy", "/host/.CONFIG"),
+            rename_command("/host/decoy", "/host/.config/YINZ"),
+        ],
+    );
+    assert!(home.join("decoy").is_dir());
+    assert_eq!(
+        fs::read_to_string(home.join(".config/yinz/config.kdl")).unwrap(),
+        "keybinds {}\n"
+    );
+    assert_allowed(
+        &mut env,
+        [
+            rename_command("/host/decoy", "/host/decoy-renamed"),
+            write_command("/host/notes.txt", false),
+        ],
+    );
+}
+
+/// Case-insensitive APFS opens `.Config/YINZ` as `.config/yinz`. The guard knows the folder by
+/// its identity, so no spelling of it gets through.
+#[cfg(target_os = "macos")]
+#[test]
+fn case_variant_paths_to_protected_state_are_refused_on_macos() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    fs::create_dir_all(home.join(".config/yinz")).unwrap();
+    fs::write(home.join(".config/yinz/config.kdl"), "keybinds {}\n").unwrap();
+    if !home.join(".CONFIG/YINZ").exists() {
+        // A case-sensitive volume has no aliasing to guard against.
+        return;
+    }
+    let mut env = env_with_config_dir(temp.path(), &home, &home.join(".config/yinz"));
+    assert_protected(
+        &mut env,
+        [
+            write_command("/host/.Config/YINZ/config.kdl", false),
+            write_command("/host/.CONFIG/yinz/new.kdl", true),
+            PluginCommand::FsCreateDir {
+                path: PathBuf::from("/host/.config/YINZ/layouts"),
+                all: true,
+            },
+            rename_command("/host/.CONFIG", "/host/.config-old"),
+            rename_command("/host/.Config/Yinz", "/host/yinz-old"),
+            PluginCommand::FsRemove {
+                path: PathBuf::from("/host/.Config"),
+                recursive: true,
+            },
+            PluginCommand::FsRemove {
+                path: PathBuf::from("/host/.config/YINZ/config.kdl"),
+                recursive: false,
+            },
+        ],
+    );
+    assert_eq!(
+        fs::read_to_string(home.join(".config/yinz/config.kdl")).unwrap(),
+        "keybinds {}\n"
+    );
+    assert!(!home.join(".config/yinz/new.kdl").exists());
+    assert!(!home.join(".config/yinz/layouts").exists());
+}
+
+#[test]
+fn the_plugins_own_folders_inside_protected_state_stay_writable() {
+    use yinz_runtime::consts::YINZ_PLUGIN_TMP_DIR;
+    // The plugin's `/data` and `/cache` live inside yinz's data and cache folders. Both are
+    // protected, but the plugin's own folders inside them stay the plugin's, existing or not.
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let data = temp.path().join("data");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(data.join("plugin_data/plugin")).unwrap();
+    fs::write(data.join("plugin-data.db"), "").unwrap();
+    let mut env = crate::test_env::test_env();
+    env.plugin_cwd = home.clone();
+    env.yinz_data_dir = data.clone();
+    env.plugin_own_data_dir = data.join("plugin_data/plugin");
+    // Not created yet, as before the plugin's first cache write.
+    env.plugin_own_cache_dir = data.join("cache/plugin");
+    grant_every_filesystem_permission(&env);
+    fs::create_dir_all(&*YINZ_PLUGIN_TMP_DIR).unwrap();
+    let plugin_tmp = tempfile::tempdir_in(&*YINZ_PLUGIN_TMP_DIR).unwrap();
+    let virtual_tmp = PathBuf::from("/tmp").join(plugin_tmp.path().file_name().unwrap());
+    let tmp_file = virtual_tmp.join("scratch.txt");
+
+    assert_allowed(
+        &mut env,
+        [
+            write_command("/data/notes.txt", false),
+            write_command("/data/nested/notes.txt", true),
+            PluginCommand::FsCreateDir {
+                path: PathBuf::from("/data/folder"),
+                all: false,
+            },
+            rename_command("/data/notes.txt", "/data/renamed.txt"),
+            PluginCommand::FsRemove {
+                path: PathBuf::from("/data/renamed.txt"),
+                recursive: false,
+            },
+            write_command("/cache/nested/entry.txt", true),
+            rename_command("/cache/nested/entry.txt", "/cache/entry.txt"),
+            write_command(tmp_file.to_str().unwrap(), false),
+            write_command("/host/notes.txt", false),
+        ],
+    );
+    assert!(data.join("plugin_data/plugin/nested/notes.txt").is_file());
+    assert!(data.join("plugin_data/plugin/folder").is_dir());
+    assert!(!data.join("plugin_data/plugin/renamed.txt").exists());
+    assert!(data.join("cache/plugin/entry.txt").is_file());
+    assert!(plugin_tmp.path().join("scratch.txt").is_file());
+
+    // The rest of the data folder stays protected, including beside the plugin's own folders.
+    env.plugin_cwd = data.clone();
+    assert_protected(
+        &mut env,
+        [
+            write_command("/host/plugin-data.db", false),
+            write_command("/host/plugin_data/other.txt", false),
+            write_command("/host/cache/other.txt", true),
+            rename_command("/host/plugin_data", "/host/moved"),
+        ],
+    );
+    assert_eq!(fs::read(data.join("plugin-data.db")).unwrap(), b"");
+}
+
 #[test]
 fn disconnect_target_queries_isolate_late_replies_and_report_failures() {
     use yinz_plugin_api::plugin_command::ProtobufGetDisconnectTargetsResponse;

@@ -450,9 +450,10 @@ fn steel_git_plugins_pin_imports_workers_and_attached_clients_until_reload() {
         "Git plugin failed to load: {loading_error:?}"
     );
     harness.rendered("one idle idle one");
-    let first = crate::plugin_authoring::git::status(harness.directory.path(), &source)
-        .unwrap()
-        .unwrap();
+    let first =
+        crate::plugin_authoring::git::status(&Harness::data_dir(harness.directory.path()), &source)
+            .unwrap()
+            .unwrap();
     let mut pinned = source.clone();
     pinned.revision = first
         .commit
@@ -464,7 +465,7 @@ fn steel_git_plugins_pin_imports_workers_and_attached_clients_until_reload() {
     assert!(frame.contains(&pinned.descriptor()));
     write_revision("two");
     let next = crate::plugin_authoring::git::install(
-        harness.directory.path(),
+        &Harness::data_dir(harness.directory.path()),
         &source,
         std::slice::from_ref(&source),
         true,

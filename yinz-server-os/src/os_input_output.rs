@@ -1727,6 +1727,7 @@ impl ServerEnvironment for ServerOsInputOutput {
     }
     fn write_private_file(&mut self, buf: String, path: &Path) -> Result<()> {
         yinz_bus::scrollback_dump::write_private_file(path, buf.as_bytes())
+            .context("server backend could not write a private file")
     }
 }
 

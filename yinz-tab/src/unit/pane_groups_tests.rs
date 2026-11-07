@@ -12,6 +12,9 @@ fn create_test_pane_groups() -> PaneGroups {
     PaneGroups::new(create_mock_senders())
 }
 
+/// A tab other than the first, so a launch into a fixed tab id cannot pass.
+const LAUNCH_TAB: Option<TabId> = Some(TabId::new(7));
+
 fn create_test_screen_size() -> Size {
     Size { rows: 24, cols: 80 }
 }
@@ -37,7 +40,7 @@ fn get_client_pane_group_returns_correct_panes() {
     let screen_size = create_test_screen_size();
 
     for pane_id in &pane_ids {
-        pane_groups.add_pane_id_to_group(*pane_id, screen_size, &client_id);
+        pane_groups.add_pane_id_to_group(*pane_id, screen_size, LAUNCH_TAB, &client_id);
     }
 
     let result = pane_groups.get_client_pane_group(&client_id);
@@ -81,7 +84,7 @@ fn launching_the_plugin_sends_fill_plugin_cwd_to_pty() {
                     _,
                     _,
                     run_plugin,
-                    _,
+                    tab_id,
                     _,
                     client_id,
                     _,
@@ -94,6 +97,11 @@ fn launching_the_plugin_sends_fill_plugin_cwd_to_pty() {
                 ),
                 _,
             )) => {
+                assert_eq!(
+                    Some(tab_id),
+                    LAUNCH_TAB,
+                    "{expected}: opened in the wrong tab"
+                );
                 assert_eq!(should_float, Some(true), "{expected}");
                 assert!(!in_place, "{expected}");
                 assert_eq!(should_focus, Some(false), "{expected}");
@@ -119,28 +127,63 @@ fn launching_the_plugin_sends_fill_plugin_cwd_to_pty() {
         );
     };
 
-    pane_groups.group_and_ungroup_panes(vec![], vec![], screen_size, &client_1);
+    pane_groups.group_and_ungroup_panes(vec![], vec![], screen_size, LAUNCH_TAB, &client_1);
     nothing_launched("an empty grouping request");
 
+    // Without a tab to open in, the group still forms but nothing is launched.
+    pane_groups.add_pane_id_to_group(
+        PaneId::Terminal(TerminalId::new(9)),
+        screen_size,
+        None,
+        &client_1,
+    );
+    nothing_launched("a grouping with no tab to open the control in");
+    pane_groups.clear_pane_group(&client_1);
+
     // A client's first pane.
-    pane_groups.add_pane_id_to_group(PaneId::Terminal(TerminalId::new(1)), screen_size, &client_1);
+    pane_groups.add_pane_id_to_group(
+        PaneId::Terminal(TerminalId::new(1)),
+        screen_size,
+        LAUNCH_TAB,
+        &client_1,
+    );
     assert_eq!(launched_for("a client's first pane"), client_1);
-    pane_groups.add_pane_id_to_group(PaneId::Terminal(TerminalId::new(2)), screen_size, &client_1);
+    pane_groups.add_pane_id_to_group(
+        PaneId::Terminal(TerminalId::new(2)),
+        screen_size,
+        LAUNCH_TAB,
+        &client_1,
+    );
     nothing_launched("a non-empty group growing");
 
     // The scan is over every client, so a second client going empty->non-empty launches
     // for the first client's operation.
-    pane_groups.toggle_pane_id_in_group(PaneId::Plugin(PluginId::new(3)), screen_size, &client_2);
+    pane_groups.toggle_pane_id_in_group(
+        PaneId::Plugin(PluginId::new(3)),
+        screen_size,
+        LAUNCH_TAB,
+        &client_2,
+    );
     assert_eq!(launched_for("a second client's first pane"), client_2);
     pane_groups.clear_pane_group(&client_2);
-    pane_groups.add_pane_id_to_group(PaneId::Terminal(TerminalId::new(2)), screen_size, &client_1);
+    pane_groups.add_pane_id_to_group(
+        PaneId::Terminal(TerminalId::new(2)),
+        screen_size,
+        LAUNCH_TAB,
+        &client_1,
+    );
     nothing_launched("client 2 is still empty");
     pane_groups.override_groups_with(HashMap::from([
         (client_1, vec![PaneId::Terminal(TerminalId::new(2))]),
         (client_2, vec![PaneId::Terminal(TerminalId::new(2))]),
     ]));
     pane_groups.clear_pane_group(&client_2);
-    pane_groups.add_pane_id_to_group(PaneId::Terminal(TerminalId::new(4)), screen_size, &client_1);
+    pane_groups.add_pane_id_to_group(
+        PaneId::Terminal(TerminalId::new(4)),
+        screen_size,
+        LAUNCH_TAB,
+        &client_1,
+    );
     nothing_launched("client 2 stays empty across client 1's add");
 
     // For all clients: launched once, for a client that has a group.
@@ -148,6 +191,7 @@ fn launching_the_plugin_sends_fill_plugin_cwd_to_pty() {
         vec![PaneId::Terminal(TerminalId::new(5))],
         vec![],
         screen_size,
+        LAUNCH_TAB,
     );
     let launched = launched_for("a group-for-all that fills an empty group");
     assert!([client_1, client_2].contains(&launched));
@@ -156,6 +200,7 @@ fn launching_the_plugin_sends_fill_plugin_cwd_to_pty() {
         vec![PaneId::Terminal(TerminalId::new(6))],
         vec![],
         screen_size,
+        LAUNCH_TAB,
     );
     nothing_launched("a group-for-all when every group is already non-empty");
 }
@@ -181,6 +226,7 @@ fn should_launch_plugin_returns_true_when_empty_to_non_empty() {
     pane_groups.add_pane_id_to_group(
         PaneId::Terminal(TerminalId::new(10)),
         screen_size,
+        LAUNCH_TAB,
         &client_id,
     );
 
@@ -196,11 +242,17 @@ fn should_launch_plugin_returns_false_when_non_empty_to_non_empty() {
     pane_groups.add_pane_id_to_group(
         PaneId::Terminal(TerminalId::new(10)),
         screen_size,
+        LAUNCH_TAB,
         &client_id,
     );
     let previous_groups = pane_groups.clone_inner();
 
-    pane_groups.add_pane_id_to_group(PaneId::Plugin(PluginId::new(20)), screen_size, &client_id);
+    pane_groups.add_pane_id_to_group(
+        PaneId::Plugin(PluginId::new(20)),
+        screen_size,
+        LAUNCH_TAB,
+        &client_id,
+    );
 
     assert!(!pane_groups.should_launch_plugin(&previous_groups, &client_id));
 }
@@ -277,7 +329,7 @@ impl PaneGroupsModel {
         let pane_id = tc.draw(any_pane_id());
         let client_id = tc.draw(any_client_id());
         self.real
-            .toggle_pane_id_in_group(pane_id, self.screen_size, &client_id);
+            .toggle_pane_id_in_group(pane_id, self.screen_size, LAUNCH_TAB, &client_id);
         let group = self.model.entry(client_id).or_default();
         if group.contains(&pane_id) {
             group.retain(|p| p != &pane_id);
@@ -291,7 +343,7 @@ impl PaneGroupsModel {
         let pane_id = tc.draw(any_pane_id());
         let client_id = tc.draw(any_client_id());
         self.real
-            .add_pane_id_to_group(pane_id, self.screen_size, &client_id);
+            .add_pane_id_to_group(pane_id, self.screen_size, LAUNCH_TAB, &client_id);
         Self::push_unique(self.model.entry(client_id).or_default(), pane_id);
     }
 
@@ -304,6 +356,7 @@ impl PaneGroupsModel {
             to_group.clone(),
             to_ungroup.clone(),
             self.screen_size,
+            LAUNCH_TAB,
             &client_id,
         );
         let group = self.model.entry(client_id).or_default();
@@ -321,6 +374,7 @@ impl PaneGroupsModel {
             to_group.clone(),
             to_ungroup.clone(),
             self.screen_size,
+            LAUNCH_TAB,
         );
         // production only touches clients that already have an entry
         for group in self.model.values_mut() {

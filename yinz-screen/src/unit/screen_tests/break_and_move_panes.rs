@@ -1,4 +1,5 @@
 use super::*;
+use crate::tab::ExtractedPanePlacement;
 use yinz_test_support::Watched;
 use yinz_types::internal_ids::TabId;
 
@@ -1617,4 +1618,239 @@ pub fn send_cli_launch_or_focus_plugin_in_place_with_close_replaced_pane() {
         .cloned();
 
     assert_snapshot!(format!("{:#?}", fill_plugin_cwd_instruction));
+}
+
+/// What a test moving panes between tabs watches: the pty thread, to see what gets closed, the
+/// background jobs, to see what the user is told, and the plugin thread, kept open so sends to it
+/// succeed.
+struct MoveChannels {
+    pty: Receiver<(PtyInstruction, ErrorContext)>,
+    background_jobs: Receiver<(BackgroundJob, ErrorContext)>,
+    _plugin: Receiver<(PluginInstruction, ErrorContext)>,
+}
+
+/// Two tabs, client 1 on the first.
+fn screen_for_moving_a_pane_right() -> (Screen, MoveChannels) {
+    let (mut screen, background_jobs) = screen_with_background_jobs(Size {
+        cols: 121,
+        rows: 20,
+    });
+    let (pty_tx, pty) = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    // before the tabs are made: each keeps its own copy of the senders
+    let (plugin_tx, plugin) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    screen
+        .switch_active_tab(TabPosition::new(0), None, true, ClientId::new(1))
+        .expect("TEST");
+    let watched = MoveChannels {
+        pty,
+        background_jobs,
+        _plugin: plugin,
+    };
+    (screen, watched)
+}
+
+/// Fill `tab_id` until it has no room for a pane arriving as `placement`.
+fn fill_tab(screen: &mut Screen, tab_id: TabId, placement: ExtractedPanePlacement) {
+    let floating = !matches!(placement, ExtractedPanePlacement::Tiled);
+    for next in 100..200 {
+        if !screen
+            .tabs
+            .get_mut(&tab_id)
+            .expect("TEST")
+            .has_room_for_extracted_pane(&placement)
+        {
+            return;
+        }
+        add_pane_to_tab(
+            screen,
+            tab_id,
+            PaneId::Terminal(TerminalId::new(next)),
+            floating,
+        );
+    }
+    panic!("tab {tab_id} never ran out of room");
+}
+
+fn all_pane_ids(screen: &Screen) -> std::collections::BTreeSet<PaneId> {
+    screen
+        .tabs
+        .values()
+        .flat_map(|tab| tab.get_all_pane_ids())
+        .collect()
+}
+
+/// A destination with no room for the moved pane used to swallow it: `add_tiled_pane` and
+/// `add_floating_pane` drop the box they are handed when there is no room, so the pane vanished
+/// from both tabs with no `PaneClosed`, no `PtyInstruction::ClosePane`, and its process left
+/// running. The pane must stay exactly where it was instead.
+#[test]
+fn moving_a_pane_into_a_full_tab_leaves_it_in_its_own_tab() {
+    for floating in [false, true] {
+        let client_id = ClientId::new(1);
+        let (source, destination) = (TabId::new(0), TabId::new(1));
+        let (mut screen, watched) = screen_for_moving_a_pane_right();
+        let moved = if floating {
+            open_floating_pane(&mut screen, source, 5, "", false);
+            PaneId::Terminal(TerminalId::new(5))
+        } else {
+            PaneId::Terminal(TerminalId::new(1))
+        };
+        assert_eq!(screen.active_pane_id(client_id), Some(moved));
+        fill_tab(
+            &mut screen,
+            destination,
+            if floating {
+                ExtractedPanePlacement::FloatingDefault { min_height: 0 }
+            } else {
+                ExtractedPanePlacement::Tiled
+            },
+        );
+        let before = all_pane_ids(&screen);
+        let geom_before = screen.tabs[&source]
+            .get_pane_with_id(moved)
+            .expect("TEST")
+            .current_geom();
+
+        screen
+            .break_pane_to_new_tab(Direction::Right, client_id)
+            .expect("a refused move is not an error");
+
+        assert_eq!(
+            all_pane_ids(&screen),
+            before,
+            "floating: {floating}: no pane may disappear from every tab"
+        );
+        assert!(screen.tabs[&source].has_non_suppressed_pane_with_pid(&moved));
+        assert!(!screen.tabs[&destination].has_pane_with_pid(&moved));
+        assert_eq!(screen.tabs[&source].pane_id_is_floating(&moved), floating);
+        assert_eq!(
+            screen.tabs[&source]
+                .get_pane_with_id(moved)
+                .expect("TEST")
+                .current_geom(),
+            geom_before,
+            "floating: {floating}: the refused pane keeps its slot"
+        );
+        assert_eq!(screen.active_tab_ids[&client_id], source);
+        assert_eq!(screen.active_pane_id(client_id), Some(moved));
+        assert!(drain_background_jobs(&watched.background_jobs).iter().any(
+            |job| matches!(job, BackgroundJob::DisplayPaneError(ids, _) if ids == &vec![moved])
+        ));
+        for (instruction, _) in watched.pty.try_iter() {
+            match instruction {
+                PtyInstruction::ClosePane(id, _) => assert_ne!(id, moved),
+                PtyInstruction::CloseTab(ids) => assert!(!ids.contains(&moved)),
+                _ => {},
+            }
+        }
+    }
+}
+
+#[test]
+fn moving_a_pane_into_a_tab_with_room_still_moves_it() {
+    for floating in [false, true] {
+        let client_id = ClientId::new(1);
+        let (source, destination) = (TabId::new(0), TabId::new(1));
+        let (mut screen, watched) = screen_for_moving_a_pane_right();
+        let moved = if floating {
+            open_floating_pane(&mut screen, source, 5, "", false);
+            PaneId::Terminal(TerminalId::new(5))
+        } else {
+            PaneId::Terminal(TerminalId::new(1))
+        };
+        let before = all_pane_ids(&screen);
+
+        screen
+            .break_pane_to_new_tab(Direction::Right, client_id)
+            .expect("TEST");
+
+        assert_eq!(all_pane_ids(&screen), before);
+        assert!(!screen.tabs[&source].has_pane_with_pid(&moved));
+        assert!(screen.tabs[&destination].has_non_suppressed_pane_with_pid(&moved));
+        assert_eq!(
+            screen.tabs[&destination].pane_id_is_floating(&moved),
+            floating
+        );
+        assert_eq!(
+            screen.tabs[&destination].are_floating_panes_visible(),
+            floating
+        );
+        assert_eq!(screen.active_tab_ids[&client_id], destination);
+        assert_eq!(screen.active_pane_id(client_id), Some(moved));
+        assert!(!watched.pty.try_iter().any(|(instruction, _)| matches!(
+            instruction,
+            PtyInstruction::ClosePane(id, _) if id == moved
+        )));
+    }
+}
+
+/// `focus_plugin_pane` with `move_to_focused_tab` moves the plugin's pane out of its own tab, and
+/// had the same hole as `break_pane_to_new_tab`: a full destination dropped the pane, leaving the
+/// plugin instance running with no pane. The plugin is focused where it is instead.
+#[test]
+fn moving_a_plugin_into_a_full_tab_focuses_it_in_its_own_tab() {
+    for should_float in [false, true] {
+        let client_id = ClientId::new(1);
+        let (destination, source) = (TabId::new(0), TabId::new(1));
+        let plugin_id = PaneId::Plugin(crate::PluginId::new(7));
+        let (mut screen, watched) = screen_for_moving_a_pane_right();
+        let run_plugin = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "file:/path/to/fake/plugin",
+            &None,
+            None,
+            None,
+        )
+        .expect("TEST");
+        screen
+            .tabs
+            .get_mut(&source)
+            .expect("TEST")
+            .new_pane(
+                plugin_id,
+                None,
+                Some(Run::Plugin(run_plugin.clone())),
+                false,
+                true,
+                NewPanePlacement::Tiled {
+                    direction: None,
+                    borderless: None,
+                },
+                Some(client_id),
+                None,
+            )
+            .expect("TEST");
+        fill_tab(
+            &mut screen,
+            destination,
+            if should_float {
+                ExtractedPanePlacement::FloatingDefault { min_height: 0 }
+            } else {
+                ExtractedPanePlacement::Tiled
+            },
+        );
+        assert_eq!(screen.active_tab_ids[&client_id], destination);
+        let before = all_pane_ids(&screen);
+
+        assert!(screen
+            .focus_plugin_pane(&run_plugin, should_float, true, false, client_id, &mut None)
+            .expect("a refused move is not an error"));
+
+        assert_eq!(
+            all_pane_ids(&screen),
+            before,
+            "should_float: {should_float}: no pane may disappear from every tab"
+        );
+        assert!(screen.tabs[&source].has_non_suppressed_pane_with_pid(&plugin_id));
+        assert!(!screen.tabs[&destination].has_pane_with_pid(&plugin_id));
+        assert_eq!(screen.active_tab_ids[&client_id], source);
+        assert_eq!(screen.active_pane_id(client_id), Some(plugin_id));
+        assert!(!watched.pty.try_iter().any(|(instruction, _)| matches!(
+            instruction,
+            PtyInstruction::ClosePane(id, _) if id == plugin_id
+        )));
+    }
 }

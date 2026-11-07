@@ -7,6 +7,8 @@ use yinz_types::geometry::FloatingPaneCoordinates;
 use yinz_types::geometry::PercentOrFixed;
 use yinz_types::pane_size::Size;
 
+use yinz_runtime::errors::prelude::*;
+
 use crate::{panes::PaneId, pty::PtyInstruction, thread_bus::ThreadSenders, ClientId};
 
 pub struct PaneGroups {
@@ -55,6 +57,7 @@ impl PaneGroups {
         &mut self,
         pane_id: PaneId,
         screen_size: Size,
+        launch_tab: Option<TabId>,
         client_id: &ClientId,
     ) {
         let previous_groups = self.clone_inner();
@@ -65,13 +68,14 @@ impl PaneGroups {
             client_pane_group.push(pane_id);
         };
         if self.should_launch_plugin(&previous_groups, client_id) {
-            self.launch_plugin(screen_size, client_id);
+            self.launch_plugin(screen_size, launch_tab, client_id);
         }
     }
     pub fn add_pane_id_to_group(
         &mut self,
         pane_id: PaneId,
         screen_size: Size,
+        launch_tab: Option<TabId>,
         client_id: &ClientId,
     ) {
         let previous_groups = self.clone_inner();
@@ -80,7 +84,7 @@ impl PaneGroups {
             client_pane_group.push(pane_id);
         }
         if self.should_launch_plugin(&previous_groups, client_id) {
-            self.launch_plugin(screen_size, client_id);
+            self.launch_plugin(screen_size, launch_tab, client_id);
         }
     }
     pub fn group_and_ungroup_panes(
@@ -88,6 +92,7 @@ impl PaneGroups {
         pane_ids_to_group: Vec<PaneId>,
         pane_ids_to_ungroup: Vec<PaneId>,
         screen_size: Size,
+        launch_tab: Option<TabId>,
         client_id: &ClientId,
     ) {
         let previous_groups = self.clone_inner();
@@ -99,7 +104,7 @@ impl PaneGroups {
         }
         client_pane_group.retain(|p| !pane_ids_to_ungroup.contains(p));
         if self.should_launch_plugin(&previous_groups, client_id) {
-            self.launch_plugin(screen_size, client_id);
+            self.launch_plugin(screen_size, launch_tab, client_id);
         }
     }
     pub fn group_and_ungroup_panes_for_all_clients(
@@ -107,6 +112,7 @@ impl PaneGroups {
         pane_ids_to_group: Vec<PaneId>,
         pane_ids_to_ungroup: Vec<PaneId>,
         screen_size: Size,
+        launch_tab: Option<TabId>,
     ) {
         let previous_groups = self.clone_inner();
         let mut should_launch = false;
@@ -127,7 +133,7 @@ impl PaneGroups {
         }
 
         if should_launch && let Some(first_client) = all_connected_clients.first() {
-            self.launch_plugin(screen_size, first_client);
+            self.launch_plugin(screen_size, launch_tab, first_client);
         }
     }
     pub fn override_groups_with(&mut self, new_pane_groups: HashMap<ClientId, Vec<PaneId>>) {
@@ -157,51 +163,70 @@ impl PaneGroups {
                     .get(client_id)
                     .is_some_and(|panes| !panes.is_empty()))
     }
-    fn launch_plugin(&self, screen_size: Size, client_id: &ClientId) {
-        if let Ok(run_plugin) = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+    /// Opens the multiple-select control in `launch_tab`, the tab where the grouping
+    /// started. It is pinned there and stays there if the client later switches tabs.
+    fn launch_plugin(&self, screen_size: Size, launch_tab: Option<TabId>, client_id: &ClientId) {
+        let Some(tab_id) = launch_tab else {
+            Err::<(), _>(anyhow!(
+                "No tab to open the pane-group control in for client {client_id:?}"
+            ))
+            .non_fatal();
+            return;
+        };
+        match yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
             "yinz:multiple-select",
             &None,
             None,
             None,
         ) {
-            let tab_index = 1;
-            let size = Size::default();
-            let should_float = Some(true);
-            let should_be_opened_in_place = false;
-            let pane_title = None;
-            let skip_cache = false;
-            let cwd = None;
-            let should_focus_plugin = Some(false);
-            let width_30_percent = (screen_size.cols as f64 * 0.3) as usize;
-            let height_30_percent = (screen_size.rows as f64 * 0.3) as usize;
-            let width = std::cmp::max(width_30_percent, 48);
-            let height = std::cmp::max(height_30_percent, 10);
-            let y_position = screen_size.rows.saturating_sub(height + 2);
-            let floating_pane_coordinates = FloatingPaneCoordinates {
-                x: Some(PercentOrFixed::Fixed(2)),
-                y: Some(PercentOrFixed::Fixed(y_position)),
-                width: Some(PercentOrFixed::Fixed(width)),
-                height: Some(PercentOrFixed::Fixed(height)),
-                pinned: Some(true),
-                borderless: Some(false),
-            };
-            let _ = self.senders.send_to_pty(PtyInstruction::FillPluginCwd(
-                should_float,
-                should_be_opened_in_place,
-                false, // close_replaced_pane
-                pane_title,
-                run_plugin,
-                TabId::new(tab_index),
-                None,
-                *client_id,
-                size,
-                skip_cache,
-                cwd,
-                should_focus_plugin,
-                Some(floating_pane_coordinates),
-                None,
-                None,
-            ));
+            Err(error) => {
+                Err::<(), _>(anyhow!(
+                    "failed to resolve the pane-group control plugin: {error}"
+                ))
+                .non_fatal();
+            },
+            Ok(run_plugin) => {
+                let size = Size::default();
+                let should_float = Some(true);
+                let should_be_opened_in_place = false;
+                let pane_title = None;
+                let skip_cache = false;
+                let cwd = None;
+                let should_focus_plugin = Some(false);
+                let width_30_percent = (screen_size.cols as f64 * 0.3) as usize;
+                let height_30_percent = (screen_size.rows as f64 * 0.3) as usize;
+                let width = std::cmp::max(width_30_percent, 48);
+                let height = std::cmp::max(height_30_percent, 10);
+                let y_position = screen_size.rows.saturating_sub(height + 2);
+                let floating_pane_coordinates = FloatingPaneCoordinates {
+                    x: Some(PercentOrFixed::Fixed(2)),
+                    y: Some(PercentOrFixed::Fixed(y_position)),
+                    width: Some(PercentOrFixed::Fixed(width)),
+                    height: Some(PercentOrFixed::Fixed(height)),
+                    pinned: Some(true),
+                    borderless: Some(false),
+                };
+                self.senders
+                    .send_to_pty(PtyInstruction::FillPluginCwd(
+                        should_float,
+                        should_be_opened_in_place,
+                        false, // close_replaced_pane
+                        pane_title,
+                        run_plugin,
+                        tab_id,
+                        None,
+                        *client_id,
+                        size,
+                        skip_cache,
+                        cwd,
+                        should_focus_plugin,
+                        Some(floating_pane_coordinates),
+                        None,
+                        None,
+                    ))
+                    .context("failed to open the pane-group control")
+                    .non_fatal();
+            },
         }
     }
 }

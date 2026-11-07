@@ -821,6 +821,9 @@ fn run_client(
         InputInstruction,
     > = channels::bounded(50);
     let send_input_instructions = SenderWithContext::new(send_input_instructions);
+    // The client loop's way back to the input thread; unbounded so the two never wait on each
+    // other. See `InputControlSender`.
+    let (send_input_control, receive_input_control) = crate::input_handler::input_control_channel();
 
     if os_input.should_install_panic_hook() {
         std::panic::set_hook({
@@ -1002,6 +1005,7 @@ fn run_client(
                     command_is_executing,
                     send_client_instructions,
                     receive_input_instructions,
+                    receive_input_control,
                     nested_reannounce,
                     activity,
                 )
@@ -1064,7 +1068,7 @@ fn run_client(
         os_input: &*os_input,
         command_is_executing: &mut command_is_executing,
         stdin_ansi_parser: &stdin_ansi_parser,
-        send_input_instructions: &send_input_instructions,
+        send_input_control: &send_input_control,
         nested_reannounce: &nested_reannounce,
         teardown,
         synchronised_output,

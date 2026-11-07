@@ -11,8 +11,8 @@ use crate::router::SlowWarnings;
 use crate::stdin_ansi_parser::{ForwardKind, StdinAnsiParser, SyncOutput};
 use crate::terminal_escapes::{stalled_output_abandoned, write_synchronised, ClientTeardown};
 use crate::{
-    command_is_executing::CommandIsExecuting, nested_reannounce::NestedReannounce,
-    stdin_ansi_parser, ClientInstruction, InputInstruction,
+    command_is_executing::CommandIsExecuting, input_handler::InputControlSender,
+    nested_reannounce::NestedReannounce, stdin_ansi_parser, ClientInstruction, InputInstruction,
 };
 use std::collections::VecDeque;
 use std::io::Write;
@@ -48,7 +48,8 @@ pub(crate) struct ClientLoop<'a, 'config> {
     pub os_input: &'a dyn ClientOsApi,
     pub command_is_executing: &'a mut CommandIsExecuting,
     pub stdin_ansi_parser: &'a Arc<Mutex<StdinAnsiParser>>,
-    pub send_input_instructions: &'a SenderWithContext<InputInstruction>,
+    /// Never waits for the input thread, which itself waits on this loop's bounded queue.
+    pub send_input_control: &'a InputControlSender,
     /// Re-announces this client to its Yinz host, and knows whether one has
     /// ever answered — which is how the client learns it is nested at all.
     pub nested_reannounce: &'a NestedReannounce,
@@ -513,7 +514,7 @@ impl ClientLoop<'_, '_> {
             // Handled entirely on the server side, or carried only for the
             // error context they add to the trace.
             ClientInstruction::SetMouseMode(enabled) => {
-                self.send_input_instructions
+                self.send_input_control
                     .send(InputInstruction::SetMouseMode(enabled))
                     .context("updating mouse mode")
                     .non_fatal();
@@ -574,12 +575,13 @@ impl ClientLoop<'_, '_> {
                 token,
                 stale_reply_bytes.len(),
             );
-            let _ = self.send_input_instructions.send(
-                InputInstruction::ForwardedReplyFromHostComplete {
-                    token: stale_token,
-                    reply_bytes: stale_reply_bytes,
-                },
-            );
+            // Fails only once the input thread has exited, when nobody awaits the reply.
+            let _ =
+                self.send_input_control
+                    .send(InputInstruction::ForwardedReplyFromHostComplete {
+                        token: stale_token,
+                        reply_bytes: stale_reply_bytes,
+                    });
         }
 
         // 2. Arm a per-forward deadline on the dedicated runtime. When it
@@ -588,7 +590,9 @@ impl ClientLoop<'_, '_> {
         //    server releases `forward_in_flight` and dispatches the next
         //    queued forward.
         let runtime = stdin_ansi_parser::forward_timeout_runtime();
-        let sender_for_timer = self.send_input_instructions.clone();
+        // The control sender never waits, so a full input queue cannot stall the timeout
+        // runtime's other deadlines.
+        let sender_for_timer = self.send_input_control.clone();
         stdin_ansi_parser::schedule_timeout(
             runtime.handle(),
             self.stdin_ansi_parser.clone(),

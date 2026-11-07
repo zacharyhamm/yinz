@@ -105,7 +105,7 @@ use crate::{
     panes::PaneId,
     plugins::{PluginId, PluginInstruction, PluginRenderAsset},
     pty::{ClientTabIndexOrPaneId, PtyInstruction, ReplacedPane},
-    tab::{Pane, Tab},
+    tab::{ExtractedPanePlacement, Pane, Tab},
     thread_bus::Bus,
     ui::loading_indication::LoadingIndication,
     ClientId, ServerInstruction,
@@ -2789,7 +2789,7 @@ impl Screen {
                     if !should_float && should_be_in_place && !can_replace_active_pane {
                         return Err(anyhow!("no active pane to replace for client {client_id}"));
                     }
-                    plugin_pane_to_move_to_active_tab = tab.extract_pane(plugin_pane_id, true);
+                    plugin_pane_to_move_to_active_tab = Some((*tab_id, plugin_pane_id));
                 }
 
                 break;
@@ -2807,36 +2807,70 @@ impl Screen {
             tab.show_overlay_pane(plugin_pane_id);
             tab_id_and_plugin_pane_id = Some((destination, plugin_pane_id));
         }
-        if let Some(plugin_pane_to_move_to_active_tab) = plugin_pane_to_move_to_active_tab.take() {
-            let pane_id = plugin_pane_to_move_to_active_tab.pid();
-            let new_active_tab = self.get_active_tab_mut(client_id)?;
-
-            if should_float {
-                new_active_tab.show_floating_panes();
-                new_active_tab.add_floating_pane(
-                    plugin_pane_to_move_to_active_tab,
-                    pane_id,
-                    None,
-                    true,
-                    Some(client_id),
-                )?;
-            } else if should_be_in_place {
-                new_active_tab.park_pane(plugin_pane_to_move_to_active_tab);
-                new_active_tab.focus_pane_with_id(pane_id, false, true, client_id)?;
+        // Only set when `focused_tab_id` is a tab other than the plugin's.
+        if let Some((source, plugin_pane_id)) = plugin_pane_to_move_to_active_tab
+            && let Some(destination) = focused_tab_id
+        {
+            // in place, the pane is parked behind the active one, which always takes it
+            let placement = (!should_be_in_place || should_float).then_some(if should_float {
+                // the destination picks the spot, as it does for a floating pane opened there
+                ExtractedPanePlacement::FloatingDefault { min_height: 0 }
             } else {
-                new_active_tab.hide_floating_panes();
-                new_active_tab.add_tiled_pane(
-                    plugin_pane_to_move_to_active_tab,
-                    pane_id,
-                    false,
-                    Some(client_id),
-                )?;
+                ExtractedPanePlacement::Tiled
+            });
+            // Asked before extracting, so a refusal leaves the pane exactly where it was. The
+            // plugin is then focused in its own tab below rather than moved.
+            let destination_has_room = self.tabs.get_mut(&destination).is_some_and(|tab| {
+                placement
+                    .as_ref()
+                    .is_none_or(|placement| tab.has_room_for_extracted_pane(placement))
+            });
+            if !destination_has_room {
+                log::warn!(
+                    "Tab {destination} has no room for plugin pane {plugin_pane_id:?}; focusing it in tab {source}"
+                );
+            } else if let Some(extracted) =
+                self.extract_pane_for_transfer(source, plugin_pane_id, true)
+            {
+                let pane_id = extracted.2.pid();
+                let moved = match placement {
+                    Some(placement) => self
+                        .accept_transferred_panes(vec![(extracted, placement)], destination, false)
+                        .moved
+                        .contains(&pane_id),
+                    None => match self.tabs.get_mut(&destination) {
+                        Some(tab) => {
+                            let (_, _, pane, carried_respawn) = extracted;
+                            tab.park_pane(pane);
+                            if let Some(entry) = carried_respawn {
+                                tab.restore_pending_respawn(pane_id, entry);
+                            }
+                            true
+                        },
+                        // unreachable - checked above - but the pane must still go somewhere
+                        None => {
+                            self.return_extracted_pane(extracted);
+                            false
+                        },
+                    },
+                };
+                if moved {
+                    // focusing also raises or lowers the floating layer to match the pane
+                    self.tabs
+                        .get_mut(&destination)
+                        .with_context(err_context)?
+                        .focus_pane_with_id(pane_id, false, should_be_in_place, client_id)?;
+                    // Set affected pane ID for CLI client output
+                    if let Some(completion) = completion_tx {
+                        completion.set_affected_pane_id(pane_id);
+                    }
+                    return Ok(true);
+                }
+                // refused after all: `accept_transferred_panes` put it back, so focus it there
+                tab_id_and_plugin_pane_id = self
+                    .tab_containing_pane_mut(pane_id)
+                    .map(|tab| (tab.id, pane_id));
             }
-            // Set affected pane ID for CLI client output
-            if let Some(completion) = completion_tx {
-                completion.set_affected_pane_id(pane_id);
-            }
-            return Ok(true);
         }
         match tab_id_and_plugin_pane_id {
             Some((tab_id, plugin_pane_id)) => {
@@ -4257,10 +4291,10 @@ impl Screen {
             self.retain_only_existing_panes_in_pane_groups();
             return;
         }
-        let surface_size = self.size_of_tab_of_client(*client_id);
+        let (surface_size, launch_tab) = self.pane_group_control_placement(*client_id);
         {
             let mut pane_groups = self.current_pane_group.borrow_mut();
-            pane_groups.toggle_pane_id_in_group(pane_id, surface_size, client_id);
+            pane_groups.toggle_pane_id_in_group(pane_id, surface_size, launch_tab, client_id);
         }
         self.retain_only_existing_panes_in_pane_groups();
     }
@@ -4269,10 +4303,10 @@ impl Screen {
             self.retain_only_existing_panes_in_pane_groups();
             return;
         }
-        let surface_size = self.size_of_tab_of_client(*client_id);
+        let (surface_size, launch_tab) = self.pane_group_control_placement(*client_id);
         {
             let mut pane_groups = self.current_pane_group.borrow_mut();
-            pane_groups.add_pane_id_to_group(pane_id, surface_size, client_id);
+            pane_groups.add_pane_id_to_group(pane_id, surface_size, launch_tab, client_id);
         }
         self.retain_only_existing_panes_in_pane_groups();
     }
@@ -4292,6 +4326,20 @@ impl Screen {
             }
         }
         self.retain_only_existing_panes_in_pane_groups();
+    }
+    /// The tab the pane-group control opens in, and the size it is laid out against: the tab the
+    /// grouping client is acting in, resolved as for any other plugin launch on its behalf. The
+    /// size is that tab's, so a client without a tab of its own (the CLI) does not lay the
+    /// control out against a default size in someone else's tab.
+    fn pane_group_control_placement(&self, client_id: ClientId) -> (Size, Option<TabId>) {
+        let launch_tab = self
+            .client_to_act_for(client_id)
+            .and_then(|client_id| self.active_tab_ids.get(&client_id).copied());
+        let surface_size = launch_tab
+            .and_then(|tab_id| self.tabs.get(&tab_id))
+            .map(|tab| tab.size)
+            .unwrap_or_else(|| self.size_of_tab_of_client(client_id));
+        (surface_size, launch_tab)
     }
     fn get_active_pane_id(&self, client_id: &ClientId) -> Option<PaneId> {
         self.active_pane_id(*client_id)
@@ -4582,7 +4630,7 @@ impl Screen {
             .into_iter()
             .filter(|pane_id| self.pane_is_selectable(*pane_id))
             .collect();
-        let surface_size = self.size_of_tab_of_client(client_id);
+        let (surface_size, launch_tab) = self.pane_group_control_placement(client_id);
         if for_all_clients {
             {
                 let mut current_pane_group = self.current_pane_group.borrow_mut();
@@ -4590,6 +4638,7 @@ impl Screen {
                     pane_ids_to_group,
                     pane_ids_to_ungroup,
                     surface_size,
+                    launch_tab,
                 );
             }
         } else {
@@ -4599,6 +4648,7 @@ impl Screen {
                     pane_ids_to_group,
                     pane_ids_to_ungroup,
                     surface_size,
+                    launch_tab,
                     &client_id,
                 );
             }
