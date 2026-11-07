@@ -76,8 +76,8 @@ This returns the original turn's outcome, including failure; `acknowledged` and 
 For parallel workers, submit without `--wait`, save each pane/conversation/submission triple, and wait on those submissions later.
 Do not combine `--submission` with `--until`. A plain `wait --until idle` observes inactivity and readiness and returns the last completed turn's text, which does not establish the outcome of your task.
 A recent window of 32 submissions per pane/conversation is retained in memory, along with all unresolved submissions; target replacement, exit, closure, and server restart discard them. Unknown or expired IDs return `rejected`. A retained ID cannot be submitted again. An unavailable result does not prove the work never ran: inspect before any retry rather than treating the ID as durable deduplication.
-When Claude runs a command or subagent in the background, `completed` carries only its interim text and lists `background_tasks`.
-Claude remains busy while its parent, tracked workers, background tasks, or notification processing are active. Use `ready` to decide whether to send steering, or a separate `wait --until idle --conversation ID` for that background work's final text. A long-running background server keeps the state wait pending until its timeout.
+When Claude leaves a command or subagent running in the background, `completed` carries only its interim text and sets `background: true`.
+Claude remains busy while its parent turn or notification processing is active, or while Claude reports background work still running. Use `ready` to decide whether to send steering, or a separate `wait --until idle --conversation ID` for that background work's final text. A long-running background server keeps the state wait pending until its timeout.
 
 To start a fresh conversation in the same pane, prompt exactly `/clear` (Claude) or `/new` (Codex or Pi).
 The reply is `target_changed`; wait for idle, then use the new conversation ID. Other slash commands need `send-keys`, and typing `/clear` or `/new` through `send-keys` does not establish readiness.

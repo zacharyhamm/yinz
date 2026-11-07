@@ -7,11 +7,10 @@ use std::time::{Duration, Instant};
 use yinz_ipc::ipc::ServerToClientMsg;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::control::{
-    claude_prompt_text, claude_task_notification_ids, is_claude_task_notification,
-    is_command_prompt, needs_paste_lead_in, pi_prompt_text, supports_prompt,
-    validate_submission_id, AgentOutcome, AgentReadiness, AgentRequest, AgentResponse, AgentStatus,
-    NotReadyReason, PromptDelivery, PromptObservation, MAX_PROMPT_BYTES, MAX_TIMEOUT_MS,
-    PASTE_LEAD_IN,
+    claude_prompt_text, is_claude_task_notification, is_command_prompt, needs_paste_lead_in,
+    pi_prompt_text, supports_prompt, validate_submission_id, AgentOutcome, AgentReadiness,
+    AgentRequest, AgentResponse, AgentStatus, NotReadyReason, PromptDelivery, PromptObservation,
+    MAX_PROMPT_BYTES, MAX_TIMEOUT_MS, PASTE_LEAD_IN,
 };
 pub(super) use yinz_types::agent::tracking::{
     ClaudeActivity, ClaudeNotification, ClaudeTurn, DialogInput, LifecycleState, PermissionWait,
@@ -44,9 +43,9 @@ pub(super) struct Lifecycle {
     claude_confirmation: Option<bool>,
     claude_previous_prompt_id: Option<String>,
     agy_confirmation: Option<bool>,
-    /// Claude background tasks launched by confirmed turns whose `<task-notification>` turn
-    /// has not been confirmed yet.
-    background_tasks: BTreeSet<String>,
+    /// The prompt whose confirmed Claude turn left background work running, until Claude's
+    /// session registry reports idle or a later turn's confirmation replaces it.
+    claude_background: Option<String>,
     /// Claude `<task-notification>` turns in flight, by prompt ID. They run beside the
     /// caller's prompt tracking, which they never replace.
     claude_notifications: BTreeMap<String, ClaudeNotification>,
@@ -55,13 +54,13 @@ pub(super) struct Lifecycle {
 }
 
 impl Lifecycle {
-    pub(super) fn event_background_tasks(&self) -> Vec<String> {
-        self.background_tasks.iter().cloned().collect()
+    pub(super) fn event_background(&self) -> bool {
+        self.claude_background.is_some()
     }
 
     #[cfg(test)]
-    pub(crate) fn background_tasks_for_test(&self) -> &BTreeSet<String> {
-        &self.background_tasks
+    pub(crate) fn claude_background_for_test(&self) -> Option<&str> {
+        self.claude_background.as_deref()
     }
 
     #[cfg(test)]
@@ -89,7 +88,7 @@ impl Lifecycle {
             claude_confirmation: self.claude_confirmation,
             claude_previous_prompt_id: self.claude_previous_prompt_id.clone(),
             agy_confirmation: self.agy_confirmation,
-            background_tasks: self.background_tasks.clone(),
+            claude_background: self.claude_background.clone(),
             claude_notifications: self.claude_notifications.clone(),
             last_message: self.last_message.clone(),
         }
@@ -108,7 +107,7 @@ impl From<LifecycleState> for Lifecycle {
             claude_confirmation: state.claude_confirmation,
             claude_previous_prompt_id: state.claude_previous_prompt_id,
             agy_confirmation: state.agy_confirmation,
-            background_tasks: state.background_tasks,
+            claude_background: state.claude_background,
             claude_notifications: state.claude_notifications,
             last_message: state.last_message,
         }
@@ -418,51 +417,6 @@ impl Screen {
     }
 
     pub(super) fn ignore_claude_worker(&self, pane: PaneId, hook: &HookEvent) -> bool {
-        if matches!(
-            hook.hook_event_name.as_str(),
-            "SubagentStart" | "SubagentStop"
-        ) {
-            // Claude 2.1.318 can emit byte-identical hooks for successive runs.
-            // Reject before apply_agent_report_state can clear a resumed worker's wait.
-            let complete = hook.hook_event_name == "SubagentStop";
-            return !self.agent_lifecycle.get(&pane).is_some_and(|l| {
-                l.kind == "claude"
-                    && l.conversation == hook.session_id
-                    && !hook.archive_only
-                    && hook
-                        .agent_id
-                        .as_deref()
-                        .is_some_and(|id| !id.is_empty() && id.len() <= 128)
-                    && hook.claude_task_execution.as_ref().map_or_else(
-                        || {
-                            // A delayed raw Start cannot reopen completed observed work:
-                            // incremental observation and replay both deduplicate its Stop.
-                            // A real resume becomes active when its causal launch arrives.
-                            !complete
-                                && !l
-                                    .claude
-                                    .executions
-                                    .get(hook.agent_id.as_deref().unwrap_or_default())
-                                    .is_some_and(|runs| {
-                                        !runs.is_empty() && runs.values().all(Option::is_some)
-                                    })
-                        },
-                        |execution| {
-                            execution.valid(complete)
-                                && !l
-                                    .claude
-                                    .abandoned_executions
-                                    .contains(&execution.tool_use_id)
-                                && !l
-                                    .claude
-                                    .executions
-                                    .get(hook.agent_id.as_deref().unwrap_or_default())
-                                    .and_then(|runs| runs.get(&execution.tool_use_id))
-                                    .is_some_and(Option::is_some)
-                        },
-                    )
-            });
-        }
         hook.is_worker()
             && !self.agent_lifecycle.get(&pane).is_some_and(|l| {
                 l.kind == "claude"
@@ -499,46 +453,6 @@ impl Screen {
         }) else {
             return;
         };
-        if let Some(id) = hook.agent_id.as_ref().filter(|id| !id.is_empty())
-            && let Some(execution) = &hook.claude_task_execution
-        {
-            // Observed execution evidence supersedes ambiguous raw activity. Delayed
-            // evidence can briefly hide an unobserved resume; its launch restores Busy.
-            lifecycle.claude.provisional_workers.remove(id);
-            let runs = lifecycle.claude.executions.entry(id.clone()).or_default();
-            match hook.hook_event_name.as_str() {
-                "SubagentStart" => {
-                    runs.entry(execution.tool_use_id.clone()).or_insert(None);
-                    lifecycle.claude.stopped_workers.remove(id);
-                    lifecycle.claude.workers.insert(id.clone());
-                    lifecycle.background_tasks.insert(id.clone());
-                },
-                "SubagentStop" => {
-                    runs.insert(execution.tool_use_id.clone(), execution.run_id.clone());
-                    if runs.values().all(Option::is_some) {
-                        lifecycle.claude.workers.remove(id);
-                        lifecycle.claude.stopped_workers.insert(id.clone());
-                        lifecycle.background_tasks.remove(id);
-                    }
-                },
-                _ => {},
-            }
-        } else if hook.hook_event_name == "SubagentStart"
-            && let Some(id) = &hook.agent_id
-        {
-            // Launches without causal evidence stay Busy until execution evidence arrives.
-            // Their raw Stop cannot prove completion or clear a later input wait.
-            // A repeated raw Start can be a resumption even before the observer
-            // records the first execution, including workers restored from older handoffs.
-            if lifecycle.claude.workers.contains(id)
-                || lifecycle.claude.executions.contains_key(id)
-                || lifecycle.claude.stopped_workers.contains(id)
-            {
-                lifecycle.claude.provisional_workers.insert(id.clone());
-            }
-            lifecycle.claude.stopped_workers.remove(id);
-            lifecycle.claude.workers.insert(id.clone());
-        }
         let parent = lifecycle.claude.parent.get_or_insert_with(|| {
             let mut parent = self
                 .agent_worker_waits
@@ -556,8 +470,7 @@ impl Screen {
             visible.waiting_on = parent.waiting_on.clone();
             visible.wait_needs_a_person = parent.wait_needs_a_person;
             if visible.state == AgentState::Idle
-                && (!lifecycle.claude.workers.is_empty()
-                    || !lifecycle.background_tasks.is_empty()
+                && (lifecycle.claude_background.is_some()
                     || !lifecycle.claude_notifications.is_empty())
             {
                 visible.state = AgentState::Busy;
@@ -606,13 +519,44 @@ impl Screen {
     fn claude_background_pending(&self, pane: PaneId) -> bool {
         self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
             lifecycle.kind == "claude"
-                && (!lifecycle.claude.workers.is_empty()
-                    || !lifecycle.background_tasks.is_empty()
+                && (lifecycle.claude_background.is_some()
                     || !lifecycle.claude_notifications.is_empty())
         })
     }
 
-    /// Track Claude background tasks and completed turn text. Completions must be tracked
+    /// Record Claude's registry background status before a confirmation's state is applied,
+    /// so the confirmed parent's Idle is aggregated with it. A turn confirmation replaces the
+    /// status of every older turn; only that turn's own background watch can report it idle.
+    pub(super) fn track_claude_background(&mut self, pane: PaneId, hook: &HookEvent) {
+        let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane).filter(|l| {
+            l.kind == "claude"
+                && l.conversation == hook.session_id
+                && !hook.is_worker()
+                && !hook.archive_only
+        }) else {
+            return;
+        };
+        let Some(prompt) = hook.prompt_id.as_ref().filter(|id| !id.is_empty()) else {
+            return;
+        };
+        if hook.hook_event_name == yinz_types::agent::CLAUDE_BACKGROUND_IDLE {
+            if lifecycle.claude_background.as_ref() == Some(prompt) {
+                lifecycle.claude_background = None;
+            }
+        } else if hook.hook_event_name == "Stop"
+            && hook.claude_turn_complete == Some(true)
+            && lifecycle
+                .claude
+                .turns
+                .get(prompt)
+                .is_some_and(|turn| turn.sequence >= lifecycle.claude.message_sequence)
+        {
+            lifecycle.claude_background =
+                (hook.claude_background == Some(true)).then(|| prompt.clone());
+        }
+    }
+
+    /// Track Claude notification turns and completed turn text. Completions must be tracked
     /// before pending operations are answered; notifications need an initialized lifecycle.
     fn track_agent_turn(&mut self, pane: PaneId, event: &AgentEvent, hook: &HookEvent) {
         let notification = self.agent_task_notification(pane, &event.kind, hook);
@@ -659,15 +603,9 @@ impl Screen {
         }
         if notification {
             if let Some(prompt) = hook.prompt_id.clone().filter(|id| !id.is_empty()) {
-                let tasks = hook
-                    .prompt
-                    .as_deref()
-                    .and_then(claude_task_notification_ids)
-                    .unwrap_or_default();
                 lifecycle.claude_notifications.insert(
                     prompt,
                     ClaudeNotification {
-                        tasks,
                         waiting: None,
                         permission_revision: None,
                     },
@@ -687,28 +625,9 @@ impl Screen {
                     // An observer timeout does not prove notification processing stopped.
                     return;
                 }
-                if let Some(notification) = hook
-                    .prompt_id
-                    .as_ref()
-                    .and_then(|prompt| lifecycle.claude_notifications.remove(prompt))
-                {
-                    for task in notification.tasks {
-                        if lifecycle.claude.executions.contains_key(&task) {
-                            continue;
-                        }
-                        lifecycle.background_tasks.remove(&task);
-                        lifecycle.claude.completed_tasks.insert(task);
-                    }
+                if let Some(prompt) = &hook.prompt_id {
+                    lifecycle.claude_notifications.remove(prompt);
                 }
-                lifecycle.background_tasks.extend(
-                    hook.claude_background_tasks
-                        .iter()
-                        .filter(|task| {
-                            !lifecycle.claude.completed_tasks.contains(*task)
-                                && !lifecycle.claude.executions.contains_key(*task)
-                        })
-                        .cloned(),
-                );
                 let sequence = hook
                     .prompt_id
                     .as_ref()
@@ -1347,10 +1266,6 @@ impl Screen {
                     .is_none_or(|composer| agent.kind == "claude" && !composer.empty)
                 || self.claude_steering(pane_id, &agent)
                 || self.claude_background_pending(pane_id)
-                || self
-                    .agent_lifecycle
-                    .get(&pane_id)
-                    .is_some_and(|lifecycle| !lifecycle.background_tasks.is_empty())
         });
         Some(AgentStatus {
             pane_id,
@@ -1372,15 +1287,11 @@ impl Screen {
             input_revision: Some(self.agent_input_revision(pane_id)),
             clear_draft_supported: prompt_supported
                 && self.draft_composer(pane_id, &agent.kind).is_some(),
-            background_tasks: self
-                .agent_lifecycle
-                .get(&pane_id)
-                .filter(|lifecycle| {
-                    lifecycle.kind == agent.kind
-                        && agent.session_id.as_ref() == Some(&lifecycle.conversation)
-                })
-                .map(|lifecycle| lifecycle.background_tasks.iter().cloned().collect())
-                .unwrap_or_default(),
+            background: self.agent_lifecycle.get(&pane_id).is_some_and(|lifecycle| {
+                lifecycle.kind == agent.kind
+                    && agent.session_id.as_ref() == Some(&lifecycle.conversation)
+                    && lifecycle.claude_background.is_some()
+            }),
             agent,
         })
     }
@@ -1469,7 +1380,7 @@ impl Screen {
             prompt_supported: false,
             input_revision: Some(self.agent_input_revision(pane_id)),
             clear_draft_supported: false,
-            background_tasks: Vec::new(),
+            background: false,
             readiness: self.agent_readiness(pane_id, &agent, info.is_held, info.exited),
             agent,
         })
@@ -1984,7 +1895,7 @@ impl Screen {
                     || self
                         .draft_composer(pane, &status.agent.kind)
                         .is_some_and(|c| !c.empty)
-                    || !status.background_tasks.is_empty()
+                    || status.background
                     || !status.ready
                     || self
                         .agent_controls
@@ -2627,25 +2538,10 @@ impl Screen {
     fn finalize_agent_recovery(&mut self, pane: PaneId, agent: &AgentInfo, revision: u64) {
         if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
             lifecycle.input_revision = Some(revision);
-            lifecycle.background_tasks.clear();
+            lifecycle.claude_background = None;
             lifecycle.claude_notifications.clear();
-            lifecycle.claude.provisional_workers.clear();
             lifecycle.claude.worker_wait_tools.clear();
             lifecycle.claude.uncorrelated_worker_waits.clear();
-            lifecycle
-                .claude
-                .stopped_workers
-                .append(&mut lifecycle.claude.workers);
-            for runs in lifecycle.claude.executions.values_mut() {
-                runs.retain(|tool, completed| {
-                    if completed.is_none() {
-                        lifecycle.claude.abandoned_executions.insert(tool.clone());
-                        false
-                    } else {
-                        true
-                    }
-                });
-            }
             for turn in lifecycle.claude.turns.values_mut() {
                 turn.confirmation = Some(true);
             }
@@ -2685,7 +2581,7 @@ impl Screen {
                 submission.result = Some(SubmissionResult {
                             outcome: AgentOutcome::Interrupted,
                             message: Some("Observation ended by explicit recovery; the task's completion was not verified.".into()),
-                            background_tasks: Vec::new(),
+                            background: false,
                         });
             }
         }
@@ -2729,20 +2625,19 @@ impl Screen {
                 outcome,
                 AgentOutcome::TargetChanged | AgentOutcome::TargetClosed
             );
-        let background_tasks = pending.prompt.as_ref().map_or_else(
+        let background = pending.prompt.as_ref().map_or_else(
             || {
                 self.agent_status(pending.pane, pending_claim)
-                    .map(|status| status.background_tasks)
-                    .unwrap_or_default()
+                    .is_some_and(|status| status.background)
             },
-            |prompt| prompt.background_tasks().to_vec(),
+            PromptObservation::background,
         );
         self.record_submission(
             pending,
             completed.then(|| SubmissionResult {
                 outcome,
                 message: message.clone(),
-                background_tasks: background_tasks.clone(),
+                background,
             }),
         );
         if let Some(client) = &pending.client {
@@ -2758,7 +2653,7 @@ impl Screen {
                 .extend(self.agent_status(pending.pane, pending_claim));
             response.message = message;
             if matches!(outcome, AgentOutcome::Completed | AgentOutcome::Ok) {
-                response.background_tasks = background_tasks;
+                response.background = background;
             }
             if pending.prompt.is_none()
                 && let Some(submission) = pending
@@ -2771,7 +2666,7 @@ impl Screen {
                 if let Some(result) = &submission.result {
                     response.outcome = result.outcome;
                     response.message = result.message.clone();
-                    response.background_tasks = result.background_tasks.clone();
+                    response.background = result.background;
                 }
             }
             if let Some(prompt) = &pending.prompt {
@@ -3425,7 +3320,7 @@ impl Screen {
                         claude_confirmation: None,
                         claude_previous_prompt_id: None,
                         agy_confirmation: None,
-                        background_tasks: BTreeSet::new(),
+                        claude_background: None,
                         claude_notifications: BTreeMap::new(),
                         last_message: None,
                     },
@@ -3575,9 +3470,8 @@ impl Screen {
                                 previous.and_then(|previous| previous.claude_confirmation)
                             })
                         },
-                        background_tasks: previous
-                            .map(|previous| previous.background_tasks.clone())
-                            .unwrap_or_default(),
+                        claude_background: previous
+                            .and_then(|previous| previous.claude_background.clone()),
                         claude_notifications: previous
                             .map(|previous| previous.claude_notifications.clone())
                             .unwrap_or_default(),
@@ -3733,7 +3627,7 @@ impl Screen {
                         .trim()
                         .to_owned(),
                     ),
-                    background_tasks: Vec::new(),
+                    background: false,
                 });
             self.record_submission(&pending, interrupted);
             match outcome {
@@ -4101,7 +3995,7 @@ impl Screen {
                 && (!pending.abandoned || pending.delivery.is_some())
         }) {
             Some("a submission or paste write is still in flight")
-        } else if !status.background_tasks.is_empty() || self.claude_background_pending(pane) {
+        } else if status.background || self.claude_background_pending(pane) {
             Some("background work is still running")
         } else if self
             .agent_input_at(pane)
@@ -4314,7 +4208,7 @@ impl Screen {
                     || (!steering
                         && (self.claude_background_pending(pane)
                             || status.agent.state != operation.agent.state
-                            || !status.background_tasks.is_empty()))
+                            || status.background))
                     || matches!(status.agent.state, AgentState::Waiting | AgentState::Exited)
             }) || (!steering
                 && self

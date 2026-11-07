@@ -527,11 +527,10 @@ impl Screen {
                     .tab_containing_pane(pane)
                     .and_then(|tab| tab.pane_agent_info(pane))
                     .or_else(|| self.detected_agent_status(pane).map(|status| status.agent));
-                let tasks = self
+                let background = self
                     .agent_lifecycle
                     .get(&pane)
-                    .map(|l| l.event_background_tasks())
-                    .unwrap_or_default();
+                    .is_some_and(|l| l.event_background());
                 (
                     pane,
                     json!({"pane_id":pane.to_string(),"kind":agent.as_ref().map(|a| &a.kind),
@@ -541,7 +540,7 @@ impl Screen {
                     "control":self.agent_status(pane, None).map(|s| json!({"ready":s.ready,"prompt_supported":s.prompt_supported,"status_available":s.status_available,"not_ready_reason":s.not_ready_reason})),
                     "state":agent.as_ref().map(|a| a.state.to_string().to_lowercase()),
                     "needs_input":agent.as_ref().is_some_and(|a| a.is_waiting_on_a_person()),
-                    "submission_id":null,"turn_id":null,"background_tasks":tasks,"projects":[]}),
+                    "submission_id":null,"turn_id":null,"background":background,"projects":[]}),
                 )
             })
             .collect();
@@ -602,9 +601,9 @@ impl Screen {
             }
             if previous
                 .as_ref()
-                .is_some_and(|p| p["background_tasks"] != state["background_tasks"])
+                .is_some_and(|p| p["background"] != state["background"])
             {
-                self.publish_agent_event(pane, "background_tasks_changed", json!({}));
+                self.publish_agent_event(pane, "background_changed", json!({}));
             }
         }
     }

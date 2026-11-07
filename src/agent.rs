@@ -918,13 +918,8 @@ fn write_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
             writeln!(out, "  needs_person: {}", status.agent.wait_needs_a_person)
                 .context("cannot write agent waiting reason")?;
         }
-        if !status.background_tasks.is_empty() {
-            writeln!(
-                out,
-                "  background_tasks: {}",
-                status.background_tasks.join(", ")
-            )
-            .context("cannot write background tasks")?;
+        if status.background {
+            writeln!(out, "  background: true").context("cannot write background work")?;
         }
     }
     if let Some(id) = &response.submission_id {
@@ -944,15 +939,10 @@ fn write_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
     if let Some(message) = &response.message {
         writeln!(out, "{message}").context("cannot write agent message")?;
     }
-    if let Some(status) = response
-        .agents
-        .first()
-        .filter(|_| !response.background_tasks.is_empty())
-    {
+    if let Some(status) = response.agents.first().filter(|_| response.background) {
         writeln!(
             out,
-            "Background work is still running ({}). `yinz agent wait {} --until idle` returns its final answer.",
-            response.background_tasks.join(", "),
+            "Background work is still running. `yinz agent wait {} --until idle` returns its final answer.",
             status.pane_id
         )
         .context("cannot write background work guidance")?;

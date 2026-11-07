@@ -28,6 +28,30 @@ Each one found its session from the environment, then ran spawn, wait, prompt,
 | 35 | P2 | **Not reproduced; watch for it.** A worker spawned into `.worktrees/fix-sub` once edited the main checkout's file by absolute path, and `prompt --wait` reported success. Later runs stayed inside their own worktrees. |
 | 37 | P2 | **Not reproduced; watch for it.** Haiku once called a 55 KB paste ending in an instruction a "prompt injection" and ignored it, despite `PASTE_LEAD_IN`. A later 56 KB sample worked. |
 
+## Claude session registry activity, 2026-11-07
+
+Yinz no longer reconstructs Claude background work from transcripts. Claude Code
+2.1.312+ rewrites `$CLAUDE_CONFIG_DIR/sessions/<pid>.json` whenever its `status`
+changes: `busy` (a turn, background agents, workflows or forked skills), `shell`
+(only background Bash), `idle`, or `waiting` (blocked on a person). Each prompt's
+detached turn observer confirms the turn from the transcript boundary, or from a
+fresh `idle`/`shell` record after an early Esc. The confirmation carries
+`_yinz_claude_background`: whether the record still shows work. `busy` counts only
+after it outlasts a one-second settle, because the foreground flag clears after
+Stop hooks. When work remains, the observer keeps polling and reports
+`BackgroundIdle` for that prompt once the record is `idle`, or when observation
+ends for any other reason. The screen keeps one outstanding prompt per lifecycle;
+a newer confirmation replaces it. Records must match the process ID, conversation
+and `kind: "interactive"`. A turn-ending record must be newer than the prompt; a
+background record must be newer than the process start, since background agents
+keep the `busy` written before the prompt. A missing, unreadable or unrecognized
+registry yields no background signal, so the pane follows hooks as before.
+
+The task-notification parsing, run-ID joining, sidechain scanning, SendMessage
+resumption tracking and per-execution `SubagentStart`/`SubagentStop` reports
+described in the sections below were removed, with their fixtures. Those sections
+are investigation history.
+
 ## Revised Claude activity acceptance, 2026-11-06
 
 The user's accepted plan supersedes the completeness prerequisites and blocking

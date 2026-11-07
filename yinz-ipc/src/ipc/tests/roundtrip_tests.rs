@@ -4973,7 +4973,7 @@ fn test_server_messages() {
         input_revision: None,
         is_suppressed: true,
         clear_draft_supported: false,
-        background_tasks: vec!["bj30txqod".into()],
+        background: true,
     };
     for outcome in [
         AgentOutcome::Ok,
@@ -5019,7 +5019,7 @@ fn test_server_messages() {
             turn_id: Some("turn-7".into()),
             submission_id: Some("submission-7".into()),
             prompt_delivery: Some(yinz_types::agent::control::PromptDelivery::Started),
-            background_tasks: vec!["bj30txqod".into()],
+            background: true,
         }));
     }
     for reason in [
@@ -6323,17 +6323,6 @@ fn warp_agent_tracking_roundtrip_preserves_provider_evidence() {
                 conversation: "conversation".into(),
                 input_revision: Some(90),
                 claude: ClaudeActivity {
-                    executions: [(
-                        "worker".into(),
-                        [
-                            ("first-tool".into(), Some("first-run".into())),
-                            ("resume-tool".into(), None),
-                        ]
-                        .into(),
-                    )]
-                    .into(),
-                    abandoned_executions: ["abandoned-tool".into()].into(),
-                    provisional_workers: ["nested-worker".into()].into(),
                     worker_wait_tools: [("worker".into(), ["question-2".into()].into())].into(),
                     uncorrelated_worker_waits: ["legacy-worker".into()].into(),
                     released_worker_tools: [("worker".into(), ["question-1".into()].into())].into(),
@@ -6355,11 +6344,10 @@ fn warp_agent_tracking_roundtrip_preserves_provider_evidence() {
                 claude_confirmation: Some(false),
                 claude_previous_prompt_id: Some("previous".into()),
                 agy_confirmation: Some(true),
-                background_tasks: ["task".into()].into(),
+                claude_background: Some("prompt".into()),
                 claude_notifications: [(
                     "notification".into(),
                     ClaudeNotification {
-                        tasks: vec!["task".into()],
                         waiting: Some(agent.clone()),
                         permission_revision: Some(91),
                     },
@@ -6393,7 +6381,7 @@ fn warp_agent_tracking_roundtrip_preserves_provider_evidence() {
                 result: Some(SubmissionResult {
                     outcome: AgentOutcome::TargetChanged,
                     message: None,
-                    background_tasks: vec!["task".into()],
+                    background: true,
                 }),
             }]
             .into(),

@@ -873,27 +873,24 @@ fn readiness_reason_is_additive_and_uses_snake_case() {
 }
 
 #[test]
-fn task_notification_ids_come_only_from_notification_prompts() {
-    let one = "\n<task-notification>\n<task-id>bj30txqod</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<status>completed</status>\n<summary>done &amp; dusted</summary>\n</task-notification>";
-    assert_eq!(
-        claude_task_notification_ids(one),
-        Some(vec!["bj30txqod".to_owned()])
-    );
-    let two = format!("{one}\n<task-notification><task-id> a91f </task-id></task-notification>");
-    assert_eq!(
-        claude_task_notification_ids(&two),
-        Some(vec!["bj30txqod".to_owned(), "a91f".to_owned()])
-    );
-    assert_eq!(
-        claude_task_notification_ids("<task-notification><task-id></task-id>"),
-        Some(Vec::new())
-    );
+fn task_notifications_are_recognized_only_at_the_start_of_a_claude_prompt() {
+    let hook = |prompt: &str| HookEvent {
+        hook_event_name: "UserPromptSubmit".into(),
+        prompt: Some(prompt.into()),
+        ..Default::default()
+    };
+    let notification = "\n<task-notification>\n<task-id>bj30txqod</task-id>\n</task-notification>";
+    assert!(is_claude_task_notification("claude", &hook(notification)));
+    assert!(!is_claude_task_notification("codex", &hook(notification)));
     for other in [
         "review",
         "Explain <task-notification><task-id>x</task-id></task-notification>",
         "/clear",
     ] {
-        assert_eq!(claude_task_notification_ids(other), None, "{other}");
+        assert!(
+            !is_claude_task_notification("claude", &hook(other)),
+            "{other}"
+        );
     }
 }
 
@@ -1738,7 +1735,7 @@ fn claude_observation_keeps_only_its_successfully_confirmed_tasks() {
             session_id: "conversation".into(),
             prompt_id: Some(identity.into()),
             claude_turn_complete: Some(complete),
-            claude_background_tasks: vec!["second".into(), "first".into(), "first".into()],
+            claude_background: Some(true),
             ..Default::default()
         };
         assert_eq!(
@@ -1748,11 +1745,10 @@ fn claude_observation_keeps_only_its_successfully_confirmed_tasks() {
             ),
             expected
         );
-        if expected == Some(AgentOutcome::Completed) {
-            assert_eq!(observation.background_tasks(), ["first", "second"]);
-        } else {
-            assert!(observation.background_tasks().is_empty());
-        }
+        assert_eq!(
+            observation.background(),
+            expected == Some(AgentOutcome::Completed)
+        );
     }
 }
 

@@ -1,6 +1,14 @@
 # Claude activity observation and historical completeness investigation
 
-## Revised acceptance: best-effort activity tracking
+## Current design: session registry status
+
+Claude's own session registry (`sessions/<pid>.json`) now decides whether a Claude
+pane is still working after a turn ends. See "Claude session registry activity,
+2026-11-07" in `AGENT_CLI_FINDINGS.md`. The transcript correlation described below
+was removed. The sanitized fixtures it cites were deleted with it and remain in
+git history.
+
+## Superseded acceptance: best-effort activity tracking
 
 The user superseded the complete-ledger prerequisite below. Claude must stay
 interactive when reporting fails. Occasional stale status from missing or delayed

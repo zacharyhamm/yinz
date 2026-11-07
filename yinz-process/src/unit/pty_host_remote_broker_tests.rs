@@ -671,14 +671,11 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
         confirmation
     );
 
-    let worker_completion = yinz_types::agent::HookEvent {
-        hook_event_name: "SubagentStop".into(),
+    let background_idle = yinz_types::agent::HookEvent {
+        hook_event_name: yinz_types::agent::CLAUDE_BACKGROUND_IDLE.into(),
         session_id: "remote-session".into(),
-        agent_id: Some("worker".into()),
-        claude_task_execution: Some(yinz_types::agent::ClaudeTaskExecution {
-            tool_use_id: "resume-tool".into(),
-            run_id: Some("resumed-run".into()),
-        }),
+        prompt_id: Some("prompt".into()),
+        claude_background: Some(false),
         ..Default::default()
     };
     crate::claude_turn::send(
@@ -687,7 +684,7 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
             pane_token: "token".into(),
         },
         "claude",
-        &worker_completion,
+        &background_idle,
     )
     .unwrap();
     let BrokerToServerMsg::AgentReport { json, .. } = protocol::read_frame(&mut server_side)
@@ -696,11 +693,11 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
         .decode_control()
         .unwrap()
     else {
-        panic!("expected worker completion")
+        panic!("expected background idle")
     };
     assert_eq!(
         serde_json::from_str::<yinz_types::agent::HookEvent>(&json).unwrap(),
-        worker_completion
+        background_idle
     );
 
     // Input and release tool identities must reach the screen unchanged, even when

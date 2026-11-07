@@ -5037,7 +5037,7 @@ fn claude_interruption_confirmation_clears_busy_but_cannot_clear_a_newer_turn() 
 
         // The transcript observer reports cancellation through the same confirmed Stop
         // path as a turn_duration boundary, preserving any assistant text collected.
-        let interrupted = claude_stop("prompt", "Work so far.", &[]);
+        let interrupted = claude_stop("prompt", "Work so far.", false);
         report_kind(&mut screen, "claude", interrupted.clone());
         assert_eq!(pane_state(&screen), AgentState::Idle);
 
@@ -5055,7 +5055,7 @@ fn claude_interruption_confirmation_clears_busy_but_cannot_clear_a_newer_turn() 
         report_kind(
             &mut screen,
             "claude",
-            claude_stop("next", "Next turn.", &[]),
+            claude_stop("next", "Next turn.", false),
         );
         assert_eq!(pane_state(&screen), AgentState::Idle);
     }
@@ -5338,21 +5338,31 @@ fn task_notification(prompt_id: &str, tasks: &[&str]) -> HookEvent {
     }
 }
 
-fn claude_stop(prompt_id: &str, message: &str, background: &[&str]) -> HookEvent {
+/// A turn confirmation, with whether Claude's registry still showed background work.
+fn claude_stop(prompt_id: &str, message: &str, background: bool) -> HookEvent {
     HookEvent {
         prompt_id: Some(prompt_id.into()),
         last_assistant_message: Some(message.into()),
-        claude_background_tasks: background.iter().map(|task| task.to_string()).collect(),
+        claude_background: Some(background),
         ..hook("Stop")
     }
 }
 
-/// Prompt Claude and confirm a turn that left `background` running.
+/// The background watch of `prompt_id`'s turn reporting Claude's registry idle.
+fn background_idle(prompt_id: &str) -> HookEvent {
+    HookEvent {
+        prompt_id: Some(prompt_id.into()),
+        claude_background: Some(false),
+        ..hook(yinz_types::agent::CLAUDE_BACKGROUND_IDLE)
+    }
+}
+
+/// Prompt Claude and confirm a turn, possibly leaving background work running.
 fn complete_with_background(
     screen: &mut Screen,
     messages: &CapturedClientMessages,
     writes: &Receiver<(PtyWriteInstruction, ErrorContext)>,
-    background: &[&str],
+    background: bool,
 ) -> AgentResponse {
     report_kind(screen, "claude", hook("SessionStart"));
     screen.agent_control_with_clear(prompt(true), CLIENT, writes);
@@ -5388,7 +5398,7 @@ fn a_notification_after_adoption_can_confirm_its_completed_turn() {
             "claude",
             HookEvent {
                 claude_turn_complete: None,
-                ..claude_stop("notification", "Finished after restart.", &[])
+                ..claude_stop("notification", "Finished after restart.", false)
             },
         );
         assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
@@ -5396,7 +5406,7 @@ fn a_notification_after_adoption_can_confirm_its_completed_turn() {
         report_kind(
             &mut screen,
             "claude",
-            claude_stop("notification", "Finished after restart.", &[]),
+            claude_stop("notification", "Finished after restart.", false),
         );
         assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
         assert!(!screen.claude_background_pending_for_test());
@@ -5407,11 +5417,10 @@ fn a_notification_after_adoption_can_confirm_its_completed_turn() {
 fn background_work_is_reported_and_an_idle_wait_returns_its_final_answer() {
     for target in pane_targets() {
         let (mut screen, messages, writes) = setup_on_target("claude", target);
-        let completed =
-            complete_with_background(&mut screen, &messages, &writes, &["bash", "agent"]);
+        let completed = complete_with_background(&mut screen, &messages, &writes, true);
         assert_eq!(completed.outcome, AgentOutcome::Completed);
         assert_eq!(completed.message.as_deref(), Some("Started."));
-        assert_eq!(completed.background_tasks, ["agent", "bash"]);
+        assert!(completed.background);
         assert_eq!(completed.agents[0].agent.state, AgentState::Busy);
         assert!(
             !completed.agents[0].ready,
@@ -5419,12 +5428,15 @@ fn background_work_is_reported_and_an_idle_wait_returns_its_final_answer() {
         );
         draft_frame(&mut screen, "claude", "", 0, Instant::now());
         assert!(screen.agent_status_for_test().ready);
-        assert_eq!(completed.agents[0].background_tasks, ["agent", "bash"]);
+        assert!(completed.agents[0].background);
 
         screen.agent_control(wait(AgentState::Idle), CLIENT);
         assert!(replies(&messages, CLIENT).is_empty());
-        for (prompt_id, task, text) in [("first", "bash", "BGDONE"), ("second", "agent", "SUB=sub")]
-        {
+        // The registry still shows the agent working after the Bash notification turn.
+        for (prompt_id, task, text, working) in [
+            ("first", "bash", "BGDONE", true),
+            ("second", "agent", "SUB=sub", false),
+        ] {
             report_kind(&mut screen, "claude", task_notification(prompt_id, &[task]));
             let busy = screen.get_pane_info(PANE).unwrap().agent.unwrap();
             assert_eq!(busy.state, AgentState::Busy);
@@ -5434,18 +5446,26 @@ fn background_work_is_reported_and_an_idle_wait_returns_its_final_answer() {
                 "claude",
                 HookEvent {
                     claude_turn_complete: None,
-                    ..claude_stop(prompt_id, text, &[])
+                    ..claude_stop(prompt_id, text, working)
                 },
             );
             assert!(replies(&messages, CLIENT).is_empty());
-            report_kind(&mut screen, "claude", claude_stop(prompt_id, text, &[]));
+            report_kind(&mut screen, "claude", claude_stop(prompt_id, text, working));
+            assert_eq!(
+                screen.agent_status_for_test().agent.state,
+                if working {
+                    AgentState::Busy
+                } else {
+                    AgentState::Idle
+                }
+            );
         }
         let done = replies(&messages, CLIENT).pop().unwrap();
         assert_eq!(done.outcome, AgentOutcome::Ok);
         assert_eq!(done.message.as_deref(), Some("SUB=sub"));
-        assert!(done.background_tasks.is_empty());
+        assert!(!done.background);
         assert!(done.agents[0].ready, "notification turns consume no input");
-        assert!(done.agents[0].background_tasks.is_empty());
+        assert!(!done.agents[0].background);
 
         // A duplicate hook for a confirmed notification turn is not a new turn.
         report_kind(
@@ -5482,7 +5502,7 @@ fn a_notification_can_start_before_the_previous_turn_is_confirmed() {
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("prompt", "Started.", &["bash"]),
+        claude_stop("prompt", "Started.", true),
     );
     let completed = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(completed.outcome, AgentOutcome::Completed);
@@ -5495,7 +5515,7 @@ fn a_notification_can_start_before_the_previous_turn_is_confirmed() {
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("notification", "BGDONE", &[]),
+        claude_stop("notification", "BGDONE", false),
     );
     screen.agent_control(wait(AgentState::Idle), CLIENT);
     let done = replies(&messages, CLIENT).pop().unwrap();
@@ -5505,7 +5525,7 @@ fn a_notification_can_start_before_the_previous_turn_is_confirmed() {
 }
 
 #[test]
-fn a_notification_confirmed_before_its_launching_turn_keeps_the_task_finished() {
+fn a_notification_confirmed_before_its_launching_turn_keeps_the_newer_registry_status() {
     // Detached observers can confirm the later notification turn first.
     let (mut screen, messages, writes) = setup("claude");
     report_kind(&mut screen, "claude", hook("SessionStart"));
@@ -5520,16 +5540,16 @@ fn a_notification_confirmed_before_its_launching_turn_keeps_the_task_finished() 
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("notification", "BGDONE", &[]),
+        claude_stop("notification", "BGDONE", false),
     );
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("prompt", "Started.", &["bash"]),
+        claude_stop("prompt", "Started.", true),
     );
     replies(&messages, CLIENT);
     let status = screen.agent_status_for_test();
-    assert!(status.background_tasks.is_empty());
+    assert!(!status.background);
     assert!(!screen.claude_background_pending_for_test());
     screen.agent_control(wait(AgentState::Idle), CLIENT);
     let done = replies(&messages, CLIENT).pop().unwrap();
@@ -5540,7 +5560,7 @@ fn a_notification_confirmed_before_its_launching_turn_keeps_the_task_finished() 
 #[test]
 fn interrupted_recovery_ends_an_interrupted_notification_turn() {
     let (mut screen, messages, writes) = setup("claude");
-    complete_with_background(&mut screen, &messages, &writes, &["bash"]);
+    complete_with_background(&mut screen, &messages, &writes, true);
     report_kind(
         &mut screen,
         "claude",
@@ -5559,7 +5579,7 @@ fn interrupted_recovery_ends_an_interrupted_notification_turn() {
 #[test]
 fn a_notification_never_consumes_a_typed_draft() {
     let (mut screen, messages, writes) = setup("claude");
-    complete_with_background(&mut screen, &messages, &writes, &["bash"]);
+    complete_with_background(&mut screen, &messages, &writes, true);
     screen.agent_write_for_test();
     // A person can type the same tags; the draft still advances the input revision.
     report_kind(
@@ -5570,11 +5590,11 @@ fn a_notification_never_consumes_a_typed_draft() {
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("notification", "BGDONE", &[]),
+        claude_stop("notification", "BGDONE", false),
     );
     let status = screen.agent_status_for_test();
     assert_eq!(status.agent.state, AgentState::Idle);
-    assert!(status.background_tasks.is_empty());
+    assert!(!status.background);
     assert!(!status.ready);
     assert_eq!(
         status.not_ready_reason,
@@ -5610,18 +5630,18 @@ fn an_unknown_notification_after_interrupted_recovery_leaves_the_agent_ready() {
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("notification", "I'll wait.", &[]),
+        claude_stop("notification", "I'll wait.", false),
     );
     let status = screen.agent_status_for_test();
     assert!(status.ready);
-    assert!(status.background_tasks.is_empty());
+    assert!(!status.background);
 }
 
 #[test]
 fn background_tracking_ends_with_recovery_and_the_conversation() {
     for end in ["recover", "clear", "session_end"] {
         let (mut screen, messages, writes) = setup("claude");
-        complete_with_background(&mut screen, &messages, &writes, &["bash"]);
+        complete_with_background(&mut screen, &messages, &writes, true);
         match end {
             "recover" => {
                 screen.agent_control(recover(), CLIENT);
@@ -5647,10 +5667,7 @@ fn background_tracking_ends_with_recovery_and_the_conversation() {
             _ => report_kind(&mut screen, "claude", hook("SessionEnd")),
         }
         if end != "session_end" {
-            assert!(
-                screen.agent_status_for_test().background_tasks.is_empty(),
-                "{end}"
-            );
+            assert!(!screen.agent_status_for_test().background, "{end}");
             if end == "recover" {
                 screen.agent_control(wait(AgentState::Idle), CLIENT);
                 assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
@@ -5659,27 +5676,114 @@ fn background_tracking_ends_with_recovery_and_the_conversation() {
         assert!(screen
             .agent_lifecycle
             .get(&PANE)
-            .is_none_or(|lifecycle| lifecycle.background_tasks_for_test().is_empty()));
+            .is_none_or(|lifecycle| lifecycle.claude_background_for_test().is_none()));
     }
 }
 
 #[test]
 fn an_idle_wait_times_out_while_background_work_runs() {
     let (mut screen, messages, writes) = setup("claude");
-    complete_with_background(&mut screen, &messages, &writes, &["bash"]);
+    complete_with_background(&mut screen, &messages, &writes, true);
     screen.agent_control(wait(AgentState::Idle), CLIENT);
     assert!(replies(&messages, CLIENT).is_empty());
     screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(31));
     let timed_out = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(timed_out.outcome, AgentOutcome::TimedOut);
     assert_eq!(timed_out.agents[0].agent.state, AgentState::Busy);
-    assert_eq!(timed_out.agents[0].background_tasks, ["bash"]);
+    assert!(timed_out.agents[0].background);
+}
+
+#[test]
+fn registry_idle_ends_only_the_background_work_of_its_own_turn() {
+    for target in pane_targets() {
+        let (mut screen, messages, writes) = setup_on_target("claude", target);
+        complete_with_background(&mut screen, &messages, &writes, true);
+        screen.agent_control(wait(AgentState::Idle), CLIENT);
+        // Another turn's watch, a worker, or a replayed archive cannot end it.
+        for stale in [
+            background_idle("older"),
+            HookEvent {
+                agent_id: Some("worker".into()),
+                ..background_idle("prompt")
+            },
+            HookEvent {
+                archive_only: true,
+                ..background_idle("prompt")
+            },
+            HookEvent {
+                session_id: "other".into(),
+                ..background_idle("prompt")
+            },
+        ] {
+            report_kind(&mut screen, "claude", stale);
+            assert!(replies(&messages, CLIENT).is_empty());
+            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+        }
+        report_kind(&mut screen, "claude", background_idle("prompt"));
+        let done = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(done.outcome, AgentOutcome::Ok);
+        assert_eq!(done.message.as_deref(), Some("Started."));
+        assert!(!done.agents[0].background);
+        assert_eq!(done.agents[0].agent.state, AgentState::Idle);
+        // A repeated report changes nothing.
+        report_kind(&mut screen, "claude", background_idle("prompt"));
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+    }
+}
+
+#[test]
+fn a_newer_turn_confirmation_replaces_older_background_status() {
+    let (mut screen, messages, writes) = setup("claude");
+    complete_with_background(&mut screen, &messages, &writes, true);
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            prompt_id: Some("next".into()),
+            ..hook("UserPromptSubmit")
+        },
+    );
+    // The older watch reporting idle cannot hide work the newer turn left running.
+    report_kind(&mut screen, "claude", claude_stop("next", "NEXT", true));
+    report_kind(&mut screen, "claude", background_idle("prompt"));
+    let status = screen.agent_status_for_test();
+    assert_eq!(status.agent.state, AgentState::Busy);
+    assert!(status.background);
+    // An older turn's late confirmation cannot restore its own background status either.
+    report_kind(&mut screen, "claude", background_idle("next"));
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("prompt", "Started.", true),
+    );
+    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+    // A confirmation without registry evidence degrades to hook-derived state.
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            prompt_id: Some("third".into()),
+            ..hook("UserPromptSubmit")
+        },
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            claude_background: None,
+            ..claude_stop("third", "THIRD", false)
+        },
+    );
+    let status = screen.agent_status_for_test();
+    assert_eq!(status.agent.state, AgentState::Idle);
+    assert!(!status.background);
+    replies(&messages, CLIENT);
 }
 
 #[test]
 fn an_idle_wait_returns_the_last_completed_turn_and_a_new_prompt_clears_it() {
     let (mut screen, messages, writes) = setup("claude");
-    complete_with_background(&mut screen, &messages, &writes, &[]);
+    complete_with_background(&mut screen, &messages, &writes, false);
     screen.agent_control(wait(AgentState::Idle), CLIENT);
     assert_eq!(
         replies(&messages, CLIENT)[0].message.as_deref(),
@@ -5705,7 +5809,7 @@ fn an_idle_wait_returns_the_last_completed_turn_and_a_new_prompt_clears_it() {
             .map(str::to_owned)
     };
     assert_eq!(lifecycle(&screen), None);
-    report_kind(&mut screen, "claude", claude_stop("next", "NEXT", &[]));
+    report_kind(&mut screen, "claude", claude_stop("next", "NEXT", false));
     screen.agent_control(wait(AgentState::Idle), CLIENT);
     assert_eq!(
         replies(&messages, CLIENT)[0].message.as_deref(),
@@ -5716,7 +5820,7 @@ fn an_idle_wait_returns_the_last_completed_turn_and_a_new_prompt_clears_it() {
 #[test]
 fn a_failed_notification_confirmation_ends_only_that_turn() {
     let (mut screen, messages, writes) = setup("claude");
-    complete_with_background(&mut screen, &messages, &writes, &["bash"]);
+    complete_with_background(&mut screen, &messages, &writes, true);
     report_kind(
         &mut screen,
         "claude",
@@ -5727,12 +5831,12 @@ fn a_failed_notification_confirmation_ends_only_that_turn() {
         "claude",
         HookEvent {
             claude_turn_complete: Some(false),
-            ..claude_stop("notification", "", &[])
+            ..claude_stop("notification", "", false)
         },
     );
     // An observer timeout cannot certify that background processing finished.
     let status = screen.agent_status_for_test();
-    assert_eq!(status.background_tasks, ["bash"]);
+    assert!(status.background);
     assert_eq!(status.agent.state, AgentState::Busy);
     assert!(screen.claude_background_pending_for_test());
     send_esc(&mut screen, &messages);
@@ -7207,7 +7311,7 @@ fn literal_claude_notification_xml_is_a_caller_turn() {
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("prompt", "It is XML.", &[]),
+        claude_stop("prompt", "It is XML.", false),
     );
     let completed = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(completed.outcome, AgentOutcome::Completed);
@@ -10305,109 +10409,7 @@ fn claude_worker(name: &str, id: &str) -> HookEvent {
     HookEvent {
         agent_id: Some(id.into()),
         tool_use_id: matches!(name, "PreToolUse" | "PostToolUse").then(|| format!("input-{id}")),
-        claude_task_execution: matches!(name, "SubagentStart" | "SubagentStop").then(|| {
-            yinz_types::agent::ClaudeTaskExecution {
-                tool_use_id: format!("launch-{id}"),
-                run_id: (name == "SubagentStop").then(|| format!("run-{id}")),
-            }
-        }),
         ..hook(name)
-    }
-}
-
-fn claude_execution(name: &str, task: &str, tool: &str) -> HookEvent {
-    let mut hook = claude_worker(name, task);
-    hook.claude_task_execution.as_mut().unwrap().tool_use_id = tool.into();
-    hook
-}
-
-/// The process fixture tests verify these stream identities against persisted launch and
-/// completion records. Replay the same identities through the normal screen report path.
-fn captured_claude_executions() -> Vec<HookEvent> {
-    let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../yinz-process/src/unit/fixtures/claude-task-executions.json"
-    ))
-    .unwrap();
-    claude_fixture_executions(&fixture["cases"]["same-prompt"]["runs"])
-}
-
-fn claude_fixture_executions(runs: &serde_json::Value) -> Vec<HookEvent> {
-    runs.as_array()
-        .unwrap()
-        .iter()
-        .map(|entry| {
-            let run = &entry["record"];
-            let complete = run["subtype"] == "task_notification";
-            HookEvent {
-                agent_id: Some(run["task_id"].as_str().unwrap().into()),
-                claude_task_execution: Some(yinz_types::agent::ClaudeTaskExecution {
-                    tool_use_id: run["tool_use_id"].as_str().unwrap().into(),
-                    run_id: complete.then(|| run["run_id"].as_str().unwrap().into()),
-                }),
-                // Only the conversation alias is adapted to the screen fixture.
-                ..hook(if complete {
-                    "SubagentStop"
-                } else {
-                    "SubagentStart"
-                })
-            }
-        })
-        .collect()
-}
-
-#[test]
-fn claude_captured_raw_and_observed_resumption_returns_to_idle() {
-    let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../yinz-process/src/unit/fixtures/claude-resumption-observation.json"
-    ))
-    .unwrap();
-    let case = &fixture["cases"]["same-prompt"];
-    let runs = claude_fixture_executions(&case["runs"]);
-    let raw: Vec<HookEvent> = case["hooks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|entry| entry["payload"]["agent_id"].is_string())
-        .map(|entry| {
-            let mut event: HookEvent = serde_json::from_value(entry["payload"].clone()).unwrap();
-            event.session_id = hook("SessionStart").session_id;
-            event.prompt_id = hook("UserPromptSubmit").prompt_id;
-            event
-        })
-        .collect();
-    assert_eq!(raw.len(), 4);
-    assert_eq!(raw[0], raw[2]);
-    assert_eq!(raw[1], raw[3]);
-    let task = runs[0].agent_id.as_deref().unwrap();
-    for include_raw in [false, true] {
-        let (mut screen, _, _) = setup("claude");
-        // Native Claude hooks and the task observer have no turn_id. Do not mix
-        // their captured absence with the generic fixture's synthetic "turn".
-        let report = |screen: &mut Screen, mut event: HookEvent| {
-            event.turn_id = None;
-            report_kind(screen, "claude", event);
-        };
-        report(&mut screen, hook("SessionStart"));
-        report(&mut screen, hook("UserPromptSubmit"));
-        for (raw, observed) in raw.iter().zip(&runs) {
-            if include_raw {
-                report(&mut screen, raw.clone());
-            }
-            report(&mut screen, observed.clone());
-        }
-        report(&mut screen, claude_stop("prompt", "done", &[task]));
-        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
-        let lifecycle = screen
-            .capture_agent_tracking(PANE)
-            .unwrap()
-            .lifecycle
-            .unwrap();
-        assert!(lifecycle.claude.executions[task]
-            .values()
-            .all(Option::is_some));
-        assert!(!lifecycle.claude.provisional_workers.contains(task));
-        assert!(!lifecycle.claude.workers.contains(task));
-        assert!(screen.agent_status_for_test().background_tasks.is_empty());
     }
 }
 
@@ -10420,83 +10422,69 @@ fn claude_worker_input(name: &str, task: &str, tool: Option<&str>) -> HookEvent 
 }
 
 #[test]
-fn claude_completed_workers_release_only_the_matching_tool_wait() {
+fn claude_worker_waits_release_only_the_matching_tool() {
     for (asking, release) in [
         ("PreToolUse", "PostToolUse"),
         ("Elicitation", "ElicitationResult"),
     ] {
-        for stop_first in [false, true] {
-            let (mut screen, messages, _) = setup("claude");
-            let runs = captured_claude_executions();
-            let task = runs[0].agent_id.as_deref().unwrap();
-            report_kind(&mut screen, "claude", hook("SessionStart"));
-            report_kind(&mut screen, "claude", runs[0].clone());
-            report_kind(
-                &mut screen,
-                "claude",
-                claude_worker_input(asking, task, Some("question-1")),
-            );
-            report_kind(&mut screen, "claude", runs[1].clone());
-            report_kind(&mut screen, "claude", runs[2].clone());
-            report_kind(
-                &mut screen,
-                "claude",
-                claude_worker_input(asking, task, Some("question-2")),
-            );
-            if stop_first {
-                report_kind(&mut screen, "claude", runs[3].clone());
-            }
-            for event in [
-                runs[1].clone(),
-                // A delayed older wait cannot replace the newer pending tool.
-                claude_worker_input(asking, task, Some("question-1")),
-                claude_worker_input(release, task, Some("question-1")),
-                claude_worker_input(release, task, None),
-                HookEvent {
-                    session_id: "foreign".into(),
-                    ..claude_worker_input(release, task, Some("question-2"))
-                },
-                HookEvent {
-                    archive_only: true,
-                    ..claude_worker_input(release, task, Some("question-2"))
-                },
-                // A release received before its wait must suppress that late wait.
-                claude_worker_input(asking, task, Some("question-1")),
-            ] {
-                report_kind(&mut screen, "claude", event);
-                assert_eq!(
-                    screen.agent_status_for_test().agent.state,
-                    AgentState::Waiting
-                );
-                assert!(screen.agent_worker_waits[&PANE].waits.contains_key(task));
-            }
-            report_kind(
-                &mut screen,
-                "claude",
-                claude_worker_input(release, task, Some("question-2")),
-            );
+        let (mut screen, messages, _) = setup("claude");
+        let task = "worker";
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        report_kind(&mut screen, "claude", claude_worker("SubagentStart", task));
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker_input(asking, task, Some("question-1")),
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker_input(release, task, Some("question-1")),
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker_input(asking, task, Some("question-2")),
+        );
+        for event in [
+            claude_worker("SubagentStop", task),
+            // A delayed older wait cannot replace the newer pending tool.
+            claude_worker_input(asking, task, Some("question-1")),
+            claude_worker_input(release, task, Some("question-1")),
+            claude_worker_input(release, task, None),
+            HookEvent {
+                session_id: "foreign".into(),
+                ..claude_worker_input(release, task, Some("question-2"))
+            },
+            HookEvent {
+                archive_only: true,
+                ..claude_worker_input(release, task, Some("question-2"))
+            },
+            // A release received before its wait must suppress that late wait.
+            claude_worker_input(asking, task, Some("question-1")),
+        ] {
+            report_kind(&mut screen, "claude", event);
             assert_eq!(
                 screen.agent_status_for_test().agent.state,
-                if stop_first {
-                    AgentState::Idle
-                } else {
-                    AgentState::Busy
-                }
+                AgentState::Waiting
             );
-            if !stop_first {
-                report_kind(&mut screen, "claude", runs[3].clone());
-            }
-            // Duplicate completion and reordered wait must not recreate Waiting.
-            report_kind(&mut screen, "claude", runs[3].clone());
-            report_kind(
-                &mut screen,
-                "claude",
-                claude_worker_input(asking, task, Some("question-2")),
-            );
-            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
-            screen.agent_control(wait(AgentState::Idle), CLIENT);
-            assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+            assert!(screen.agent_worker_waits[&PANE].waits.contains_key(task));
         }
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker_input(release, task, Some("question-2")),
+        );
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+        // A reordered wait must not recreate Waiting.
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker_input(asking, task, Some("question-2")),
+        );
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+        screen.agent_control(wait(AgentState::Idle), CLIENT);
+        assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
     }
 }
 
@@ -10541,330 +10529,13 @@ fn claude_late_wait_after_completion_can_release_but_missing_identity_stays_cons
 }
 
 #[test]
-fn claude_repeated_raw_starts_reconcile_with_delayed_execution_reports() {
-    let (mut screen, messages, _) = setup("claude");
-    let runs = captured_claude_executions();
-    report_kind(&mut screen, "claude", hook("SessionStart"));
-    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
-    report_kind(
-        &mut screen,
-        "claude",
-        HookEvent {
-            claude_task_execution: None,
-            ..runs[0].clone()
-        },
-    );
-    assert_claude_raw_resumption_reconciles_delayed_completion(&mut screen, &messages);
-}
-
-/// Delayed observed completion may hide an unidentified resume. A subsequent
-/// observed launch restores Busy; exact tombstones still protect that execution.
-fn assert_claude_raw_resumption_reconciles_delayed_completion(
-    screen: &mut Screen,
-    messages: &CapturedClientMessages,
-) {
-    let runs = captured_claude_executions();
-    let task = runs[0].agent_id.as_deref().unwrap();
-    screen.agent_control(wait(AgentState::Idle), CLIENT);
-    for event in [
-        HookEvent {
-            claude_task_execution: None,
-            ..runs[1].clone()
-        },
-        HookEvent {
-            claude_task_execution: None,
-            ..runs[2].clone()
-        },
-        runs[0].clone(),
-        runs[1].clone(),
-        claude_stop("prompt", "parent completed", &[task]),
-        runs[0].clone(),
-        runs[1].clone(),
-    ] {
-        report_kind(screen, "claude", event);
-    }
-    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
-    let status = screen.agent_status_for_test();
-    assert_eq!(
-        status.not_ready_reason,
-        Some(NotReadyReason::UnconsumedInput)
-    );
-    assert!(
-        replies(messages, CLIENT).is_empty(),
-        "activity completion cannot bypass input readiness"
-    );
-    report_kind(screen, "claude", runs[2].clone());
-    report_kind(screen, "claude", runs[1].clone());
-    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
-    report_kind(screen, "claude", runs[3].clone());
-    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
-    let claude = screen
-        .capture_agent_tracking(PANE)
-        .unwrap()
-        .lifecycle
-        .unwrap()
-        .claude;
-    assert!(!claude.workers.contains(task));
-    assert!(!claude.provisional_workers.contains(task));
-}
-
-#[test]
-fn claude_uncorrelated_known_worker_starts_are_replaced_by_observed_executions() {
-    for completed_first in [false, true] {
-        let (mut screen, _, _) = setup("claude");
-        let runs = captured_claude_executions();
-        let task = runs[0].agent_id.as_deref().unwrap();
-        report_kind(&mut screen, "claude", hook("SessionStart"));
-        report_kind(&mut screen, "claude", runs[0].clone());
-        if completed_first {
-            report_kind(&mut screen, "claude", runs[1].clone());
-        }
-        report_kind(
-            &mut screen,
-            "claude",
-            HookEvent {
-                claude_task_execution: None,
-                ..runs[2].clone()
-            },
-        );
-        assert_eq!(
-            screen.agent_status_for_test().agent.state,
-            if completed_first {
-                AgentState::Idle
-            } else {
-                AgentState::Busy
-            }
-        );
-        report_kind(&mut screen, "claude", runs[1].clone());
-        // A delayed raw Start cannot reopen observed completed work. A newly
-        // observed old completion also supersedes provisional activity.
-        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
-        report_kind(&mut screen, "claude", runs[2].clone());
-        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
-        report_kind(&mut screen, "claude", runs[3].clone());
-        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
-        assert!(screen.agent_status_for_test().background_tasks.is_empty());
-        assert!(!screen
-            .capture_agent_tracking(PANE)
-            .unwrap()
-            .lifecycle
-            .unwrap()
-            .claude
-            .provisional_workers
-            .contains(task));
-    }
-}
-
-#[test]
-fn claude_delayed_raw_start_cannot_reopen_completed_work_during_observer_replay() {
-    let (mut screen, _, _) = setup("claude");
-    let runs = captured_claude_executions();
-    report_kind(&mut screen, "claude", hook("SessionStart"));
-    for event in &runs[..2] {
-        report_kind(&mut screen, "claude", event.clone());
-    }
-    for _ in 0..2 {
-        report_kind(
-            &mut screen,
-            "claude",
-            HookEvent {
-                claude_task_execution: None,
-                ..runs[0].clone()
-            },
-        );
-        // A running observer deduplicates records and need not emit another Stop.
-        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
-        for event in &runs[..2] {
-            report_kind(&mut screen, "claude", event.clone());
-        }
-        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
-        assert!(screen.agent_status_for_test().background_tasks.is_empty());
-    }
-    // Only the new execution's causal launch reactivates this known worker.
-    report_kind(&mut screen, "claude", runs[2].clone());
-    let task = runs[2].agent_id.as_deref().unwrap();
-    let mut input = claude_worker("PreToolUse", task);
-    input.tool_name = Some("AskUserQuestion".into());
-    input.tool_use_id = Some("resumed-question".into());
-    report_kind(&mut screen, "claude", input.clone());
-    for event in &runs[..2] {
-        report_kind(&mut screen, "claude", event.clone());
-        assert_eq!(
-            screen.agent_status_for_test().agent.state,
-            AgentState::Waiting
-        );
-        assert_eq!(screen.agent_status_for_test().background_tasks, [task]);
-    }
-    report_kind(&mut screen, "claude", runs[3].clone());
-    report_kind(
-        &mut screen,
-        "claude",
-        HookEvent {
-            claude_task_execution: None,
-            ..runs[2].clone()
-        },
-    );
-    assert_eq!(
-        screen.agent_status_for_test().agent.state,
-        AgentState::Waiting
-    );
-    input.hook_event_name = "PostToolUse".into();
-    report_kind(&mut screen, "claude", input);
-    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
-    assert!(screen.agent_status_for_test().background_tasks.is_empty());
-}
-
-#[test]
-fn claude_correlated_completion_retires_launches_in_both_parent_orderings() {
-    for parent_first in [false, true] {
-        let (mut screen, messages, writes) = setup("claude");
-        report_kind(&mut screen, "claude", hook("SessionStart"));
-        screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
-        finish_paste(&writes);
-        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
-        report_kind(
-            &mut screen,
-            "claude",
-            claude_worker("SubagentStart", "same"),
-        );
-        if parent_first {
-            report_kind(
-                &mut screen,
-                "claude",
-                claude_stop("prompt", "done", &["same"]),
-            );
-        }
-        for _ in 0..2 {
-            report_kind(&mut screen, "claude", claude_worker("SubagentStop", "same"));
-        }
-        if !parent_first {
-            report_kind(
-                &mut screen,
-                "claude",
-                claude_stop("prompt", "done", &["same"]),
-            );
-        }
-        report_kind(
-            &mut screen,
-            "claude",
-            claude_worker("SubagentStart", "same"),
-        );
-        report_kind(
-            &mut screen,
-            "claude",
-            claude_stop("prompt", "late duplicate", &["same"]),
-        );
-        let status = screen.agent_status_for_test();
-        assert_eq!(status.agent.state, AgentState::Idle);
-        assert!(status.background_tasks.is_empty());
-        replies(&messages, CLIENT);
-        screen.agent_control(wait(AgentState::Idle), CLIENT);
-        assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
-    }
-}
-
-#[test]
-fn claude_old_completions_cannot_end_resumed_work_or_clear_its_wait() {
-    for waiting in [false, true] {
-        for old_stop_first in [false, true] {
-            let (mut screen, _, _) = setup("claude");
-            report_kind(&mut screen, "claude", hook("SessionStart"));
-            report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
-            report_kind(
-                &mut screen,
-                "claude",
-                claude_execution("SubagentStart", "same", "first"),
-            );
-            if old_stop_first {
-                report_kind(
-                    &mut screen,
-                    "claude",
-                    claude_execution("SubagentStop", "same", "first"),
-                );
-            }
-            report_kind(
-                &mut screen,
-                "claude",
-                claude_execution("SubagentStart", "same", "resumed"),
-            );
-            if waiting {
-                report_kind(
-                    &mut screen,
-                    "claude",
-                    HookEvent {
-                        tool_name: Some("AskUserQuestion".into()),
-                        ..claude_worker("PreToolUse", "same")
-                    },
-                );
-            }
-            for _ in 0..2 {
-                report_kind(
-                    &mut screen,
-                    "claude",
-                    claude_execution("SubagentStop", "same", "first"),
-                );
-                // Raw hooks are indistinguishable, including a first delivery of an old Stop.
-                report_kind(
-                    &mut screen,
-                    "claude",
-                    HookEvent {
-                        agent_id: Some("same".into()),
-                        ..hook("SubagentStop")
-                    },
-                );
-                report_kind(
-                    &mut screen,
-                    "claude",
-                    claude_execution("SubagentStart", "same", "first"),
-                );
-            }
-            report_kind(
-                &mut screen,
-                "claude",
-                claude_stop("prompt", "parent", &["same"]),
-            );
-            assert_eq!(
-                screen.agent_status_for_test().agent.state,
-                if waiting {
-                    AgentState::Waiting
-                } else {
-                    AgentState::Busy
-                }
-            );
-            assert_eq!(screen.agent_status_for_test().background_tasks, ["same"]);
-            if waiting {
-                assert!(screen.agent_worker_waits[&PANE].waits.contains_key("same"));
-                // Only the actual tool's response releases an uncorrelated input wait.
-                report_kind(&mut screen, "claude", claude_worker("PostToolUse", "same"));
-            }
-            report_kind(
-                &mut screen,
-                "claude",
-                claude_execution("SubagentStop", "same", "resumed"),
-            );
-            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
-            assert!(screen.agent_status_for_test().background_tasks.is_empty());
-        }
-    }
-}
-
-#[test]
-fn claude_completion_preserves_draft_revision_and_independent_readiness() {
+fn background_completion_preserves_draft_revision_and_independent_readiness() {
     let (mut screen, _, writes) = setup("claude");
     report_kind(&mut screen, "claude", hook("SessionStart"));
     screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
     finish_paste(&writes);
     report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
-    report_kind(
-        &mut screen,
-        "claude",
-        claude_worker("SubagentStart", "same"),
-    );
-    report_kind(
-        &mut screen,
-        "claude",
-        claude_stop("prompt", "done", &["same"]),
-    );
+    report_kind(&mut screen, "claude", claude_stop("prompt", "done", true));
     screen.agent_write_for_test();
     assert_eq!(
         screen.agent_status_for_test().not_ready_reason,
@@ -10884,10 +10555,10 @@ fn claude_completion_preserves_draft_revision_and_independent_readiness() {
         Some(NotReadyReason::UnconsumedInput),
         "draft input after render"
     );
-    report_kind(&mut screen, "claude", claude_worker("SubagentStop", "same"));
+    report_kind(&mut screen, "claude", background_idle("prompt"));
     let status = screen.agent_status_for_test();
     assert_eq!(status.agent.state, AgentState::Idle);
-    assert!(status.background_tasks.is_empty());
+    assert!(!status.background);
     assert_eq!(
         status.not_ready_reason,
         Some(NotReadyReason::UnconsumedInput)
@@ -10904,50 +10575,13 @@ fn claude_completion_preserves_draft_revision_and_independent_readiness() {
 }
 
 #[test]
-fn claude_completion_is_scoped_and_legacy_stops_preserve_unknown_waits() {
+fn claude_worker_stop_archives_without_publishing_idle_or_clearing_waits() {
     let (mut screen, _, _) = setup("claude");
     report_kind(&mut screen, "claude", hook("SessionStart"));
     report_kind(
         &mut screen,
         "claude",
-        claude_worker("SubagentStart", "same"),
-    );
-    for change in ["foreign", "archive", "missing", "empty"] {
-        let mut event = claude_worker("SubagentStop", "same");
-        match change {
-            "foreign" => event.session_id = "foreign".into(),
-            "archive" => event.archive_only = true,
-            "missing" => event.claude_task_execution = None,
-            "empty" => event.claude_task_execution.as_mut().unwrap().run_id = Some(String::new()),
-            _ => unreachable!(),
-        }
-        report_kind(&mut screen, "claude", event);
-        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
-    }
-    report_kind(
-        &mut screen,
-        "claude",
-        HookEvent {
-            tool_name: Some("AskUserQuestion".into()),
-            ..claude_worker("PreToolUse", "same")
-        },
-    );
-    report_kind(&mut screen, "claude", claude_worker("SubagentStop", "same"));
-    assert_eq!(
-        screen.agent_status_for_test().agent.state,
-        AgentState::Waiting
-    );
-    assert!(screen.agent_worker_waits[&PANE].waits.contains_key("same"));
-}
-
-#[test]
-fn claude_raw_stop_archives_without_publishing_idle_or_clearing_waits() {
-    let (mut screen, _, _) = setup("claude");
-    report_kind(&mut screen, "claude", hook("SessionStart"));
-    report_kind(
-        &mut screen,
-        "claude",
-        claude_execution("SubagentStart", "worker", "resumed"),
+        claude_worker("SubagentStart", "worker"),
     );
     report_kind(
         &mut screen,
@@ -10960,7 +10594,6 @@ fn claude_raw_stop_archives_without_publishing_idle_or_clearing_waits() {
     let (sender, plugins) = channels::unbounded();
     screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     let mut stop = claude_worker("SubagentStop", "worker");
-    stop.claude_task_execution = None;
     stop.agent_type = Some("reviewer".into());
     stop.last_assistant_message = Some("worker report".into());
     report_kind(&mut screen, "claude", stop);
@@ -10999,75 +10632,6 @@ fn claude_raw_stop_archives_without_publishing_idle_or_clearing_waits() {
         Some("worker report")
     );
     assert_eq!(archived.agent_type.as_deref(), Some("reviewer"));
-}
-
-#[test]
-fn claude_recovery_abandons_execution_without_fabricating_completion() {
-    let (mut screen, messages, writes) = setup("claude");
-    complete_with_background(&mut screen, &messages, &writes, &["worker"]);
-    report_kind(
-        &mut screen,
-        "claude",
-        claude_execution("SubagentStart", "worker", "first"),
-    );
-    report_kind(
-        &mut screen,
-        "claude",
-        HookEvent {
-            claude_task_execution: None,
-            ..claude_execution("SubagentStart", "worker", "unobserved")
-        },
-    );
-    assert!(screen
-        .capture_agent_tracking(PANE)
-        .unwrap()
-        .lifecycle
-        .unwrap()
-        .claude
-        .provisional_workers
-        .contains("worker"));
-    send_esc(&mut screen, &messages);
-    recover_after_quiet(&mut screen, interrupted_recover());
-    assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
-    for name in ["SubagentStart", "SubagentStop"] {
-        report_kind(
-            &mut screen,
-            "claude",
-            claude_execution(name, "worker", "first"),
-        );
-        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
-    }
-    let tracking = screen
-        .capture_agent_tracking(PANE)
-        .unwrap()
-        .lifecycle
-        .unwrap()
-        .claude;
-    assert!(tracking.abandoned_executions.contains("first"));
-    assert!(tracking.provisional_workers.is_empty());
-    assert!(tracking.executions["worker"].is_empty());
-    report_kind(
-        &mut screen,
-        "claude",
-        claude_execution("SubagentStart", "worker", "resumed"),
-    );
-    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
-    report_kind(
-        &mut screen,
-        "claude",
-        HookEvent {
-            session_id: "new".into(),
-            ..hook("SessionStart")
-        },
-    );
-    let tracking = screen
-        .capture_agent_tracking(PANE)
-        .unwrap()
-        .lifecycle
-        .unwrap()
-        .claude;
-    assert!(tracking.executions.is_empty());
-    assert!(tracking.abandoned_executions.is_empty());
 }
 
 fn steering_prompt(id: &str) -> AgentRequest {
@@ -11110,85 +10674,69 @@ fn deliver_steering(
 }
 
 #[test]
-fn claude_workers_and_notifications_publish_aggregate_activity_without_idle_edges() {
+fn claude_background_and_notifications_publish_aggregate_activity_without_idle_edges() {
     for target in pane_targets() {
-        for parent_finishes_first in [false, true] {
-            let (mut screen, messages, writes) = setup_on_target("claude", target.clone());
-            report_kind(&mut screen, "claude", hook("SessionStart"));
-            screen.agent_control_with_clear(identified_prompt("parent", true), CLIENT, &writes);
-            finish_paste(&writes);
-            report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
-            for id in ["one", "two", "one"] {
-                report_kind(&mut screen, "claude", claude_worker("SubagentStart", id));
-            }
-            let (sender, plugins) = channels::unbounded();
-            screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
-            screen.background_plugin_subscriptions.insert(
-                (PluginId::new(99), CLIENT),
-                HashSet::from([EventType::PaneUpdate]),
-            );
-            if parent_finishes_first {
-                report_kind(
-                    &mut screen,
-                    "claude",
-                    claude_stop("prompt", "parent", &["bash"]),
-                );
-                assert_eq!(
-                    replies(&messages, CLIENT)[0].agents[0].agent.state,
-                    AgentState::Busy
-                );
-            }
-            for id in ["one", "one", "two"] {
-                report_kind(&mut screen, "claude", claude_worker("SubagentStop", id));
-                assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
-            }
-            if !parent_finishes_first {
-                report_kind(
-                    &mut screen,
-                    "claude",
-                    claude_stop("prompt", "parent", &["bash"]),
-                );
-                assert_eq!(
-                    replies(&messages, CLIENT)[0].agents[0].agent.state,
-                    AgentState::Busy
-                );
-            }
-            assert!(plugins.try_iter().all(|(instruction, _)| {
-                let PluginInstruction::Update(updates) = instruction else { return true };
-                updates.into_iter().all(|(_, _, event)| {
-                    !matches!(event, Event::PaneUpdate(manifest) if manifest.panes.values().flatten()
-                        .any(|pane| pane.id == PANE && pane.agent.as_ref().is_some_and(|a| a.state == AgentState::Idle)))
-                })
-            }), "parent completion must never publish an idle pane while work remains");
-            screen.agent_control(wait(AgentState::Idle), CLIENT);
-            report_kind(
-                &mut screen,
-                "claude",
-                task_notification("notification", &["bash"]),
-            );
-            assert!(replies(&messages, CLIENT).is_empty());
-            report_kind(
-                &mut screen,
-                "claude",
-                claude_stop("notification", "finished", &[]),
-            );
-            assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
-            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
-            // An uncorrelated question may belong to a resumption not yet persisted.
-            // Keep that input wait conservative until the actual tool response arrives.
-            report_kind(
-                &mut screen,
-                "claude",
-                HookEvent {
-                    tool_name: Some("AskUserQuestion".into()),
-                    ..claude_worker("PreToolUse", "one")
-                },
-            );
-            assert_eq!(
-                screen.agent_status_for_test().agent.state,
-                AgentState::Waiting
-            );
+        let (mut screen, messages, writes) = setup_on_target("claude", target.clone());
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        screen.agent_control_with_clear(identified_prompt("parent", true), CLIENT, &writes);
+        finish_paste(&writes);
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        for id in ["one", "two"] {
+            report_kind(&mut screen, "claude", claude_worker("SubagentStart", id));
         }
+        let (sender, plugins) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+        screen.background_plugin_subscriptions.insert(
+            (PluginId::new(99), CLIENT),
+            HashSet::from([EventType::PaneUpdate]),
+        );
+        report_kind(&mut screen, "claude", claude_stop("prompt", "parent", true));
+        assert_eq!(
+            replies(&messages, CLIENT)[0].agents[0].agent.state,
+            AgentState::Busy
+        );
+        for id in ["one", "two"] {
+            report_kind(&mut screen, "claude", claude_worker("SubagentStop", id));
+            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+        }
+        report_kind(
+            &mut screen,
+            "claude",
+            task_notification("notification", &["one"]),
+        );
+        // The launching turn's watch reports idle only after the notification turn.
+        report_kind(&mut screen, "claude", background_idle("prompt"));
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+        assert!(plugins.try_iter().all(|(instruction, _)| {
+            let PluginInstruction::Update(updates) = instruction else { return true };
+            updates.into_iter().all(|(_, _, event)| {
+                !matches!(event, Event::PaneUpdate(manifest) if manifest.panes.values().flatten()
+                    .any(|pane| pane.id == PANE && pane.agent.as_ref().is_some_and(|a| a.state == AgentState::Idle)))
+            })
+        }), "parent completion must never publish an idle pane while work remains");
+        screen.agent_control(wait(AgentState::Idle), CLIENT);
+        assert!(replies(&messages, CLIENT).is_empty());
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_stop("notification", "finished", false),
+        );
+        assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+        // An uncorrelated question may belong to a resumption not yet persisted.
+        // Keep that input wait conservative until the actual tool response arrives.
+        report_kind(
+            &mut screen,
+            "claude",
+            HookEvent {
+                tool_name: Some("AskUserQuestion".into()),
+                ..claude_worker("PreToolUse", "one")
+            },
+        );
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
     }
 }
 
@@ -11204,7 +10752,8 @@ fn claude_worker_waits_and_foreign_events_preserve_the_underlying_parent() {
             claude_worker("SubagentStart", "worker"),
         );
         if parent_done {
-            report_kind(&mut screen, "claude", claude_stop("prompt", "done", &[]));
+            // The worker outlives the turn, so the registry still shows it working.
+            report_kind(&mut screen, "claude", claude_stop("prompt", "done", true));
         }
         report_kind(
             &mut screen,
@@ -11242,14 +10791,11 @@ fn claude_worker_waits_and_foreign_events_preserve_the_underlying_parent() {
             "claude",
             claude_worker("SubagentStop", "worker"),
         );
-        assert_eq!(
-            screen.agent_status_for_test().agent.state,
-            if parent_done {
-                AgentState::Idle
-            } else {
-                AgentState::Busy
-            }
-        );
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+        if parent_done {
+            report_kind(&mut screen, "claude", background_idle("prompt"));
+            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+        }
         report_kind(
             &mut screen,
             "claude",
@@ -11303,7 +10849,7 @@ fn claude_sequential_steering_keeps_each_completion_and_ignores_old_acknowledgem
             report_kind(
                 &mut screen,
                 "claude",
-                claude_stop("one", "first steering", &[]),
+                claude_stop("one", "first steering", false),
             );
             let first = replies(&messages, ClientId::new(2));
             assert_eq!(first[0].submission_id.as_deref(), Some("one"));
@@ -11318,7 +10864,7 @@ fn claude_sequential_steering_keeps_each_completion_and_ignores_old_acknowledgem
             report_kind(
                 &mut screen,
                 "claude",
-                claude_stop("two", "latest answer", &[]),
+                claude_stop("two", "latest answer", false),
             );
             let second = replies(&messages, ClientId::new(3));
             assert_eq!(second[0].submission_id.as_deref(), Some("two"));
@@ -11326,7 +10872,7 @@ fn claude_sequential_steering_keeps_each_completion_and_ignores_old_acknowledgem
             report_kind(
                 &mut screen,
                 "claude",
-                claude_stop("prompt", "parent answer", &[]),
+                claude_stop("prompt", "parent answer", false),
             );
             let parent = replies(&messages, CLIENT);
             if managed {
@@ -11463,7 +11009,7 @@ fn claude_steering_timeout_or_delivery_failure_does_not_finish_the_parent() {
         report_kind(
             &mut screen,
             "claude",
-            claude_stop("prompt", "parent answer", &[]),
+            claude_stop("prompt", "parent answer", false),
         );
         let parent = replies(&messages, CLIENT);
         assert_eq!(parent.last().unwrap().outcome, AgentOutcome::Completed);
@@ -11473,7 +11019,7 @@ fn claude_steering_timeout_or_delivery_failure_does_not_finish_the_parent() {
         report_kind(
             &mut screen,
             "claude",
-            claude_stop("one", "steering answer", &[]),
+            claude_stop("one", "steering answer", false),
         );
         assert!(replies(&messages, ClientId::new(2)).is_empty());
         screen.agent_control(wait_submission("one"), ClientId::new(2));
@@ -11503,7 +11049,7 @@ fn claude_acknowledged_timeout_keeps_its_result_without_blocking_steering() {
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("prompt", "parent answer", &[]),
+        claude_stop("prompt", "parent answer", false),
     );
     assert!(replies(&messages, ClientId::new(2)).is_empty());
     screen.agent_control(wait_submission("parent"), CLIENT);
@@ -11514,7 +11060,7 @@ fn claude_acknowledged_timeout_keeps_its_result_without_blocking_steering() {
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("next", "steered answer", &[]),
+        claude_stop("next", "steered answer", false),
     );
     assert_eq!(
         replies(&messages, ClientId::new(2))[0].outcome,
@@ -11525,7 +11071,7 @@ fn claude_acknowledged_timeout_keeps_its_result_without_blocking_steering() {
 #[test]
 fn claude_background_notifications_cannot_acknowledge_steering_or_hide_permission_waits() {
     let (mut screen, messages, writes) = setup("claude");
-    complete_with_background(&mut screen, &messages, &writes, &["bash"]);
+    complete_with_background(&mut screen, &messages, &writes, true);
     deliver_steering(&mut screen, &writes, "next", CLIENT);
     report_kind(
         &mut screen,
@@ -11556,7 +11102,7 @@ fn claude_background_notifications_cannot_acknowledge_steering_or_hide_permissio
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("notification", "background answer", &[]),
+        claude_stop("notification", "background answer", false),
     );
     assert!(replies(&messages, CLIENT).is_empty());
     assert_eq!(
@@ -11567,16 +11113,13 @@ fn claude_background_notifications_cannot_acknowledge_steering_or_hide_permissio
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("next", "steered answer", &["bash"]),
+        claude_stop("next", "steered answer", false),
     );
     let result = replies(&messages, CLIENT);
     assert_eq!(result[0].outcome, AgentOutcome::Completed);
     assert_eq!(result[0].message.as_deref(), Some("steered answer"));
-    assert_eq!(result[0].background_tasks, ["bash"]);
-    assert!(
-        result[0].agents[0].background_tasks.is_empty(),
-        "late confirmations cannot restart completed tasks"
-    );
+    assert!(!result[0].background);
+    assert!(!result[0].agents[0].background);
     assert_eq!(result[0].agents[0].agent.state, AgentState::Idle);
 }
 
@@ -11624,7 +11167,7 @@ fn claude_late_uncertainty_is_retained_when_a_newer_steering_turn_completes() {
         "claude",
         HookEvent {
             claude_turn_complete: Some(false),
-            ..claude_stop("prompt", "", &[])
+            ..claude_stop("prompt", "", false)
         },
     );
     assert_eq!(
@@ -11634,7 +11177,7 @@ fn claude_late_uncertainty_is_retained_when_a_newer_steering_turn_completes() {
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("next", "next answer", &[]),
+        claude_stop("next", "next answer", false),
     );
     let completed = replies(&messages, ClientId::new(2));
     assert_eq!(completed[0].outcome, AgentOutcome::Completed);
@@ -11646,7 +11189,7 @@ fn claude_late_uncertainty_is_retained_when_a_newer_steering_turn_completes() {
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("prompt", "parent answer", &[]),
+        claude_stop("prompt", "parent answer", false),
     );
     assert!(screen.agent_status_for_test().ready);
 }
@@ -11669,7 +11212,7 @@ fn recent_submission_results_survive_older_unresolved_steering() {
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("recent", "recent answer", &[]),
+        claude_stop("recent", "recent answer", false),
     );
     replies(&messages, CLIENT);
     for index in 0..limit {
@@ -11692,7 +11235,7 @@ fn recent_submission_results_survive_older_unresolved_steering() {
     }
     // Resolving an older claim prunes it immediately, without waiting for another admission.
     let before = screen.agent_submissions[&PANE].len();
-    report_kind(&mut screen, "claude", claude_stop("old-1", "late", &[]));
+    report_kind(&mut screen, "claude", claude_stop("old-1", "late", false));
     assert_eq!(screen.agent_submissions[&PANE].len(), before - 1);
 }
 
@@ -11724,7 +11267,7 @@ fn claude_overlapping_failures_only_finish_the_correlated_submission() {
         report_kind(
             &mut screen,
             "claude",
-            claude_stop(prompt_id, "success", &[]),
+            claude_stop(prompt_id, "success", false),
         );
         let completed = replies(&messages, remaining);
         assert_eq!(completed.len(), 1);
@@ -11757,7 +11300,11 @@ fn claude_uncorrelatable_failure_leaves_older_submissions_unresolved() {
         );
     }
     assert!(replies(&messages, CLIENT).is_empty());
-    report_kind(&mut screen, "claude", claude_stop("prompt", "success", &[]));
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("prompt", "success", false),
+    );
     assert_eq!(
         replies(&messages, CLIENT)[0].outcome,
         AgentOutcome::Completed
@@ -11765,7 +11312,7 @@ fn claude_uncorrelatable_failure_leaves_older_submissions_unresolved() {
 }
 
 #[test]
-fn claude_stopped_workers_can_resume_and_request_input() {
+fn claude_resumed_workers_can_request_input_again() {
     for target in pane_targets() {
         let (mut screen, messages, _) = setup_on_target("claude", target);
         report_kind(&mut screen, "claude", hook("SessionStart"));
@@ -11779,24 +11326,20 @@ fn claude_stopped_workers_can_resume_and_request_input() {
                 report_kind(
                     &mut screen,
                     "claude",
-                    claude_execution("SubagentStart", "worker", run),
+                    claude_worker("SubagentStart", "worker"),
                 );
-                assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
             }
-            screen.agent_control(wait(AgentState::Idle), CLIENT);
+            screen.agent_control(wait(AgentState::Waiting), CLIENT);
             report_kind(&mut screen, "claude", question.clone());
             assert_eq!(
                 screen.agent_status_for_test().agent.state,
                 AgentState::Waiting
             );
-            assert_eq!(
-                replies(&messages, CLIENT)[0].outcome,
-                AgentOutcome::NeedsInput
-            );
+            assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
             report_kind(
                 &mut screen,
                 "claude",
-                claude_execution("SubagentStart", "worker", run),
+                claude_worker("SubagentStart", "worker"),
             );
             assert_eq!(
                 screen.agent_status_for_test().agent.state,
@@ -11814,7 +11357,7 @@ fn claude_stopped_workers_can_resume_and_request_input() {
                 report_kind(
                     &mut screen,
                     "claude",
-                    claude_execution("SubagentStop", "worker", run),
+                    claude_worker("SubagentStop", "worker"),
                 );
                 assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
             }
@@ -11825,11 +11368,11 @@ fn claude_stopped_workers_can_resume_and_request_input() {
                 },
                 HookEvent {
                     archive_only: true,
-                    ..claude_execution("SubagentStart", "worker", run)
+                    ..claude_worker("SubagentStart", "worker")
                 },
                 HookEvent {
                     session_id: "foreign".into(),
-                    ..claude_execution("SubagentStart", "worker", run)
+                    ..claude_worker("SubagentStart", "worker")
                 },
             ] {
                 report_kind(&mut screen, "claude", stale);
@@ -11856,7 +11399,7 @@ fn old_submission_waiters_survive_completion_and_newer_admissions() {
             let id = format!("next-{index}");
             deliver_steering(&mut screen, &writes, &id, CLIENT);
             report_kind(&mut screen, "claude", steering_ack(&id));
-            report_kind(&mut screen, "claude", claude_stop(&id, "newer", &[]));
+            report_kind(&mut screen, "claude", claude_stop(&id, "newer", false));
             replies(&messages, CLIENT);
         }
         assert_eq!(screen.agent_submissions[&PANE].len(), limit + 1);
@@ -11872,7 +11415,7 @@ fn old_submission_waiters_survive_completion_and_newer_admissions() {
         }
         // Separate observation from waiter delivery, as on the screen thread, so an
         // admission or disconnect can happen while the completed result is protected.
-        let stop = claude_stop("prompt", "old answer", &["old-task"]);
+        let stop = claude_stop("prompt", "old answer", true);
         let event = AgentEvent::from_hook(
             "claude",
             TerminalId::new(7),
@@ -11888,7 +11431,7 @@ fn old_submission_waiters_survive_completion_and_newer_admissions() {
                 assert_eq!(result[0].outcome, AgentOutcome::Completed);
                 assert_eq!(result[0].submission_id.as_deref(), Some("parent"));
                 assert_eq!(result[0].message.as_deref(), Some("old answer"));
-                assert_eq!(result[0].background_tasks, ["old-task"]);
+                assert!(result[0].background);
             }
         } else if release == "disconnect" {
             assert_eq!(screen.agent_submissions[&PANE].len(), limit + 1);
@@ -11908,8 +11451,8 @@ fn old_submission_waiters_survive_completion_and_newer_admissions() {
 }
 
 #[test]
-fn claude_submission_tasks_are_independent_of_the_pane_task_union() {
-    for next_tasks in [vec![], vec!["new-task"]] {
+fn claude_submission_background_is_independent_of_the_pane() {
+    for next_background in [false, true] {
         let (mut screen, messages, writes) = setup("claude");
         report_kind(&mut screen, "claude", hook("SessionStart"));
         screen.agent_control_with_clear(identified_prompt("parent", true), CLIENT, &writes);
@@ -11917,48 +11460,48 @@ fn claude_submission_tasks_are_independent_of_the_pane_task_union() {
         report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
         deliver_steering(&mut screen, &writes, "next", ClientId::new(2));
         report_kind(&mut screen, "claude", steering_ack("next"));
-        for (submission, prompt, client, tasks) in [
-            ("parent", "prompt", CLIENT, vec!["old-task"]),
-            ("next", "next", ClientId::new(2), next_tasks.clone()),
+        for (submission, prompt, client, background) in [
+            ("parent", "prompt", CLIENT, true),
+            ("next", "next", ClientId::new(2), next_background),
         ] {
             screen.agent_control(wait_submission(submission), ClientId::new(3));
             report_kind(
                 &mut screen,
                 "claude",
-                claude_stop(prompt, submission, &tasks),
+                claude_stop(prompt, submission, background),
             );
             for recipient in [client, ClientId::new(3)] {
                 let result = replies(&messages, recipient);
                 assert_eq!(result.len(), 1);
                 assert_eq!(result[0].outcome, AgentOutcome::Completed);
-                assert_eq!(result[0].background_tasks, tasks);
+                assert_eq!(result[0].background, background);
             }
         }
-        let mut union = vec!["old-task"];
-        union.extend(&next_tasks);
-        union.sort();
-        assert_eq!(screen.agent_status_for_test().background_tasks, union);
-        screen.agent_control(wait(AgentState::Busy), CLIENT);
-        let pane_wait = replies(&messages, CLIENT);
-        assert_eq!(pane_wait[0].outcome, AgentOutcome::Ok);
-        assert_eq!(pane_wait[0].background_tasks, union);
-        report_kind(
-            &mut screen,
-            "claude",
-            task_notification("notification", &union),
-        );
-        report_kind(
-            &mut screen,
-            "claude",
-            claude_stop("notification", "finished tasks", &[]),
-        );
-        assert!(screen.agent_status_for_test().background_tasks.is_empty());
-        for (submission, tasks) in [("parent", vec!["old-task"]), ("next", next_tasks)] {
+        // The newest confirmation carries the registry's current status for the pane.
+        assert_eq!(screen.agent_status_for_test().background, next_background);
+        if next_background {
+            screen.agent_control(wait(AgentState::Busy), CLIENT);
+            let pane_wait = replies(&messages, CLIENT);
+            assert_eq!(pane_wait[0].outcome, AgentOutcome::Ok);
+            assert!(pane_wait[0].background);
+            report_kind(
+                &mut screen,
+                "claude",
+                task_notification("notification", &["task"]),
+            );
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_stop("notification", "finished tasks", false),
+            );
+        }
+        assert!(!screen.agent_status_for_test().background);
+        for (submission, background) in [("parent", true), ("next", next_background)] {
             screen.agent_control(wait_submission(submission), CLIENT);
             let retained = replies(&messages, CLIENT);
             assert_eq!(retained[0].outcome, AgentOutcome::Completed);
-            assert_eq!(retained[0].background_tasks, tasks);
-            assert!(retained[0].agents[0].background_tasks.is_empty());
+            assert_eq!(retained[0].background, background);
+            assert!(!retained[0].agents[0].background);
         }
     }
 }
@@ -11967,7 +11510,7 @@ fn claude_submission_tasks_are_independent_of_the_pane_task_union() {
 fn notification_permission_wait_clears_only_after_delivered_enter() {
     for cli in [false, true] {
         let (mut screen, messages, writes) = setup("claude");
-        complete_with_background(&mut screen, &messages, &writes, &["bash"]);
+        complete_with_background(&mut screen, &messages, &writes, true);
         report_kind(
             &mut screen,
             "claude",
@@ -12040,7 +11583,7 @@ fn notification_permission_wait_clears_only_after_delivered_enter() {
         report_kind(
             &mut screen,
             "claude",
-            claude_stop("notification", "finished", &[]),
+            claude_stop("notification", "finished", false),
         );
         assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
     }
@@ -12080,10 +11623,11 @@ fn claude_steering_delivery_is_bounded_during_continuous_background_output() {
     assert!(replies(&messages, CLIENT).is_empty());
     assert!(replies(&messages, ClientId::new(2)).is_empty());
     report_kind(&mut screen, "claude", steering_ack("next"));
+    // The registry still shows the worker running when the newest turn ends.
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("next", "next answer", &[]),
+        claude_stop("next", "next answer", true),
     );
     assert_eq!(
         replies(&messages, ClientId::new(2))[0].outcome,
@@ -12092,7 +11636,7 @@ fn claude_steering_delivery_is_bounded_during_continuous_background_output() {
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("prompt", "parent answer", &[]),
+        claude_stop("prompt", "parent answer", false),
     );
     assert_eq!(
         replies(&messages, CLIENT)[0].outcome,
@@ -12144,7 +11688,7 @@ fn claude_steering_replaces_unconsumed_input_despite_unrelated_output() {
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("replace", "replaced", &[]),
+        claude_stop("replace", "replaced", false),
     );
     assert_eq!(
         replies(&messages, ClientId::new(2))[0].outcome,
@@ -12227,7 +11771,7 @@ fn claude_steering_preparation_stops_when_permission_or_question_hooks_arrive() 
             report_kind(
                 &mut screen,
                 "claude",
-                claude_stop("prompt", "parent answer", &[]),
+                claude_stop("prompt", "parent answer", false),
             );
             screen.agent_control(wait_submission("parent"), CLIENT);
             let parent = replies(&messages, CLIENT);
@@ -12348,7 +11892,7 @@ fn claude_terminal_hooks_retire_detached_confirmations_without_turn_ids() {
                     HookEvent {
                         turn_id: None,
                         claude_turn_complete: Some(complete),
-                        ..claude_stop("prompt", "stale", &["stale-task"])
+                        ..claude_stop("prompt", "stale", true)
                     },
                 );
                 assert_eq!(
@@ -12359,11 +11903,11 @@ fn claude_terminal_hooks_retire_detached_confirmations_without_turn_ids() {
                         AgentState::Idle
                     }
                 );
-                assert!(screen.agent_status_for_test().background_tasks.is_empty());
+                assert!(!screen.agent_status_for_test().background);
             }
             if older {
                 assert!(replies(&messages, ClientId::new(2)).is_empty());
-                report_kind(&mut screen, "claude", claude_stop("next", "success", &[]));
+                report_kind(&mut screen, "claude", claude_stop("next", "success", false));
                 assert_eq!(
                     replies(&messages, ClientId::new(2))[0].outcome,
                     AgentOutcome::Completed
@@ -12400,7 +11944,11 @@ fn claude_steering_attempts_replacement_for_full_and_hidden_composers() {
         assert_eq!(finish_paste(&writes), b"\r");
         assert!(replies(&messages, CLIENT).is_empty());
         report_kind(&mut screen, "claude", steering_ack("next"));
-        report_kind(&mut screen, "claude", claude_stop("next", "delivered", &[]));
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_stop("next", "delivered", false),
+        );
         assert_eq!(
             replies(&messages, CLIENT)[0].outcome,
             AgentOutcome::Completed
@@ -13155,14 +12703,10 @@ fn claude_queued_prompt_recovery_finishes_the_missed_hook_fixture() {
     for background in [false, true] {
         let (mut screen, _, _) = setup("claude");
         for (index, raw) in fixture["reports"].as_array().unwrap().iter().enumerate() {
+            let mut hook: HookEvent = serde_json::from_value(raw.clone()).unwrap();
             if background && index == 5 {
-                report_kind(
-                    &mut screen,
-                    "claude",
-                    claude_execution("SubagentStart", "worker", "execution"),
-                );
+                hook.claude_background = Some(true);
             }
-            let hook: HookEvent = serde_json::from_value(raw.clone()).unwrap();
             report_kind(&mut screen, "claude", hook);
             let expected = if index == 1 || (index == 5 && !background) {
                 AgentState::Idle
@@ -13179,7 +12723,10 @@ fn claude_queued_prompt_recovery_finishes_the_missed_hook_fixture() {
             report_kind(
                 &mut screen,
                 "claude",
-                claude_execution("SubagentStop", "worker", "execution"),
+                HookEvent {
+                    claude_recovered_after: Some("prompt".into()),
+                    ..background_idle("queued")
+                },
             );
             assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
         }
@@ -13201,7 +12748,7 @@ fn claude_queued_prompt_recovery_deduplicates_native_hook_races_and_late_replay(
     for native_first in [false, true] {
         let (mut screen, _, _) = setup("claude");
         report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
-        report_kind(&mut screen, "claude", claude_stop("prompt", "first", &[]));
+        report_kind(&mut screen, "claude", claude_stop("prompt", "first", false));
         let native = steering_ack("queued");
         let recovered = recovered_prompt("queued", "prompt");
         let (first, second) = if native_first {
@@ -13210,7 +12757,7 @@ fn claude_queued_prompt_recovery_deduplicates_native_hook_races_and_late_replay(
             (recovered.clone(), native)
         };
         report_kind(&mut screen, "claude", first);
-        report_kind(&mut screen, "claude", claude_stop("queued", "final", &[]));
+        report_kind(&mut screen, "claude", claude_stop("queued", "final", false));
         for duplicate in [second, recovered.clone(), recovered] {
             report_kind(&mut screen, "claude", duplicate);
             assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
@@ -13240,13 +12787,13 @@ fn claude_queued_prompt_recovery_rejects_stale_conversations_predecessors_and_id
         report_kind(
             &mut screen,
             "claude",
-            claude_stop("prompt", "original", &[]),
+            claude_stop("prompt", "original", false),
         );
         let mut recovered = recovered_prompt("queued", "prompt");
         match change {
             "newer_prompt" => {
                 report_kind(&mut screen, "claude", steering_ack("newer"));
-                report_kind(&mut screen, "claude", claude_stop("newer", "newest", &[]));
+                report_kind(&mut screen, "claude", claude_stop("newer", "newest", false));
             },
             "conversation" => report_kind(
                 &mut screen,
@@ -13301,7 +12848,7 @@ fn claude_queued_prompt_recovery_cannot_acknowledge_pending_input_or_consume_a_d
         screen.agent_control_with_clear(identified_prompt("initial", true), CLIENT, &writes);
         finish_paste(&writes);
         report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
-        report_kind(&mut screen, "claude", claude_stop("prompt", "first", &[]));
+        report_kind(&mut screen, "claude", claude_stop("prompt", "first", false));
         replies(&messages, CLIENT);
         if newer_draft {
             screen.agent_write_for_test();
@@ -13359,7 +12906,7 @@ fn claude_queued_prompt_recovery_cannot_acknowledge_pending_input_or_consume_a_d
 fn claude_queued_prompt_recovery_preserves_permission_wait_and_event_state() {
     let (mut screen, _, _) = setup("claude");
     report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
-    report_kind(&mut screen, "claude", claude_stop("prompt", "first", &[]));
+    report_kind(&mut screen, "claude", claude_stop("prompt", "first", false));
     report_kind(&mut screen, "claude", claude_permission_prompt());
     let before = screen.get_pane_info(PANE).unwrap().agent.unwrap();
     let revision = screen.claude_permission_waits[&PANE].input_revision;
@@ -13404,7 +12951,7 @@ fn claude_queued_prompt_recovery_native_evidence_correlates_once_without_reopeni
             for matches in [false, true] {
                 let (mut screen, messages, writes) = setup("claude");
                 report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
-                report_kind(&mut screen, "claude", claude_stop("prompt", "first", &[]));
+                report_kind(&mut screen, "claude", claude_stop("prompt", "first", false));
                 deliver_steering(&mut screen, &writes, "pending", CLIENT);
                 replies(&messages, CLIENT);
                 let (sender, plugins) = channels::unbounded();
@@ -13430,7 +12977,7 @@ fn claude_queued_prompt_recovery_native_evidence_correlates_once_without_reopeni
                     );
                 }
                 if late {
-                    report_kind(&mut screen, "claude", claude_stop("queued", "final", &[]));
+                    report_kind(&mut screen, "claude", claude_stop("queued", "final", false));
                 }
                 report_kind(&mut screen, "claude", second);
                 report_kind(&mut screen, "claude", native.clone());
@@ -13444,7 +12991,7 @@ fn claude_queued_prompt_recovery_native_evidence_correlates_once_without_reopeni
                     matches
                 );
                 if !late {
-                    report_kind(&mut screen, "claude", claude_stop("queued", "final", &[]));
+                    report_kind(&mut screen, "claude", claude_stop("queued", "final", false));
                     let responses = replies(&messages, CLIENT);
                     assert_eq!(
                         responses.len(),
@@ -13500,7 +13047,7 @@ fn claude_queued_prompt_recovery_native_replay_cannot_acknowledge_later_identica
         for report in reports {
             report_kind(&mut screen, "claude", report);
         }
-        report_kind(&mut screen, "claude", claude_stop("queued", "final", &[]));
+        report_kind(&mut screen, "claude", claude_stop("queued", "final", false));
         deliver_steering(&mut screen, &writes, "later", CLIENT);
         replies(&messages, CLIENT);
         report_kind(&mut screen, "claude", native);

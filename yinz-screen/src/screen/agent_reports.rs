@@ -150,12 +150,13 @@ pub(super) fn apply_queued_agent_report(
         screen.correlate_claude_terminal_hook(pane_id, hook);
     }
     if report.kind == "claude"
-        && let Some(hook) = hook.as_ref().filter(|hook| {
-            hook.hook_event_name == "SubagentStop" && hook.claude_task_execution.is_none()
-        })
+        && let Some(hook) = hook
+            .as_ref()
+            .filter(|hook| hook.hook_event_name == "SubagentStop")
     {
-        // Raw Stops are useful archive evidence but cannot identify which execution
-        // ended. Never pass them through activity or worker-wait reconciliation.
+        // Worker Stops are useful archive evidence but cannot identify which execution
+        // ended; Claude's session registry decides background activity. Never pass them
+        // through activity or worker-wait reconciliation.
         if screen.has_agent_lifecycle(pane_id, "claude", &hook.session_id)
             && hook.agent_id.as_deref().is_some_and(|id| !id.is_empty())
             && report.event.as_ref().is_some_and(|event| {
@@ -348,6 +349,11 @@ pub(super) fn apply_queued_agent_report(
     .then(|| screen.get_pane_info(pane_id).and_then(|pane| pane.agent))
     .flatten();
     let previous = screen.get_pane_info(pane_id).and_then(|pane| pane.agent);
+    if report.kind == "claude"
+        && let Some(hook) = &hook
+    {
+        screen.track_claude_background(pane_id, hook);
+    }
     let result = screen.apply_agent_report_state(report, hook.as_ref());
     trace.record(
         "state",

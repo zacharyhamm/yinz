@@ -7,7 +7,7 @@ use yinz_types::agent::{
     control::{AgentOutcome, AgentRequest, AgentResponse},
     hook_outcome,
     report::{AgentReport, AgentReportState},
-    AgentEvent, AgentState, ClaudeTaskExecution, HookEvent, HookOutcome,
+    AgentEvent, AgentState, HookEvent, HookOutcome, CLAUDE_BACKGROUND_IDLE,
 };
 use yinz_types::pane_id::PaneId;
 
@@ -71,7 +71,7 @@ fn claude_steering_delivers_without_interrupting_and_publishes_background_activi
             IpcRecv::Msg(ServerToClientMsg::AgentReportAccepted { .. }, _)
         ));
     };
-    let report = |name: &str, prompt_id: &str, worker: Option<&str>, tasks: &[&str]| {
+    let report = |name: &str, prompt_id: &str, worker: Option<&str>, background: Option<bool>| {
         let hook = HookEvent {
             hook_event_name: name.into(), session_id: "claude-session".into(),
             source: (name == "SessionStart").then(|| "startup".into()),
@@ -83,39 +83,11 @@ fn claude_steering_delivers_without_interrupting_and_publishes_background_activi
             } else { "steer".into() }),
             agent_id: worker.map(str::to_owned),
             claude_turn_complete: (name == "Stop").then_some(true),
-            claude_background_tasks: tasks.iter().map(|s| s.to_string()).collect(),
+            claude_background: background,
             last_assistant_message: (name == "Stop").then(|| format!("finished {prompt_id}")),
             ..Default::default()
         };
         send_report(hook);
-    };
-    // Process fixture tests validate these identities against persisted launch results and
-    // successful handback notifications. Replay their observer reports over IPC as well as
-    // the raw hooks; a raw SubagentStop alone cannot identify the completed execution.
-    let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../yinz-process/src/unit/fixtures/claude-task-executions.json"
-    ))
-    .unwrap();
-    let runs = fixture["cases"]["same-prompt"]["runs"].as_array().unwrap();
-    let worker = runs[0]["record"]["task_id"].as_str().unwrap();
-    let observed_worker = |index: usize| {
-        let run = &runs[index]["record"];
-        let complete = run["subtype"] == "task_notification";
-        HookEvent {
-            hook_event_name: if complete {
-                "SubagentStop"
-            } else {
-                "SubagentStart"
-            }
-            .into(),
-            session_id: "claude-session".into(),
-            agent_id: Some(run["task_id"].as_str().unwrap().into()),
-            claude_task_execution: Some(ClaudeTaskExecution {
-                tool_use_id: run["tool_use_id"].as_str().unwrap().into(),
-                run_id: complete.then(|| run["run_id"].as_str().unwrap().into()),
-            }),
-            ..Default::default()
-        }
     };
     let reply =
         |receiver: &mut yinz_ipc::ipc::IpcReceiverWithContext<ServerToClientMsg>| -> AgentResponse {
@@ -137,7 +109,7 @@ fn claude_steering_delivers_without_interrupting_and_publishes_background_activi
             .unwrap();
         reply(&mut receiver)
     };
-    report("SessionStart", "", None, &[]);
+    report("SessionStart", "", None, None);
     sender
         .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Prompt {
             pane_id: pane,
@@ -154,7 +126,7 @@ fn claude_steering_delivers_without_interrupting_and_publishes_background_activi
     let initial_bytes = agent.wait_for_stdin("initial paste and Enter reach Claude", |bytes| {
         bytes.ends_with(b"\x1b[200~start\x1b[201~\r")
     });
-    report("UserPromptSubmit", "initial", None, &[]);
+    report("UserPromptSubmit", "initial", None, None);
     let submitted = reply(&mut receiver);
     assert_eq!(submitted.outcome, AgentOutcome::Submitted);
     assert_eq!(submitted.submission_id.as_deref(), Some("initial"));
@@ -163,8 +135,8 @@ fn claude_steering_delivers_without_interrupting_and_publishes_background_activi
     yinz.wait_until("Claude consumed the initial prompt", |snapshot| {
         snapshot.contains("Initial prompt accepted")
     });
-    report("SubagentStart", "initial", Some(worker), &[]);
-    send_report(observed_worker(0));
+    let worker = "worker";
+    report("SubagentStart", "initial", Some(worker), None);
     sender
         .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Status {
             pane_id: pane,
@@ -174,7 +146,7 @@ fn claude_steering_delivers_without_interrupting_and_publishes_background_activi
     let working = reply(&mut receiver);
     assert_eq!(working.agents[0].agent.state, AgentState::Busy);
     assert!(working.agents[0].ready, "{working:?}");
-    assert_eq!(working.agents[0].background_tasks, [worker]);
+    assert!(!working.agents[0].background);
     let events = yinz.stream_events(&["pane_update"]);
     events.wait_for_event("PaneUpdate");
     sender
@@ -192,34 +164,28 @@ fn claude_steering_delivers_without_interrupting_and_publishes_background_activi
         bytes[initial_bytes.len()..].ends_with(b"\x1b[200~steer\x1b[201~\r")
     });
     assert_eq!(&bytes[initial_bytes.len()..], b"\x1b[200~steer\x1b[201~\r");
-    report("UserPromptSubmit", "steering", None, &[]);
+    report("UserPromptSubmit", "steering", None, None);
     agent.output(composer("Steering accepted").as_bytes());
     yinz.wait_until("Claude consumed the steering prompt", |snapshot| {
         snapshot.contains("Steering accepted")
     });
-    report("Stop", "initial", None, &[worker]);
-    report("Stop", "steering", None, &["bash"]);
+    // Claude's session registry still shows the worker and background Bash running.
+    report("Stop", "initial", None, Some(true));
+    report("Stop", "steering", None, Some(true));
     let completed = reply(&mut receiver);
     assert_eq!(completed.outcome, AgentOutcome::Completed);
     assert_eq!(completed.submission_id.as_deref(), Some("steering"));
     assert_eq!(completed.message.as_deref(), Some("finished steering"));
     assert_eq!(completed.agents[0].agent.state, AgentState::Busy);
     assert!(completed.agents[0].ready);
-    report("SubagentStop", "steering", Some(worker), &[]);
-    let uncorrelated = status();
-    assert_eq!(uncorrelated.agents[0].agent.state, AgentState::Busy);
-    assert!(uncorrelated.agents[0]
-        .background_tasks
-        .iter()
-        .any(|id| id == worker));
-    send_report(observed_worker(1));
-    // A duplicate completion and late parent launch list cannot resurrect finished work.
-    send_report(observed_worker(1));
-    report("Stop", "initial", None, &[worker]);
+    report("SubagentStop", "steering", Some(worker), None);
+    // The superseded turn's watch cannot end work the newer confirmation reported.
+    report(CLAUDE_BACKGROUND_IDLE, "initial", None, Some(false));
+    report("Stop", "initial", None, Some(true));
     let background = status();
     assert_eq!(background.agents[0].agent.state, AgentState::Busy);
-    assert_eq!(background.agents[0].background_tasks, ["bash"]);
-    report("UserPromptSubmit", "notification", None, &[]);
+    assert!(background.agents[0].background);
+    report("UserPromptSubmit", "notification", None, None);
     // A status reply is a screen-thread barrier after every preceding report.
     sender
         .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Status {
@@ -252,12 +218,12 @@ fn claude_steering_delivers_without_interrupting_and_publishes_background_activi
             timeout_ms: 30_000,
         }))
         .unwrap();
-    report("Stop", "notification", None, &[]);
+    report("Stop", "notification", None, Some(false));
     let idle = reply(&mut receiver);
     assert_eq!(idle.outcome, AgentOutcome::Ok);
     assert_eq!(idle.message.as_deref(), Some("finished notification"));
     assert_eq!(idle.agents[0].agent.state, AgentState::Idle);
-    assert!(idle.agents[0].background_tasks.is_empty());
+    assert!(!idle.agents[0].background);
     yinz.wait_until(
         "the idle pane is published after background processing",
         |_| {

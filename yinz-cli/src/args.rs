@@ -887,8 +887,8 @@ pub enum Agent {
         /// Ignored compatibility option: explicit prompts always replace drafts.
         #[clap(long, hide = true)]
         preserve_draft: bool,
-        /// Wait for this turn's outcome after the agent acknowledges the prompt. If Claude left
-        /// background work running, the reply lists `background_tasks`; `agent wait --until idle`
+        /// Wait for this turn's outcome after the agent acknowledges the prompt. If Claude was
+        /// still working in the background, the reply sets `background`; `agent wait --until idle`
         /// returns its final answer.
         #[clap(long)]
         wait: bool,
@@ -900,8 +900,8 @@ pub enum Agent {
     },
     /// Wait for a submission's exact outcome, or observe a reported state without sending input.
     /// A successful idle state wait returns the final
-    /// text of the last completed turn. For Claude, it also waits for background work (listed
-    /// as `background_tasks`) to finish its notification turn.
+    /// text of the last completed turn. For Claude, it also waits until Claude's session registry
+    /// reports no background work (agents, workflows or Bash) still running.
     Wait {
         /// Terminal pane ID, such as terminal_7 or 7.
         #[clap(value_parser = parse_agent_target)]

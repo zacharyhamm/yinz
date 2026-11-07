@@ -502,8 +502,8 @@ and key input require a verified agent command pane. An agent started manually
 inside a shell can appear in listings without satisfying that requirement.
 
 Use `ready` to decide whether a text prompt can be submitted; activity and readiness
-are independent. Claude can be `busy` and `ready` while its parent turn, subagents,
-or background Bash tasks are running. Steering requires a visible empty composer
+are independent. Claude can be `busy` and `ready` while its parent turn, background
+agents, or background Bash commands are running. Steering requires a visible empty composer
 and uses bracketed paste and Enter without interrupting work. It submits input for
 Claude to consume at its supported opportunity; it does not promise immediate execution.
 Waiting dialogs and unacknowledged submissions still block prompts. Other providers
@@ -572,7 +572,7 @@ rather than replacing it with `ok` when the agent becomes idle. It can return
 then wait with the same submission ID. Use this command after a prompt timeout
 or disconnection as well. `--submission` and an explicit `--until` are mutually
 exclusive. A submission wait concerns that turn; a separate idle wait can observe
-Claude background tasks and their later notification turns.
+Claude background work and its later notification turns.
 
 `prompt --submission ID` accepts a caller-chosen identifier of 1–128 ASCII letters,
 digits, `.`, `_`, or `-`. Choose a unique ID per prompt and save it before sending
@@ -629,8 +629,10 @@ code changes or test results. Automatic policy waits do not produce
 `needs_input` unless a person must respond. Worker permission requests, questions and
 elicitation also produce `needs_input` for their parent conversation. The pane
 stays `waiting` until all worker waits clear. Claude then shows `busy` while its
-parent, any tracked worker, background task, or task-notification processing remains
-active. `wait --until idle` waits for all of that work; completing one prompt does
+parent turn or task-notification processing is active, or while Claude's session
+registry reports background agents, workflows or Bash still running after a
+confirmed turn. Prompt replies and status then set `background: true`. Without a
+readable registry (older Claude versions), Claude follows hooks alone. `wait --until idle` waits for all of that work; completing one prompt does
 not imply the pane is idle.
 
 The default deadline is 30 seconds. `prompt --wait` defaults to 10 minutes.
@@ -787,7 +789,7 @@ provide cross-session event delivery.
 | `observation_uncertain` | Observation could not establish an outcome |
 | `pane_spawned`, `pane_closed`, `pane_replaced` | A pane appeared, disappeared, or started a replacement process |
 | `conversation_replaced` | Provider or conversation identity changed, including clearing the record |
-| `background_tasks_changed` | Tracked Claude background tasks changed |
+| `background_changed` | Claude's background work started or finished after a confirmed turn |
 | `project_membership_changed` | A project probe changed membership |
 
 Idle alone does not establish completion. Timeouts, missing confirmations, and

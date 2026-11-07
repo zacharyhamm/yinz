@@ -213,7 +213,7 @@ fn lifecycle_claude_failures_preserve_other_overlapping_turns() {
             if failed == Some((submission, prompt)) {
                 continue;
             }
-            report_kind(&mut screen, "claude", claude_stop(prompt, "success", &[]));
+            report_kind(&mut screen, "claude", claude_stop(prompt, "success", false));
             let all = events(&mut screen, &messages);
             let completed: Vec<_> = all
                 .iter()
@@ -407,13 +407,12 @@ fn lifecycle_conversation_reset_closure_exit_and_background_notifications() {
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("prompt", "private answer", &["task-1"]),
+        claude_stop("prompt", "private answer", true),
     );
     let all = events(&mut screen, &messages);
     assert!(all
         .iter()
-        .any(|e| e["event_type"] == "background_tasks_changed"
-            && e["background_tasks"] == json!(["task-1"])));
+        .any(|e| e["event_type"] == "background_changed" && e["background"] == true));
     assert!(!all.iter().any(|e| e.to_string().contains("private answer")));
     report_kind(
         &mut screen,
@@ -423,12 +422,12 @@ fn lifecycle_conversation_reset_closure_exit_and_background_notifications() {
     report_kind(
         &mut screen,
         "claude",
-        claude_stop("notification", "private background", &[]),
+        claude_stop("notification", "private background", false),
     );
     let all = events(&mut screen, &messages);
-    assert!(all.iter().any(
-        |e| e["event_type"] == "background_tasks_changed" && e["background_tasks"] == json!([])
-    ));
+    assert!(all
+        .iter()
+        .any(|e| e["event_type"] == "background_changed" && e["background"] == false));
     assert!(all.iter().any(|e| e["event_type"] == "turn_completed"
         && e["provider_prompt_id"] == "notification"
         && e["submission_id"].is_null()));
@@ -638,7 +637,7 @@ fn lifecycle_oversized_payload_is_explicit_even_for_filtered_readers() {
     screen.publish_agent_event(
         PANE,
         "state_changed",
-        json!({"background_tasks":["x".repeat(64 * 1024)]}),
+        json!({"detail":"x".repeat(64 * 1024)}),
     );
     let all = events(&mut screen, &messages);
     let fact = all

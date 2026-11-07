@@ -48,9 +48,10 @@ pub struct LifecycleState {
     pub claude_confirmation: Option<bool>,
     pub claude_previous_prompt_id: Option<String>,
     pub agy_confirmation: Option<bool>,
-    /// Claude background tasks launched by confirmed turns whose `<task-notification>` turn
-    /// has not been confirmed yet.
-    pub background_tasks: BTreeSet<String>,
+    /// The prompt whose confirmed Claude turn left background work running, until Claude's
+    /// session registry reports idle or a later turn's confirmation replaces it.
+    #[serde(default)]
+    pub claude_background: Option<String>,
     /// Claude `<task-notification>` turns in flight, by prompt ID. They run beside the
     /// caller's prompt tracking, which they never replace.
     pub claude_notifications: BTreeMap<String, ClaudeNotification>,
@@ -58,16 +59,10 @@ pub struct LifecycleState {
     pub last_message: Option<String>,
 }
 
-/// Parent presentation, workers, and retained turn confirmations have separate lifetimes.
+/// Parent presentation, worker waits, and retained turn confirmations have separate lifetimes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ClaudeActivity {
     pub parent: Option<AgentInfo>,
-    pub workers: BTreeSet<String>,
-    pub stopped_workers: BTreeSet<String>,
-    /// Raw starts for known workers cannot distinguish a duplicate from an unobserved
-    /// resumption. Correlated execution evidence supersedes this provisional activity.
-    #[serde(default)]
-    pub provisional_workers: BTreeSet<String>,
     /// Tool identity of each worker's visible input wait. Missing identity never permits
     /// an unrelated tool event to release the wait, including after execution completion.
     #[serde(default)]
@@ -78,14 +73,6 @@ pub struct ClaudeActivity {
     #[serde(default)]
     pub released_worker_tools: BTreeMap<String, BTreeSet<String>>,
     pub turns: BTreeMap<String, ClaudeTurn>,
-    pub completed_tasks: BTreeSet<String>,
-    /// Executions indexed by task ID and causal tool call. Completion tombstones
-    /// survive ordinary prompts and pane transfer, until conversation replacement.
-    #[serde(default)]
-    pub executions: BTreeMap<String, BTreeMap<String, Option<String>>>,
-    /// Explicit recovery abandons executions without claiming successful completion.
-    #[serde(default)]
-    pub abandoned_executions: BTreeSet<String>,
     pub sequence: u64,
     pub message_sequence: u64,
 }
@@ -101,8 +88,6 @@ pub struct ClaudeTurn {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaudeNotification {
-    /// The tasks the notification reports finished.
-    pub tasks: Vec<String>,
     pub waiting: Option<AgentInfo>,
     pub permission_revision: Option<u64>,
 }
@@ -132,7 +117,8 @@ pub struct Submission {
 pub struct SubmissionResult {
     pub outcome: AgentOutcome,
     pub message: Option<String>,
-    pub background_tasks: Vec<String>,
+    #[serde(default)]
+    pub background: bool,
 }
 
 /// Correlation for the destination's lifecycle feed. Subscribers, cursors, and the

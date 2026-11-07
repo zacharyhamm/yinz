@@ -15,8 +15,7 @@ use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::HookEvent;
 
 mod prompts;
-mod task_observer;
-mod tasks;
+mod recovery;
 
 pub const OBSERVER_FLAG: &str = "--claude-turn-observer";
 
@@ -64,8 +63,9 @@ struct Observation {
     conversation_file: Option<PathBuf>,
     #[serde(default)]
     claude_status: Option<ClaudeStatusObservation>,
+    /// The process-scoped prompt recovery observer, rather than one turn's observer.
     #[serde(default)]
-    task_observer: bool,
+    recovery: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -91,36 +91,60 @@ impl ClaudeStatusObservation {
         })
     }
 
-    fn idle(&self, pid: u32, session: &str) -> bool {
-        // Claude 2.1.312 publishes status even when an early Esc writes no transcript
-        // boundary. Missing/older registries simply leave transcript observation in charge.
-        // Bound reads and reject special files; this optional signal must never block hooks.
-        let read = || -> Option<Value> {
-            use std::os::unix::fs::OpenOptionsExt;
-            let file = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NONBLOCK)
-                .open(&self.path)
-                .ok()?;
-            if !file.metadata().ok()?.is_file() {
-                return None;
-            }
-            let mut bytes = Vec::new();
-            file.take(64 * 1024 + 1).read_to_end(&mut bytes).ok()?;
-            if bytes.len() > 64 * 1024 {
-                return None;
-            }
-            serde_json::from_slice(&bytes).ok()
-        };
-        read().is_some_and(|status| {
-            status["pid"].as_u64() == Some(u64::from(pid))
-                && status["sessionId"].as_str() == Some(session)
-                && status["kind"] == "interactive"
-                && status["status"] == "idle"
-                && status["statusUpdatedAt"]
-                    .as_u64()
-                    .is_some_and(|updated| updated > self.after_ms)
-        })
+    /// The status of Claude's session registry record (`busy`, `shell`, `idle` or `waiting`),
+    /// when it names this process and conversation and changed after `since_ms`.
+    fn status(&self, pid: u32, session: &str, since_ms: u64) -> Option<String> {
+        // Claude 2.1.312+ rewrites the record whenever its status changes, including after an
+        // early Esc that writes no transcript boundary. Missing/older registries leave hooks and
+        // transcript observation in charge. Bound reads and reject special files; this optional
+        // signal must never block hooks.
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&self.path)
+            .ok()?;
+        if !file.metadata().ok()?.is_file() {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        file.take(64 * 1024 + 1).read_to_end(&mut bytes).ok()?;
+        if bytes.len() > 64 * 1024 {
+            return None;
+        }
+        let record: Value = serde_json::from_slice(&bytes).ok()?;
+        (record["pid"].as_u64() == Some(u64::from(pid))
+            && record["sessionId"].as_str() == Some(session)
+            && record["kind"] == "interactive"
+            && record["statusUpdatedAt"]
+                .as_u64()
+                .is_some_and(|updated| updated > since_ms))
+        .then(|| record["status"].as_str().map(str::to_owned))
+        .flatten()
+    }
+
+    /// Whether the registry shows this prompt's turn over: `idle`, or `shell` when only
+    /// background Bash remains. `busy` can be the foreground turn itself.
+    fn turn_over(&self, pid: u32, session: &str) -> bool {
+        self.status(pid, session, self.after_ms)
+            .is_some_and(|status| matches!(status.as_str(), "idle" | "shell"))
+    }
+
+    /// The current status, from any record this process instance wrote. The record is
+    /// rewritten only when its status changes, so background agents that outlive a turn keep
+    /// the `busy` written when it started, before that turn's prompt.
+    fn current(&self, (pid, started): (u32, u64), session: &str) -> Option<String> {
+        self.status(pid, session, started.saturating_sub(1).saturating_mul(1000))
+    }
+}
+
+/// Whether a registry status shows Claude working: a turn, background agents, workflows or
+/// forked skills (`busy`), only background Bash (`shell`), or blocked on a person (`waiting`).
+fn working(status: &str) -> Option<bool> {
+    match status {
+        "idle" => Some(false),
+        "busy" | "shell" | "waiting" => Some(true),
+        _ => None,
     }
 }
 
@@ -129,13 +153,10 @@ impl ClaudeStatusObservation {
 pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
     if hook.claude_recovered_after.is_some()
         || !matches!(kind, "claude" | "agy")
-        || (hook.is_worker()
-            && !(kind == "claude"
-                && hook.hook_event_name == "SubagentStart"
-                && hook.claude_task_execution.is_none()))
+        || hook.is_worker()
         || !matches!(
             hook.hook_event_name.as_str(),
-            "UserPromptSubmit" | "SessionStart" | "SessionEnd" | "SubagentStart"
+            "UserPromptSubmit" | "SessionStart" | "SessionEnd"
         )
     {
         return Ok(());
@@ -151,7 +172,7 @@ pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
             update_conversation_marker(path, kind, hook)?;
         }
         let observation = Observation {
-            task_observer: false,
+            recovery: false,
             kind: kind.to_owned(),
             hook: hook.clone(),
             route: route.clone(),
@@ -161,29 +182,19 @@ pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
                 .filter(|_| kind == "claude")
                 .and_then(|(pid, _)| ClaudeStatusObservation::new(pid)),
         };
-        if kind == "claude"
-            && matches!(
-                hook.hook_event_name.as_str(),
-                "UserPromptSubmit" | "SubagentStart"
-            )
-        {
-            // Task observation is independent of prompt identity and parent completion.
-            let mut task = Observation {
-                task_observer: true,
-                ..observation
-            };
-            spawn_observer(&task)
-                .context("start Claude task observation")
-                .non_fatal();
-            task.task_observer = false;
-            if hook.hook_event_name == "UserPromptSubmit"
-                && hook.prompt_id.as_deref().is_some_and(|id| !id.is_empty())
-            {
-                spawn_observer(&task)?;
-            }
-        } else if hook.hook_event_name == "UserPromptSubmit"
-            && hook.prompt_id.as_deref().is_some_and(|id| !id.is_empty())
-        {
+        if hook.hook_event_name != "UserPromptSubmit" {
+            return Ok(());
+        }
+        if kind == "claude" {
+            // Prompt recovery is independent of prompt identity and parent completion.
+            spawn_observer(&Observation {
+                recovery: true,
+                ..observation.clone()
+            })
+            .context("start Claude prompt recovery")
+            .non_fatal();
+        }
+        if hook.prompt_id.as_deref().is_some_and(|id| !id.is_empty()) {
             spawn_observer(&observation)?;
         }
         Ok(())
@@ -302,11 +313,18 @@ fn agent_ancestor(kind: &str) -> Option<(u32, u64)> {
 pub fn run() -> Result<()> {
     let mut observation: Observation =
         serde_json::from_reader(std::io::stdin()).context("read turn observation")?;
-    if observation.task_observer {
-        return task_observer::run(&observation);
+    if observation.recovery {
+        return recovery::run(&observation);
     }
     let completed = follow(&observation);
-    if completed.as_ref().is_ok_and(|turn| turn.reported) {
+    if let Ok(turn) = &completed
+        && turn.reported
+    {
+        if turn.background {
+            return watch_background(&observation, |hook| {
+                send(&observation.route, &observation.kind, hook)
+            });
+        }
         return Ok(());
     }
     observation.hook.hook_event_name = "Stop".into();
@@ -319,7 +337,6 @@ pub fn run() -> Result<()> {
     }
     if let Ok(turn) = completed {
         observation.hook.last_assistant_message = turn.last_text;
-        observation.hook.claude_background_tasks = turn.background_tasks;
     } else {
         observation.hook.last_assistant_message = None;
     }
@@ -374,20 +391,8 @@ fn update_conversation_marker(path: &Path, kind: &str, hook: &HookEvent) -> Resu
             marker
                 .write_all(conversation_marker(kind, hook).as_bytes())
                 .with_context(|| format!("write {kind} conversation marker"))?;
-            if hook.is_worker() {
-                // A worker can restart observation after a missed parent hook, but a
-                // delayed worker must never replace a newer conversation marker.
-                let installed = std::fs::hard_link(&temporary, path);
-                std::fs::remove_file(&temporary).context("remove worker conversation temporary")?;
-                match installed {
-                    Ok(()) => Ok(()),
-                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-                    Err(error) => Err(error).context("initialize worker conversation marker"),
-                }
-            } else {
-                std::fs::rename(&temporary, path)
-                    .with_context(|| format!("replace {kind} conversation marker"))
-            }
+            std::fs::rename(&temporary, path)
+                .with_context(|| format!("replace {kind} conversation marker"))
         })();
         if result.is_err() {
             std::fs::remove_file(&temporary)
@@ -423,10 +428,9 @@ fn follow_with_api_reporting(
     mut report: impl FnMut(&HookEvent) -> Result<()>,
 ) -> Result<Turn> {
     let kind = &observation.kind;
-    let (process_id, start_time) = observation
+    let (process_id, _) = observation
         .process
         .with_context(|| format!("cannot identify {kind} process"))?;
-    let pid = sysinfo::Pid::from_u32(process_id);
     let path = observation
         .hook
         .transcript_path
@@ -437,26 +441,7 @@ fn follow_with_api_reporting(
     use std::os::unix::fs::OpenOptionsExt;
     options.custom_flags(libc::O_NONBLOCK);
     let mut system = System::new();
-    let alive = |system: &mut System| -> Result<()> {
-        system.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&[pid]),
-            true,
-            ProcessRefreshKind::nothing(),
-        );
-        if !system.process(pid).is_some_and(|process| {
-            process.start_time() == start_time && process.status() != sysinfo::ProcessStatus::Zombie
-        }) {
-            return Err(anyhow!("{kind} process exited"));
-        }
-        if let Some(marker) = &observation.conversation_file
-            && std::fs::read_to_string(marker)
-                .with_context(|| format!("{kind} conversation ended"))?
-                != conversation_marker(kind, &observation.hook)
-        {
-            return Err(anyhow!("{kind} conversation replaced"));
-        }
-        Ok(())
-    };
+    let alive = |system: &mut System| alive(system, observation);
     // The first prompt's file can be created only after UserPromptSubmit hooks return.
     let timeout_seconds = match kind.as_str() {
         "agy" => yinz_types::agent::AGY_HOOK_TIMEOUT_SECONDS,
@@ -562,13 +547,13 @@ fn follow_with_api_reporting(
             && observation
                 .claude_status
                 .as_ref()
-                .is_some_and(|status| status.idle(process_id, &turn.session))
+                .is_some_and(|status| status.turn_over(process_id, &turn.session))
         {
             // Read all records first, including overlapping prompts. Recheck
             // process/conversation identity and transcript stability after the status read.
             alive(&mut system)?;
             let current =
-                std::fs::metadata(path).context("inspect Claude transcript after Idle")?;
+                std::fs::metadata(path).context("inspect Claude transcript after turn end")?;
             if current.ino() == metadata.ino()
                 && current.dev() == metadata.dev()
                 && current.len() == offset
@@ -593,9 +578,83 @@ fn confirm(
     hook.prompt_sha256 = None;
     hook.claude_turn_complete = Some(true);
     hook.last_assistant_message = turn.last_text.clone();
-    hook.claude_background_tasks = turn.background_tasks.clone();
+    hook.claude_background = settle_background(observation);
     report(&hook)?;
     turn.reported = true;
+    turn.background = hook.claude_background == Some(true);
+    Ok(())
+}
+
+/// How long a turn that ended in the transcript may still read `busy` in the registry before
+/// that counts as background work. Claude clears its foreground flag only after Stop hooks.
+const BACKGROUND_SETTLE: Duration = Duration::from_secs(1);
+
+/// Whether work outlives a turn the transcript or registry has already ended.
+fn settle_background(observation: &Observation) -> Option<bool> {
+    let process = observation.process?;
+    let status = observation.claude_status.as_ref()?;
+    let deadline = Instant::now() + BACKGROUND_SETTLE;
+    loop {
+        let current = status.current(process, &observation.hook.session_id)?;
+        if current != "busy" || Instant::now() >= deadline {
+            return working(&current);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// After a turn confirmed with background work, report once the registry shows Claude idle.
+/// Any other end of observation also reports, so a lost signal degrades to hook-derived state.
+fn watch_background(
+    observation: &Observation,
+    mut report: impl FnMut(&HookEvent) -> Result<()>,
+) -> Result<()> {
+    if let (Some(process), Some(status)) = (observation.process, &observation.claude_status) {
+        let mut system = System::new();
+        let deadline =
+            Instant::now() + Duration::from_millis(yinz_types::agent::control::MAX_TIMEOUT_MS);
+        while Instant::now() < deadline
+            && alive(&mut system, observation).is_ok()
+            && status
+                .current(process, &observation.hook.session_id)
+                .as_deref()
+                .and_then(working)
+                == Some(true)
+        {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    let mut hook = observation.hook.clone();
+    hook.hook_event_name = yinz_types::agent::CLAUDE_BACKGROUND_IDLE.into();
+    hook.prompt = None;
+    hook.prompt_sha256 = None;
+    hook.claude_background = Some(false);
+    report(&hook)
+}
+
+/// Fails once the observed process exits or its conversation marker changes.
+fn alive(system: &mut System, observation: &Observation) -> Result<()> {
+    let kind = &observation.kind;
+    let (process_id, start_time) = observation
+        .process
+        .with_context(|| format!("cannot identify {kind} process"))?;
+    let pid = sysinfo::Pid::from_u32(process_id);
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    if !system.process(pid).is_some_and(|process| {
+        process.start_time() == start_time && process.status() != sysinfo::ProcessStatus::Zombie
+    }) {
+        return Err(anyhow!("{kind} process exited"));
+    }
+    if let Some(marker) = &observation.conversation_file
+        && std::fs::read_to_string(marker).with_context(|| format!("{kind} conversation ended"))?
+            != conversation_marker(kind, &observation.hook)
+    {
+        return Err(anyhow!("{kind} conversation replaced"));
+    }
     Ok(())
 }
 
@@ -607,8 +666,8 @@ struct Turn {
     found: bool,
     ancestors: HashSet<String>,
     last_text: Option<String>,
-    /// Bash commands and subagents this turn left running in the background, in launch order.
-    background_tasks: Vec<String>,
+    /// Claude's registry still showed work running when this turn was confirmed.
+    background: bool,
     step_idx: Option<u64>,
 }
 
@@ -626,7 +685,7 @@ impl Turn {
             found: false,
             ancestors: HashSet::new(),
             last_text: None,
-            background_tasks: Vec::new(),
+            background: false,
             step_idx,
         }
     }
@@ -656,7 +715,7 @@ impl Turn {
                 .is_some_and(|parent| self.ancestors.contains(parent));
             // Explicit prompt identity takes precedence over transcript ancestry: steering
             // prompts can descend from this turn without belonging to it. Their descendants
-            // must not contribute text, tasks, or completion boundaries to this observation.
+            // must not contribute text or completion boundaries to this observation.
             let linked = record["promptId"]
                 .as_str()
                 .map_or(parent_in_turn, |prompt| prompt == self.prompt);
@@ -665,13 +724,6 @@ impl Turn {
             }
             if let Some(id) = record["uuid"].as_str() {
                 self.ancestors.insert(id.to_owned());
-            }
-            if record["type"] == "user"
-                && let Some(task) = background_task(&record["toolUseResult"])
-                && !self.background_tasks.iter().any(|known| known == task)
-                && self.background_tasks.len() < yinz_types::agent::MAX_BACKGROUND_TASKS
-            {
-                self.background_tasks.push(task.to_owned());
             }
             if record["type"] == "assistant"
                 && let Some(content) = record["message"]["content"].as_array()
@@ -750,28 +802,6 @@ impl Turn {
 
         Ok(false)
     }
-}
-
-/// The task a tool result left running: a Bash `run_in_background` command reports
-/// `backgroundTaskId`, and an async subagent launch reports `async_launched` with its `agentId`.
-/// A successful SendMessage resumption reports `resumedAgentId` or `revivedAgentId`.
-/// Claude names the same ID in the `<task-id>` of the notification that ends it.
-fn background_task(result: &Value) -> Option<&str> {
-    if let Some(task) = result["backgroundTaskId"].as_str() {
-        return Some(task).filter(|task| !task.is_empty());
-    }
-    if result["success"] == true
-        && let Some(task) = result["resumedAgentId"]
-            .as_str()
-            .or_else(|| result["revivedAgentId"].as_str())
-            .filter(|task| !task.is_empty())
-    {
-        return Some(task);
-    }
-    (result["isAsync"] == true && result["status"] == "async_launched")
-        .then(|| result["agentId"].as_str())
-        .flatten()
-        .filter(|task| !task.is_empty())
 }
 
 struct AgyApi {

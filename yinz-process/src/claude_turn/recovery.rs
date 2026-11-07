@@ -1,10 +1,10 @@
-//! One replayable task observer per provider process, conversation and reporting route.
+//! One replayable prompt recovery observer per provider process, conversation and route.
 use super::*;
-use std::collections::BTreeMap;
 
 pub(super) fn run(observation: &Observation) -> Result<()> {
     let directory = &*yinz_runtime::consts::YINZ_TMP_DIR;
-    yinz_runtime::shared::ensure_secure_dir(directory).context("secure task observer directory")?;
+    yinz_runtime::shared::ensure_secure_dir(directory)
+        .context("secure prompt recovery directory")?;
     let Some(_lock) = lock(observation, directory)? else {
         return Ok(());
     };
@@ -16,11 +16,11 @@ pub(super) fn lock(observation: &Observation, directory: &Path) -> Result<Option
     let identity = serde_json::to_vec(&(
         observation
             .process
-            .context("Claude task observer process missing")?,
+            .context("Claude recovery observer process missing")?,
         &observation.hook.session_id,
         &observation.route,
     ))
-    .context("encode task observer identity")?;
+    .context("encode recovery observer identity")?;
     let key: String = Sha256::digest(identity)
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -30,13 +30,13 @@ pub(super) fn lock(observation: &Observation, directory: &Path) -> Result<Option
         .write(true)
         .create(true)
         .truncate(false)
-        .open(directory.join(format!("claude-tasks-{key}.lock")))
-        .context("open task observer lock")?;
+        .open(directory.join(format!("claude-prompts-{key}.lock")))
+        .context("open recovery observer lock")?;
     // Keep the inode: unlinking an unlocked file races a competing observer.
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-        Err(error) => Err(error).context("lock task observer"),
+        Err(error) => Err(error).context("lock recovery observer"),
     }
 }
 
@@ -52,8 +52,6 @@ pub(super) fn follow_reporting(
     mut report: impl FnMut(&HookEvent) -> Result<()>,
     mut observe: impl FnMut(&Observation) -> Result<Child>,
 ) -> Result<()> {
-    let (process_id, started) = observation.process.context("Claude process missing")?;
-    let pid = sysinfo::Pid::from_u32(process_id);
     let root = Path::new(
         observation
             .hook
@@ -61,73 +59,28 @@ pub(super) fn follow_reporting(
             .as_deref()
             .context("Claude transcript missing")?,
     );
-    let sidechains = root.with_extension("").join("subagents");
     let mut system = System::new();
-    let mut tasks = tasks::Tasks::new(&observation.hook.session_id);
     let mut prompts = prompts::Prompts::new(&observation.hook);
-    let mut readers = BTreeMap::<PathBuf, Transcript>::new();
+    let mut reader = None;
     let mut children = CompletionChildren::default();
     loop {
         children.reap()?;
-        system.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&[pid]),
-            true,
-            ProcessRefreshKind::nothing(),
-        );
-        if !system.process(pid).is_some_and(|process| {
-            process.start_time() == started && process.status() != sysinfo::ProcessStatus::Zombie
-        }) {
+        if alive(&mut system, observation).is_err() {
             return Ok(());
         }
-        if let Some(marker) = &observation.conversation_file
-            && std::fs::read_to_string(marker).context("read Claude conversation")?
-                != observation.hook.session_id
-        {
-            return Ok(());
-        }
-        let mut paths = vec![root.to_path_buf()];
-        match std::fs::read_dir(&sidechains) {
-            Ok(entries) => {
-                for entry in entries {
-                    let path = entry.context("read Claude sidechain entry")?.path();
-                    if path.extension().is_some_and(|ext| ext == "jsonl") {
-                        paths.push(path);
-                        if paths.len() > 4096 {
-                            return Err(anyhow!("too many Claude sidechains"));
-                        }
-                    }
-                }
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
-            Err(error) => return Err(error).context("list Claude sidechains"),
-        }
-        paths.sort();
-        for path in paths {
-            if !readers.contains_key(&path) {
-                if readers.len() >= 4096 {
-                    return Err(anyhow!("too many observed Claude transcripts"));
-                }
-                match Transcript::open(&path) {
-                    Ok(reader) => {
-                        readers.insert(path.clone(), reader);
-                    },
-                    Err(error)
-                        if error
-                            .downcast_ref::<std::io::Error>()
-                            .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
-                    {
-                        continue
-                    },
-                    Err(error) => return Err(error),
-                }
+        if reader.is_none() {
+            match Transcript::open(root) {
+                Ok(opened) => reader = Some(opened),
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => {},
+                Err(error) => return Err(error),
             }
-            let reader = readers
-                .get_mut(&path)
-                .context("Claude transcript reader missing")?;
-            reader.poll(&path, |record| {
-                if path == root
-                    && let Some(hook) = prompts.record(record)?
-                {
+        }
+        if let Some(reader) = &mut reader {
+            reader.poll(root, |record| {
+                if let Some(hook) = prompts.record(record)? {
                     // Deliver acceptance before completion can race it. Keep the original
                     // process, marker and route; a reporter child has no Claude ancestor.
                     report(&hook)?;
@@ -143,14 +96,11 @@ pub(super) fn follow_reporting(
                         },
                     }
                 }
-                for hook in tasks.record(record)? {
-                    report(&hook)?;
-                }
                 Ok(())
             })?;
         }
         // EOF and parent Idle are not completion signals. A later trigger replays
-        // all files if this observer exits on an I/O or bounded reporting failure.
+        // the transcript if this observer exits on an I/O or bounded reporting failure.
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -169,7 +119,7 @@ pub(super) fn recovered_observation(
         .and_then(|timestamp| u64::try_from(timestamp.timestamp_millis()).ok());
     Observation {
         hook,
-        task_observer: false,
+        recovery: false,
         claude_status: after_ms.and_then(|after_ms| {
             observation
                 .claude_status
@@ -229,10 +179,10 @@ impl Transcript {
             .read(true)
             .custom_flags(libc::O_NONBLOCK)
             .open(path)
-            .context("open Claude task transcript")?;
-        let metadata = file.metadata().context("inspect Claude task transcript")?;
+            .context("open Claude transcript")?;
+        let metadata = file.metadata().context("inspect Claude transcript")?;
         if !metadata.is_file() {
-            return Err(anyhow!("Claude task transcript is not a regular file"));
+            return Err(anyhow!("Claude transcript is not a regular file"));
         }
         Ok(Self {
             reader: BufReader::new(file),
@@ -243,30 +193,31 @@ impl Transcript {
     }
 
     fn poll(&mut self, path: &Path, mut record: impl FnMut(&Value) -> Result<()>) -> Result<()> {
-        let current = std::fs::metadata(path).context("inspect Claude task transcript")?;
+        let current = std::fs::metadata(path).context("inspect Claude transcript")?;
         if current.ino() != self.metadata.ino()
             || current.dev() != self.metadata.dev()
             || current.len() < self.offset
         {
-            return Err(anyhow!("Claude task transcript replaced or truncated"));
+            return Err(anyhow!("Claude transcript replaced or truncated"));
         }
-        // Bound each sweep so a continuously growing file cannot starve sidechains
-        // or process/conversation checks. Partial lines survive polling boundaries.
+        // Bound each sweep so a continuously growing file cannot starve process and
+        // conversation checks. Partial lines survive polling boundaries.
         for _ in 0..1024 {
             let bytes = self
                 .reader
                 .by_ref()
                 .take((16 * 1024 * 1024 + 1 - self.line.len()) as u64)
                 .read_until(b'\n', &mut self.line)
-                .context("read Claude task record")?;
+                .context("read Claude transcript record")?;
             self.offset += bytes as u64;
             if self.line.len() > 16 * 1024 * 1024 {
-                return Err(anyhow!("Claude task record exceeds 16 MiB"));
+                return Err(anyhow!("Claude transcript record exceeds 16 MiB"));
             }
             if self.line.last() != Some(&b'\n') {
                 break;
             }
-            let value = serde_json::from_slice(&self.line).context("parse Claude task record")?;
+            let value =
+                serde_json::from_slice(&self.line).context("parse Claude transcript record")?;
             self.line.clear();
             record(&value)?;
         }

@@ -192,7 +192,7 @@ fn agent_status(cwd: &std::path::Path) -> AgentStatus {
         input_revision: None,
         is_suppressed: false,
         clear_draft_supported: false,
-        background_tasks: Vec::new(),
+        background: false,
     }
 }
 

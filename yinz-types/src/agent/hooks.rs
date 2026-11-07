@@ -598,26 +598,9 @@ const PRUNED_INPUT_BUDGET: usize = HOOK_BROADCAST_MAX_BYTES;
 /// Prose can use the full budget; serialization and other fields decide the actual cut.
 const PRUNED_MESSAGE_CHARS: usize = HOOK_BROADCAST_MAX_BYTES;
 
-/// Background task IDs one Claude turn can report; IDs past this are not tracked.
-pub const MAX_BACKGROUND_TASKS: usize = 32;
-
-/// Claude's causal Agent/SendMessage tool call identifies an execution, even when
-/// resuming the same task within one prompt. A terminal notification additionally
-/// supplies a provider run ID. Raw SubagentStart/Stop hooks supply neither.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClaudeTaskExecution {
-    pub tool_use_id: String,
-    pub run_id: Option<String>,
-}
-
-impl ClaudeTaskExecution {
-    pub fn valid(&self, complete: bool) -> bool {
-        let id = |s: &str| !s.is_empty() && s.len() <= 128 && !s.chars().any(char::is_control);
-        id(&self.tool_use_id)
-            && self.run_id.as_deref().is_none_or(id)
-            && (!complete || self.run_id.is_some())
-    }
-}
+/// Host observer report that Claude's session registry went idle after a confirmed turn
+/// left work running. It carries that turn's prompt ID and changes no reported state.
+pub const CLAUDE_BACKGROUND_IDLE: &str = "BackgroundIdle";
 
 /// A Claude Code hook event, as its JSON arrives.
 ///
@@ -656,21 +639,15 @@ pub struct HookEvent {
         skip_serializing_if = "Option::is_none"
     )]
     pub claude_recovered_after: Option<String>,
-    /// Background tasks (Bash `run_in_background` or async subagents) that the confirmed Claude
-    /// turn launched. Each finishes later in its own `<task-notification>` turn.
+    /// Claude's session registry status after this prompt's confirmed turn: still working in
+    /// the background (`busy`, `shell` or `waiting`) or idle. Absent when the registry is
+    /// unavailable. [`CLAUDE_BACKGROUND_IDLE`] later reports `false` for a `true` turn.
     #[serde(
         default,
-        rename = "_yinz_claude_background_tasks",
-        skip_serializing_if = "Vec::is_empty"
-    )]
-    pub claude_background_tasks: Vec<String>,
-    /// Host observer evidence, carried independently of prunable tool responses.
-    #[serde(
-        default,
-        rename = "_yinz_claude_task_execution",
+        rename = "_yinz_claude_background",
         skip_serializing_if = "Option::is_none"
     )]
-    pub claude_task_execution: Option<ClaudeTaskExecution>,
+    pub claude_background: Option<bool>,
     /// Antigravity's host-side turn confirmation.
     #[serde(
         default,
@@ -870,16 +847,7 @@ impl HookEvent {
             transcript_path: self.transcript_path.clone(),
             claude_turn_complete: self.claude_turn_complete,
             claude_recovered_after: self.claude_recovered_after.clone(),
-            claude_task_execution: self
-                .claude_task_execution
-                .clone()
-                .filter(|e| e.valid(false)),
-            claude_background_tasks: self
-                .claude_background_tasks
-                .iter()
-                .take(MAX_BACKGROUND_TASKS)
-                .map(|task| truncate_within(task, 128, 128))
-                .collect(),
+            claude_background: self.claude_background,
             agy_turn_complete: self.agy_turn_complete,
             prompt_sha256: self.prompt_sha256.clone(),
             codex_hooks_ready: self.codex_hooks_ready,

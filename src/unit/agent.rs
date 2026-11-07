@@ -225,7 +225,7 @@ fn successful_read_prints_only_terminal_text_and_json_keeps_metadata() {
         input_revision: None,
         is_suppressed: false,
         clear_draft_supported: false,
-        background_tasks: Vec::new(),
+        background: false,
     });
     for (text, expected) in [
         ("result\n> ", "result\n> \n"),
@@ -280,7 +280,7 @@ fn background_work_is_shown_with_how_to_get_its_answer() {
     let mut json = Vec::new();
     print_response(&response, true, &mut json).unwrap();
     let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
-    assert!(value.get("background_tasks").is_none());
+    assert!(value.get("background").is_none());
 
     let status: yinz_types::agent::control::AgentStatus = serde_json::from_value(json!({
         "pane_id": "terminal_7", "session": "s", "host_id": "h", "tab_id": null,
@@ -289,25 +289,22 @@ fn background_work_is_shown_with_how_to_get_its_answer() {
         "agent": {"kind": "claude", "state": "Idle", "source": "Reported"},
     }))
     .unwrap();
-    assert!(
-        status.background_tasks.is_empty(),
-        "older servers omit the field"
-    );
+    assert!(!status.background, "older servers omit the field");
     response
         .agents
         .push(yinz_types::agent::control::AgentStatus {
-            background_tasks: vec!["bj30txqod".into()],
+            background: true,
             is_suppressed: true,
             ..status
         });
-    response.background_tasks = vec!["bj30txqod".into()];
+    response.background = true;
     let mut output = Vec::new();
     print_response(&response, false, &mut output).unwrap();
     let text = String::from_utf8(output).unwrap();
-    assert!(text.contains("  background_tasks: bj30txqod\n"));
+    assert!(text.contains("  background: true\n"));
     assert!(text.contains("is_suppressed: true"));
     assert!(text.ends_with(
-        "Started.\nBackground work is still running (bj30txqod). `yinz agent wait terminal_7 --until idle` returns its final answer.\n"
+        "Started.\nBackground work is still running. `yinz agent wait terminal_7 --until idle` returns its final answer.\n"
     ));
     let mut json = Vec::new();
     print_response(&response, true, &mut json).unwrap();

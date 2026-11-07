@@ -1158,7 +1158,7 @@ fn hook_json_boundaries_and_full_prompt_identity() {
             turn_id: Some("turn-1".into()),
             prompt_id: Some("prompt-1".into()),
             claude_turn_complete: Some(true),
-            claude_background_tasks: (0..40).map(|task| format!("task-{task}")).collect(),
+            claude_background: Some(true),
             agy_turn_complete: Some(true),
             message: Some(prompt.clone()),
             last_assistant_message: Some(prompt.clone()),
@@ -1171,10 +1171,7 @@ fn hook_json_boundaries_and_full_prompt_identity() {
         assert_eq!(bounded.turn_id, hook.turn_id);
         assert_eq!(bounded.prompt_id, hook.prompt_id);
         assert_eq!(bounded.claude_turn_complete, hook.claude_turn_complete);
-        assert_eq!(
-            bounded.claude_background_tasks,
-            hook.claude_background_tasks[..MAX_BACKGROUND_TASKS]
-        );
+        assert_eq!(bounded.claude_background, hook.claude_background);
         assert_eq!(bounded.agy_turn_complete, hook.agy_turn_complete);
         assert_eq!(
             bounded.prompt_sha256,
@@ -1456,36 +1453,6 @@ fn a_notification_and_a_prompt_submission_each_carry_their_text() {
     .expect("parsed");
     assert_eq!(event.prompt.as_deref(), Some("fix the flaky test"));
 }
-#[test]
-fn claude_task_execution_survives_pruning_without_raw_tool_responses() {
-    let event = super::HookEvent {
-        hook_event_name: "SubagentStop".into(),
-        session_id: "conversation".into(),
-        agent_id: Some("worker".into()),
-        claude_task_execution: Some(super::ClaudeTaskExecution {
-            tool_use_id: "launch-tool".into(),
-            run_id: Some("provider-run".into()),
-        }),
-        tool_response: Some(
-            serde_json::json!({"large": "x".repeat(super::HOOK_BROADCAST_MAX_BYTES * 2)}),
-        ),
-        ..Default::default()
-    };
-    let (_, raw) = event.broadcast(serde_json::to_string(&event).unwrap());
-    assert!(raw.len() <= super::HOOK_BROADCAST_MAX_BYTES);
-    let decoded: super::HookEvent = serde_json::from_str(&raw).unwrap();
-    assert!(decoded.tool_response.is_none());
-    assert_eq!(decoded.claude_task_execution, event.claude_task_execution);
-    let legacy: super::HookEvent =
-        serde_json::from_str(r#"{"hook_event_name":"SubagentStop","agent_id":"worker"}"#).unwrap();
-    assert!(legacy.claude_task_execution.is_none());
-    for value in ["".into(), "x".repeat(129), "bad\nidentity".into()] {
-        let mut invalid = event.clone();
-        invalid.claude_task_execution.as_mut().unwrap().tool_use_id = value;
-        assert!(invalid.pruned().claude_task_execution.is_none());
-    }
-}
-
 #[test]
 fn recovered_claude_prompt_metadata_survives_serialization_and_pruning() {
     let hook = HookEvent {

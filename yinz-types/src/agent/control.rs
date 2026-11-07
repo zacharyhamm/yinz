@@ -316,10 +316,10 @@ pub struct AgentResponse {
     /// `Started` is recorded before the first prompt write and never downgraded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_delivery: Option<PromptDelivery>,
-    /// Claude background work the completed turn launched. Its final answer arrives in a later
-    /// turn; `agent wait --until idle` returns it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub background_tasks: Vec<String>,
+    /// Claude was still working in the background when the completed turn ended. Its final
+    /// answer arrives in a later turn; `agent wait --until idle` returns it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
 }
 
 impl AgentResponse {
@@ -449,9 +449,9 @@ pub struct AgentStatus {
     pub input_revision: Option<u64>,
     #[serde(default)]
     pub clear_draft_supported: bool,
-    /// Claude background tasks whose `<task-notification>` turn has not finished.
+    /// Claude reported work still running in the background after its last turn ended.
     #[serde(default)]
-    pub background_tasks: Vec<String>,
+    pub background: bool,
 }
 
 mod pane_string {
@@ -488,7 +488,7 @@ pub struct PromptObservation {
     acknowledged: bool,
     waiting_before_submit: bool,
     turn_id: Option<String>,
-    background_tasks: Vec<String>,
+    background: bool,
     finished: bool,
 }
 
@@ -531,7 +531,7 @@ impl PromptObservation {
             acknowledged: false,
             waiting_before_submit: false,
             turn_id: None,
-            background_tasks: Vec::new(),
+            background: false,
             finished: false,
         }
     }
@@ -580,9 +580,10 @@ impl PromptObservation {
         self.turn_id.as_deref()
     }
 
-    /// Tasks launched by this turn's successful confirmation, independent of pane activity.
-    pub fn background_tasks(&self) -> &[String] {
-        &self.background_tasks
+    /// Whether this turn's successful confirmation left background work running,
+    /// independent of pane activity.
+    pub fn background(&self) -> bool {
+        self.background
     }
 
     /// A caller may submit literal notification XML as ordinary task text. A matching
@@ -779,9 +780,7 @@ impl PromptObservation {
                 }
                 hook.claude_turn_complete.map(|complete| {
                     if complete {
-                        self.background_tasks = hook.claude_background_tasks.clone();
-                        self.background_tasks.sort();
-                        self.background_tasks.dedup();
+                        self.background = hook.claude_background == Some(true);
                         AgentOutcome::Completed
                     } else {
                         AgentOutcome::StatusUnavailable
@@ -896,39 +895,15 @@ pub fn is_command_prompt(kind: &str, prompt: &str) -> bool {
     text.starts_with('/') || (matches!(kind, "claude" | "pi") && text.starts_with('!'))
 }
 
-const TASK_NOTIFICATION_OPEN: &str = "<task-notification>";
-
-/// The task IDs of a turn Claude starts by itself when background work finishes. Its
-/// `UserPromptSubmit.prompt` is one or more `<task-notification>` elements, each naming the
-/// `<task-id>` of the Bash command or subagent that finished. `None` for any other prompt.
-pub fn claude_task_notification_ids(prompt: &str) -> Option<Vec<String>> {
-    let text = prompt.trim_start();
-    if !text.starts_with(TASK_NOTIFICATION_OPEN) {
-        return None;
-    }
-    let ids = text
-        .split(TASK_NOTIFICATION_OPEN)
-        .filter_map(|element| {
-            let id = element
-                .split_once("<task-id>")?
-                .1
-                .split_once("</task-id>")?
-                .0;
-            let id = id.trim();
-            (!id.is_empty()).then(|| id.to_owned())
-        })
-        .collect();
-    Some(ids)
-}
-
-/// Whether a hook is the submission of a Claude `<task-notification>` turn.
+/// Whether a hook submits a turn Claude starts by itself when background work finishes. Its
+/// `UserPromptSubmit.prompt` is one or more `<task-notification>` elements.
 pub fn is_claude_task_notification(kind: &str, hook: &HookEvent) -> bool {
     kind == "claude"
         && hook.hook_event_name == "UserPromptSubmit"
         && hook
             .prompt
             .as_deref()
-            .is_some_and(|prompt| claude_task_notification_ids(prompt).is_some())
+            .is_some_and(|prompt| prompt.trim_start().starts_with("<task-notification>"))
 }
 
 /// Typed ahead of an ordinary paste Claude may collapse, to identify its body as instructions.

@@ -422,66 +422,25 @@ fn warp_tracking_legacy_worker_wait_cannot_be_released_by_a_newer_tool() {
 }
 
 #[test]
-fn warp_tracking_legacy_raw_worker_resumption_survives_delayed_execution_reports() {
+fn warp_tracking_keeps_worker_tool_releases() {
     let (mut source, _, _) = setup_tracking("claude");
-    let runs = captured_claude_executions();
-    let task = runs[0].agent_id.as_deref().unwrap();
     report_kind(&mut source, "claude", hook("SessionStart"));
-    report_kind(&mut source, "claude", hook("UserPromptSubmit"));
-    report_kind(
-        &mut source,
-        "claude",
-        HookEvent {
-            claude_task_execution: None,
-            ..runs[0].clone()
-        },
-    );
-    let handoff = source.capture_agent_tracking(PANE).unwrap();
-    let mut legacy = serde_json::to_value(&handoff).unwrap();
-    let claude = legacy["lifecycle"]["claude"].as_object_mut().unwrap();
-    for field in ["executions", "provisional_workers", "abandoned_executions"] {
-        claude.remove(field);
+    let task = "worker";
+    report_kind(&mut source, "claude", claude_worker("SubagentStart", task));
+    for (name, tool) in [
+        ("PreToolUse", "question-1"),
+        ("PostToolUse", "question-1"),
+        ("PreToolUse", "question-2"),
+    ] {
+        report_kind(
+            &mut source,
+            "claude",
+            claude_worker_input(name, task, Some(tool)),
+        );
     }
-    let decoded: yinz_types::agent::tracking::AgentTrackingHandoff =
-        serde_json::from_value(legacy).unwrap();
-    let claude = &decoded.lifecycle.as_ref().unwrap().claude;
-    assert!(claude.workers.contains(task));
-    assert!(claude.executions.is_empty());
-    assert!(claude.provisional_workers.is_empty());
-    let (mut destination, messages, _) = setup_tracking("claude");
-    destination
-        .pending_agent_tracking
-        .insert(PANE, (Some(handoff.agent), Some(decoded)));
-    assert!(destination.restore_staged_transfer_state(PANE));
-    assert_claude_raw_resumption_reconciles_delayed_completion(&mut destination, &messages);
-}
-
-#[test]
-fn warp_tracking_keeps_worker_tool_releases_and_reconciles_provisional_resumptions() {
-    let (mut source, _, _) = setup_tracking("claude");
-    report_kind(&mut source, "claude", hook("SessionStart"));
-    let runs = captured_claude_executions();
-    let task = runs[0].agent_id.as_deref().unwrap();
-    report_kind(&mut source, "claude", runs[0].clone());
-    report_kind(
-        &mut source,
-        "claude",
-        claude_worker_input("PreToolUse", task, Some("question-1")),
-    );
-    report_kind(
-        &mut source,
-        "claude",
-        claude_worker_input("PostToolUse", task, Some("question-1")),
-    );
-    report_kind(
-        &mut source,
-        "claude",
-        claude_worker_input("PreToolUse", task, Some("question-2")),
-    );
-    report_kind(&mut source, "claude", runs[1].clone());
     let mut destination = transfer(&mut source, "claude");
     for event in [
-        runs[1].clone(),
+        claude_worker("SubagentStop", task),
         claude_worker_input("PostToolUse", task, Some("question-1")),
         claude_worker_input("PreToolUse", task, Some("question-1")),
     ] {
@@ -500,47 +459,12 @@ fn warp_tracking_keeps_worker_tool_releases_and_reconciles_provisional_resumptio
         destination.agent_status_for_test().agent.state,
         AgentState::Idle
     );
-    report_kind(
-        &mut destination,
-        "claude",
-        HookEvent {
-            claude_task_execution: None,
-            ..runs[2].clone()
-        },
-    );
-    let mut again = transfer(&mut destination, "claude");
-    report_kind(&mut again, "claude", runs[2].clone());
-    report_kind(&mut again, "claude", runs[3].clone());
-    assert_eq!(again.agent_status_for_test().agent.state, AgentState::Idle);
-    assert!(!again
-        .capture_agent_tracking(PANE)
-        .unwrap()
-        .lifecycle
-        .unwrap()
-        .claude
-        .provisional_workers
-        .contains(task));
 }
 
 #[test]
-fn warp_tracking_claude_execution_tombstones_and_waits_survive_transfer() {
-    let (mut source, _, _) = setup_tracking("claude");
-    report_kind(&mut source, "claude", hook("SessionStart"));
-    report_kind(
-        &mut source,
-        "claude",
-        claude_execution("SubagentStart", "worker", "first"),
-    );
-    report_kind(
-        &mut source,
-        "claude",
-        claude_execution("SubagentStop", "worker", "first"),
-    );
-    report_kind(
-        &mut source,
-        "claude",
-        claude_execution("SubagentStart", "worker", "resumed"),
-    );
+fn warp_tracking_claude_background_and_waits_survive_transfer() {
+    let (mut source, messages, writes) = setup_tracking("claude");
+    complete_with_background(&mut source, &messages, &writes, true);
     report_kind(
         &mut source,
         "claude",
@@ -550,45 +474,42 @@ fn warp_tracking_claude_execution_tombstones_and_waits_survive_transfer() {
         },
     );
     let mut destination = transfer(&mut source, "claude");
-    for event in ["SubagentStop", "SubagentStart"] {
-        report_kind(
-            &mut destination,
-            "claude",
-            claude_execution(event, "worker", "first"),
-        );
-        assert_eq!(
-            destination.agent_status_for_test().agent.state,
-            AgentState::Waiting
-        );
-        assert!(destination.agent_worker_waits[&PANE]
-            .waits
-            .contains_key("worker"));
-    }
+    assert_eq!(
+        destination
+            .capture_agent_tracking(PANE)
+            .unwrap()
+            .lifecycle
+            .unwrap()
+            .claude_background
+            .as_deref(),
+        Some("prompt")
+    );
+    report_kind(
+        &mut destination,
+        "claude",
+        claude_worker("SubagentStop", "worker"),
+    );
+    assert!(destination.agent_worker_waits[&PANE]
+        .waits
+        .contains_key("worker"));
     report_kind(
         &mut destination,
         "claude",
         claude_worker("PostToolUse", "worker"),
     );
-    report_kind(
-        &mut destination,
-        "claude",
-        claude_execution("SubagentStop", "worker", "resumed"),
-    );
     assert_eq!(
         destination.agent_status_for_test().agent.state,
-        AgentState::Idle
+        AgentState::Busy
     );
     let mut again = transfer(&mut destination, "claude");
-    report_kind(
-        &mut again,
-        "claude",
-        claude_execution("SubagentStart", "worker", "resumed"),
-    );
+    report_kind(&mut again, "claude", background_idle("prompt"));
     assert_eq!(again.agent_status_for_test().agent.state, AgentState::Idle);
     let mut legacy = serde_json::to_value(again.capture_agent_tracking(PANE).unwrap()).unwrap();
+    legacy["lifecycle"]
+        .as_object_mut()
+        .unwrap()
+        .remove("claude_background");
     for field in [
-        "executions",
-        "provisional_workers",
         "worker_wait_tools",
         "uncorrelated_worker_waits",
         "released_worker_tools",
@@ -600,12 +521,11 @@ fn warp_tracking_claude_execution_tombstones_and_waits_survive_transfer() {
     }
     let decoded: yinz_types::agent::tracking::AgentTrackingHandoff =
         serde_json::from_value(legacy).unwrap();
-    let claude = decoded.lifecycle.unwrap().claude;
-    assert!(claude.executions.is_empty());
-    assert!(claude.provisional_workers.is_empty());
-    assert!(claude.worker_wait_tools.is_empty());
-    assert!(claude.uncorrelated_worker_waits.is_empty());
-    assert!(claude.released_worker_tools.is_empty());
+    let lifecycle = decoded.lifecycle.unwrap();
+    assert!(lifecycle.claude_background.is_none());
+    assert!(lifecycle.claude.worker_wait_tools.is_empty());
+    assert!(lifecycle.claude.uncorrelated_worker_waits.is_empty());
+    assert!(lifecycle.claude.released_worker_tools.is_empty());
 }
 
 #[test]
@@ -710,9 +630,9 @@ fn warp_tracking_preserves_provisional_muse_and_rejects_mismatched_identity() {
 }
 
 #[test]
-fn warp_tracking_keeps_overlapping_claude_turns_workers_and_background_tasks() {
+fn warp_tracking_keeps_overlapping_claude_turns_workers_and_background() {
     let (mut source, messages, writes) = setup_tracking("claude");
-    complete_with_background(&mut source, &messages, &writes, &["task"]);
+    complete_with_background(&mut source, &messages, &writes, true);
     report_kind(
         &mut source,
         "claude",
@@ -748,9 +668,9 @@ fn warp_tracking_keeps_overlapping_claude_turns_workers_and_background_tasks() {
     assert_eq!(restored.worker_waits, expected.worker_waits);
     assert_eq!(restored.lifecycle, expected.lifecycle);
     for completion in [
-        claude_stop("unrelated", "ignored", &[]),
-        claude_stop("notification", "background done", &[]),
-        claude_stop("new-prompt", "finished", &[]),
+        claude_stop("unrelated", "ignored", false),
+        claude_stop("notification", "background done", false),
+        claude_stop("new-prompt", "finished", false),
     ] {
         report_kind(&mut source, "claude", completion.clone());
         report_kind(&mut destination, "claude", completion);
@@ -819,7 +739,7 @@ fn permission_wait_survives_transfers(notification: bool) {
             for transfers in [1, 2] {
                 let (mut source, messages, mut writes) = setup_tracking("claude");
                 if notification {
-                    complete_with_background(&mut source, &messages, &writes, &["bash"]);
+                    complete_with_background(&mut source, &messages, &writes, true);
                     report_kind(
                         &mut source,
                         "claude",
