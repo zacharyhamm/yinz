@@ -8610,150 +8610,225 @@ fn prompt_automatically_replaces_idle_drafts() {
     }
 }
 
+/// A freshly spawned agent reports its conversation first; the plugin keeping its run history
+/// binds the derived `<kind>:<conversation>` run ID moments later, which can land while a prompt
+/// is already preparing (Agenda 67: Claude prompts failed with `target_changed`).
 #[test]
-fn codex_first_run_id_binding_before_or_during_prompt_preparation_delivers() {
-    for binding in ["before", "marker", "clearing"] {
-        let (mut screen, messages, writes) = setup("codex");
-        report(&mut screen, hook("SessionStart"));
-        let original = screen.get_pane_info(PANE).unwrap().agent.unwrap();
-        assert_eq!(original.run_id, None);
-        let mut bound = original.clone();
-        bound.run_id = Some("codex:conversation".into());
-        if binding == "before" {
+fn first_derived_run_id_binding_before_or_during_prompt_preparation_delivers() {
+    for kind in ["codex", "claude"] {
+        for binding in ["before", "marker", "clearing"] {
+            let (mut screen, messages, writes) = setup(kind);
+            report_kind(&mut screen, kind, hook("SessionStart"));
+            let original = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+            assert_eq!(original.run_id, None);
+            let mut bound = original.clone();
+            bound.run_id = Some(format!("{kind}:conversation"));
+            if binding == "before" {
+                screen
+                    .tab_containing_pane_mut(PANE)
+                    .unwrap()
+                    .set_pane_agent(PANE, Some(bound.clone()));
+            }
+            let now = Instant::now();
+            screen.agent_control_at(
+                prompt(false),
+                crate::screen::agent_control::Reply::Client(CLIENT),
+                now,
+            );
+            let marker = finish_paste(&writes);
+            assert!(marker.starts_with(b"\x1b[200~yz") && marker.ends_with(b"\x1b[201~"));
+            if binding == "clearing" {
+                screen.refresh_agent_controls_at(now + Duration::from_millis(1));
+                assert_eq!(finish_paste(&writes), [3]);
+            }
+            let revision = screen.tabs[&TabId::new(0)].agent_input_revision(PANE);
             screen
                 .tab_containing_pane_mut(PANE)
                 .unwrap()
-                .set_pane_agent(PANE, Some(bound.clone()));
+                .set_pane_agent(PANE, Some(bound));
+            assert_eq!(
+                screen.tabs[&TabId::new(0)].agent_input_revision(PANE),
+                revision
+            );
+            if binding != "clearing" {
+                screen.refresh_agent_controls_at(now + Duration::from_millis(1));
+                assert_eq!(finish_paste(&writes), [3], "{kind}/{binding}");
+            }
+            screen.refresh_agent_controls_at(now + Duration::from_millis(2));
+            screen.refresh_agent_controls_at(now + Duration::from_millis(252));
+            assert_eq!(
+                finish_paste(&writes),
+                b"\x1b[200~review\x1b[201~",
+                "{kind}/{binding}: {:?}",
+                replies(&messages, CLIENT)
+            );
+            screen.refresh_agent_controls_at(now + Duration::from_millis(253));
+            screen.refresh_agent_controls_at(now + Duration::from_secs(1));
+            assert_eq!(finish_paste(&writes), b"\r");
+            report_kind(&mut screen, kind, hook("UserPromptSubmit"));
+            let response = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(
+                response.outcome,
+                AgentOutcome::Submitted,
+                "{kind}/{binding}"
+            );
+            assert_eq!(
+                response.prompt_delivery,
+                Some(yinz_types::agent::control::PromptDelivery::Started)
+            );
+            assert!(response.acknowledged);
         }
-        let now = Instant::now();
-        screen.agent_control_at(
-            prompt(false),
-            crate::screen::agent_control::Reply::Client(CLIENT),
-            now,
-        );
-        let marker = finish_paste(&writes);
-        assert!(marker.starts_with(b"\x1b[200~yz") && marker.ends_with(b"\x1b[201~"));
-        if binding == "clearing" {
-            screen.refresh_agent_controls_at(now + Duration::from_millis(1));
-            assert_eq!(finish_paste(&writes), [3]);
-        }
-        let revision = screen.tabs[&TabId::new(0)].agent_input_revision(PANE);
-        screen
-            .tab_containing_pane_mut(PANE)
-            .unwrap()
-            .set_pane_agent(PANE, Some(bound));
-        assert_eq!(
-            screen.tabs[&TabId::new(0)].agent_input_revision(PANE),
-            revision
-        );
-        if binding != "clearing" {
-            screen.refresh_agent_controls_at(now + Duration::from_millis(1));
-            assert_eq!(finish_paste(&writes), [3]);
-        }
-        screen.refresh_agent_controls_at(now + Duration::from_millis(2));
-        screen.refresh_agent_controls_at(now + Duration::from_millis(252));
-        assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
-        screen.refresh_agent_controls_at(now + Duration::from_millis(253));
-        screen.refresh_agent_controls_at(now + Duration::from_secs(1));
-        assert_eq!(finish_paste(&writes), b"\r");
-        report(&mut screen, hook("UserPromptSubmit"));
-        let response = replies(&messages, CLIENT).pop().unwrap();
-        assert_eq!(response.outcome, AgentOutcome::Submitted, "{binding}");
-        assert_eq!(
-            response.prompt_delivery,
-            Some(yinz_types::agent::control::PromptDelivery::Started)
-        );
-        assert!(response.acknowledged);
     }
 }
 
 #[test]
 fn prompt_preparation_pins_identity_and_retains_unsent_failures() {
     use yinz_types::agent::control::PromptDelivery;
-    for stage in ["marker", "clearing"] {
-        for change in [
-            "noncanonical",
-            "replacement",
-            "removal",
-            "provider",
-            "conversation",
-            "missing",
-            "input",
-        ] {
-            let (mut screen, messages, writes) = setup("codex");
-            report(&mut screen, hook("SessionStart"));
-            let mut original = screen.get_pane_info(PANE).unwrap().agent.unwrap();
-            if matches!(change, "replacement" | "removal") {
-                original.run_id = Some("codex:conversation".into());
+    for kind in ["codex", "claude"] {
+        let other_kind = if kind == "codex" { "claude" } else { "codex" };
+        for stage in ["marker", "clearing"] {
+            for change in [
+                // A run ID derived from some other conversation.
+                "noncanonical",
+                // Another provider's derivation for the same conversation.
+                "foreign",
+                // A fallback ID that is not derived from the conversation at all.
+                "fallback",
+                "replacement",
+                "removal",
+                "provider",
+                "conversation",
+                // A real replacement: new conversation with its own derived run ID.
+                "rebound",
+                "missing",
+                "input",
+            ] {
+                let (mut screen, messages, writes) = setup(kind);
+                report_kind(&mut screen, kind, hook("SessionStart"));
+                let mut original = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+                if matches!(change, "replacement" | "removal") {
+                    original.run_id = Some(format!("{kind}:conversation"));
+                }
+                screen
+                    .tab_containing_pane_mut(PANE)
+                    .unwrap()
+                    .set_pane_agent(PANE, Some(original.clone()));
+                let now = Instant::now();
+                let mut request = prompt(false);
+                if let AgentRequest::Prompt { submission_id, .. } = &mut request {
+                    *submission_id = Some("identity-check".into());
+                }
+                screen.agent_control_at(
+                    request,
+                    crate::screen::agent_control::Reply::Client(CLIENT),
+                    now,
+                );
+                finish_paste(&writes);
+                if stage == "clearing" {
+                    screen.refresh_agent_controls_at(now + Duration::from_millis(1));
+                    assert_eq!(finish_paste(&writes), [3]);
+                }
+                let mut changed = original.clone();
+                match change {
+                    "noncanonical" | "replacement" => {
+                        changed.run_id = Some(format!("{kind}:other"))
+                    },
+                    "foreign" => changed.run_id = Some(format!("{other_kind}:conversation")),
+                    "fallback" => changed.run_id = Some(format!("{kind}:pane:7:1")),
+                    "removal" => changed.run_id = None,
+                    "provider" => changed.kind = other_kind.into(),
+                    "conversation" => changed.session_id = Some("other".into()),
+                    "rebound" => {
+                        changed.session_id = Some("other".into());
+                        changed.run_id = Some(format!("{kind}:other"));
+                    },
+                    "input" => {
+                        screen.agent_control(send_keys(vec![BareKey::Char('x')]), ClientId::new(2))
+                    },
+                    _ => {},
+                }
+                screen
+                    .tab_containing_pane_mut(PANE)
+                    .unwrap()
+                    .set_pane_agent(PANE, (change != "missing").then_some(changed));
+                screen.refresh_agent_controls_at(now + Duration::from_millis(2));
+                let response = replies(&messages, CLIENT).pop().unwrap();
+                assert_eq!(
+                    response.outcome,
+                    match change {
+                        "missing" => AgentOutcome::StatusUnavailable,
+                        "input" => AgentOutcome::Interrupted,
+                        _ => AgentOutcome::TargetChanged,
+                    },
+                    "{kind}/{stage}/{change}"
+                );
+                assert_eq!(response.prompt_delivery, Some(PromptDelivery::NotSent));
+                assert!(!response.acknowledged);
+                assert!(response.turn_id.is_none());
+                // Restore status only to retrieve the retained result; never retry preparation.
+                screen
+                    .tab_containing_pane_mut(PANE)
+                    .unwrap()
+                    .set_pane_agent(PANE, Some(original));
+                screen.agent_control(
+                    AgentRequest::WaitTurn {
+                        pane_id: PANE,
+                        expected_session_id: Some("conversation".into()),
+                        submission_id: "identity-check".into(),
+                        timeout_ms: 1000,
+                    },
+                    CLIENT,
+                );
+                let retained = replies(&messages, CLIENT).pop().unwrap();
+                assert_eq!(retained.outcome, response.outcome);
+                assert_eq!(retained.prompt_delivery, response.prompt_delivery);
+                screen.refresh_agent_controls_at(now + Duration::from_secs(1));
+                let remaining = finish_paste(&writes);
+                assert!(remaining.is_empty() || (change == "input" && remaining == b"x"));
             }
-            screen
-                .tab_containing_pane_mut(PANE)
-                .unwrap()
-                .set_pane_agent(PANE, Some(original.clone()));
+        }
+    }
+}
+
+/// Once the derived run ID is accepted it is pinned: a later change to it still fails closed.
+#[test]
+fn accepted_derived_run_id_is_pinned_for_later_stages() {
+    for kind in ["codex", "claude"] {
+        for change in ["replacement", "removal"] {
+            let (mut screen, messages, writes) = setup(kind);
+            report_kind(&mut screen, kind, hook("SessionStart"));
+            let original = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+            assert_eq!(original.run_id, None);
             let now = Instant::now();
-            let mut request = prompt(false);
-            if let AgentRequest::Prompt { submission_id, .. } = &mut request {
-                *submission_id = Some("identity-check".into());
-            }
             screen.agent_control_at(
-                request,
+                prompt(false),
                 crate::screen::agent_control::Reply::Client(CLIENT),
                 now,
             );
             finish_paste(&writes);
-            if stage == "clearing" {
-                screen.refresh_agent_controls_at(now + Duration::from_millis(1));
-                assert_eq!(finish_paste(&writes), [3]);
-            }
-            let mut changed = original.clone();
-            match change {
-                "noncanonical" | "replacement" => changed.run_id = Some("codex:other".into()),
-                "removal" => changed.run_id = None,
-                "provider" => changed.kind = "claude".into(),
-                "conversation" => changed.session_id = Some("other".into()),
-                "input" => {
-                    screen.agent_control(send_keys(vec![BareKey::Char('x')]), ClientId::new(2))
-                },
-                _ => {},
-            }
+            let mut bound = original.clone();
+            bound.run_id = Some(format!("{kind}:conversation"));
             screen
                 .tab_containing_pane_mut(PANE)
                 .unwrap()
-                .set_pane_agent(PANE, (change != "missing").then_some(changed));
+                .set_pane_agent(PANE, Some(bound.clone()));
+            screen.refresh_agent_controls_at(now + Duration::from_millis(1));
+            assert_eq!(finish_paste(&writes), [3], "{kind}/{change}");
+            let mut changed = bound;
+            changed.run_id = (change == "replacement").then(|| format!("{kind}:other"));
+            screen
+                .tab_containing_pane_mut(PANE)
+                .unwrap()
+                .set_pane_agent(PANE, Some(changed));
             screen.refresh_agent_controls_at(now + Duration::from_millis(2));
             let response = replies(&messages, CLIENT).pop().unwrap();
             assert_eq!(
                 response.outcome,
-                match change {
-                    "missing" => AgentOutcome::StatusUnavailable,
-                    "input" => AgentOutcome::Interrupted,
-                    _ => AgentOutcome::TargetChanged,
-                },
-                "{stage}/{change}"
+                AgentOutcome::TargetChanged,
+                "{kind}/{change}"
             );
-            assert_eq!(response.prompt_delivery, Some(PromptDelivery::NotSent));
-            assert!(!response.acknowledged);
-            assert!(response.turn_id.is_none());
-            // Restore status only to retrieve the retained result; never retry preparation.
-            screen
-                .tab_containing_pane_mut(PANE)
-                .unwrap()
-                .set_pane_agent(PANE, Some(original));
-            screen.agent_control(
-                AgentRequest::WaitTurn {
-                    pane_id: PANE,
-                    expected_session_id: Some("conversation".into()),
-                    submission_id: "identity-check".into(),
-                    timeout_ms: 1000,
-                },
-                CLIENT,
-            );
-            let retained = replies(&messages, CLIENT).pop().unwrap();
-            assert_eq!(retained.outcome, response.outcome);
-            assert_eq!(retained.prompt_delivery, response.prompt_delivery);
             screen.refresh_agent_controls_at(now + Duration::from_secs(1));
-            let remaining = finish_paste(&writes);
-            assert!(remaining.is_empty() || (change == "input" && remaining == b"x"));
+            assert!(finish_paste(&writes).is_empty(), "{kind}/{change}");
         }
     }
 }

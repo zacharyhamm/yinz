@@ -4166,10 +4166,13 @@ impl Screen {
                 .prompt
                 .as_ref()
                 .is_some_and(|(pending, _, _)| pending.steering);
-            // The asynchronous Codex binding publishes a derived ID for the already
-            // bound conversation. Accept it once, then pin it for the remaining stages.
+            // A freshly started agent's run record is bound asynchronously: the plugin
+            // keeping its history publishes `<kind>:<conversation>` (`session_run_id`)
+            // for the already bound conversation after the agent has reported ready, so
+            // a prompt can capture the identity before it arrives. Accept that derived
+            // ID once, then pin it for the remaining stages. Any other ID, provider or
+            // conversation still fails closed below.
             if operation.prompt.is_some()
-                && operation.agent.kind == "codex"
                 && operation.agent.run_id.is_none()
                 && let Some(conversation) = operation
                     .agent
@@ -4179,7 +4182,8 @@ impl Screen {
                 && let Some(status) = &status
                 && status.agent.kind == operation.agent.kind
                 && status.agent.session_id == operation.agent.session_id
-                && status.agent.run_id.as_deref() == Some(format!("codex:{conversation}").as_str())
+                && status.agent.run_id.as_deref()
+                    == Some(format!("{}:{conversation}", operation.agent.kind).as_str())
             {
                 operation.agent.run_id = status.agent.run_id.clone();
             }

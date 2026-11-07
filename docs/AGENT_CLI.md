@@ -1099,8 +1099,9 @@ The marker makes an empty composer nonempty before clearing. Clearing does not r
 Providers must bind `clear_key` to clear the whole composer.
 One timeout covers clearing and submission. Clearing failures are available through `wait --submission`, with acknowledgement false.
 New input, conversation replacement, agent activity, caller disconnection, or writer failure cancels further delivery.
-During preparation, the first Codex run ID may bind from absent to
-`codex:<already-bound conversation>` when provider and conversation are unchanged.
+During preparation, the first run ID may bind from absent to the derived
+`<provider>:<already-bound conversation>` (for example `claude:<id>` or `codex:<id>`)
+when provider and conversation are unchanged.
 The new ID is then pinned: replacement or removal cancels delivery. Other explicit
 run ID, provider or conversation changes are rejected. Missing status returns
 `status_unavailable` and stops preparation without automatic retry.
