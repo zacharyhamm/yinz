@@ -1768,6 +1768,69 @@ fn conversation_capture_attributes_workers_and_deduplicates_alternative_completi
 }
 
 #[test]
+fn worker_completions_keep_identical_prose_in_distinct_turns() {
+    let (mut runtime, _) = plugin_with_source(
+        "agent-service",
+        r#"
+        (require "./agent-service/state.scm" "./agent-service/messages.scm" "./agent-service/runs.scm")
+        (as-set! "host" "host") (as-set! "session" "destination")
+        (define (hook raw)
+          (define event (as-result (as-model "HookEvent" (yinz-json-string raw))))
+          (as-call "record-event" 7 "claude" event 100))
+        (define (entries) (hash-ref (as-map-get "runs" 7 #f) "entries"))
+    "#,
+        json!({}),
+        BTreeMap::new(),
+        "",
+    );
+    for turn in ["one", "two"] {
+        let event = json!({"hook_event_name":"SubagentStop", "session_id":"conversation",
+            "agent_id":"worker", "agent_type":"general-purpose", "turn_id":turn,
+            "last_assistant_message":"Done."});
+        runtime.invoke("hook", vec![event.clone()]).unwrap();
+        runtime.invoke("hook", vec![event]).unwrap();
+    }
+    let entries = runtime.invoke("entries", vec![]).unwrap();
+    let entries = entries.as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    for (entry, turn) in entries.iter().zip(["one", "two"]) {
+        assert_eq!(entry["kind"], "message");
+        assert_eq!(entry["text"], "Done.");
+        assert_eq!(entry["worker_id"], "worker");
+        assert_eq!(entry["conversation_turn_id"], turn);
+    }
+    assert_ne!(entries[0]["event_id"], entries[1]["event_id"]);
+
+    // A recovered reply and fallback prose in the same turn describe one completion.
+    let recovered = json!({"hook_event_name":"SubagentStop", "session_id":"conversation",
+        "agent_id":"worker", "agent_type":"general-purpose", "turn_id":"three",
+        "last_assistant_message":"Done.", "assistant_messages":[{
+            "source_id":"claude:conversation:worker:reply", "turn_id":"three",
+            "worker_id":"worker", "text":"Done.", "incomplete":false}]});
+    runtime.invoke("hook", vec![recovered.clone()]).unwrap();
+    runtime.invoke("hook", vec![recovered]).unwrap();
+    let entries = runtime.invoke("entries", vec![]).unwrap();
+    let entries = entries.as_array().unwrap();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[2]["conversation_turn_id"], "three");
+    assert!(entries[2]["event_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("message:"));
+
+    // Text alone cannot identify an alternative report when the turn is unknown.
+    let unknown_turn = json!({"hook_event_name":"SubagentStop", "session_id":"conversation",
+        "agent_id":"worker", "agent_type":"general-purpose", "last_assistant_message":"Done."});
+    runtime.invoke("hook", vec![unknown_turn.clone()]).unwrap();
+    runtime.invoke("hook", vec![unknown_turn]).unwrap();
+    let entries = runtime.invoke("entries", vec![]).unwrap();
+    let entries = entries.as_array().unwrap();
+    assert_eq!(entries.len(), 4);
+    assert_eq!(entries[3]["text"], "Done.");
+    assert!(entries[3]["conversation_turn_id"].is_null());
+}
+
+#[test]
 fn conversation_repair_is_read_only_until_apply_idempotent_and_revision_guarded() {
     for race in [false, true] {
         let (mut runtime, _) = plugin_with_source(

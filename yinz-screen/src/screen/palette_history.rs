@@ -128,7 +128,7 @@ pub(super) struct Browser {
 struct HistoryCache {
     events: BTreeMap<u64, yinz_bus::command_palette::HistoryEvent>,
     earlier: Option<HistoryRow>,
-    // Highest revision covered by reads connected to the beginning of the run.
+    // Highest revision covered by the initial tail or live revision delivery.
     latest_received_revision: u64,
 }
 
@@ -484,9 +484,10 @@ impl Screen {
                         },
                         "context" => false,
                         "received" => {
-                            if let HistoryAction::Run {
-                                from: Some(next), ..
-                            } = row.action
+                            if !older
+                                && let HistoryAction::Run {
+                                    from: Some(next), ..
+                                } = row.action
                             {
                                 browser.history.latest_received_revision = browser
                                     .history
@@ -602,12 +603,12 @@ impl Screen {
                 browser.rows.clear();
                 for row in rows {
                     let id = format!("history:{}:{}", state.widget.view, row.id);
-                    if !matches!(
+                    let event = matches!(
                         row.action,
-                        HistoryAction::Event { .. }
-                            | HistoryAction::Tools { .. }
-                            | HistoryAction::Hit { .. }
-                    ) {
+                        HistoryAction::Event { .. } | HistoryAction::Hit { .. }
+                    ) || row.id.starts_with("event:")
+                        && matches!(row.action, HistoryAction::Tools { .. });
+                    if !event {
                         actions.push(entry(id.clone(), row.label));
                     }
                     browser.rows.insert(id, row.action);
@@ -810,9 +811,7 @@ impl Screen {
                 .is_some_and(|browser| {
                     matches!(
                         browser.action,
-                        HistoryAction::Hit { .. }
-                            | HistoryAction::Event { .. }
-                            | HistoryAction::Tools { .. }
+                        HistoryAction::Hit { .. } | HistoryAction::Event { .. }
                     )
                 })
         {

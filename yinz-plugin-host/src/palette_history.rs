@@ -702,7 +702,7 @@ fn conversation_view(
             },
         ));
     }
-    if tools.is_none() {
+    if tools.is_none() && before.is_none() {
         // Delivery watermark is independent of the chronological conversation cursor.
         rows.push(row(
             "received".into(),
@@ -719,10 +719,7 @@ fn conversation_view(
             created_at_ms: entry.created_at_ms,
             revision: entry.revision,
         };
-        if tools.is_none()
-            && after.is_none()
-            && (start.is_some() || before.is_none() && page.earlier.is_none())
-        {
+        if tools.is_none() && after.is_none() && (start.is_some() || page.earlier.is_none()) {
             activity(
                 backend,
                 id,
@@ -770,18 +767,21 @@ fn conversation_view(
             truncated: page.shortened.contains(&entry.revision),
         });
     }
-    if tools.is_none() && before.is_none() && after.is_none() {
+    if tools.is_none() && after.is_none() {
+        // An earlier page owns the gap up to the next page's first message.
         activity(
             backend,
             id,
             Range {
                 start,
-                end: None,
+                end: before,
                 worker: worker.map(str::to_owned),
             },
             &timestamp,
             &mut events,
         )?;
+    }
+    if tools.is_none() && after.is_none() {
         if worker.is_none() {
             rows.push(row(
                 "workers".into(),
@@ -862,31 +862,54 @@ fn activity(
     timestamp: &impl Fn(Option<i64>) -> String,
     events: &mut Vec<HistoryEvent>,
 ) -> Result<(), String> {
-    let mut request = range.request(id).filter(Pred::eq("kind", "tool_call"));
-    if let Some(worker) = &range.worker {
-        request = request.filter(Pred::eq("worker_id", worker.clone()));
-    }
-    let count = backend.count(&request)? as usize;
-    let mut request = range
+    use agent_proto::{agents::RunEntryKind, conversation::Cursor};
+
+    let request = range
         .request(id)
-        .filter(Pred::is_in("kind", ["tool_call", "tool_result"]));
-    if let Some(worker) = &range.worker {
-        request = request.filter(Pred::eq("worker_id", worker.clone()));
+        .filter(Pred::is_in("kind", ["tool_call", "tool_result"]))
+        .select([
+            "run_id",
+            "revision",
+            "kind",
+            "created_at_ms",
+            "worker_id",
+            "tool",
+            "text",
+        ])
+        .sort_by("created_at_ms", SortDir::Desc)
+        .sort_by("revision", SortDir::Desc)
+        .limit(100);
+    let mut position: Option<Cursor> = None;
+    let mut first = None;
+    let mut count = 0;
+    loop {
+        let current = match position {
+            Some(cursor) => request.clone().filter(cursor.before()),
+            None => request.clone(),
+        };
+        let mut batch = agent_proto::agents::rows::entries_from_rows(&backend.fetch(&current)?)
+            .remove(id)
+            .unwrap_or_default();
+        if batch.is_empty() {
+            break;
+        }
+        let cursor = |entry: &agent_proto::agents::RunEntry| Cursor {
+            created_at_ms: entry.created_at_ms,
+            revision: entry.revision,
+        };
+        batch.sort_by_key(cursor);
+        position = batch.first().map(cursor);
+        // Resolve legacy attribution just as expanded tool reads do.
+        for entry in batch
+            .into_iter()
+            .rev()
+            .filter(|e| e.worker() == range.worker)
+        {
+            count += usize::from(entry.kind == RunEntryKind::ToolCall);
+            first = Some(cursor(&entry));
+        }
     }
-    if count == 0 && backend.count(&request)? == 0 {
-        return Ok(());
-    }
-    let fetched = backend.fetch(
-        &request
-            .select(["run_id", "revision", "kind", "created_at_ms"])
-            .sort_by("created_at_ms", SortDir::Asc)
-            .sort_by("revision", SortDir::Asc)
-            .limit(1),
-    )?;
-    if let Some(entry) = agent_proto::agents::rows::entries_from_rows(&fetched)
-        .remove(id)
-        .and_then(|es| es.into_iter().next())
-    {
+    if let Some(entry) = first {
         events.push(HistoryEvent {
             revision: entry.revision,
             tool_calls: count,
