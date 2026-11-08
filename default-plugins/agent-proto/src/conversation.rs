@@ -290,8 +290,8 @@ pub fn workers(backend: &impl Backend, id: &str) -> Result<Vec<String>, String> 
     }
     let request = FetchRequest::entity(rows::ENTRY_ENTITY)
         .filter(Pred::eq("run_id", id))
-        .filter(Pred::not_null("worker_id"))
-        .select(["run_id", "revision", "kind", "worker_id"])
+        .filter(Pred::not_null("worker_id").or(Pred::not_null("tool")))
+        .select(["run_id", "revision", "kind", "worker_id", "tool"])
         .limit(100);
     let mut offset = 0;
     loop {
@@ -314,9 +314,11 @@ pub fn workers(backend: &impl Backend, id: &str) -> Result<Vec<String>, String> 
 #[path = "unit/conversation.rs"]
 mod tests;
 
-/// Reconcile source reports without changing an existing archive row. Legacy
-/// SubagentStop text can account for only this worker's final transcript reply;
-/// identical earlier replies and replies in different turns remain distinct.
+/// Reconcile source reports without changing an existing archive row. Source
+/// identity is scoped to the worker, independently of the inferred turn. Only
+/// completion reports may stand in for a distinct source by text. SubagentStop
+/// text can account for only this worker's final transcript reply; identical
+/// earlier replies and replies in different turns remain distinct.
 pub fn missing_messages(
     messages: Vec<yinz_types::agent::CapturedMessage>,
     entries: &[RunEntry],
@@ -331,11 +333,28 @@ pub fn missing_messages(
         .into_iter()
         .filter(|m| {
             !entries.iter().any(|e| {
-                let identity = format!("message:{}", serde_json::json!([m.turn_id, m.source_id]));
-                if e.event_id.as_deref() == Some(identity.as_str()) {
+                if e.worker() != m.worker_id {
+                    return false;
+                }
+                // A bounded transcript can lose the prompt that supplied the turn ID.
+                if e.event_id
+                    .as_deref()
+                    .and_then(|id| id.strip_prefix("message:"))
+                    .and_then(|id| serde_json::from_str::<[String; 2]>(id).ok())
+                    .is_some_and(|[_, source]| source == m.source_id)
+                {
                     return true;
                 }
-                if e.worker() != m.worker_id {
+                let worker_fallback = e
+                    .event_id
+                    .as_ref()
+                    .is_some_and(|id| id.starts_with("subagent:"));
+                if e.kind != RunEntryKind::Result && !worker_fallback {
+                    return false;
+                }
+                if worker_fallback
+                    && m.worker_id.as_ref().and_then(|w| final_source.get(w)) != Some(&m.source_id)
+                {
                     return false;
                 }
                 let text = e
@@ -350,11 +369,7 @@ pub fn missing_messages(
                     return false;
                 }
                 e.conversation_turn_id.as_deref() == Some(m.turn_id.as_str())
-                    || e.event_id
-                        .as_ref()
-                        .is_some_and(|id| id.starts_with("subagent:"))
-                        && m.worker_id.as_ref().and_then(|w| final_source.get(w))
-                            == Some(&m.source_id)
+                    || worker_fallback
                         && e.created_at_ms
                             .zip(m.created_at_ms)
                             .is_some_and(|(recorded, source)| recorded >= source)

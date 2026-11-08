@@ -235,6 +235,212 @@ fn repair_skips_legacy_worker_completion_but_preserves_identical_prose_in_anothe
     assert_eq!(missing.len(), 1);
     assert_eq!(missing[0].turn_id, "one");
 }
+
+fn recovered(
+    source: &str,
+    worker: Option<&str>,
+    turn: &str,
+    text: &str,
+) -> yinz_types::agent::CapturedMessage {
+    yinz_types::agent::CapturedMessage {
+        source_id: source.into(),
+        worker_id: worker.map(str::to_owned),
+        turn_id: turn.into(),
+        text: text.into(),
+        created_at_ms: Some(10),
+        incomplete: false,
+    }
+}
+
+#[test]
+fn repair_preserves_distinct_sources_with_identical_text() {
+    for worker in [None, Some("worker")] {
+        let messages = vec![
+            recovered("one", worker, "turn", "answer"),
+            recovered("two", worker, "turn", "answer"),
+        ];
+        assert_eq!(missing_messages(messages.clone(), &[]), messages);
+        let mut known = entry(
+            1,
+            RunEntryKind::Message,
+            Some(10),
+            worker,
+            Some("turn"),
+            "answer",
+        );
+        // Prose without a source identity cannot stand in for either source.
+        assert_eq!(
+            missing_messages(messages.clone(), &[known.clone()]),
+            messages
+        );
+        known.event_id = Some(format!("message:{}", serde_json::json!(["turn", "one"])));
+        assert_eq!(
+            missing_messages(messages.clone(), &[known.clone()]),
+            messages[1..]
+        );
+        // Identity remains authoritative even if the source's text changes.
+        known.text = "different text".into();
+        assert_eq!(
+            missing_messages(messages.clone(), &[known.clone()]),
+            messages[1..]
+        );
+        let mut second = known.clone();
+        second.event_id = Some(format!("message:{}", serde_json::json!(["turn", "two"])));
+        assert!(missing_messages(messages, &[known, second]).is_empty());
+    }
+}
+
+#[test]
+fn repair_matches_stable_sources_after_the_prompt_leaves_the_transcript_tail() {
+    for worker in [None, Some("worker")] {
+        let mut known = entry(
+            1,
+            RunEntryKind::Message,
+            Some(10),
+            worker,
+            Some("prompt"),
+            "answer",
+        );
+        known.event_id = Some(format!(
+            "message:{}",
+            serde_json::json!(["prompt", "reply"])
+        ));
+        let archived = [known];
+        let original = archived.clone();
+        let mut message = recovered("reply", worker, "source:reply", "answer");
+        message.incomplete = true;
+        assert!(missing_messages(vec![message.clone()], &archived).is_empty());
+        // Source identity also wins if a later recovery restores the prompt.
+        let mut fallback = archived[0].clone();
+        fallback.conversation_turn_id = Some("source:reply".into());
+        fallback.event_id = Some(format!(
+            "message:{}",
+            serde_json::json!(["source:reply", "reply"])
+        ));
+        message.turn_id = "prompt".into();
+        assert!(missing_messages(vec![message], &[fallback]).is_empty());
+        assert_eq!(archived, original);
+    }
+}
+
+#[test]
+fn repair_source_identity_requires_matching_worker_attribution() {
+    let mut known = entry(
+        1,
+        RunEntryKind::Message,
+        Some(10),
+        Some("worker"),
+        Some("turn"),
+        "answer",
+    );
+    known.event_id = Some("message:[\"turn\",\"source\"]".into());
+    for worker in [None, Some("other")] {
+        for turn in ["turn", "source:source"] {
+            let message = recovered("source", worker, turn, "answer");
+            assert_eq!(
+                missing_messages(vec![message.clone()], &[known.clone()]),
+                [message]
+            );
+        }
+    }
+}
+
+#[test]
+fn repair_ignores_malformed_or_unrelated_source_identities() {
+    let mut known = entry(1, RunEntryKind::Message, Some(10), None, None, "answer");
+    let message = recovered("source", None, "source:source", "answer");
+    for identity in [
+        "message:invalid",
+        "message:[\"turn\"]",
+        "message:[\"turn\",\"source\",\"extra\"]",
+        "message:[null,\"source\"]",
+        "message:[\"turn\",42]",
+        "message:[\"turn\",\"source\"] trailing",
+        "subagent:[\"turn\",\"source\"]",
+    ] {
+        known.event_id = Some(identity.into());
+        assert_eq!(
+            missing_messages(vec![message.clone()], &[known.clone()]),
+            [message.clone()],
+            "{identity}"
+        );
+    }
+}
+
+#[test]
+fn repair_matches_result_text_only_within_the_same_worker_and_turn() {
+    let message = recovered("source", Some("worker"), "turn", "answer");
+    for (worker, turn, expected) in [
+        (Some("worker"), Some("turn"), 0),
+        (Some("other"), Some("turn"), 1),
+        (None, Some("turn"), 1),
+        (Some("worker"), Some("other"), 1),
+        (Some("worker"), None, 1),
+    ] {
+        let known = entry(1, RunEntryKind::Result, Some(20), worker, turn, " answer\n");
+        assert_eq!(
+            missing_messages(vec![message.clone()], &[known]).len(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn repair_worker_fallback_accounts_only_for_that_workers_final_source() {
+    for turn in [None, Some("turn")] {
+        for final_text in ["answer", "different"] {
+            let mut known = entry(
+                1,
+                RunEntryKind::Message,
+                Some(20),
+                Some("worker"),
+                turn,
+                "answer",
+            );
+            known.event_id = Some("subagent:[\"session\",\"\",\"worker\"]".into());
+            let messages = vec![
+                recovered("earlier", Some("worker"), "turn", "answer"),
+                recovered("final", Some("worker"), "turn", final_text),
+                recovered("other-final", Some("other"), "turn", "answer"),
+            ];
+            let expected = if final_text == "answer" {
+                vec![messages[0].clone(), messages[2].clone()]
+            } else {
+                messages.clone()
+            };
+            assert_eq!(missing_messages(messages, &[known]), expected);
+        }
+    }
+}
+
+#[test]
+fn repair_legacy_worker_fallback_requires_a_source_timestamp_no_later_than_the_fallback() {
+    let mut known = entry(
+        1,
+        RunEntryKind::Message,
+        Some(20),
+        Some("worker"),
+        None,
+        "answer",
+    );
+    known.event_id = Some("subagent:[\"session\",\"\",\"worker\"]".into());
+    for (recorded, source, expected) in [
+        (Some(20), Some(10), 0),
+        (Some(20), Some(20), 0),
+        (Some(20), Some(30), 1),
+        (None, Some(10), 1),
+        (Some(20), None, 1),
+    ] {
+        known.created_at_ms = recorded;
+        let mut message = recovered("final", Some("worker"), "turn", "answer");
+        message.created_at_ms = source;
+        assert_eq!(
+            missing_messages(vec![message], &[known.clone()]).len(),
+            expected
+        );
+    }
+}
+
 #[test]
 fn many_recovered_messages_do_not_advance_the_delivery_watermark_past_an_unread_revision() {
     let b = backend();
@@ -283,7 +489,71 @@ fn v4_archive_upgrade_adds_nullable_attribution_without_changing_legacy_rows() {
             "legacy text",
         )],
     );
+    // Write v4 rows directly: the current entry writer fills scalar attribution.
+    for revision in 2..=102 {
+        let hook = yinz_tile::agent::HookEvent {
+            hook_event_name: "PostToolUse".into(),
+            tool_name: Some("shell".into()),
+            agent_id: Some(format!("worker-{revision:03}")),
+            ..Default::default()
+        };
+        let capture = yinz_tile::agent::tool_capture::prepare("claude", &hook).unwrap();
+        b.apply(vec![yinz_tile::prelude::Mutation::put(rows::ENTRY_ENTITY)
+            .uid(format!("legacy-tool-{revision:03}"))
+            .set("run_id", "run")
+            .set("host_id", "host")
+            .set("revision", revision as i64)
+            .set("kind", "tool_result")
+            .set("text", "tool")
+            .set("tool", serde_json::to_string(&capture).unwrap())
+            .build()])
+            .unwrap();
+    }
     b.define(&store::agent_run_entry_def()).unwrap();
+    // The same worker can appear in both legacy and current attribution.
+    save(
+        &b,
+        &[entry(
+            103,
+            RunEntryKind::ToolCall,
+            Some(10),
+            Some("worker-002"),
+            None,
+            "current tool",
+        )],
+    );
+    assert_eq!(
+        workers(&b, "run").unwrap(),
+        (2..=102)
+            .map(|revision| format!("worker-{revision:03}"))
+            .collect::<Vec<_>>()
+    );
+    let range = Range {
+        start: None,
+        end: None,
+        worker: Some("worker-102".into()),
+    };
+    let worker_tools = tools(&b, "run", &range, None).unwrap();
+    assert_eq!(worker_tools.entries.len(), 1);
+    let legacy_tool = &worker_tools.entries[0];
+    assert_eq!(legacy_tool.revision, 102);
+    assert!(legacy_tool.worker_id.is_none());
+    assert_eq!(
+        legacy_tool.tool.as_ref().unwrap().worker_id.as_deref(),
+        Some("worker-102")
+    );
+    assert!(tools(
+        &b,
+        "run",
+        &Range {
+            worker: None,
+            ..range
+        },
+        None
+    )
+    .unwrap()
+    .entries
+    .is_empty());
     let p = page(&b, "run", None, None, None).unwrap();
     assert_eq!(p.entries.len(), 1);
     assert_eq!(p.entries[0].text, "legacy text");

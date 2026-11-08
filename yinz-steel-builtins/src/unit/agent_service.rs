@@ -1768,6 +1768,141 @@ fn conversation_capture_attributes_workers_and_deduplicates_alternative_completi
 }
 
 #[test]
+fn live_messages_preserve_distinct_source_ids_with_identical_text() {
+    for worker in [None, Some("worker")] {
+        let mut runtime = conversation_capture_runtime();
+        for source in ["first", "second"] {
+            let event = json!({"hook_event_name":"MessageDisplay", "session_id":"conversation",
+                "agent_id":worker, "prompt_id":"turn", "message_id":source,
+                "index":0, "final":true, "delta":"same reply"});
+            runtime.invoke("hook", vec![event.clone()]).unwrap();
+            runtime.invoke("hook", vec![event]).unwrap();
+        }
+        let entries = runtime.invoke("entries", vec![]).unwrap();
+        let entries = entries.as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        for entry in entries {
+            assert_eq!(entry["kind"], "message");
+            assert_eq!(entry["text"], "same reply");
+            assert_eq!(entry["worker_id"], json!(worker));
+            assert_eq!(entry["conversation_turn_id"], "turn");
+        }
+        assert_ne!(entries[0]["event_id"], entries[1]["event_id"]);
+    }
+}
+
+fn conversation_capture_runtime() -> yinz_steel::Runtime {
+    plugin_with_source(
+        "agent-service",
+        r#"
+        (require "./agent-service/state.scm" "./agent-service/messages.scm" "./agent-service/runs.scm")
+        (as-set! "host" "host") (as-set! "session" "destination")
+        (define (hook raw)
+          (define event (as-result (as-model "HookEvent" (yinz-json-string raw))))
+          (as-call "record-event" 7 "claude" event 100))
+        (define (entries) (hash-ref (as-map-get "runs" 7 #f) "entries"))
+    "#,
+        json!({}),
+        BTreeMap::new(),
+        "",
+    ).0
+}
+
+#[test]
+fn recovered_messages_preserve_distinct_sources_within_and_across_payloads() {
+    for successive in [false, true] {
+        let mut runtime = conversation_capture_runtime();
+        let messages: Vec<_> = ["first", "second"]
+            .into_iter()
+            .map(|source| {
+                json!({"source_id":source, "worker_id":"worker", "turn_id":"turn",
+                "text":"same reply", "incomplete":false})
+            })
+            .collect();
+        let payloads = if successive {
+            messages
+                .iter()
+                .cloned()
+                .map(|message| vec![message])
+                .collect()
+        } else {
+            vec![messages]
+        };
+        for payload in payloads {
+            let event = json!({"hook_event_name":"SubagentStop", "session_id":"conversation",
+                "agent_id":"worker", "assistant_messages":payload});
+            runtime.invoke("hook", vec![event.clone()]).unwrap();
+            runtime.invoke("hook", vec![event]).unwrap();
+        }
+        let entries = runtime.invoke("entries", vec![]).unwrap();
+        let entries = entries.as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_ne!(entries[0]["event_id"], entries[1]["event_id"]);
+        for entry in entries {
+            assert_eq!(entry["text"], "same reply");
+            assert_eq!(entry["worker_id"], "worker");
+            assert_eq!(entry["conversation_turn_id"], "turn");
+        }
+    }
+}
+
+#[test]
+fn native_worker_stop_reconciles_only_its_final_supplied_reply_without_a_turn() {
+    for (replies, fallback, expected_fallback) in [
+        (vec![("worker", "Done.")], "Done.", false),
+        (vec![("worker", "\u{7} Done.\t")], "\rDone.\n", false),
+        (
+            vec![
+                ("worker", "Done."),
+                ("worker", "Done."),
+                ("other", "different"),
+            ],
+            "Done.",
+            false,
+        ),
+        (
+            vec![("worker", "Done."), ("worker", "different")],
+            "Done.",
+            true,
+        ),
+        (vec![("other", "Done.")], "Done.", true),
+        (vec![("worker", "different")], "Done.", true),
+    ] {
+        let mut runtime = conversation_capture_runtime();
+        let messages: Vec<_> = replies
+            .iter()
+            .enumerate()
+            .map(|(index, (worker, text))| {
+                json!({"source_id":format!("source-{index}"), "worker_id":worker,
+                "turn_id":"recovered-turn", "created_at_ms":5, "text":text, "incomplete":false})
+            })
+            .collect();
+        let event = json!({"hook_event_name":"SubagentStop", "session_id":"conversation",
+            "agent_id":"worker", "agent_type":"general-purpose",
+            "last_assistant_message":fallback, "assistant_messages":messages});
+        // Every replay still supplies the final reply, even after MissingMessages filters it out.
+        for _ in 0..2 {
+            runtime.invoke("hook", vec![event.clone()]).unwrap();
+            let entries = runtime.invoke("entries", vec![]).unwrap();
+            let entries = entries.as_array().unwrap();
+            assert_eq!(
+                entries.len(),
+                replies.len() + usize::from(expected_fallback)
+            );
+            let fallbacks: Vec<_> = entries
+                .iter()
+                .filter(|entry| entry["event_id"].as_str().unwrap().starts_with("subagent:"))
+                .collect();
+            assert_eq!(fallbacks.len(), usize::from(expected_fallback));
+            if expected_fallback {
+                assert_eq!(fallbacks[0]["text"], "Done.");
+                assert!(fallbacks[0]["conversation_turn_id"].is_null());
+            }
+        }
+    }
+}
+
+#[test]
 fn worker_completions_keep_identical_prose_in_distinct_turns() {
     let (mut runtime, _) = plugin_with_source(
         "agent-service",

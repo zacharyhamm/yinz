@@ -834,6 +834,11 @@ impl Screen {
             return;
         }
         state.widget.clear_error();
+        if matches!(browser.action, HistoryAction::Workers { .. }) {
+            let action = browser.action.clone();
+            self.request_palette_agent(client, AgentAction::History(action), vec![]);
+            return;
+        }
         browser.rows.clear();
         state.widget.set_sections(vec![]);
         if state.widget.query().is_empty() {
@@ -1132,11 +1137,15 @@ impl Screen {
                     .map(|(id, q)| (id.to_string(), q.clone()))
                     == browser.history_scope =>
             {
-                state.widget.agent_page_request(matches!(
+                let latest = matches!(
                     action,
                     HistoryAction::Conversation { before: None, .. }
                         | HistoryAction::Tools { before: None, .. }
-                ));
+                );
+                state.widget.agent_page_request(latest);
+                if latest {
+                    browser.action = action.clone();
+                }
                 state.widget.clear_error();
                 state.agents.cancel();
                 self.request_palette_agent(client, AgentAction::History(action), vec![]);

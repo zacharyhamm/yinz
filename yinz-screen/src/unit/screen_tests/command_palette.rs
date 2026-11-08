@@ -5831,6 +5831,66 @@ fn history_run(
 }
 
 #[test]
+fn history_workers_refresh_retains_results_until_the_new_list_arrives() {
+    use yinz_bus::command_palette::{
+        AgentAction, AgentReply, AgentRequest, HistoryAction, HistoryReply, HistoryRow, Instruction,
+    };
+    let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let (tx, requests) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let next = || loop {
+        let (instruction, _) = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let PluginInstruction::PaletteAgent(request) = instruction {
+            break *request;
+        }
+    };
+    let reply = |request: &AgentRequest, worker: &str| Instruction::AgentReply {
+        client: CLIENT,
+        opening: request.opening,
+        step: request.step,
+        reply: Ok(AgentReply::History(HistoryReply::Rows {
+            rows: vec![HistoryRow {
+                id: worker.into(),
+                label: format!("Worker {worker}"),
+                description: String::new(),
+                action: HistoryAction::Conversation {
+                    id: "run".into(),
+                    worker: Some(worker.into()),
+                    before: None,
+                },
+            }],
+            status: "Workers".into(),
+        })),
+    };
+    screen.toggle_command_palette(CLIENT);
+    screen.open_palette_history(
+        CLIENT,
+        None,
+        Some(HistoryAction::Workers { id: "run".into() }),
+    );
+    screen.plugin_palette_instruction(reply(&next(), "alpha"));
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("Worker alpha"), "{frame}");
+    let position = palette_text_position(&screen, CLIENT, "Refresh");
+    screen.command_palette_handles_mouse(&MouseEvent::new_left_press_event(position), CLIENT);
+    screen.command_palette_handles_mouse(&MouseEvent::new_left_release_event(position), CLIENT);
+    palette_key(&mut screen, BareKey::Enter); // Picker clicks select; Enter activates.
+    let pending = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(pending.contains("Worker alpha"), "{pending}");
+    let refresh = next();
+    assert!(matches!(
+        &refresh.action,
+        AgentAction::History(HistoryAction::Workers { id }) if id == "run"
+    ));
+    screen.plugin_palette_instruction(reply(&refresh, "bravo"));
+    let refreshed = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(refreshed.contains("Worker bravo"), "{refreshed}");
+    assert!(!refreshed.contains("Worker alpha"), "{refreshed}");
+}
+
+#[test]
 fn history_workers_picker_opens_selected_conversation_and_restores_parent() {
     use yinz_bus::command_palette::{
         AgentAction, AgentReply, AgentRequest, HistoryAction, HistoryReply, HistoryRow, Instruction,
@@ -6122,6 +6182,201 @@ fn history_tool_activity_search_restores_range_and_cursor() {
             .plugin_palette_instruction(reply(&restored, history_page_rows(31..=59, false, None)));
         let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert!(frame.contains("Event 59"), "{frame}");
+    }
+}
+
+#[test]
+fn history_latest_retargets_live_conversation_polling_after_a_search_hit() {
+    history_latest_polling_case(false, None);
+}
+
+#[test]
+fn history_latest_retargets_live_worker_polling_after_a_search_hit() {
+    history_latest_polling_case(false, Some("worker"));
+}
+
+#[test]
+fn history_latest_retargets_live_tool_polling() {
+    history_latest_polling_case(true, Some("worker"));
+}
+
+fn history_latest_polling_case(tools: bool, worker: Option<&str>) {
+    use yinz_bus::command_palette::{
+        AgentAction, AgentReply, AgentRequest, HistoryAction, HistoryRow, Instruction,
+    };
+    use yinz_types::agent::{history::Cursor, history::Range, AgentInfo, AgentSource, AgentState};
+    let mut screen = screen();
+    screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
+        PaneId::Terminal(TerminalId::new(1)),
+        Some(AgentInfo {
+            kind: "codex".into(),
+            state: AgentState::Idle,
+            source: AgentSource::Reported,
+            detail: None,
+            waiting_on: None,
+            wait_needs_a_person: false,
+            cwd: None,
+            session_id: Some("session".into()),
+            run_id: Some("run".into()),
+        }),
+    );
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let (tx, requests) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let next = || loop {
+        let (instruction, _) = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let PluginInstruction::PaletteAgent(request) = instruction
+            && matches!(request.action, AgentAction::History(_))
+        {
+            break *request;
+        }
+    };
+    let (tx, ticks) = channels::unbounded();
+    screen.bus.senders.to_screen = Some(SenderWithContext::new(tx));
+    let next_tick = || loop {
+        let (instruction, _) = ticks.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let ScreenInstruction::CommandPalette(tick @ Instruction::HistoryTick { .. }) =
+            instruction
+        {
+            break tick;
+        }
+    };
+    let action = |before| {
+        if tools {
+            HistoryAction::Tools {
+                id: "run".into(),
+                range: Range {
+                    start: Some(Cursor {
+                        created_at_ms: None,
+                        revision: 1,
+                    }),
+                    end: Some(Cursor {
+                        created_at_ms: None,
+                        revision: 100,
+                    }),
+                    worker: worker.map(str::to_owned),
+                },
+                before,
+            }
+        } else {
+            HistoryAction::Conversation {
+                id: "run".into(),
+                worker: worker.map(str::to_owned),
+                before,
+            }
+        }
+    };
+    let anchored = action(Some(Cursor {
+        created_at_ms: None,
+        revision: 51,
+    }));
+    let latest = action(None);
+    let assert_action =
+        |request: &AgentRequest, expected: &HistoryAction| match (&request.action, expected) {
+            (
+                AgentAction::History(HistoryAction::Conversation { id, worker, before }),
+                HistoryAction::Conversation {
+                    id: expected_id,
+                    worker: expected_worker,
+                    before: expected_before,
+                },
+            ) => assert_eq!(
+                (id, worker, before),
+                (expected_id, expected_worker, expected_before)
+            ),
+            (
+                AgentAction::History(HistoryAction::Tools { id, range, before }),
+                HistoryAction::Tools {
+                    id: expected_id,
+                    range: expected_range,
+                    before: expected_before,
+                },
+            ) => assert_eq!(
+                (id, range, before),
+                (expected_id, expected_range, expected_before)
+            ),
+            _ => panic!("expected {expected:?}, received {:?}", request.action),
+        };
+    let reply = |request: &AgentRequest, revision| {
+        let mut rows = history_page_rows(revision..=revision, false, None);
+        for (id, label, action) in [
+            ("context", "", anchored.clone()),
+            (
+                "earlier",
+                "Load earlier messages",
+                action(Some(Cursor {
+                    created_at_ms: None,
+                    revision,
+                })),
+            ),
+            ("latest", "Latest / Refresh", latest.clone()),
+        ] {
+            rows.push(HistoryRow {
+                id: id.into(),
+                label: label.into(),
+                description: String::new(),
+                action,
+            });
+        }
+        Instruction::AgentReply {
+            client: CLIENT,
+            opening: request.opening,
+            step: request.step,
+            reply: Ok(AgentReply::History(history_run(rows))),
+        }
+    };
+    let live = screen.live_palette_agents().pop().unwrap();
+    screen.toggle_command_palette(CLIENT);
+    screen.open_palette_history(
+        CLIENT,
+        Some(live),
+        Some(if tools {
+            anchored.clone()
+        } else {
+            HistoryAction::Hit {
+                id: "run".into(),
+                revision: 50,
+            }
+        }),
+    );
+    screen.plugin_palette_instruction(reply(&next(), 50));
+    for (label, expected_poll, revision) in [
+        ("Load earlier messages", &anchored, 49),
+        ("Latest / Refresh", &latest, 90),
+        ("Load earlier messages", &latest, 48),
+    ] {
+        // Consume the previous generation's timer before issuing a new request.
+        let _obsolete = next_tick();
+        let position = palette_text_position(&screen, CLIENT, label);
+        screen.command_palette_handles_mouse(&MouseEvent::new_left_press_event(position), CLIENT);
+        screen.command_palette_handles_mouse(&MouseEvent::new_left_release_event(position), CLIENT);
+        let request = next();
+        if label == "Latest / Refresh" {
+            assert_action(&request, &latest);
+        } else {
+            assert!(matches!(
+                &request.action,
+                AgentAction::History(
+                    HistoryAction::Conversation {
+                        before: Some(_),
+                        ..
+                    } | HistoryAction::Tools {
+                        before: Some(_),
+                        ..
+                    }
+                )
+            ));
+        }
+        screen.plugin_palette_instruction(reply(&request, revision));
+        screen.plugin_palette_instruction(next_tick());
+        let poll = next();
+        assert_action(&poll, expected_poll);
+        screen.plugin_palette_instruction(reply(&poll, revision + 1));
+        if label == "Latest / Refresh" {
+            let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+            assert!(frame.contains("Event 91"), "{frame}");
+        }
     }
 }
 
