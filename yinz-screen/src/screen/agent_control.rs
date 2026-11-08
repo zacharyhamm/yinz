@@ -68,6 +68,11 @@ impl Lifecycle {
         self.last_message.as_deref()
     }
 
+    #[cfg(test)]
+    pub(crate) fn handoff_for_test(&self) -> LifecycleState {
+        self.handoff()
+    }
+
     /// The notification turn a Claude hook belongs to, by its prompt ID.
     fn claude_notification(&self, hook: &HookEvent) -> Option<&ClaudeNotification> {
         hook.prompt_id
@@ -3093,8 +3098,17 @@ impl Screen {
                 self.claude_permission_waits.insert(pane, wait);
                 continue;
             }
-            // shortcut: Enter infers an answer and may open another dialog; use dialog detection if needed.
-            agent.state = AgentState::Busy;
+            // Enter infers an answer, but an anonymous background permission prompt must
+            // not reopen a confirmed caller turn. Publishing aggregates the remaining work.
+            agent.state = if self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
+                lifecycle.kind == "claude"
+                    && lifecycle.conversation == wait.conversation
+                    && lifecycle.claude_confirmation == Some(true)
+            }) {
+                AgentState::Idle
+            } else {
+                AgentState::Busy
+            };
             agent.detail = None;
             agent.waiting_on = None;
             agent.wait_needs_a_person = false;

@@ -11664,6 +11664,461 @@ fn notification_permission_wait_clears_only_after_delivered_enter() {
     }
 }
 
+fn claude_lifecycle(screen: &Screen) -> yinz_types::agent::tracking::LifecycleState {
+    screen.agent_lifecycle[&PANE].handoff_for_test()
+}
+
+fn claude_background_permission_request(name: &str) -> HookEvent {
+    HookEvent {
+        tool_name: Some("Bash".into()),
+        tool_use_id: Some("worker-bash".into()),
+        ..claude_worker(name, "worker")
+    }
+}
+
+fn claude_background_permission_wait(screen: &mut Screen, caller_id: bool) {
+    report_kind(
+        screen,
+        "claude",
+        claude_background_permission_request("PermissionRequest"),
+    );
+    report_kind(
+        screen,
+        "claude",
+        HookEvent {
+            prompt_id: caller_id.then(|| "prompt".into()),
+            ..claude_permission_prompt()
+        },
+    );
+    assert!(claude_lifecycle(screen).claude_notifications.is_empty());
+    assert_eq!(
+        screen.agent_status_for_test().agent.state,
+        AgentState::Waiting
+    );
+}
+
+#[test]
+fn claude_background_permission_approval_restores_completed_parent_and_finishes_idle_wait() {
+    for cli in [false, true] {
+        for caller_id in [false, true] {
+            for more_background in [false, true] {
+                let (mut screen, messages, writes) = setup("claude");
+                complete_with_background(&mut screen, &messages, &writes, true);
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    claude_worker("SubagentStart", "worker"),
+                );
+                let (sender, plugins) = channels::unbounded();
+                screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+                screen.background_plugin_subscriptions.insert(
+                    (PluginId::new(99), CLIENT),
+                    HashSet::from([EventType::PaneUpdate]),
+                );
+                claude_background_permission_wait(&mut screen, caller_id);
+                let previous_consumption = claude_lifecycle(&screen).input_revision;
+                permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
+                assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+                let consumption = if cli {
+                    Some(screen.tabs[&TabId::new(0)].agent_input_revision(PANE))
+                } else {
+                    previous_consumption
+                };
+                let lifecycle = &claude_lifecycle(&screen);
+                let parent = lifecycle.claude.parent.as_ref().unwrap();
+                assert_eq!(
+                    parent.state,
+                    AgentState::Idle,
+                    "cli={cli} caller_id={caller_id}"
+                );
+                assert_eq!(parent.detail, None);
+                assert_eq!(parent.waiting_on, None);
+                assert!(!parent.wait_needs_a_person);
+                assert_eq!(lifecycle.claude_confirmation, Some(true));
+                assert!(screen.agent_status_for_test().background);
+                assert!(screen.claude_permission_waits.is_empty());
+                // Terminal Enter has no CLI consumption receipt; observe the empty composer
+                // so the idle wait also has independent evidence of input readiness.
+                draft_frame(&mut screen, "claude", "", 0, Instant::now());
+                let waiter = ClientId::new(2);
+                screen.agent_control(wait(AgentState::Idle), waiter);
+                assert!(replies(&messages, waiter).is_empty());
+                for name in ["PreToolUse", "PostToolUse", "SubagentStop"] {
+                    report_kind(
+                        &mut screen,
+                        "claude",
+                        claude_background_permission_request(name),
+                    );
+                    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+                    assert_eq!(
+                        claude_lifecycle(&screen)
+                            .claude
+                            .parent
+                            .as_ref()
+                            .unwrap()
+                            .state,
+                        AgentState::Idle
+                    );
+                }
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    task_notification("notification", &["worker"]),
+                );
+                // Registry idle cannot finish an in-flight notification turn.
+                report_kind(&mut screen, "claude", background_idle("prompt"));
+                assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+                assert!(replies(&messages, waiter).is_empty());
+                let published: Vec<_> = plugins
+                    .try_iter()
+                    .flat_map(|(instruction, _)| {
+                        let PluginInstruction::Update(updates) = instruction else {
+                            return vec![];
+                        };
+                        updates
+                    })
+                    .filter_map(|(_, _, event)| {
+                        let Event::PaneUpdate(manifest) = event else {
+                            return None;
+                        };
+                        manifest
+                            .panes
+                            .values()
+                            .flatten()
+                            .find(|pane| pane.id == PANE)
+                            .and_then(|pane| pane.agent.as_ref().map(|agent| agent.state))
+                    })
+                    .collect();
+                assert!(published.contains(&AgentState::Waiting));
+                assert!(published.contains(&AgentState::Busy));
+                assert!(
+                    !published.contains(&AgentState::Idle),
+                    "permission approval must keep publishing aggregate activity"
+                );
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    claude_stop("notification", "Worker finished.", more_background),
+                );
+                if more_background {
+                    assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+                    assert!(screen.agent_status_for_test().background);
+                    assert!(replies(&messages, waiter).is_empty());
+                    report_kind(&mut screen, "claude", background_idle("notification"));
+                }
+                let done = replies(&messages, waiter);
+                assert_eq!(done.len(), 1);
+                assert_eq!(done[0].outcome, AgentOutcome::Ok);
+                assert_eq!(done[0].message.as_deref(), Some("Worker finished."));
+                assert!(!done[0].background);
+                assert_eq!(done[0].agents[0].agent.state, AgentState::Idle);
+                assert_eq!(claude_lifecycle(&screen).input_revision, consumption);
+                assert!(plugins.try_iter().any(|(instruction, _)| {
+                    let PluginInstruction::Update(updates) = instruction else { return false };
+                    updates.into_iter().any(|(_, _, event)| {
+                        matches!(event, Event::PaneUpdate(manifest) if manifest.panes.values().flatten()
+                            .any(|pane| pane.id == PANE && pane.agent.as_ref().is_some_and(|a| a.state == AgentState::Idle)))
+                    })
+                }));
+            }
+        }
+    }
+}
+
+#[test]
+fn claude_background_permission_repeated_dialogs_require_new_enter_and_preserve_drafts() {
+    for cli in [false, true] {
+        for early_enter in [false, true] {
+            let (mut screen, messages, writes) = setup("claude");
+            complete_with_background(&mut screen, &messages, &writes, true);
+            if early_enter {
+                permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
+            }
+            for _ in 0..2 {
+                // Repeated Notifications and an earlier Enter cannot answer a new dialog.
+                for _ in 0..2 {
+                    claude_background_permission_wait(&mut screen, false);
+                }
+                permission_key(&mut screen, KeyWithModifier::new(BareKey::Down), cli);
+                assert_eq!(
+                    screen.agent_status_for_test().agent.state,
+                    AgentState::Waiting
+                );
+                permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
+                assert_eq!(
+                    claude_lifecycle(&screen)
+                        .claude
+                        .parent
+                        .as_ref()
+                        .unwrap()
+                        .state,
+                    AgentState::Idle
+                );
+                assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+            }
+            // Activity completion must not consume a draft typed after permission approval.
+            let consumption = screen
+                .agent_dialog_inputs
+                .get(&PANE)
+                .map(|input| input.input_revision)
+                .or(claude_lifecycle(&screen).input_revision);
+            screen.agent_write_for_test();
+            draft_frame(
+                &mut screen,
+                "claude",
+                "unsubmitted draft",
+                17,
+                Instant::now(),
+            );
+            let revision = screen.tabs[&TabId::new(0)].agent_input_revision(PANE);
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_background_permission_request("PostToolUse"),
+            );
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_worker("SubagentStop", "worker"),
+            );
+            report_kind(
+                &mut screen,
+                "claude",
+                task_notification("notification", &["worker"]),
+            );
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_stop("notification", "finished", false),
+            );
+            let status = screen.agent_status_for_test();
+            assert_eq!(status.agent.state, AgentState::Idle);
+            assert!(!status.background);
+            assert_eq!(
+                status.not_ready_reason,
+                Some(NotReadyReason::UnconsumedInput)
+            );
+            assert_eq!(
+                screen.tabs[&TabId::new(0)].agent_input_revision(PANE),
+                revision
+            );
+            assert_eq!(claude_lifecycle(&screen).input_revision, consumption);
+            assert!(screen.tabs[&TabId::new(0)]
+                .get_pane_with_id(PANE)
+                .unwrap()
+                .dump_screen(false, Some(CLIENT))
+                .contains("unsubmitted draft"));
+        }
+    }
+}
+
+#[test]
+fn claude_background_permission_unconfirmed_callers_remain_busy_after_approval() {
+    for confirmation in [None, Some(false)] {
+        for cli in [false, true] {
+            let (mut screen, _, _) = setup("claude");
+            report_kind(&mut screen, "claude", hook("SessionStart"));
+            report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+            if let Some(complete) = confirmation {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    HookEvent {
+                        claude_turn_complete: Some(complete),
+                        ..claude_stop("prompt", "still working", true)
+                    },
+                );
+            }
+            claude_background_permission_wait(&mut screen, true);
+            permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
+            assert_eq!(claude_lifecycle(&screen).claude_confirmation, confirmation);
+            assert_eq!(
+                claude_lifecycle(&screen)
+                    .claude
+                    .parent
+                    .as_ref()
+                    .unwrap()
+                    .state,
+                AgentState::Busy
+            );
+            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_stop("prompt", "finished", false),
+            );
+            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+        }
+    }
+}
+
+#[test]
+fn claude_background_permission_new_callers_invalidate_old_completion_evidence() {
+    for recovered in [false, true] {
+        for cli in [false, true] {
+            let (mut screen, messages, writes) = setup("claude");
+            complete_with_background(&mut screen, &messages, &writes, true);
+            claude_background_permission_wait(&mut screen, false);
+            if !recovered {
+                permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    task_notification("notification", &["worker"]),
+                );
+            }
+            report_kind(
+                &mut screen,
+                "claude",
+                if recovered {
+                    recovered_prompt("newer", "prompt")
+                } else {
+                    HookEvent {
+                        prompt_id: Some("newer".into()),
+                        ..hook("UserPromptSubmit")
+                    }
+                },
+            );
+            assert_eq!(claude_lifecycle(&screen).claude_confirmation, None);
+            if recovered {
+                assert_eq!(
+                    screen.agent_status_for_test().agent.state,
+                    AgentState::Waiting
+                );
+                assert!(screen.claude_permission_waits.contains_key(&PANE));
+            } else {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    HookEvent {
+                        prompt_id: Some("newer".into()),
+                        ..claude_permission_prompt()
+                    },
+                );
+            }
+            permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
+            assert_eq!(
+                claude_lifecycle(&screen)
+                    .claude
+                    .parent
+                    .as_ref()
+                    .unwrap()
+                    .state,
+                AgentState::Busy
+            );
+            if recovered {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    task_notification("notification", &["worker"]),
+                );
+            }
+            for stale in [
+                background_idle("prompt"),
+                claude_stop("notification", "older answer", false),
+                claude_stop("prompt", "Started.", false),
+            ] {
+                report_kind(&mut screen, "claude", stale);
+                assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+                assert_eq!(claude_lifecycle(&screen).claude_confirmation, None);
+                assert_eq!(
+                    claude_lifecycle(&screen)
+                        .claude
+                        .parent
+                        .as_ref()
+                        .unwrap()
+                        .state,
+                    AgentState::Busy
+                );
+            }
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_stop("newer", "new answer", false),
+            );
+            assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+            assert!(!screen.agent_status_for_test().background);
+        }
+    }
+}
+
+#[test]
+fn claude_background_permission_approval_preserves_concurrent_worker_tools_after_stop() {
+    for cli in [false, true] {
+        let (mut screen, messages, writes) = setup("claude");
+        complete_with_background(&mut screen, &messages, &writes, true);
+        claude_background_permission_wait(&mut screen, false);
+        for (worker, tool) in [
+            ("one", "question-1"),
+            ("one", "question-2"),
+            ("two", "question-3"),
+        ] {
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_worker_input("PreToolUse", worker, Some(tool)),
+            );
+        }
+        permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
+        assert_eq!(
+            claude_lifecycle(&screen)
+                .claude
+                .parent
+                .as_ref()
+                .unwrap()
+                .state,
+            AgentState::Idle
+        );
+        assert_eq!(
+            screen.agent_worker_waits[&PANE].parent.state,
+            AgentState::Idle
+        );
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
+        draft_frame(&mut screen, "claude", "", 0, Instant::now());
+        report_kind(
+            &mut screen,
+            "claude",
+            task_notification("notification", &["worker"]),
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_stop("notification", "finished", false),
+        );
+        assert!(!screen.agent_status_for_test().background);
+        let waiter = ClientId::new(2);
+        for event in [
+            claude_worker("SubagentStop", "one"),
+            claude_worker("SubagentStop", "two"),
+            claude_background_permission_request("PostToolUse"),
+            claude_worker_input("PostToolUse", "one", Some("unrelated")),
+            claude_worker_input("PostToolUse", "one", Some("question-1")),
+            claude_worker_input("PostToolUse", "two", Some("question-3")),
+        ] {
+            report_kind(&mut screen, "claude", event);
+            assert_eq!(
+                screen.agent_status_for_test().agent.state,
+                AgentState::Waiting
+            );
+        }
+        assert!(screen.agent_worker_waits[&PANE].waits.contains_key("one"));
+        assert!(!screen.agent_worker_waits[&PANE].waits.contains_key("two"));
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker_input("PostToolUse", "one", Some("question-2")),
+        );
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+        screen.agent_control(wait(AgentState::Idle), waiter);
+        let done = replies(&messages, waiter);
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].message.as_deref(), Some("finished"));
+    }
+}
+
 #[test]
 fn claude_steering_delivery_is_bounded_during_continuous_background_output() {
     let (mut screen, messages, writes) = setup("claude");

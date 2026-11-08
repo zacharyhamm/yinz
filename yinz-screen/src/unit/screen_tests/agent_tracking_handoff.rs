@@ -823,6 +823,104 @@ fn warp_tracking_notification_permission_wait_clears_after_delivered_enter() {
 }
 
 #[test]
+fn warp_tracking_completed_parent_background_permission_restores_idle_after_approval() {
+    for cli in [false, true] {
+        for caller_id in [false, true] {
+            for prior_destination_enter in [false, true] {
+                for transfers in [1, 2] {
+                    let (mut source, mut messages, mut writes) = setup_tracking("claude");
+                    complete_with_background(&mut source, &messages, &writes, true);
+                    report_kind(
+                        &mut source,
+                        "claude",
+                        claude_worker("SubagentStart", "worker"),
+                    );
+                    claude_background_permission_wait(&mut source, caller_id);
+                    let waiting = source.agent_status_for_test().agent;
+                    for _ in 0..transfers {
+                        let (mut destination, destination_messages, destination_writes) =
+                            setup_tracking("claude");
+                        if prior_destination_enter {
+                            report_kind(&mut destination, "claude", hook("SessionStart"));
+                            permission_key(
+                                &mut destination,
+                                KeyWithModifier::new(BareKey::Enter),
+                                cli,
+                            );
+                            assert_eq!(finish_paste(&destination_writes), b"\r");
+                        }
+                        transfer_into(&mut source, &mut destination);
+                        destination.refresh_agent_controls();
+                        assert_eq!(destination.agent_status_for_test().agent, waiting);
+                        assert!(destination.agent_status_for_test().background);
+                        assert_eq!(
+                            claude_lifecycle(&destination).claude_confirmation,
+                            Some(true)
+                        );
+                        assert!(claude_lifecycle(&destination)
+                            .claude_notifications
+                            .is_empty());
+                        permission_key(&mut destination, KeyWithModifier::new(BareKey::Down), cli);
+                        assert_eq!(destination.agent_status_for_test().agent, waiting);
+                        source = destination;
+                        messages = destination_messages;
+                        writes = destination_writes;
+                    }
+                    finish_paste(&writes);
+                    permission_key(&mut source, KeyWithModifier::new(BareKey::Enter), cli);
+                    assert_eq!(finish_paste(&writes), b"\r");
+                    assert!(source.claude_permission_waits.is_empty());
+                    assert_eq!(
+                        claude_lifecycle(&source)
+                            .claude
+                            .parent
+                            .as_ref()
+                            .unwrap()
+                            .state,
+                        AgentState::Idle
+                    );
+                    assert_eq!(source.agent_status_for_test().agent.state, AgentState::Busy);
+                    draft_frame(&mut source, "claude", "", 0, Instant::now());
+                    let waiter = ClientId::new(2);
+                    source.agent_control(wait(AgentState::Idle), waiter);
+                    for name in ["PreToolUse", "PostToolUse", "SubagentStop"] {
+                        report_kind(
+                            &mut source,
+                            "claude",
+                            claude_background_permission_request(name),
+                        );
+                        assert_eq!(source.agent_status_for_test().agent.state, AgentState::Busy);
+                        assert!(replies(&messages, waiter).is_empty());
+                    }
+                    report_kind(
+                        &mut source,
+                        "claude",
+                        task_notification("notification", &["worker"]),
+                    );
+                    report_kind(&mut source, "claude", background_idle("prompt"));
+                    assert_eq!(source.agent_status_for_test().agent.state, AgentState::Busy);
+                    assert!(replies(&messages, waiter).is_empty());
+                    report_kind(
+                        &mut source,
+                        "claude",
+                        claude_stop("notification", "Transferred worker finished.", false),
+                    );
+                    let done = replies(&messages, waiter);
+                    assert_eq!(done.len(), 1);
+                    assert_eq!(done[0].outcome, AgentOutcome::Ok);
+                    assert_eq!(
+                        done[0].message.as_deref(),
+                        Some("Transferred worker finished.")
+                    );
+                    assert_eq!(source.agent_status_for_test().agent.state, AgentState::Idle);
+                    assert!(!source.agent_status_for_test().background);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn warp_tracking_finalizes_requests_and_retains_launch_and_submission_history() {
     let (mut source, messages, writes) = setup_tracking("codex");
     report(&mut source, hook("SessionStart"));
