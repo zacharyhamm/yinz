@@ -3324,6 +3324,13 @@ pub enum PluginCommand {
         pane_id: PaneId,
         agent: Option<AgentInfo>,
     },
+    /// Publish inferred busy/idle activity only if the pane still has `expected` and
+    /// its agent has not reported a state. Preserves the record's source and metadata.
+    SetPaneAgentActivity {
+        pane_id: PaneId,
+        expected: AgentInfo,
+        state: AgentState,
+    },
     /// Set the id of the run record this plugin is keeping for `pane_id`'s agent, or clear it
     /// with `None`.
     ///

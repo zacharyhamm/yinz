@@ -408,6 +408,12 @@ The state vocabulary is `busy`, `waiting`, `idle` and `exited`. Reporting source
 distinguish launch metadata (`Spawned`), manual registration (`Registered`) and
 agent reports (`Reported`). JSON retains these existing state and source names.
 
+Agent info and the status bar read the same pane state. Without agent reports,
+the agent service samples screen activity every five seconds and publishes inferred
+busy/idle changes to that record, preserving its `Spawned` or `Registered` source.
+Agent reports take precedence over inferred activity. Inferred state alone does not
+establish prompt readiness.
+
 Status includes `status_available`, `ready`, `prompt_supported` and
 `not_ready_reason`. List and status expose the reason in JSON and text output.
 When several conditions block readiness, the first matching reason applies:

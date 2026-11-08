@@ -3032,6 +3032,18 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 }),
                 _ => Err("Mismatched payload for SetPaneAgent"),
             },
+            Some(CommandName::SetPaneAgentActivity) => match protobuf_plugin_command.payload {
+                Some(Payload::SetPaneAgentActivityPayload(payload)) => {
+                    let (pane_id, expected, state) = serde_json::from_str(&payload)
+                        .map_err(|_| "invalid pane agent activity payload")?;
+                    Ok(PluginCommand::SetPaneAgentActivity {
+                        pane_id,
+                        expected,
+                        state,
+                    })
+                },
+                _ => Err("Mismatched payload for SetPaneAgentActivity"),
+            },
             Some(CommandName::SetPaneAgentRun) => match protobuf_plugin_command.payload {
                 Some(Payload::SetPaneAgentRunPayload(payload)) => {
                     Ok(PluginCommand::SetPaneAgentRun {
@@ -5564,6 +5576,17 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     pane_id: pane_id.try_into().ok(),
                     agent: agent.map(ProtobufAgentInfo::try_from).transpose()?,
                 })),
+            }),
+            PluginCommand::SetPaneAgentActivity {
+                pane_id,
+                expected,
+                state,
+            } => Ok(ProtobufPluginCommand {
+                name: CommandName::SetPaneAgentActivity as i32,
+                payload: Some(Payload::SetPaneAgentActivityPayload(
+                    serde_json::to_string(&(pane_id, expected, state))
+                        .map_err(|_| "invalid pane agent activity payload")?,
+                )),
             }),
             PluginCommand::SetPaneAgentRun { pane_id, run_id } => Ok(ProtobufPluginCommand {
                 name: CommandName::SetPaneAgentRun as i32,

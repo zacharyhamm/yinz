@@ -203,7 +203,7 @@
             (as-map-remove! "hooks" id)
             (as-map-remove! "waiting-transitions" id)
             (as-set! "event-fed" (filter (lambda (other) (not (= id other))) (as-get "event-fed"))))
-          ((or (not (member id (as-get "event-fed"))) (equal? (hash-ref agent "kind") "claude"))
+          (else
             (define feed (as-model "HookFeed" agent))
             (when (as-present? feed)
               (define previous (as-map-get "hooks" id #f))

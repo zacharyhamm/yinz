@@ -298,6 +298,7 @@ enum CommandName {
   YinzUpdateStatus = 321;
   UpdateYinzFromSource = 322;
   UpdateYinzPrerelease = 323;
+  SetPaneAgentActivity = 324;
 }
 
 message PluginCommand {
@@ -310,6 +311,7 @@ message PluginCommand {
   reserved 108, 109, 110, 164, 165, 167, 173, 187;
   CommandName name = 1;
   oneof payload {
+    string set_pane_agent_activity_payload = 261;
     string get_session_inventory_payload = 259;
     string switch_session_destination_payload = 260;
     string get_plugin_ids_for_url_payload = 243;

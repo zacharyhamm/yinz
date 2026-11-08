@@ -2655,6 +2655,46 @@ fn compact_rows_only_change_with_identity_or_state() {
 }
 
 #[test]
+fn strip_rows_use_shared_pane_state_over_stale_hooks_and_screen_samples() {
+    let mut pane = pane(12, "codex", Some("codex"));
+    for source in [
+        AgentSource::Spawned,
+        AgentSource::Registered,
+        AgentSource::Reported,
+    ] {
+        for (state, phase, polls, symbol) in [
+            (AgentState::Busy, HookPhase::Idle, 10, '●'),
+            (AgentState::Idle, HookPhase::Busy, 0, '○'),
+            (AgentState::Waiting, HookPhase::Busy, 0, '!'),
+            (AgentState::Busy, HookPhase::Waiting, 10, '●'),
+        ] {
+            let mut record = registered_agent("codex", None);
+            record.source = source;
+            record.state = state;
+            pane.agent = Some(record);
+            let rows = strip_rows(
+                &[pane.clone()],
+                &BTreeMap::new(),
+                &Activity::from([(12, (1, polls))]),
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &Summaries::new(),
+                &feeds(&[(12, phase)]),
+            );
+            let row = rows
+                .iter()
+                .find_map(|row| match row {
+                    StripRow::Agent { text, waiting, .. } => Some((text, waiting)),
+                    _ => None,
+                })
+                .unwrap();
+            assert!(row.0.ends_with(symbol), "{source:?} {state:?}: {row:?}");
+            assert_eq!(*row.1, state == AgentState::Waiting);
+        }
+    }
+}
+
+#[test]
 fn strip_rows_flag_only_the_agents_waiting_on_an_answer() {
     let panes = vec![
         pane(3, "codex", Some("codex")),

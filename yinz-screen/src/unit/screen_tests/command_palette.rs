@@ -4675,6 +4675,91 @@ fn live_agent_results_refresh_panel_presentation_in_root_and_picker() {
 }
 
 #[test]
+fn agent_activity_updates_info_and_preserves_registration_and_run_metadata() {
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+
+    let mut screen = screen();
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    let agent: AgentInfo = serde_json::from_value(serde_json::json!({
+        "kind": "codex", "state": "Idle", "source": "Registered", "cwd": "/work/tree"
+    }))
+    .unwrap();
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .set_pane_agent(pane, Some(agent));
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    palette_search(&mut screen, "provider:codex");
+    palette_key(&mut screen, BareKey::Enter);
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("○ codex  idle"), "{frame}");
+
+    for (state, label) in [
+        (AgentState::Busy, "● codex  working"),
+        (AgentState::Idle, "○ codex  idle"),
+    ] {
+        let expected = screen.get_pane_info(pane).unwrap().agent.unwrap();
+        screen
+            .set_pane_agent_activity(pane, expected.clone(), state)
+            .unwrap();
+        let current = screen.get_pane_info(pane).unwrap().agent.unwrap();
+        assert_eq!(current.state, state);
+        assert_eq!(current.source, AgentSource::Registered);
+        assert_eq!(current.cwd, expected.cwd);
+        assert_eq!(current.run_id, expected.run_id);
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(frame.contains(label), "{frame}");
+        // The same old sample cannot undo a transition already accepted by the host.
+        screen
+            .set_pane_agent_activity(pane, expected.clone(), expected.state)
+            .unwrap();
+        assert_eq!(screen.get_pane_info(pane).unwrap().agent, Some(current));
+    }
+}
+
+#[test]
+fn agent_activity_cannot_overwrite_reports_restarts_or_exits() {
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+
+    let mut screen = screen();
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    let expected: AgentInfo = serde_json::from_value(serde_json::json!({
+        "kind": "codex", "state": "Idle", "source": "Registered", "session_id": "old"
+    }))
+    .unwrap();
+    for (source, state, session) in [
+        (AgentSource::Reported, AgentState::Idle, "old"),
+        (AgentSource::Registered, AgentState::Idle, "new"),
+        (AgentSource::Registered, AgentState::Exited, "old"),
+    ] {
+        let mut current = expected.clone();
+        current.source = source;
+        current.state = state;
+        current.session_id = Some(session.into());
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .set_pane_agent(pane, Some(current.clone()));
+        screen
+            .set_pane_agent_activity(pane, expected.clone(), AgentState::Busy)
+            .unwrap();
+        assert_eq!(
+            screen.get_pane_info(pane).unwrap().agent,
+            Some(current.clone())
+        );
+        if source == AgentSource::Reported || state == AgentState::Exited {
+            screen
+                .set_pane_agent_activity(pane, current.clone(), AgentState::Busy)
+                .unwrap();
+            assert_eq!(screen.get_pane_info(pane).unwrap().agent, Some(current));
+        }
+    }
+}
+
+#[test]
 fn agent_info_focus_reports_success_when_focus_changes_or_is_already_set() {
     use crate::screen::thread_main::PendingEvents;
     use yinz_types::agent::{AgentInfo, AgentSource, AgentState};

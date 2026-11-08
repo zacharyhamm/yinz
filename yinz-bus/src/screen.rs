@@ -1021,6 +1021,7 @@ pub enum ScreenInstruction {
     AgentReport(yinz_types::agent::report::AgentReport, std::time::Instant),
     RestoreWarpedAgentInput(PaneId, yinz_types::data::WarpedAgentInput),
     SetPaneAgent(PaneId, Option<AgentInfo>, Option<NotificationEnd>),
+    SetPaneAgentActivity(PaneId, AgentInfo, yinz_types::agent::AgentState),
     AgentWorktreeResolved {
         cwd: PathBuf,
         generation: u64,

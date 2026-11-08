@@ -3350,6 +3350,9 @@ pub fn screen_thread_main(
                         break 'instruction;
                     }
                 },
+                ScreenInstruction::SetPaneAgentActivity(pane_id, expected, state) => {
+                    screen.set_pane_agent_activity(pane_id, expected, state)?;
+                },
                 ScreenInstruction::SetPaneAgentRun(pane_id, run_id, _completion) => {
                     // Unlike a record, this waits for nothing: a run id names a record, and a pane
                     // with no record has nothing for it to name. Dropping it is the answer, not

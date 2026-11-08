@@ -96,10 +96,10 @@ impl<'a> LiveAgentOrder<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumString)]
 pub enum AgentSource {
     /// The pane was opened as an agent pane, and nothing has been heard from the agent since:
-    /// the state is what the session can see (running, exited), not what the agent says.
+    /// the state comes from session activity, rather than from an agent report.
     Spawned,
     /// A person named the pane's agent by hand (agent's `agent_register`), and nothing has been
-    /// heard from the agent itself: the kind is theirs, the state is a placeholder.
+    /// heard from the agent itself: the kind is theirs, the state is inferred from activity.
     Registered,
     /// The agent itself said so — its hooks through `yinz action agent-report`, or a plugin
     /// speaking for it.

@@ -235,13 +235,23 @@ pub fn strip_rows(
             let (kind, _) = classify(pane, manual)?;
             let hooked = hooks.contains_key(&pane.pane_id);
             let cell = kind_cell(&compact_kind(&kind), pane.host.as_deref(), false);
-            let waiting =
-                awaiting_confirmation(summaries, activity, hooks, pane.status, pane.pane_id);
+            // A pane record is shared with native Agent info and the palette. Inferred
+            // activity is published back to that record before it is counted here.
+            let state = pane.agent.as_ref().map(|agent| agent.state);
+            let waiting = pane.status == AgentStatus::Running
+                && state.map_or_else(
+                    || awaiting_confirmation(summaries, activity, hooks, pane.status, pane.pane_id),
+                    |state| state == AgentState::Waiting,
+                );
             let symbol = match pane.status {
                 AgentStatus::Held => '■',
                 AgentStatus::Exited => '×',
                 AgentStatus::Running if waiting => '!',
-                AgentStatus::Running => match hooks.get(&pane.pane_id).map(|feed| feed.phase) {
+                AgentStatus::Running if state == Some(AgentState::Exited) => '×',
+                AgentStatus::Running => match state
+                    .and_then(HookPhase::from_state)
+                    .or_else(|| hooks.get(&pane.pane_id).map(|feed| feed.phase))
+                {
                     Some(HookPhase::Busy) => '●',
                     Some(HookPhase::Idle) => '○',
                     Some(HookPhase::Waiting) => '!',

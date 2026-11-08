@@ -1684,6 +1684,11 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             pane_id: pane_id(tc),
             run_id: optional_strings(tc),
         },
+        CommandType::SetPaneAgentActivity => PluginCommand::SetPaneAgentActivity {
+            pane_id: pane_id(tc),
+            expected: agent_infos(tc),
+            state: agent_infos(tc).state,
+        },
         CommandType::InspectConfiguration => {
             PluginCommand::InspectConfiguration(Some("theme".into()))
         },

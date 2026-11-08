@@ -41,9 +41,10 @@
               (if (and (as-present? previous-wait) (equal? (hash-ref event "hook_event_name") "Notification")) previous-wait (as-model "WaitingDetail" event)) json-null))
           (define feed (hash "phase" phase "detail" (as-model "HookDetail" kind event) "waiting_on" waiting
               "session_id" (hash-ref event "session_id") "cwd" (hash-ref event "cwd")))
-          ;; The host combines Claude's parent, workers and notification turns before publishing.
+          ;; PaneUpdate precedes AgentEvent. Use the host's accepted state rather
+          ;; than independently reinterpreting a hook after lifecycle reconciliation.
           (define agent (hash-ref pane "agent"))
-          (when (and (equal? kind "claude") (as-present? agent)
+          (when (and (as-present? agent)
               (equal? (hash-ref agent "kind") kind)
               (equal? (hash-ref agent "session_id") (hash-ref event "session_id")))
             (define reported (as-model "HookFeed" agent))
@@ -120,7 +121,14 @@
       (define moved (and old text (not (= (car old) (as-model "Fingerprint" text)))))
       (define usable (and reading (not (hash-ref reading "is_scrolled"))
           (or (not moved) (and (as-present? output-ago) (<= output-ago (as-get "poll-window"))))))
-      (as-set! "activity" (as-model "Observe" (as-get "activity") id (if usable text json-null)))) running))
+      (as-set! "activity" (as-model "Observe" (as-get "activity") id (if usable text json-null)))
+      (define pane (as-pane id))
+      (define agent (and pane (hash-ref pane "agent")))
+      (define activity (as-map-get "activity" id #f))
+      (when (and (as-present? agent) activity (not (equal? (hash-ref agent "source") "Reported")))
+        (define phase (if (= (cadr activity) 0) "Busy" "Idle"))
+        (unless (equal? (hash-ref agent "state") phase)
+          (as-send (hash "SetPaneAgentActivity" (hash "pane_id" (hash "Terminal" id) "expected" agent "state" phase)))))) running))
 (as-register! "hook" on-hook)
 (as-register! "command" on-command)
 (as-register! "observe" observe)

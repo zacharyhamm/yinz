@@ -399,6 +399,7 @@ pub(super) fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::SetPaneBorderless
         | CommandType::SetPaneColor
         | CommandType::SetPaneAgent
+        | CommandType::SetPaneAgentActivity
         | CommandType::SetPaneAgentRun
         | CommandType::SetQuitNotice
         | CommandType::GroupAndUngroupPanes

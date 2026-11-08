@@ -476,6 +476,17 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 check_plugin(env, name, source, mode)
             },
             PluginCommand::SetPaneAgent { pane_id, agent } => set_pane_agent(env, pane_id, agent),
+            PluginCommand::SetPaneAgentActivity {
+                pane_id,
+                expected,
+                state,
+            } => {
+                env.senders
+                    .send_to_screen(ScreenInstruction::SetPaneAgentActivity(
+                        pane_id, expected, state,
+                    ))
+                    .context("publishing inferred pane agent activity")?;
+            },
             PluginCommand::SetPaneAgentRun { pane_id, run_id } => {
                 set_pane_agent_run(env, pane_id, run_id)
             },

@@ -636,6 +636,7 @@ mod props {
             | PluginCommand::TestPlugin { .. }
             | PluginCommand::CancelPluginTest(_)
             | PluginCommand::SetPaneAgent { .. }
+            | PluginCommand::SetPaneAgentActivity { .. }
             | PluginCommand::SetPaneAgentRun { .. }
             | PluginCommand::SpawnAgent { .. }
             | PluginCommand::AgentControl { .. }

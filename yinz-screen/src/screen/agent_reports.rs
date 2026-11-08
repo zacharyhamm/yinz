@@ -29,6 +29,34 @@ impl HookFlash {
 }
 
 impl Screen {
+    pub(super) fn set_pane_agent_activity(
+        &mut self,
+        pane: PaneId,
+        expected: AgentInfo,
+        state: AgentState,
+    ) -> Result<()> {
+        // Sampling runs in a plugin. A report, restart, or exit may have arrived since
+        // it read the manifest; inferred activity must never overwrite that evidence.
+        if expected.source == AgentSource::Reported
+            || !matches!(state, AgentState::Busy | AgentState::Idle)
+            || !self.get_pane_info(pane).is_some_and(|info| {
+                !info.is_held && !info.exited && info.agent.as_ref() == Some(&expected)
+            })
+            || expected.state == AgentState::Exited
+            || expected.state == state
+        {
+            return Ok(());
+        }
+        let mut agent = expected;
+        agent.state = state;
+        agent.detail = None;
+        agent.waiting_on = None;
+        agent.wait_needs_a_person = false;
+        publish_pane_agent_activity(self, pane, agent)
+            .context("publishing inferred agent activity")?;
+        Ok(())
+    }
+
     pub(super) fn agent_hook_is_flashing(
         &self,
         pane: &yinz_types::data::PaneInfo,

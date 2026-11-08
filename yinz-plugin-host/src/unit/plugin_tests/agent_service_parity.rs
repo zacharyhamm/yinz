@@ -227,6 +227,100 @@ fn agent_service_actual_runtimes_match_empty_startup_subscriptions_and_heartbeat
 }
 
 #[test]
+fn agent_service_publishes_inferred_activity_and_counts_the_accepted_pane_state() {
+    use super::runtime_parity::SteelReference;
+    use yinz_types::agent::{AgentSource, AgentState};
+
+    let clock = Arc::new(AtomicU64::new(90_000));
+    let mut session = session(true);
+    let mut pane = session.panes.panes[&TabPosition::new(0)][0].clone();
+    pane.agent = Some(agent_proto::agents::registered_agent(
+        "codex",
+        pane.cwd.clone(),
+    ));
+    session
+        .panes
+        .panes
+        .insert(TabPosition::new(0), vec![pane.clone()]);
+    let (_, responder) = host(clock.clone(), session, false);
+    let mut service = SteelReference::with_clock(
+        "agent-service",
+        BTreeMap::new(),
+        std::path::Path::new("/work"),
+        responder,
+        Some(clock),
+    );
+    let counts = |service: &mut SteelReference| -> Value {
+        service.pipe(&message(
+            "agent_counts_subscribe",
+            PipeSource::Plugin(PluginId::new(7)),
+            None,
+        ));
+        service
+            .take_commands()
+            .iter()
+            .find_map(|command| {
+                let send = command.get("MessageToPlugin")?;
+                (send["message_name"] == "agent_counts").then(|| {
+                    serde_json::from_str(send["message_payload"].as_str().unwrap()).unwrap()
+                })
+            })
+            .unwrap()
+    };
+    let manifest = |pane: &PaneInfo| {
+        Event::PaneUpdate(PaneManifest {
+            panes: [(TabPosition::new(0), vec![pane.clone()])].into(),
+        })
+    };
+    assert_eq!(counts(&mut service)["idle"], 1);
+    for (state, busy, idle) in [(AgentState::Busy, 1, 0), (AgentState::Idle, 0, 1)] {
+        service.update(&Event::Timer(FractionalSeconds::new(5.0)));
+        let commands = service.take_commands();
+        let update = commands
+            .iter()
+            .find_map(|command| command.get("SetPaneAgentActivity"))
+            .unwrap();
+        assert_eq!(
+            update["expected"],
+            serde_json::to_value(pane.agent.as_ref().unwrap()).unwrap()
+        );
+        assert_eq!(update["state"], serde_json::to_value(state).unwrap());
+        // Until the host accepts the guarded update, the bar keeps the same
+        // state Agent info reads, even though the sample already changed.
+        let before = counts(&mut service);
+        assert_eq!(before["busy"], idle);
+        assert_eq!(before["idle"], busy);
+        pane.agent.as_mut().unwrap().state = state;
+        service.update(&manifest(&pane));
+        let after = counts(&mut service);
+        assert_eq!(after["busy"], busy);
+        assert_eq!(after["idle"], idle);
+    }
+    let agent = pane.agent.as_mut().unwrap();
+    agent.source = AgentSource::Reported;
+    agent.state = AgentState::Busy;
+    agent.session_id = Some("conversation-1".into());
+    service.update(&manifest(&pane));
+    assert_eq!(counts(&mut service)["busy"], 1);
+    service.update(&Event::Timer(FractionalSeconds::new(5.0)));
+    assert!(service
+        .take_commands()
+        .iter()
+        .all(|command| command.get("SetPaneAgentActivity").is_none()));
+    // A hook may describe a different phase from the host's accepted lifecycle
+    // state. Both event processing and later manifests must keep the host's answer.
+    let Event::AgentEvent(mut event) = hook("Stop", json!({})) else {
+        unreachable!()
+    };
+    event.kind = "codex".into();
+    service.update(&Event::AgentEvent(event));
+    assert_eq!(counts(&mut service)["busy"], 1);
+    pane.agent.as_mut().unwrap().state = AgentState::Idle;
+    service.update(&manifest(&pane));
+    assert_eq!(counts(&mut service)["idle"], 1);
+}
+
+#[test]
 fn agent_service_echoes_open_request_only_to_the_requesting_subscriber() {
     use super::runtime_parity::SteelReference;
 
