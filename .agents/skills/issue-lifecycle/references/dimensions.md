@@ -210,7 +210,7 @@ command instructions. Steel changes may affect the
 [plugin guide](../../../../docs/PLUGINS.md),
 [SDK guide](../../../../docs/PLUGIN_SDK.md) and
 [testing guide](../../../../docs/PLUGIN_TESTING.md). Lifecycle changes may
-affect the [operating guide](../../../../docs/ISSUE_LIFECYCLE.md) and
+affect the [design reference](../../../../docs/ISSUE_LIFECYCLE.md) and
 [lifecycle skill](../SKILL.md).
 
 - **Plan review:** Does the plan identify which docs, skills and SDK guides need

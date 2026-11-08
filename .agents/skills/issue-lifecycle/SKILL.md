@@ -9,257 +9,157 @@ description: >
 
 # Yinz issue lifecycle
 
-Use Agenda for issue descriptions, Swamp for durable lifecycle state and
-evidence, and local Git worktrees for development and merging. All agent work
-runs in visible Yinz panes through the reusable `@yinz/agent` behavior. The
-lifecycle implementation is `@yinz/issue-lifecycle`; its entry workflows are
-`yinz-issue-start`, `yinz-issue-drive` and `yinz-issue-merge`. Read
-[the operating guide](../../../docs/ISSUE_LIFECYCLE.md) for commands, evidence
-inputs, the reusable agent extension and recovery.
+Use Agenda for requirements, Swamp for durable state/evidence, and local Git
+worktrees for development. `@yinz/issue-lifecycle` uses visible Yinz pane workers through
+`@yinz/agent`; direct evidence methods never replace workers with headless or
+inline work. Operator actions belong to the controlling workflow. PR creation,
+fetch/push, remote merge, deployment and notifications need separate instructions.
 
-## Establish identity and resume
+## Identity and setup
 
-Select one canonical control checkout containing the Swamp definitions. Use its
-`scripts/issue-lifecycle` launcher for every lifecycle operation, including from
-an issue worktree. Pass `--control` when invoking a different copy of the
-launcher. Do not initialize separate lifecycle stores in each worktree.
+Use one canonical control checkout and its `scripts/issue-lifecycle` launcher for
+every operation (`--control` when using another copy); never split stores across
+worktrees. Commands below take `--item <returned-id>` and JSON via `--input-file`.
+Use installed `swamp`/`agenda`, help for unfamiliar flags, JSON for machine reads,
+issue-scoped input files and arguments rather than issue text interpolated in shell.
 
-Run `start` from the intended worker Git worktree, or a subdirectory of it;
-create the feature worktree first if needed. The lifecycle claims the
-worktree for the issue and saves its canonical root as `workerWorktree`. It
-refuses the main checkout (a worktree on `main`) and any worktree another issue
-already claimed. A claim becomes permanent once `start` saves state, so each
-worktree serves one issue; another issue's `start` reclaims a claim whose
-`start` never saved state. Every new worker uses that directory across roles,
-revisions, later drive/resume, explicit restarts and rollback recovery. Later
-launcher invocations from other checkouts and repeated `start` do not replace
-it. Pending tasks retain their saved configuration. Swamp storage remains in
-the control checkout. Legacy states without this field retain their existing
-implementation-worktree/control-checkout selection; do not infer a new origin.
+The control vault `default/AGENDA_WORKSPACE` identifies the existing workspace,
+never Agenda's current selection. `--workspace` asserts equality, not an override.
+Read workspace identity/item before changing it; let the launcher compute names.
+Consult [setup reference](../../../docs/ISSUE_LIFECYCLE.md#one-control-checkout)
+for missing configuration, prerequisites, claims and legacy behavior.
 
-Use the installed `swamp` and `agenda` commands. Check their help before using
-unfamiliar flags. Use JSON for machine reads. The control checkout's Swamp vault
-`default` stores the workspace under `AGENDA_WORKSPACE`; the launcher reads it
-automatically. Configure a missing value with `swamp vault put default
-AGENDA_WORKSPACE --repo-dir <control-checkout>` using the intended existing
-workspace. Do not infer it from Agenda's current selection. `--workspace` is an
-optional assertion against the vault value, not an override. Workflow execution
-and integration also verify the vault value against the issue's recorded
-workspace. A mismatch requires inspecting the configuration, not recreating the
-issue. The workspace is a public issue identifier and remains in lifecycle state.
-Read the Agenda workspace identity and item before changing it; identify the
-issue by the configured workspace and returned item ID. Let the launcher compute
-the behavior name; it hashes long workspace names to stay within Swamp's name limit.
+Inspect `status` before start/resume; never recreate the behavior or reset history.
+Trust persisted evidence, not prior conversation. Agenda title/note are requirements: if changed, `refresh`
+and review them. Create a feature worktree if needed, then `start` there (or in a
+subdirectory). It claims canonical `workerWorktree`, refusing `main`, detached
+HEAD and other issues' claims. All new workers retain that directory across roles,
+revisions/recovery and later invocations; repeated start does not replace it.
+Pending tasks keep configuration; legacy states retain implementation/control
+selection without inferring a new origin.
 
-Inspect persisted state before starting or resuming. Resume its current phase;
-do not recreate the behavior, reset its history, or infer success from a
-previous conversation. The Agenda title and note are the requirements. If they
-changed, use `refresh` and review the revised requirements before proceeding.
+## Drive and resume
 
-## Drive the work
-
-After `start`, use the launcher's `drive` command with JSON input
+After start, `drive` accepts
 `{agent: {session, kind, model?, effort?, permissionMode?, startupTimeoutSeconds?, timeoutSeconds?}}`.
-Use the intended running Yinz session and provider. Omitted options preserve
-provider defaults. Settings persist; ordinary resume uses `drive` with no input.
-The launcher captures the invoking control pane's session and ID. Every new
-worker resolves that pane's current tab and joins its separate controller-owned worker stack there, including
-revisions, repairs and restarts. Existing workers stay in their original tabs
-and resume their original submissions. The selected worker session must match
-the control pane's session; missing panes and lookup failures block launches.
-Outside the pane environment, supply `control: {session, paneId}` explicitly
-(alongside `agent` for `drive`, or alongside role options for `agent` and
-`restart-agent`), or resume with saved identity. Older saved driver settings
-must acquire control identity before launching another worker; an unlaunched
-legacy task requires an explicit restart. Never bypass placement with automatic
-tab selection.
-After approval and worktree preparation, use `drive` again. After an explicitly
-requested restart or completed rollback recovery, continue through `drive` to
-the next handoff. The driver supplies prompts and uses visible pane workers;
-never replace them with headless provider execution or inline agent work.
-Single-role `agent` and `resume-agent` remain lower-level diagnostic operations.
-Use the local Yinz agents skill for deliberate pane inspection and dialogs.
+Select the intended running session/provider; omitted options preserve defaults.
+Settings persist; ordinary resume is `drive` with no input. New workers resolve the
+control pane's current tab and join its separate worker stack; existing workers
+keep tabs/submissions. Sessions must match. Outside the pane environment use saved
+identity or `control: {session, paneId}` alongside `agent` (role options for
+`agent`/`restart-agent`). Older drivers need identity before new launches; no
+automatic-tab fallback is allowed.
 
-**Wait for the driver, collect its structured handoff, and present its readable
-result before ending the controlling turn.** If a shell command yields, keep
-waiting on that same command. A launched pane, workflow ID, or progress report
-does not complete the request. Present the issue, plan version or commit,
-decision required and supporting evidence (plan behavior, steps, tests,
-assumptions and review; or delivered change, code review and verification).
-For a blocker, explain the recorded cause and the recovery needed. Do not promise
-to wake the controller after its turn or session ends; that is outside this flow.
+Wait on the same foreground command through yields until its structured handoff,
+then present the readable result before ending the controlling turn: issue,
+plan version/commit, decision and evidence (plan behavior, steps, tests,
+assumptions/review, or delivered change, review and verification checklist).
+Pane/workflow IDs and progress are not completion. Explain blocker cause/recovery;
+do not promise a later controller wakeup.
 
-The driver automatically runs initial triage, planning and review, followed by
-at most one targeted revision and review when blockers remain. The allowance is
-reserved with the exact assignment before launch, once per requirements generation.
-Resume, rollback, restart, manual planning and command reinvocation never replenish
-it. Only a refresh with genuinely changed requirements starts a new generation.
-Legacy first-version plans may receive one automatic revision; later legacy versions
-are treated as having consumed it. Existing revision authorizations remain valid.
+Pending tasks, saved assignments, partial imports and cleanup resume **before
+phase dispatch**. `drive` observes ordinary acknowledged timeouts on the original
+submission without resending. Pending rollback needs `resume-rollback` or a new
+explicit rollback. Completed handoffs persist until superseded.
+`agent`/`resume-agent` are diagnostics; use the local Yinz agents skill for pane
+inspection/dialogs.
 
-After that allowance, unresolved high/critical findings stop at
-`authorize_plan_revision`, including prior findings, decisions, revision changes
-and disagreements. Inspect cited source and adjudicate supported findings with
-`adjudicate-plan`: pass the current `planVersion`, `reviewFingerprint` from the
-handoff, and `dispositions` with `findingId`, `disposition` (`resolved`, `rejected`
-or `downgraded`), `rationale`, and nonempty source `evidence`; a downgrade also
-requires the corrected `severity`. Explain the judgment and what code you inspected.
-The controller may record supported dispositions without asking the user. Keep the
-original review intact. Never call an accepted unresolved high/critical risk
-resolved: it remains blocked for user direction. Stale adjudications and mutations
-during unresolved assignments are rejected. Then `drive` again to obtain the next
-handoff.
+| Phase | Next action after pending work is resolved |
+| --- | --- |
+| `triaging` | `drive` triages source, problem, scope, acceptance criteria and reproduction evidence. |
+| `classified` | `drive` plans steps/files/risks, focused tests and verbatim argv `checks` covering steps, then runs adversarial review. Present checks: plan approval approves running them. |
+| `planning` | Missing/current-version-mismatched review: review. Blocking current review: one automatic revision/review if available, otherwise `authorize_plan_revision`. Clean review: `approve_plan`. Missing plan blocks. |
+| `approved` | `prepare_worktree`: adopt recorded worktree/existing feature branch; conflicting paths are rejected before Git preparation. |
+| `implementing` | `drive` implements/commits with focused tests, then reviews; completed implementation or rollback to `review_code` routes to review. Clean current review runs checks at that commit. Stale evidence, code blockers or failed verification block; passing gate yields `authorize_merge`. |
+| `ready` | Active merge failure: `blocked`, read log and repair. Otherwise `integrate`. |
+| `merged` | `summarize` compares outcome to original requirements using landed receipt. |
+| `done` | `complete`: report recorded outcome without repeating work/merge. |
 
-If another revision is needed, present the concrete handoff and obtain explicit
-authorization for exactly one targeted revision. Record it with `drive` input
-`{revisionApproval: {handoffId, request}}`, using the exact handoff ID and user's
-actual request. The complete assignment includes that request and is saved before
-dispatch. Resume reuses it and reviews the resulting version. Never infer blanket
-approval or ask again for an already authorized assignment.
+| Handoff decision | Controller action |
+| --- | --- |
+| `authorize_plan_revision` | Supported adjudication or authorization for one targeted revision, below. |
+| `approve_plan` | Present reviewed plan; `approve {planVersion, request}` records explicit approval. Existing session authorization within scope suffices; ask only if absent. |
+| `prepare_worktree` | `implement {worktree, branch}`, then `drive`. |
+| `authorize_merge` | Show change, review and verification; `ready {commit, mergeRequest}` records explicit merge authorization, including an existing explicit request. Plan approval does not authorize merge. |
+| `integrate` | `merge` from control checkout serializes rebase onto current local `main`, full `cargo x ci check` and local fast-forward merge. |
+| `summarize` | `summarize {outcomeMet: true, summary}` only after merge and met outcome; otherwise keep Agenda open and explain remaining work. |
+| `complete` | Present completed result. |
+| `blocked` | Read matching recovery section below, resolve deliberately, then `drive`. |
 
-Planners and reviewers must read [planning standards](references/planning.md) and
-[review standards](references/review.md). Plan and code reviewers must also read
-the [Yinz review dimensions](references/dimensions.md), applying those relevant to
-the change. Preserve unaffected steps, accepted tradeoffs and finding IDs.
-Reopening a disposed concern requires new evidence
-explaining why its previous disposition no longer holds. Historical context never
-substitutes for current review evidence.
+## Review and authorization
 
-Revision authorization does not authorize implementation or merge. The driver
-stops separately for explicit approval of the reviewed plan and worktree
-preparation, then runs implementation and code review up to merge authorization.
-It never records approval, merge authorization or a CI waiver on its own.
+One automatic targeted revision/review is reserved with its exact assignment before
+launch per requirements generation. Resume, rollback, restart, manual planning and
+reinvocation never replenish it; only refresh with genuinely changed requirements
+does. Legacy first-version plans may receive one; later versions count as consumed.
+Saved revision authorizations remain valid.
 
-1. **Triage:** the driver runs role `triage` to investigate the problem, acceptance
-   criteria, scope and reproduction evidence against the affected source.
-2. **Plan:** the driver runs role `plan` for concrete steps, affected files, risks,
-   development test selection and structured `checks` (argv arrays the lifecycle
-   runs verbatim, each naming the steps it covers), then role `review_plan` for
-   adversarial review. Present the checks with the plan: approving the plan
-   approves running them.
-   The driver allows one automatic targeted revision; further revisions need
-   individual authorization. Every revised plan needs a fresh review.
-3. **Approve and implement:** record authorization for the reviewed plan, then
-   adopt the recorded worker worktree and its existing feature branch. A conflicting
-   implementation path is rejected before Git preparation. Existing approval in
-   this session is sufficient; do not ask again. If authorization is missing, present the
-   concrete reviewed plan and explain the decision needed before proceeding.
-4. **Develop:** the driver runs role `implement` in the prepared issue worktree. The
-   worker implements and commits the plan and runs targeted tests. Fix defects
-   and flakes in this branch through the worker. Keep each worktree's real
-   `target/` isolated; never set `CARGO_TARGET_DIR` or share build artifacts.
-5. **Review code:** the driver runs role `review_code` against the committed worktree.
-   Swamp imports the role-specific structured result only after validating the
-   original task, plan and commit. Repairs require fresh review evidence.
-6. **Verify and prepare to merge:** after a clean code review, the driver runs
-   the plan's checks in the issue worktree at the reviewed commit, outside the
-   merge lock, recording each exit code, duration and log. Show the resulting
-   change and the verification checklist from that run; reviewer-reported checks
-   are advisory. A failed check blocks with its log; repair it in the worktree
-   with a new reviewed commit. `drive` never reruns a failed verification; run
-   `verify` explicitly only for an environment failure at the same commit.
-   Record the user's authorization with `ready`, which requires a passing
-   verification of the exact commit; existing explicit merge authorization
-   counts. Do not treat plan approval as merge authorization. Plans recorded
-   before structured checks keep the reviewer-reported gate and say so.
-7. **Integrate:** run `merge` from the control checkout. It serializes rebase,
-   `cargo x ci check` and local fast-forward merge with a shared coordinator and
-   a Git-repository lock. Full CI is the merge gate for this lifecycle. Skip it
-   only when the user explicitly requests that exception, recording the request
-   and its scope in `skipCiRequest`; time pressure, previous checks and an
-   agent's judgment do not supply that request.
-8. **Summarize:** compare the delivered outcome with the original requirements.
-   Complete the Agenda task only after the local merge and `outcomeMet: true`.
-   Leave an unmet issue open and explain the remaining work.
+At `authorize_plan_revision`, inspect cited source and explain judgment.
+`adjudicate-plan` takes current `planVersion`, handoff `reviewFingerprint` and
+`dispositions`: `findingId`, `disposition` (`resolved`, `rejected`, `downgraded`),
+`rationale`, nonempty source `evidence`, plus corrected lower `severity` for downgrade.
+Supported dispositions need no extra permission. Preserve original review; stale
+inputs/mutations during unresolved assignments are rejected. Accepted unresolved
+high/critical risk stays blocked for user direction. Then `drive` again.
 
-Use the launcher to persist transitions. Keep human issue descriptions in
-Agenda; avoid replacing them with generated logs. Swamp state and events retain
-plans, review evidence, authorization, verification and merge history.
+For another revision, present the concrete handoff and obtain authorization for
+exactly one targeted revision. `drive {revisionApproval: {handoffId, request}}` uses
+that ID and actual user request; the complete assignment is saved before dispatch,
+reused on resume and freshly reviewed. Never infer blanket approval or ask again
+for that assignment. Revision, implementation, merge and CI-waiver authorizations
+are separate; the driver grants none itself.
 
-The direct evidence methods are lower-level recording interfaces, not a shortcut
-around pane workers. Operator actions such as approval, worktree preparation,
-merge authorization and close-out remain under the controlling workflow.
+Planners/reviewers read [planning](references/planning.md) and
+[review](references/review.md); plan/code reviewers also read applicable
+[Yinz review dimensions](references/dimensions.md). Preserve unaffected steps,
+accepted tradeoffs and finding IDs. Reopening disposed concerns needs new evidence
+explaining why the disposition no longer holds. History never replaces current
+review; repairs need fresh review. Ad-hoc code still needs real planning/review/
+verification. Never fabricate evidence. Keep human descriptions in Agenda;
+launcher transitions retain evidence and history in Swamp.
 
-## Concurrency and recovery
+Keep each worktree's real `target/` isolated: no `CARGO_TARGET_DIR`, changed
+`build.target-dir` or shared/copied mutable build artifacts. Fix defects/flakes in
+this branch through the worker. After clean review, lifecycle checks run at the
+exact commit outside the merge lock, recording exit codes/durations/logs; reviewer
+checks are advisory. `ready` needs passing exact-commit verification. Legacy plans
+without checks explicitly retain the reviewer-reported gate. Failed verification
+is not automatically rerun. Full merge CI can be skipped only for the user's
+explicit waiver for that merge, recorded with scope in `skipCiRequest`; previous
+checks, time pressure and agent judgment do not suffice. The shared repository
+lock covers rebase/checks/merge; per-issue locks do not replace it, nor is it FIFO.
 
-Development and review can proceed independently in multiple worktrees. The
-integration lock covers the repository's shared Git directory, so only one
-cooperating lifecycle can rebase, run the full gate and update the target at a
-time. Waiting for that lock is not a FIFO queue. Per-issue Swamp locking does
-not replace the shared integration boundary.
+## Blocker routing
 
-A failed or interrupted step is not evidence of completion. Inspect state, the
-exact workflow run and Git before retrying. Keep the worktree intact for
-diagnosis. Resolve conflicts and verification failures in that worktree, record
-the repair and refresh review evidence before retrying integration. When the
-merge gate fails, show the user the attempt's summary, failed phases and tests,
-and the log path from the launcher output or the `blocked` handoff
-(`<git-common-dir>/yinz-lifecycle/merges/<attemptId>/ci-check.log`). Read the
-log, then pass the cause to `repair`. A flake or timeout is a defect to fix, not
-a reason to retry; earlier failed attempts stay in `mergeFailures` and in the
-next receipt's `previousAttempts`. Do not
-silently abort a rebase, reset changes, delete branches, force a merge or remove
-a lock file held by another process.
+Read `references/recovery.md` only when the driver reports `blocked`:
 
-An unresolved pane task blocks ordinary lifecycle mutations and replacement
-workers. `drive` resumes its original task and submission, including partially
-applied results. It continues observing ordinary acknowledged wait timeouts and
-returns a blocker for dialogs, uncertain delivery, missing sessions, provider
-failures or invalid evidence. Resolve the blocker deliberately, then `drive`
-again; use `resume-agent` for lower-level observation. Do not rerun `agent` to
-retry the prompt automatically. Completed handoffs persist, so resume does not
-repeat workers; rollback and restart invalidate superseded handoffs.
-Accepted worker results are saved before their panes close. Pending cleanup is
-retried on resume without replaying evidence. Failed or blocked panes stay visible.
-Missing or stale Codex, Muse or AGY hooks fail preflight and
-are not installed automatically.
+| Blocker family | Recovery section |
+| --- | --- |
+| Unresolved task, timeout, unknown/expired submission, background work | [Unresolved tasks](references/recovery.md#unresolved-tasks) |
+| Dialog, hooks, session/provider/control failure | [Dialogs hooks and sessions](references/recovery.md#dialogs-hooks-and-sessions) |
+| Malformed response, transport failure, uncertain delivery | [Uncertain delivery](references/recovery.md#uncertain-delivery) |
+| Resource-free structured `launch_rejected` | [Rejected launches](references/recovery.md#rejected-launches) |
+| Unusable completed evidence, stopped failure, structured `not_sent` | [Unusable evidence and stopped failures](references/recovery.md#unusable-evidence-and-stopped-failures) |
+| Partial import, pane cleanup | [Interrupted imports and cleanup](references/recovery.md#interrupted-imports-and-cleanup) |
+| Interrupted rollback/restart | [Rollback and restart](references/recovery.md#rollback-and-restart) |
+| Review blocker, stale evidence, failed verification | [Review and verification failures](references/recovery.md#review-and-verification-failures) |
+| Conflict, failed CI, interrupted integration | [Integration failures](references/recovery.md#integration-failures) |
+| Failed close-out after landing, unmet outcome | [Close-out failures](references/recovery.md#close-out-failures) |
+| Other free-text reason, requirements/configuration change | [Inspect the blocker](references/recovery.md#inspect-the-blocker) |
 
-When the user asks to restart or roll back, that request authorizes superseding
-the previous attempt regardless of its outcome. Do not require successful
-resume, proof of non-delivery, `confirmedStopped`, or another permission question.
-Use `rollback` with `{step, request}` to return to any lifecycle step, retaining
-its prerequisites and invalidating downstream decisions. Supported steps are
-`triage`, `plan`, `review_plan`, `approve`, `implement`, `review_code`, `ready`,
-`merge` and `summarize`. Use `restart-agent` with the current `taskId`, actual
-`request`, and ordinary agent inputs to roll back to a worker step and start a
-fresh assignment. Select the intended running session; the old session may be
-gone. Repeating identical restart inputs resumes the replacement, while a new
-restart must target its new task ID.
+## Explicit rollback or restart
 
-Rollback preserves history, Git changes and worktree ownership, reopens completed
-Agenda tasks, and keeps plan versions increasing. A landed merge is never undone;
-merge and close-out retries reuse its receipt. Changed requirements require
-rollback to triage. Old panes remain visible: inspect and stop surviving workers
-before replacement work edits the same checkout. Superseding their assignment
-does not prove their processes stopped. After an interrupted rollback, use
-`resume-rollback` to finish its recorded intent and resume its replacement; do
-not ask again for authorization already recorded on that operation. A new explicit
-rollback request may also supersede a pending recovery; it preserves the old intent
-in history and does not require completing that recovery first.
-
-If a worker completed but returned unusable evidence, `discard-agent` requires
-the operator's actual `request` and `confirmedStopped: true`. It accepts a
-matching completed worker with no background tasks and unapplied evidence, or a
-durable `launch_rejected` task whose structured rejection retained no pane,
-submission, background work or other resources. Lifecycle state must still match
-the task's original snapshot. After discarding a rejected launch, correct the
-configuration in a new `agent` request. No configuration change or relaunch is
-automatic. Malformed responses, transport failures and legacy uncertain launches
-remain blocked for discard; an explicit rollback or restart can supersede them.
-Discard cannot end active work or undo source changes; inspect any changes before
-assigning replacement work.
-
-If a state-changing transition was saved but its final task-completion write
-failed, `resume-agent` validates the completed result and reconciles the task
-without repeating the transition or event write. Reconcile first, then `refresh`
-if Agenda requirements changed afterward. Unapplied evidence still requires
-fresh requirements, including implementation reports that leave lifecycle state
-unchanged.
-
-If the merge landed but Agenda close-out failed, resume close-out from the merge
-receipt rather than merging again. Existing ad-hoc work in the recorded worktree
-can be adopted, but it still needs a real plan, review and verification; never fabricate evidence to
-advance the phase.
-
-This lifecycle performs no PR creation, push, fetch, remote merge, deployment or
-notification to other people. Such actions require their own user instruction.
+The actual user request authorizes superseding any prior outcome: no successful
+resume, non-delivery proof, `confirmedStopped` or renewed approval is required.
+`rollback {step, request}` retains prerequisites and invalidates downstream
+decisions. Steps: `triage`, `plan`, `review_plan`, `approve`, `implement`,
+`review_code`, `ready`, `merge`, `summarize`; changed requirements require `triage`.
+`restart-agent` uses current `taskId`, actual `request` and ordinary agent inputs
+with the intended running session. Identical inputs resume the replacement;
+another restart targets its new task ID. Inspect/stop surviving workers before
+replacements edit the same checkout. After restart/completed `resume-rollback`,
+`drive` to the next handoff; saved intent needs no renewed approval, and a new
+explicit rollback may supersede pending recovery. History, Git changes, ownership
+and increasing versions survive; completed Agenda tasks reopen. Landed merge and
+close-out retries reuse receipts. [Design reference](../../../docs/ISSUE_LIFECYCLE.md)
+holds persistence and input contracts.
