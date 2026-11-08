@@ -608,6 +608,8 @@ impl Agent {
             | Agent::Status { json, .. }
             | Agent::Show { json, .. }
             | Agent::Hide { json, .. }
+            | Agent::LaunchSupport { json }
+            | Agent::LaunchStatus { json, .. }
             | Agent::Spawn { json, .. }
             | Agent::Restart { json, .. }
             | Agent::Prompt { json, .. }
@@ -749,10 +751,25 @@ pub enum Agent {
         #[clap(long)]
         json: bool,
     },
+    /// Read the versioned launch capability and server incarnation before saving an intent.
+    LaunchSupport {
+        #[clap(long)]
+        json: bool,
+    },
+    /// Observe the original launch. Never creates a pane or repeats preparation.
+    LaunchStatus {
+        #[clap(value_parser = parse_submission_id)]
+        launch_id: String,
+        #[clap(long)]
+        json: bool,
+    },
     /// Launch an agent with the shared launch planner and return its actual pane and checkout.
     /// Preserve keyboard focus, including when the worker needs another tab.
     /// Refresh existing Claude hooks with `yinz hooks install --agent claude` to prevent duplicate reports.
     Spawn {
+        /// Caller-chosen identity, qualified as SERVER_INSTANCE.ID. Save before sending.
+        #[clap(long, value_parser = parse_submission_id)]
+        launch_id: Option<String>,
         /// Share a separate worker stack owned by this controller pane.
         #[clap(long, value_parser = parse_agent_target, conflicts_with_all = ["tab", "new_tab", "suppressed"])]
         stack_for: Option<yinz_types::pane_id::PaneId>,

@@ -34,6 +34,7 @@ mod agent_spawn_tests;
 mod data;
 mod execution;
 mod filesystem;
+mod launch_transaction;
 #[cfg(test)]
 #[path = "unit/layout_cwd_tests.rs"]
 mod layout_cwd_tests;
@@ -389,6 +390,28 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     }
                     if cwd.is_none() && project.is_none() && remote_host.is_none() {
                         *cwd = Some(env.plugin_cwd.clone());
+                    }
+                }
+                if let yinz_types::agent::control::AgentRequest::Launch { request, .. } =
+                    &mut request
+                {
+                    if let Some((_, destination)) = &mut request.new_project
+                        && destination.is_relative()
+                    {
+                        *destination = translate_plugin_path(env, destination.clone());
+                    }
+                    if request.remote_host.is_none() {
+                        if let Some(path) = &mut request.cwd
+                            && path.is_relative()
+                        {
+                            *path = translate_plugin_path(env, path.clone());
+                        }
+                        if request.cwd.is_none()
+                            && request.project.is_none()
+                            && request.new_project.is_none()
+                        {
+                            request.cwd = Some(env.plugin_cwd.clone());
+                        }
                     }
                 }
                 let senders = env.senders.clone();

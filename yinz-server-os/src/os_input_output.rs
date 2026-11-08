@@ -1316,6 +1316,14 @@ impl TerminalProcesses for ServerOsInputOutput {
     ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
         ServerOsInputOutput::rerun_resolved(self, resolved, quit_cb)
     }
+    fn clear_terminal_id_confirmed(
+        &self,
+        terminal_id: TerminalId,
+        child: Option<ProcessId>,
+    ) -> Result<bool> {
+        self.pty_backend
+            .clear_terminal_id_confirmed(terminal_id, child)
+    }
     fn clear_terminal_id(&self, terminal_id: TerminalId) -> Result<()> {
         self.detected_themes
             .lock()

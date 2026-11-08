@@ -181,6 +181,17 @@ pub trait TerminalProcesses: Send + Sync {
         Err(anyhow!("this backend does not support remote panes"))
     }
     fn clear_terminal_id(&self, terminal_id: TerminalId) -> Result<()>;
+    /// Managed-launch cleanup runs off the PTY loop. True requires confirmed process exit;
+    /// sending a terminate request alone is insufficient evidence.
+    fn clear_terminal_id_confirmed(
+        &self,
+        terminal_id: TerminalId,
+        _child: Option<yinz_types::internal_ids::ProcessId>,
+    ) -> Result<bool> {
+        self.clear_terminal_id(terminal_id)
+            .context("request managed terminal teardown")?;
+        Ok(false)
+    }
 }
 
 /// Supervised terminal lifecycle, callbacks, and ownership transfers.

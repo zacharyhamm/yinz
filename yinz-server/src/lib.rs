@@ -3085,11 +3085,16 @@ fn init_session(
     let default_mode = config_options.default_mode.unwrap_or_default();
     let default_keybinds = config.keybinds.clone();
 
+    let launches = Arc::new(yinz_bus::agent_launch::LaunchRuntime {
+        host_id: yinz_runtime::host_identity::host_id(),
+        ..Default::default()
+    });
     let session_update_quiesced = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let session = starting_session.insert(SessionMetaData {
         shutdown: shutdown.clone(),
         data_access: data_access.clone(),
         senders: ThreadSenders {
+            launches: launches.clone(),
             session: session_identity.clone(),
             session_update_quiesced: session_update_quiesced.clone(),
             to_screen: Some(to_screen.clone()),
@@ -3135,6 +3140,7 @@ fn init_session(
             Some(&to_background_jobs),
             Some(os_input.clone()),
         );
+        bus.senders.launches = launches.clone();
         bus.senders.session = session_identity.clone();
         bus.senders.session_update_quiesced = session_update_quiesced.clone();
         bus.senders.session_checkpoint = session_checkpoint.clone();
@@ -3167,6 +3173,7 @@ fn init_session(
             Some(&to_background_jobs),
             Some(os_input.clone()),
         );
+        screen_bus.senders.launches = launches.clone();
         screen_bus.senders.session = session_identity.clone();
         screen_bus.senders.session_update_quiesced = session_update_quiesced.clone();
         screen_bus.senders.session_checkpoint = session_checkpoint.clone();
@@ -3246,6 +3253,7 @@ fn init_session(
             Some(&to_background_jobs),
             None,
         );
+        plugin_bus.senders.launches = launches.clone();
         plugin_bus.senders.session = session_identity.clone();
         plugin_bus.senders.session_update_quiesced = session_update_quiesced.clone();
         let plugin_session = plugins::ServerSession::Shared(session_identity.clone());

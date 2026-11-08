@@ -32,6 +32,7 @@ fn create_test_dependencies() -> JobDependencies {
     let to_background_jobs = SenderWithContext::new(send_to_background_jobs);
 
     let senders = ThreadSenders {
+        launches: Default::default(),
         to_pty: Some(to_pty),
         to_screen: Some(to_screen),
         to_plugin: Some(to_plugin),

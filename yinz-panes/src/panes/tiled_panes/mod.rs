@@ -937,6 +937,99 @@ impl TiledPanes {
             reserved_top_rows,
         }
     }
+    /// Logical geometry excludes fullscreen overrides and includes the complete classic stack.
+    pub fn worker_region_geometry(&mut self, pane_id: PaneId) -> Option<PaneGeom> {
+        let geom = self.panes.get(&pane_id)?.position_and_size();
+        if geom.is_stacked() {
+            StackedPanes::new_from_btreemap(&mut self.panes, &self.panes_to_hide)
+                .position_and_size_of_stack(&pane_id)
+        } else {
+            Some(geom)
+        }
+    }
+
+    /// Pure admission: splitting a stack must leave its expanded member usable as well.
+    pub fn plan_worker_split(&mut self, anchor: PaneId, members: usize) -> Option<SplitDirection> {
+        let geom = self.worker_region_geometry(anchor)?;
+        if geom.rows.is_fixed() || geom.cols.is_fixed() {
+            return None;
+        }
+        [SplitDirection::Vertical, SplitDirection::Horizontal]
+            .into_iter()
+            .find(|direction| {
+                split(*direction, &geom).is_some_and(|(old, new)| {
+                    old.cols.as_usize() >= MIN_TERMINAL_WIDTH
+                        && new.cols.as_usize() >= MIN_TERMINAL_WIDTH
+                        && old.rows.as_usize() >= MIN_TERMINAL_HEIGHT + members.saturating_sub(1)
+                        && new.rows.as_usize() >= MIN_TERMINAL_HEIGHT
+                })
+            })
+    }
+
+    /// Apply only an admitted split, propagating stack errors before inserting the newcomer.
+    pub fn insert_worker_split(
+        &mut self,
+        anchor: PaneId,
+        direction: SplitDirection,
+        mut pane: Box<dyn Pane>,
+    ) -> Result<()> {
+        let geom = self
+            .worker_region_geometry(anchor)
+            .context("worker split anchor disappeared")?;
+        let (old, new) = split(direction, &geom).context("admitted worker split no longer fits")?;
+        if self
+            .panes
+            .get(&anchor)
+            .context("missing worker split anchor")?
+            .position_and_size()
+            .is_stacked()
+        {
+            StackedPanes::new_from_btreemap(&mut self.panes, &self.panes_to_hide)
+                .resize_panes_in_stack(&anchor, old)
+                .context("resize admitted worker anchor stack")?;
+        } else {
+            self.panes
+                .get_mut(&anchor)
+                .context("missing worker split anchor")?
+                .set_geom(old);
+        }
+        pane.set_geom(new);
+        self.panes.insert(pane.pid(), pane);
+        self.relayout(!direction);
+        self.reapply_pane_frames();
+        Ok(())
+    }
+
+    /// Strict managed insertion never parks a pane when its admitted stack cannot accept it.
+    pub fn insert_worker_stack(&mut self, anchor: PaneId, pane: Box<dyn Pane>) -> Result<()> {
+        let mut grid = TiledPaneGrid::new(
+            &mut self.panes,
+            &self.panes_to_hide,
+            display_area_viewport(&self.display_area),
+            *self.viewport.borrow(),
+        );
+        let stacked = grid
+            .get_pane_geom(&anchor)
+            .context("admitted worker stack anchor disappeared")?
+            .is_stacked();
+        if !stacked {
+            grid.make_pane_stacked(&anchor)
+                .context("create admitted worker stack")?;
+        }
+        let geom = match grid.make_room_in_stack_of_pane_id_for_pane(&anchor) {
+            Ok(geom) => geom,
+            Err(error) => {
+                if !stacked {
+                    grid.unstack_pane(&anchor);
+                }
+                return Err(error).context("admitted worker stack cannot accept its reservation");
+            },
+        };
+        drop(grid);
+        self.insert_into_stack(pane.pid(), geom, pane);
+        Ok(())
+    }
+
     pub fn can_split_pane_horizontally(&mut self, client_id: ClientId) -> bool {
         match self.active_panes.get(&client_id).copied() {
             Some(active_pane_id) => self.can_split_pane_id_horizontally(active_pane_id),

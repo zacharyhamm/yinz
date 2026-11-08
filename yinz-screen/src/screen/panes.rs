@@ -312,10 +312,42 @@ impl Screen {
             c.set_affected_pane_id(pid)
         }
 
-        let client_or_tab_index = self.resolve_pane_placement(client_or_tab_index);
+        let mut client_or_tab_index = self.resolve_pane_placement(client_or_tab_index);
 
         if let Some(c) = completion_tx.as_mut().filter(|_| !set_blocking) {
             c.wait_for_placement();
+            if let Some(reason) = c.launch.as_ref().and_then(|gate| gate.snapshot().revoked) {
+                let message = format!("agent reservation revoked: {reason:?}");
+                c.set_error_message(message.clone());
+                pending.waiting_for_pane.remove(&pid);
+                self.forget_unplaced_pane(pid, message);
+                return Ok(());
+            }
+            // Resolving a destination on the host is only a hint until Screen admits the
+            // placeholder. Follow a controller that moved in that interval; after admission
+            // the slot's tab incarnation is fixed and a move revokes it instead.
+            if let Some(gate) = c
+                .launch
+                .as_ref()
+                .filter(|gate| gate.snapshot().slot.is_none())
+                && let Some(controller) = c.agent_tab.as_ref().and_then(|t| t.stack_controller)
+            {
+                if let Some(tab_id) = self.tab_id_containing_pane(controller)
+                    && let Some(tab) = self.tabs.get(&tab_id)
+                {
+                    let target = crate::route::AgentTabPlacement {
+                        tab_id,
+                        lifetime: std::sync::Arc::downgrade(&tab.agent_tab_lifetime),
+                        created: false,
+                        stack_controller: Some(controller),
+                    };
+                    gate.destination(target.clone());
+                    c.agent_tab = Some(target);
+                    client_or_tab_index = ClientTabIndexOrPaneId::TabIndexNoFocus(tab_id);
+                } else {
+                    gate.revoke(yinz_types::agent::launch::LaunchReason::ControllerClosed);
+                }
+            }
             if let Some(target) = &c.agent_tab {
                 let live = target
                     .stack_controller
@@ -327,6 +359,9 @@ impl Screen {
                             .ptr_eq(&std::sync::Arc::downgrade(&tab.agent_tab_lifetime))
                     });
                 if !live {
+                    if let Some(gate) = &c.launch {
+                        gate.revoke(yinz_types::agent::launch::LaunchReason::DestinationClosed);
+                    }
                     c.set_error_message("destination tab closed during agent launch".into());
                     pending.waiting_for_pane.remove(&pid);
                     self.forget_unplaced_pane(
@@ -369,7 +404,7 @@ impl Screen {
         // or to a tab of its own - `agent_pane_target` says when. Every other pane
         // keeps the target it came with.
         let AgentPlacement {
-            target: client_or_tab_index,
+            target: mut client_or_tab_index,
             focus_after_placing,
             created_tab_id,
         } = if completion_tx
@@ -416,24 +451,84 @@ impl Screen {
                     });
             }
         }
+        if let Some(completion) = completion_tx.as_ref().filter(|c| c.launch.is_some())
+            && let Some(destination) = &completion.agent_tab
+        {
+            client_or_tab_index = ClientTabIndexOrPaneId::TabIndexNoFocus(destination.tab_id);
+            if self
+                .tabs
+                .get(&destination.tab_id)
+                .is_some_and(|tab| tab.is_pending())
+            {
+                pending.waiting_for_tab.push(ScreenInstruction::NewPane(
+                    pid,
+                    initial_pane_title,
+                    hold_for_command,
+                    invoked_with,
+                    new_pane_placement,
+                    start_suppressed,
+                    client_or_tab_index,
+                    completion_tx,
+                    set_blocking,
+                ));
+                return Ok(());
+            }
+        }
+        if let Some(completion) = &completion_tx
+            && let (Some(gate), Some(destination)) = (&completion.launch, &completion.agent_tab)
+        {
+            gate.destination(destination.clone());
+        }
         let worker_stack = completion_tx
             .as_ref()
             .and_then(|c| c.agent_tab.as_ref())
             .and_then(|target| target.stack_controller.map(|owner| (owner, target.tab_id)));
+        let managed_gate = completion_tx.as_ref().and_then(|c| c.launch.clone());
+        let empty_launch_tab = completion_tx
+            .as_ref()
+            .and_then(|c| c.agent_tab.as_ref())
+            .filter(|target| target.created)
+            .and_then(|target| self.tabs.get(&target.tab_id))
+            .filter(|tab| tab.agent_tab_cleanup_allowed && tab.get_all_pane_ids().is_empty())
+            .map(|tab| tab.id);
         let mut separate_worker = false;
         if let Some(key) = worker_stack {
-            let live: Vec<_> = self
+            let mut live: Vec<_> = self
                 .agent_worker_stacks
                 .get(&key)
+                .cloned()
+                .unwrap_or_default()
                 .into_iter()
-                .flatten()
-                .copied()
                 .filter(|pane| {
                     self.tabs
                         .get(&key.1)
                         .is_some_and(|tab| tab.can_anchor_tiled_stack(*pane))
                 })
                 .collect();
+            let lifetime_matches =
+                self.agent_worker_regions
+                    .get(&key)
+                    .is_some_and(|(lifetime, _)| {
+                        self.tabs.get(&key.1).is_some_and(|tab| {
+                            lifetime.ptr_eq(&std::sync::Arc::downgrade(&tab.agent_tab_lifetime))
+                        })
+                    });
+            if !lifetime_matches
+                || live.first().is_some_and(|root| {
+                    let group = self
+                        .tabs
+                        .get_mut(&key.1)
+                        .map(|tab| tab.worker_region_members(*root))
+                        .unwrap_or_default();
+                    group.len() != live.len() || group.iter().any(|id| !live.contains(id))
+                })
+            {
+                live.clear();
+                self.agent_worker_regions.remove(&key);
+            }
+            if live.is_empty() {
+                self.agent_worker_regions.remove(&key);
+            }
             if let Some(root) = live.first() {
                 new_pane_placement = NewPanePlacement::Stacked {
                     pane_id_to_stack_under: Some(*root),
@@ -510,16 +605,64 @@ impl Screen {
                         None
                     };
                     if let Some(active_tab) = self.tabs.get_mut(&tab_index) {
-                        if worker_stack.is_some() {
-                            active_tab.ensure_worker_pane_capacity()?;
-                        }
-                        if separate_worker {
-                            active_tab.new_separate_worker_pane(
+                        if let Some((controller, _)) = worker_stack {
+                            let anchor = if separate_worker {
+                                if active_tab.can_anchor_tiled_stack(controller) {
+                                    controller
+                                } else {
+                                    // Floating/overlay controllers still own workers in this
+                                    // tab's tiled layer. Split a logical tiled region; never
+                                    // join the controller's floating group or another stack.
+                                    active_tab.worker_split_anchor().ok_or_else(|| {
+                                        if let Some(gate) = &managed_gate {
+                                            gate.revoke(yinz_types::agent::launch::LaunchReason::InsufficientRoom);
+                                        }
+                                        anyhow!("no tiled region for controller workers")
+                                    })?
+                                }
+                            } else {
+                                self.agent_worker_stacks
+                                    .get(&(controller, tab_index))
+                                    .and_then(|v| v.first())
+                                    .copied()
+                                    .unwrap_or(controller)
+                            };
+                            if let Err(reason) = active_tab.admit_worker_pane(
                                 pid,
                                 initial_pane_title,
                                 invoked_with,
-                                blocking_notification,
-                            )?;
+                                anchor,
+                                !separate_worker,
+                            ) {
+                                if let Some(gate) = &managed_gate {
+                                    gate.revoke(reason);
+                                }
+                                anyhow::bail!("worker placement rejected: {reason:?}");
+                            }
+                        } else if managed_gate.is_some()
+                            && !start_suppressed
+                            && active_tab.get_selectable_tiled_panes_count() > 0
+                        {
+                            let anchor = active_tab.worker_split_anchor().ok_or_else(|| {
+                                if let Some(gate) = &managed_gate {
+                                    gate.revoke(
+                                        yinz_types::agent::launch::LaunchReason::InsufficientRoom,
+                                    );
+                                }
+                                anyhow!("agent placement rejected: insufficient_room")
+                            })?;
+                            if let Err(reason) = active_tab.admit_worker_pane(
+                                pid,
+                                initial_pane_title,
+                                invoked_with,
+                                anchor,
+                                false,
+                            ) {
+                                if let Some(gate) = &managed_gate {
+                                    gate.revoke(reason);
+                                }
+                                anyhow::bail!("agent placement rejected: {reason:?}");
+                            }
                         } else {
                             active_tab.new_pane(
                                 pid,
@@ -609,6 +752,13 @@ impl Screen {
             }
             return Err(error);
         }
+        if let Some(tab) = empty_launch_tab.and_then(|id| self.tabs.get_mut(&id))
+            && tab.get_all_pane_ids() == vec![pid]
+        {
+            // Only this admitted reservation touched the empty launch-created tab in this
+            // Screen turn. Any later user/other-launch activity permanently retires cleanup.
+            tab.agent_tab_cleanup_allowed = true;
+        }
         if worker_stack.is_some()
             && !self
                 .tabs
@@ -627,6 +777,37 @@ impl Screen {
             && self.tab_id_containing_pane(pid) == Some(key.1)
         {
             self.agent_worker_stacks.entry(key).or_default().push(pid);
+        }
+        if let Some(key) = worker_stack
+            && let Some(tab) = self.tabs.get(&key.1)
+        {
+            self.agent_worker_regions.entry(key).or_insert_with(|| {
+                (
+                    std::sync::Arc::downgrade(&tab.agent_tab_lifetime),
+                    yinz_bus::agent_launch::new_incarnation(),
+                )
+            });
+        }
+        if let (Some(gate), Some(tab_id), PaneId::Terminal(terminal)) =
+            (&managed_gate, placed_in, pid)
+            && let Some(tab) = self.tabs.get(&tab_id)
+        {
+            gate.admit(yinz_types::agent::launch::LaunchSlot {
+                pane_id: pid,
+                process_generation: terminal.get() as u64,
+                tab_id,
+                tab_incarnation: tab.agent_tab_incarnation.clone(),
+                controller: worker_stack.map(|key| key.0),
+                worker_region: worker_stack.and_then(|key| {
+                    self.agent_worker_regions
+                        .get(&key)
+                        .map(|(_, id)| id.clone())
+                }),
+                placement_generation: terminal.get() as u64,
+            });
+            if let Some(target) = completion_tx.as_ref().and_then(|c| c.agent_tab.clone()) {
+                self.managed_reservations.insert(terminal, target);
+            }
         }
         if let Some(completion) = completion_tx.take()
             && let Some(tab) = placed_in.and_then(|id| self.tabs.get_mut(&id))

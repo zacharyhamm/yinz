@@ -1097,7 +1097,7 @@ impl Tab {
             self.tiled_panes.unset_fullscreen();
         }
         self.dissolve_stack_lists_for_classic_mutation();
-        let focused_member = if should_focus || !*self.stacked_pane_list.borrow() {
+        let focused_member = if should_focus {
             None
         } else {
             let mut members = self.tiled_panes.pane_ids_in_stack_of_pane_id(&root_pane_id);

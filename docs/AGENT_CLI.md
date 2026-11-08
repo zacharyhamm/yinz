@@ -137,6 +137,78 @@ Use `--kind claude` for these aliases. Other model IDs are validated by the conf
 On Linux, `--bubblewrap` uses an explicitly prepared project environment.
 See [Project Bubblewrap environments](BUBBLEWRAP.md) for configuration, preparation, and authentication.
 
+### Transactional launch identity and observation
+
+Managed CLI, palette, and plugin launches share the host coordinator. The CLI
+requires `agent-launch-transaction-v2` before sending its distinct `Launch`
+request. No protobuf change is required: the typed request travels through
+`AgentControlJson`.
+
+`spawn --launch-id SERVER_INSTANCE.ID` records a caller-chosen operation. Obtain
+`server_instance` with `yinz agent launch-support --json`, choose the suffix, and
+save the complete identity **before** invoking spawn. IDs accept 1–128 ASCII
+letters, digits, `.`, `_`, and `-`. An interactive spawn without an ID generates
+one and returns it in `launch.launch_id`. Launch JSON accepts `launch_id`; flags
+override file values. A repeat with identical normalized inputs observes the
+same operation. Different inputs return `conflict` and preserve its receipt.
+
+```sh
+yinz agent launch-support --json
+# Save SERVER_INSTANCE.my-task with the original launch configuration.
+yinz agent spawn --launch-id SERVER_INSTANCE.my-task --kind codex --cwd /work/issue --stack-for terminal_7 --json
+yinz agent launch-status SERVER_INSTANCE.my-task --json
+```
+
+Receipts live in the session's host-scoped persistent plugin-data journal and
+include request digest, server incarnation, phase, reason, process state,
+placement identity, resource ownership, and independent `cleanup_pending`.
+Environment values are hashed with the request and are never written to receipts.
+The journal keeps unresolved operations and terminal tombstones. Missing history,
+an old incarnation, and unavailable transport never authorize another execution.
+A pending launch from a retired server is `unknown`; it is never replayed.
+
+| Receipt outcome | Meaning |
+| --- | --- |
+| `pending` | Admission, preparation, start, registration, or owned teardown is unresolved. |
+| `rejected` | Validation/admission refused execution and no launch pane or PTY remains. |
+| `started` | Process start, current usable placement, and identity registration were acknowledged. |
+| `failed` | Preparation/start failed; inspect the explicit process and resource facts. |
+| `cancelled` | Revocation won or owned teardown finished; process facts distinguish non-execution from confirmed exit. |
+| `unknown` | Authoritative execution/history/cleanup could not be recovered. |
+| `conflict` | This ID belongs to a different request; the original operation is unchanged. |
+
+`started` is historical: subsequent closure reports `disposition: closed` and
+cannot supply a freshly usable worker. Provider conversation and prompt
+submission IDs remain separate; a launch alone does not establish readiness or
+completion. The response's `acknowledged` still describes prompts only.
+An ordinary restart/rerun of the pane also makes the original worker unavailable
+through its launch receipt; the replacement does not inherit that launch identity.
+Held reservations cannot be rerun before the transaction hands them off.
+
+Screen admits an actual placeholder before checkout materialization. Strict
+`--stack-for` splits a complete logical tiled stack/list into a separate owned
+worker region, using the controller's tiled region when it has one. Floating and
+overlay controllers keep their layer and focus while workers occupy the same
+tab's tiled layer. Subsequent workers share only the owned region. Pending
+placeholders consume pane and geometric capacity. Rejection preserves existing
+panes, groups, fullscreen, and keyboard focus, with no Git preparation or provider
+execution. It never falls back to another tab; `--new-tab` is the explicit
+alternative. Automatic placement retains its separate size/overflow heuristic.
+Intentional `--suppressed` launches retain their explicit hidden-pane policy.
+
+After slow checkout, environment, or SSH resolution, Screen revalidates the
+incarnations and admitted slot. A one-use permit orders revocation against exec.
+A start-winning invalidation remains aborting until the owned late child is
+cleaned up; a positive size or copied completion cannot authorize execution.
+Started workers remain ordinary panes when their controller later moves/closes.
+Local teardown waits for owned process exit off the PTY loop. A remote transport
+that acknowledges only sending termination cannot prove remote reaping: its
+receipt remains `unknown` with cleanup pending for inspection.
+Cleanup removes only owned terminal reservations and proven empty,
+incarnation-matching launch-created tabs. Git paths and branches are retained,
+including on failure; `git` entries distinguish borrowed, created, and retained
+attempt provenance. Destination metadata alone does not imply ownership.
+
 `agent spawn --help` describes every launch option. Recognized kinds are
 `muse`, `codex`, `claude`, `cursor`, `qwen`, `gemini`, `aider`, `cline`,
 `opencode`, `pi` and `agy`. Recognition does not imply prompt support.
@@ -237,7 +309,7 @@ Add `--tab ID` to select an existing tab. Suppressed launches preserve focus and
 
 Launch JSON accepts `"suppressed": true`, optionally with `"tab": ID`.
 The default is false. Any CLI placement flag replaces all JSON placement fields.
-The running server must confirm suppression support before Yinz sends the launch request.
+The running server must confirm transaction support before Yinz sends the launch request.
 
 ```sh
 yinz agent spawn --kind claude --branch review --suppressed --json

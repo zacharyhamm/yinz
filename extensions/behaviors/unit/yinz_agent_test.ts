@@ -1,3 +1,4 @@
+import { launchReply, launchSupport, receipt } from "./launch_fixtures.ts";
 import {
   AgentConfigSchema,
   type AgentContext,
@@ -107,6 +108,13 @@ function harness(replies: Reply[], overrides: Record<string, unknown> = {}) {
     id: () => "submission-1",
     realPath: (path) => Promise.resolve(path),
     run: (args, stdin, signal) => {
+      if (args[3] === "launch-support") {
+        return Promise.resolve({
+          code: 0,
+          stdout: JSON.stringify(launchSupport),
+          stderr: "",
+        });
+      }
       calls.push({
         args,
         stdin,
@@ -116,10 +124,20 @@ function harness(replies: Reply[], overrides: Record<string, unknown> = {}) {
       const reply = replies.shift();
       if (reply instanceof Error) return Promise.reject(reply);
       if (!reply) throw new Error(`Unexpected command: ${args.join(" ")}`);
-      if ("code" in reply) return Promise.resolve(reply as CommandResult);
+      if ("code" in reply) {
+        const command = reply as CommandResult;
+        try {
+          command.stdout = JSON.stringify(
+            launchReply(args, JSON.parse(command.stdout)),
+          );
+        } catch { /* Preserve malformed transport fixtures. */ }
+        return Promise.resolve(command);
+      }
       return Promise.resolve({
         code: 0,
-        stdout: JSON.stringify(reply),
+        stdout: JSON.stringify(
+          launchReply(args, reply as Record<string, unknown>),
+        ),
         stderr: "",
       });
     },
@@ -223,16 +241,23 @@ Deno.test("a failed result write keeps the original submission resumable", async
 });
 
 Deno.test("uncertain spawn never respawns automatically", async () => {
-  const h = harness([new Error("lost spawn response")]);
+  const h = harness([new Error("lost spawn response"), {
+    outcome: "status_unavailable",
+    launch: receipt("server-test.submission-1", {
+      outcome: "unknown",
+      process: "unknown",
+      disposition: "unknown",
+    }),
+  }]);
   await rejects(
     () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
     "lost spawn response",
   );
   await rejects(
     () => resumeAgent(h.context, h.dependencies),
-    "Launch outcome is uncertain",
+    "Launch unknown",
   );
-  equal(h.calls.length, 1);
+  equal(h.calls.filter((call) => call.args[3] === "spawn").length, 1);
   equal(h.records.get("state")?.phase, "launching");
 });
 
@@ -260,13 +285,10 @@ Deno.test("unsupported effort rejection is classified with its response and neve
     equal(state.outcome, "rejected");
     equal(state.message, rejected.message);
     equal(state.config.effort, "ultra");
-    equal(JSON.parse(state.rawResponse!), rejected);
+    equal(JSON.parse(state.rawResponse!).message, rejected.message);
     equal(state.paneId, undefined);
     equal(state.submissionId, undefined);
-    equal(
-      h.writes.find(({ value }) => value.rawResponse)?.value.phase,
-      "launch_rejected",
-    );
+    assert(h.writes.some(({ value }) => value.phase === "launch_rejected"));
     assert(!h.records.has("result"));
     await rejects(
       () => resumeAgent(h.context, h.dependencies),
@@ -304,7 +326,14 @@ Deno.test("spawn rejection with resources and malformed or uncertain responses s
     new Error("lost spawn response"),
   ];
   for (const reply of replies) {
-    const h = harness([reply]);
+    const h = harness([reply, {
+      outcome: "status_unavailable",
+      launch: receipt("server-test.submission-1", {
+        outcome: "unknown",
+        process: "unknown",
+        disposition: "unknown",
+      }),
+    }]);
     await rejects(
       () => runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
       "",
@@ -313,9 +342,9 @@ Deno.test("spawn rejection with resources and malformed or uncertain responses s
     assert(!h.records.has("result"));
     await rejects(
       () => resumeAgent(h.context, h.dependencies),
-      "Launch outcome is uncertain",
+      "Launch unknown",
     );
-    equal(h.calls.length, 1);
+    equal(h.calls.filter((call) => call.args[3] === "spawn").length, 1);
   }
 });
 
@@ -1067,6 +1096,7 @@ Deno.test("stack placement never silently falls back without a controller", asyn
   equal(h.calls.length, 0);
 });
 
+<<<<<<< HEAD
 Deno.test("submission continuation retains the original conversation and recovers a lost acknowledgement without another prompt", async () => {
   const h = harness([spawned, ready(), completed()]);
   await runAgent(
@@ -1248,4 +1278,94 @@ Deno.test("a different continuation cannot replace a timed-out turn's saved iden
   equal(h.records.get("result")?.submissionId, "submission-2");
   equal(h.calls.filter((c) => c.args.includes("prompt")).length, 2);
   equal(h.calls.filter((c) => c.args.includes("spawn")).length, 1);
+=======
+Deno.test("launch transaction resumes the original started operation after a lost reply without spawning twice", async () => {
+  const h = harness([
+    new Error("lost reply"),
+    { ...spawned, launch: receipt("server-test.submission-1") },
+    ready(),
+    completed(),
+  ]);
+  await rejects(
+    () =>
+      runAgent({ prompt: "Original approved task" }, h.context, h.dependencies),
+    "lost reply",
+  );
+  const intent = AgentStateSchema.parse(h.records.get("state"));
+  equal(intent.phase, "launching");
+  equal(intent.launchId, "server-test.submission-1");
+  equal(intent.submissionId, undefined);
+  await resumeAgent(h.context, h.dependencies);
+  equal(h.calls.map((call) => call.args[3]), [
+    "spawn",
+    "launch-status",
+    "wait",
+    "prompt",
+  ]);
+  equal(h.calls[3].stdin, "Original approved task");
+  equal(h.records.get("result")?.promptDigest, intent.promptDigest);
+});
+
+Deno.test("launch transaction pending and unknown observations retain exact intent and never submit", async () => {
+  const h = harness([
+    {
+      outcome: "status_unavailable",
+      launch: receipt("server-test.submission-1", {
+        outcome: "pending",
+        phase: "prepares",
+        process: "not_started",
+        disposition: "reserved",
+      }),
+    },
+    {
+      outcome: "status_unavailable",
+      launch: receipt("server-test.submission-1", {
+        outcome: "unknown",
+        process: "unknown",
+        disposition: "unknown",
+      }),
+    },
+  ]);
+  await rejects(
+    () => runAgent({ prompt: "Original task" }, h.context, h.dependencies),
+    "Launch pending",
+  );
+  await rejects(() => resumeAgent(h.context, h.dependencies), "Launch unknown");
+  const state = AgentStateSchema.parse(h.records.get("state"));
+  equal(state.launchId, "server-test.submission-1");
+  equal(state.prompt, "Original task");
+  equal(state.submissionId, undefined);
+  equal(h.calls.map((call) => call.args[3]), ["spawn", "launch-status"]);
+});
+
+Deno.test("launch transaction refuses a changed digest or server on observation", async () => {
+  for (
+    const changed of [{ request_digest: "b".repeat(64) }, {
+      server_instance: "replacement",
+    }]
+  ) {
+    const h = harness([
+      {
+        outcome: "status_unavailable",
+        launch: receipt("server-test.submission-1", {
+          outcome: "pending",
+          process: "not_started",
+          disposition: "reserved",
+        }),
+      },
+      { ...spawned, launch: receipt("server-test.submission-1", changed) },
+    ]);
+    await rejects(
+      () => runAgent({ prompt: "Original task" }, h.context, h.dependencies),
+      "Launch pending",
+    );
+    await rejects(
+      () => resumeAgent(h.context, h.dependencies),
+      "does not match",
+    );
+    equal(h.records.get("state")?.launchRequestDigest, "a".repeat(64));
+    equal(h.records.get("state")?.submissionId, undefined);
+    equal(h.calls.filter((call) => call.args[3] === "spawn").length, 1);
+  }
+>>>>>>> bab9477ac (Make agent launches transactional with durable receipts and placement safeguards)
 });

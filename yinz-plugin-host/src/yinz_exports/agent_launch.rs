@@ -1,14 +1,14 @@
 //! Agent launch preparation, worktree ownership, and placement completion.
 
 use super::filesystem::resolve_fs_ancestors;
-use super::pane_creation::{spawn_command_pane_near_plugin, translate_plugin_path};
+use super::pane_creation::translate_plugin_path;
 use super::write_response;
 use crate::plugin_map::PluginEnv;
 use prost::Message;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::oneshot;
 use yinz_bus::global_async_runtime::get_tokio_runtime;
 use yinz_bus::pty::{ClientTabIndexOrPaneId, PtyInstruction};
@@ -40,7 +40,7 @@ pub(super) fn spawn_agent(
     mut context: BTreeMap<String, String>,
     start_suppressed: bool,
 ) {
-    let result: SpawnAgentResponse = (|| {
+    let result: SpawnAgentResponse = {
         let host_paths = env.plugin_config.is_builtin()
             && context
                 .get("agent_agent_host_cwd")
@@ -61,26 +61,54 @@ pub(super) fn spawn_agent(
                 translate_plugin_path(env, path)
             }
         });
-        let prepared = prepare_agent(
-            &spec,
-            source,
-            cwd,
-            &env.data_access,
-            &env.server_session.current(),
-        )
-        .map_err(|error| error.to_string())?;
-        let resources = prepared.resources();
-        let kind = yinz_types::agent::agent_kind_of(&prepared.command.path, &prepared.command.args)
-            .unwrap_or_else(|| "true".to_owned());
+        let kind =
+            yinz_runtime::agent::launch::kind_for_spec(&spec).unwrap_or_else(|| "true".into());
         context.insert(AGENT_PANE_CONTEXT.to_owned(), kind);
-        spawn_command_pane_near_plugin(env, prepared.command, context, name, true, start_suppressed)
-            .map(|pane_id| SpawnedAgent {
-                pane_id,
-                branch: resources.branch,
-                cwd: resources.cwd,
-                ..Default::default()
-            })
-    })();
+        let origin = env.originating_plugin(context);
+        let request = yinz_types::agent::launch::LaunchRequest {
+            placement: if start_suppressed {
+                yinz_types::agent::control::AgentPlacement::Suppressed(None)
+            } else {
+                Default::default()
+            },
+            spec: spec.clone(),
+            cwd: cwd.clone().or_else(|| Some(source.clone())),
+            project: None,
+            remote_host: None,
+            new_project: None,
+        };
+        let response = super::launch_transaction::launch_with_prepare(
+            format!(
+                "{}.{}",
+                yinz_bus::agent_launch::server_instance(),
+                uuid::Uuid::new_v4()
+            ),
+            request,
+            env.client_id,
+            &env.senders,
+            &env.data_access,
+            Some(origin),
+            name,
+            Some(Box::new(|spec| {
+                prepare_agent(
+                    spec,
+                    source,
+                    cwd,
+                    &env.data_access,
+                    &env.server_session.current(),
+                )
+            })),
+        );
+        if response.outcome == AgentOutcome::Ok {
+            response
+                .spawned
+                .ok_or_else(|| "launch omitted its pane identity".into())
+        } else {
+            Err(response
+                .message
+                .unwrap_or_else(|| format!("launch needs observation: {:?}", response.launch)))
+        }
+    };
     let response = ProtobufSpawnAgentResponse::from(result);
     write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write spawn_agent response".to_string())
@@ -89,6 +117,7 @@ pub(super) fn spawn_agent(
 
 #[derive(Debug)]
 pub(super) struct PreparedAgent {
+    pub(super) git: Vec<yinz_types::agent::launch::GitResource>,
     pub(super) command: CommandToRun,
     pub(super) branch: Option<String>,
     pub(super) cwd: PathBuf,
@@ -111,7 +140,7 @@ impl PreparedAgent {
 }
 
 #[derive(Debug)]
-pub(super) struct AgentSpawnError(Box<AgentResponse>);
+pub(super) struct AgentSpawnError(pub(super) Box<AgentResponse>);
 
 impl AgentSpawnError {
     pub(super) fn failed(
@@ -243,6 +272,29 @@ pub(super) fn prepare_agent(
         yinz_runtime::agent::pi::prepare_command(&mut command)
             .map_err(|error| AgentSpawnError::failed(error, Some(resources.clone())))?;
     }
+    use yinz_types::agent::launch::{GitResource, GitResourceKind, ResourceOwnership};
+    let mut git = vec![GitResource {
+        kind: GitResourceKind::Worktree,
+        ownership: if prepared.created_worktree {
+            ResourceOwnership::Created
+        } else {
+            ResourceOwnership::Borrowed
+        },
+        path: prepared.path.clone(),
+        branch: prepared.branch.clone(),
+    }];
+    if prepared.branch.is_some() {
+        git.push(GitResource {
+            kind: GitResourceKind::Branch,
+            ownership: if prepared.created_branch {
+                ResourceOwnership::Created
+            } else {
+                ResourceOwnership::Borrowed
+            },
+            path: prepared.path.clone(),
+            branch: prepared.branch.clone(),
+        });
+    }
     let reused = prepared.reused_worktree;
     let branch = prepared.branch.or_else(|| {
         worktree_at(&prepared.path, &prepared.path)
@@ -265,6 +317,7 @@ pub(super) fn prepare_agent(
     }
     let requested_branch = requested_branch.filter(|requested| branch.as_ref() != Some(requested));
     Ok(PreparedAgent {
+        git,
         command,
         branch,
         cwd: folder,
@@ -302,165 +355,196 @@ pub(super) const TILED: NewPanePlacement = NewPanePlacement::Tiled {
 /// be redirected to a roomier tab (`Screen::agent_pane_target`).
 pub(super) fn spawn_agent_prepared(
     placement: yinz_types::agent::control::AgentPlacement,
+    spec: AgentSpawnSpec,
+    client_id: crate::ClientId,
+    senders: &ThreadSenders,
+    data: &DataAccess,
+    prepare: impl FnOnce(&mut AgentSpawnSpec) -> Result<PreparedAgent, AgentSpawnError>,
+) -> Result<SpawnedAgent, AgentSpawnError> {
+    let request = yinz_types::agent::launch::LaunchRequest {
+        placement,
+        spec,
+        cwd: None,
+        project: None,
+        remote_host: None,
+        new_project: None,
+    };
+    let response = super::launch_transaction::launch_with_prepare(
+        format!(
+            "{}.{}",
+            yinz_bus::agent_launch::server_instance(),
+            uuid::Uuid::new_v4()
+        ),
+        request,
+        client_id,
+        senders,
+        data,
+        None,
+        None,
+        Some(Box::new(prepare)),
+    );
+    if response.outcome == AgentOutcome::Ok {
+        response
+            .spawned
+            .ok_or_else(|| "launch omitted its pane".into())
+    } else {
+        Err(AgentSpawnError(Box::new(response)))
+    }
+}
+
+pub(super) fn spawn_agent_prepared_with_gate(
+    placement: yinz_types::agent::control::AgentPlacement,
     mut spec: AgentSpawnSpec,
     client_id: crate::ClientId,
     senders: &ThreadSenders,
+    gate: std::sync::Arc<yinz_bus::agent_launch::LaunchGate>,
+    origin: Option<yinz_types::data::OriginatingPlugin>,
+    title: Option<String>,
     prepare: impl FnOnce(&mut AgentSpawnSpec) -> Result<PreparedAgent, AgentSpawnError>,
+    before_start: impl FnOnce(
+        &AgentLaunchResources,
+        &[yinz_types::agent::launch::GitResource],
+    ) -> Result<(), AgentSpawnError>,
 ) -> Result<SpawnedAgent, AgentSpawnError> {
-    let surface = TILED;
-    let started = Instant::now();
+    use yinz_types::agent::control::AgentPlacement;
     if spec.prompt.is_some() || spec.reuse_prompt.is_some() {
         return Err(
             "spawn does not accept prompt or reuse_prompt; spawn, wait, then prompt".into(),
         );
     }
-    use yinz_types::agent::control::AgentPlacement;
     placement.validate()?;
+    // Pure provider validation precedes allocating anything; Git and environment preparation
+    // follow an acknowledged placeholder. A held command never executes a provider.
+    let (planned, _) = yinz_runtime::agent::launch::plan(&spec)?;
     let start_suppressed = matches!(placement, AgentPlacement::Suppressed(_));
-    let mut destination = match &placement {
-        AgentPlacement::Tab(_)
-        | AgentPlacement::Suppressed(_)
-        | AgentPlacement::ControllerStack(_) => Some(
-            resolve_agent_tab(senders, placement.clone(), None, client_id).map_err(|error| {
-                let mut failure = AgentSpawnError::from(error);
-                failure.0.launch_resources = Some(AgentLaunchResources {
-                    tab_id: match placement {
-                        AgentPlacement::Tab(id) | AgentPlacement::Suppressed(Some(id)) => Some(id),
-                        _ => None,
-                    },
-                    ..Default::default()
-                });
-                failure
-            })?,
-        ),
-        _ => None,
+    let destination = if matches!(placement, AgentPlacement::Automatic) {
+        None
+    } else {
+        Some(resolve_agent_tab(
+            senders, placement, None, client_id, &gate,
+        )?)
     };
-    let prepared = prepare(&mut spec).map_err(|mut failure| {
-        if let Some(destination) = &destination {
-            failure
-                .0
-                .launch_resources
-                .get_or_insert_with(Default::default)
-                .tab_id = Some(destination.tab_id);
-        }
-        failure
-    })?;
-    let mut resources = prepared.resources();
-    resources.tab_id = destination.as_ref().map(|target| target.tab_id);
-    let command = prepared.command;
-    let title = agent_pane_title(&spec);
-    let action = RunCommandAction {
-        command: command.path,
-        args: command.args,
-        cwd: command.cwd,
-        hold_on_close: true,
-        target: command.target,
-        remote_default_shell: command.remote_default_shell,
+    if let Some(destination) = &destination {
+        gate.destination(destination.clone());
+    }
+    let mut resources = AgentLaunchResources {
+        tab_id: destination.as_ref().map(|p| p.tab_id),
+        created_tab_id: destination.as_ref().filter(|p| p.created).map(|p| p.tab_id),
         ..Default::default()
     };
-    let action: RunCommand = action.into();
-    if matches!(placement, AgentPlacement::NewTab(_)) {
-        destination = Some(
-            resolve_agent_tab(
-                senders,
-                placement,
-                Some(Run::Command(action.clone())),
+    let preferred = origin.as_ref().map_or(
+        ClientTabIndexOrPaneId::ClientIdNoFocus(client_id),
+        |origin| {
+            ClientTabIndexOrPaneId::PaneIdOrClient(
+                yinz_types::pane_id::PaneId::Plugin(origin.plugin_id),
                 client_id,
             )
-            .map_err(|error| AgentSpawnError::failed(error, Some(resources.clone())))?,
-        );
-        resources.tab_id = destination.as_ref().map(|target| target.tab_id);
-        resources.created_tab_id = resources.tab_id;
+        },
+    );
+    let target = destination.as_ref().map_or(preferred, |p| {
+        ClientTabIndexOrPaneId::TabIndexNoFocus(p.tab_id)
+    });
+    let placeholder: RunCommand = RunCommandAction {
+        command: planned.path,
+        args: planned.args,
+        hold_on_start: true,
+        hold_on_close: true,
+        ..Default::default()
     }
-    let (completion_tx, completion_rx) = oneshot::channel();
-    let mut completion = NotificationEnd::new(completion_tx);
-    completion.wait_for_agent_start = true;
+    .into();
+    let (tx, rx) = oneshot::channel();
+    let mut completion = NotificationEnd::new(tx);
+    completion.launch = Some(gate.clone());
     completion.agent_tab = destination.clone();
     completion.created_tab_id = resources.created_tab_id;
-    let target = destination.as_ref().map_or(
-        ClientTabIndexOrPaneId::ClientIdNoFocus(client_id),
-        |destination| ClientTabIndexOrPaneId::TabIndexNoFocus(destination.tab_id),
-    );
     senders
         .send_to_pty(PtyInstruction::SpawnTerminal(
-            Some(TerminalAction::RunCommand(action)),
-            title,
-            surface,
+            Some(TerminalAction::RunCommand(placeholder)),
+            title.or_else(|| agent_pane_title(&spec)),
+            TILED,
             start_suppressed,
             target,
             Some(completion),
             false,
         ))
-        .map_err(|error| {
+        .map_err(|e| {
             AgentSpawnError::failed(
-                format!(
-                    "failed to request agent pane: {error:#}{}",
-                    cleanup_agent_tab(senders, destination.as_ref(), &mut resources)
-                ),
+                format!("reserve agent pane: {e:#}"),
                 Some(resources.clone()),
             )
         })?;
-    let result = wait_for_agent_placement(
-        completion_rx,
-        &resources,
-        Duration::from_secs(120).saturating_sub(started.elapsed()),
-    )?;
-    destination = destination.or(result.agent_tab);
-    resources.tab_id = resources
-        .tab_id
-        .or(destination.as_ref().map(|target| target.tab_id));
-    resources.created_tab_id = resources.created_tab_id.or(result.created_tab_id);
-    let definitive_failure = result.error_message.is_some();
-    let error = result.error_message.or_else(|| {
-        if result.affected_pane_id.is_none() {
-            Some("agent pane creation outcome is unknown".into())
-        } else if result.affected_tab_id.is_none() {
-            Some("agent destination outcome is unknown".into())
-        } else {
-            None
-        }
-    });
-    if let Some(error) = error {
-        let cleanup = if definitive_failure {
-            cleanup_agent_tab(senders, destination.as_ref(), &mut resources)
-        } else {
-            String::new()
-        };
-        let mut failure =
-            AgentSpawnError::failed(format!("{error}{cleanup}"), Some(resources.clone()));
-        if let Some(pane_id) = result.affected_pane_id {
-            failure.0.spawned = Some(SpawnedAgent {
-                pane_id,
-                tab_id: result.affected_tab_id,
-                created_tab_id: resources.created_tab_id,
-                branch: resources.branch.clone(),
-                cwd: resources.cwd.clone(),
-                requested_branch: resources.requested_branch.clone(),
-                reused: resources.reused,
-                occupied_by: Vec::new(),
-            });
-            if resources.tab_id.is_none() && resources.created_tab_id.is_none() {
-                failure.0.launch_resources = None;
-            }
-        }
-        return Err(failure);
+    let placed = wait_for_agent_placement(rx, &resources, Duration::from_secs(120))?;
+    let destination = placed.agent_tab.or(destination);
+    resources.tab_id = placed.affected_tab_id.or(resources.tab_id);
+    resources.created_tab_id = placed.created_tab_id.or(resources.created_tab_id);
+    if let Some(error) = placed.error_message {
+        return Err(AgentSpawnError::failed(error, Some(resources)));
     }
-    let pane_id = result.affected_pane_id.ok_or_else(|| {
-        AgentSpawnError::failed(
-            "agent pane creation outcome is unknown",
-            Some(resources.clone()),
-        )
+    let slot = gate
+        .snapshot()
+        .slot
+        .ok_or_else(|| AgentSpawnError::failed("admission unavailable", Some(resources.clone())))?;
+    // Only this reservation can start; a revoked placeholder cannot be replaced by a new one.
+    let prepared = prepare(&mut spec).map_err(|mut failure| {
+        failure
+            .0
+            .launch_resources
+            .get_or_insert_with(Default::default)
+            .tab_id = Some(slot.tab_id);
+        gate.revoke(yinz_types::agent::launch::LaunchReason::PrepareFailed);
+        let _ =
+            senders.send_to_screen(ScreenInstruction::ClosePane(slot.pane_id, None, None, None));
+        failure
     })?;
-    let tab_id = result.affected_tab_id.ok_or_else(|| {
-        AgentSpawnError::failed(
-            "agent destination outcome is unknown",
-            Some(resources.clone()),
-        )
-    })?;
+    resources = prepared.resources();
+    resources.tab_id = Some(slot.tab_id);
+    resources.created_tab_id = destination.as_ref().filter(|p| p.created).map(|p| p.tab_id);
+    before_start(&resources, &prepared.git)?;
+    let command = prepared.command;
+    let action: RunCommand = RunCommandAction {
+        command: command.path,
+        args: command.args,
+        cwd: command.cwd,
+        originating_plugin: origin,
+        hold_on_close: true,
+        target: command.target,
+        remote_default_shell: command.remote_default_shell,
+        ..Default::default()
+    }
+    .into();
+    let (tx, rx) = oneshot::channel();
+    let mut completion = NotificationEnd::new(tx);
+    completion.set_affected_pane_id(slot.pane_id);
+    completion.complete_pane_placement(slot.tab_id);
+    let yinz_types::pane_id::PaneId::Terminal(terminal_id) = slot.pane_id else {
+        return Err("invalid launch allocation".into());
+    };
+    senders
+        .send_to_pty(PtyInstruction::StartAgentReservation {
+            terminal_id,
+            command: action,
+            completion,
+        })
+        .map_err(|e| {
+            AgentSpawnError::failed(
+                format!("start reserved agent: {e:#}"),
+                Some(resources.clone()),
+            )
+        })?;
+    let started = wait_for_agent_placement(rx, &resources, Duration::from_secs(120))?;
+    if let Some(error) = started.error_message {
+        return Err(AgentSpawnError::failed(error, Some(resources)));
+    }
+    if !gate.snapshot().running || gate.snapshot().revoked.is_some() {
+        return Err(AgentSpawnError::failed(
+            "agent did not retain its admitted slot",
+            Some(resources),
+        ));
+    }
     Ok(SpawnedAgent {
-        tab_id: Some(tab_id),
+        pane_id: slot.pane_id,
+        tab_id: Some(slot.tab_id),
         created_tab_id: resources.created_tab_id,
-        pane_id,
         branch: resources.branch,
         cwd: resources.cwd,
         requested_branch: resources.requested_branch,
@@ -498,6 +582,7 @@ fn resolve_agent_tab(
     placement: yinz_types::agent::control::AgentPlacement,
     invoked_with: Option<Run>,
     client_id: crate::ClientId,
+    gate: &std::sync::Arc<yinz_bus::agent_launch::LaunchGate>,
 ) -> Result<yinz_bus::route::AgentTabPlacement, String> {
     let (reply, receiver) = std::sync::mpsc::channel();
     senders
@@ -505,15 +590,18 @@ fn resolve_agent_tab(
             placement,
             invoked_with,
             client_id,
+            launch: gate.clone(),
             reply,
         })
         .map_err(|error| format!("cannot request agent destination: {error:#}"))?;
     receiver.recv().map_err(|error| {
+        gate.cleanup_unknown();
+        gate.revoke(yinz_types::agent::launch::LaunchReason::HistoryUnavailable);
         format!("agent destination outcome unknown: {error}; inspect tabs before retrying")
     })?
 }
 
-fn cleanup_agent_tab(
+pub(super) fn cleanup_agent_tab(
     senders: &ThreadSenders,
     destination: Option<&yinz_bus::route::AgentTabPlacement>,
     resources: &mut AgentLaunchResources,
@@ -661,6 +749,8 @@ pub(super) fn agent_folder_tracked(
         (GitCheckout::Current, Some(cwd)) => {
             guard.check(&cwd)?;
             Ok(PreparedCheckout {
+                created_branch: false,
+                created_worktree: false,
                 reused_worktree: false,
                 path: cwd,
                 branch: None,
@@ -669,6 +759,8 @@ pub(super) fn agent_folder_tracked(
         (GitCheckout::Current, None) => {
             guard.check(&source)?;
             Ok(PreparedCheckout {
+                created_branch: false,
+                created_worktree: false,
                 reused_worktree: false,
                 path: source,
                 branch: None,
@@ -739,6 +831,8 @@ pub(super) fn prepare_git_checkout(
 /// asked for - a taken name is cut afresh with a suffix.
 #[derive(Debug)]
 pub(super) struct PreparedCheckout {
+    created_branch: bool,
+    created_worktree: bool,
     pub(super) path: PathBuf,
     pub(super) branch: Option<String>,
     pub(super) reused_worktree: bool,
@@ -822,6 +916,8 @@ pub(super) fn prepare_git_checkout_in_tracked(
         GitCheckout::Current => {
             guard.check(&root)?;
             Ok(PreparedCheckout {
+                created_branch: false,
+                created_worktree: false,
                 reused_worktree: false,
                 path: root,
                 branch: None,
@@ -836,6 +932,8 @@ pub(super) fn prepare_git_checkout_in_tracked(
                 if let Some(worktree) = worktree_holding(&root, &branch)? {
                     guard.check(&worktree)?;
                     return Ok(PreparedCheckout {
+                        created_branch: false,
+                        created_worktree: false,
                         reused_worktree: true,
                         path: worktree,
                         branch: Some(branch),
@@ -855,6 +953,8 @@ pub(super) fn prepare_git_checkout_in_tracked(
                     Some(session_name),
                 )?;
                 return Ok(PreparedCheckout {
+                    created_branch: false,
+                    created_worktree: false,
                     reused_worktree: false,
                     path: root,
                     branch: Some(branch),
@@ -874,6 +974,8 @@ pub(super) fn prepare_git_checkout_in_tracked(
                 Some(session_name),
             )?;
             Ok(PreparedCheckout {
+                created_branch: true,
+                created_worktree: false,
                 reused_worktree: false,
                 path: root,
                 branch: Some(branch),
@@ -900,6 +1002,8 @@ pub(super) fn prepare_git_checkout_in_tracked(
                 if let Some(existing) = worktree_at(&root, &path)? {
                     guard.check(&existing.path)?;
                     return Ok(PreparedCheckout {
+                        created_branch: false,
+                        created_worktree: false,
                         reused_worktree: true,
                         path: existing.path,
                         branch: existing.branch,
@@ -908,6 +1012,8 @@ pub(super) fn prepare_git_checkout_in_tracked(
                 if let Some(existing) = worktree_holding(&root, &branch)? {
                     guard.check(&existing)?;
                     return Ok(PreparedCheckout {
+                        created_branch: false,
+                        created_worktree: false,
                         reused_worktree: true,
                         path: existing,
                         branch: Some(branch),
@@ -928,6 +1034,8 @@ pub(super) fn prepare_git_checkout_in_tracked(
                 run_git(&root, &args, "create the worktree", Some(session_name))?;
                 exclude_nested_worktree(&root, &path);
                 return Ok(PreparedCheckout {
+                    created_branch: args.contains(&"-b"),
+                    created_worktree: true,
                     reused_worktree: false,
                     path,
                     branch: Some(branch),
@@ -947,6 +1055,8 @@ pub(super) fn prepare_git_checkout_in_tracked(
             )?;
             exclude_nested_worktree(&root, &path);
             Ok(PreparedCheckout {
+                created_branch: true,
+                created_worktree: true,
                 reused_worktree: false,
                 path,
                 branch: Some(branch),

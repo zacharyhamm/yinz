@@ -958,6 +958,51 @@ fn new_agent_tab_completion_waits_for_layout_and_does_not_change_focus() {
 }
 
 #[test]
+fn launch_transaction_empty_created_tab_cleanup_requires_exclusive_activity() {
+    use yinz_types::agent::control::AgentPlacement;
+    for shared in [false, true] {
+        let mut screen = screen_with_floor();
+        tab_with_panes(&mut screen, TabId::new(0), 1, 1);
+        let _plugins = plugin_capture(&mut screen);
+        let target = screen
+            .resolve_agent_tab(AgentPlacement::NewTab(None), None, CLIENT)
+            .unwrap();
+        screen
+            .tabs
+            .get_mut(&target.tab_id)
+            .unwrap()
+            .finish_pending_layout();
+        let result = place_reserved_agent(&mut screen, 20, target.clone())
+            .blocking_recv()
+            .unwrap();
+        assert!(result.error_message.is_none(), "{result:?}");
+        let owned = PaneId::Terminal(crate::TerminalId::new(20));
+        if shared {
+            // Another launch used the tab, even if its own reservation was later released.
+            let other = PaneId::Terminal(crate::TerminalId::new(21));
+            screen
+                .tabs
+                .get_mut(&target.tab_id)
+                .unwrap()
+                .admit_worker_pane(other, None, None, owned, false)
+                .unwrap();
+            screen.close_pane_explicitly(other, None);
+        }
+        screen.close_pane_explicitly(owned, None);
+        assert_eq!(screen.cleanup_agent_tab(&target), !shared);
+        assert_eq!(screen.tabs.contains_key(&target.tab_id), shared);
+        if !shared {
+            tab_with_panes(&mut screen, target.tab_id, 30, 1);
+            assert!(screen.cleanup_agent_tab(&target));
+            assert!(
+                screen.tabs.contains_key(&target.tab_id),
+                "idempotent cleanup must preserve a replacement tab"
+            );
+        }
+    }
+}
+
+#[test]
 fn closing_pending_agent_destination_fails_all_launches_and_cleanup_cannot_delete_replacement() {
     use yinz_types::agent::control::AgentPlacement;
     let mut screen = screen_with_floor();

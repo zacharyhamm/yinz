@@ -344,6 +344,7 @@ impl TestBridge {
         let (to_pty_writer, receive_pty_writer) = channels::unbounded();
         let (to_background_jobs, receive_background_jobs) = channels::unbounded();
         let senders = ThreadSenders {
+            launches: Default::default(),
             to_pty: Some(SenderWithContext::new(to_pty)),
             to_screen: Some(SenderWithContext::new(to_screen)),
             to_plugin: Some(SenderWithContext::new(to_plugin)),
@@ -8466,6 +8467,7 @@ fn pane_preparation_publishes_before_a_newer_reload_or_retirement() {
         panes.lock().unwrap().reload(plugin, 1);
         let (to_screen, screen) = channels::bounded(0);
         let senders = ThreadSenders {
+            launches: Default::default(),
             to_screen: Some(SenderWithContext::new(to_screen)),
             ..test.bridge.senders.clone()
         };

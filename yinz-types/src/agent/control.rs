@@ -116,6 +116,14 @@ pub struct RestartedAgent {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum AgentRequest {
     /// Read-only feature negotiation before sending placement to an older server.
+    LaunchSupport,
+    LaunchStatus {
+        launch_id: String,
+    },
+    Launch {
+        launch_id: String,
+        request: super::launch::LaunchRequest,
+    },
     SpawnPlacementSupport,
     SpawnStackSupport,
     /// Read-only negotiation before sending a suppressed launch to an older server.
@@ -303,6 +311,10 @@ pub struct AgentResponse {
     pub restarted: Option<RestartedAgent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_resources: Option<super::AgentLaunchResources>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<super::launch::LaunchReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_instance: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<ProviderUsage>,
     pub output: Option<String>,

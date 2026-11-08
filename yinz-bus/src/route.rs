@@ -3,6 +3,20 @@ use crate::PaneId;
 use tokio::sync::oneshot;
 use yinz_types::{data::UnblockCondition, internal_ids::TabId};
 
+/// A size is insufficient evidence for a managed provider launch.
+#[derive(Clone, Debug)]
+pub enum ManagedPlacementDecision {
+    Accepted {
+        launch_id: String,
+        slot: yinz_types::agent::launch::LaunchSlot,
+        size: yinz_types::pane_size::TerminalSize,
+    },
+    Rejected {
+        launch_id: String,
+        reason: yinz_types::agent::launch::LaunchReason,
+    },
+}
+
 /// A weak reference pins a tab incarnation without keeping a closed tab alive.
 #[derive(Debug, Clone)]
 pub struct AgentTabPlacement {
@@ -35,6 +49,7 @@ pub struct NotificationEnd {
     channel: Option<oneshot::Sender<ActionCompletionResult>>,
     /// Direct agent control waits for both placement and process startup.
     pub wait_for_agent_start: bool,
+    pub launch: Option<std::sync::Arc<crate::agent_launch::LaunchGate>>,
     placement_pending: bool,
     pub agent_tab: Option<AgentTabPlacement>,
     pub created_tab_id: Option<TabId>,
@@ -74,6 +89,7 @@ impl Clone for NotificationEnd {
         NotificationEnd {
             channel: None,
             wait_for_agent_start: self.wait_for_agent_start,
+            launch: self.launch.clone(),
             placement_pending: self.placement_pending,
             agent_tab: self.agent_tab.clone(),
             created_tab_id: self.created_tab_id,
@@ -94,6 +110,7 @@ impl NotificationEnd {
         NotificationEnd {
             channel: Some(sender),
             wait_for_agent_start: false,
+            launch: None,
             placement_pending: false,
             agent_tab: None,
             created_tab_id: None,
@@ -211,6 +228,7 @@ impl NotificationEnd {
         NotificationEnd {
             channel: Some(sender),
             wait_for_agent_start: false,
+            launch: None,
             placement_pending: false,
             agent_tab: None,
             created_tab_id: None,

@@ -1063,6 +1063,49 @@ impl UnixPtyBackend {
         self.remove_terminal(terminal_id, false)
     }
 
+    /// Called only by an off-thread managed-launch cleanup owner. PID reuse is conservative:
+    /// a still-live replacement cannot prove that the original processes exited.
+    pub fn clear_terminal_id_confirmed(
+        &self,
+        terminal_id: TerminalId,
+        child: Option<ProcessId>,
+    ) -> Result<bool> {
+        let remote = self.is_remote(terminal_id);
+        let mut processes: Vec<_> = self
+            .terminal_id_to_host
+            .lock()
+            .to_anyhow()?
+            .get(&terminal_id)
+            .map(|host| vec![host.host_pid, host.child_pid])
+            .unwrap_or_default();
+        if let Some(child) = child {
+            processes.push(child);
+        }
+        self.clear_terminal_id(terminal_id)
+            .context("terminate owned launch transport")?;
+        // The existing remote terminate message confirms sending, not reaping. Preserve
+        // uncertainty rather than treating local transport removal as remote process exit.
+        if remote || processes.is_empty() {
+            return Ok(false);
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let mut all_exited = true;
+            for process in &processes {
+                all_exited &= yinz_process::liveness::has_exited(process.get())
+                    .context("confirm launch process exit")?;
+            }
+            if all_exited {
+                return Ok(true);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(false);
+            }
+            // These are external OS processes, without a shared condition variable.
+            std::thread::park_timeout(Duration::from_millis(10));
+        }
+    }
+
     /// Replace a held transport while preserving resizes for the next launch.
     pub fn reset_terminal_id(&self, terminal_id: TerminalId) -> Result<()> {
         self.remove_terminal(terminal_id, true)

@@ -309,6 +309,7 @@ struct DepartedFocus {
 
 pub struct Tab {
     /// Only this tab owns the strong reference; delayed launches hold weak references.
+    pub agent_tab_incarnation: String,
     pub agent_tab_lifetime: std::sync::Arc<()>,
     pub agent_tab_cleanup_allowed: bool,
     /// Keep an empty default layout alive until its reserved agent pane arrives.
@@ -669,6 +670,7 @@ impl Tab {
             pids_waiting_resize: HashSet::new(),
             pending_command_respawns: HashMap::new(),
             host_cursor_state: HashMap::new(),
+            agent_tab_incarnation: yinz_bus::agent_launch::new_incarnation(),
             agent_tab_lifetime: std::sync::Arc::new(()),
             agent_tab_cleanup_allowed: false,
             agent_tab_waiting_for_pane: false,

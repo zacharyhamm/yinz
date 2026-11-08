@@ -1512,6 +1512,20 @@ impl Screen {
                 self.agent_reply(&client, response);
                 return;
             },
+            LaunchSupport => {
+                let mut response = AgentResponse::new(AgentOutcome::Ok);
+                response.output = Some(yinz_types::agent::launch::CAPABILITY.to_owned());
+                response.server_instance =
+                    Some(yinz_bus::agent_launch::server_instance().to_owned());
+                self.agent_reply(&client, response);
+                return;
+            },
+            Launch { .. } | LaunchStatus { .. } => {
+                let mut response = AgentResponse::new(AgentOutcome::Rejected);
+                response.message = Some("launch transactions require the host coordinator".into());
+                self.agent_reply(&client, response);
+                return;
+            },
             SpawnStackSupport => {
                 let mut response = AgentResponse::new(AgentOutcome::Ok);
                 response.output = Some("agent-controller-stack-v1".into());
@@ -2435,6 +2449,9 @@ impl Screen {
             | Spawn { .. }
             | SpawnNewProject { .. }
             | CreateProject { .. }
+            | Launch { .. }
+            | LaunchStatus { .. }
+            | LaunchSupport
             | SpawnStackSupport
             | SpawnPlacementSupport
             | SpawnSuppressedSupport

@@ -57,8 +57,32 @@ const AgentStatusSchema = z.object({
   background: z.boolean().default(false),
   background_tasks: z.array(z.string()).default([]),
 }).transform(foldBackground);
+export const LaunchReceiptSchema = z.object({
+  version: z.literal(2),
+  launch_id: Text,
+  request_digest: z.string(),
+  server_instance: Text,
+  outcome: z.enum([
+    "pending",
+    "rejected",
+    "started",
+    "failed",
+    "cancelled",
+    "unknown",
+    "conflict",
+  ]),
+  phase: Text,
+  reason: z.string().nullable(),
+  process: z.enum(["not_started", "starting", "running", "exited", "unknown"]),
+  resources: z.object({ cleanup_pending: z.boolean() }).passthrough(),
+  disposition: z.enum(["reserved", "available", "closed", "unknown"]),
+}).passthrough();
+
 export const AgentResponseSchema = z.object({
   outcome: Text,
+  launch: LaunchReceiptSchema.optional(),
+  output: z.string().nullable().optional(),
+  server_instance: Text.optional(),
   agents: z.array(AgentStatusSchema).default([]),
   spawned: z.object({
     pane_id: Pane,
@@ -94,6 +118,11 @@ export const AgentStateSchema = z.object({
     "completed",
     "completed_unusable",
   ]),
+  launchVersion: z.literal(2).optional(),
+  launchId: Text.optional(),
+  launchRequestDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  launchServer: Text.optional(),
+  launchReceipt: LaunchReceiptSchema.optional(),
   paneId: Pane.optional(),
   tabId: z.number().int().optional(),
   conversationId: Text.optional(),
@@ -124,6 +153,16 @@ function rejectedWithoutResources(value: AgentResponse): boolean {
 }
 
 export function isRejectedLaunch(state: AgentState): boolean {
+  if (state.launchId && state.launchReceipt && !state.submissionId) {
+    const receipt = state.launchReceipt;
+    return receipt.launch_id === state.launchId &&
+      receipt.server_instance === state.launchServer &&
+      receipt.request_digest === state.launchRequestDigest &&
+      ["rejected", "cancelled", "failed"].includes(receipt.outcome) &&
+      ["not_started", "exited"].includes(receipt.process) &&
+      !receipt.resources.cleanup_pending &&
+      receipt.disposition === "closed";
+  }
   if (
     state.phase !== "launch_rejected" || state.outcome !== "rejected" ||
     state.paneId !== undefined || state.tabId !== undefined ||
@@ -363,7 +402,10 @@ async function response(
   if (parsed.message != null) state.message = parsed.message;
   if (parsed.turn_id) state.turnId = parsed.turn_id;
   state.backgroundTasks = parsed.background_tasks;
-  if (state.phase === "launching" && rejectedWithoutResources(parsed)) {
+  if (
+    state.phase === "launching" && !state.launchId &&
+    rejectedWithoutResources(parsed)
+  ) {
     // Persist the classification together with its response, before reporting failure.
     state.phase = "launch_rejected";
   }
@@ -653,6 +695,26 @@ async function launch(
       args.push("--tab", String(matches[0].tab_id));
     }
   }
+  // Read-only negotiation must succeed before recording the launch intent. A distinct wire
+  // request on the CLI then prevents an older server silently dropping idempotency fields.
+  const supportResult = await dependencies.run(
+    commandArgs(state, ["launch-support"]),
+    undefined,
+    context.signal,
+  );
+  const support = AgentResponseSchema.parse(JSON.parse(supportResult.stdout));
+  if (
+    supportResult.code !== 0 || support.outcome !== "ok" ||
+    support.output !== "agent-launch-transaction-v2" || !support.server_instance
+  ) {
+    throw new Error(
+      "agent-launch-transaction-v2 is required; launch was not sent",
+    );
+  }
+  state.launchVersion = 2;
+  state.launchServer = support.server_instance;
+  state.launchId = `${support.server_instance}.${dependencies.id()}`;
+  args.push("--launch-id", state.launchId);
   state.phase = "launching";
   await save(context, state, dependencies);
   const value = await response(
@@ -661,21 +723,53 @@ async function launch(
     commandArgs(state, args),
     dependencies,
   );
+  return await acceptLaunch(context, state, value, dependencies);
+}
+
+async function acceptLaunch(
+  context: AgentContext,
+  state: AgentState,
+  value: AgentResponse,
+  dependencies: Dependencies,
+): Promise<ResourceHandle[]> {
+  const receipt = value.launch;
+  if (
+    !receipt || receipt.version !== 2 || receipt.launch_id !== state.launchId ||
+    receipt.server_instance !== state.launchServer ||
+    (state.launchRequestDigest &&
+      receipt.request_digest !== state.launchRequestDigest)
+  ) {
+    throw new Error(
+      `Launch receipt does not match the saved intent; observe launch-status ${state.launchId}`,
+    );
+  }
+  // An unavailable history lookup has no digest and cannot establish any execution facts.
+  if (!/^[a-f0-9]{64}$/.test(receipt.request_digest)) {
+    throw new Error(
+      `Launch history is unknown; observe launch-status ${state.launchId}; do not spawn again`,
+    );
+  }
+  state.launchRequestDigest ??= receipt.request_digest;
+  state.launchReceipt = receipt;
+  await save(context, state, dependencies);
   if (isRejectedLaunch(state)) {
-    throw new Error(
-      "Agent launch was rejected without resources; use discard-agent for this lifecycle task before dispatching a new task with corrected configuration",
-    );
-  }
-  if (value.spawned) {
-    state.paneId = value.spawned.pane_id;
-    if (value.spawned.tab_id != null) state.tabId = value.spawned.tab_id;
+    state.phase = "launch_rejected";
     await save(context, state, dependencies);
-  }
-  if (value.outcome !== "ok" || !value.spawned?.cwd || !state.paneId) {
     throw new Error(
-      `Agent launch needs inspection: ${value.outcome}; never retry an uncertain spawn`,
+      `Agent launch ${receipt.outcome}: ${receipt.reason}; process ${receipt.process}; use discard-agent deliberately for this original task`,
     );
   }
+  if (
+    receipt.outcome !== "started" || receipt.process !== "running" ||
+    receipt.disposition !== "available" || receipt.resources.cleanup_pending ||
+    value.outcome !== "ok" || !value.spawned?.cwd
+  ) {
+    throw new Error(
+      `Launch ${receipt.outcome} (${receipt.phase}, ${receipt.reason}); observe launch-status ${state.launchId}; do not spawn again`,
+    );
+  }
+  state.paneId = value.spawned.pane_id;
+  if (value.spawned.tab_id != null) state.tabId = value.spawned.tab_id;
   if (await dependencies.realPath(value.spawned.cwd) !== state.config.cwd) {
     throw new Error(
       "Spawned agent directory differs from the requested worktree",
@@ -848,6 +942,11 @@ export async function resumeAgent(
       }
       return [];
     }
+    if (isRejectedLaunch(state)) {
+      throw new Error(
+        "Agent launch has definitive terminal process facts; use discard-agent deliberately for this original task",
+      );
+    }
     if (state.phase === "background") {
       return await observeBackground(context, state, dependencies);
     }
@@ -872,6 +971,17 @@ export async function resumeAgent(
     }
     if (state.phase === "preflight") {
       return await launch(context, state, dependencies);
+    }
+    if (
+      ["launching", "launch_rejected"].includes(state.phase) && state.launchId
+    ) {
+      const value = await response(
+        context,
+        state,
+        commandArgs(state, ["launch-status", state.launchId]),
+        dependencies,
+      );
+      return await acceptLaunch(context, state, value, dependencies);
     }
     if (state.phase === "spawned" && state.paneId) {
       return await submit(context, state, dependencies);

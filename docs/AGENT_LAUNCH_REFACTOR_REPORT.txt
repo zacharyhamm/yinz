@@ -1,0 +1,148 @@
+Agent launch and worker placement implementation report
+
+Worktree: /home/zacharyhamm/yinz/.worktrees/agent-launch-placement
+Branch: agent-launch-placement
+Base/HEAD: 1acb6249cd73c6d9b006f3ca9612cc43b4491f18
+Changes are uncommitted. No merge, push, reset, branch switch, or other-worktree
+source edits were performed. Builds use this worktree's real target directory.
+
+Managed CLI and plugin launches now share a version-two transaction. Screen
+admits a real placeholder before Git preparation. Strict worker insertion splits
+a logical tiled region, including a complete controller stack/list, and later
+workers join only that controller/tab's owned region. Floating and overlay
+controllers retain their layer and focus. Pane limits include pending tiled
+reservations. Failed geometric/capacity admission does not mutate live groups,
+fullscreen, focus, or unrelated panes, and does not prepare Git or execute a
+provider. Automatic overflow and intentional suppression retain separate policy.
+
+The existing placement-before-exec barrier now carries typed decisions, launch
+identity, allocation/placement generations, tab incarnation, controller identity,
+and worker-region ownership. Screen revalidates after slow preparation. A shared
+one-use permit orders revocation against exec. If start wins, cleanup owns the
+late child and reader and waits for confirmed teardown off the event loops.
+Ordinary Enter/rerun cannot start a held pending reservation. After handoff,
+ordinary reruns are permitted, but their replacement process cannot inherit the
+original launch receipt's availability.
+
+The server runtime and host coordinator keep host/session-scoped persistent
+receipts in plugin-data storage, using authored revision guards. Intent and the
+starting boundary are recorded before side effects/execution. Environment values
+are hashed, not saved. Matching IDs observe the same operation; conflicting
+request digests do not change it. Registration and current placement are
+acknowledged before successful handoff. Historical started receipts also report
+current availability; closure or rerun never supplies a replacement worker.
+Missing history and retired server incarnations never authorize replay.
+
+Resource manifests distinguish owned terminal allocations/placeholders/processes
+and created tabs from borrowed destination metadata. Git manifests record
+borrowed, created, or incomplete retained-attempt provenance. Branches, worktrees,
+and project directories are never deleted on failure. Empty created-tab cleanup
+requires the original lifetime and exclusive activity; concurrent activity and
+recycled IDs prevent destructive cleanup. Process certainty and cleanup_pending
+are separate, including when teardown cannot be confirmed.
+
+The CLI adds --launch-id, launch-support, and read-only launch-status, using the
+distinct agent-launch-transaction-v2 request/capability. IPC still carries the
+typed request as JSON; protobufs were not changed. Legacy spawn/plugin callers
+adapt into the coordinator and retain their existing response shape.
+
+The reusable Swamp behavior saves optional versioned launch identity before
+spawn, observes that exact identity on launching resume, and keeps the original
+readiness and once-only submission guards. Definitive terminal receipts permit
+a deliberate lifecycle handoff even when Git paths remain. Pending, unknown,
+mismatched, closed, or legacy ID-less launches do not trigger replacement spawn
+or prompt replay. No actual saved task, approval, Agenda issue 16, historical
+client-timezone lifecycle, or Swamp state was mutated. Timezone code is unchanged.
+The parallel typed evidence-submission refactor was not implemented here; its
+state migrations must retain the optional AgentState.launch* fields. Launch
+receipts do not replace task/prompt/approval/conversation/submission correlation.
+
+Principal affected source areas:
+- yinz-types/src/agent/{control,launch}.rs: versioned request, receipt, identity,
+  reason, process, disposition, and resource contracts.
+- yinz-bus/src/agent_launch.rs and route/screen/pty/pty_writer contracts: shared
+  coordinator runtime, one-use gate, typed decisions, and acknowledgements.
+- yinz-panes tiled_panes and yinz-tab pane_creation/pane_lifecycle: pure admission,
+  stack-aware splitting, strict insertion, expanded sizes, and focus preservation.
+- yinz-screen screen/{panes,agent_placement,launch_transaction,thread_main,mod}.rs:
+  actual admission, lifetime/region validation, registration, and owned release.
+- yinz-plugin-host yinz_exports/{agent_launch,launch_transaction}.rs and
+  agent_control/palette adapters: shared preparation, durable journal, receipts.
+- yinz-pty and yinz-server-os: final execution fence, cancellation, late handback,
+  reader cleanup, and conservative process-exit confirmation.
+- yinz-process command validation: resolve managed provider executable before
+  acknowledging the launcher wrapper as successfully started.
+- src/agent.rs, yinz-cli args, server routing/update identity, IPC roundtrip tests.
+- extensions/behaviors/_lib/yinz_agent.ts and adjacent behavior/unit fixtures.
+- docs/AGENT_CLI.md, docs/ISSUE_LIFECYCLE.md, and repository lifecycle SKILL.md.
+
+Focused verification results (overlapping runs are not additive):
+
+Focused Rust launch/placement, startup, rerun, IPC, OS and real-process regressions
+  cargo x test -p yinz -p yinz-pty -p yinz-process -p yinz-plugin-host -p yinz-screen -p yinz-bus -p yinz-server-os -p yinz-ipc -E 'test(launch_transaction) | test(controller_worker_stack) | test(worker_stack_anchor) | test(direct_agent_startup_places_before_execution) | test(local_commands_wait_for_placement) | test(rejected_or_zero_sized_placement) | test(closing_after_placement_still_cancels) | test(/^pty::pty_tests::.*rerun/) | test(handback) | test(failed_startup_waits_for_write_cancellation) | test(/^agent::tests::/) | test(yinz_exports::agent_spawn_tests) | test(command::tests) | test(spawn_and_read_output) | test(fallback_panes_clear_inherited) | test(a_local_rerun_terminates) | test(a_dead_remote_transport) | test(remote_codex_wrappers) | test(missing_agent_directory) | test(a_bubblewrap_launch_that_cannot_resolve) | test(agent_spawn_placement_and_failure_resources_roundtrip) | test(screen::screen_tests::agent_placement)'
+  Summary [  10.500s] 142 tests run: 142 passed, 3798 skipped
+  Log: /tmp/launch-focused-final.log
+
+Final host transaction/provenance fault cases
+  cargo x test -p yinz-plugin-host -E 'test(launch_transaction)'
+  Summary [   0.037s] 16 tests run: 16 passed, 976 skipped
+  Log: /tmp/launch-host-final.log
+
+Agent placement integration binary
+  cargo x integration-test -j 16 -E 'binary(agent_pane_placement)'
+  Summary [  17.493s] 5 tests run: 5 passed, 0 skipped
+  Log: /tmp/launch-integration-final.log
+
+Extension checks:
+  cd extensions
+  deno check behaviors/_lib/yinz_agent.ts behaviors/_lib/issue_agents.ts behaviors/_lib/issue_driver.ts
+  deno test --allow-read --allow-write --allow-run --allow-env behaviors/unit/yinz_agent_test.ts behaviors/unit/issue_agents_test.ts
+  Result: 133 passed; type checks passed.
+  deno fmt --check behaviors/_lib/yinz_agent.ts behaviors/unit/yinz_agent_test.ts behaviors/unit/issue_agents_test.ts behaviors/unit/launch_fixtures.ts behaviors/yinz_agent.ts
+  Result: passed.
+  Logs: /tmp/launch-deno-check.log and /tmp/launch-deno-tests.log
+
+Rust hygiene: cargo x lint and cargo x format --check both passed.
+Logs: /tmp/launch-lint-final.log and /tmp/launch-format-check.log
+Git diff --check passed.
+No unfiltered workspace/integration suites or cargo x ci check were run.
+
+Covered cases include the 105x59 controller-only classic/list stack incident,
+capacity rejection without Git/provider side effects, pending reservations,
+controller movement before/after admission, root closure and hidden list members,
+stale ownership/tab incarnations, fullscreen rejection, two-client focus with
+floating/overlay layers, one-use claim races, late/lost handbacks, duplicate and
+conflicting IDs, history loss/restart fencing, lost registration/commit replies,
+unknown cleanup, actual missing executables, explicit suppression, retained Git
+and project paths, and Enter on a held reservation during blocked Git preparation.
+
+Material decisions and verification limits:
+- Launch IDs are caller-chosen but server-incarnation-qualified. This is stricter
+  than an arbitrary unqualified string and fences missing history after restart.
+  Interactive callers generate it after support negotiation; lifecycle callers
+  save it before sending a mutating request.
+- The coordinator lives in the plugin host to share preparation without circular
+  dependencies; the server supplies the shared runtime and durable data access.
+- Existing SSH termination acknowledgement does not prove remote reaping. Such
+  uncertain teardown stays unknown with cleanup pending. Docker SSH end-to-end
+  tests were not run: the available fixtures belong to another worktree, which
+  this assignment forbids disturbing. Local wrapper and OS tests were selected.
+- Tests ran on Linux. Restart/history fencing uses deterministic journal/runtime
+  tests; a real crash/restart and every platform/scheduling combination were not
+  exhaustively exercised.
+- Installed /home/zacharyhamm/.codex/skills/yinz-agents/SKILL.md remains unchanged.
+  It needs the launch-ID/support/status workflow and typed receipt interpretation
+  before suggesting any retry; its current resource-inspection guidance predates
+  this contract. Repository lifecycle guidance was updated here.
+
+Validation defects investigated during development:
+- Two Cargo checks were accidentally overlapped against this target. Four real
+  server fixtures failed at server spawn with ENOENT while Cargo changed the
+  executable link. The remaining Cargo checks were serialized; the real-process
+  cases passed. This matches the documented executable-replacement hazard.
+- An added fullscreen fixture attempted fullscreen with a single pane; corrected
+  to include a second pane while retaining a separate tiny-layout case.
+- The first Git-barrier fixture incorrectly required exit zero for a structured
+  pending launch-status response. It now reads that response independently of
+  exit code and always releases the FIFO on assertion failure, preventing a
+  scoped thread join from hanging. The corrected real race test passes.

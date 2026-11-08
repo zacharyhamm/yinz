@@ -339,6 +339,50 @@ pub fn screen_thread_main(
                         screen.render()?;
                     }
                 },
+                ScreenInstruction::CommitAgentLaunch { terminal_id, reply } => {
+                    let accepted = screen.validate_launch_slot(terminal_id).is_ok()
+                        && screen
+                            .bus
+                            .senders
+                            .launches
+                            .gate(terminal_id)
+                            .is_some_and(|gate| gate.handoff());
+                    let _ = reply.send(accepted);
+                },
+                ScreenInstruction::ReleaseAgentLaunch { terminal_id, reply } => {
+                    let gate = screen.bus.senders.launches.gate(terminal_id);
+                    let owned = gate.is_some_and(|gate| !gate.snapshot().finished);
+                    if owned {
+                        screen.close_pane_explicitly(PaneId::Terminal(terminal_id), None);
+                    }
+                    let released = owned
+                        && screen
+                            .tab_id_containing_pane(PaneId::Terminal(terminal_id))
+                            .is_none();
+                    if released && let Some(gate) = screen.bus.senders.launches.gate(terminal_id) {
+                        gate.layout_released();
+                    }
+                    let _ = reply.send(released);
+                },
+                ScreenInstruction::ClaimAgentLaunch {
+                    terminal_id,
+                    command,
+                    reply,
+                } => {
+                    let size = screen.validate_launch_slot(terminal_id).ok();
+                    if size.is_some()
+                        && let Some(tab) =
+                            screen.tab_containing_pane_mut(PaneId::Terminal(terminal_id))
+                        && let Some(pane) = tab.get_pane_with_id_mut(PaneId::Terminal(terminal_id))
+                    {
+                        pane.set_launch_command(command);
+                    }
+                    let _ = reply.send(size);
+                },
+                ScreenInstruction::RegisterAgentLaunch { spawned, reply } => {
+                    let accepted = screen.register_launch(spawned);
+                    let _ = reply.send(accepted);
+                },
                 ScreenInstruction::ConfirmTerminalPlacement(terminal_id, generation) => {
                     terminal_placements.insert(terminal_id, generation);
                 },
@@ -3321,9 +3365,11 @@ pub fn screen_thread_main(
                     placement,
                     invoked_with,
                     client_id,
+                    launch,
                     reply,
                 } => {
-                    let result = screen.resolve_agent_tab(placement, invoked_with, client_id);
+                    let result =
+                        screen.resolve_launch_tab(placement, invoked_with, client_id, &launch);
                     // If the receiver disappeared, retain the tab: the outcome is unknown.
                     let _ = reply.send(result);
                 },
@@ -4400,6 +4446,7 @@ pub fn screen_thread_main(
             .settle_tabs()
             .context("failed to settle tabs after instruction")
             .non_fatal();
+        screen.revalidate_launches();
         screen.confirm_terminal_placements(&mut terminal_placements, &pending)?;
         if !screen.migration_blocks_normal_work() {
             screen.reconcile_project_contexts();

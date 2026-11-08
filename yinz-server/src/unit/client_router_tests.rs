@@ -208,6 +208,7 @@ fn paused_session() -> (SessionMetaData, PausedThreads) {
     let session = SessionMetaData {
         shutdown: Default::default(),
         senders: ThreadSenders {
+            launches: Default::default(),
             to_screen: Some(SenderWithContext::new(to_screen)),
             to_pty: Some(SenderWithContext::new(to_pty)),
             to_plugin: Some(SenderWithContext::new(to_plugin)),

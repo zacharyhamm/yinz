@@ -6,11 +6,9 @@ use yinz_types::{session_update, update_client};
 type Answer = mpsc::Sender<Result<update_client::ClientReply, String>>;
 
 fn identity() -> session_update::ServerIdentity {
-    static INSTANCE: std::sync::LazyLock<String> =
-        std::sync::LazyLock::new(|| uuid::Uuid::new_v4().to_string());
     session_update::ServerIdentity {
         server_pid: std::process::id(),
-        server_instance: INSTANCE.clone(),
+        server_instance: yinz_bus::agent_launch::server_instance().to_owned(),
     }
 }
 #[derive(Default)]

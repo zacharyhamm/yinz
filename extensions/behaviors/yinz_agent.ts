@@ -84,7 +84,7 @@ export const behavior = {
     resume: {
       kind: "action",
       description:
-        "Retrieve the original submission; rejected lifecycle launches can be discarded, never relaunched here",
+        "Observe the saved launch or original submission; uncertain operations are never replayed",
       arguments: EmptySchema,
       execute: (_args: Record<string, never>, context: AgentContext) =>
         resumeAgent(context),

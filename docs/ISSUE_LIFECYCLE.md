@@ -211,6 +211,73 @@ plans beyond version one are treated as having used the allowance; legacy
 first-version plans may receive one automatic revision. Already-recorded revision
 authorizations remain usable.
 
+<<<<<<< HEAD
+=======
+A clear review returns `approve_plan`. Revision authorization does not approve
+implementation: record that separate approval explicitly with `approve`.
+The `prepare_worktree` handoff requires `implement` to adopt the recorded worker
+worktree.
+After preparation, `drive` runs implementation and code review, then runs the
+plan's checks at the reviewed commit (see
+[Deterministic verification](#deterministic-verification)). It returns
+`authorize_merge` with the delivered change, review coverage and a checklist built
+from that verification run. Code blockers or failed checks return `blocked` for
+repair and fresh review. `ready`, `merge` and `summarize` remain explicit operator operations.
+The driver never infers revision approval, implementation approval, merge
+authorization or a CI waiver.
+
+Resume with `drive` and no input: the selected session and provider settings and
+current assignment are durable. Pending work resumes its original task and
+submission; ordinary acknowledged wait timeouts keep observing it. Dialogs,
+uncertain delivery, missing sessions, invalid evidence and provider failures
+produce blockers without replacement submissions. Interrupted evidence imports
+reconcile before new work is dispatched. Completed handoffs retain their identity
+across resume; changed state or assignments invalidate them, including restarts
+and rollbacks. A pending rollback must finish through `resume-rollback` first.
+Single-role `agent` and `resume-agent` remain available for deliberate low-level
+control and diagnostics, using their existing inputs.
+
+| Launcher command                | Evidence and effect                                                                                                   |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `start`                         | Read the Agenda issue, claim the invoking feature worktree, and record its identity, description and worktree through `yinz-issue-start`. |
+| `drive`                         | Run missing workers or resume their original submissions through `yinz-issue-drive`, returning a human handoff or blocker. |
+| `status`                        | Inspect the current state before deciding what to do next.                                                            |
+| `refresh`                       | Re-read a changed Agenda description and invalidate planning evidence that no longer covers it.                       |
+| `agent` with role `triage`      | Investigate the issue in a pane and import classification, acceptance criteria and reproduction evidence.             |
+| `agent` with role `plan`        | Generate concrete steps, affected files, risks, test strategy and structured checks; revisions need fresh review.     |
+| `agent` with role `review_plan` | Review the current plan against the code and import findings.                                                         |
+| `approve`                       | Record the user's authorization for the reviewed plan.                                                                |
+| `implement`                     | Adopt the recorded worker worktree (legacy issues may create one).                                                                    |
+| `agent` with role `implement`   | Implement and commit the approved plan in the existing issue worktree, running focused checks.                        |
+| `agent` with role `review_code` | Review the committed implementation and import plan conformance, deviations and advisory reviewer checks.             |
+| `verify`                        | Run `yinz-issue-verify`: the plan's checks at the reviewed commit, recording exit codes, durations and logs.          |
+| `resume-agent`                  | Retrieve the original submission or reconcile already-applied evidence; never resubmit or relaunch.                   |
+| `rollback`                      | Explicitly return to any lifecycle step, archive the previous assignment and downstream decisions, and reopen Agenda. |
+| `restart-agent`                 | Roll back to a worker step and dispatch a fresh assignment with the requested session and provider. |
+| `resume-rollback`               | Finish an interrupted rollback and resume its saved replacement assignment, if any. |
+| `discard-agent`                 | Discard unusable evidence, a confirmed stopped failure, or a definitive terminal launch receipt with completed cleanup (legacy resource-free rejections remain readable), with an operator reason and confirmation. |
+| `ready`                         | Record authorization to integrate the reviewed change; requires passing verification of that commit.                  |
+| `merge`                         | Run `yinz-issue-merge`; serialize rebase, full CI and local fast-forward merge, recording the result.                 |
+| `repair`                        | Record repair work after an integration failure and return to development and review.                                 |
+| `summarize`                     | Record the delivered outcome and complete the Agenda task only when merged and `outcomeMet` is true.                  |
+
+Direct `triage`, `plan`, `review-plan` and `review-code` commands remain
+low-level evidence methods; normal agent work uses the pane roles above. The
+merge workflow calls the shared `yinz-main-merge` coordinator, which invokes the
+issue behavior's `integrate` method. The coordinator and OS lock serve different
+purposes: one orders Swamp integration execution; the other protects the shared
+Git repository.
+
+Descriptions and plans can evolve. Refresh the issue when requirements change;
+revise the plan when the approach changes. A stale review does not cover a newer
+plan or a repaired implementation. Record real findings and command results;
+adopting already-written code does not excuse its review.
+
+Approval already given in the current session remains valid within its stated
+scope. The operator records that authorization rather than asking repeatedly. If
+plan or merge authorization is absent, present the concrete work and request the
+missing decision. Approval to implement does not itself authorize merging.
+>>>>>>> bab9477ac (Make agent launches transactional with durable receipts and placement safeguards)
 
 ## Pane tasks
 
@@ -259,6 +326,7 @@ step and its prerequisites are retained; downstream decisions are invalidated.
 Plan versions increase, completed Agenda tasks reopen with descriptions
 preserved, and Git changes, ownership, worktrees and branches survive.
 
+<<<<<<< HEAD
 A landed merge is not undone: rollback checks durable receipts under the Git
 merge lock, and merge/close-out retries reuse them. Earlier-step rollback starts
 new review/authorization for subsequent changes. Superseding an assignment does
@@ -266,6 +334,158 @@ not stop its processes. Recovery is durable under `recovery`, historical
 `recovery-<id>` and `agent-task-<id>` resources; a new explicit rollback may
 supersede pending intent while retaining it in history. The skill and blocker
 reference own commands and reconciliation procedures.
+=======
+The controller persists the task before dispatch. The reusable behavior saves
+versioned launch ID and server incarnation before spawning, then a unique submission ID before prompting. A launching resume uses `yinz agent launch-status SAVED_ID --json`; it never issues another spawn. A matching started receipt advances the original task to readiness and its existing once-only submission flow. Pending, unknown, mismatched, and closed receipts remain blocked with that exact observation route. An
+unresolved task blocks lifecycle mutations, including dispatching a second
+worker. Inspect `status`, then retrieve the original task:
+
+```sh
+"$LIFECYCLE_REPO/scripts/issue-lifecycle" \
+  --item "$AGENDA_ITEM_ID" resume-agent
+```
+
+`needs_input`, timeouts, interruptions and target replacement are failures to
+continue the workflow. They are not successful evidence and do not trigger a new
+prompt. An uncertain spawn is never retried automatically. Unknown or expired
+submissions remain unresolved until the operator requests rollback or restart;
+inspect the retained pane and state. Background
+tasks require a further observation of the same conversation's final idle answer
+before success. Once evidence and task completion are durably saved, the lifecycle
+closes the worker with a conversation- and submission-guarded command.
+Cleanup is independently retryable through `drive` or `resume-agent`; it never
+replays accepted evidence. Failed, blocked, superseded and unusable-result panes
+remain available for inspection. Closing the last worker releases its region.
+Existing saved tasks retain legacy placement and cleanup behavior.
+
+If dispatch stopped before the child saved its initial state, `resume-agent`
+initializes the original task under the child execution lock using the saved
+configuration and prompt. Existing child state is validated and resumed.
+
+If a worker completed but its response is unusable, or its launch was durably
+classified as `launch_rejected`, `discard-agent` accepts
+`{"request": "the operator's actual discard instruction", "confirmedStopped": true}`.
+It verifies the original task identity and unchanged lifecycle state. Completed
+workers must have no background tasks. A rejected launch must have a saved,
+version-two receipt for the same launch/server/digest with definitive
+`not_started` or confirmed `exited` process facts and completed cleanup.
+Retained Git resources do not imply a live provider. Legacy resource-free
+structured rejections remain readable; legacy launching tasks without launch IDs
+stay uncertain and are never backfilled from pane observations. For example,
+an unsupported effort setting can be
+corrected in a new `agent` input after explicitly discarding the rejected task.
+The old task's configuration remains recorded; neither resume nor discard
+changes configuration or launches a replacement.
+
+Malformed responses, transport failures, unresolved cleanup, and
+legacy uncertain launches remain blocked for `discard-agent`, but can be
+superseded by explicit rollback or restart. `discard-agent` cannot discard an
+active or uncertain task, and it does not close panes or undo code changes.
+A correlated, acknowledged terminal provider failure (`failed`, including `StopFailure`) can
+also be explicitly discarded. Discard rechecks the original submission and
+requires a fresh observation of the same pane and conversation, idle with no
+background tasks. The failure response remains separate from that observation.
+Inspect any changes before dispatching replacement work.
+
+A finalized prompt-preparation failure can also be discarded when the retained
+server response explicitly contains `prompt_delivery: "not_sent"`. Confirmation
+retrieves the original submission and requires the recorded submission ID, pane,
+Yinz session, provider and conversation to match. The response must have a failure
+outcome, no acknowledgement, no turn ID and no background work. Fresh status must
+show that same worker idle with no background work, clearing writes or submission
+writes pending. `clearing_draft` and `pending_submission` block discard until the
+writes drain. The operator must supply a reason and `confirmedStopped: true`, and
+the lifecycle must still equal the task's original snapshot.
+
+Discard records the reason on the task, preserves the correlated failure separately
+from fresh status, and leaves lifecycle state unchanged. An empty composer is not
+required: preparation may have left a marker or draft. Inspect the composer before
+reuse. Discard never resends, respawns, closes the pane or marks an issue successful;
+a replacement task requires a separate explicit request.
+
+`prompt_delivery` is optional. Missing means unknown, including older responses
+whose text says the prompt was not sent. Such text cannot authorize unsent recovery.
+`started` is recorded before the first actual prompt write (including a typed
+prefix) and never downgraded, even if the write fails. Preparation marker and
+clearing writes do not count as prompt delivery. Unknown submissions, malformed or
+mismatched evidence, uncertain delivery and active workers remain blocked for
+discard. This
+requires both updated server responses and updated behavior code; older tasks
+without structured non-delivery evidence use explicit rollback or restart.
+
+If a state-changing transition was saved but the final task-completion write
+failed, `resume-agent` validates the completed result's identity and reconciles
+the task without repeating the transition or event write. This works even if
+Agenda requirements changed afterward; use `refresh` once reconciliation
+finishes. Evidence that still needs applying must pass the Agenda freshness
+check. Implementation reports leave lifecycle state unchanged, so their recovery
+still checks requirements and retries the evidence write.
+
+## Rollback and restart
+
+An explicit operator request can supersede any prior assignment, including a
+running worker, a missing session, an expired submission, an uncertain launch,
+or malformed evidence. It does not require a successful resume, a terminal
+provider result, or `confirmedStopped`. Record the user's actual request;
+ordinary timeouts never authorize an automatic restart.
+
+Use `rollback` with a step and request:
+
+```json
+{ "step": "plan", "request": "Restart planning for this issue" }
+```
+
+The supported steps are `triage`, `plan`, `review_plan`, `approve`, `implement`,
+`review_code`, `ready`, `merge`, and `summarize`. Rollback retains the evidence
+preceding that step and invalidates decisions from that step onward. It cannot
+skip prerequisites: for example, `review_plan` requires an existing plan.
+Plan versions keep increasing. Changed Agenda requirements require rollback
+to `triage`. Completed Agenda tasks are reopened and their descriptions preserved.
+
+Rollback archives the original state and assignment, including failures and
+partially applied evidence. A new rollback ID prevents old results from being
+imported, even when returning to the same phase. It preserves source changes,
+worktrees and branches. It does not reset Git, abort a rebase, undo a merge, or
+close old panes. Inspect and stop any surviving old worker before allowing a
+replacement to edit the same worktree. The request supersedes its workflow
+assignment; it does not establish that its process stopped.
+
+Before replacing a merge attempt, rollback consults its durable Git receipt
+under the repository merge lock. A merge that already landed stays in the
+history. Retrying `merge` or `summarize` reuses that receipt. Returning to an
+earlier step begins a new sequence of review and authorization for subsequent
+changes. Conflicts or a rebased HEAD still need repair in the retained worktree.
+
+After rollback, continue with the ordinary command for the selected step.
+For worker steps, `restart-agent` combines rollback and a new assignment:
+
+```json
+{
+    "taskId": "the-current-agent-task-id-from-status",
+    "role": "plan",
+    "session": "your-running-session",
+    "kind": "codex",
+    "request": "Restart planning for this issue"
+}
+```
+
+`taskId` guards against replacing a newer assignment. Use the same agent options
+as `agent`; omitted optional settings use provider defaults. The replacement
+gets a new task, behavior, pane and submission identity. Repeating the identical
+request resumes that replacement instead of launching another worker. To restart
+the replacement itself, use its new task ID and the new restart request.
+
+Recovery intent is saved before changing Agenda, lifecycle state or assignments.
+`status` includes the latest recovery record. If persistence or Agenda fails
+midway, `resume-rollback` finishes the saved operation and resumes its exact
+replacement, if requested. No additional approval is needed to finish the same
+authorized operation. Ordinary mutations wait until recovery completes. A new
+explicit rollback can supersede even a pending recovery, preserving its intent
+in history; use this when requirements or the desired restart step have changed.
+Recovery
+records remain queryable under `recovery-<id>` and superseded assignments under
+`agent-task-<id>` in the issue's behavior.
+>>>>>>> bab9477ac (Make agent launches transactional with durable receipts and placement safeguards)
 
 ## Structured evidence and operator inputs
 
@@ -323,11 +543,12 @@ Its ID and prompt are durable before delivery; identical calls retrieve that
 continuation rather than sending again. Original configuration, prompt and digest
 remain bound, and previous terminal turn snapshots are retained. Repeating `run` is refused, even with the same prompt. After
 submission, `resume` observes its saved ID rather than sending again. It can
-continue known startup progress before submission, but refuses an uncertain
-launch instead of spawning another pane. A structured spawn rejection with no
-retained resources is saved as `launch_rejected` with its response. Resume
-explains that lifecycle tasks can use `discard-agent`; standalone callers must
-use a new behavior identity with corrected inputs.
+observe the exact saved launch before submission. A verified matching started
+receipt continues that original task; definitive terminal non-execution/exit
+receipts are saved as `launch_rejected`. Resume explains deliberate lifecycle
+controls for those original assignments. Unknown and legacy launching tasks
+remain blocked. Launch receipts do not replace task/prompt/approval,
+conversation, submission, or evidence-import guards.
 
 The workflow input shape is:
 
@@ -507,11 +728,50 @@ waits, then rebases against `main` as it exists on acquisition. Waiting is not
 FIFO. Independent Git commands do not participate; manual `main` movement during
 integration would bypass protection.
 
+<<<<<<< HEAD
 The lifecycle advances local `main` only. Fetch, push, PR creation, remote merge,
 deployment and notifications to others are outside its scope and require their
 own user instruction. Branch/worktree cleanup is separate from issue completion;
 failed worktrees remain for diagnosis. Completion requires local merge and
 `outcomeMet: true`; unmet issues remain open with remaining work recorded.
+=======
+There is no remote fetch, push, pull request, remote merge or deployment stage.
+The `main` branch advances locally only. Branch and worktree cleanup are
+separate from completing the issue; failed worktrees remain available for
+diagnosis.
+
+## Recovery
+
+Read `status` and inspect the exact workflow run before retrying. Use Swamp's
+workflow history and data commands to inspect persisted evidence, rather than
+editing internal `.swamp/` files. Use `swamp help workflow history` and
+`swamp help workflow resume` for the installed command schema. The current
+behavior state is stored as the `state` resource; events preserve the transition
+history.
+
+| Situation                                                                 | Next action                                                                                                                           |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| A session ends during planning or implementation                          | Resume the recorded phase and existing worktree.                                                                                      |
+| The user requests restart or rollback                                     | Use `rollback` for any step or `restart-agent` for a fresh worker; the request supersedes the old attempt without terminal-outcome proof. |
+| Rollback is interrupted                                                   | Use `resume-rollback`, or supersede the pending recovery with a new explicitly requested rollback.                                     |
+| A pane task timed out or needs input                                      | `drive` observes ordinary acknowledged timeouts; address dialogs deliberately, then `drive` resumes the original submission.            |
+| Launch was rejected without resources, such as for unsupported effort     | Use `discard-agent` with the operator's reason and confirmation, then dispatch a new task with corrected configuration.               |
+| Launch has an uncertain outcome, malformed response or unresolved cleanup | Observe the saved launch ID; inspect legacy tasks without inventing a receipt. Automatic relaunch and discard remain blocked.                                                |
+| A worker's completed response fails schema validation                     | Inspect the response and worktree; discard only that completed evidence with explicit confirmation before assigning replacement work. |
+| Lifecycle state advanced but the final task-completion write failed       | Use `resume-agent` to reconcile the saved transition, then `refresh` if Agenda requirements changed.                                  |
+| The Agenda description changes                                            | Use `refresh`, assess changed requirements and regenerate affected plan/review evidence.                                              |
+| A review finds blockers                                                   | Repair the plan or implementation, then record a fresh review.                                                                        |
+| Integration is waiting                                                    | Let the current integration finish; do not remove its lock file.                                                                      |
+| Rebase conflicts                                                          | Inspect the retained worktree and resolve the conflict deliberately; record and review the result before retrying integration.        |
+| The CI gate fails                                                         | Read the recorded log and failed tests, `repair` with the cause, fix it in the issue worktree and retry with current review evidence. |
+| The integration process is interrupted                                    | Inspect Git and the persisted run to determine whether rebase, verification or merge completed before resuming.                       |
+| The local merge landed but Agenda completion failed                       | Verify the recorded merge and retry close-out without merging again.                                                                  |
+| The outcome does not meet the issue                                       | Keep the Agenda task open and record what remains.                                                                                    |
+
+Never reset or discard a worktree to make retry appear clean. A conflicted
+rebase, dirty worktree or changed target is evidence that needs inspection. An
+empty check list or a cancelled run is not successful verification.
+>>>>>>> bab9477ac (Make agent launches transactional with durable receipts and placement safeguards)
 
 ## Validation boundaries
 

@@ -269,7 +269,10 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             },
             json,
         ),
+        Agent::LaunchSupport { json } => (AgentRequest::LaunchSupport, json),
+        Agent::LaunchStatus { launch_id, json } => (AgentRequest::LaunchStatus { launch_id }, json),
         Agent::Spawn {
+            launch_id,
             stack_for,
             tab,
             new_tab,
@@ -316,7 +319,7 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             if fields.contains_key("prompt") || fields.contains_key("reuse_prompt") {
                 bail!("spawn does not accept prompt or reuse_prompt; spawn, wait, then prompt");
             }
-            let overrides = serde_json::json!({"kind":kind,"project":project,"new_project":new_project,"destination":destination,"remote_host":remote_host,
+            let overrides = serde_json::json!({"launch_id":launch_id,"kind":kind,"project":project,"new_project":new_project,"destination":destination,"remote_host":remote_host,
                 "worktree":worktree,
                 "cwd":cwd,"branch":branch,"base":base,"worktree_dir":worktree_dir,"model":model,
                 "effort":effort,"permission_mode":permission_mode,"resume":resume});
@@ -353,6 +356,7 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             }
             let mut spec_fields = fields.clone();
             for field in [
+                "launch_id",
                 "tab",
                 "new_tab",
                 "suppressed",
@@ -395,6 +399,11 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             let destination: Option<std::path::PathBuf> =
                 serde_json::from_value(input["destination"].clone())
                     .context("parse new project destination")?;
+            let launch_id: Option<String> =
+                serde_json::from_value(input["launch_id"].clone()).context("parse launch ID")?;
+            if let Some(id) = &launch_id {
+                yinz_types::agent::control::validate_submission_id(id).map_err(|e| anyhow!(e))?;
+            }
             timeout = Duration::from_secs(120);
             if name.is_some() || destination.is_some() {
                 let (Some(name), Some(destination)) = (name, destination) else {
@@ -416,15 +425,24 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
                     }
                 }
                 return Ok((
-                    AgentRequest::SpawnNewProject {
-                        name,
-                        destination: if crate::remote_commands::selected().is_some() {
-                            destination
-                        } else {
-                            std::path::absolute(destination).context("resolve destination")?
+                    AgentRequest::Launch {
+                        launch_id: launch_id.unwrap_or_default(),
+                        request: yinz_types::agent::launch::LaunchRequest {
+                            new_project: Some((
+                                name,
+                                if crate::remote_commands::selected().is_some() {
+                                    destination
+                                } else {
+                                    std::path::absolute(destination)
+                                        .context("resolve destination")?
+                                },
+                            )),
+                            spec,
+                            placement,
+                            cwd: None,
+                            project: None,
+                            remote_host: None,
                         },
-                        spec,
-                        placement,
                     },
                     json,
                     timeout,
@@ -444,13 +462,16 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
                 }
             }
             (
-                AgentRequest::Spawn {
-                    placement,
-
-                    spec,
-                    cwd,
-                    project,
-                    remote_host,
+                AgentRequest::Launch {
+                    launch_id: launch_id.unwrap_or_default(),
+                    request: yinz_types::agent::launch::LaunchRequest {
+                        placement,
+                        spec,
+                        cwd,
+                        project,
+                        remote_host,
+                        new_project: None,
+                    },
                 },
                 json,
             )
@@ -704,6 +725,25 @@ fn exchange_on_socket(
     let mut receiver = sender
         .get_receiver::<ServerToClientMsg>()
         .context("cannot set up agent reply")?;
+    let mut request = request;
+    if let AgentRequest::Launch { launch_id, .. } = &mut request {
+        sender
+            .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::LaunchSupport))
+            .context("server must support agent-launch-transaction-v2; launch was not sent")?;
+        let support = receive_response(&mut receiver, Instant::now() + Duration::from_secs(5))
+            .context("launch capability unavailable; launch was not sent")?;
+        anyhow::ensure!(
+            support.outcome == AgentOutcome::Ok
+                && support.output.as_deref() == Some(yinz_types::agent::launch::CAPABILITY),
+            "server does not support agent-launch-transaction-v2; launch was not sent"
+        );
+        if launch_id.is_empty() {
+            let server = support
+                .server_instance
+                .context("launch server identity unavailable")?;
+            *launch_id = format!("{server}.{}", uuid::Uuid::new_v4());
+        }
+    }
     if let AgentRequest::Spawn {
         placement, spec, ..
     }
@@ -766,15 +806,48 @@ fn exchange_on_socket(
         .checked_add(timeout)
         .and_then(|deadline| deadline.checked_add(Duration::from_secs(2)))
         .context("agent timeout is too large")?;
-    sender
+    let observation = match &request {
+        AgentRequest::Launch { launch_id, request } => Some((
+            launch_id.clone(),
+            request.digest().context("digest launch request")?,
+        )),
+        AgentRequest::LaunchStatus { launch_id } => Some((launch_id.clone(), String::new())),
+        _ => None,
+    };
+    let result = sender
         .send_client_msg(ClientToServerMsg::AgentControl(request))
-        .context("cannot send agent request")?;
-    let result = receive_response(&mut receiver, deadline);
+        .context("cannot send agent request")
+        .and_then(|()| receive_response(&mut receiver, deadline));
     sender
         .send_client_msg(ClientToServerMsg::ClientExited)
         .context("disconnecting agent client")
         .non_fatal();
-    result
+    match (result, observation) {
+        (Err(error), Some((launch_id, request_digest))) => {
+            use yinz_types::agent::launch::*;
+            let server_instance = launch_id
+                .split_once('.')
+                .map_or("unavailable", |(server, _)| server)
+                .to_owned();
+            let mut response = AgentResponse::new(AgentOutcome::StatusUnavailable);
+            response.message = Some(format!("launch observation unavailable: {error:#}; query launch-status {launch_id}; do not spawn again"));
+            response.launch = Some(LaunchReceipt {
+                version: 2,
+                launch_id,
+                request_digest,
+                server_instance,
+                outcome: LaunchOutcome::Unknown,
+                phase: LaunchPhase::Starts,
+                reason: Some(LaunchReason::TransportUnavailable),
+                process: ProcessState::Unknown,
+                resources: Default::default(),
+                spawned: None,
+                disposition: WorkerDisposition::Unknown,
+            });
+            Ok(response)
+        },
+        (result, _) => result,
+    }
 }
 
 // The router can acknowledge a request before the screen thread answers it.
@@ -842,6 +915,22 @@ fn write_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
         }
         writeln!(out, "{value}").context("cannot write agent response")?;
         return Ok(());
+    }
+    if let Some(launch) = &response.launch {
+        writeln!(
+            out,
+            "Launch: {} {:?} ({:?}, {:?}, {:?})",
+            launch.launch_id, launch.outcome, launch.phase, launch.process, launch.disposition
+        )
+        .context("write launch receipt")?;
+        if launch.outcome != yinz_types::agent::launch::LaunchOutcome::Started {
+            writeln!(
+                out,
+                "Observe: yinz agent launch-status {} --json",
+                launch.launch_id
+            )
+            .context("write launch observation route")?;
+        }
     }
     if let Some(output) = &response.output {
         write!(out, "{output}").context("cannot write agent output")?;

@@ -957,6 +957,7 @@ impl MockScreen {
         let session_metadata = MockSession {
             shutdown: Default::default(),
             senders: ThreadSenders {
+                launches: Default::default(),
                 session_update_quiesced: Default::default(),
                 to_screen: Some(to_screen.clone()),
                 to_pty: Some(to_pty.clone()),

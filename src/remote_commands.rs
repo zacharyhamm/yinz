@@ -67,6 +67,8 @@ fn route(command: Option<&Command>) -> Route {
             | Agent::List { .. }
             | Agent::Status { .. }
             | Agent::CloseCompleted { .. }
+            | Agent::LaunchSupport { .. }
+            | Agent::LaunchStatus { .. }
             | Agent::Spawn { .. }
             | Agent::Show { .. }
             | Agent::Hide { .. }

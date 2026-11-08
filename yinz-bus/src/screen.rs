@@ -63,6 +63,23 @@ pub type AgentEventProjectMemberships = BTreeMap<String, Result<Option<Vec<PaneI
 /// that mapping is total.
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum ScreenInstruction {
+    CommitAgentLaunch {
+        terminal_id: TerminalId,
+        reply: std::sync::mpsc::Sender<bool>,
+    },
+    ReleaseAgentLaunch {
+        terminal_id: TerminalId,
+        reply: std::sync::mpsc::Sender<bool>,
+    },
+    ClaimAgentLaunch {
+        terminal_id: TerminalId,
+        command: yinz_types::input::command::RunCommand,
+        reply: std::sync::mpsc::Sender<Option<yinz_types::pane_size::TerminalSize>>,
+    },
+    RegisterAgentLaunch {
+        spawned: yinz_types::agent::SpawnedAgent,
+        reply: std::sync::mpsc::Sender<bool>,
+    },
     SessionMigration(crate::migration::ScreenRequest),
     WarpReplayFinished(TerminalId),
     SubscribePaneOutput(
@@ -1021,6 +1038,7 @@ pub enum ScreenInstruction {
         placement: yinz_types::agent::control::AgentPlacement,
         invoked_with: Option<Run>,
         client_id: ClientId,
+        launch: std::sync::Arc<crate::agent_launch::LaunchGate>,
         reply: std::sync::mpsc::Sender<Result<crate::route::AgentTabPlacement, String>>,
     },
     CleanupAgentTab(

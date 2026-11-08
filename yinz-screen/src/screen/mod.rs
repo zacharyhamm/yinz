@@ -613,6 +613,8 @@ pub(crate) struct Screen {
     agent_draft_clears: HashMap<PaneId, agent_control::DraftClear>,
     agent_submissions: HashMap<PaneId, std::collections::VecDeque<agent_control::Submission>>,
     agent_launches: HashMap<PaneId, yinz_types::agent::SpawnedAgent>,
+    managed_reservations: HashMap<TerminalId, yinz_bus::route::AgentTabPlacement>,
+    agent_worker_regions: HashMap<(PaneId, TabId), (std::sync::Weak<()>, String)>,
     agent_worker_stacks: HashMap<(PaneId, TabId), Vec<PaneId>>,
     pending_agent_tracking: HashMap<PaneId, PendingAgentTracking>,
     pending_terminal_states: HashMap<PaneId, String>,
@@ -1456,6 +1458,8 @@ impl Screen {
             agent_draft_clears: HashMap::new(),
             agent_submissions: HashMap::new(),
             agent_launches: HashMap::new(),
+            managed_reservations: HashMap::new(),
+            agent_worker_regions: HashMap::new(),
             agent_worker_stacks: HashMap::new(),
             pending_agent_tracking: HashMap::new(),
             pending_terminal_states: HashMap::new(),
@@ -3095,6 +3099,11 @@ impl Screen {
     }
 
     pub(crate) fn cleanup_closed_pane(&mut self, id: PaneId) {
+        if let PaneId::Terminal(terminal) = id
+            && let Some(gate) = self.bus.senders.launches.gate(terminal)
+        {
+            gate.layout_released();
+        }
         self.pending_agent_tracking.remove(&id);
         self.pending_terminal_states.remove(&id);
         self.forget_notification_assemblies(id);
@@ -3227,14 +3236,14 @@ impl Screen {
     /// Placement is independent of command output. A new pane may wait for the first tab
     /// or a pending layout, so keep its request until it is either placed or rejected.
     fn confirm_terminal_placements(
-        &self,
+        &mut self,
         pending: &mut HashMap<TerminalId, u64>,
         events: &pending_events::PendingEvents,
     ) -> Result<()> {
         let mut completed = Vec::new();
         for (&terminal_id, &generation) in pending.iter() {
             let pane_id = PaneId::Terminal(terminal_id);
-            let placed = self.tabs.iter().find_map(|(&tab_id, tab)| {
+            let mut placed = self.tabs.iter().find_map(|(&tab_id, tab)| {
                 if tab.is_pending() {
                     return None;
                 }
@@ -3263,6 +3272,26 @@ impl Screen {
                     )
                 })
             });
+            if self
+                .bus
+                .senders
+                .launches
+                .gate(terminal_id)
+                .is_some_and(|gate| !gate.snapshot().finished)
+            {
+                placed = self
+                    .validate_launch_slot(terminal_id)
+                    .ok()
+                    .and_then(|size| {
+                        self.bus
+                            .senders
+                            .launches
+                            .gate(terminal_id)?
+                            .snapshot()
+                            .slot
+                            .map(|slot| (size, slot.tab_id))
+                    });
+            }
             if placed.is_none()
                 && (self.has_pending_tabs()
                     || events.waiting_for_tab.iter().any(|event| {
@@ -3272,14 +3301,45 @@ impl Screen {
             {
                 continue;
             }
-            self.bus
+            let instruction = if let Some(gate) = self
+                .bus
                 .senders
-                .send_to_pty_writer(yinz_bus::pty_writer::PtyWriteInstruction::TerminalPlaced {
+                .launches
+                .gate(terminal_id)
+                .filter(|gate| !gate.snapshot().finished)
+            {
+                let state = gate.snapshot();
+                let decision = match (placed, state.slot) {
+                    (Some((size, _)), Some(slot)) => {
+                        yinz_bus::route::ManagedPlacementDecision::Accepted {
+                            launch_id: gate.launch_id.clone(),
+                            slot,
+                            size,
+                        }
+                    },
+                    _ => yinz_bus::route::ManagedPlacementDecision::Rejected {
+                        launch_id: gate.launch_id.clone(),
+                        reason: state
+                            .revoked
+                            .unwrap_or(yinz_types::agent::launch::LaunchReason::PlacementRevoked),
+                    },
+                };
+                yinz_bus::pty_writer::PtyWriteInstruction::ManagedTerminalPlaced {
+                    terminal_id,
+                    generation,
+                    decision,
+                }
+            } else {
+                yinz_bus::pty_writer::PtyWriteInstruction::TerminalPlaced {
                     terminal_id,
                     generation,
                     placement: placed,
-                })
-                .context("confirm terminal content dimensions")?;
+                }
+            };
+            self.bus
+                .senders
+                .send_to_pty_writer(instruction)
+                .context("confirm terminal placement decision")?;
             completed.push(terminal_id);
         }
         for id in completed {
@@ -3536,6 +3596,11 @@ impl Screen {
     /// thread is asked to close it; otherwise its process, transport and reader
     /// would run until the session ends.
     pub fn forget_unplaced_pane(&mut self, pane_id: PaneId, why: String) {
+        if let PaneId::Terminal(terminal) = pane_id
+            && let Some(gate) = self.bus.senders.launches.gate(terminal)
+        {
+            gate.layout_released();
+        }
         self.cleanup_closed_pane(pane_id);
         log::error!("dropping pane {pane_id:?}: {why}");
         self.bus
@@ -5049,3 +5114,5 @@ fn replay_pending_plugin_events(
 #[path = "../unit/screen_tests/mod.rs"]
 #[cfg(test)]
 mod screen_tests;
+
+mod launch_transaction;

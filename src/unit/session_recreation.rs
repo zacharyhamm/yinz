@@ -15,6 +15,9 @@ use yinz_runtime::session_checkpoint::{write_checkpoint, SessionCheckpoint};
 const NAME: &str = "recreation";
 const MARKER: &str = "floating-plugin-marker";
 
+#[path = "agent_launch_transaction.rs"]
+mod agent_launch_transaction;
+
 #[path = "remote_startup.rs"]
 mod remote_startup;
 #[path = "session_update_real.rs"]

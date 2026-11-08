@@ -44,3 +44,5 @@ pub use yinz_types::pane_id::PaneId;
 pub mod command_palette;
 
 pub mod migration;
+
+pub mod agent_launch;

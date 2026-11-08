@@ -12831,6 +12831,7 @@ fn controller_worker_stack_rejects_only_stack_space() {
             &mut Default::default(),
         )
         .unwrap();
+    screen.resize_to_screen(Size { cols: 6, rows: 5 }).unwrap();
     let pane = PaneId::Terminal(TerminalId::new(88));
     let destination = screen
         .resolve_agent_tab(AgentPlacement::ControllerStack(owner), None, CLIENT)
@@ -12851,15 +12852,13 @@ fn controller_worker_stack_rejects_only_stack_space() {
             false,
             &mut Default::default(),
         )
-        .unwrap();
+        .unwrap_err();
     assert!(rx.try_recv().unwrap().error_message.is_some());
     assert!(!screen
         .agent_worker_stacks
         .get(&(owner, tab_id))
         .is_some_and(|members| members.contains(&pane)));
-    assert!(screen
-        .get_pane_info(pane)
-        .is_some_and(|info| info.is_suppressed));
+    assert!(screen.get_pane_info(pane).is_none());
 }
 
 #[test]
@@ -13188,10 +13187,7 @@ fn controller_worker_stack_respects_subsequent_worker_pane_limit() {
             assert_eq!(result.is_err(), at_capacity);
             let completion = rx.try_recv().unwrap();
             if at_capacity {
-                assert!(completion
-                    .error_message
-                    .unwrap()
-                    .contains("configured pane limit reached"));
+                assert!(completion.error_message.unwrap().contains("PaneLimit"));
                 assert!(screen.get_pane_info(worker).is_none());
             } else {
                 assert!(completion.error_message.is_none());
@@ -13588,5 +13584,486 @@ fn claude_queued_prompt_recovery_native_replay_cannot_acknowledge_later_identica
         assert!(!later.acknowledged);
         assert!(later.result.is_none());
         assert!(replies(&messages, CLIENT).is_empty());
+    }
+}
+
+fn launch_transaction_worker(
+    screen: &mut Screen,
+    id: u32,
+) -> (
+    std::sync::Arc<yinz_bus::agent_launch::LaunchGate>,
+    crate::route::ActionCompletionResult,
+) {
+    launch_transaction_worker_after_resolve(screen, id, |_| {})
+}
+
+fn launch_transaction_worker_after_resolve(
+    screen: &mut Screen,
+    id: u32,
+    before_admission: impl FnOnce(&mut Screen),
+) -> (
+    std::sync::Arc<yinz_bus::agent_launch::LaunchGate>,
+    crate::route::ActionCompletionResult,
+) {
+    let terminal = TerminalId::new(id);
+    let gate = std::sync::Arc::new(yinz_bus::agent_launch::LaunchGate::new(
+        format!("test.{id}"),
+        false,
+    ));
+    gate.allocated(terminal);
+    screen
+        .bus
+        .senders
+        .launches
+        .gates
+        .lock()
+        .unwrap()
+        .insert(terminal, gate.clone());
+    let destination = screen
+        .resolve_agent_tab(
+            yinz_types::agent::control::AgentPlacement::ControllerStack(PANE),
+            None,
+            CLIENT,
+        )
+        .unwrap();
+    let tab = destination.tab_id;
+    before_admission(screen);
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    let mut completion = crate::route::NotificationEnd::new(tx);
+    completion.agent_tab = Some(destination);
+    completion.launch = Some(gate.clone());
+    let _ = screen.place_new_pane(
+        PaneId::Terminal(terminal),
+        None,
+        None,
+        None,
+        NewPanePlacement::default(),
+        false,
+        crate::pty::ClientTabIndexOrPaneId::TabIndexNoFocus(tab),
+        Some(completion),
+        false,
+        &mut Default::default(),
+    );
+    (gate, rx.try_recv().unwrap())
+}
+
+#[test]
+fn launch_transaction_destination_rejection_has_typed_reason_and_no_side_effects() {
+    use yinz_types::agent::{control::AgentPlacement, launch::LaunchReason};
+    for (placement, expected) in [
+        (
+            AgentPlacement::ControllerStack(PaneId::Terminal(TerminalId::new(999))),
+            LaunchReason::ControllerClosed,
+        ),
+        (
+            AgentPlacement::Tab(TabId::new(999)),
+            LaunchReason::DestinationClosed,
+        ),
+    ] {
+        let (mut screen, _, _) = setup("bash");
+        let before = screen.tabs.keys().copied().collect::<Vec<_>>();
+        let focus = screen.active_tab_ids.clone();
+        let gate = yinz_bus::agent_launch::LaunchGate::new("test.destination".into(), false);
+        assert!(screen
+            .resolve_launch_tab(placement, None, CLIENT, &gate)
+            .is_err());
+        assert_eq!(gate.snapshot().revoked, Some(expected));
+        assert!(gate.snapshot().destination.is_none());
+        assert_eq!(screen.tabs.keys().copied().collect::<Vec<_>>(), before);
+        assert_eq!(screen.active_tab_ids, focus);
+    }
+}
+
+#[test]
+fn launch_transaction_controller_move_follows_before_admission_and_revokes_after_it() {
+    for move_before_admission in [false, true] {
+        let (mut screen, _, _) = setup("bash");
+        new_tab(&mut screen, 2, TabId::new(1));
+        let move_controller = |screen: &mut Screen| {
+            let moved = screen
+                .break_multiple_panes_to_tab_with_id(vec![PANE], TabId::new(1), false, CLIENT)
+                .unwrap();
+            assert!(moved.succeeded(), "{moved:?}");
+        };
+        let (gate, result) = launch_transaction_worker_after_resolve(&mut screen, 88, |screen| {
+            if move_before_admission {
+                move_controller(screen);
+            }
+        });
+        assert!(result.error_message.is_none(), "{result:?}");
+        let slot = gate.snapshot().slot.unwrap();
+        assert_eq!(slot.tab_id, TabId::new(usize::from(move_before_admission)));
+        if !move_before_admission {
+            move_controller(&mut screen);
+        }
+        screen.revalidate_launches();
+        if move_before_admission {
+            assert!(screen.validate_launch_slot(TerminalId::new(88)).is_ok());
+            assert!(gate.claim());
+        } else {
+            assert_eq!(
+                gate.snapshot().revoked,
+                Some(yinz_types::agent::launch::LaunchReason::ControllerMoved)
+            );
+            assert!(!gate.claim());
+        }
+        assert_eq!(
+            screen.tab_id_containing_pane(PaneId::Terminal(TerminalId::new(88))),
+            Some(slot.tab_id)
+        );
+    }
+}
+
+#[test]
+fn launch_transaction_floating_and_overlay_controllers_keep_both_clients_focus() {
+    for placement in [
+        NewPanePlacement::Floating(None),
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+    ] {
+        let (mut screen, _, _) = setup_with_placement(
+            "bash",
+            PaneTarget::Local,
+            Size {
+                cols: 105,
+                rows: 59,
+            },
+            placement,
+        );
+        let other = ClientId::new(2);
+        screen.add_client(other).unwrap();
+        let tab_id = screen.tab_id_containing_pane(PANE).unwrap();
+        let focus = [CLIENT, other].map(|client| screen.tabs[&tab_id].get_active_pane_id(client));
+        let active_tabs = screen.active_tab_ids.clone();
+        let controller = screen.tabs[&tab_id]
+            .get_pane_with_id(PANE)
+            .unwrap()
+            .position_and_size();
+        let overlays = screen.tabs[&tab_id].overlays_are_rendered();
+        for id in [88, 89] {
+            let (gate, result) = launch_transaction_worker(&mut screen, id);
+            assert!(result.error_message.is_none(), "{result:?}");
+            let slot = gate.snapshot().slot.unwrap();
+            assert_eq!(slot.tab_id, tab_id);
+            assert!(screen.validate_launch_slot(TerminalId::new(id)).is_ok());
+            assert_eq!(
+                [CLIENT, other].map(|client| screen.tabs[&tab_id].get_active_pane_id(client)),
+                focus
+            );
+            assert_eq!(screen.active_tab_ids, active_tabs);
+            assert_eq!(
+                screen.tabs[&tab_id]
+                    .get_pane_with_id(PANE)
+                    .unwrap()
+                    .position_and_size(),
+                controller
+            );
+            assert_eq!(screen.tabs[&tab_id].overlays_are_rendered(), overlays);
+            assert!(!screen
+                .tabs
+                .get_mut(&tab_id)
+                .unwrap()
+                .worker_region_members(slot.pane_id)
+                .contains(&PANE));
+        }
+    }
+}
+
+#[test]
+fn launch_transaction_splits_only_controller_stack_in_incident_geometry() {
+    for list_mode in [false, true] {
+        let (mut screen, _, _) = setup_with_size(
+            "bash",
+            PaneTarget::Local,
+            Size {
+                cols: 105,
+                rows: 59,
+            },
+        );
+        *screen.stacked_pane_list.borrow_mut() = list_mode;
+        screen.close_pane_explicitly(PaneId::Terminal(TerminalId::new(1)), None);
+        let tab_id = screen.tab_id_containing_pane(PANE).unwrap();
+        let old = PaneId::Terminal(TerminalId::new(87));
+        screen
+            .tabs
+            .get_mut(&tab_id)
+            .unwrap()
+            .new_pane(
+                old,
+                None,
+                None,
+                false,
+                false,
+                NewPanePlacement::Stacked {
+                    pane_id_to_stack_under: Some(PANE),
+                    borderless: None,
+                },
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            screen
+                .tabs
+                .get_mut(&tab_id)
+                .unwrap()
+                .worker_region_members(PANE)
+                .len(),
+            2
+        );
+        for id in [88, 89] {
+            let (gate, result) = launch_transaction_worker(&mut screen, id);
+            assert!(result.error_message.is_none(), "{result:?}");
+            let slot = gate.snapshot().slot.unwrap();
+            assert!(slot.worker_region.is_some());
+            let size = screen.validate_launch_slot(TerminalId::new(id)).unwrap();
+            assert!(size.cols > 1 && size.rows > 1, "{size:?}");
+            assert_eq!(screen.tabs[&tab_id].get_active_pane_id(CLIENT), Some(PANE));
+            assert_eq!(
+                screen
+                    .tabs
+                    .get_mut(&tab_id)
+                    .unwrap()
+                    .worker_region_members(PANE)
+                    .len(),
+                2
+            );
+            assert!(screen
+                .tabs
+                .get_mut(&tab_id)
+                .unwrap()
+                .worker_region_members(slot.pane_id)
+                .iter()
+                .all(|id| ![PANE, old].contains(id)));
+        }
+    }
+}
+
+#[test]
+fn launch_transaction_rejected_admission_keeps_layout_and_has_no_hidden_orphan() {
+    for (limit, fullscreen) in [(None, false), (Some(1), false), (None, true)] {
+        let (mut screen, _, _) = setup_with_pane_limit(
+            "bash",
+            PaneTarget::Local,
+            Size { cols: 80, rows: 24 },
+            NewPanePlacement::default(),
+            limit,
+        );
+        if !fullscreen {
+            screen.close_pane_explicitly(PaneId::Terminal(TerminalId::new(1)), None);
+        }
+        screen.resize_to_screen(Size { cols: 6, rows: 5 }).unwrap();
+        let tab = screen.tab_id_containing_pane(PANE).unwrap();
+        if fullscreen {
+            screen
+                .tabs
+                .get_mut(&tab)
+                .unwrap()
+                .toggle_pane_fullscreen(PANE);
+        }
+        assert_eq!(screen.tabs[&tab].is_fullscreen_active(), fullscreen);
+        let geom = screen.tabs[&tab]
+            .get_pane_with_id(PANE)
+            .unwrap()
+            .position_and_size();
+        let (gate, result) = launch_transaction_worker(&mut screen, 88);
+        assert!(result.error_message.is_some());
+        assert!(gate.snapshot().slot.is_none());
+        assert!(!gate.claim());
+        assert_eq!(
+            gate.snapshot().revoked,
+            Some(if limit.is_some() {
+                yinz_types::agent::launch::LaunchReason::PaneLimit
+            } else {
+                yinz_types::agent::launch::LaunchReason::InsufficientRoom
+            })
+        );
+        assert!(screen
+            .get_pane_info(PaneId::Terminal(TerminalId::new(88)))
+            .is_none());
+        assert_eq!(
+            screen.tabs[&tab]
+                .get_pane_with_id(PANE)
+                .unwrap()
+                .position_and_size(),
+            geom
+        );
+        assert_eq!(screen.tabs[&tab].get_active_pane_id(CLIENT), Some(PANE));
+        assert_eq!(screen.tabs[&tab].is_fullscreen_active(), fullscreen);
+    }
+}
+
+#[test]
+fn launch_transaction_region_survives_root_close_and_hidden_list_members() {
+    for list_mode in [false, true] {
+        let (mut screen, _, _) = setup("bash");
+        *screen.stacked_pane_list.borrow_mut() = list_mode;
+        let (first, _) = launch_transaction_worker(&mut screen, 88);
+        let (second, result) = launch_transaction_worker(&mut screen, 89);
+        assert!(result.error_message.is_none(), "{result:?}");
+        let region = second.snapshot().slot.unwrap().worker_region;
+        assert_eq!(first.snapshot().slot.unwrap().worker_region, region);
+        screen.close_pane_explicitly(PaneId::Terminal(TerminalId::new(88)), None);
+        screen.revalidate_launches();
+        assert!(screen.validate_launch_slot(TerminalId::new(89)).is_ok());
+        let (third, result) = launch_transaction_worker(&mut screen, 90);
+        assert!(result.error_message.is_none(), "{result:?}");
+        assert_eq!(third.snapshot().slot.unwrap().worker_region, region);
+        assert_eq!(
+            screen.tabs[&TabId::new(0)].get_active_pane_id(CLIENT),
+            Some(PANE)
+        );
+    }
+}
+
+#[test]
+fn launch_transaction_dissolved_group_cannot_revive_completed_region_ownership() {
+    let (mut screen, _, _) = setup("bash");
+    let (first, _) = launch_transaction_worker(&mut screen, 88);
+    let (second, result) = launch_transaction_worker(&mut screen, 89);
+    assert!(result.error_message.is_none());
+    for gate in [&first, &second] {
+        assert!(gate.claim());
+        gate.running();
+        gate.registered();
+        assert!(gate.handoff());
+    }
+    let key = (PANE, TabId::new(0));
+    let original_region = second.snapshot().slot.unwrap().worker_region.unwrap();
+    let mut original_geoms = Vec::new();
+    for id in [88, 89] {
+        let pane = screen
+            .tabs
+            .get_mut(&key.1)
+            .unwrap()
+            .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(id)))
+            .unwrap();
+        let original = pane.position_and_size();
+        original_geoms.push((id, original));
+        let mut standalone = original;
+        standalone.stacked = None;
+        pane.set_geom(standalone);
+    }
+    screen.revalidate_launches();
+    assert!(!screen.agent_worker_regions.contains_key(&key));
+    // Even identical panes and recycled classic stack IDs cannot resurrect retired ownership.
+    for (id, original) in original_geoms {
+        screen
+            .tabs
+            .get_mut(&key.1)
+            .unwrap()
+            .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(id)))
+            .unwrap()
+            .set_geom(original);
+    }
+    let (third, result) = launch_transaction_worker(&mut screen, 90);
+    assert!(result.error_message.is_none(), "{result:?}");
+    assert_ne!(
+        third.snapshot().slot.unwrap().worker_region,
+        Some(original_region)
+    );
+    assert_eq!(screen.tabs[&key.1].get_active_pane_id(CLIENT), Some(PANE));
+}
+
+#[test]
+fn launch_transaction_controller_close_revokes_pending_but_preserves_committed_workers() {
+    for committed in [false, true] {
+        let (mut screen, _, _) = setup("bash");
+        let (gate, result) = launch_transaction_worker(&mut screen, 88);
+        assert!(result.error_message.is_none());
+        if committed {
+            assert!(gate.claim());
+            gate.running();
+            gate.registered();
+            assert!(gate.handoff());
+        }
+        screen.close_pane_explicitly(PANE, None);
+        screen.revalidate_launches();
+        assert_eq!(gate.snapshot().revoked.is_none(), committed);
+        if !committed {
+            assert!(!gate.claim());
+        } else {
+            assert!(screen
+                .get_pane_info(PaneId::Terminal(TerminalId::new(88)))
+                .is_some());
+        }
+    }
+}
+
+#[test]
+fn launch_transaction_pending_placeholders_serialize_capacity_and_first_region_creation() {
+    for limit in [2, 3] {
+        let (mut screen, _, _) = setup_with_pane_limit(
+            "bash",
+            PaneTarget::Local,
+            Size {
+                cols: 105,
+                rows: 59,
+            },
+            NewPanePlacement::default(),
+            Some(limit),
+        );
+        let (first, result) = launch_transaction_worker(&mut screen, 88);
+        assert!(result.error_message.is_none());
+        let (second, result) = launch_transaction_worker(&mut screen, 89);
+        assert_eq!(result.error_message.is_none(), limit == 3);
+        if limit == 3 {
+            assert_eq!(
+                first.snapshot().slot.unwrap().worker_region,
+                second.snapshot().slot.unwrap().worker_region
+            );
+            assert!(
+                screen
+                    .validate_launch_slot(TerminalId::new(88))
+                    .unwrap()
+                    .rows
+                    > 1
+            );
+        } else {
+            assert!(!second.claim());
+            assert_eq!(
+                second.snapshot().revoked,
+                Some(yinz_types::agent::launch::LaunchReason::PaneLimit)
+            );
+        }
+    }
+}
+
+#[test]
+fn launch_transaction_changed_group_or_tab_incarnation_cannot_authorize_start() {
+    for reused_tab in [false, true] {
+        let (mut screen, _, _) = setup("bash");
+        let (gate, result) = launch_transaction_worker(&mut screen, 88);
+        assert!(result.error_message.is_none());
+        let slot = gate.snapshot().slot.unwrap();
+        if reused_tab {
+            let old = screen.tabs.remove(&slot.tab_id).unwrap();
+            new_tab(&mut screen, 1, slot.tab_id);
+            assert_ne!(
+                screen.tabs[&slot.tab_id].agent_tab_incarnation,
+                old.agent_tab_incarnation
+            );
+        } else {
+            screen
+                .tabs
+                .get_mut(&slot.tab_id)
+                .unwrap()
+                .new_pane(
+                    PaneId::Terminal(TerminalId::new(99)),
+                    None,
+                    None,
+                    false,
+                    false,
+                    NewPanePlacement::Stacked {
+                        pane_id_to_stack_under: Some(slot.pane_id),
+                        borderless: None,
+                    },
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        screen.revalidate_launches();
+        assert!(gate.snapshot().revoked.is_some());
+        assert!(!gate.claim());
     }
 }

@@ -17,6 +17,11 @@ use crate::thread_bus::Bus;
 // here anyway, so
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PtyWriteInstruction {
+    ManagedTerminalPlaced {
+        terminal_id: TerminalId,
+        generation: u64,
+        decision: crate::route::ManagedPlacementDecision,
+    },
     MigrationBarrier {
         deadline: std::time::Instant,
         reply: crossbeam::channel::Sender<Result<(), String>>,
@@ -199,6 +204,17 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                         .retain_agent_theme(terminal_id, event)
                         .context("retain learned agent palette")
                         .non_fatal();
+                },
+                PtyWriteInstruction::ManagedTerminalPlaced {
+                    terminal_id,
+                    generation,
+                    decision,
+                } => {
+                    placements.push(crate::pty::PtyInstruction::ManagedTerminalPlaced {
+                        terminal_id,
+                        generation,
+                        decision,
+                    });
                 },
                 PtyWriteInstruction::TerminalPlaced {
                     terminal_id,

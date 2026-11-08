@@ -47,7 +47,7 @@ pub(super) fn spawn_agent_for_control(
     senders: &ThreadSenders,
     data_access: &DataAccess,
 ) -> Result<SpawnedAgent, AgentSpawnError> {
-    spawn_agent_prepared(placement, spec, client_id, senders, |spec| {
+    spawn_agent_prepared(placement, spec, client_id, senders, data_access, |spec| {
         prepare_automation_agent(
             spec,
             cwd,
@@ -78,6 +78,68 @@ pub fn control_agent(
     };
     let result = (|| -> Result<AgentResponse, String> {
         let request = match request {
+            AgentRequest::Launch { launch_id, request } => {
+                return Ok(super::launch_transaction::launch(
+                    launch_id, request, client, senders, data,
+                ))
+            },
+            AgentRequest::LaunchStatus { launch_id } => {
+                return Ok(super::launch_transaction::status(&launch_id, senders, data))
+            },
+            AgentRequest::Spawn {
+                spec,
+                cwd,
+                project,
+                remote_host,
+                placement,
+            } => {
+                return Ok(super::launch_transaction::launch(
+                    format!(
+                        "{}.{}",
+                        yinz_bus::agent_launch::server_instance(),
+                        uuid::Uuid::new_v4()
+                    ),
+                    yinz_types::agent::launch::LaunchRequest {
+                        placement,
+                        spec,
+                        cwd,
+                        project,
+                        remote_host,
+                        new_project: None,
+                    },
+                    client,
+                    senders,
+                    data,
+                ));
+            },
+            AgentRequest::SpawnNewProject {
+                name,
+                destination,
+                spec,
+                placement,
+            } => {
+                return Ok(super::launch_transaction::launch(
+                    format!(
+                        "{}.{}",
+                        yinz_bus::agent_launch::server_instance(),
+                        uuid::Uuid::new_v4()
+                    ),
+                    yinz_types::agent::launch::LaunchRequest {
+                        placement,
+                        spec,
+                        cwd: None,
+                        project: None,
+                        remote_host: None,
+                        new_project: Some((name, destination)),
+                    },
+                    client,
+                    senders,
+                    data,
+                ));
+            },
+            request => request,
+        };
+        let request = match request {
             AgentRequest::CreateProject { name, destination } => {
                 let (name, root) = create_project(&name, &destination, senders, data)?;
                 let mut response = AgentResponse::new(AgentOutcome::Ok);
@@ -88,43 +150,6 @@ pub fn control_agent(
                 let mut response = AgentResponse::new(AgentOutcome::Ok);
                 response.usage = Some(crate::provider_usage::collect(&provider));
                 return Ok(response);
-            },
-            AgentRequest::Spawn {
-                spec,
-                cwd,
-                project,
-                remote_host,
-                placement,
-            } => {
-                return Ok(finish_spawn(
-                    spawn_agent_for_control(
-                        placement,
-                        spec,
-                        cwd,
-                        project,
-                        remote_host,
-                        client,
-                        senders,
-                        data,
-                    ),
-                    senders,
-                ));
-            },
-            AgentRequest::SpawnNewProject {
-                name,
-                destination,
-                spec,
-                placement,
-            } => {
-                return Ok(spawn_new_project(
-                    name,
-                    destination,
-                    spec,
-                    placement,
-                    client,
-                    senders,
-                    data,
-                ));
             },
             request => request,
         };
@@ -249,7 +274,7 @@ pub(super) fn projects(data: &DataAccess) -> Result<yinz_types::data::DataRows, 
         })
 }
 
-fn finish_spawn(
+pub(super) fn finish_spawn(
     result: Result<SpawnedAgent, AgentSpawnError>,
     senders: &ThreadSenders,
 ) -> AgentResponse {
@@ -267,84 +292,55 @@ fn finish_spawn(
     response
 }
 
-fn spawn_new_project(
-    name: String,
-    destination: PathBuf,
-    spec: AgentSpawnSpec,
-    placement: yinz_types::agent::control::AgentPlacement,
-    client: crate::ClientId,
+pub(super) fn prepare_new_project_agent(
+    spec: &mut AgentSpawnSpec,
+    name: &str,
+    destination: &std::path::Path,
     senders: &ThreadSenders,
     data: &DataAccess,
-) -> AgentResponse {
-    let mut progress = NewProjectProgress::default();
-    let result = spawn_agent_prepared(placement, spec, client, senders, |spec| {
-        if spec.branch.is_some()
-            || spec.base.is_some()
-            || spec.worktree.is_some()
-            || spec.worktree_dir.is_some()
-            || spec.reuse.is_some()
-            || spec.resume.is_some()
-        {
-            return Err(
-                "new project cannot use branch, base, worktree, reuse or resume options".into(),
-            );
-        }
-        validate_automation_spec(spec)?;
-        let plan = plan_new_project(&name, &destination, data)?;
-        if spec.bubblewrap {
-            let environment =
-                yinz_config::project_config::bubblewrap::Environment::at_root(&plan.root);
-            environment
-                .preflight()
-                .map_err(|error| format!("{error:#}"))?;
-            environment
-                .validate_spawn_env(&spec.env)
-                .map_err(|error| format!("{error:#}"))?;
-        }
-        let root = plan.root.clone();
-        materialize_new_project(plan, senders, data, &mut progress)?;
-        // Creating a new project explicitly selects its main checkout.
-        spec.allow_outside_worktree = Some(true);
-        prepare_automation_agent(
-            spec,
-            Some(root),
-            None,
-            None,
-            data,
-            &senders.session.current(),
-        )
-    });
-    let mut response = finish_spawn(result, senders);
-    if response.outcome != AgentOutcome::Ok
-        && let Some(root) = progress.retained
+    progress: &mut NewProjectProgress,
+) -> Result<PreparedAgent, AgentSpawnError> {
+    if spec.branch.is_some()
+        || spec.base.is_some()
+        || spec.worktree.is_some()
+        || spec.worktree_dir.is_some()
+        || spec.reuse.is_some()
+        || spec.resume.is_some()
     {
-        response.outcome = AgentOutcome::Failed;
-        if response.spawned.is_none() {
-            response
-                .launch_resources
-                .get_or_insert_with(Default::default)
-                .cwd = Some(root.clone());
-        }
-        let registration = if progress.registered {
-            "succeeded"
-        } else {
-            "did not succeed"
-        };
-        let retry = if progress.registered {
-            format!(
-                "; retry with --project '{}' --allow-outside-worktree",
-                name.trim().replace('\'', "'\\''")
-            )
-        } else {
-            String::new()
-        };
-        response.message = Some(format!(
-            "{}; retained project directory {}; registration {registration}{retry}",
-            response.message.as_deref().unwrap_or("agent launch failed"),
-            root.display()
-        ));
+        return Err(
+            "new project cannot use branch, base, worktree, reuse or resume options".into(),
+        );
     }
-    response
+    validate_automation_spec(spec)?;
+    let plan = plan_new_project(name, destination, data)?;
+    if spec.bubblewrap {
+        let environment = yinz_config::project_config::bubblewrap::Environment::at_root(&plan.root);
+        environment
+            .preflight()
+            .map_err(|error| format!("{error:#}"))?;
+        environment
+            .validate_spawn_env(&spec.env)
+            .map_err(|error| format!("{error:#}"))?;
+    }
+    let root = plan.root.clone();
+    materialize_new_project(plan, senders, data, progress)?;
+    // Creating a new project explicitly selects its main checkout.
+    spec.allow_outside_worktree = Some(true);
+    let mut prepared = prepare_automation_agent(
+        spec,
+        Some(root.clone()),
+        None,
+        None,
+        data,
+        &senders.session.current(),
+    )?;
+    prepared.git.push(yinz_types::agent::launch::GitResource {
+        kind: yinz_types::agent::launch::GitResourceKind::ProjectDirectory,
+        ownership: yinz_types::agent::launch::ResourceOwnership::Created,
+        path: root,
+        branch: None,
+    });
+    Ok(prepared)
 }
 
 /// A new project that has passed every check that can run before touching disk.
@@ -356,8 +352,8 @@ struct NewProjectPlan {
 
 /// How far creation got, so a later failure can report what it left behind.
 #[derive(Default)]
-struct NewProjectProgress {
-    retained: Option<PathBuf>,
+pub(super) struct NewProjectProgress {
+    pub(super) retained: Option<PathBuf>,
     registered: bool,
 }
 
@@ -642,6 +638,7 @@ pub(super) fn prepare_automation_agent(
         command.target = yinz_types::command::PaneTarget::ssh(&host)?;
         command.cwd = Some(cwd.clone());
         return Ok(PreparedAgent {
+            git: Vec::new(),
             command,
             cwd,
             branch: None,
@@ -763,11 +760,28 @@ pub(super) fn register_spawned_agent(
     spawned: SpawnedAgent,
 ) -> AgentResponse {
     let mut response = AgentResponse::new(AgentOutcome::Ok);
-    if let Err(error) = senders.send_to_screen(ScreenInstruction::AgentSpawned(spawned.clone())) {
+    let (reply, receiver) = std::sync::mpsc::channel();
+    let registered = senders
+        .send_to_screen(ScreenInstruction::RegisterAgentLaunch {
+            spawned: spawned.clone(),
+            reply,
+        })
+        .is_ok()
+        && receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap_or(false);
+    let gate = match spawned.pane_id {
+        PaneId::Terminal(terminal) => senders.launches.gate(terminal),
+        _ => None,
+    };
+    let registered = registered || gate.as_ref().is_some_and(|gate| gate.snapshot().registered);
+    if !registered && let Some(gate) = &gate {
+        gate.revoke(yinz_types::agent::launch::LaunchReason::RegistrationFailed);
+    }
+    if !registered {
         response.outcome = AgentOutcome::Failed;
-        response.message = Some(format!(
-            "agent pane was created but launch registration failed: {error:#}"
-        ));
+        response.message =
+            Some("agent pane was created but launch registration was not acknowledged".into());
     }
     response.spawned = Some(spawned);
     response

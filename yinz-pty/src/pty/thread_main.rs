@@ -26,12 +26,26 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
         let (event, mut err_ctx) = pty.bus.recv().expect("failed to receive event on channel");
         yinz_runtime::errors::add_call(&mut err_ctx, ContextType::Pty((&event).into()));
         match event {
+            PtyInstruction::StartAgentReservation {
+                terminal_id,
+                command,
+                completion,
+            } => {
+                pty.start_agent_reservation(terminal_id, command, completion)?;
+            },
             PtyInstruction::SessionMigration(request) => pty.session_migration(request),
             PtyInstruction::StartupWritesCancelled {
                 terminal_id,
                 generation,
             } => {
                 pty.startup_writes_cancelled(terminal_id, generation)?;
+            },
+            PtyInstruction::ManagedTerminalPlaced {
+                terminal_id,
+                generation,
+                decision,
+            } => {
+                pty.managed_terminal_placed(terminal_id, generation, decision)?;
             },
             PtyInstruction::TerminalPlaced {
                 terminal_id,

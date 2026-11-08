@@ -341,6 +341,11 @@ fn spawn_placed_terminal(
     quit_cb: TerminalQuitCallback,
 ) -> Result<SpawnedTerminal> {
     let terminal_action = pending.terminal_action.clone();
+    if matches!(&terminal_action, TerminalAction::RunCommand(command) if command.target.is_remote())
+        && let Some(gate) = senders.launches.gate(pending.terminal_id)
+    {
+        gate.remote();
+    }
     let mut report_progress = |phase: &str| {
         if let TerminalAction::RunCommand(command) = &terminal_action {
             send_remote_status(senders, pending.terminal_id, command, phase).non_fatal();
@@ -368,12 +373,46 @@ fn spawn_placed_terminal(
                 )
                 .non_fatal();
             }
+            if let Some(gate) = senders.launches.gate(pending.terminal_id) {
+                let TerminalAction::RunCommand(command) = &terminal_action else {
+                    anyhow::bail!("managed launch must be a command");
+                };
+                let (reply, receiver) = std::sync::mpsc::channel();
+                senders
+                    .send_to_screen(ScreenInstruction::ClaimAgentLaunch {
+                        terminal_id: pending.terminal_id,
+                        command: command.clone(),
+                        reply,
+                    })
+                    .context("revalidate launch at execution boundary")?;
+                resolved.initial_size = Some(
+                    receiver
+                        .recv()
+                        .context("launch gate unavailable")?
+                        .context("launch reservation revoked")?,
+                );
+                anyhow::ensure!(gate.claim(), "launch permit revoked or already claimed");
+            }
             os_input.spawn_resolved(resolved, quit_cb)
         })
-        .map(|(terminal_id, reader, child_pid)| SpawnedTerminal {
-            terminal_id,
-            reader,
-            child_pid,
+        .map(|(terminal_id, reader, child_pid)| {
+            if let Some(gate) = senders.launches.gate(terminal_id) {
+                gate.started(child_pid);
+            }
+            SpawnedTerminal {
+                terminal_id,
+                reader,
+                child_pid,
+            }
+        })
+        .inspect_err(|error| {
+            if matches!(
+                error.downcast_ref::<YinzError>(),
+                Some(YinzError::CommandNotFound { .. })
+            ) && let Some(gate) = senders.launches.gate(pending.terminal_id)
+            {
+                gate.non_execution();
+            }
         })
 }
 
@@ -419,6 +458,10 @@ fn run_spawn_job(
                             &mut report_progress,
                         )
                         .and_then(|mut resolved| {
+                            anyhow::ensure!(
+                                senders.launches.gate(terminal_id).is_none_or(|gate| gate.snapshot().finished),
+                                "a pending managed reservation can only start through its launch permit"
+                            );
                             resolved.initial_size = Some(
                                 placement
                                     .recv()
@@ -456,6 +499,7 @@ type TerminalQuitCallback = Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>;
 /// SpawnResolved is enqueued, so Screen's ClosePane cannot overtake startup.
 struct SpawnExitGate {
     callback: TerminalQuitCallback,
+    launch: Option<Arc<yinz_bus::agent_launch::LaunchGate>>,
     handback: Option<bool>,
     pending: Option<(PaneId, Option<i32>, RunCommand)>,
 }
@@ -466,6 +510,13 @@ impl SpawnExitGate {
         Box::new(move |pane, status, command| {
             let result = (|| -> Result<()> {
                 let mut gate = gate.lock().to_anyhow()?;
+                if let Some(launch) = &gate.launch {
+                    if launch.snapshot().remote && status.is_none() {
+                        launch.cleanup_unknown();
+                    } else {
+                        launch.exited();
+                    }
+                }
                 match gate.handback {
                     Some(true) => (gate.callback)(pane, status, command),
                     Some(false) => {},
@@ -840,11 +891,19 @@ impl Pty {
             SpawnJob::Terminal(pending) => pending.terminal_action.clone(),
             SpawnJob::Rerun(pending) => TerminalAction::RunCommand(pending.run_command.clone()),
         };
+        let launch = match &job {
+            SpawnJob::Terminal(_) => senders.launches.gate(terminal_id),
+            SpawnJob::Rerun(_) => None,
+        };
         let exit_gate = Arc::new(std::sync::Mutex::new(SpawnExitGate {
             callback: terminal_quit_callback(senders.clone(), &action),
+            launch: launch.clone(),
             handback: None,
             pending: None,
         }));
+        if let Some(gate) = &launch {
+            gate.worker_pending(true);
+        }
         self.reap_spawn_workers();
         self.spawn_workers.push(std::thread::spawn(move || {
             let (resolved, started) = run_spawn_job(
@@ -856,6 +915,9 @@ impl Pty {
                 cancelled,
                 SpawnExitGate::callback(&exit_gate),
             );
+            if let Some(gate) = &launch {
+                gate.worker_pending(false);
+            }
             let handed_back = senders
                 .send_to_pty(PtyInstruction::SpawnResolved(resolved))
                 .is_ok();
@@ -870,25 +932,64 @@ impl Pty {
             if !handed_back {
                 Err::<(), _>(anyhow!(LOST_SPAWN_HANDBACK)).non_fatal();
                 for terminal_id in started {
-                    os_input.clear_terminal_id(terminal_id).non_fatal();
+                    if let Some(gate) = senders
+                        .launches
+                        .gate(terminal_id)
+                        .filter(|gate| !gate.snapshot().finished)
+                    {
+                        let state = gate.snapshot();
+                        let result = if !state.claimed || state.non_execution_proven {
+                            os_input.clear_terminal_id(terminal_id).map(|()| true)
+                        } else {
+                            os_input.clear_terminal_id_confirmed(terminal_id, state.child_pid)
+                        };
+                        if matches!(result, Ok(true)) {
+                            gate.cleaned();
+                        } else {
+                            gate.cleanup_unknown();
+                        }
+                        result
+                            .context("confirm lost launch handback cleanup")
+                            .non_fatal();
+                        continue;
+                    }
+                    let cleanup = os_input.clear_terminal_id(terminal_id);
+                    cleanup.non_fatal();
                 }
             }
         }));
         Ok(())
     }
 
-    /// Queue behind an active launch, or resolve this rerun on a worker and
-    /// wait for Screen's current content dimensions before executing it.
+    /// An ordinary rerun cannot consume a pending transaction's reserved terminal.
+    fn authorize_ordinary_rerun(&self, terminal: TerminalId) -> Result<()> {
+        if let Some(gate) = self.bus.senders.launches.gate(terminal) {
+            anyhow::ensure!(
+                gate.snapshot().finished,
+                "a pending managed reservation can only start through its launch permit"
+            );
+            gate.supersede();
+        }
+        Ok(())
+    }
+
+    /// Queue behind an active rerun, or resolve on a worker and wait for current dimensions.
     fn request_rerun(
         &mut self,
         pane_id: PaneId,
         mut run_command: RunCommand,
-        completion_tx: Option<NotificationEnd>,
+        mut completion_tx: Option<NotificationEnd>,
     ) -> Result<Option<(RunCommand, Option<NotificationEnd>)>> {
         run_command.hold_on_start = false;
         let PaneId::Terminal(terminal_id) = pane_id else {
             return Ok(Some((run_command, completion_tx)));
         };
+        if let Err(error) = self.authorize_ordinary_rerun(terminal_id) {
+            if let Some(completion) = completion_tx.as_mut() {
+                completion.set_error_message(error.to_string());
+            }
+            return Ok(None);
+        }
         if let Some(state) = self.reruns.get_mut(&terminal_id) {
             state.queued.push_back((run_command, completion_tx));
             return Ok(None);
@@ -938,16 +1039,46 @@ impl Pty {
     ) -> Result<()> {
         let terminal_id = pending.terminal_id;
         let spawned = spawned.take()?;
-        if self.pending_terminal_spawns.get(&terminal_id) != Some(&pending.generation) {
+        if let Some(gate) = self.bus.senders.launches.gate(terminal_id) {
+            if spawned.as_ref().err().is_some_and(|error| {
+                matches!(
+                    error.downcast_ref::<YinzError>(),
+                    Some(YinzError::CommandNotFound { .. })
+                )
+            }) {
+                gate.non_execution();
+            }
+            if spawned.is_err() {
+                gate.revoke(yinz_types::agent::launch::LaunchReason::ExecFailed);
+            }
+            if self.pending_terminal_spawns.get(&terminal_id) != Some(&pending.generation)
+                || gate.snapshot().revoked.is_some()
+            {
+                if let Err(error) = &spawned
+                    && let Some(completion) = self.pending_start_completions.get_mut(&terminal_id)
+                {
+                    completion.set_error_message(format!("command failed to start: {error:#}"));
+                }
+                drop(spawned);
+                self.bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::ClosePane(
+                        PaneId::Terminal(terminal_id),
+                        None,
+                        None,
+                        None,
+                    ))
+                    .non_fatal();
+                return self.close_pane(PaneId::Terminal(terminal_id));
+            }
+        } else if self.pending_terminal_spawns.get(&terminal_id) != Some(&pending.generation) {
             if spawned.is_ok() {
                 self.bus
                     .os_input
                     .as_ref()
                     .context("no OS I/O interface found")?
                     .clear_terminal_id(terminal_id)
-                    .with_context(|| {
-                        format!("failed to tear down the late spawn of closed pane {terminal_id}")
-                    })
+                    .context("tear down stale launch handback")
                     .non_fatal();
             }
             return Ok(());
@@ -1228,7 +1359,63 @@ impl Pty {
             .reserve_terminal_id()
     }
 
+    fn managed_terminal_placed(
+        &mut self,
+        terminal: TerminalId,
+        generation: u64,
+        decision: yinz_bus::route::ManagedPlacementDecision,
+    ) -> Result<()> {
+        use yinz_bus::route::ManagedPlacementDecision;
+        let Some(gate) = self.bus.senders.launches.gate(terminal) else {
+            return Ok(());
+        };
+        if self.awaiting_placement.get(&terminal).map(|p| p.generation) != Some(generation) {
+            return Ok(());
+        }
+        let placement = match decision {
+            ManagedPlacementDecision::Accepted {
+                launch_id,
+                slot,
+                size,
+            } => {
+                if launch_id != gate.launch_id
+                    || gate.snapshot().slot.as_ref() != Some(&slot)
+                    || gate.snapshot().revoked.is_some()
+                {
+                    return Ok(());
+                }
+                Some((size, slot.tab_id))
+            },
+            ManagedPlacementDecision::Rejected { launch_id, reason } => {
+                if launch_id != gate.launch_id {
+                    return Ok(());
+                }
+                gate.revoke(reason);
+                None
+            },
+        };
+        self.accept_terminal_placement(terminal, generation, placement)
+    }
+
     fn terminal_placed(
+        &mut self,
+        terminal_id: TerminalId,
+        generation: u64,
+        placement: Option<(TerminalSize, TabId)>,
+    ) -> Result<()> {
+        if self
+            .bus
+            .senders
+            .launches
+            .gate(terminal_id)
+            .is_some_and(|gate| !gate.snapshot().finished)
+        {
+            return Ok(());
+        }
+        self.accept_terminal_placement(terminal_id, generation, placement)
+    }
+
+    fn accept_terminal_placement(
         &mut self,
         terminal_id: TerminalId,
         generation: u64,
@@ -1342,6 +1529,29 @@ impl Pty {
     }
 
     /// Reserve and place a pane, then let its worker start with the assigned size.
+    fn start_agent_reservation(
+        &mut self,
+        terminal_id: TerminalId,
+        command: RunCommand,
+        mut completion: NotificationEnd,
+    ) -> Result<()> {
+        let Some(gate) = self.bus.senders.launches.gate(terminal_id) else {
+            completion.set_error_message("launch reservation does not exist".into());
+            return Ok(());
+        };
+        if !gate.request_start() {
+            completion.set_error_message("launch reservation revoked or already started".into());
+            return Ok(());
+        }
+        self.pending_start_completions
+            .insert(terminal_id, completion);
+        self.defer_spawn(SpawnJob::Terminal(PendingTerminalSpawn {
+            terminal_id,
+            terminal_action: TerminalAction::RunCommand(command),
+            generation: 0,
+        }))
+    }
+
     fn spawn_pane(
         &mut self,
         terminal_action: Option<TerminalAction>,
@@ -1371,6 +1581,20 @@ impl Pty {
             let (placement, startup) = completion.split_for_startup();
             pending.completion_tx = Some(placement);
             self.pending_start_completions.insert(terminal_id, startup);
+        }
+        if let Some(gate) = pending
+            .completion_tx
+            .as_ref()
+            .and_then(|c| c.launch.clone())
+        {
+            gate.allocated(terminal_id);
+            self.bus
+                .senders
+                .launches
+                .gates
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(terminal_id, gate);
         }
         finish_pane_spawn(self, pending, Ok((terminal_id, starts_held)))?;
         if !starts_held {
@@ -1550,11 +1774,79 @@ impl Pty {
         }
     }
 
+    fn cleanup_managed_terminal(
+        &mut self,
+        terminal: TerminalId,
+        reader: Option<tokio::task::JoinHandle<()>>,
+    ) -> Result<()> {
+        let os = self
+            .bus
+            .os_input
+            .as_ref()
+            .context("no OS I/O interface found")?
+            .box_clone();
+        let gate = self
+            .bus
+            .senders
+            .launches
+            .gate(terminal)
+            .context("managed cleanup lost its launch")?;
+        let state = gate.snapshot();
+        if state.cleanup_started {
+            return Ok(());
+        }
+        if !state.claimed || state.non_execution_proven {
+            if !gate.request_cleanup() {
+                return Ok(());
+            }
+            match os.clear_terminal_id(terminal) {
+                Ok(()) => {
+                    gate.cleaned();
+                    return Ok(());
+                },
+                Err(error) => {
+                    gate.cleanup_unknown();
+                    return Err(error).context("release never-started launch allocation");
+                },
+            }
+        }
+        if state.worker_pending {
+            // The off-thread exec still owns its eventual child. Its handback captures the
+            // complete supervisor identity before requesting and confirming teardown.
+            return Ok(());
+        }
+        if !gate.request_cleanup() {
+            return Ok(());
+        }
+        self.spawn_workers.push(std::thread::spawn(move || {
+            let confirmed = os.clear_terminal_id_confirmed(terminal, state.child_pid);
+            if let Some(reader) = reader {
+                let _ = yinz_bus::global_async_runtime::get_tokio_runtime().block_on(reader);
+            }
+            match confirmed {
+                Ok(true) => gate.cleaned(),
+                Ok(false) => gate.cleanup_unknown(),
+                Err(error) => {
+                    gate.cleanup_unknown();
+                    Err::<(), _>(error)
+                        .context("confirm owned launch teardown")
+                        .non_fatal();
+                },
+            }
+        }));
+        Ok(())
+    }
+
     pub(crate) fn close_pane(&mut self, id: PaneId) -> Result<()> {
         let err_context = || format!("failed to close for pane {id:?}");
         match id {
             PaneId::Terminal(id) => {
                 self.pending_terminal_spawns.remove(&id);
+                let launch_gate = self.bus.senders.launches.gate(id);
+                if let Some(gate) = &launch_gate {
+                    gate.revoke(yinz_types::agent::launch::LaunchReason::PlacementRevoked);
+                }
+
                 self.pending_write_cancellations.remove(&id);
                 if let Some(placement) = self.awaiting_placement.remove(&id) {
                     placement
@@ -1571,7 +1863,8 @@ impl Pty {
                 // nothing here reuses its socket, so there is nothing to wait
                 // for (the warp path, which does reuse it, waits in
                 // `stop_readers_for_warp`).
-                if let Some(handle) = self.task_handles.remove(&id) {
+                let reader = self.task_handles.remove(&id);
+                if let Some(handle) = &reader {
                     handle.abort();
                 }
                 self.reader_controls.remove(&id);
@@ -1586,14 +1879,19 @@ impl Pty {
                 self.forget_terminal_host(id);
                 self.terminal_cmds.remove(&id);
                 self.forget_terminal_foreground(id);
-                let teardown = self
-                    .bus
-                    .os_input
-                    .as_ref()
-                    .context("no OS I/O interface found")
-                    .and_then(|os_input| os_input.clear_terminal_id(id))
-                    .with_context(err_context);
-                teardown.non_fatal();
+                if launch_gate.is_some() {
+                    self.cleanup_managed_terminal(id, reader)
+                        .with_context(err_context)
+                        .non_fatal();
+                } else {
+                    self.bus
+                        .os_input
+                        .as_ref()
+                        .context("no OS I/O interface found")?
+                        .clear_terminal_id(id)
+                        .with_context(err_context)
+                        .non_fatal();
+                }
             },
             PaneId::Plugin(pid) => drop(
                 self.bus
@@ -1629,6 +1927,7 @@ impl Pty {
         let err_context = || format!("failed to rerun command in pane {:?}", pane_id);
         match pane_id {
             PaneId::Terminal(id) => {
+                self.authorize_ordinary_rerun(id)?;
                 match run_command.originating_plugin.as_ref() {
                     // A per-step context set by the caller wins over the pane's original one,
                     // and becomes the answer for later reruns of this pane too.

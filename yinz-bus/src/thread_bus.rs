@@ -94,6 +94,7 @@ impl Drop for PluginReplies {
 /// A container for senders to the different threads in yinz on the server side
 #[derive(Default, Clone)]
 pub struct ThreadSenders {
+    pub launches: std::sync::Arc<crate::agent_launch::LaunchRuntime>,
     pub session: yinz_runtime::envs::SessionState,
     /// Reject actions while a session update is capturing or replacing state.
     pub session_update_quiesced: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -420,6 +421,7 @@ impl<T> Bus<T> {
         Bus {
             receivers,
             senders: ThreadSenders {
+                launches: Default::default(),
                 session: Default::default(),
                 session_update_quiesced: Default::default(),
                 to_screen: to_screen.cloned(),
@@ -447,6 +449,7 @@ impl<T> Bus<T> {
         Bus {
             receivers: vec![],
             senders: ThreadSenders {
+                launches: Default::default(),
                 session: Default::default(),
                 session_update_quiesced: Default::default(),
                 to_screen: None,

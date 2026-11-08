@@ -1504,6 +1504,11 @@ impl Pane for TerminalPane {
     fn waiting_pulse(&self) -> Option<f32> {
         self.waiting_pulse
     }
+    fn set_launch_command(&mut self, command: RunCommand) {
+        self.invoked_with = Some(Run::Command(command));
+        self.agent = agent_from_run(self.invoked_with.as_ref());
+        self.is_held = None;
+    }
     fn invoked_with(&self) -> &Option<Run> {
         &self.invoked_with
     }

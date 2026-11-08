@@ -598,8 +598,9 @@ pub(super) fn execute(
                 kind: Some(h.kind.clone()),
                 ..Default::default()
             };
-            return launch(request, senders, spec, |_| {
+            return launch(request, senders, data, spec, |_| {
                 Ok(PreparedAgent {
+                    git: Vec::new(),
                     command,
                     cwd: cwd.into(),
                     branch: None,

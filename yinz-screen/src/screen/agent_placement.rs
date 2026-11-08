@@ -285,6 +285,50 @@ impl Screen {
 }
 
 impl Screen {
+    pub(super) fn resolve_launch_tab(
+        &mut self,
+        placement: yinz_types::agent::control::AgentPlacement,
+        invoked_with: Option<Run>,
+        client_id: ClientId,
+        launch: &yinz_bus::agent_launch::LaunchGate,
+    ) -> Result<yinz_bus::route::AgentTabPlacement, String> {
+        use yinz_types::agent::{control::AgentPlacement, launch::LaunchReason};
+        let rejection = launch.snapshot().revoked.or_else(|| {
+            if placement.validate().is_err() {
+                return Some(LaunchReason::InvalidRequest);
+            }
+            let tab_id = match &placement {
+                AgentPlacement::ControllerStack(pane) => match self.tab_id_containing_pane(*pane) {
+                    Some(tab) => Some(tab),
+                    None => return Some(LaunchReason::ControllerClosed),
+                },
+                AgentPlacement::Tab(tab) | AgentPlacement::Suppressed(Some(tab)) => Some(*tab),
+                AgentPlacement::Suppressed(None) => self.tab_a_client_is_looking_at(client_id),
+                _ => return None,
+            };
+            tab_id
+                .is_none_or(|tab| {
+                    !self.tabs.contains_key(&tab) || self.deferred_tab_closes.contains(&tab)
+                })
+                .then_some(LaunchReason::DestinationClosed)
+        });
+        if let Some(reason) = rejection {
+            launch.revoke(reason);
+            return Err(format!("agent destination rejected: {reason:?}"));
+        }
+        let result = self.resolve_agent_tab(placement, invoked_with, client_id);
+        match &result {
+            Ok(destination) => launch.destination(destination.clone()),
+            Err(_) => {
+                // Unexpected creation/layout errors can have effects. Retain an uncertain
+                // receipt rather than invent a resource-free validation rejection.
+                launch.revoke(LaunchReason::HistoryUnavailable);
+                launch.cleanup_unknown();
+            },
+        }
+        result
+    }
+
     pub(super) fn resolve_agent_tab(
         &mut self,
         placement: yinz_types::agent::control::AgentPlacement,

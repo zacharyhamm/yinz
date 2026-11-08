@@ -515,7 +515,7 @@ fn execute(
                 allow_outside_worktree: Some(path.is_some()),
                 ..Default::default()
             };
-            launch(request, senders, spec, |spec| {
+            launch(request, senders, data, spec, |spec| {
                 prepare_agent(spec, cwd, None, data, &senders.session.current())
             })
         },
@@ -531,7 +531,7 @@ fn execute(
                 allow_outside_worktree: Some(true),
                 ..Default::default()
             };
-            launch(request, senders, spec, |_| {
+            launch(request, senders, data, spec, |_| {
                 existing_command(kind, cwd, target)
             })
         },
@@ -558,7 +558,7 @@ fn execute(
                 kind: Some(kind.clone()),
                 ..Default::default()
             };
-            launch(request, senders, spec, |_| {
+            launch(request, senders, data, spec, |_| {
                 existing_command(kind, cwd, source.target.clone())
             })
         },
@@ -577,6 +577,7 @@ fn existing_command(
         yinz_runtime::agent::launch::command_in_context(kind, Some(cwd.into()), target)?;
     yinz_runtime::agent::pi::prepare_command(&mut command)?;
     Ok(PreparedAgent {
+        git: Vec::new(),
         command,
         cwd: cwd.into(),
         branch: None,
@@ -588,6 +589,7 @@ fn existing_command(
 fn launch(
     request: &AgentRequest,
     senders: &ThreadSenders,
+    data: &DataAccess,
     spec: AgentSpawnSpec,
     prepare: impl FnOnce(&mut AgentSpawnSpec) -> Result<PreparedAgent, AgentSpawnError>,
 ) -> Result<AgentReply, String> {
@@ -615,6 +617,7 @@ fn launch(
         spec,
         request.client,
         senders,
+        data,
         prepare,
     ) {
         Ok(spawned) => agent_control::register_spawned_agent(senders, spawned),

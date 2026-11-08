@@ -289,6 +289,16 @@ pub enum PendingSpawn {
 /// Instructions related to PTYs (pseudoterminals).
 #[derive(Clone, Debug, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PtyInstruction {
+    ManagedTerminalPlaced {
+        terminal_id: TerminalId,
+        generation: u64,
+        decision: crate::route::ManagedPlacementDecision,
+    },
+    StartAgentReservation {
+        terminal_id: TerminalId,
+        command: RunCommand,
+        completion: NotificationEnd,
+    },
     SessionMigration(crate::migration::PtyRequest),
     WarpReplayFinished(TerminalId),
     SpawnTerminal(

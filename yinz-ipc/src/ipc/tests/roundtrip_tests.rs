@@ -4997,6 +4997,8 @@ fn test_server_messages() {
     ] {
         test_server_roundtrip!(ServerToClientMsg::AgentControl(AgentResponse::new(outcome)));
         test_server_roundtrip!(ServerToClientMsg::AgentControl(AgentResponse {
+            launch: None,
+            server_instance: None,
             outcome,
             agents: vec![status.clone()],
             spawned: Some(yinz_types::agent::SpawnedAgent {
@@ -6454,4 +6456,59 @@ fn warp_terminal_state_and_recovery_roundtrip() {
         client_id: None,
         is_cli_client: true,
     });
+}
+
+#[test]
+fn agent_launch_transaction_v2_contract_roundtrip() {
+    use yinz_types::agent::{
+        control::{AgentRequest, AgentResponse},
+        launch::*,
+    };
+    test_client_roundtrip!(ClientToServerMsg::AgentControl(AgentRequest::LaunchSupport));
+    test_client_roundtrip!(ClientToServerMsg::AgentControl(
+        AgentRequest::LaunchStatus {
+            launch_id: "instance.request".into()
+        }
+    ));
+    test_client_roundtrip!(ClientToServerMsg::AgentControl(AgentRequest::Launch {
+        launch_id: "instance.request".into(),
+        request: LaunchRequest {
+            placement: Default::default(),
+            spec: Default::default(),
+            cwd: Some("/work".into()),
+            project: None,
+            remote_host: None,
+            new_project: None,
+        }
+    }));
+    for outcome in [
+        LaunchOutcome::Pending,
+        LaunchOutcome::Rejected,
+        LaunchOutcome::Started,
+        LaunchOutcome::Failed,
+        LaunchOutcome::Cancelled,
+        LaunchOutcome::Unknown,
+        LaunchOutcome::Conflict,
+    ] {
+        test_server_roundtrip!(ServerToClientMsg::AgentControl(AgentResponse {
+            launch: Some(LaunchReceipt {
+                version: 2,
+                launch_id: "instance.request".into(),
+                request_digest: "a".repeat(64),
+                server_instance: "instance".into(),
+                outcome,
+                phase: LaunchPhase::Aborts,
+                reason: Some(LaunchReason::ControllerMoved),
+                process: ProcessState::Unknown,
+                resources: LaunchManifest {
+                    cleanup_pending: true,
+                    ..Default::default()
+                },
+                spawned: None,
+                disposition: WorkerDisposition::Unknown,
+            }),
+            server_instance: Some("instance".into()),
+            ..Default::default()
+        }));
+    }
 }

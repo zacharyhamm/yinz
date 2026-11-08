@@ -2405,3 +2405,22 @@ fn detected_agent_theme_observes_an_agent_started_inside_a_shell() {
     server.clear_terminal_id(id).unwrap();
     reading.join().unwrap();
 }
+
+#[test]
+fn launch_transaction_cleanup_confirms_real_process_exit_after_termination() {
+    use yinz_bus::os_input_output::TerminalProcesses;
+    let server = make_server();
+    let (terminal, reader, child) = server
+        .spawn_terminal(
+            yinz_types::input::command::TerminalAction::RunCommand(RunCommand {
+                command: "/bin/cat".into(),
+                ..Default::default()
+            }),
+            Box::new(|_, _, _| {}),
+            None,
+        )
+        .unwrap();
+    drop(reader);
+    assert!(server.clear_terminal_id_confirmed(terminal, child).unwrap());
+    assert!(yinz_process::liveness::has_exited(child.unwrap().get()).unwrap());
+}

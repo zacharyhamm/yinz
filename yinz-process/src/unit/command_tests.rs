@@ -286,3 +286,38 @@ fn only_a_bubblewrap_target_execs_through_this_binarys_launcher() {
         Some(std::ffi::OsStr::new("/nonexistent"))
     ));
 }
+
+#[test]
+fn launch_transaction_checks_the_managed_provider_in_the_final_environment_without_exec() {
+    let directory = tempfile::tempdir().unwrap();
+    let launcher = directory.path().join("yinz");
+    std::os::unix::fs::symlink("/usr/bin/true", &launcher).unwrap();
+    let provider = directory.path().join("claude");
+    let mut command = RunCommand {
+        command: launcher.clone(),
+        args: vec![
+            "agent".into(),
+            "claude".into(),
+            "--command".into(),
+            provider.to_string_lossy().into(),
+            "--".into(),
+        ],
+        ..Default::default()
+    };
+    assert!(!can_exec(&command, None));
+    std::os::unix::fs::symlink("/usr/bin/true", &provider).unwrap();
+    assert!(can_exec(&command, None));
+    command.command = "env".into();
+    command.args = vec![
+        format!("PATH={}", directory.path().display()),
+        launcher.to_string_lossy().into(),
+        "agent".into(),
+        "claude".into(),
+        "--command".into(),
+        "claude".into(),
+        "--".into(),
+    ];
+    assert!(can_exec(&command, Some(std::ffi::OsStr::new("/usr/bin"))));
+    std::fs::remove_file(&provider).unwrap();
+    assert!(!can_exec(&command, Some(std::ffi::OsStr::new("/usr/bin"))));
+}

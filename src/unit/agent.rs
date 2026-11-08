@@ -345,7 +345,7 @@ fn spawn_args(flags: &[&str], input: serde_json::Value) -> serde_json::Value {
     )
     .unwrap();
     let (request, _, _) = request(cli.command, &mut input.to_string().as_bytes()).unwrap();
-    serde_json::to_value(request).unwrap()["Spawn"].clone()
+    serde_json::to_value(request).unwrap()["Launch"]["request"].clone()
 }
 #[test]
 fn spawn_resolves_local_cwd_after_merging_flags_and_json() {
@@ -690,6 +690,89 @@ fn spawn_placement_waits_for_support_reply_before_sending_spawn() {
 }
 
 #[test]
+fn launch_transaction_capability_fails_closed_and_lost_reply_preserves_exact_identity() {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use yinz_types::agent::launch::*;
+
+    for supported in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("launch.sock");
+        let listener = ListenerOptions::new()
+            .name(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
+            .create_sync()
+            .unwrap();
+        let request = LaunchRequest {
+            placement: Default::default(),
+            spec: AgentSpawnSpec::default(),
+            cwd: None,
+            project: None,
+            remote_host: None,
+            new_project: None,
+        };
+        let expected_digest = request.digest().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut sender =
+                IpcSenderWithContext::<ServerToClientMsg>::new(listener.accept().unwrap());
+            let mut receiver = sender.get_receiver::<ClientToServerMsg>().unwrap();
+            receiver
+                .set_recv_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            assert!(matches!(
+                receiver.recv_client_msg(),
+                IpcRecv::Msg(
+                    ClientToServerMsg::AgentControl(AgentRequest::LaunchSupport),
+                    _
+                )
+            ));
+            let mut response = AgentResponse::new(AgentOutcome::Ok);
+            response.output = Some(if supported { CAPABILITY } else { "legacy" }.into());
+            response.server_instance = Some("server-under-test".into());
+            sender
+                .send_server_msg(ServerToClientMsg::AgentControl(response))
+                .unwrap();
+            if supported {
+                let IpcRecv::Msg(
+                    ClientToServerMsg::AgentControl(AgentRequest::Launch { launch_id, .. }),
+                    _,
+                ) = receiver.recv_client_msg()
+                else {
+                    panic!("versioned launch request missing");
+                };
+                assert!(launch_id.starts_with("server-under-test."));
+                // Lose the reply after accepting the mutating request, deterministically.
+                Some(launch_id)
+            } else {
+                assert!(matches!(receiver.recv_client_msg(), IpcRecv::Eof));
+                None
+            }
+        });
+        let result = exchange_on_socket(
+            yinz_ipc::consts::ipc_connect(&path).unwrap(),
+            AgentRequest::Launch {
+                launch_id: String::new(),
+                request,
+            },
+            Duration::from_secs(5),
+        );
+        let original = server.join().unwrap();
+        if let Some(original) = original {
+            let receipt = result.unwrap().launch.unwrap();
+            assert_eq!(receipt.launch_id, original);
+            assert_eq!(receipt.request_digest, expected_digest);
+            assert_eq!(receipt.server_instance, "server-under-test");
+            assert_eq!(receipt.outcome, LaunchOutcome::Unknown);
+            assert_eq!(receipt.process, ProcessState::Unknown);
+            assert_eq!(receipt.reason, Some(LaunchReason::TransportUnavailable));
+        } else {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("launch was not sent"));
+        }
+    }
+}
+
+#[test]
 fn spawn_rejects_unknown_fields_before_launch_regardless_of_permissions() {
     use clap::Parser;
     #[derive(Parser)]
@@ -898,10 +981,10 @@ fn bubblewrap_spawn_cli_and_json_keep_the_opt_in() {
         args.extend(extra);
         let parsed = Cli::try_parse_from(args).unwrap();
         let (request, _, _) = request(parsed.command, &mut input.as_bytes()).unwrap();
-        let AgentRequest::Spawn { spec, .. } = request else {
-            panic!("expected spawn");
+        let AgentRequest::Launch { request, .. } = request else {
+            panic!("expected transactional spawn");
         };
-        assert_eq!(spec.bubblewrap, expected);
+        assert_eq!(request.spec.bubblewrap, expected);
     }
 }
 
@@ -960,15 +1043,15 @@ fn new_project_spawn_merges_json_and_resolves_relative_destinations() {
             request(cli.command, &mut input.to_string().as_bytes()).unwrap();
         assert!(json);
         assert_eq!(timeout, Duration::from_secs(120));
-        let AgentRequest::SpawnNewProject {
-            name,
-            destination,
-            spec,
-            placement,
+        let AgentRequest::Launch {
+            request: launch, ..
         } = request
         else {
-            panic!("expected new project request")
+            panic!("expected new project launch")
         };
+        let (name, destination) = launch.new_project.unwrap();
+        let spec = launch.spec;
+        let placement = launch.placement;
         assert_eq!(
             name,
             if flags.is_empty() {
@@ -1071,7 +1154,7 @@ fn new_project_spawn_requires_a_pair_and_rejects_json_and_flag_conflicts() {
         request(cli.command, &mut input.to_string().as_bytes())
             .unwrap()
             .0,
-        AgentRequest::SpawnNewProject { .. }
+        AgentRequest::Launch { .. }
     ));
 }
 

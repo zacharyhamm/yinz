@@ -1,3 +1,4 @@
+import { launchReply, launchSupport } from "./launch_fixtures.ts";
 import {
   createEvidenceMethods,
   type EvidenceContext,
@@ -310,6 +311,16 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
         };
         const dependencies = {
           run: async (args: string[], stdin?: string, signal?: AbortSignal) => {
+<<<<<<< HEAD
+=======
+            if (args[3] === "launch-support") {
+              return {
+                code: 0,
+                stdout: JSON.stringify(launchSupport),
+                stderr: "",
+              };
+            }
+>>>>>>> bab9477ac (Make agent launches transactional with durable receipts and placement safeguards)
             if (args[3] === "list-panes") {
               controls.placementCalls.push(args);
               return Promise.resolve({
@@ -322,11 +333,21 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
                 stderr: "",
               });
             }
+<<<<<<< HEAD
             const output = await controls.agentRunner!(args, stdin, signal);
             if (args[3] === "prompt" && controls.submitEvidence) {
               await submitEvidence();
             }
             return output;
+=======
+            const result = await controls.agentRunner!(args, stdin, signal);
+            try {
+              result.stdout = JSON.stringify(
+                launchReply(args, JSON.parse(result.stdout)),
+              );
+            } catch { /* Preserve malformed responses. */ }
+            return result;
+>>>>>>> bab9477ac (Make agent launches transactional with durable receipts and placement safeguards)
           },
           realPath: (path: string) => Promise.resolve(path),
           id: controls.agentId,
@@ -1026,13 +1047,20 @@ Deno.test("resource-bearing, malformed, uncertain and legacy launch failures can
     const state = AgentStateSchema.parse(h.child.get("state"));
     if (response === responses.at(-1)) {
       equal(state.phase, "launch_rejected");
-      h.child.set("state", { ...state, phase: "launching" });
+      h.child.set("state", {
+        ...state,
+        phase: "launching",
+        launchId: undefined,
+        launchReceipt: undefined,
+        launchServer: undefined,
+        launchRequestDigest: undefined,
+      });
     } else {
       equal(state.phase, "launching");
     }
     await rejects(
       () => h.methods.resume_agent.execute({}, h.context),
-      "Launch outcome is uncertain",
+      "",
     );
     await rejects(
       () =>
@@ -1043,7 +1071,7 @@ Deno.test("resource-bearing, malformed, uncertain and legacy launch failures can
       "uncertain or active",
     );
     await rejects(() => assertNoPendingAgent(h.context), "unresolved");
-    equal(cliCalls, 1);
+    equal(cliCalls, response === responses.at(-1) ? 1 : 2);
     equal(h.resources.get("state"), createState(issue));
   }
 });

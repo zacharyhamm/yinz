@@ -91,7 +91,50 @@ pub fn prepare_command(cmd: &RunCommand) -> Result<std::process::Command> {
 /// command resolves on the sandbox's `PATH`, which the server checked when it resolved the
 /// spawn; here it only needs its launcher.
 pub fn can_exec(cmd: &RunCommand, search_path: Option<&std::ffi::OsStr>) -> bool {
-    cmd.target.is_bubblewrap() || resolve_command_with_path(cmd, search_path).is_some()
+    cmd.target.is_bubblewrap()
+        || (resolve_command_with_path(cmd, search_path).is_some()
+            && managed_provider_can_exec(cmd, search_path).unwrap_or(true))
+}
+
+/// A generated Yinz launcher is only the supervisor of the requested provider. Check that
+/// provider in the execution host's final PATH before acknowledging startup of its wrapper.
+/// This does not probe/execute it or change general `env` command behavior.
+fn managed_provider_can_exec(
+    cmd: &RunCommand,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Option<bool> {
+    if cmd.command.file_name()? == "env" {
+        let index = cmd.args.iter().position(|arg| !arg.contains('='))?;
+        let path = cmd.args[..index]
+            .iter()
+            .filter_map(|arg| arg.strip_prefix("PATH="))
+            .next_back();
+        let nested = RunCommand {
+            command: cmd.args[index].clone().into(),
+            args: cmd.args[index + 1..].to_vec(),
+            cwd: cmd.cwd.clone(),
+            ..Default::default()
+        };
+        return managed_provider_can_exec(&nested, path.map(std::ffi::OsStr::new).or(search_path));
+    }
+    if cmd.command.file_name()? != "yinz"
+        || cmd.args.first()?.as_str() != "agent"
+        || !matches!(
+            cmd.args.get(1)?.as_str(),
+            "claude" | "codex" | "codex-untracked" | "muse"
+        )
+    {
+        return None;
+    }
+    if cmd.args.get(2)?.as_str() != "--command" {
+        return None;
+    }
+    let provider = RunCommand {
+        command: cmd.args.get(3)?.into(),
+        cwd: cmd.cwd.clone(),
+        ..Default::default()
+    };
+    Some(resolve_command_with_path(&provider, search_path).is_some())
 }
 
 fn find_executable(candidate: &std::path::Path) -> Option<PathBuf> {

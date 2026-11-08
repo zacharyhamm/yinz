@@ -430,6 +430,13 @@ impl TerminalProcesses for MockOsApi {
         }
         Ok((Box::new(crate::os_input_output::NullAsyncReader), None))
     }
+    fn clear_terminal_id_confirmed(
+        &self,
+        terminal_id: TerminalId,
+        _child: Option<ProcessId>,
+    ) -> anyhow::Result<bool> {
+        self.clear_terminal_id(terminal_id).map(|()| true)
+    }
     fn clear_terminal_id(&self, terminal_id: TerminalId) -> anyhow::Result<()> {
         self.cleared_terminal_ids.lock().unwrap().push(terminal_id);
         (!self.clear_failures.lock().unwrap().contains(&terminal_id))
@@ -5030,6 +5037,7 @@ fn a_lost_spawn_handback_discards_early_and_late_exit_callbacks() {
     let (pty, plugins, screen) = make_pty_with_screen_receiver(MockOsApi::new());
     let command = RunCommand::default();
     let gate = Arc::new(Mutex::new(SpawnExitGate {
+        launch: None,
         callback: terminal_quit_callback(
             pty.bus.senders.clone(),
             &TerminalAction::RunCommand(command.clone()),
@@ -5689,4 +5697,198 @@ fn a_held_scrollback_editor_given_back_keeps_its_dump() {
     drop(pty);
     assert!(dump.exists(), "the sending session takes the editor back");
     std::fs::remove_file(&dump).unwrap();
+}
+
+#[test]
+fn launch_transaction_ordinary_rerun_cannot_start_a_held_reservation() {
+    use yinz_bus::agent_launch::LaunchGate;
+    use yinz_types::agent::launch::LaunchSlot;
+    let os = MockOsApi::new();
+    let (mut pty, _, screen) = make_pty_with_screen_receiver(os.clone());
+    let (to_pty, returned) = channels::unbounded();
+    pty.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    let gate = Arc::new(LaunchGate::new("held-reservation".into(), false));
+    gate.allocated(TERMINAL_41);
+    gate.admit(LaunchSlot {
+        pane_id: PaneId::Terminal(TERMINAL_41),
+        process_generation: 41,
+        tab_id: TabId::new(7),
+        tab_incarnation: "tab".into(),
+        controller: None,
+        worker_region: None,
+        placement_generation: 41,
+    });
+    pty.bus
+        .senders
+        .launches
+        .gates
+        .lock()
+        .unwrap()
+        .insert(TERMINAL_41, gate.clone());
+    let command = RunCommand {
+        command: "sh".into(),
+        ..Default::default()
+    };
+    let (reply, mut received) = tokio::sync::oneshot::channel();
+    assert!(pty
+        .request_rerun(
+            PaneId::Terminal(TERMINAL_41),
+            command.clone(),
+            Some(NotificationEnd::new(reply))
+        )
+        .unwrap()
+        .is_none());
+    assert!(received
+        .try_recv()
+        .unwrap()
+        .error_message
+        .unwrap()
+        .contains("launch permit"));
+    assert!(pty
+        .rerun_command_in_pane(PaneId::Terminal(TERMINAL_41), command.clone())
+        .is_err());
+    assert!(pty.reruns.is_empty());
+    assert!(pty.spawn_workers.is_empty());
+    assert!(os.rerun_commands().is_empty());
+    assert!(!gate.snapshot().claimed);
+    assert!(gate.claim());
+    gate.running();
+    gate.registered();
+    assert!(gate.handoff());
+    pty.request_rerun(PaneId::Terminal(TERMINAL_41), command, None)
+        .unwrap();
+    assert!(gate.snapshot().superseded);
+    assert!(
+        !gate.snapshot().exited,
+        "requesting replacement is not proof of process exit"
+    );
+    let (terminal, generation) = screen
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            ScreenInstruction::ConfirmTerminalPlacement(terminal, generation) => {
+                Some((terminal, generation))
+            },
+            _ => None,
+        })
+        .unwrap();
+    pty.terminal_placed(
+        terminal,
+        generation,
+        Some((
+            TerminalSize {
+                cols: 80,
+                rows: 24,
+                width_in_pixels: None,
+                height_in_pixels: None,
+            },
+            TabId::new(7),
+        )),
+    )
+    .unwrap();
+    let (pending, spawned) = resolved_rerun(&returned);
+    pty.handle_rerun_spawned(pending, spawned).unwrap();
+    assert_eq!(os.rerun_commands().len(), 1);
+}
+
+#[test]
+fn launch_transaction_typed_admission_and_final_claim_fence_process_execution() {
+    use yinz_bus::{agent_launch::LaunchGate, route::ManagedPlacementDecision};
+    use yinz_types::agent::launch::{LaunchReason, LaunchSlot};
+    for start_wins in [false, true] {
+        let mut os = MockOsApi::new();
+        if start_wins {
+            os.transport_started = Arc::new(Barrier::new(2));
+            os.transport_release = Arc::new(Barrier::new(2));
+        }
+        let (mut pty, _, screen) = make_pty_with_screen_receiver(os.clone());
+        let (to_pty, returned) = channels::unbounded();
+        pty.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+        let gate = Arc::new(LaunchGate::new("transaction".into(), false));
+        let mut slot = LaunchSlot {
+            pane_id: PaneId::Terminal(TERMINAL_41),
+            process_generation: 41,
+            tab_id: TabId::new(7),
+            tab_incarnation: "tab".into(),
+            controller: None,
+            worker_region: None,
+            placement_generation: 41,
+        };
+        let command = RunCommand {
+            command: "sh".into(),
+            ..Default::default()
+        };
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let mut completion = NotificationEnd::new(tx);
+        completion.launch = Some(gate.clone());
+        pty.spawn_pane(Some(TerminalAction::RunCommand(command.clone())), {
+            let mut pending = in_place_spawn(Some(command), None);
+            pending.completion_tx = Some(completion);
+            pending
+        })
+        .unwrap();
+        let (terminal, generation) = screen
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                ScreenInstruction::ConfirmTerminalPlacement(terminal, generation) => {
+                    Some((terminal, generation))
+                },
+                _ => None,
+            })
+            .unwrap();
+        slot.pane_id = PaneId::Terminal(terminal);
+        slot.process_generation = terminal.get() as u64;
+        slot.placement_generation = terminal.get() as u64;
+        gate.admit(slot.clone());
+        let size = TerminalSize {
+            cols: 80,
+            rows: 24,
+            width_in_pixels: None,
+            height_in_pixels: None,
+        };
+        // A legacy positive dimension callback cannot authorize a managed launch.
+        pty.terminal_placed(terminal, generation, Some((size, slot.tab_id)))
+            .unwrap();
+        assert!(pty.awaiting_placement[&terminal].sender.is_some());
+        pty.managed_terminal_placed(
+            terminal,
+            generation,
+            ManagedPlacementDecision::Accepted {
+                launch_id: gate.launch_id.clone(),
+                slot,
+                size,
+            },
+        )
+        .unwrap();
+        loop {
+            let (instruction, _) = screen.recv_timeout(Duration::from_secs(30)).unwrap();
+            if let ScreenInstruction::ClaimAgentLaunch { reply, .. } = instruction {
+                if !start_wins {
+                    gate.revoke(LaunchReason::ControllerMoved);
+                }
+                reply.send(Some(size)).unwrap();
+                break;
+            }
+        }
+        if start_wins {
+            os.transport_started.wait();
+            assert!(gate.snapshot().claimed);
+            gate.revoke(LaunchReason::ControllerClosed);
+            pty.close_pane(PaneId::Terminal(terminal)).unwrap();
+            assert!(!gate.snapshot().cleanup_confirmed);
+            os.transport_release.wait();
+        }
+        let (instruction, _) = returned.recv_timeout(Duration::from_secs(30)).unwrap();
+        let PtyInstruction::SpawnResolved(PendingSpawn::Terminal(pending, spawned)) = instruction
+        else {
+            panic!("spawn handback");
+        };
+        pty.handle_terminal_spawned(pending, spawned).unwrap();
+        assert_eq!(
+            os.resolved_spawns.lock().unwrap().len(),
+            usize::from(start_wins)
+        );
+        assert_eq!(gate.snapshot().claimed, start_wins);
+        assert!(gate.wait_cleanup(Duration::from_secs(30)));
+        assert!(!gate.snapshot().finished);
+    }
 }

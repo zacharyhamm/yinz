@@ -753,6 +753,7 @@ pub trait Pane {
     fn waiting_pulse(&self) -> Option<f32> {
         None
     }
+    fn set_launch_command(&mut self, _command: RunCommand) {}
     fn invoked_with(&self) -> &Option<Run>;
     fn is_setup_wizard(&self) -> bool {
         matches!(self.invoked_with(), Some(Run::Plugin(plugin)) if plugin.is_setup_wizard())

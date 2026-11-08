@@ -301,6 +301,133 @@ impl Tab {
             self.add_tiled_pane(new_pane, pid, false, focus_client_id)
         }
     }
+    pub fn worker_split_anchor(&mut self) -> Option<PaneId> {
+        let ids = self.get_tiled_pane_ids();
+        ids.into_iter()
+            .filter(|id| self.get_pane_with_id(*id).is_some_and(|p| p.selectable()))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .find(|id| {
+                let members = self.worker_region_members(*id).len();
+                self.tiled_panes.plan_worker_split(*id, members).is_some()
+            })
+    }
+
+    /// Admission is side-effect free. In particular no list dissolution, fullscreen or focus
+    /// change occurs until geometry and the pane limit have both been accepted.
+    pub fn admit_worker_pane(
+        &mut self,
+        pid: PaneId,
+        title: Option<String>,
+        run: Option<Run>,
+        anchor: PaneId,
+        join: bool,
+    ) -> Result<(), yinz_types::agent::launch::LaunchReason> {
+        use yinz_types::agent::launch::LaunchReason;
+        self.ensure_worker_pane_capacity()
+            .map_err(|_| LaunchReason::PaneLimit)?;
+        let members = self.worker_region_members(anchor);
+        let visible = self
+            .stack_list_id_of_member(&anchor)
+            .and_then(|id| self.stack_lists.get(&id))
+            .map_or(anchor, |list| list.visible);
+        let geom = self
+            .tiled_panes
+            .worker_region_geometry(visible)
+            .ok_or(LaunchReason::InsufficientRoom)?;
+        let viewport = self.get_viewport();
+        if geom.x + geom.cols.as_usize() > viewport.x + viewport.cols
+            || geom.y + geom.rows.as_usize() > viewport.y + viewport.rows
+        {
+            return Err(LaunchReason::InsufficientRoom);
+        }
+        let direction = if join {
+            if geom.rows.as_usize() < yinz_panes::pane::MIN_TERMINAL_HEIGHT + members.len()
+                || geom.cols.as_usize() < yinz_panes::pane::MIN_TERMINAL_WIDTH
+            {
+                return Err(LaunchReason::InsufficientRoom);
+            }
+            None
+        } else {
+            Some(
+                self.tiled_panes
+                    .plan_worker_split(visible, members.len())
+                    .ok_or(LaunchReason::InsufficientRoom)?,
+            )
+        };
+        let pane = self
+            .build_pane(pid, title, run, None)
+            .map_err(|_| LaunchReason::InvalidRequest)?;
+        self.agent_tab_cleanup_allowed = false;
+        if self.tiled_panes.fullscreen_is_active() {
+            self.tiled_panes.unset_fullscreen();
+        }
+        self.dissolve_stack_lists_for_classic_mutation();
+        if let Some(direction) = direction {
+            self.tiled_panes
+                .insert_worker_split(anchor, direction, pane)
+                .map_err(|_| LaunchReason::PlacementRevoked)?;
+            self.sync_stacked_pane_list_mode();
+        } else {
+            let focused = members
+                .iter()
+                .copied()
+                .find(|id| self.tiled_panes.pane_id_is_focused(id));
+            self.tiled_panes
+                .insert_worker_stack(anchor, pane)
+                .map_err(|_| LaunchReason::PlacementRevoked)?;
+            if let Some(focused) = focused {
+                self.tiled_panes.expand_pane_in_stack(focused);
+            }
+            self.sync_stacked_pane_list_mode();
+        }
+        self.set_should_clear_display_before_rendering();
+        self.swap_layouts.set_is_tiled_damaged();
+        Ok(())
+    }
+
+    pub fn worker_region_members(&mut self, pane: PaneId) -> Vec<PaneId> {
+        if let Some(list) = self
+            .stack_list_id_of_member(&pane)
+            .and_then(|id| self.stack_lists.get(&id))
+        {
+            return list.members.clone();
+        }
+        let members = self.tiled_panes.pane_ids_in_stack_of_pane_id(&pane);
+        if members.is_empty() && self.tiled_panes.panes_contain(&pane) {
+            vec![pane]
+        } else {
+            members
+        }
+    }
+
+    /// A collapsed classic member starts at the expanded member's content size. Ordinary
+    /// parked panes cannot pass this check; hidden list members have a live navigable region.
+    pub fn worker_startup_size(&mut self, pane: PaneId) -> Option<(usize, usize)> {
+        if !self.can_anchor_tiled_stack(pane) {
+            return None;
+        }
+        let visible = self
+            .stack_list_id_of_member(&pane)
+            .and_then(|id| self.stack_lists.get(&id))
+            .map_or(pane, |list| list.visible);
+        let geom = self.tiled_panes.worker_region_geometry(visible)?;
+        let viewport = self.get_viewport();
+        if geom.x + geom.cols.as_usize() > viewport.x + viewport.cols
+            || geom.y + geom.rows.as_usize() > viewport.y + viewport.rows
+        {
+            return None;
+        }
+        self.worker_region_members(pane)
+            .into_iter()
+            .filter_map(|id| {
+                self.get_pane_with_id(id)
+                    .map(|p| (p.get_content_columns(), p.get_content_rows()))
+            })
+            .max_by_key(|(cols, rows)| cols.saturating_mul(*rows))
+            .filter(|(cols, rows)| *cols > 0 && *rows > 0)
+    }
+
     /// Create the first controller worker in a region of its own.
     pub fn new_separate_worker_pane(
         &mut self,

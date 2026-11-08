@@ -42,6 +42,7 @@ selection without inferring a new origin.
 
 After start, `drive` accepts
 `{agent: {session, kind, model?, effort?, permissionMode?, startupTimeoutSeconds?, timeoutSeconds?}}`.
+<<<<<<< HEAD
 Select the intended running session/provider; omitted options preserve defaults.
 Settings persist; ordinary resume is `drive` with no input. New workers resolve the
 control pane's current tab and join its separate worker stack; existing workers
@@ -49,6 +50,27 @@ keep tabs/submissions. Sessions must match. Outside the pane environment use sav
 identity or `control: {session, paneId}` alongside `agent` (role options for
 `agent`/`restart-agent`). Older drivers need identity before new launches; no
 automatic-tab fallback is allowed.
+=======
+Use the intended running Yinz session and provider. Omitted options preserve
+provider defaults. Settings persist; ordinary resume uses `drive` with no input.
+The launcher captures the invoking control pane's session and ID. Every new
+worker resolves that pane's current tab and joins its separate controller-owned worker stack there, including
+revisions, repairs and restarts. Existing workers stay in their original tabs
+and resume their original submissions. The selected worker session must match
+the control pane's session; missing panes and lookup failures block launches.
+Outside the pane environment, supply `control: {session, paneId}` explicitly
+(alongside `agent` for `drive`, or alongside role options for `agent` and
+`restart-agent`), or resume with saved identity. Older saved driver settings
+must acquire control identity before launching another worker; an unlaunched
+legacy task requires an explicit restart. Never bypass placement with automatic
+tab selection.
+After approval and worktree preparation, use `drive` again. After an explicitly
+requested restart or completed rollback recovery, continue through `drive` to
+the next handoff. The driver supplies prompts and uses visible pane workers;
+never replace them with headless provider execution or inline agent work.
+Single-role `agent` and `resume-agent` remain lower-level diagnostic operations.
+Use the local Yinz agents skill for deliberate pane inspection and dialogs. New workers require `agent-launch-transaction-v2` and persist an incarnation-qualified launch ID before spawn. Resume observes that exact ID, never a replacement spawn. Definitive terminal receipts can support deliberate discard even when Git paths remain; pending, unknown, or legacy ID-less launches require inspection. A receipt alone never supplies worker evidence or changes the original approval/task/prompt correlation.
+>>>>>>> bab9477ac (Make agent launches transactional with durable receipts and placement safeguards)
 
 Wait on the same foreground command through yields until its structured handoff,
 then present the readable result before ending the controlling turn: issue,
@@ -164,6 +186,7 @@ and increasing versions survive; completed Agenda tasks reopen. Landed merge and
 close-out retries reuse receipts. [Design reference](../../../docs/ISSUE_LIFECYCLE.md)
 holds persistence and input contracts.
 
+<<<<<<< HEAD
 A worker is complete only after its role evidence is validated, recorded and
 acknowledged through its assigned `@yinz/issue-evidence` behavior. Final prose is
 presentation and is never parsed as lifecycle evidence. Workers may invoke only
@@ -171,6 +194,21 @@ the supplied submission method and receipt query; approvals, rollback, merge and
 Agenda mutations remain controller operations. Validation errors are corrected
 within the same worker. Lost acknowledgements are recovered by inspecting the
 original task's durable submission; identical replay preserves its receipt.
+=======
+If a worker completed but returned unusable evidence, `discard-agent` requires
+the operator's actual `request` and `confirmedStopped: true`. It accepts a
+matching completed worker with no background tasks and unapplied evidence, or a
+durable `launch_rejected` task with a matching version-two launch receipt proving
+non-execution or confirmed process exit and completed pane/PTY cleanup. Retained
+Git paths do not imply a live provider. Legacy resource-free structured rejections
+remain readable. No submission or background work may remain, and lifecycle state
+must still match the task's original snapshot. After discarding a rejected launch, correct the
+configuration in a new `agent` request. No configuration change or relaunch is
+automatic. Malformed responses, transport failures and legacy uncertain launches
+remain blocked for discard; an explicit rollback or restart can supersede them.
+Discard cannot end active work or undo source changes; inspect any changes before
+assigning replacement work.
+>>>>>>> bab9477ac (Make agent launches transactional with durable receipts and placement safeguards)
 
 If a provider ends without accepted evidence, keep the task unresolved. Use
 `continue-agent` with `{taskId, request}` to ask that same retained conversation
