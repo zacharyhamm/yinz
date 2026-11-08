@@ -521,6 +521,7 @@ async function applyResult(
   task: Task,
   dependencies: IssueAgentDependencies,
 ) {
+  if (task.discard) return finishDiscard(context, task);
   const current = await loadState(context);
   if (task.status === "completed") return cleanupTask(context, task);
   if (["discarded", "superseded"].includes(task.status)) {
@@ -739,6 +740,7 @@ export async function runTask(
   dependencies: IssueAgentDependencies,
   recover = false,
 ) {
+  if (task.discard) return finishDiscard(context, task);
   await saveTask(context, task);
   try {
     if (task.submission) {
@@ -967,11 +969,36 @@ async function beginRecovery(
   return finishRecovery(context, recovery, dependencies);
 }
 
+/** Durable discard intent must be fenced before any provider work or import. */
+async function finishDiscard(context: IssueAgentContext, task: Task) {
+  if (["discarded", "superseded"].includes(task.status)) {
+    return { dataHandles: [] };
+  }
+  if (!task.discard) throw new Error("No pending discard intent");
+  const current = await loadState(context);
+  if (
+    task.status === "completed" || canonical(current) !== canonical(task.before)
+  ) {
+    throw new Error(
+      "Pane evidence may already be applied; cannot finish pending discard",
+    );
+  }
+  await evidenceOperation(context, task, "supersede", {
+    taskId: task.id,
+    assignmentDigest: task.submission?.assignmentDigest,
+    operationId: task.id,
+  });
+  return {
+    dataHandles: [await saveTask(context, { ...task, status: "discarded" })],
+  };
+}
+
 export async function resumeTask(
   context: IssueAgentContext,
   dependencies: IssueAgentDependencies,
 ) {
   const task = AgentTaskSchema.parse(await context.readResource("agent-task"));
+  if (task.discard) return finishDiscard(context, task);
   if (
     ["completed", "discarded", "superseded", "applying"].includes(task.status)
   ) {
@@ -1007,6 +1034,7 @@ export function createAgentMethods(
               "Continuation must target the current original assignment",
             );
           }
+          if (task.discard) return finishDiscard(context, task);
           if (task.evidence) {
             return task.status === "completed"
               ? applyResult(context, task, dependencies)
@@ -1207,6 +1235,7 @@ export function createAgentMethods(
             await context.readResource("agent-task"),
           );
           if (task.status === "discarded") return { dataHandles: [] };
+          if (task.discard) return finishDiscard(context, task);
           if (task.status === "completed") {
             throw new Error(
               "Pane evidence is already applied; revise the lifecycle instead",
@@ -1240,21 +1269,9 @@ export function createAgentMethods(
               "Pane evidence may already be applied; resume the task before discarding it",
             );
           }
-          await saveTask(context, { ...task, discard });
-          await evidenceOperation(context, task, "supersede", {
-            taskId: task.id,
-            assignmentDigest: task.submission?.assignmentDigest,
-            operationId: task.id,
-          });
-          return {
-            dataHandles: [
-              await saveTask(context, {
-                ...task,
-                status: "discarded",
-                discard,
-              }),
-            ],
-          };
+          const pending = { ...task, discard };
+          await saveTask(context, pending);
+          return finishDiscard(context, pending);
         }),
     },
   };

@@ -3832,6 +3832,113 @@ Deno.test("rollback can supersede a task interrupted before its evidence slot op
   equal(h.calls.length, 0);
 });
 
+Deno.test("pending discard fences accepted evidence before any recovery can import it", async () => {
+  for (const fault of ["supersede", "final-save"]) {
+    for (const recovery of ["resume", "continue", "discard", "drive"]) {
+      const h = harness();
+      h.controls.runError = "Lost provider response";
+      await rejects(
+        () =>
+          h.methods.run_agent.execute(
+            { ...options, role: "triage" },
+            h.context,
+          ),
+        "Lost provider response",
+      );
+      const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+      const submission = () =>
+        SubmissionSchema.parse(
+          h.submissions.get(original.submission!.behaviorName)?.get(
+            "submission",
+          ),
+        );
+      equal(submission().status, "accepted");
+      const discard = {
+        request: "Discard the accepted but unapplied findings",
+        confirmedStopped: true as const,
+      };
+      if (fault === "supersede") {
+        h.controls.failEvidenceSupersede = true;
+      } else {
+        h.controls.failWrite = (spec, _name, value) =>
+          spec === "agent-task" && value.status === "discarded";
+      }
+      await rejects(
+        () => h.methods.discard_agent.execute(discard, h.context),
+        fault === "supersede"
+          ? "Evidence supersession interrupted"
+          : "Interrupted recovery write",
+      );
+      equal(
+        AgentTaskSchema.parse(h.resources.get("agent-task")).discard,
+        discard,
+      );
+      equal(await loadState(h.context), original.before);
+      const recover = () => {
+        if (recovery === "continue") {
+          return h.methods.continue_agent.execute({
+            taskId: original.id,
+            request: "Submit the existing findings",
+          }, h.context);
+        }
+        if (recovery === "discard") {
+          return h.methods.discard_agent.execute(discard, h.context);
+        }
+        if (recovery === "drive") return h.drive.execute({}, h.context);
+        return h.methods.resume_agent.execute({}, h.context);
+      };
+      const calls = h.calls.length;
+      if (fault === "supersede") {
+        // Repeated failures must retain intent without touching the provider.
+        for (let attempt = 0; attempt < 2; attempt++) {
+          if (recovery === "drive") {
+            await recover();
+            equal(result(h).decision, "blocked");
+            assert(
+              result(h).reason.includes("Evidence supersession interrupted"),
+            );
+          } else await rejects(recover, "Evidence supersession interrupted");
+          equal(h.calls.length, calls);
+          equal(submission().status, "accepted");
+          equal(await loadState(h.context), original.before);
+          equal(
+            AgentTaskSchema.parse(h.resources.get("agent-task")).discard,
+            discard,
+          );
+        }
+        h.controls.failEvidenceSupersede = false;
+      }
+      await recover();
+      equal(submission().status, "superseded");
+      equal(await loadState(h.context), original.before);
+      assert(
+        h.writes.some((write) =>
+          write.spec === "agent-task" && write.value.id === original.id &&
+          write.value.status === "discarded"
+        ),
+      );
+      assert(!h.resources.has(`event-agent-${original.id}`));
+      equal(h.controls.cleanupCalls, 0);
+      // Drive may launch the next assignment after finishing the discard, but
+      // must never resume or continue the discarded provider submission.
+      assert(
+        h.calls.slice(calls).every((call) =>
+          call.name !== original.behaviorName &&
+          call.definition !== original.behaviorName
+        ),
+      );
+      if (recovery !== "drive") {
+        equal(
+          AgentTaskSchema.parse(h.resources.get("agent-task")).status,
+          "discarded",
+        );
+        await h.methods.resume_agent.execute({}, h.context);
+        equal(h.calls.length, calls);
+      }
+    }
+  }
+});
+
 Deno.test("interrupted submission fencing preserves parent state and resumes before replacement dispatch", async () => {
   const h = harness();
   h.controls.runError = "Lost provider response";

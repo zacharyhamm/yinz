@@ -1103,6 +1103,84 @@ Deno.test("submission continuation retains the original conversation and recover
   equal(h.calls.filter((c) => c.args.includes("prompt")).length, 2);
 });
 
+Deno.test("delayed continuation retries cannot repeat provider work or overwrite turn history", async () => {
+  const h = harness([spawned, ready(), completed()]);
+  await runAgent({ prompt: "Investigate" }, h.context, h.dependencies);
+  const turns = [1, 2, 3].map((index) => ({
+    id: `a6da10b0-c980-4b82-b920-00000000000${index}`,
+    prompt: `Submit established findings ${index}`,
+  }));
+  for (const [index, turn] of turns.entries()) {
+    const submission = `submission-${index + 2}`;
+    h.dependencies.id = () => submission;
+    h.replies.push(ready(), completed({ submission_id: submission }));
+    await continueAgent(turn, h.context, h.dependencies);
+  }
+  const records = structuredClone([...h.records]);
+  const calls = h.calls.length;
+  const writes = h.writes.length;
+  for (const turn of turns.slice(0, -1)) {
+    await rejects(
+      () => continueAgent(turn, h.context, h.dependencies),
+      "already used by an older turn",
+    );
+    await rejects(
+      () =>
+        continueAgent(
+          { ...turn, prompt: "Changed request" },
+          h.context,
+          h.dependencies,
+        ),
+      "different prompt",
+    );
+  }
+  equal([...h.records], records);
+  equal(h.calls.length, calls);
+  equal(h.writes.length, writes);
+  await continueAgent(turns[2], h.context, h.dependencies);
+  equal(h.calls.length, calls);
+});
+
+Deno.test("continuation fails closed on incomplete or cyclic history and existing snapshots", async () => {
+  for (const fault of ["missing", "malformed", "cycle", "existing"]) {
+    const h = harness([spawned, ready(), completed()]);
+    await runAgent({ prompt: "Investigate" }, h.context, h.dependencies);
+    const first = {
+      id: "a6da10b0-c980-4b82-b920-000000000001",
+      prompt: "Submit findings",
+    };
+    h.dependencies.id = () => "submission-2";
+    h.replies.push(ready(), completed({ submission_id: "submission-2" }));
+    await continueAgent(first, h.context, h.dependencies);
+    const next = { ...first, id: "a6da10b0-c980-4b82-b920-000000000002" };
+    const key = `turn-${first.id}`;
+    if (fault === "missing") h.records.delete(key);
+    if (fault === "malformed") h.records.set(key, { phase: "completed" });
+    if (fault === "cycle") {
+      h.records.set(key, structuredClone(h.records.get("state")!));
+    }
+    if (fault === "existing") {
+      h.records.set(`turn-${next.id}`, structuredClone(h.records.get(key)!));
+    }
+    const records = structuredClone([...h.records]);
+    const calls = h.calls.length;
+    const writes = h.writes.length;
+    await rejects(
+      () => continueAgent(next, h.context, h.dependencies),
+      fault === "malformed"
+        ? "invalid_type"
+        : fault === "existing"
+        ? "snapshot already exists"
+        : fault === "cycle"
+        ? "history contains a cycle"
+        : "history is missing",
+    );
+    equal([...h.records], records);
+    equal(h.calls.length, calls);
+    equal(h.writes.length, writes);
+  }
+});
+
 Deno.test("continuation refuses active, cleaned or replacement conversations without launching another worker", async () => {
   const args = {
     id: "a6da10b0-c980-4b82-b920-000000000001",

@@ -910,6 +910,39 @@ export async function continueAgent(
     }
     return resumeAgent(context, dependencies);
   }
+  // Each turn stores its predecessor before its intent is persisted. Walk that
+  // chain so delayed retries cannot reuse an older identity or overwrite it.
+  let previous = state;
+  const visited = new Set<string>();
+  while (previous.continuation) {
+    const turn = previous.continuation;
+    if (visited.has(turn.id)) {
+      throw new Error(
+        "Continuation history contains a cycle; inspect retained history",
+      );
+    }
+    visited.add(turn.id);
+    if (turn.id === args.id) {
+      if (turn.prompt !== args.prompt) {
+        throw new Error("Continuation identity has a different prompt");
+      }
+      throw new Error(
+        "Continuation identity was already used by an older turn",
+      );
+    }
+    const snapshot = await context.readResource(`turn-${turn.id}`);
+    if (snapshot == null) {
+      throw new Error(
+        "Continuation history is missing a turn snapshot; inspect retained history",
+      );
+    }
+    previous = AgentStateSchema.parse(snapshot);
+  }
+  if (await context.readResource(`turn-${args.id}`) != null) {
+    throw new Error(
+      "Continuation snapshot already exists; inspect retained history",
+    );
+  }
   assertContinuationEligible(state);
   return guarded(context, state, dependencies, async () => {
     await context.writeResource(

@@ -329,12 +329,6 @@ retained resources is saved as `launch_rejected` with its response. Resume
 explains that lifecycle tasks can use `discard-agent`; standalone callers must
 use a new behavior identity with corrected inputs.
 
-One behavior represents one prompt task. Repeated `run` is refused even for the
-same prompt; a new task uses a new behavior identity. `resume` observes the saved
-submission, can continue known pre-submission startup progress, and refuses
-uncertain launch rather than spawning again. Resource-free structured rejection
-is saved as `launch_rejected` with its response.
-
 The workflow input shape is:
 
 ```json
@@ -352,8 +346,8 @@ The workflow input shape is:
 Installed commands are `swamp workflow validate yinz-agent-task`,
 `swamp workflow run yinz-agent-task --stdin`, and `swamp behavior run <agentName>
 resume|status`, all with `--repo-dir <control>`; machine reads use `--json`.
-`result` is published only for a correlated completed task with a nonempty final
-message and no background work. `state` retains launch, pane, conversation and
+`result` is published only for a correlated completed provider turn with no
+background work; final presentation text is optional. `state` retains launch, pane, conversation and
 submission identity; `observation` stores live status separately. Completion is
 an answer, not correctness evidence replacing lifecycle review/verification.
 
