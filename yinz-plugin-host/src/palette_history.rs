@@ -71,6 +71,20 @@ fn run_action(id: &str, from: Option<u64>) -> HistoryAction {
     }
 }
 
+fn unavailable_history() -> AgentReply {
+    AgentReply::History(HistoryReply::Run {
+        header: HistoryHeader {
+            name: "Recorded history unavailable".into(),
+            details: "No recorded history".into(),
+            ..Default::default()
+        },
+        activity_ranges: vec![],
+        events: vec![],
+        rows: vec![],
+        status: "No recorded history".into(),
+    })
+}
+
 /// Read only assistant prose from the current recorded run. A run id alone is
 /// insufficient on the shared archive: its header must belong to this host/session.
 pub(super) fn last_reply(
@@ -410,17 +424,7 @@ pub(super) fn execute(
         },
         HistoryAction::Run { id, from, query } => {
             let Some(h) = history::run_header(&backend, id)? else {
-                return Ok(AgentReply::History(HistoryReply::Run {
-                    header: HistoryHeader {
-                        name: "Recorded history unavailable".into(),
-                        details: "No recorded history".into(),
-                        ..Default::default()
-                    },
-                    activity_ranges: vec![],
-                    events: vec![],
-                    rows: vec![],
-                    status: "No recorded history".into(),
-                }));
+                return Ok(unavailable_history());
             };
             let metadata = run_details(&h, &timestamp);
             let mut rows = Vec::new();
@@ -675,7 +679,9 @@ fn conversation_view(
         tools,
     } = read;
     use agent_proto::conversation::{self, Cursor, Range};
-    let h = history::run_header(backend, id)?.ok_or("Recorded history unavailable")?;
+    let Some(h) = history::run_header(backend, id)? else {
+        return Ok(unavailable_history());
+    };
     let page = match tools {
         Some(range) => conversation::tools(backend, id, range, before)?,
         None => conversation::page(backend, id, worker, before, after)?,

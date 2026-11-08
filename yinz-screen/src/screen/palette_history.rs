@@ -1169,11 +1169,19 @@ impl Screen {
                 state.agents.cancel();
                 self.request_palette_agent(client, AgentAction::History(action), vec![]);
             },
-            HistoryAction::Hit { .. } => {
-                let live = browser.live.clone();
+            _ => {
+                let live = browser.live.clone().filter(|live| match &action {
+                    HistoryAction::Search(_) => false,
+                    HistoryAction::Run { id, .. }
+                    | HistoryAction::Conversation { id, .. }
+                    | HistoryAction::Workers { id }
+                    | HistoryAction::Tools { id, .. }
+                    | HistoryAction::Hit { id, .. }
+                    | HistoryAction::Event { id, .. }
+                    | HistoryAction::Resume { id } => live.run().as_ref() == Some(id),
+                });
                 self.open_palette_history(client, live, Some(action));
             },
-            _ => self.open_palette_history(client, None, Some(action)),
         }
         true
     }

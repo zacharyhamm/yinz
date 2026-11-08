@@ -170,11 +170,12 @@ impl Pair {
             for command in &mut commands {
                 if let Some(def) = command.pointer_mut("/DataDefineEntity/def")
                     && def["name"] == agents::rows::ENTRY_ENTITY
-                    && def["version"] == 5
+                    && def["version"] == 6
                 {
                     // The retained Wasm reference predates nullable worker/turn
-                    // attribution. Assert the complete new schema before comparing
-                    // the unchanged declaration and archive paging trace.
+                    // attribution and its resolution marker. Assert the complete new
+                    // schema before comparing the unchanged declaration and archive
+                    // paging trace.
                     assert_eq!(
                         *def,
                         serde_json::to_value(store::agent_run_entry_def()).unwrap()
@@ -183,7 +184,7 @@ impl Pair {
                     def["attrs"].as_array_mut().unwrap().retain(|attr| {
                         !matches!(
                             attr["name"].as_str(),
-                            Some("worker_id" | "conversation_turn_id")
+                            Some("worker_id" | "conversation_turn_id" | "attribution_resolved")
                         )
                     });
                 }
@@ -344,7 +345,12 @@ impl Pair {
                             def.attrs
                                 .iter()
                                 .filter(|a| {
-                                    !matches!(a.name.as_str(), "worker_id" | "conversation_turn_id")
+                                    !matches!(
+                                        a.name.as_str(),
+                                        "worker_id"
+                                            | "conversation_turn_id"
+                                            | "attribution_resolved"
+                                    )
                                 })
                                 .map(|a| a.name.clone()),
                         ),
@@ -449,7 +455,7 @@ fn project_store_actual_runtimes_match_archive_pages_scopes_and_search() {
     );
     let mut pair = Pair::new(None);
     let project = projects::validate("work", "/work").unwrap();
-    for data in &pair.databases {
+    for (index, data) in pair.databases.iter().enumerate() {
         data.apply(store::SHARED, &[projects::to_mutation(&project)]);
         for (id, host, session, cwd, previous) in [
             (
@@ -494,10 +500,23 @@ fn project_store_actual_runtimes_match_archive_pages_scopes_and_search() {
                 })
                 .collect();
             run.revision = 18;
-            data.apply(
-                store::SHARED,
-                &agents::rows::run_mutations(&run, REV_ABSENT),
-            );
+            let mut mutations = agents::rows::run_mutations(&run, REV_ABSENT);
+            if index == 0 {
+                // Seed the retained Wasm database using only its v4 entry attributes.
+                for mutation in &mut mutations {
+                    if let Mutation::Put { entity, values, .. } = mutation
+                        && entity == agents::rows::ENTRY_ENTITY
+                    {
+                        values.retain(|(name, _)| {
+                            !matches!(
+                                name.as_str(),
+                                "worker_id" | "conversation_turn_id" | "attribution_resolved"
+                            )
+                        });
+                    }
+                }
+            }
+            data.apply(store::SHARED, &mutations);
         }
     }
     for args in [

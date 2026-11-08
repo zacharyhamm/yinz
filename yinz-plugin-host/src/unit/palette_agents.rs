@@ -911,6 +911,69 @@ fn live_agent_last_reply_isolates_hosts_sessions_and_runs_and_accepts_legacy_his
 }
 
 #[test]
+fn palette_history_before_header_persistence_can_be_polled_again() {
+    use agent_proto::agents::{rows, RunOutcome};
+    use yinz_bus::command_palette::{HistoryAction, HistoryReply};
+
+    let (temp, data) = repository();
+    let mut recorded = recorded_run(temp.path());
+    recorded.outcome = RunOutcome::Active;
+    recorded.ended_at_ms = None;
+    recorded.entries[0].text = "Newly recorded message".into();
+    let actions = [
+        HistoryAction::Run {
+            id: recorded.id.clone(),
+            from: None,
+            query: String::new(),
+        },
+        HistoryAction::Conversation {
+            id: recorded.id.clone(),
+            worker: None,
+            before: None,
+            after_revision: Some(1),
+        },
+    ];
+    let execute = |action| {
+        run(&request(temp.path(), AgentAction::History(action)), &data)
+            .0
+            .unwrap()
+    };
+    for action in &actions {
+        let AgentReply::History(HistoryReply::Run {
+            header,
+            activity_ranges,
+            events,
+            rows,
+            status,
+        }) = execute(action.clone())
+        else {
+            panic!("expected empty history")
+        };
+        assert_eq!(header.name, "Recorded history unavailable");
+        assert_eq!(header.details, "No recorded history");
+        assert_eq!(status, "No recorded history");
+        assert!(activity_ranges.is_empty());
+        assert!(events.is_empty());
+        assert!(rows.is_empty());
+    }
+    data.plugin_data()
+        .apply(
+            project_data::store::SHARED,
+            &rows::run_mutations(&recorded, REV_ABSENT),
+        )
+        .unwrap();
+    for action in actions {
+        let AgentReply::History(HistoryReply::Run { events, .. }) = execute(action) else {
+            panic!("expected persisted history")
+        };
+        assert!(!events.is_empty());
+        assert!(events
+            .iter()
+            .all(|event| { event.revision == 1 && event.markdown == recorded.entries[0].text }));
+    }
+}
+
+#[test]
 fn palette_history_search_exact_event_predecessor_and_resume() {
     use yinz_bus::command_palette::{HistoryAction, HistoryReply};
     let (temp, data) = repository();

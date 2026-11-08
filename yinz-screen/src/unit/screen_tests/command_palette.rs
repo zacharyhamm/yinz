@@ -5354,6 +5354,9 @@ fn history_poll_generations_reject_ticks_after_search_refresh_and_event_return()
                     tool: String::new(),
                 })),
             });
+            // Same-run event readers retain the live target and schedule their own timer.
+            // Once back in the parent view, that timer must also be rejected as stale.
+            obsolete.push(next_tick());
             screen.command_palette_handles_input(
                 &Some(KeyWithModifier::new(BareKey::Esc)),
                 b"",
@@ -5894,20 +5897,51 @@ fn history_workers_refresh_retains_results_until_the_new_list_arrives() {
 
 #[test]
 fn history_workers_picker_opens_selected_conversation_and_restores_parent() {
+    history_workers_picker_case(false);
+}
+
+#[test]
+fn history_live_workers_picker_keeps_polling_the_selected_conversation() {
+    history_workers_picker_case(true);
+}
+
+fn history_workers_picker_case(live: bool) {
     use yinz_bus::command_palette::{
         AgentAction, AgentReply, AgentRequest, HistoryAction, HistoryReply, HistoryRow, Instruction,
     };
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+
     let mut screen = screen();
+    if live {
+        screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
+            PaneId::Terminal(TerminalId::new(1)),
+            Some(AgentInfo {
+                kind: "codex".into(),
+                state: AgentState::Idle,
+                source: AgentSource::Reported,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                session_id: Some("session".into()),
+                run_id: Some("run".into()),
+            }),
+        );
+    }
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     let (tx, rx) = channels::unbounded();
     screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let next = || loop {
         let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        if let PluginInstruction::PaletteAgent(request) = instruction {
+        if let PluginInstruction::PaletteAgent(request) = instruction
+            && matches!(request.action, AgentAction::History(_))
+        {
             break *request;
         }
     };
+    let (tx, ticks) = channels::unbounded();
+    screen.bus.senders.to_screen = Some(SenderWithContext::new(tx));
     let reply = |request: &AgentRequest, history| Instruction::AgentReply {
         client: CLIENT,
         opening: request.opening,
@@ -5917,7 +5951,7 @@ fn history_workers_picker_opens_selected_conversation_and_restores_parent() {
     screen.toggle_command_palette(CLIENT);
     screen.open_palette_history(
         CLIENT,
-        None,
+        screen.live_palette_agents().pop(),
         Some(HistoryAction::Run {
             id: "run".into(),
             from: None,
@@ -5947,7 +5981,11 @@ fn history_workers_picker_opens_selected_conversation_and_restores_parent() {
     let parent = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(parent.contains("Parent message"), "{parent}");
     palette_key(&mut screen, BareKey::Tab); // Search -> messages.
-    palette_key(&mut screen, BareKey::Tab); // Messages -> Workers.
+    palette_key(&mut screen, BareKey::Tab); // Messages -> prompt (live) or Workers.
+    if live {
+        palette_key(&mut screen, BareKey::Tab); // Prompt -> Focus.
+        palette_key(&mut screen, BareKey::Right); // Focus -> Workers.
+    }
     let parent = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     palette_key(&mut screen, BareKey::Enter);
     let workers = next();
@@ -6004,6 +6042,44 @@ fn history_workers_picker_opens_selected_conversation_and_restores_parent() {
     ));
     let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(frame.contains("Worker message"), "{frame}");
+    if live {
+        let worker_view = screen.command_palettes[&CLIENT].widget().view;
+        loop {
+            let (instruction, _) = ticks.recv_timeout(Duration::from_secs(5)).unwrap();
+            if let ScreenInstruction::CommandPalette(tick @ Instruction::HistoryTick { view, .. }) =
+                instruction
+                && view == worker_view
+            {
+                screen.plugin_palette_instruction(tick);
+                break;
+            }
+        }
+        let poll = next();
+        assert!(matches!(
+            &poll.action,
+            AgentAction::History(HistoryAction::Conversation {
+                id,
+                worker: Some(worker),
+                before: None,
+                after_revision: Some(3),
+            }) if id == "run" && worker == "bravo"
+        ));
+        screen.plugin_palette_instruction(reply(
+            &poll,
+            history_run(vec![HistoryRow {
+                id: "event:3".into(),
+                label: "Updated worker message".into(),
+                description: String::new(),
+                action: HistoryAction::Event {
+                    id: "run".into(),
+                    revision: 3,
+                },
+            }]),
+        ));
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(frame.contains("Updated worker message"), "{frame}");
+        assert!(!frame.contains("Parent message"), "{frame}");
+    }
     palette_key(&mut screen, BareKey::Esc);
     let restored = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(restored.contains("Worker alpha"), "{restored}");
@@ -6013,6 +6089,119 @@ fn history_workers_picker_opens_selected_conversation_and_restores_parent() {
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
         parent
     );
+}
+
+#[test]
+fn history_navigation_keeps_live_target_only_for_the_current_run() {
+    use yinz_bus::command_palette::{
+        query::AgentQuery, AgentAction, AgentReply, AgentRequest, HistoryAction, HistoryReply,
+        HistoryRow, Instruction,
+    };
+    use yinz_types::agent::{history::Range, AgentInfo, AgentSource, AgentState};
+
+    let range = Range {
+        start: None,
+        end: None,
+        worker: Some("worker".into()),
+    };
+    for action in [
+        HistoryAction::Tools {
+            id: "run".into(),
+            range: range.clone(),
+            before: None,
+        },
+        HistoryAction::Run {
+            id: "previous".into(),
+            from: None,
+            query: String::new(),
+        },
+        HistoryAction::Search(AgentQuery::default()),
+    ] {
+        let keeps_live = matches!(action, HistoryAction::Tools { .. });
+        let mut screen = screen();
+        screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
+            PaneId::Terminal(TerminalId::new(1)),
+            Some(AgentInfo {
+                kind: "codex".into(),
+                state: AgentState::Idle,
+                source: AgentSource::Reported,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                session_id: Some("session".into()),
+                run_id: Some("run".into()),
+            }),
+        );
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        let (tx, requests) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+        let next = || loop {
+            let (instruction, _) = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+            if let PluginInstruction::PaletteAgent(request) = instruction
+                && matches!(request.action, AgentAction::History(_))
+            {
+                break *request;
+            }
+        };
+        let reply = |request: &AgentRequest, history| Instruction::AgentReply {
+            client: CLIENT,
+            opening: request.opening,
+            step: request.step,
+            reply: Ok(AgentReply::History(history)),
+        };
+        screen.toggle_command_palette(CLIENT);
+        screen.open_palette_history(CLIENT, screen.live_palette_agents().pop(), None);
+        screen.plugin_palette_instruction(reply(
+            &next(),
+            history_run(vec![HistoryRow {
+                id: "navigate".into(),
+                label: "Open history".into(),
+                description: String::new(),
+                action: action.clone(),
+            }]),
+        ));
+        let position = palette_text_position(&screen, CLIENT, "Open history");
+        screen.command_palette_handles_mouse(&MouseEvent::new_left_press_event(position), CLIENT);
+        screen.command_palette_handles_mouse(&MouseEvent::new_left_release_event(position), CLIENT);
+        let child = next();
+        let history = if matches!(action, HistoryAction::Search(_)) {
+            HistoryReply::Rows {
+                rows: vec![],
+                status: String::new(),
+            }
+        } else {
+            history_run(vec![])
+        };
+        screen.plugin_palette_instruction(reply(&child, history));
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert_eq!(frame.contains("Focus"), keeps_live, "{action:?}: {frame}");
+        let view = screen.command_palettes[&CLIENT].widget().view;
+        // A successful live reply schedules generation 1; an archived view stays at 0.
+        for generation in 0..=1 {
+            screen.plugin_palette_instruction(Instruction::HistoryTick {
+                client: CLIENT,
+                opening: child.opening,
+                view,
+                generation,
+            });
+        }
+        if keeps_live {
+            let poll = next();
+            assert!(matches!(&poll.action,
+                AgentAction::History(HistoryAction::Tools { id, range: actual, before: None })
+                    if id == "run" && actual == &range));
+        }
+        assert!(
+            !requests.try_iter().any(|(instruction, _)| matches!(
+                instruction,
+                PluginInstruction::PaletteAgent(request)
+                    if matches!(request.action, AgentAction::History(_))
+            )),
+            "unexpected history request after {action:?}"
+        );
+    }
 }
 
 #[test]
