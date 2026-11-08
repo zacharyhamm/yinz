@@ -10,9 +10,10 @@
 //! janitor. In particular, TestRun/OwnedDir reclamation cannot safely delete these trees while
 //! servers are alive, and Drop cannot recover a guard that is itself SIGKILLed.
 use std::{
-    fs::{self, File, OpenOptions},
+    collections::{BTreeMap, BTreeSet},
+    fs::{self, File, OpenOptions, TryLockError},
     io::{BufRead, Read, Write},
-    os::{fd::AsRawFd, unix::process::CommandExt},
+    os::{fd::AsRawFd, unix::fs::MetadataExt, unix::process::CommandExt},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{mpsc, Arc, Mutex},
@@ -252,52 +253,19 @@ fn stage(message: &str) {
     let _ = writeln!(std::io::stdout(), "YINZ_FIXTURE_STAGE {message}");
 }
 
+fn try_lock(file: &File) -> Result<bool> {
+    match file.try_lock() {
+        Ok(()) => Ok(true),
+        Err(TryLockError::WouldBlock) => Ok(false),
+        Err(TryLockError::Error(error)) => Err(error).context("lock fixture ownership"),
+    }
+}
+
 fn cleanup(root: &Path, sockets: &Path) -> Result<()> {
     // The guard receives these exact created paths before any fixture commands run.
     // The diagnostic symlink at root/sockets is never used to choose shutdown targets.
     let directory = sockets.join(&*yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR);
-    let claims = entries(&directory.join(yinz_ipc::consts::SESSION_OWNERSHIP_DIR))?;
     let mut errors = Vec::new();
-    // Dispatch to all instances before waiting: retired sources and private destinations can
-    // depend on one another. Claim files survive rename/unlink and must also be waited on.
-    let mut kills = Vec::new();
-    for entry in entries(&directory)? {
-        if yinz_ipc::consts::is_ipc_socket(&entry.file_type().context("inspect fixture endpoint")?)
-        {
-            let path = entry.path();
-            kills.push(std::thread::spawn(move || {
-                let result = yinz_ipc::ipc::kill_session_with_completion(&path);
-                (path, result)
-            }));
-        }
-    }
-    for kill in kills {
-        let (path, result) = kill
-            .join()
-            .map_err(|_| anyhow!("fixture shutdown thread panicked"))?;
-        if let Err(error) = result {
-            // It may already be shutting down. Ownership/lifetime release below is still
-            // required; a missing/refused endpoint alone never authorizes deletion.
-            if !matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-            ) {
-                let message = format!("shutdown {}: {error}", path.display());
-                eprintln!("{message}");
-                errors.push(message);
-            }
-        }
-    }
-    for claim in claims {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(claim.path())
-            .with_context(|| format!("open fixture claim {}", claim.path().display()))?;
-        stage(&format!("wait claim {}", claim.file_name().display()));
-        file.lock()
-            .with_context(|| format!("wait for fixture claim {}", claim.path().display()))?;
-    }
     // Also covers servers in daemon startup, final client flushing, and pane descendants.
     // This is a kernel ownership barrier, not a quiet-period or socket-existence heuristic.
     let users = OpenOptions::new()
@@ -305,8 +273,99 @@ fn cleanup(root: &Path, sockets: &Path) -> Result<()> {
         .write(true)
         .open(root.join(".users"))
         .context("open fixture lifetime lease")?;
-    stage("wait processes");
-    users.lock().context("wait for fixture processes to exit")?;
+    let mut users_locked = false;
+    let mut claims = BTreeMap::<PathBuf, (File, bool)>::new();
+    let mut kills =
+        BTreeMap::<(u64, u64), (PathBuf, std::thread::JoinHandle<std::io::Result<()>>)>::new();
+    // Avoid duplicate requests after completion, but recognize a replacement at the same path.
+    let mut attempted = BTreeSet::new();
+    let mut drained = false;
+    let mut first_pass = true;
+    loop {
+        // A daemon can bind after EOF or while another shutdown is still in flight. Keep
+        // discovering without blocking on either ownership or individual completion replies.
+        if !drained {
+            for entry in entries(&directory)? {
+                let metadata = match entry.metadata() {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error).context("inspect fixture endpoint"),
+                };
+                let identity = (metadata.dev(), metadata.ino());
+                if yinz_ipc::consts::is_ipc_socket(&metadata.file_type())
+                    && attempted.insert(identity)
+                {
+                    let path = entry.path();
+                    let endpoint = path.clone();
+                    let kill = std::thread::spawn(move || {
+                        yinz_ipc::ipc::kill_session_with_completion(&endpoint)
+                    });
+                    kills.insert(identity, (path, kill));
+                }
+            }
+        }
+        // Claims survive rename/unlink. Keep acquired locks until removal, and discover new
+        // claims as well: a daemon may not have claimed its endpoint on the first pass.
+        for claim in entries(&directory.join(yinz_ipc::consts::SESSION_OWNERSHIP_DIR))? {
+            if let std::collections::btree_map::Entry::Vacant(entry) = claims.entry(claim.path()) {
+                let file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(claim.path())
+                    .with_context(|| format!("open fixture claim {}", claim.path().display()))?;
+                stage(&format!("wait claim {}", claim.file_name().display()));
+                entry.insert((file, false));
+            }
+        }
+        let mut claims_locked = true;
+        for (path, (file, locked)) in &mut claims {
+            if !*locked {
+                *locked = try_lock(file)
+                    .with_context(|| format!("wait for fixture claim {}", path.display()))?;
+            }
+            claims_locked &= *locked;
+        }
+        if !users_locked {
+            users_locked = try_lock(&users).context("wait for fixture processes to exit")?;
+        }
+        drained = users_locked && claims_locked;
+        if first_pass {
+            stage("wait processes");
+            first_pass = false;
+        }
+        let finished: Vec<_> = kills
+            .iter()
+            .filter(|(_, (_, kill))| kill.is_finished())
+            .map(|(identity, _)| *identity)
+            .collect();
+        for identity in finished {
+            let (path, kill) = kills
+                .remove(&identity)
+                .context("finished fixture shutdown")?;
+            let result = kill
+                .join()
+                .map_err(|_| anyhow!("fixture shutdown thread panicked"))?;
+            if let Err(error) = result {
+                // Missing/refused endpoints are retried while ownership remains held; they
+                // never authorize deletion. Preserve other errors even if ownership drains.
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) {
+                    attempted.remove(&identity);
+                } else {
+                    let message = format!("shutdown {}: {error}", path.display());
+                    eprintln!("{message}");
+                    errors.push(message);
+                }
+            }
+        }
+        if drained && kills.is_empty() {
+            break;
+        }
+        // The guard's outer BUDGET bounds discovery, ownership waits, and shutdown together.
+        std::thread::sleep(Duration::from_millis(25));
+    }
     // Supervisors deliberately close inherited descriptors and can survive a dead server.
     // Query only this private namespace, then use the existing conditional, confirmed sweep.
     let pty = directory.join("pty");
@@ -351,6 +410,94 @@ fn remove_trees(
     remove(sockets)
         .with_context(|| format!("remove fixture socket namespace {}", sockets.display()))?;
     remove(root).with_context(|| format!("remove fixture tree {}", root.display()))
+}
+
+#[test]
+fn cleanup_discovers_late_servers_while_ownership_or_shutdown_is_pending() {
+    use interprocess::local_socket::traits::Listener;
+    use yinz_ipc::{
+        ipc::{ClientToServerMsg, IpcReceiverWithContext, IpcRecv, ServerToClientMsg},
+        session_ownership::SessionOwnership,
+    };
+
+    for pending_shutdown in [false, true] {
+        let fixture = RealFixture::new("ylb-");
+        let root = fixture.path().to_owned();
+        let sockets = fixture.socket_dir().to_owned();
+        let directory = sockets.join(&*yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR);
+        fs::create_dir_all(&directory).unwrap();
+        // This is the daemon's inherited lease before it has claimed or bound an endpoint.
+        let daemon_lease = fixture.users.as_ref().unwrap().clone();
+        let (late_stopped, wait_late) = mpsc::channel();
+        let pending = pending_shutdown.then(|| {
+            let owner = SessionOwnership::acquire(&directory.join("pending"))
+                .unwrap()
+                .unwrap();
+            let listener = owner.bind().unwrap();
+            std::thread::spawn(move || {
+                let mut receiver =
+                    IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
+                assert!(matches!(
+                    receiver.recv_client_msg(),
+                    IpcRecv::Msg(ClientToServerMsg::KillSessionWithCompletion { .. }, _)
+                ));
+                // Completion depends on stopping the late daemon. Joining this request in
+                // the discovery loop would prevent that daemon from ever being discovered.
+                wait_late.recv_timeout(BUDGET).unwrap();
+                receiver
+                    .get_sender::<ServerToClientMsg>()
+                    .unwrap()
+                    .send_server_msg(ServerToClientMsg::KillSessionComplete { error: None })
+                    .unwrap();
+                owner.shutdown().unwrap();
+            })
+        });
+        let stages = fixture.stages.clone();
+        let cleanup = std::thread::spawn(move || drop(fixture));
+        stages.wait_until("cleanup's initial discovery pass", BUDGET, |stages| {
+            stages
+                .iter()
+                .any(|stage| stage == "wait processes")
+                .then_some(())
+        });
+        // Both the endpoint and its claim appear only after the initial discovery pass.
+        let owner = SessionOwnership::acquire(&directory.join("late"))
+            .unwrap()
+            .unwrap();
+        let listener = owner.bind().unwrap();
+        let stopped = yinz_test_support::Watched::new(false);
+        let observed = stopped.clone();
+        let daemon = std::thread::spawn(move || {
+            let mut receiver =
+                IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
+            assert!(matches!(
+                receiver.recv_client_msg(),
+                IpcRecv::Msg(ClientToServerMsg::KillSessionWithCompletion { .. }, _)
+            ));
+            receiver
+                .get_sender::<ServerToClientMsg>()
+                .unwrap()
+                .send_server_msg(ServerToClientMsg::KillSessionComplete { error: None })
+                .unwrap();
+            owner.shutdown().unwrap();
+            drop(owner);
+            drop(daemon_lease);
+            if pending_shutdown {
+                late_stopped.send(()).unwrap();
+            }
+            *observed.lock() = true;
+        });
+        stopped.wait_until("late daemon shutdown", BUDGET, |stopped| {
+            stopped.then_some(())
+        });
+        daemon.join().unwrap();
+        if let Some(pending) = pending {
+            pending.join().unwrap();
+        }
+        cleanup.join().unwrap();
+        assert!(!root.exists());
+        assert!(!sockets.exists());
+    }
 }
 
 #[test]

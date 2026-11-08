@@ -712,7 +712,7 @@ fn interrupted_startup(stage: &str, signal: Signal) {
 
     let session = Session::new();
     let root = session.0.path();
-    let events_path = root.join("events");
+    let events_path = session.0.socket_dir().join("events");
     let listener = UnixListener::bind(&events_path).unwrap();
     let events = Watched::new(Vec::<Event>::new());
     let recorded = events.clone();
@@ -726,7 +726,7 @@ fn interrupted_startup(stage: &str, signal: Signal) {
             recorded.lock().push(serde_json::from_str(&line).unwrap());
         }
     });
-    let peer_path = root.join("peer");
+    let peer_path = session.0.socket_dir().join("peer");
     let peer = yinz_ipc::consts::ipc_bind(&peer_path).unwrap();
     let watching = stage.starts_with("watch-");
     let (resume_config, config_resumed) = mpsc::channel();
