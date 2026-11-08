@@ -545,6 +545,7 @@ fn launch_transaction_partial_project_failure_retains_directory_with_project_pro
         crate::ClientId::new(1),
         &host.senders,
         &data,
+        OpeningPromptPolicy::Reject,
         None,
         None,
         Some(Box::new(|_| {
@@ -650,6 +651,7 @@ fn launch_transaction_concurrent_identical_requests_observe_the_original_prepara
                 crate::ClientId::new(1),
                 &senders,
                 &data,
+                OpeningPromptPolicy::Reject,
                 None,
                 None,
                 Some(Box::new(|spec| {
@@ -680,6 +682,38 @@ fn launch_transaction_concurrent_identical_requests_observe_the_original_prepara
 }
 
 #[test]
+fn launch_transaction_automation_rejects_opening_prompts_before_allocating_resources() {
+    for (prompt, reuse_prompt) in [
+        (Some(""), None),
+        (Some("opening task"), None),
+        (None, Some("reused task")),
+    ] {
+        let (root, data, mut request) = repository();
+        let host = Host::new(false, true, false);
+        request.spec.prompt = prompt.map(str::to_owned);
+        request.spec.reuse_prompt = reuse_prompt.map(str::to_owned);
+        let response = launch(
+            format!("{}.prompt", server_instance()),
+            request,
+            crate::ClientId::new(1),
+            &host.senders,
+            &data,
+        );
+        assert_eq!(response.outcome, AgentOutcome::Rejected);
+        assert!(response
+            .message
+            .unwrap()
+            .contains("does not accept prompt or reuse_prompt"));
+        let receipt = response.launch.unwrap();
+        assert_eq!(receipt.process, ProcessState::NotStarted);
+        assert!(!receipt.resources.terminal_allocated);
+        assert!(!root.path().join(".worktrees").exists());
+        assert!(host.senders.launches.gates.lock().unwrap().is_empty());
+        assert!(host.commands.lock().is_empty());
+    }
+}
+
+#[test]
 fn launch_transaction_plugin_spawn_preserves_origin_and_legacy_response() {
     use prost::Message;
     let (root, data, request) = repository();
@@ -688,40 +722,72 @@ fn launch_transaction_plugin_spawn_preserves_origin_and_legacy_response() {
     env.senders = host.senders.clone();
     env.data_access = Arc::new(data);
     env.plugin_cwd = root.path().to_owned();
-    env.response_sink = Some(Vec::new());
     // Use the permission-gated public dispatch, with precisely the existing SpawnAgent right.
     *env.permissions.lock().unwrap() = Some(std::collections::HashSet::from([
         yinz_types::data::PermissionType::RunCommands,
     ]));
-    super::super::run_plugin_command(
-        &mut env,
-        yinz_types::data::PluginCommand::SpawnAgent {
-            spec: request.spec,
-            source_directory: None,
-            cwd: None,
-            name: Some("worker".into()),
-            context: std::collections::BTreeMap::from([(
-                "original-context".into(),
-                "preserved".into(),
-            )]),
-            start_suppressed: false,
-        },
-    )
-    .unwrap();
-    let wire = yinz_plugin_api::plugin_command::ProtobufSpawnAgentResponse::decode(
-        env.response_sink.take().unwrap().as_slice(),
-    )
-    .unwrap();
-    let spawned = yinz_types::data::SpawnAgentResponse::try_from(wire)
-        .unwrap()
+    for (prompt, reuse_prompt, reuse, expected_prompt) in [
+        ("", None, false, None),
+        (
+            "opening task",
+            Some("reused task"),
+            false,
+            Some("opening task"),
+        ),
+        (
+            "opening task",
+            Some("reused task"),
+            true,
+            Some("reused task"),
+        ),
+    ] {
+        let mut spec = request.spec.clone();
+        spec.prompt = Some(prompt.into());
+        spec.reuse_prompt = reuse_prompt.map(str::to_owned);
+        spec.reuse = Some(reuse);
+        env.response_sink = Some(Vec::new());
+        super::super::run_plugin_command(
+            &mut env,
+            yinz_types::data::PluginCommand::SpawnAgent {
+                spec,
+                source_directory: None,
+                cwd: None,
+                name: Some("worker".into()),
+                context: std::collections::BTreeMap::from([(
+                    "original-context".into(),
+                    "preserved".into(),
+                )]),
+                start_suppressed: false,
+            },
+        )
         .unwrap();
-    assert!(spawned.cwd.unwrap().join(".git").exists());
-    let command = &host.commands.lock()[0];
-    let origin = command.originating_plugin.as_ref().unwrap();
-    assert_eq!(origin.plugin_id, env.plugin_id);
-    assert_eq!(origin.context["original-context"], "preserved");
-    assert_eq!(
-        origin.context[yinz_types::data::AGENT_PANE_CONTEXT],
-        "codex"
-    );
+        let wire = yinz_plugin_api::plugin_command::ProtobufSpawnAgentResponse::decode(
+            env.response_sink.take().unwrap().as_slice(),
+        )
+        .unwrap();
+        let spawned = yinz_types::data::SpawnAgentResponse::try_from(wire)
+            .unwrap()
+            .unwrap();
+        assert!(spawned.cwd.unwrap().join(".git").exists());
+        if reuse {
+            assert_eq!(spawned.branch.as_deref(), Some("review"));
+        }
+        let commands = host.commands.lock();
+        let command = commands.last().unwrap();
+        assert!(!command.args.iter().any(String::is_empty));
+        for prompt in ["opening task", "reused task"] {
+            assert_eq!(
+                command.args.iter().any(|arg| arg == prompt),
+                expected_prompt == Some(prompt),
+                "{command:?}"
+            );
+        }
+        let origin = command.originating_plugin.as_ref().unwrap();
+        assert_eq!(origin.plugin_id, env.plugin_id);
+        assert_eq!(origin.context["original-context"], "preserved");
+        assert_eq!(
+            origin.context[yinz_types::data::AGENT_PANE_CONTEXT],
+            "codex"
+        );
+    }
 }

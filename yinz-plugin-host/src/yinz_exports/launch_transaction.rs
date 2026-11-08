@@ -3,7 +3,7 @@ use super::{
     agent_control::{
         finish_spawn, prepare_automation_agent, prepare_new_project_agent, NewProjectProgress,
     },
-    agent_launch::{spawn_agent_prepared_with_gate, AgentSpawnError},
+    agent_launch::{spawn_agent_prepared_with_gate, AgentSpawnError, OpeningPromptPolicy},
 };
 use std::{cell::RefCell, sync::Arc};
 use yinz_bus::{
@@ -272,7 +272,17 @@ pub(super) fn launch(
     senders: &ThreadSenders,
     data: &DataAccess,
 ) -> AgentResponse {
-    launch_with_prepare(id, request, client, senders, data, None, None, None)
+    launch_with_prepare(
+        id,
+        request,
+        client,
+        senders,
+        data,
+        OpeningPromptPolicy::Reject,
+        None,
+        None,
+        None,
+    )
 }
 
 type Preparation<'a> = Box<
@@ -287,6 +297,7 @@ pub(super) fn launch_with_prepare(
     client: crate::ClientId,
     senders: &ThreadSenders,
     data: &DataAccess,
+    opening_prompt: OpeningPromptPolicy,
     origin: Option<yinz_types::data::OriginatingPlugin>,
     title: Option<String>,
     prepare: Option<Preparation<'_>>,
@@ -401,6 +412,7 @@ pub(super) fn launch_with_prepare(
         client,
         senders,
         gate.clone(),
+        opening_prompt,
         origin,
         title,
         |spec| {

@@ -87,6 +87,7 @@ pub(super) fn spawn_agent(
             env.client_id,
             &env.senders,
             &env.data_access,
+            OpeningPromptPolicy::Allow,
             Some(origin),
             name,
             Some(Box::new(|spec| {
@@ -379,6 +380,7 @@ pub(super) fn spawn_agent_prepared(
         client_id,
         senders,
         data,
+        OpeningPromptPolicy::Reject,
         None,
         None,
         Some(Box::new(prepare)),
@@ -392,12 +394,20 @@ pub(super) fn spawn_agent_prepared(
     }
 }
 
+/// Plugin spawns support opening prompts; automation submits prompts after launch.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum OpeningPromptPolicy {
+    Allow,
+    Reject,
+}
+
 pub(super) fn spawn_agent_prepared_with_gate(
     placement: yinz_types::agent::control::AgentPlacement,
     mut spec: AgentSpawnSpec,
     client_id: crate::ClientId,
     senders: &ThreadSenders,
     gate: std::sync::Arc<yinz_bus::agent_launch::LaunchGate>,
+    opening_prompt: OpeningPromptPolicy,
     origin: Option<yinz_types::data::OriginatingPlugin>,
     title: Option<String>,
     prepare: impl FnOnce(&mut AgentSpawnSpec) -> Result<PreparedAgent, AgentSpawnError>,
@@ -407,7 +417,9 @@ pub(super) fn spawn_agent_prepared_with_gate(
     ) -> Result<(), AgentSpawnError>,
 ) -> Result<SpawnedAgent, AgentSpawnError> {
     use yinz_types::agent::control::AgentPlacement;
-    if spec.prompt.is_some() || spec.reuse_prompt.is_some() {
+    if opening_prompt == OpeningPromptPolicy::Reject
+        && (spec.prompt.is_some() || spec.reuse_prompt.is_some())
+    {
         return Err(
             "spawn does not accept prompt or reuse_prompt; spawn, wait, then prompt".into(),
         );

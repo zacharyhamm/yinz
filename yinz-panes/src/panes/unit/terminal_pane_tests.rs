@@ -2846,6 +2846,37 @@ fn agent_exit_notification_preserves_palette_for_pending_pty_output() {
 }
 
 #[test]
+fn starting_an_agent_reservation_clears_the_banner_and_preserves_output_on_resize() {
+    let mut pane = agent_pane();
+    pane.hold(None, true, RunCommand::default());
+    assert!(pane.banner.is_some());
+
+    let command = RunCommand {
+        command: "codex".into(),
+        ..Default::default()
+    };
+    pane.set_launch_command(command.clone());
+    assert!(!pane.is_held());
+    assert_eq!(pane.invoked_with, Some(super::Run::Command(command)));
+    assert!(pane.grid.dump_screen(false).trim().is_empty());
+
+    pane.handle_pty_bytes(b"provider output survives resize\r\n".to_vec());
+    assert!(pane
+        .grid
+        .dump_screen(false)
+        .contains("provider output survives resize"));
+    for (cols, rows) in [(90, 24), (70, 18)] {
+        pane.set_geom(geom_at(0, 0, cols, rows));
+        let screen = pane.grid.dump_screen(false);
+        assert!(
+            screen.contains("provider output survives resize"),
+            "{screen}"
+        );
+        assert!(!screen.contains("Waiting to start"), "{screen}");
+    }
+}
+
+#[test]
 fn agent_restart_is_fresh_and_keeps_command_metadata() {
     let mut pane = agent_pane();
     pane.set_agent_info(Some(AgentInfo {

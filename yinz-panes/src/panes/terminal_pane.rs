@@ -1508,6 +1508,7 @@ impl Pane for TerminalPane {
         self.invoked_with = Some(Run::Command(command));
         self.agent = agent_from_run(self.invoked_with.as_ref());
         self.is_held = None;
+        self.remove_banner();
     }
     fn invoked_with(&self) -> &Option<Run> {
         &self.invoked_with
