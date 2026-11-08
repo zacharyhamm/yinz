@@ -33,6 +33,7 @@ fn record(commands: &Commands, command: &PluginCommand) {
         }
     }
     super::reference_trace::legacy_project_fields(&mut value);
+    super::reference_trace::legacy_entry_definition(&mut value);
     commands.lock().unwrap().push(value);
 }
 
@@ -621,13 +622,43 @@ fn normalize_run_persistence(commands: Vec<Value>, current: bool) -> Vec<Value> 
         for mutation in mutations.iter_mut() {
             let entity = mutation
                 .pointer("/Put/entity")
-                .or_else(|| mutation.pointer("/Update/entity"));
+                .or_else(|| mutation.pointer("/Update/entity"))
+                .cloned();
             assert!(
-                entity == Some(&serde_json::json!("agent_run"))
-                    || entity == Some(&serde_json::json!("agent_run_entry")),
+                entity == Some(serde_json::json!("agent_run"))
+                    || entity == Some(serde_json::json!("agent_run_entry")),
                 "run batches contain only metadata and timeline writes"
             );
-            if entity == Some(&serde_json::json!("agent_run")) {
+            if entity == Some(serde_json::json!("agent_run_entry")) {
+                let body = mutation.get_mut("Put").unwrap();
+                let values = body["values"].as_array_mut().unwrap();
+                let worker = values
+                    .iter()
+                    .find(|pair| pair[0] == "worker_id")
+                    .and_then(|pair| pair[1]["Text"].as_str())
+                    .map(str::to_owned);
+                if let Some(worker) = worker
+                    && values.iter().any(|pair| {
+                        pair[0] == "event_id"
+                            && pair[1]["Text"]
+                                .as_str()
+                                .is_some_and(|id| id.starts_with("subagent:"))
+                    })
+                    && let Some(text) = values.iter_mut().find(|pair| pair[0] == "text")
+                {
+                    text[1]["Text"] = serde_json::json!(format!(
+                        "Subagent {worker}:\n{}",
+                        text[1]["Text"].as_str().unwrap()
+                    ));
+                }
+                values.retain(|pair| {
+                    !matches!(
+                        pair[0].as_str(),
+                        Some("worker_id" | "conversation_turn_id" | "attribution_resolved")
+                    )
+                });
+            }
+            if entity == Some(serde_json::json!("agent_run")) {
                 let operation = if mutation.get("Put").is_some() {
                     "Put"
                 } else {

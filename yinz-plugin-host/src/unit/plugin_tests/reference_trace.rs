@@ -230,10 +230,12 @@ impl Trace {
             };
             let command_json = replace(recorded, "<fixture-root>", &self.root);
             let mut command: PluginCommand = serde_json::from_value(command_json.clone()).unwrap();
-            if let PluginCommand::DataDefineEntity { def, .. } = &mut command
-                && def.name == "project"
-            {
-                *def = project_data::store::project_def();
+            if let PluginCommand::DataDefineEntity { def, .. } = &mut command {
+                match def.name.as_str() {
+                    "project" => *def = project_data::store::project_def(),
+                    "agent_run_entry" => *def = project_data::store::agent_run_entry_def(),
+                    _ => {},
+                }
             }
             let reply = responder(&command);
             let mut actual = replace(
@@ -242,6 +244,37 @@ impl Trace {
                 "<fixture-root>",
             );
             legacy_project_fields(&mut actual);
+            if matches!(&command, PluginCommand::DataDefineEntity { def, .. } if def.name == "agent_run_entry")
+            {
+                actual["json"]["version"] = serde_json::json!(4);
+                for field in ["attrs_added", "indexes_created"] {
+                    if let Some(attrs) = actual["json"][field].as_array_mut() {
+                        attrs.retain(|attr| {
+                            !matches!(
+                                attr.as_str(),
+                                Some("worker_id" | "conversation_turn_id" | "attribution_resolved")
+                            )
+                        });
+                    }
+                }
+            }
+            if matches!(&command, PluginCommand::DataFetch { request } if request.entity == "agent_run_entry")
+            {
+                for field in ["attribution_resolved", "worker_id", "conversation_turn_id"] {
+                    if let Some(index) = actual["json"]["columns"]
+                        .as_array()
+                        .and_then(|columns| columns.iter().position(|column| column == field))
+                    {
+                        actual["json"]["columns"]
+                            .as_array_mut()
+                            .unwrap()
+                            .remove(index);
+                        for row in actual["json"]["rows"].as_array_mut().unwrap() {
+                            row.as_array_mut().unwrap().remove(index);
+                        }
+                    }
+                }
+            }
             let mut expected_reply = call.reply.clone();
             // Shared browsing dropped recursive listings. Retain the old transcript while
             // adapting its driver request to today's PickRequest decoder.
@@ -626,5 +659,26 @@ pub(crate) fn legacy_project_fields(value: &mut Value) {
             }
         },
         _ => {},
+    }
+}
+
+// Retained traces predate worker and conversation-turn attribution. Check the
+// complete current declaration before adapting its added nullable fields.
+pub(crate) fn legacy_entry_definition(value: &mut Value) {
+    if let Some(def) = value.pointer_mut("/DataDefineEntity/def")
+        && def["name"] == "agent_run_entry"
+        && def["version"] == 6
+    {
+        assert_eq!(
+            *def,
+            serde_json::to_value(project_data::store::agent_run_entry_def()).unwrap()
+        );
+        def["version"] = serde_json::json!(4);
+        def["attrs"].as_array_mut().unwrap().retain(|attr| {
+            !matches!(
+                attr["name"].as_str(),
+                Some("worker_id" | "conversation_turn_id" | "attribution_resolved")
+            )
+        });
     }
 }

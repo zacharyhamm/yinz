@@ -416,10 +416,33 @@ fn stored_equal(wasm: &DataHost, steel: &DataHost) {
         let without_ids = |host: &DataHost| {
             let mut rows = host.fetch(&request);
             assert!(!rows.truncated, "compare every stored {entity} row");
-            let id = rows.column_index("id").unwrap();
-            rows.columns.remove(id);
-            for row in &mut rows.rows {
-                row.remove(id);
+            if entity == "agent_run_entry" {
+                let worker = rows.column_index("worker_id").unwrap();
+                let event = rows.column_index("event_id").unwrap();
+                let text = rows.column_index("text").unwrap();
+                for row in &mut rows.rows {
+                    if let DataValue::Text(worker) = &row[worker]
+                        && matches!(&row[event], DataValue::Text(id) if id.starts_with("subagent:"))
+                        && let DataValue::Text(message) = &row[text]
+                    {
+                        row[text] = DataValue::Text(format!("Subagent {worker}:\n{message}"));
+                    }
+                }
+            }
+            // Legacy recordings predate attribution; its values are covered by
+            // the conversation store tests rather than the retained service trace.
+            for field in [
+                "id",
+                "worker_id",
+                "conversation_turn_id",
+                "attribution_resolved",
+            ] {
+                if let Some(index) = rows.column_index(field) {
+                    rows.columns.remove(index);
+                    for row in &mut rows.rows {
+                        row.remove(index);
+                    }
+                }
             }
             rows
         };

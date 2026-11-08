@@ -643,6 +643,7 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
     let confirmation = yinz_types::agent::HookEvent {
         hook_event_name: "Stop".into(),
         session_id: "remote-session".into(),
+        turn_id: Some("remote-prompt".into()),
         prompt_id: Some("remote-prompt".into()),
         claude_turn_complete: Some(true),
         last_assistant_message: Some("final remote answer".into()),
@@ -674,6 +675,7 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
     let background_idle = yinz_types::agent::HookEvent {
         hook_event_name: yinz_types::agent::CLAUDE_BACKGROUND_IDLE.into(),
         session_id: "remote-session".into(),
+        turn_id: Some("prompt".into()),
         prompt_id: Some("prompt".into()),
         claude_background: Some(false),
         ..Default::default()
