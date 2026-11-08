@@ -717,6 +717,11 @@ requires them. Every worktree must have its own real `target/` directory. Never
 set `CARGO_TARGET_DIR`, change `build.target-dir`, share a target directory, or
 copy mutable build artifacts between worktrees.
 
+When `/tmp` has insufficient space, set `YINZ_TEST_TMPDIR` to a short, private
+directory on a larger filesystem for managed test runs. Set `TMPDIR` there too
+for other temporary fixtures. Keep this directory outside Git worktrees so
+fixtures do not inherit repository identity.
+
 Only an explicit user request permits skipping the full merge gate. Record the
 request and its scope in `skipCiRequest`. A prior successful run, a small diff,
 an expensive build or a desire to move faster does not supply that request. A

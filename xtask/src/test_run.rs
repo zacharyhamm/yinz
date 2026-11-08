@@ -14,8 +14,11 @@ impl TestRun {
     pub fn new() -> anyhow::Result<Self> {
         // /tmp stays short on macOS too: its default temp_dir can exhaust sun_path.
         // SAFETY: geteuid has no preconditions.
-        let parent =
-            std::path::PathBuf::from(format!("/tmp/yz-runs-{}", unsafe { libc::geteuid() }));
+        let parent = std::env::var_os("YINZ_TEST_TMPDIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(format!("/tmp/yz-runs-{}", unsafe { libc::geteuid() }))
+            });
         let root = OwnedDir::new(&parent).context("failed to create the test run directory")?;
         root.inherit_lock()
             .context("failed to pass the test run lease to child processes")?;
