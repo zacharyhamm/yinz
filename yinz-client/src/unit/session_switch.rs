@@ -1436,6 +1436,8 @@ fn local_switch_options_exclude_the_source_layout_and_reload_without_losing_cli_
                     warp_terminal_state: 0,
                     signal_quit: false,
                     update_protocol: 0,
+                    server_version: String::new(),
+                    server_host: String::new(),
                 })
                 .unwrap();
         });

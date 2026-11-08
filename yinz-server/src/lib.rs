@@ -1314,6 +1314,8 @@ pub fn start_server_impl(
                             warp_terminal_state: yinz_types::data::WARP_TERMINAL_STATE_VERSION,
                             signal_quit: true,
                             update_protocol: yinz_types::session_update::PROTOCOL_VERSION,
+                            server_version: yinz_runtime::consts::VERSION.to_owned(),
+                            server_host: yinz_runtime::host_identity::host_display_name(),
                         },
                     )
                     .context("advertise attachment capabilities")
@@ -2217,6 +2219,8 @@ pub fn start_server_impl(
                             warp_terminal_state: yinz_types::data::WARP_TERMINAL_STATE_VERSION,
                             signal_quit: true,
                             update_protocol: yinz_types::session_update::PROTOCOL_VERSION,
+                            server_version: yinz_runtime::consts::VERSION.to_owned(),
+                            server_host: yinz_runtime::host_identity::host_display_name(),
                         },
                     );
                     log::info!(

@@ -515,6 +515,8 @@ fn force_delete_waits_for_completion_and_preserves_checkpoint_on_failure() {
                             warp_terminal_state: 0,
                             signal_quit: false,
                             update_protocol: 0,
+                            server_version: String::new(),
+                            server_host: String::new(),
                         })
                         .unwrap();
                 },

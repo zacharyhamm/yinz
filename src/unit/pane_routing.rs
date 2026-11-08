@@ -130,6 +130,8 @@ impl Session {
                     warp_terminal_state: 2,
                     signal_quit: false,
                     update_protocol: 0,
+                    server_version: String::new(),
+                    server_host: String::new(),
                 },
                 ClientToServerMsg::AgentControl(_) => {
                     ServerToClientMsg::AgentControl(yinz_types::agent::control::AgentResponse::new(

@@ -354,13 +354,15 @@ fn queued_stale_frames_and_session_switches_do_not_affect_the_replacement() {
     let (tx, rx) = channels::unbounded();
     let tx = SenderWithContext::new(tx);
     let budget = Arc::new(RenderBudget::new(100));
-    budget.reserve(5).unwrap();
+    budget.reserve(12).unwrap();
     for instruction in [
         ClientInstruction::FromServer(
             1,
             Box::new(ClientInstruction::Connected {
                 signal_quit: false,
                 update_protocol: 0,
+                server_version: "replacement-build".into(),
+                server_host: "replacement-host".into(),
             }),
         ),
         ClientInstruction::FromServer(
@@ -368,6 +370,8 @@ fn queued_stale_frames_and_session_switches_do_not_affect_the_replacement() {
             Box::new(ClientInstruction::Connected {
                 signal_quit: true,
                 update_protocol: 0,
+                server_version: "stale-build".into(),
+                server_host: "stale-host".into(),
             }),
         ),
         ClientInstruction::FromServer(0, Box::new(ClientInstruction::Render("STALE".into()))),
@@ -375,13 +379,42 @@ fn queued_stale_frames_and_session_switches_do_not_affect_the_replacement() {
             0,
             Box::new(ClientInstruction::SwitchSession(Default::default())),
         ),
-        ClientInstruction::FromServer(
-            1,
-            Box::new(ClientInstruction::Exit(yinz_ipc::ipc::ExitReason::Normal)),
-        ),
+        ClientInstruction::FromServer(1, Box::new(ClientInstruction::Render("CURRENT".into()))),
     ] {
         tx.send(instruction).unwrap();
     }
+    let saver = crate::screensaver::Screensaver::new(
+        &Default::default(),
+        &yinz_types::input::options::Options {
+            screensaver_idle_timeout: Some(1),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let producer = std::thread::spawn({
+        let os = os.clone();
+        let tx = tx.clone();
+        move || {
+            os.stdout_attempts.wait_until(
+                "replacement identity appears on the screensaver",
+                yinz_test_support::default_timeout(),
+                |writes| {
+                    writes
+                        .iter()
+                        .any(|write| {
+                            String::from_utf8_lossy(write)
+                                .contains("Server: replacement-build on replacement-host")
+                        })
+                        .then_some(())
+                },
+            );
+            tx.send(ClientInstruction::FromServer(
+                1,
+                Box::new(ClientInstruction::Exit(yinz_ipc::ipc::ExitReason::Normal)),
+            ))
+            .unwrap();
+        }
+    });
     let (input_tx, _input_rx) = crate::input_handler::input_control_channel();
     let nested = NestedReannounce::spawn(Box::new(os.clone()), "generation-test".into());
     nested.stop();
@@ -406,9 +439,13 @@ fn queued_stale_frames_and_session_switches_do_not_affect_the_replacement() {
         render_budget: &budget,
         startup_started: Instant::now(),
         splash: None,
-        screensaver: None,
+        screensaver: Some(saver),
     }
     .run(&rx);
+    producer.join().unwrap();
+    assert!(!String::from_utf8(os.stdout_bytes())
+        .unwrap()
+        .contains("stale-host"));
     assert!(!signal_quit_supported.load(Ordering::Acquire));
     assert_eq!(outcome.exit_status, 0);
     assert!(outcome.reconnect_to_session.is_none());

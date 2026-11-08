@@ -61,6 +61,8 @@ pub(crate) struct Screensaver {
     last_size: Option<Size>,
     cycle: Option<u128>,
     direction: Option<Direction>,
+    client_identity: String,
+    server_identity: String,
 }
 
 impl Screensaver {
@@ -86,7 +88,18 @@ impl Screensaver {
             last_size: None,
             cycle: None,
             direction: None,
+            client_identity: identity_line(
+                "Client",
+                yinz_runtime::consts::VERSION,
+                &yinz_runtime::host_identity::host_display_name(),
+            ),
+            server_identity: identity_line("Server", "", ""),
         })
+    }
+
+    pub fn set_server_identity(&mut self, version: &str, host: &str) {
+        self.server_identity = identity_line("Server", version, host);
+        self.next_frame = Instant::now();
     }
 
     pub fn active(&self) -> bool {
@@ -119,7 +132,7 @@ impl Screensaver {
             return Ok(false);
         }
         let size = os.get_terminal_size();
-        let stage = Stage::new(size);
+        let stage = Stage::screensaver(size);
         if self.active() && (!state.sleeping || stage.is_none()) {
             state.sleeping = false;
             state.last_input = now;
@@ -136,7 +149,8 @@ impl Screensaver {
         if self.renderer.is_none()
             && now.saturating_duration_since(state.last_input) >= self.timeout
         {
-            self.renderer = splash::renderer(os.get_terminal_size(), &self.config, &self.options);
+            self.renderer = stage
+                .map(|(stage, _)| splash::renderer_for_stage(stage, &self.config, &self.options));
             state.sleeping = self.renderer.is_some();
             self.started = now;
             self.next_frame = now;
@@ -152,7 +166,7 @@ impl Screensaver {
             )
             .context("hide graphics for screensaver")?;
         }
-        if let (Some(renderer), Some(stage)) = (&mut self.renderer, stage) {
+        if let (Some(renderer), Some((stage, footer_rows))) = (&mut self.renderer, stage) {
             let resized = self.last_size != Some(size);
             if resized || now >= self.next_frame {
                 let elapsed = now.saturating_duration_since(self.started);
@@ -174,9 +188,17 @@ impl Screensaver {
                         }
                         renderer.frame(time.min(splash::DURATION))
                     },
-                    Phase::Bouncing(time) => renderer.bouncing_frame(size, time, direction),
+                    Phase::Bouncing(time) => {
+                        renderer.bouncing_frame(size, time, direction, footer_rows)
+                    },
                 };
-                renderer.append_bottom_hint(&mut output, size, "press any key");
+                renderer.append_screensaver_footer(
+                    &mut output,
+                    size,
+                    footer_rows,
+                    &self.client_identity,
+                    &self.server_identity,
+                );
                 write_synchronised(
                     &mut *os.get_stdout_writer(),
                     sync,
@@ -216,6 +238,18 @@ impl Screensaver {
                 .unwrap_or(now + Duration::from_secs(60)),
         ))
     }
+}
+
+fn identity_line(role: &str, version: &str, host: &str) -> String {
+    let component = |value: &str| {
+        let value: String = value.chars().filter(|c| !c.is_control()).collect();
+        if value.trim().is_empty() {
+            "unknown".to_owned()
+        } else {
+            value
+        }
+    };
+    format!("{role}: {} on {}", component(version), component(host))
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -5066,6 +5066,8 @@ fn test_server_messages() {
         warp_terminal_state: 0,
         signal_quit: false,
         update_protocol: 0,
+        server_version: String::new(),
+        server_host: String::new(),
     });
     test_server_roundtrip!(ServerToClientMsg::Connected {
         warp_companions: true,
@@ -5074,6 +5076,8 @@ fn test_server_messages() {
         warp_terminal_state: 2,
         signal_quit: true,
         update_protocol: 0,
+        server_version: "0.1.2-alpha.7".into(),
+        server_host: "server-box".into(),
     });
     test_server_roundtrip!(ServerToClientMsg::QueryTerminalSize);
     test_server_roundtrip!(ServerToClientMsg::ConfigFileUpdated);
@@ -6284,8 +6288,10 @@ fn signal_quit_capability_defaults_to_false_for_older_servers() {
                 warp_agent_tracking: false,
                 warp_terminal_state: 0,
                 update_protocol: 0,
+                server_version,
+                server_host,
                 ..
-            }
+            } if server_version.is_empty() && server_host.is_empty()
         ));
     }
     let message: ServerToClientMsg = serde_json::from_str(
@@ -6299,8 +6305,10 @@ fn signal_quit_capability_defaults_to_false_for_older_servers() {
             warp_agent_tracking: false,
             warp_terminal_state: 0,
             update_protocol: 0,
+            server_version,
+            server_host,
             ..
-        }
+        } if server_version.is_empty() && server_host.is_empty()
     ));
 }
 

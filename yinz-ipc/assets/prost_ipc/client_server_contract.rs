@@ -4223,6 +4223,10 @@ pub struct ConnectedMsg {
     pub signal_quit: bool,
     #[prost(uint32, tag="5")]
     pub update_protocol: u32,
+    #[prost(string, tag="7")]
+    pub server_version: ::prost::alloc::string::String,
+    #[prost(string, tag="8")]
+    pub server_host: ::prost::alloc::string::String,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

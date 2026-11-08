@@ -62,6 +62,24 @@ pub(crate) struct Stage {
 
 impl Stage {
     pub fn new(size: Size) -> Option<Self> {
+        Self::in_area(size, 2)
+    }
+
+    /// Prefer all three footer rows; retain the logo on short terminals by dropping details.
+    pub fn screensaver(size: Size) -> Option<(Self, usize)> {
+        (1..=3).rev().find_map(|footer_rows| {
+            Self::in_area(
+                Size {
+                    rows: size.rows.saturating_sub(footer_rows),
+                    ..size
+                },
+                0,
+            )
+            .map(|stage| (stage, footer_rows))
+        })
+    }
+
+    fn in_area(size: Size, margin: usize) -> Option<Self> {
         let scale = ((size.cols.saturating_sub(2)) as f32 / 52.0).min(1.0);
         if scale < 0.5 {
             return None;
@@ -69,10 +87,17 @@ impl Stage {
         let cols = (52.0 * scale).floor() as usize;
         // Trim the logo's vertical padding to leave room for the quotation,
         // without changing the letter proportions or the width of its stage.
-        let rows = (12.0 * scale).ceil() as usize;
         let quote_rows = quote_lines(cols).len();
+        let mut rows = (12.0 * scale).ceil() as usize;
+        if margin == 0 {
+            // The idle footer can take a little logo padding so an 80x24 terminal
+            // retains the quotation. Startup keeps its original dimensions.
+            rows = rows
+                .min(size.rows.saturating_sub(quote_rows + 1))
+                .max((10.0 * scale).ceil() as usize);
+        }
         let height = rows + 1 + quote_rows;
-        if height <= size.rows.saturating_sub(2) {
+        if height <= size.rows.saturating_sub(margin) {
             return Some(Self {
                 cols,
                 rows,
@@ -83,7 +108,7 @@ impl Stage {
         }
         // Short terminals retain the logo rather than clipping the quotation.
         let scale = ((size.cols.saturating_sub(2)) as f32 / 52.0)
-            .min((size.rows.saturating_sub(2)) as f32 / 16.0)
+            .min((size.rows.saturating_sub(margin)) as f32 / 16.0)
             .min(1.0);
         if scale < 0.5 {
             return None;
@@ -218,8 +243,9 @@ impl Renderer {
         size: Size,
         elapsed: Duration,
         direction: Direction,
+        footer_rows: usize,
     ) -> String {
-        let (stage, offset) = bouncing_stage(size, elapsed, direction);
+        let (stage, offset) = bouncing_stage(size, elapsed, direction, footer_rows);
         if self.stage != stage {
             self.resize(stage);
         }
@@ -284,9 +310,29 @@ impl Renderer {
         output
     }
 
-    pub(crate) fn append_bottom_hint(&self, output: &mut String, size: Size, hint: &str) {
-        let width = hint.width();
-        if size.rows == 0 || size.cols < width + 2 {
+    pub(crate) fn append_screensaver_footer(
+        &self,
+        output: &mut String,
+        size: Size,
+        footer_rows: usize,
+        client: &str,
+        server: &str,
+    ) {
+        let lines: &[&str] = match footer_rows.min(size.rows) {
+            0 => &[],
+            1 => &["press any key"],
+            2 => &[client, "press any key"],
+            _ => &[client, server, "press any key"],
+        };
+        for (offset, line) in lines.iter().enumerate() {
+            let line = footer_text(line, size.cols.saturating_sub(2));
+            self.append_footer_line(output, size, size.rows - lines.len() + offset + 1, &line);
+        }
+    }
+
+    fn append_footer_line(&self, output: &mut String, size: Size, row: usize, text: &str) {
+        let width = text.width();
+        if text.is_empty() {
             return;
         }
         let [r, g, b] = ensure_contrast(
@@ -296,8 +342,8 @@ impl Renderer {
         );
         let [br, bg, bb] = self.background.map(|channel| channel.round() as u8);
         output.push_str(&format!(
-            "\x1b[{};{}H\x1b[48;2;{br};{bg};{bb}m\x1b[38;2;{r};{g};{b}m{hint}\x1b[m",
-            size.rows,
+            "\x1b[{};{}H\x1b[48;2;{br};{bg};{bb}m\x1b[38;2;{r};{g};{b}m{text}\x1b[m",
+            row,
             (size.cols - width) / 2 + 1,
         ));
     }
@@ -345,6 +391,21 @@ impl Renderer {
     }
 }
 
+/// Keep peer-supplied text on one terminal line and truncate by displayed width.
+fn footer_text(text: &str, width: usize) -> String {
+    let mut text: String = text.chars().filter(|c| !c.is_control()).collect();
+    if text.width() > width {
+        if width == 0 {
+            return String::new();
+        }
+        while text.width() > width - 1 {
+            text.pop();
+        }
+        text.push('…');
+    }
+    text
+}
+
 fn bouncing_letter(elapsed: Duration) -> (usize, Duration) {
     let turn = elapsed.as_nanos() / LETTER_TURN.as_nanos();
     let fraction =
@@ -356,14 +417,18 @@ fn bouncing_letter(elapsed: Duration) -> (usize, Duration) {
     )
 }
 
-fn bouncing_stage(size: Size, elapsed: Duration, direction: Direction) -> (Stage, [f32; 2]) {
+fn bouncing_stage(
+    size: Size,
+    elapsed: Duration,
+    direction: Direction,
+    footer_rows: usize,
+) -> (Stage, [f32; 2]) {
     let cols = size.cols.min(20);
-    // Reserve the bottom row for the wake hint.
-    let rows = size.rows.saturating_sub(1).min(12);
+    let rows = size.rows.saturating_sub(footer_rows).min(12);
     let seconds = elapsed.as_secs_f64();
     let [dx, dy] = direction.velocity();
     let x = reflected_position(seconds * dx, size.cols - cols);
-    let y = reflected_position(seconds * dy, size.rows.saturating_sub(rows + 1));
+    let y = reflected_position(seconds * dy, size.rows.saturating_sub(rows + footer_rows));
     (
         Stage {
             cols,

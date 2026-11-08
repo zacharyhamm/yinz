@@ -696,6 +696,8 @@ fn check_query_cleanup(error: ErrorKind, reconnect: bool, quit: bool) {
                     warp_terminal_state: 0,
                     signal_quit: true,
                     update_protocol: 0,
+                    server_version: String::new(),
+                    server_host: String::new(),
                 });
             }
             os.queue_from_server(ServerToClientMsg::Render {

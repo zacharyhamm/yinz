@@ -15,6 +15,52 @@ fn saver() -> Screensaver {
 }
 
 #[test]
+fn identities_use_local_client_details_and_refresh_server_details_in_both_phases() {
+    let mut saver = saver();
+    let os = FakeClientOsApi::new().capturing_stdout();
+    let start = saver.activity.lock().unwrap().last_input + Duration::from_secs(60);
+    saver.tick(&os, None, start, true).unwrap();
+    let output = String::from_utf8(os.stdout_bytes()).unwrap();
+    assert!(output.contains(&identity_line(
+        "Client",
+        yinz_runtime::consts::VERSION,
+        &yinz_runtime::host_identity::host_display_name(),
+    )));
+    assert!(output.contains("Server: unknown on unknown"));
+
+    saver.set_server_identity("server-version", "server-box");
+    for seconds in [1, 12] {
+        let before = os.stdout_bytes().len();
+        saver
+            .tick(&os, None, start + Duration::from_secs(seconds), true)
+            .unwrap();
+        let output = String::from_utf8(os.stdout_bytes()[before..].to_vec()).unwrap();
+        assert!(output.contains("Server: server-version on server-box"));
+        assert!(!output.contains("Server: unknown"));
+    }
+    saver.set_server_identity("new-version", "new-host");
+    let before = os.stdout_bytes().len();
+    saver
+        .tick(&os, None, start + Duration::from_secs(13), true)
+        .unwrap();
+    let output = String::from_utf8(os.stdout_bytes()[before..].to_vec()).unwrap();
+    assert!(output.contains("Server: new-version on new-host"));
+    assert!(!output.contains("server-box"));
+}
+
+#[test]
+fn identity_components_remove_controls_and_default_empty_values() {
+    assert_eq!(
+        identity_line("Server", "\n\x1b\t", "\r"),
+        "Server: unknown on unknown"
+    );
+    assert_eq!(
+        identity_line("Server", "1.2\n3", "box\x07\u{009b}"),
+        "Server: 1.23 on box"
+    );
+}
+
+#[test]
 fn defaults_idle_deadline_activity_and_wake_consumption() {
     assert!(Screensaver::new(
         &Config::default(),

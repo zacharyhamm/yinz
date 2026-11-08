@@ -62,6 +62,8 @@ impl Discovery {
                         warp_terminal_state: 0,
                         signal_quit: false,
                         update_protocol: yinz_types::session_update::PROTOCOL_VERSION,
+                        server_version: String::new(),
+                        server_host: String::new(),
                     })
                     .unwrap();
                 let mut peer =

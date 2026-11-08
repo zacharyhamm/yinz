@@ -281,6 +281,19 @@ fn screensaver_drains_background_frames_and_restores_on_wake() {
     let (tx, rx) = channels::unbounded();
     let tx = SenderWithContext::new(tx);
     let (input_tx, _input_rx) = crate::input_handler::input_control_channel();
+    tx.send(ClientInstruction::from(
+        yinz_ipc::ipc::ServerToClientMsg::Connected {
+            warp_companions: true,
+            warp_held_terminals: true,
+            warp_agent_tracking: true,
+            warp_terminal_state: 0,
+            signal_quit: true,
+            update_protocol: 0,
+            server_version: "server-build".into(),
+            server_host: "remote-box".into(),
+        },
+    ))
+    .unwrap();
     budget.reserve(7).unwrap();
     tx.send(ClientInstruction::Render("initial".into()))
         .unwrap();
@@ -289,12 +302,36 @@ fn screensaver_drains_background_frames_and_restores_on_wake() {
         let budget = budget.clone();
         move || {
             os.stdout_attempts.wait_until(
-                "idle animation appears",
+                "idle animation with server identity appears",
                 yinz_test_support::default_timeout(),
                 |writes| {
                     writes
                         .iter()
-                        .any(|write| write.windows(6).any(|bytes| bytes == b"\x1b[?25l"))
+                        .any(|write| {
+                            write.windows(6).any(|bytes| bytes == b"\x1b[?25l")
+                                && String::from_utf8_lossy(write)
+                                    .contains("Server: server-build on remote-box")
+                        })
+                        .then_some(())
+                },
+            );
+            tx.send(ClientInstruction::Connected {
+                signal_quit: true,
+                update_protocol: 0,
+                server_version: "updated-build".into(),
+                server_host: "new-box".into(),
+            })
+            .unwrap();
+            os.stdout_attempts.wait_until(
+                "updated server identity appears",
+                yinz_test_support::default_timeout(),
+                |writes| {
+                    writes
+                        .iter()
+                        .any(|write| {
+                            String::from_utf8_lossy(write)
+                                .contains("Server: updated-build on new-box")
+                        })
                         .then_some(())
                 },
             );

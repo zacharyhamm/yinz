@@ -85,6 +85,8 @@ pub(crate) enum ClientInstruction {
     Connected {
         signal_quit: bool,
         update_protocol: u32,
+        server_version: String,
+        server_host: String,
     },
     Log(Vec<String>),
     LogError(Vec<String>),
@@ -119,10 +121,14 @@ impl From<ServerToClientMsg> for ClientInstruction {
             ServerToClientMsg::Connected {
                 signal_quit,
                 update_protocol,
+                server_version,
+                server_host,
                 ..
             } => ClientInstruction::Connected {
                 signal_quit,
                 update_protocol,
+                server_version,
+                server_host,
             },
             ServerToClientMsg::Log { lines } => ClientInstruction::Log(lines),
             ServerToClientMsg::LogError { lines } => ClientInstruction::LogError(lines),

@@ -108,6 +108,14 @@ pub(crate) fn renderer(
     options: &Options,
 ) -> Option<renderer::Renderer> {
     let stage = renderer::Stage::new(size)?;
+    Some(renderer_for_stage(stage, config, options))
+}
+
+pub(crate) fn renderer_for_stage(
+    stage: renderer::Stage,
+    config: &Config,
+    options: &Options,
+) -> renderer::Renderer {
     let theme = config
         .theme_config(options.theme.as_ref())
         .unwrap_or_else(|| default_palette().into());
@@ -116,11 +124,7 @@ pub(crate) fn renderer(
         style.base = PaletteColor::Rgb(terminal.foreground);
         style.background = PaletteColor::Rgb(terminal.background);
     }
-    Some(renderer::Renderer::new(
-        stage,
-        style,
-        theme.frame_selected.base,
-    ))
+    renderer::Renderer::new(stage, style, theme.frame_selected.base)
 }
 
 #[cfg(test)]

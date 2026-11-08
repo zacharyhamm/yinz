@@ -209,6 +209,8 @@ fn the_capability_probe_reads_its_answer_after_an_older_servers_pushes() {
             warp_terminal_state: 0,
             signal_quit: false,
             update_protocol: 0,
+            server_version: String::new(),
+            server_host: String::new(),
         })
         .unwrap();
     assert_eq!(
@@ -726,6 +728,8 @@ fn refuse_handoff(listener: interprocess::local_socket::Listener) {
             warp_terminal_state: 2,
             signal_quit: false,
             update_protocol: 0,
+            server_version: String::new(),
+            server_host: String::new(),
         })
         .unwrap();
     let mut adoption: IpcReceiverWithContext<ClientToServerMsg> =
@@ -1019,6 +1023,8 @@ fn warp_ipc_failure_returns_exact_snapshot_and_consumed_bytes_to_source() {
                 warp_terminal_state: 2,
                 signal_quit: false,
                 update_protocol: 0,
+                server_version: String::new(),
+                server_host: String::new(),
             })
             .unwrap();
         let mut adoption: IpcSenderWithContext<ServerToClientMsg> =

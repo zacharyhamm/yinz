@@ -8,7 +8,7 @@ mod outlines;
     not(test),
     expect(
         dead_code,
-        reason = "shared renderer includes a screensaver-only hint helper"
+        reason = "shared renderer includes a screensaver-only footer helper"
     )
 )]
 #[path = "../src/splash/renderer.rs"]

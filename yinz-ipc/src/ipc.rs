@@ -325,6 +325,10 @@ pub enum ServerToClientMsg {
         signal_quit: bool,
         #[serde(default)]
         update_protocol: u32,
+        #[serde(default)]
+        server_version: String,
+        #[serde(default)]
+        server_host: String,
     },
     Log {
         lines: Vec<String>,

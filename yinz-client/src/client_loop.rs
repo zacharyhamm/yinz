@@ -292,6 +292,9 @@ impl ClientLoop<'_, '_> {
             return false;
         };
         if recovery.control.phase() == crate::remote_recovery::Phase::Reconnecting {
+            if let Some(saver) = &mut self.screensaver {
+                saver.set_server_identity("", "");
+            }
             self.sessions.cancel();
             let mut parser = self.stdin_ansi_parser.lock().unwrap();
             parser.take_active(ForwardKind::Barrier);
@@ -525,7 +528,12 @@ impl ClientLoop<'_, '_> {
             ClientInstruction::Connected {
                 signal_quit,
                 update_protocol,
+                server_version,
+                server_host,
             } => {
+                if let Some(saver) = &mut self.screensaver {
+                    saver.set_server_identity(&server_version, &server_host);
+                }
                 self.sessions.set_update_protocol(update_protocol);
                 self.signal_quit_supported
                     .store(signal_quit, std::sync::atomic::Ordering::Release);

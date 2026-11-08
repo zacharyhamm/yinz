@@ -2084,6 +2084,8 @@ fn warp_disconnected_destination_restores_the_only_held_pane() {
                         warp_terminal_state: 2,
                         signal_quit: false,
                         update_protocol: 0,
+                        server_version: String::new(),
+                        server_host: String::new(),
                     })
                     .unwrap();
             },

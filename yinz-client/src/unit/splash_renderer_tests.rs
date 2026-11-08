@@ -460,7 +460,7 @@ fn screensaver_hint_is_centered_and_readable_without_changing_splash_frames() {
             let frame = renderer.frame(Duration::ZERO);
             assert!(!frame.contains("press any key"));
             let mut output = frame.clone();
-            renderer.append_bottom_hint(&mut output, size, "press any key");
+            renderer.append_screensaver_footer(&mut output, size, 1, "", "");
             assert!(output.starts_with(&frame));
             assert!(output.contains(&format!("\x1b[{};{}H", size.rows, (size.cols - 13) / 2 + 1)));
             assert!(output.ends_with("press any key\x1b[m"));
@@ -477,6 +477,54 @@ fn screensaver_hint_is_centered_and_readable_without_changing_splash_frames() {
             );
         }
     }
+}
+
+#[test]
+fn screensaver_footer_centers_details_and_truncates_unicode_without_controls() {
+    let size = Size { rows: 24, cols: 80 };
+    let (stage, footer_rows) = Stage::screensaver(size).unwrap();
+    assert_eq!(footer_rows, 3);
+    let renderer = Renderer::new(stage, style(false), accent(false));
+    let mut output = String::new();
+    renderer.append_screensaver_footer(
+        &mut output,
+        size,
+        footer_rows,
+        "Client: 1 on desktop",
+        "Server: 2 on remote",
+    );
+    assert!(output.contains("\x1b[22;31H"));
+    assert!(output.contains("Client: 1 on desktop"));
+    assert!(output.contains("\x1b[23;31H"));
+    assert!(output.contains("Server: 2 on remote"));
+    assert!(output.contains("\x1b[24;34H"));
+    assert!(output.ends_with("press any key\x1b[m"));
+    assert_eq!(footer_text("a界界b", 5), "a界…");
+    assert_eq!(footer_text("a\u{0301}界b", 3), "a\u{0301}…");
+    assert_eq!(footer_text("a\n\r\t\x1b\x07\u{009b}b", 10), "ab");
+    assert_eq!(footer_text("abcdef", 1), "…");
+    assert_eq!(footer_text("abcdef", 0), "");
+    for cols in 0..30 {
+        let text = footer_text("Client: 1 on 界界-desktop", cols);
+        assert!(text.width() <= cols);
+    }
+}
+
+#[test]
+fn screensaver_stage_reserves_footer_space_and_drops_details_on_short_terminals() {
+    for (rows, expected_footer) in [(24, 3), (11, 3), (10, 2), (9, 1)] {
+        let size = Size { rows, cols: 28 };
+        let (stage, footer_rows) = Stage::screensaver(size).unwrap();
+        assert_eq!(footer_rows, expected_footer);
+        assert!(stage.top + stage.rows + stage.quote_rows <= rows - footer_rows + 1);
+        let renderer = Renderer::new(stage, style(false), accent(false));
+        let mut output = String::new();
+        renderer.append_screensaver_footer(&mut output, size, footer_rows, "client", "server");
+        assert_eq!(output.contains("client"), footer_rows >= 2);
+        assert_eq!(output.contains("server"), footer_rows >= 3);
+        assert!(output.ends_with("press any key\x1b[m"));
+    }
+    assert!(Stage::screensaver(Size { rows: 8, cols: 28 }).is_none());
 }
 
 #[test]
@@ -528,10 +576,10 @@ fn bouncing_reflects_at_both_walls_and_stays_above_the_hint_after_resize() {
         for direction in DIRECTIONS {
             for frame in 0..1200 {
                 let (stage, offset) =
-                    bouncing_stage(size, Duration::from_millis(frame * 50), direction);
+                    bouncing_stage(size, Duration::from_millis(frame * 50), direction, 3);
                 assert!(stage.left >= 1 && stage.top >= 1);
                 assert!(stage.left + stage.cols - 1 <= size.cols);
-                assert!(stage.top + stage.rows - 1 < size.rows);
+                assert!(stage.top + stage.rows <= size.rows - 2);
                 assert!((0.0..2.0).contains(&offset[0]));
                 assert!((0.0..4.0).contains(&offset[1]));
             }
@@ -549,8 +597,8 @@ fn bouncing_glyphs_render_in_both_themes_without_the_quote_or_clipped_surfaces()
         for direction in DIRECTIONS {
             for millis in (0..16000).step_by(250) {
                 let time = Duration::from_millis(millis);
-                let frame = dark.bouncing_frame(size, time, direction);
-                let light_frame = light.bouncing_frame(size, time, direction);
+                let frame = dark.bouncing_frame(size, time, direction, 3);
+                let light_frame = light.bouncing_frame(size, time, direction, 3);
                 assert_eq!(
                     ansi.replace_all(&frame, ""),
                     ansi.replace_all(&light_frame, "")
@@ -615,7 +663,7 @@ fn eligible_terminals_always_have_horizontal_travel() {
         for cols in 0..=200 {
             let size = Size { rows, cols };
             if Stage::new(size).is_some() {
-                let (stage, _) = bouncing_stage(size, Duration::ZERO, Direction::UpLeft);
+                let (stage, _) = bouncing_stage(size, Duration::ZERO, Direction::UpLeft, 3);
                 assert!(cols >= 28);
                 assert!(stage.cols <= 20);
                 assert!(cols > stage.cols);
@@ -625,7 +673,7 @@ fn eligible_terminals_always_have_horizontal_travel() {
 }
 
 fn bounce_position(size: Size, elapsed: Duration, direction: Direction) -> [f64; 2] {
-    let (stage, offset) = bouncing_stage(size, elapsed, direction);
+    let (stage, offset) = bouncing_stage(size, elapsed, direction, 3);
     [
         (stage.left - 1) as f64 + f64::from(offset[0]) / 2.0,
         (stage.top - 1) as f64 + f64::from(offset[1]) / 4.0,

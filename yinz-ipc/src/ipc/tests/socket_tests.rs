@@ -169,6 +169,8 @@ fn send_apis_propagate_flush_failures() {
                 warp_terminal_state: 0,
                 signal_quit: false,
                 update_protocol: 0,
+                server_version: String::new(),
+                server_host: String::new(),
             })
             .unwrap_err(),
         send_protobuf_client_to_server(&mut flush_failing_sender(), ClientToServerMsg::ConnStatus)
@@ -182,6 +184,8 @@ fn send_apis_propagate_flush_failures() {
                 warp_terminal_state: 0,
                 signal_quit: false,
                 update_protocol: 0,
+                server_version: String::new(),
+                server_host: String::new(),
             },
         )
         .unwrap_err(),
@@ -310,6 +314,8 @@ fn server_to_client_message_over_socket() {
                 warp_terminal_state: 0,
                 signal_quit: false,
                 update_protocol: 0,
+                server_version: String::new(),
+                server_host: String::new(),
             })
             .expect("send failed");
     });
@@ -331,6 +337,7 @@ fn server_to_client_message_over_socket() {
                 warp_terminal_state: 0,
                 signal_quit: false,
                 update_protocol: 0,
+                ..
             }
         ),
         "should be Connected, got: {:?}",
@@ -359,6 +366,8 @@ fn bidirectional_communication_via_fd_duplication() {
                 warp_terminal_state: 0,
                 signal_quit: false,
                 update_protocol: 0,
+                server_version: String::new(),
+                server_host: String::new(),
             })
             .expect("send failed");
 
@@ -389,6 +398,7 @@ fn bidirectional_communication_via_fd_duplication() {
                 warp_terminal_state: 0,
                 signal_quit: false,
                 update_protocol: 0,
+                ..
             }
         ),
         "should be Connected"
@@ -533,6 +543,8 @@ fn session_probe_accepts_responding_socket() {
                 warp_terminal_state: 0,
                 signal_quit: false,
                 update_protocol: 0,
+                server_version: String::new(),
+                server_host: String::new(),
             })
             .expect("send failed");
     });
@@ -556,6 +568,7 @@ fn session_probe_accepts_responding_socket() {
                     warp_terminal_state: 0,
                     signal_quit: false,
                     update_protocol: 0,
+                    ..
                 },
                 _
             ))
@@ -940,6 +953,8 @@ fn a_probe_timeout_is_an_unresponsive_server_not_an_absent_one() {
                 warp_terminal_state: 0,
                 signal_quit: false,
                 update_protocol: 0,
+                server_version: String::new(),
+                server_host: String::new(),
             },
             ErrorContext::new()
         )),

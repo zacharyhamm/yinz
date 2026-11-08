@@ -660,6 +660,8 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
                 warp_terminal_state,
                 signal_quit,
                 update_protocol,
+                server_version,
+                server_host,
             } => server_to_client_msg::Message::Connected(ConnectedMsg {
                 warp_companions,
                 warp_held_terminals,
@@ -667,6 +669,8 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
                 warp_terminal_state,
                 signal_quit,
                 update_protocol,
+                server_version,
+                server_host,
             }),
             ServerToClientMsg::Log { lines } => {
                 server_to_client_msg::Message::Log(LogMsg { lines })
@@ -861,6 +865,8 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
                     warp_terminal_state: msg.warp_terminal_state,
                     signal_quit: msg.signal_quit,
                     update_protocol: msg.update_protocol,
+                    server_version: msg.server_version,
+                    server_host: msg.server_host,
                 })
             },
             Some(server_to_client_msg::Message::Log(log)) => {

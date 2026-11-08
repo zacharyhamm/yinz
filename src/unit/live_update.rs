@@ -43,6 +43,8 @@ fn session_preflight_ignores_pty_broker_and_checks_session_capabilities() {
                         warp_terminal_state: 0,
                         signal_quit: false,
                         update_protocol: protocol,
+                        server_version: String::new(),
+                        server_host: String::new(),
                     })
                     .unwrap();
                 *probed.lock() = true;

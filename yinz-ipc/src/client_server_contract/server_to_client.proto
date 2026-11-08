@@ -60,6 +60,8 @@ message ConnectedMsg {
   uint32 warp_terminal_state = 6;
   bool signal_quit = 3;
   uint32 update_protocol = 5;
+  string server_version = 7;
+  string server_host = 8;
 }
 
 message LogMsg {

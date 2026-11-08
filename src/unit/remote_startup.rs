@@ -509,6 +509,8 @@ fn local_resurrection_preserves_terminal_settings_geometry_pane_limit_and_debug(
                         warp_terminal_state: 0,
                         signal_quit: false,
                         update_protocol: 0,
+                        server_version: String::new(),
+                        server_host: String::new(),
                     })
                     .unwrap();
             },
@@ -774,6 +776,8 @@ fn interrupted_startup(stage: &str, signal: Signal) {
                     warp_terminal_state: 0,
                     signal_quit: false,
                     update_protocol: 0,
+                    server_version: String::new(),
+                    server_host: String::new(),
                 })
                 .unwrap();
             if before_guard {
@@ -810,6 +814,8 @@ fn interrupted_startup(stage: &str, signal: Signal) {
                             warp_terminal_state: 0,
                             signal_quit: false,
                             update_protocol: 0,
+                            server_version: String::new(),
+                            server_host: String::new(),
                         })
                         .unwrap();
                 } else {
