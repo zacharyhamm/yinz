@@ -237,7 +237,7 @@ fn coordinator_keeps_backups_after_client_startup_failure_and_repeated_recovery(
     let client_install = Fixture::new();
     let mut command = client_install.command();
     command
-        .env("YINZ_SOCKET_DIR", fixture.root.path().join("sockets"))
+        .env("YINZ_SOCKET_DIR", fixture.root.socket_dir())
         .args(["attach", SESSION]);
     let mut attached = Attached::start_command(command);
     attached.wait_for("READY-first");
@@ -314,6 +314,7 @@ fn coordinator_keeps_backups_after_client_startup_failure_and_repeated_recovery(
     let log = File::create(&log_path).unwrap();
     let environment = fixture.command();
     let mut command = Command::new(std::env::current_exe().unwrap());
+    fixture.root.inherit(&mut command);
     command.env_clear();
     for (name, value) in environment.get_envs() {
         if let Some(value) = value {
@@ -440,7 +441,7 @@ fn coordinator_keeps_backups_after_client_startup_failure_and_repeated_recovery(
     fs::copy(&fixture.binary, &client_install.binary).unwrap();
     let mut command = client_install.command();
     command
-        .env("YINZ_SOCKET_DIR", fixture.root.path().join("sockets"))
+        .env("YINZ_SOCKET_DIR", fixture.root.socket_dir())
         .args(["attach", SESSION]);
     let mut manual = Attached::start_command(command);
     manual.wait_for("READY-first");

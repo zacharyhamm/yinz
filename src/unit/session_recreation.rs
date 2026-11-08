@@ -20,16 +20,14 @@ mod remote_startup;
 #[path = "session_update_real.rs"]
 mod session_update_real;
 
-struct Session(tempfile::TempDir);
+#[path = "real_fixture.rs"]
+mod real_fixture;
+
+struct Session(real_fixture::RealFixture);
 impl Session {
     fn new() -> Self {
-        let root = tempfile::Builder::new()
-            .prefix("ysr-")
-            .tempdir_in("/tmp")
-            .unwrap();
-        for dir in [
-            "home", "config", "data", "cache", "tmp", "sockets", "runtime",
-        ] {
+        let root = real_fixture::RealFixture::new("ysr-");
+        for dir in ["home", "config", "data", "cache", "tmp", "runtime"] {
             fs::create_dir(root.path().join(dir)).unwrap();
         }
         let session = Self(root);
@@ -43,6 +41,7 @@ impl Session {
     }
     fn command(&self) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_yinz"));
+        self.0.inherit(&mut cmd);
         cmd.env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default());
         for (key, dir) in [
@@ -51,7 +50,6 @@ impl Session {
             ("XDG_DATA_HOME", "data"),
             ("XDG_CACHE_HOME", "cache"),
             ("TMPDIR", "tmp"),
-            ("YINZ_SOCKET_DIR", "sockets"),
             ("XDG_RUNTIME_DIR", "runtime"),
         ] {
             cmd.env(key, self.0.path().join(dir));
@@ -59,7 +57,8 @@ impl Session {
         cmd.current_dir(self.0.path().join("home"))
             .arg("--config-dir")
             .arg(self.0.path().join("config"));
-        cmd.env("SHELL", "/bin/sh")
+        cmd.env("YINZ_SOCKET_DIR", self.0.socket_dir())
+            .env("SHELL", "/bin/sh")
             .env("TERM", "xterm-256color")
             .arg("--config")
             .arg(self.0.path().join("config.kdl"))
@@ -128,24 +127,9 @@ impl Session {
             .unwrap();
         serde_json::from_slice(&out.stdout).ok()
     }
-    /// Names of the live server sockets in this test's private socket directory.
-    fn server_names(&self) -> Vec<String> {
-        use std::os::unix::fs::FileTypeExt;
-        let Ok(entries) = fs::read_dir(self.socket().parent().unwrap()) else {
-            return Vec::new();
-        };
-        let mut names: Vec<_> = entries
-            .flatten()
-            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_socket()))
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .collect();
-        names.sort();
-        names
-    }
     fn socket(&self) -> PathBuf {
         self.0
-            .path()
-            .join("sockets")
+            .socket_dir()
             .join(&*yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR)
             .join(NAME)
     }
@@ -171,23 +155,6 @@ impl Session {
             fs::read_to_string(checkpoint.metadata_path()).unwrap()
         );
         layout
-    }
-}
-impl Drop for Session {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            for entry in fs::read_dir(self.0.path().join("tmp")).unwrap().flatten() {
-                if let Ok(log) = fs::read_to_string(entry.path().join("yinz-log/yinz.log")) {
-                    eprintln!("server log: {log}");
-                }
-            }
-        }
-        // Every server this test started, not only the one named NAME: update tests rename the
-        // source (`retired-update`) and hand NAME to a replacement started on another socket, and
-        // a failing assertion skips their explicit KillSession. The directory is this test's own.
-        for name in self.server_names() {
-            let _ = self.run(&["kill-session", &name]);
-        }
     }
 }
 
@@ -1377,4 +1344,90 @@ fn watcher_signal_quit_preserves_the_live_session_and_recovery_state() {
     session.wait_for_panes(false);
     assert!(session.recovery_request(None).is_empty());
     session.success(&["kill-session", NAME]);
+}
+
+#[test]
+#[ignore = "subprocess fixture for abrupt test termination"]
+fn killed_fixture_owner() {
+    use std::io::{Read, Write};
+    let (session, _) = session_update_real::setup();
+    println!("FIXTURE_READY {}", session.0.path().display());
+    std::io::stdout().flush().unwrap();
+    // The outer regression kills this process after opening the guard's ownership lease.
+    let _ = std::io::stdin().read(&mut [0]);
+}
+
+#[test]
+fn killed_test_owner_is_reclaimed_by_its_guard() {
+    use std::io::BufRead;
+    let managed = tempfile::Builder::new()
+        .prefix("fixture-storage-with-a-deliberately-long-path-")
+        .tempdir()
+        .unwrap();
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .env(
+            yinz_runtime::owned_dir::TEST_CACHE_ROOT_ENV,
+            managed.path().join("run"),
+        )
+        .args([
+            "--exact",
+            "killed_fixture_owner",
+            "--ignored",
+            "--nocapture",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let (send, receive) = mpsc::channel();
+    let stdout = child.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines() {
+            let line = line.unwrap();
+            if let Some(root) = line.strip_prefix("FIXTURE_READY ") {
+                let _ = send.send(PathBuf::from(root));
+            }
+        }
+    });
+    let ready = receive.recv_timeout(Duration::from_secs(40));
+    if ready.is_err() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+    let root = ready.unwrap();
+    assert!(root.starts_with(managed.path().canonicalize().unwrap()));
+    let guard = fs::File::open(root.join(".guard")).unwrap();
+    let sockets = root.join("sockets").canonicalize().unwrap();
+    let pids: Vec<u32> = ["pid1", "pid2"]
+        .into_iter()
+        .map(|name| {
+            fs::read_to_string(root.join(name))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let stopped = yinz_test_support::Watched::new(false);
+    let done = stopped.clone();
+    std::thread::spawn(move || {
+        guard.lock().unwrap();
+        *done.lock() = true;
+    });
+    stopped.wait_until(
+        "interrupted fixture guard to finish cleanup",
+        Duration::from_secs(35),
+        |done| done.then_some(()),
+    );
+    assert!(!root.exists(), "interrupted fixture retained: {root:?}");
+    assert!(!sockets.exists());
+    for pid in pids {
+        assert!(
+            yinz_process::liveness::has_exited(pid).unwrap(),
+            "pane {pid} survived killed test"
+        );
+    }
 }

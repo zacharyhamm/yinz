@@ -3,10 +3,7 @@ use crate::update::transaction::Transaction;
 use std::{
     fs::{self, File},
     io::{Read, Write},
-    os::unix::{
-        fs::{FileTypeExt, MetadataExt},
-        process::CommandExt,
-    },
+    os::unix::{fs::MetadataExt, process::CommandExt},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
@@ -43,20 +40,18 @@ mod retry;
 #[path = "client_update_plugin_recovery.rs"]
 mod plugin_recovery;
 
+#[path = "real_fixture.rs"]
+mod real_fixture;
+
 struct Fixture {
-    root: tempfile::TempDir,
+    root: real_fixture::RealFixture,
     binary: PathBuf,
     data: PathBuf,
 }
 impl Fixture {
     fn new() -> Self {
-        let root = tempfile::Builder::new()
-            .prefix("ycu-")
-            .tempdir_in("/tmp")
-            .unwrap();
-        for name in [
-            "home", "config", "data", "cache", "tmp", "sockets", "runtime",
-        ] {
+        let root = real_fixture::RealFixture::new("ycu-");
+        for name in ["home", "config", "data", "cache", "tmp", "runtime"] {
             fs::create_dir(root.path().join(name)).unwrap();
         }
         // cargo x test builds this checkout's production binary before testing.
@@ -83,6 +78,7 @@ impl Fixture {
     }
     fn command_for(&self, binary: &Path, data: &Path) -> Command {
         let mut command = Command::new(binary);
+        self.root.inherit(&mut command);
         command
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default());
@@ -92,12 +88,12 @@ impl Fixture {
             ("XDG_DATA_HOME", "data"),
             ("XDG_CACHE_HOME", "cache"),
             ("TMPDIR", "tmp"),
-            ("YINZ_SOCKET_DIR", "sockets"),
             ("XDG_RUNTIME_DIR", "runtime"),
         ] {
             command.env(key, self.root.path().join(directory));
         }
         command
+            .env("YINZ_SOCKET_DIR", self.root.socket_dir())
             .env("SHELL", "/bin/sh")
             .env("TERM", "xterm-256color")
             .current_dir(self.root.path().join("home"))
@@ -119,8 +115,7 @@ impl Fixture {
     }
     fn socket(&self) -> PathBuf {
         self.root
-            .path()
-            .join("sockets")
+            .socket_dir()
             .join(&*yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR)
             .join(SESSION)
     }
@@ -143,30 +138,6 @@ impl Fixture {
             "--create-background",
             SESSION,
         ]);
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        if let Ok(entries) = fs::read_dir(self.socket().parent().unwrap()) {
-            for entry in entries.flatten() {
-                if entry.file_type().is_ok_and(|kind| kind.is_socket())
-                    && let Ok(stream) = yinz_ipc::consts::ipc_connect(&entry.path())
-                {
-                    let _ = IpcSenderWithContext::<ClientToServerMsg>::new(stream)
-                        .send_client_msg(ClientToServerMsg::KillSession);
-                }
-            }
-        }
-        if std::thread::panicking() {
-            let log = self.root.path().join(format!(
-                "tmp/yinz-{}/yinz-log/yinz.log",
-                nix::unistd::Uid::current()
-            ));
-            eprintln!(
-                "client update process log: {}",
-                fs::read_to_string(log).unwrap_or_default()
-            );
-        }
     }
 }
 
@@ -1022,6 +993,7 @@ fn check_full_update_coordinator(from_source: bool, stale_clients: bool) {
     let log = File::create(&log_path).unwrap();
     let environment = fixture.command();
     let mut command = Command::new(std::env::current_exe().unwrap());
+    fixture.root.inherit(&mut command);
     command.env_clear();
     for (name, value) in environment.get_envs() {
         if let Some(value) = value {
@@ -1268,5 +1240,41 @@ fn source_fixture_release(fixture: &Fixture, operation: &str) -> crate::update::
         }),
         tag_name: yinz_runtime::consts::VERSION.into(),
         assets: vec![],
+    }
+}
+
+#[test]
+fn fixture_drop_stops_real_server_and_panes_before_removing_installation() {
+    let fixture = Fixture::new();
+    fixture.start();
+    let root = fixture.root.path().to_owned();
+    let sockets = fixture.root.socket_dir().to_owned();
+    let mut peer = Peer::connect(&fixture.socket());
+    let inventory = peer.inventory(&uuid::Uuid::new_v4().to_string());
+    // Inventory and terminal content prove both pane scripts started before teardown.
+    let attached = Attached::start(&fixture);
+    attached.wait_for("READY-first");
+    fixture.success(&["--session", SESSION, "action", "go-to-tab", "2"]);
+    attached.wait_for("READY-second");
+    let pids: Vec<u32> = ["first-input.pid", "second-input.pid"]
+        .into_iter()
+        .map(|name| {
+            fs::read_to_string(root.join(name))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    drop(attached);
+    drop(peer);
+    drop(fixture);
+    assert!(!root.exists());
+    assert!(!sockets.exists());
+    for pid in std::iter::once(inventory.server_pid).chain(pids) {
+        assert!(
+            yinz_process::liveness::has_exited(pid).unwrap(),
+            "fixture process {pid} survived cleanup"
+        );
     }
 }

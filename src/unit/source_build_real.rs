@@ -128,6 +128,7 @@ fn build_in_real_pane(mode: &str) {
     let log = File::create(&log_path).unwrap();
     let environment = fixture.command();
     let mut command = Command::new(std::env::current_exe().unwrap());
+    fixture.root.inherit(&mut command);
     command.env_clear();
     for (name, value) in environment.get_envs() {
         if let Some(value) = value {

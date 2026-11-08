@@ -597,10 +597,9 @@ pub fn terminate_orphans_of_session_with_progress(
     terminate_orphans_of_session_in_with_progress(&protocol::socket_dir(), session, progress)
 }
 
-pub(crate) fn terminate_orphans_of_session_in(
-    dir: &Path,
-    session: &str,
-) -> Result<Vec<HostStatus>> {
+/// Reclaim detached supervisors in an explicitly owned socket namespace.
+/// Callers must keep the namespace alive until confirmation finishes.
+pub fn terminate_orphans_of_session_in(dir: &Path, session: &str) -> Result<Vec<HostStatus>> {
     terminate_orphans_of_session_in_with_progress(dir, session, &mut || {})
 }
 

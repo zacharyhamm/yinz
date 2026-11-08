@@ -91,6 +91,7 @@ fn run_worker(fixture: &Fixture, operation: &str, release: &crate::update::Relea
     let log = File::create(&log_path).unwrap();
     let environment = fixture.command();
     let mut command = Command::new(std::env::current_exe().unwrap());
+    fixture.root.inherit(&mut command);
     command.env_clear();
     for (name, value) in environment.get_envs() {
         if let Some(value) = value {

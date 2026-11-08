@@ -183,6 +183,7 @@ fn cold_recovery(uncertain_adoption: bool) {
     let log = File::create(&log_path).unwrap();
     let environment = fixture.command();
     let mut command = Command::new(std::env::current_exe().unwrap());
+    fixture.root.inherit(&mut command);
     command.env_clear();
     for (key, value) in environment.get_envs() {
         if let Some(value) = value {

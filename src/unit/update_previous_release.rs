@@ -14,6 +14,7 @@ fn previous() -> PathBuf {
 fn command(session: &Session, binary: &Path) -> Command {
     let original = session.command();
     let mut command = Command::new(binary);
+    session.0.inherit(&mut command);
     command
         .env_clear()
         .envs(original.get_envs().filter_map(|(k, v)| v.map(|v| (k, v))))

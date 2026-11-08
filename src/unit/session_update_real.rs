@@ -116,7 +116,7 @@ impl Drop for Peer {
     }
 }
 
-fn setup() -> (Session, Vec<i32>) {
+pub(super) fn setup() -> (Session, Vec<i32>) {
     setup_with_configuration("detachable_panes true\nload_plugins clear-defaults=true\n")
 }
 
@@ -1335,4 +1335,64 @@ fn preparation_disconnects_real_watcher_without_closing_terminals() {
         yinz_types::pane_id::PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(0)),
         "usable-after-prepare",
     );
+}
+
+#[test]
+fn fixture_unwind_stops_retired_source_private_destination_and_adopted_panes() {
+    let (session, pids) = setup();
+    let root = session.0.path().to_owned();
+    let sockets = session.0.socket_dir().to_owned();
+    let operation = uuid::Uuid::new_v4().to_string();
+    let mut source = Peer::connect(&session.socket());
+    let inventory: Inventory = serde_json::from_value(
+        source
+            .request(&operation, UpdateCommand::Inventory)
+            .unwrap(),
+    )
+    .unwrap();
+    source.prepare_update(&operation);
+    let snapshot = root.join("snapshot.json");
+    source
+        .request(
+            &operation,
+            UpdateCommand::ReleaseMigration {
+                snapshot: snapshot.clone(),
+            },
+        )
+        .unwrap();
+    let (mut destination, _) = target(&session, &inventory, &operation);
+    destination
+        .request(&operation, UpdateCommand::AdoptMigration { snapshot })
+        .unwrap();
+    let destination_pid = destination
+        .request(&operation, UpdateCommand::Inventory)
+        .unwrap()["server_pid"]
+        .as_u64()
+        .unwrap() as u32;
+    source
+        .request(
+            &operation,
+            UpdateCommand::RenameSession {
+                name: "retired-update".into(),
+            },
+        )
+        .unwrap();
+    // Leave the destination private, as a failed handoff can. Neither peer sends KillSession.
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _session = session;
+        let _source = source;
+        let _destination = destination;
+        panic!("failed test body after adoption and source rename");
+    }));
+    assert!(panic.is_err());
+    assert!(!root.exists());
+    assert!(!sockets.exists());
+    assert_server_exited(inventory.server_pid);
+    assert_server_exited(destination_pid);
+    for pid in pids {
+        assert!(
+            yinz_process::liveness::has_exited(pid as u32).unwrap(),
+            "pane {pid} survived fixture unwind"
+        );
+    }
 }
