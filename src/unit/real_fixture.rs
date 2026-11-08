@@ -37,17 +37,27 @@ pub(super) struct RealFixture {
 
 impl RealFixture {
     pub(super) fn new(prefix: &str) -> Self {
-        Self::create(prefix).expect("create owned real-server fixture")
+        Self::create(prefix, None).expect("create owned real-server fixture")
     }
 
-    fn create(prefix: &str) -> Result<Self> {
+    pub(super) fn new_in(prefix: &str, parent: &Path) -> Self {
+        Self::create(
+            prefix,
+            Some(&parent.join(format!("yz-fixtures-{}", nix::unistd::Uid::current()))),
+        )
+        .expect("create owned real-server fixture")
+    }
+
+    fn create(prefix: &str, parent: Option<&Path>) -> Result<Self> {
         // Siblings of TestRun, not children: nextest may finish while an interrupted test's
         // guard is still cleaning up. Honor the managed location without letting TestRun
         // remove a live fixture. /tmp remains the short fallback for direct cargo test.
-        let parent = std::env::var_os(yinz_runtime::owned_dir::TEST_CACHE_ROOT_ENV)
-            .and_then(|path| PathBuf::from(path).parent().map(Path::to_path_buf))
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(format!("yz-fixtures-{}", nix::unistd::Uid::current()));
+        let parent = parent.map(Path::to_path_buf).unwrap_or_else(|| {
+            std::env::var_os(yinz_runtime::owned_dir::TEST_CACHE_ROOT_ENV)
+                .and_then(|path| PathBuf::from(path).parent().map(Path::to_path_buf))
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join(format!("yz-fixtures-{}", nix::unistd::Uid::current()))
+        });
         yinz_runtime::shared::ensure_secure_dir(&parent).context("secure fixture registry")?;
         let root = tempfile::Builder::new()
             .prefix(prefix)
@@ -421,7 +431,7 @@ fn cleanup_discovers_late_servers_while_ownership_or_shutdown_is_pending() {
     };
 
     for pending_shutdown in [false, true] {
-        let fixture = RealFixture::new("ylb-");
+        let fixture = RealFixture::new_in("ylb-", Path::new("/tmp"));
         let root = fixture.path().to_owned();
         let sockets = fixture.socket_dir().to_owned();
         let directory = sockets.join(&*yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR);

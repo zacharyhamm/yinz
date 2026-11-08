@@ -72,7 +72,7 @@ fn link_e2e_binary(binary: &Path) -> anyhow::Result<()> {
         .with_context(|| format!("failed to link {} -> {}", link.display(), binary.display()))
 }
 
-fn linux_target(arch: &str) -> anyhow::Result<&'static str> {
+pub(super) fn linux_target(arch: &str) -> anyhow::Result<&'static str> {
     match arch {
         "x86_64" => Ok("x86_64-unknown-linux-gnu"),
         "aarch64" => Ok("aarch64-unknown-linux-gnu"),

@@ -44,6 +44,9 @@ const SSHD_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub fn main(sh: &Shell, flags: flags::RemoteTest) -> anyhow::Result<()> {
     let err_context = "failed to run the remote-pane tests";
+    if flags.update_fixtures && (!flags.build || !cfg!(target_os = "linux")) {
+        anyhow::bail!("--update-fixtures requires --build on Linux");
+    }
 
     if flags.native {
         if !flags.build || flags.test || flags.clean {
@@ -71,7 +74,13 @@ pub fn main(sh: &Shell, flags: flags::RemoteTest) -> anyhow::Result<()> {
             "flags '--build' and '--test' are mutually exclusive!"
         )),
         (_, _, true) => clean(sh),
-        (true, _, _) => build(sh, flags.native),
+        (true, _, _) => {
+            build(sh, flags.native)?;
+            if flags.update_fixtures {
+                build_update_fixture(sh, flags.native)?;
+            }
+            Ok(())
+        },
         (_, true, _) => test(sh, flags.args),
     }
     .context(err_context)
@@ -82,6 +91,124 @@ pub fn main(sh: &Shell, flags: flags::RemoteTest) -> anyhow::Result<()> {
 /// and already what the containers bind-mount.
 pub fn remote_test_dir() -> PathBuf {
     crate::target_dir().join("remote-test")
+}
+
+/// A second real compilation, with Cargo's version stamping and matching wire
+/// contracts. Copy sources only: this checkout and the fixture each own a real
+/// target directory. Never relabel an inventory or patch executable bytes.
+fn build_update_fixture(sh: &Shell, native: bool) -> anyhow::Result<()> {
+    let root = crate::project_root();
+    let checkout = remote_test_dir().join("update-release");
+    std::fs::create_dir_all(&checkout).context("create update fixture checkout")?;
+    let files = std::process::Command::new("git")
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
+        .current_dir(&root)
+        .output()
+        .context("list update fixture sources")?;
+    anyhow::ensure!(files.status.success(), "cannot list update fixture sources");
+    let current = yinz_runtime::consts::VERSION;
+    // A prerelease extension sorts after the running alpha, using the real
+    // prerelease-inclusive release decision in the coordinator.
+    let next = format!("{current}.update-fixture");
+    for name in files
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|name| !name.is_empty())
+    {
+        let name = std::str::from_utf8(name).context("decode update fixture source path")?;
+        let source = root.join(name);
+        if !source.is_file() {
+            continue;
+        }
+        let destination = checkout.join(name);
+        std::fs::create_dir_all(destination.parent().context("fixture source parent")?)?;
+        if source
+            .file_name()
+            .is_some_and(|name| name == "Cargo.toml" || name == "Cargo.lock")
+        {
+            let text = std::fs::read_to_string(&source).context("read fixture manifest")?;
+            let stamped = text.replace(current, &next);
+            if std::fs::read_to_string(&destination).ok().as_deref() != Some(&stamped) {
+                std::fs::write(&destination, stamped).context("stamp fixture Cargo manifest")?;
+            }
+        } else {
+            let bytes = std::fs::read(&source).context("read update fixture source")?;
+            if std::fs::read(&destination).ok().as_deref() != Some(bytes.as_slice()) {
+                std::fs::copy(&source, &destination).context("copy update fixture source")?;
+            }
+        }
+    }
+    let _pd = sh.push_dir(&checkout);
+    let target = crate::ci::linux_target(std::env::consts::ARCH)?;
+    let project_mount = format!("{}:{}", root.display(), root.display());
+    let user = format!("{}:{}", unsafe { libc::getuid() }, unsafe {
+        libc::getgid()
+    });
+    let home = format!("HOME={}", root.join("target/linux-build/home").display());
+    let cargo_home = format!(
+        "CARGO_HOME={}",
+        root.join("target/linux-build/cargo").display()
+    );
+    let cargo = crate::cargo()?;
+    let mut command = if native {
+        cmd!(sh, "{cargo}")
+    } else {
+        cmd!(sh, "docker run --rm --user {user} -v {project_mount} -w {checkout} -e {home} -e {cargo_home} yinz-test-builder:trixie-slim cargo")
+            .env("PODMAN_USERNS", "keep-id")
+    };
+    command = command.args(["build", "--locked", "--bin", "yinz", "--target", target]);
+    command.run().context("build newer update fixture")?;
+    let command = if native {
+        cmd!(sh, "{cargo}")
+    } else {
+        cmd!(sh, "docker run --rm --user {user} -v {project_mount} -w {checkout} -e {home} -e {cargo_home} yinz-test-builder:trixie-slim cargo")
+            .env("PODMAN_USERNS", "keep-id")
+    };
+    let output = command
+        .args([
+            "test",
+            "--locked",
+            "--bin",
+            "yinz",
+            "--no-run",
+            "--target",
+            target,
+            "--message-format=json",
+        ])
+        .read()
+        .context("build remote preparation worker")?;
+    let worker = output
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find_map(|value| {
+            value
+                .get("executable")
+                .and_then(|path| path.as_str())
+                .map(PathBuf::from)
+        })
+        .context("locate remote preparation worker")?;
+    let binary = checkout.join("target").join(target).join("debug/yinz");
+    let reported = cmd!(sh, "{binary} --version")
+        .read()
+        .context("verify stamped fixture")?;
+    anyhow::ensure!(
+        reported.trim() == format!("yinz {next}"),
+        "fixture reported an unexpected version: {reported}"
+    );
+    println!("Sequential update fixture: {current} -> {next}");
+    std::fs::write(
+        remote_test_dir().join("update-fixtures.json"),
+        serde_json::to_vec(&serde_json::json!({"binary":binary,"worker":worker}))
+            .context("encode fixture paths")?,
+    )
+    .context("record update fixture paths")?;
+    Ok(())
 }
 
 fn build(sh: &Shell, native: bool) -> anyhow::Result<()> {
@@ -182,14 +309,23 @@ fn test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
     // Single-threaded on purpose, twice over: the harness sets process-wide
     // environment (`PATH`, so `ssh` resolves to the shim), and the tests share
     // one far machine whose broker and forwards are process-global state.
-    cmd!(
-        sh,
-        "{cargo} test -p yinz-server --test remote_pane_ssh -- --ignored --nocapture --test-threads 1"
-    )
-    .args(args)
-    .run()
-    .map_err(anyhow::Error::new)
-    .context("the remote-pane tests failed")
+    // Full coordinator fixtures need the root binary's private update helpers.
+    // Keep the same exact-test interface and SSH container as the server suite.
+    let sequential = args
+        .iter()
+        .any(|arg| arg.to_string_lossy().contains("::sequential_ssh::"));
+    let selection = if sequential {
+        vec!["-p", "yinz", "--bin", "yinz"]
+    } else {
+        vec!["-p", "yinz-server", "--test", "remote_pane_ssh"]
+    };
+    cmd!(sh, "{cargo} test")
+        .args(selection)
+        .args(["--", "--ignored", "--nocapture", "--test-threads", "1"])
+        .args(args)
+        .run()
+        .map_err(anyhow::Error::new)
+        .context("the remote-pane tests failed")
 }
 
 fn clean(sh: &Shell) -> anyhow::Result<()> {

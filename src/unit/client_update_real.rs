@@ -43,6 +43,10 @@ mod plugin_recovery;
 #[path = "real_fixture.rs"]
 mod real_fixture;
 
+#[cfg(target_os = "linux")]
+#[path = "sequential_update_ssh.rs"]
+mod sequential_ssh;
+
 struct Fixture {
     root: real_fixture::RealFixture,
     binary: PathBuf,
@@ -50,7 +54,16 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let root = real_fixture::RealFixture::new("ycu-");
+        Self::with_root(real_fixture::RealFixture::new("ycu-"), None)
+    }
+    #[cfg(target_os = "linux")]
+    fn new_in(temporary: &Path, installation: Option<&Path>) -> Self {
+        Self::with_root(
+            real_fixture::RealFixture::new_in("ycu-", temporary),
+            installation,
+        )
+    }
+    fn with_root(root: real_fixture::RealFixture, installation: Option<&Path>) -> Self {
         for name in ["home", "config", "data", "cache", "tmp", "runtime"] {
             fs::create_dir(root.path().join(name)).unwrap();
         }
@@ -62,9 +75,11 @@ impl Fixture {
             built.is_file(),
             "build the worktree binary before running this test"
         );
-        let binary = root.path().join("yinz");
+        let binary = installation.unwrap_or(root.path()).join("yinz");
         fs::copy(built, &binary).unwrap();
-        let data = root.path().join("data");
+        let data = installation
+            .map(|directory| directory.join("data/yinz"))
+            .unwrap_or_else(|| root.path().join("data"));
         yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), &data).unwrap();
         fs::write(
             root.path().join("config.kdl"),
@@ -284,7 +299,8 @@ impl Attached {
         });
         command
             .stdin(slave.try_clone().unwrap())
-            .stdout(slave.try_clone().unwrap());
+            .stdout(slave.try_clone().unwrap())
+            .stderr(slave.try_clone().unwrap());
         // SAFETY: setsid is async-signal-safe and touches no allocation or shared state.
         unsafe {
             command.pre_exec(|| {

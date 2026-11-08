@@ -114,6 +114,8 @@ xflags::xflags! {
             optional --build
             /// With --build on Linux, use a native debug binary instead of the Debian build
             optional --native
+            /// With --build on Linux, compile a newer release fixture for sequential updates
+            optional --update-fixtures
             /// Run the tests
             optional --test
             /// Take the containers down and remove the generated keypair
@@ -266,6 +268,7 @@ pub struct RemoteTest {
 
     pub build: bool,
     pub native: bool,
+    pub update_fixtures: bool,
     pub test: bool,
     pub clean: bool,
 }

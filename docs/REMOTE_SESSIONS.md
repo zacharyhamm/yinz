@@ -138,4 +138,25 @@ cargo x remote-test --test -- --exact remote_client_ssh::remote_client_reconnect
 
 The SSH suite uses a Linux container and real local clients. Run it on a macOS host to verify a macOS client against Linux. Linux-only results do not establish macOS compatibility.
 
+The Linux sequential update regressions attach one client to a local session and
+another client to a separate SSH session with the same name. Both clients share
+one disposable executable and builtin directory. Build the pinned newer release
+fixture once, then select either order:
+
+```sh
+cargo x remote-test --build --update-fixtures
+cargo x remote-test --test -- --exact live_update::tests::client_update_real::sequential_ssh::local_then_remote
+cargo x remote-test --test -- --exact live_update::tests::client_update_real::sequential_ssh::remote_then_local
+```
+
+`--update-fixtures` copies sources into `target/remote-test/update-release` and
+compiles a newer Cargo-stamped prerelease with the same wire contracts and its own
+real `target/` directory. The Debian builder avoids requiring published release
+downloads or host libc compatibility. `--native` is also supported when the host
+binary runs in Debian 13. Tests seed pinned release preparation receipts using
+the production installation transaction, then request the production coordinator
+through each running server. Release discovery and downloading are excluded;
+running/installed version decisions, client reexec, SSH reconnection, retained
+builtins, readiness, commit, and installation claim cleanup are exercised.
+
 For sleep/wake verification on both Linux and macOS, attach to a session that prints a recognizable marker, sleep the client machine, and wake it after the SSH connection has expired. Verify the local status, a full replacement repaint, and continued input in the same remote process. Also change networks while attached and cancel an outage with Ctrl-C. These manual checks complement the SSH proxy tests.
