@@ -6,6 +6,7 @@ fn history_scopes_keep_search_worker_tools_and_chronological_cursors_independent
         id: "run".into(),
         worker: Some("one".into()),
         before: None,
+        after_revision: None,
     };
     let earlier = HistoryAction::Conversation {
         id: "run".into(),
@@ -14,8 +15,16 @@ fn history_scopes_keep_search_worker_tools_and_chronological_cursors_independent
             created_at_ms: Some(1),
             revision: 5,
         }),
+        after_revision: None,
     };
     assert_eq!(worker.scope(), earlier.scope());
+    let delivery = HistoryAction::Conversation {
+        id: "run".into(),
+        worker: Some("one".into()),
+        before: None,
+        after_revision: Some(100),
+    };
+    assert_eq!(worker.scope(), delivery.scope());
     let search = HistoryAction::Run {
         id: "run".into(),
         from: None,
@@ -43,7 +52,8 @@ fn history_scopes_keep_search_worker_tools_and_chronological_cursors_independent
         HistoryAction::Conversation {
             id: "run".into(),
             worker: None,
-            before: None
+            before: None,
+            after_revision: None,
         }
         .scope()
     );

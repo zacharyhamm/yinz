@@ -25,6 +25,20 @@ pub struct Range {
     pub worker: Option<String>,
 }
 impl Range {
+    /// Activity intervals exclude their prose boundaries. Adjacent intervals do
+    /// not overlap, and different worker conversations are independent.
+    pub fn overlaps(&self, other: &Self) -> bool {
+        self.worker == other.worker
+            && !self
+                .end
+                .zip(other.start)
+                .is_some_and(|(end, start)| end <= start)
+            && !other
+                .end
+                .zip(self.start)
+                .is_some_and(|(end, start)| end <= start)
+    }
+
     pub fn request(&self, id: &str) -> FetchRequest {
         let mut request = FetchRequest::entity("agent_run_entry").filter(Pred::eq("run_id", id));
         if let Some(start) = self.start {

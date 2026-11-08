@@ -324,6 +324,84 @@ fn repair_matches_stable_sources_after_the_prompt_leaves_the_transcript_tail() {
 }
 
 #[test]
+fn worker_provider_sources_recognize_legacy_archives_in_both_directions() {
+    for archived in [
+        "conversation:worker:reply",
+        "claude:conversation:worker:reply",
+    ] {
+        for source in [
+            "conversation:worker:reply",
+            "claude:conversation:worker:reply",
+        ] {
+            let mut known = entry(
+                1,
+                RunEntryKind::Message,
+                Some(10),
+                Some("worker"),
+                Some("live-turn"),
+                "answer",
+            );
+            known.event_id = Some(format!(
+                "message:{}",
+                serde_json::json!(["live-turn", archived])
+            ));
+            let entries = [known];
+            let original = entries.clone();
+            let message = recovered(source, Some("worker"), "source:reply", "answer");
+            assert!(message_source_exists(source, Some("worker"), &entries));
+            assert!(missing_messages(vec![message], &entries).is_empty());
+            assert_eq!(entries, original);
+
+            for (source, worker) in [
+                ("claude:other:worker:reply", Some("worker")),
+                ("claude:conversation:worker:other", Some("worker")),
+                ("claude:conversation:other:reply", Some("other")),
+                (source, Some("other")),
+                (source, None),
+            ] {
+                assert!(!message_source_exists(source, worker, &entries));
+                assert_eq!(
+                    missing_messages(
+                        vec![recovered(source, worker, "live-turn", "answer")],
+                        &entries
+                    )
+                    .len(),
+                    1
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn provider_prefix_aliases_require_a_claude_worker_source() {
+    for (archived, source, worker) in [
+        ("conversation:reply", "claude:conversation:reply", None),
+        (
+            "conversation:worker:reply",
+            "codex:conversation:worker:reply",
+            Some("worker"),
+        ),
+        (
+            "conversation:other:reply",
+            "claude:conversation:other:reply",
+            Some("worker"),
+        ),
+    ] {
+        let mut known = entry(
+            1,
+            RunEntryKind::Message,
+            Some(10),
+            worker,
+            Some("turn"),
+            "answer",
+        );
+        known.event_id = Some(format!("message:{}", serde_json::json!(["turn", archived])));
+        assert!(!message_source_exists(source, worker, &[known]));
+    }
+}
+
+#[test]
 fn repair_source_identity_requires_matching_worker_attribution() {
     let mut known = entry(
         1,
@@ -360,8 +438,8 @@ fn repair_ignores_malformed_or_unrelated_source_identities() {
     ] {
         known.event_id = Some(identity.into());
         assert_eq!(
-            missing_messages(vec![message.clone()], &[known.clone()]),
-            [message.clone()],
+            missing_messages(vec![message.clone()], std::slice::from_ref(&known)),
+            std::slice::from_ref(&message),
             "{identity}"
         );
     }
@@ -475,20 +553,21 @@ fn v4_archive_upgrade_adds_nullable_attribution_without_changing_legacy_rows() {
     let b = store::Local::shared("upgrade");
     let mut old = store::agent_run_entry_def();
     old.version = 4;
-    old.attrs
-        .retain(|attr| !matches!(attr.name.as_str(), "worker_id" | "conversation_turn_id"));
+    old.attrs.retain(|attr| {
+        !matches!(
+            attr.name.as_str(),
+            "worker_id" | "conversation_turn_id" | "attribution_resolved"
+        )
+    });
     b.define(&old).unwrap();
-    save(
-        &b,
-        &[entry(
-            1,
-            RunEntryKind::Message,
-            None,
-            None,
-            None,
-            "legacy text",
-        )],
-    );
+    b.apply(vec![yinz_tile::prelude::Mutation::put(rows::ENTRY_ENTITY)
+        .uid("legacy-prose")
+        .set("run_id", "run")
+        .set("revision", 1_i64)
+        .set("kind", "message")
+        .set("text", "legacy text")
+        .build()])
+        .unwrap();
     // Write v4 rows directly: the current entry writer fills scalar attribution.
     for revision in 2..=102 {
         let hook = yinz_tile::agent::HookEvent {
@@ -559,4 +638,350 @@ fn v4_archive_upgrade_adds_nullable_attribution_without_changing_legacy_rows() {
     assert_eq!(p.entries[0].text, "legacy text");
     assert!(p.entries[0].worker_id.is_none());
     assert!(p.entries[0].conversation_turn_id.is_none());
+}
+
+#[test]
+fn v5_archive_upgrade_leaves_attribution_unresolved_without_payload_backfill() {
+    use yinz_tile::prelude::*;
+    let b = store::Local::shared("upgrade-v5");
+    let mut old = store::agent_run_entry_def();
+    old.version = 5;
+    old.attrs.retain(|a| a.name != "attribution_resolved");
+    b.define(&old).unwrap();
+    b.apply(vec![Mutation::put(rows::ENTRY_ENTITY)
+        .uid("legacy")
+        .set("run_id", "run")
+        .set("revision", 1_i64)
+        .set("kind", "tool_result")
+        .set("text", "Subagent worker:\nlegacy output")
+        .build()])
+        .unwrap();
+    let request =
+        FetchRequest::entity(rows::ENTRY_ENTITY).select(["rev", "text", "tool", "worker_id"]);
+    let before = b.fetch(&request).unwrap();
+    b.define(&store::agent_run_entry_def()).unwrap();
+    assert_eq!(b.fetch(&request).unwrap(), before);
+    assert_eq!(
+        b.count(
+            &FetchRequest::entity(rows::ENTRY_ENTITY).filter(Pred::is_null("attribution_resolved"))
+        )
+        .unwrap(),
+        1
+    );
+    save(
+        &b,
+        &[entry(
+            2,
+            RunEntryKind::ToolCall,
+            None,
+            None,
+            None,
+            "current",
+        )],
+    );
+    for worker in [None, Some("worker")] {
+        let range = Range {
+            start: None,
+            end: None,
+            worker: worker.map(str::to_owned),
+        };
+        let collapsed = activity(&b, "run", &range).unwrap().unwrap();
+        let expanded = tools(&b, "run", &range, None).unwrap();
+        assert_eq!(
+            collapsed.first.revision,
+            if worker.is_some() { 1 } else { 2 }
+        );
+        assert_eq!(collapsed.tool_calls, usize::from(worker.is_none()));
+        assert_eq!(expanded.entries.len(), 1);
+        assert_eq!(expanded.entries[0].revision, collapsed.first.revision);
+    }
+}
+
+#[test]
+fn collapsed_activity_never_reads_current_payloads_even_for_discarded_workers() {
+    use std::cell::Cell;
+    use yinz_tile::prelude::*;
+    struct Instrumented {
+        inner: store::Local,
+        scalar_fetches: Cell<usize>,
+        legacy_fetches: Cell<usize>,
+        counts: Cell<usize>,
+    }
+    impl Backend for Instrumented {
+        fn fetch(&self, request: &FetchRequest) -> Result<DataRows, String> {
+            assert!(
+                !request.select.is_empty(),
+                "collapsed activity must project columns"
+            );
+            if request
+                .select
+                .iter()
+                .any(|field| field == "tool" || field == "text")
+            {
+                // Verify the predicate excludes *all* current rows, including workers
+                // that would later be discarded by the caller's scope filter.
+                assert_eq!(
+                    self.inner.count(
+                        &request
+                            .clone()
+                            .filter(Pred::eq("attribution_resolved", true))
+                    )?,
+                    0
+                );
+                assert!(request.limit <= 100);
+                self.legacy_fetches.set(self.legacy_fetches.get() + 1);
+            } else {
+                assert_eq!(request.limit, 1);
+                self.scalar_fetches.set(self.scalar_fetches.get() + 1);
+            }
+            self.inner.fetch(request)
+        }
+        fn count(&self, request: &FetchRequest) -> Result<u64, String> {
+            self.counts.set(self.counts.get() + 1);
+            self.inner.count(request)
+        }
+        fn define(&self, _: &EntityDef) -> Result<DataSchemaInfo, String> {
+            unreachable!()
+        }
+        fn apply(&self, _: Vec<Mutation>) -> Result<ApplyReport, WriteError> {
+            unreachable!()
+        }
+        fn watch(&self, _: &FetchRequest, _: WatchMode) -> Result<DataWatchHandle, String> {
+            unreachable!()
+        }
+    }
+    let b = backend();
+    let hook = yinz_tile::agent::HookEvent {
+        hook_event_name: "PostToolUse".into(),
+        tool_name: Some("shell".into()),
+        ..Default::default()
+    };
+    let mut capture = yinz_tile::agent::tool_capture::prepare("claude", &hook).unwrap();
+    capture.output = Some(yinz_tile::agent::tool_capture::Payload {
+        text: "x".repeat(16_000),
+        format: "text".into(),
+        original_bytes: 16_000,
+        redacted: false,
+        truncated: false,
+        attachments_omitted: false,
+    });
+    for chunk in (1..=2400).collect::<Vec<_>>().chunks(100) {
+        let entries: Vec<_> = chunk
+            .iter()
+            .map(|&r| {
+                let mut e = entry(
+                    r,
+                    if r % 2 == 0 {
+                        RunEntryKind::ToolResult
+                    } else {
+                        RunEntryKind::ToolCall
+                    },
+                    (r % 3 != 0).then_some(2500 - r as i64),
+                    if r % 4 < 2 { Some("worker") } else { None },
+                    None,
+                    &"text".repeat(4000),
+                );
+                e.tool = Some(capture.clone());
+                e
+            })
+            .collect();
+        save(&b, &entries);
+    }
+    let b = Instrumented {
+        inner: b,
+        scalar_fetches: Cell::new(0),
+        legacy_fetches: Cell::new(0),
+        counts: Cell::new(0),
+    };
+    for worker in [None, Some("worker"), Some("absent")] {
+        let range = Range {
+            start: None,
+            end: None,
+            worker: worker.map(str::to_owned),
+        };
+        let summary = activity(&b, "run", &range).unwrap();
+        if worker == Some("absent") {
+            assert!(summary.is_none());
+        } else {
+            let summary = summary.unwrap();
+            assert_eq!(summary.tool_calls, 600);
+            assert_eq!(summary.first.created_at_ms, None);
+            assert_eq!(summary.first.revision, if worker.is_some() { 9 } else { 3 });
+        }
+    }
+    assert_eq!(b.counts.get(), 3);
+    assert_eq!(b.scalar_fetches.get(), 3);
+    assert_eq!(b.legacy_fetches.get(), 3);
+}
+
+#[test]
+fn delivered_activity_neighbors_ignore_completion_alternatives() {
+    let b = backend();
+    let entries = [
+        entry(
+            1,
+            RunEntryKind::Message,
+            Some(1),
+            Some("worker"),
+            Some("turn"),
+            "answer",
+        ),
+        entry(
+            2,
+            RunEntryKind::ToolCall,
+            Some(2),
+            Some("worker"),
+            Some("turn"),
+            "tool",
+        ),
+        entry(
+            3,
+            RunEntryKind::Result,
+            Some(3),
+            Some("worker"),
+            Some("turn"),
+            "answer",
+        ),
+        entry(
+            4,
+            RunEntryKind::ToolCall,
+            Some(4),
+            Some("worker"),
+            Some("turn"),
+            "tool",
+        ),
+        entry(
+            5,
+            RunEntryKind::Message,
+            Some(5),
+            Some("worker"),
+            Some("next"),
+            "next answer",
+        ),
+    ];
+    save(&b, &entries);
+    let delivered = page(&b, "run", Some("worker"), None, Some(1)).unwrap();
+    assert_eq!(
+        delivered
+            .entries
+            .iter()
+            .map(|e| e.revision)
+            .collect::<Vec<_>>(),
+        [1, 5]
+    );
+    let ranges = activity_ranges(&b, "run", Some("worker"), &delivered.entries).unwrap();
+    assert_eq!(
+        ranges,
+        [
+            Range {
+                start: None,
+                end: Some(cursor(&entries[0])),
+                worker: Some("worker".into())
+            },
+            Range {
+                start: Some(cursor(&entries[0])),
+                end: Some(cursor(&entries[4])),
+                worker: Some("worker".into())
+            },
+            Range {
+                start: Some(cursor(&entries[4])),
+                end: None,
+                worker: Some("worker".into())
+            },
+        ]
+    );
+    assert_eq!(
+        activity(&b, "run", &ranges[1]).unwrap().unwrap().tool_calls,
+        2
+    );
+}
+
+#[test]
+fn scalar_attribution_preserves_legacy_precedence_for_current_and_unmarked_rows() {
+    use yinz_tile::prelude::*;
+    let b = backend();
+    let hook = yinz_tile::agent::HookEvent {
+        hook_event_name: "PostToolUse".into(),
+        tool_name: Some("shell".into()),
+        agent_id: Some("payload-worker".into()),
+        ..Default::default()
+    };
+    let tool = yinz_tile::agent::tool_capture::prepare("claude", &hook).unwrap();
+    for legacy in [false, true] {
+        let offset = if legacy { 10 } else { 0 };
+        let mut entries = [
+            entry(
+                offset + 1,
+                RunEntryKind::ToolCall,
+                None,
+                Some("scalar-worker"),
+                None,
+                "Subagent text-worker:\noutput",
+            ),
+            entry(
+                offset + 2,
+                RunEntryKind::ToolResult,
+                Some(1),
+                None,
+                None,
+                "Subagent text-worker:\noutput",
+            ),
+            entry(
+                offset + 3,
+                RunEntryKind::ToolCall,
+                Some(0),
+                None,
+                None,
+                "Subagent text-worker:\noutput",
+            ),
+            entry(
+                offset + 4,
+                RunEntryKind::ToolResult,
+                None,
+                None,
+                None,
+                "parent output",
+            ),
+        ];
+        entries[0].tool = Some(tool.clone());
+        entries[1].tool = Some(tool.clone());
+        let mutations = entries
+            .iter()
+            .map(|e| {
+                let mut mutation = rows::entry_mutation("run", &"host".into(), e);
+                if legacy && let Mutation::Put { values, .. } = &mut mutation {
+                    values.retain(|(key, _)| {
+                        key != "attribution_resolved"
+                            && (key != "worker_id" || e.worker_id.is_some())
+                    });
+                }
+                mutation
+            })
+            .collect();
+        b.apply(mutations).unwrap();
+    }
+    for (worker, revision, calls) in [
+        (None, 4, 0),
+        (Some("scalar-worker"), 1, 2),
+        (Some("payload-worker"), 2, 0),
+        (Some("text-worker"), 3, 2),
+    ] {
+        let range = Range {
+            start: None,
+            end: None,
+            worker: worker.map(str::to_owned),
+        };
+        let summary = activity(&b, "run", &range).unwrap().unwrap();
+        let expanded = tools(&b, "run", &range, None).unwrap();
+        assert_eq!(summary.first.revision, revision);
+        assert_eq!(summary.tool_calls, calls);
+        assert_eq!(
+            expanded
+                .entries
+                .iter()
+                .map(|e| e.revision)
+                .collect::<Vec<_>>(),
+            [revision, revision + 10]
+        );
+    }
 }

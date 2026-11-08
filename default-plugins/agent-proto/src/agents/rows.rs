@@ -101,10 +101,15 @@ pub fn entry_mutation(run_id: &str, host_id: &HostId, entry: &RunEntry) -> Mutat
         .set("host_id", host_id)
         .set("revision", entry.revision as i64)
         .set("kind", entry.kind.label())
+        .set("attribution_resolved", true)
+        .set(
+            "worker_id",
+            entry
+                .worker()
+                .map(DataValue::Text)
+                .unwrap_or(DataValue::Null),
+        )
         .set("text", entry.text.clone());
-    if let Some(worker) = entry.worker() {
-        put = put.set("worker_id", worker);
-    }
     if let Some(turn) = &entry.conversation_turn_id {
         put = put.set("conversation_turn_id", turn.clone());
     }

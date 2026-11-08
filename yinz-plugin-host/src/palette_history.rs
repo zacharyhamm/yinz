@@ -176,7 +176,7 @@ pub(super) fn execute(
     }
     match action {
         HistoryAction::Run { id, from, query } if query.is_empty() => {
-            let mut reply = conversation_view(
+            return conversation_refresh(
                 request,
                 &Reader(data),
                 id,
@@ -184,35 +184,22 @@ pub(super) fn execute(
                     after: *from,
                     ..Default::default()
                 },
-            )?;
-            if from.is_some() {
-                // Refresh activity counts at the tail while delivering newly stored
-                // revisions, including repaired messages with old source timestamps.
-                if let (
-                    AgentReply::History(HistoryReply::Run { events, rows, .. }),
-                    AgentReply::History(HistoryReply::Run {
-                        events: tail,
-                        rows: tail_rows,
-                        ..
-                    }),
-                ) = (
-                    &mut reply,
-                    conversation_view(request, &Reader(data), id, ConversationRead::default())?,
-                ) {
-                    events.extend(tail);
-                    rows.extend(tail_rows.into_iter().filter(|r| r.id != "received"));
-                }
-            }
-            return Ok(reply);
+            );
         },
-        HistoryAction::Conversation { id, worker, before } => {
-            return conversation_view(
+        HistoryAction::Conversation {
+            id,
+            worker,
+            before,
+            after_revision,
+        } => {
+            return conversation_refresh(
                 request,
                 &Reader(data),
                 id,
                 ConversationRead {
                     worker: worker.as_deref(),
                     before: *before,
+                    after: *after_revision,
                     ..Default::default()
                 },
             )
@@ -244,6 +231,7 @@ pub(super) fn execute(
                                 id: id.clone(),
                                 worker: Some(worker),
                                 before: None,
+                                after_revision: None,
                             },
                         )
                     })
@@ -303,6 +291,7 @@ pub(super) fn execute(
                             id: id.clone(),
                             worker: entry.worker(),
                             before,
+                            after_revision: None,
                         },
                     },
                 ));
@@ -427,6 +416,7 @@ pub(super) fn execute(
                         details: "No recorded history".into(),
                         ..Default::default()
                     },
+                    activity_ranges: vec![],
                     events: vec![],
                     rows: vec![],
                     status: "No recorded history".into(),
@@ -537,6 +527,7 @@ pub(super) fn execute(
                     usage: None,
                     ..Default::default()
                 },
+                activity_ranges: vec![],
                 events,
                 rows,
                 status,
@@ -617,13 +608,60 @@ pub(super) fn execute(
     Ok(AgentReply::History(reply))
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct ConversationRead<'a> {
     worker: Option<&'a str>,
     before: Option<agent_proto::conversation::Cursor>,
     after: Option<u64>,
     tools: Option<&'a agent_proto::conversation::Range>,
 }
+fn conversation_refresh(
+    request: &AgentRequest,
+    backend: &impl store::Backend,
+    id: &str,
+    read: ConversationRead<'_>,
+) -> Result<AgentReply, String> {
+    let mut reply = conversation_view(request, backend, id, read)?;
+    if read.after.is_some() {
+        // Refresh scoped activity counts at the chronological tail without
+        // acknowledging revisions that delivery has not reached yet.
+        if let (
+            AgentReply::History(HistoryReply::Run {
+                events,
+                rows,
+                activity_ranges,
+                ..
+            }),
+            AgentReply::History(HistoryReply::Run {
+                events: tail,
+                activity_ranges: tail_ranges,
+                rows: tail_rows,
+                ..
+            }),
+        ) = (
+            &mut reply,
+            conversation_view(
+                request,
+                backend,
+                id,
+                ConversationRead {
+                    after: None,
+                    ..read
+                },
+            )?,
+        ) {
+            events.extend(tail);
+            for range in tail_ranges {
+                if !activity_ranges.contains(&range) {
+                    activity_ranges.push(range);
+                }
+            }
+            rows.extend(tail_rows.into_iter().filter(|r| r.id != "received"));
+        }
+    }
+    Ok(reply)
+}
+
 fn conversation_view(
     request: &AgentRequest,
     backend: &impl store::Backend,
@@ -677,6 +715,7 @@ fn conversation_view(
                 id: id.into(),
                 worker: worker.map(str::to_owned),
                 before: Some(before),
+                after_revision: None,
             },
         };
         rows.push(row(
@@ -708,11 +747,24 @@ fn conversation_view(
             "received".into(),
             "",
             String::new(),
-            run_action(id, Some(page.latest_received_revision.saturating_add(1))),
+            HistoryAction::Conversation {
+                id: id.into(),
+                worker: worker.map(str::to_owned),
+                before: None,
+                after_revision: Some(page.latest_received_revision.saturating_add(1)),
+            },
         ));
     }
     let mut events = Vec::new();
+    let mut activity_ranges = if tools.is_none() && after.is_some() {
+        conversation::activity_ranges(backend, id, worker, &page.entries)?
+    } else {
+        Vec::new()
+    };
     let timestamp = |at| request.timezone.timestamp(at);
+    for range in &activity_ranges {
+        activity(backend, id, range.clone(), &timestamp, &mut events)?;
+    }
     let mut start = None;
     for entry in page.entries {
         let end = Cursor {
@@ -720,17 +772,13 @@ fn conversation_view(
             revision: entry.revision,
         };
         if tools.is_none() && after.is_none() && (start.is_some() || page.earlier.is_none()) {
-            activity(
-                backend,
-                id,
-                Range {
-                    start,
-                    end: Some(end),
-                    worker: worker.map(str::to_owned),
-                },
-                &timestamp,
-                &mut events,
-            )?;
+            let range = Range {
+                start,
+                end: Some(end),
+                worker: worker.map(str::to_owned),
+            };
+            activity(backend, id, range.clone(), &timestamp, &mut events)?;
+            activity_ranges.push(range);
         }
         start = Some(end);
         rows.push(row(
@@ -769,17 +817,13 @@ fn conversation_view(
     }
     if tools.is_none() && after.is_none() {
         // An earlier page owns the gap up to the next page's first message.
-        activity(
-            backend,
-            id,
-            Range {
-                start,
-                end: before,
-                worker: worker.map(str::to_owned),
-            },
-            &timestamp,
-            &mut events,
-        )?;
+        let range = Range {
+            start,
+            end: before,
+            worker: worker.map(str::to_owned),
+        };
+        activity(backend, id, range.clone(), &timestamp, &mut events)?;
+        activity_ranges.push(range);
     }
     if tools.is_none() && after.is_none() {
         if worker.is_none() {
@@ -797,6 +841,19 @@ fn conversation_view(
             HistoryAction::Conversation {
                 id: id.into(),
                 worker: worker.map(str::to_owned),
+                before: None,
+                after_revision: None,
+            },
+        ));
+    }
+    if let Some(range) = tools {
+        rows.push(row(
+            "latest".into(),
+            "Latest / Refresh",
+            String::new(),
+            HistoryAction::Tools {
+                id: id.into(),
+                range: range.clone(),
                 before: None,
             },
         ));
@@ -845,6 +902,7 @@ fn conversation_view(
                 .unwrap_or_default(),
             ..Default::default()
         },
+        activity_ranges,
         events,
         rows,
         status: if tools.is_some() {
@@ -862,57 +920,11 @@ fn activity(
     timestamp: &impl Fn(Option<i64>) -> String,
     events: &mut Vec<HistoryEvent>,
 ) -> Result<(), String> {
-    use agent_proto::{agents::RunEntryKind, conversation::Cursor};
-
-    let request = range
-        .request(id)
-        .filter(Pred::is_in("kind", ["tool_call", "tool_result"]))
-        .select([
-            "run_id",
-            "revision",
-            "kind",
-            "created_at_ms",
-            "worker_id",
-            "tool",
-            "text",
-        ])
-        .sort_by("created_at_ms", SortDir::Desc)
-        .sort_by("revision", SortDir::Desc)
-        .limit(100);
-    let mut position: Option<Cursor> = None;
-    let mut first = None;
-    let mut count = 0;
-    loop {
-        let current = match position {
-            Some(cursor) => request.clone().filter(cursor.before()),
-            None => request.clone(),
-        };
-        let mut batch = agent_proto::agents::rows::entries_from_rows(&backend.fetch(&current)?)
-            .remove(id)
-            .unwrap_or_default();
-        if batch.is_empty() {
-            break;
-        }
-        let cursor = |entry: &agent_proto::agents::RunEntry| Cursor {
-            created_at_ms: entry.created_at_ms,
-            revision: entry.revision,
-        };
-        batch.sort_by_key(cursor);
-        position = batch.first().map(cursor);
-        // Resolve legacy attribution just as expanded tool reads do.
-        for entry in batch
-            .into_iter()
-            .rev()
-            .filter(|e| e.worker() == range.worker)
-        {
-            count += usize::from(entry.kind == RunEntryKind::ToolCall);
-            first = Some(cursor(&entry));
-        }
-    }
-    if let Some(entry) = first {
+    if let Some(activity) = agent_proto::conversation::activity(backend, id, &range)? {
+        let entry = activity.first;
         events.push(HistoryEvent {
             revision: entry.revision,
-            tool_calls: count,
+            tool_calls: activity.tool_calls,
             kind: "tools".into(),
             time: timestamp(entry.created_at_ms),
             created_at_ms: entry.created_at_ms,

@@ -195,6 +195,155 @@ pub fn suppress_completions(entries: &mut Vec<RunEntry>) {
     });
 }
 
+/// Reconstruct both intervals around delivered prose, even when its neighbors
+/// are outside the newest conversation page (or have newer archive revisions).
+pub fn activity_ranges(
+    backend: &impl Backend,
+    id: &str,
+    worker: Option<&str>,
+    entries: &[RunEntry],
+) -> Result<Vec<Range>, String> {
+    let mut ranges = Vec::new();
+    for entry in entries {
+        let boundary = cursor(entry);
+        for previous in [true, false] {
+            let mut position = boundary;
+            let neighbor = loop {
+                let range = Range {
+                    start: (!previous).then_some(position),
+                    end: previous.then_some(position),
+                    worker: worker.map(str::to_owned),
+                };
+                let dir = if previous {
+                    SortDir::Desc
+                } else {
+                    SortDir::Asc
+                };
+                let mut batch = read(
+                    backend,
+                    id,
+                    &range
+                        .request(id)
+                        .filter(Pred::Not(Box::new(Pred::is_in(
+                            "kind",
+                            ["tool_call", "tool_result"],
+                        ))))
+                        .sort_by("created_at_ms", dir)
+                        .sort_by("revision", dir)
+                        .limit(100),
+                )?;
+                if batch.is_empty() {
+                    break None;
+                }
+                batch.sort_by_key(cursor);
+                let edge = if previous {
+                    batch.first()
+                } else {
+                    batch.last()
+                };
+                let Some(edge) = edge else { break None };
+                position = cursor(edge);
+                // A neighboring completion may duplicate the delivered message
+                // itself, which is outside this chronological query.
+                batch.push(entry.clone());
+                suppress_completions(&mut batch);
+                let mut matching = batch
+                    .iter()
+                    .filter(|e| e.revision != boundary.revision && e.worker().as_deref() == worker);
+                if let Some(entry) = if previous {
+                    matching.next_back()
+                } else {
+                    matching.next()
+                } {
+                    break Some(cursor(entry));
+                }
+            };
+            let range = Range {
+                start: if previous { neighbor } else { Some(boundary) },
+                end: if previous { Some(boundary) } else { neighbor },
+                worker: worker.map(str::to_owned),
+            };
+            if !ranges.contains(&range) {
+                ranges.push(range);
+            }
+        }
+    }
+    Ok(ranges)
+}
+
+fn resolved_worker(worker: Option<&str>) -> Pred {
+    Pred::eq("attribution_resolved", true).and(match worker {
+        Some(worker) => Pred::eq("worker_id", worker),
+        None => Pred::is_null("worker_id"),
+    })
+}
+
+pub struct Activity {
+    pub first: Cursor,
+    pub tool_calls: usize,
+}
+
+/// Current archive rows have scalar attribution. Only unmarked legacy rows
+/// require payload/text reads, bounded to one batch at a time.
+pub fn activity(
+    backend: &impl Backend,
+    id: &str,
+    range: &Range,
+) -> Result<Option<Activity>, String> {
+    let base = range
+        .request(id)
+        .filter(Pred::is_in("kind", ["tool_call", "tool_result"]));
+    let current = base
+        .clone()
+        .filter(resolved_worker(range.worker.as_deref()));
+    let mut count = backend.count(&current.clone().filter(Pred::eq("kind", "tool_call")))?;
+    let mut first = read(
+        backend,
+        id,
+        &current
+            .select(["run_id", "revision", "kind", "created_at_ms"])
+            .sort_by("created_at_ms", SortDir::Asc)
+            .sort_by("revision", SortDir::Asc)
+            .limit(1),
+    )?
+    .first()
+    .map(cursor);
+    let legacy = base
+        .filter(Pred::is_null("attribution_resolved"))
+        .select([
+            "run_id",
+            "revision",
+            "kind",
+            "created_at_ms",
+            "worker_id",
+            "tool",
+            "text",
+        ])
+        .sort_by("created_at_ms", SortDir::Desc)
+        .sort_by("revision", SortDir::Desc)
+        .limit(100);
+    let mut position: Option<Cursor> = None;
+    loop {
+        let request = match position {
+            Some(c) => legacy.clone().filter(c.before()),
+            None => legacy.clone(),
+        };
+        let mut batch = read(backend, id, &request)?;
+        if batch.is_empty() {
+            break;
+        }
+        batch.sort_by_key(cursor);
+        position = batch.first().map(cursor);
+        for entry in batch.into_iter().filter(|e| e.worker() == range.worker) {
+            count += u64::from(entry.kind == RunEntryKind::ToolCall);
+            let at = cursor(&entry);
+            first = Some(first.map_or(at, |first| first.min(at)));
+        }
+    }
+    let tool_calls = usize::try_from(count).map_err(|e| e.to_string())?;
+    Ok(first.map(|first| Activity { first, tool_calls }))
+}
+
 /// Expanded activity reads at most 30 records, with full retained payloads under
 /// the normal byte budget. A cursor advances independently of conversation pages.
 pub fn tools(
@@ -206,6 +355,7 @@ pub fn tools(
     let request = range
         .request(id)
         .filter(Pred::is_in("kind", ["tool_call", "tool_result"]))
+        .filter(resolved_worker(range.worker.as_deref()).or(Pred::is_null("attribution_resolved")))
         .sort_by("created_at_ms", SortDir::Desc)
         .sort_by("revision", SortDir::Desc)
         .limit(30);
@@ -314,6 +464,39 @@ pub fn workers(backend: &impl Backend, id: &str) -> Result<Vec<String>, String> 
 #[path = "unit/conversation.rs"]
 mod tests;
 
+// Only Claude worker sources have a legacy spelling without the provider prefix.
+fn worker_source<'a>(source: &'a str, worker: Option<&str>) -> &'a str {
+    let legacy = source.strip_prefix("claude:").filter(|source| {
+        let mut parts = source.split(':');
+        parts.next().is_some_and(|session| !session.is_empty())
+            && parts
+                .next()
+                .is_some_and(|id| Some(id) == worker && !id.is_empty())
+            && parts.next().is_some_and(|id| !id.is_empty())
+            && parts.next().is_none()
+    });
+    legacy.unwrap_or(source)
+}
+
+fn entry_has_message_source(entry: &RunEntry, source: &str, worker: Option<&str>) -> bool {
+    entry.worker().as_deref() == worker
+        && entry
+            .event_id
+            .as_deref()
+            .and_then(|id| id.strip_prefix("message:"))
+            .and_then(|id| serde_json::from_str::<[String; 2]>(id).ok())
+            .is_some_and(|[_, archived]| {
+                worker_source(&archived, worker) == worker_source(source, worker)
+            })
+}
+
+/// Recognize an archived provider source across inferred turns and legacy spellings.
+pub fn message_source_exists(source: &str, worker: Option<&str>, entries: &[RunEntry]) -> bool {
+    entries
+        .iter()
+        .any(|entry| entry_has_message_source(entry, source, worker))
+}
+
 /// Reconcile source reports without changing an existing archive row. Source
 /// identity is scoped to the worker, independently of the inferred turn. Only
 /// completion reports may stand in for a distinct source by text. SubagentStop
@@ -337,12 +520,7 @@ pub fn missing_messages(
                     return false;
                 }
                 // A bounded transcript can lose the prompt that supplied the turn ID.
-                if e.event_id
-                    .as_deref()
-                    .and_then(|id| id.strip_prefix("message:"))
-                    .and_then(|id| serde_json::from_str::<[String; 2]>(id).ok())
-                    .is_some_and(|[_, source]| source == m.source_id)
-                {
+                if entry_has_message_source(e, &m.source_id, m.worker_id.as_deref()) {
                     return true;
                 }
                 let worker_fallback = e

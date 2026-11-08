@@ -1208,6 +1208,76 @@ fn palette_history_opens_at_tail_and_loads_earlier_revisions_only_on_request() {
 }
 
 #[test]
+fn palette_history_conversation_delivery_keeps_scoped_watermarks_across_tail_refreshes() {
+    use yinz_bus::command_palette::{HistoryAction, HistoryReply};
+
+    for worker in [None, Some("worker")] {
+        let (temp, data) = repository();
+        let mut recorded = recorded_run(temp.path());
+        let template = recorded.entries[0].clone();
+        recorded.entries = (1..=131)
+            .map(|revision| {
+                let mut entry = template.clone();
+                entry.revision = revision;
+                entry.text = format!("Message {revision}");
+                entry.worker_id = if revision % 2 == 1 {
+                    worker.map(str::to_owned)
+                } else {
+                    Some("other-worker".into())
+                };
+                // The last inserted message is older than the chronological tail.
+                entry.created_at_ms = Some(if revision == 131 { 0 } else { revision as i64 });
+                entry
+            })
+            .collect();
+        recorded.revision = 131;
+        data.plugin_data()
+            .apply(
+                project_data::store::SHARED,
+                &agent_proto::agents::rows::run_mutations(&recorded, REV_ABSENT),
+            )
+            .unwrap();
+
+        // The current view has received revision 1 before this burst arrived.
+        let mut action = HistoryAction::Conversation {
+            id: recorded.id.clone(),
+            worker: worker.map(str::to_owned),
+            before: None,
+            after_revision: Some(2),
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        for expected_next in [62, 122, 132] {
+            let (reply, _) = run(&request(temp.path(), AgentAction::History(action)), &data);
+            let AgentReply::History(HistoryReply::Run { events, rows, .. }) = reply.unwrap() else {
+                panic!("expected conversation delivery");
+            };
+            assert!(events.iter().all(|event| event.revision % 2 == 1));
+            seen.extend(events.iter().map(|event| event.revision));
+            let received: Vec<_> = rows.iter().filter(|row| row.id == "received").collect();
+            assert_eq!(
+                received.len(),
+                1,
+                "tail must not overwrite delivery watermark"
+            );
+            action = received[0].action.clone();
+            assert!(
+                matches!(
+                    &action,
+                    HistoryAction::Conversation {
+                        worker: scope,
+                        before: None,
+                        after_revision: Some(next),
+                        ..
+                    } if scope.as_deref() == worker && *next == expected_next
+                ),
+                "{action:?}"
+            );
+        }
+        assert_eq!(seen, (3..=131).step_by(2).collect());
+    }
+}
+
+#[test]
 fn palette_history_keeps_run_navigation_on_every_conversation_page() {
     use yinz_bus::command_palette::{HistoryAction, HistoryReply};
 
@@ -1236,6 +1306,7 @@ fn palette_history_keeps_run_navigation_on_every_conversation_page() {
             id: recorded.id.clone(),
             worker: worker.map(str::to_owned),
             before: None,
+            after_revision: None,
         };
         for expected_messages in [30, 30, 5] {
             let (reply, _) = run(&request(temp.path(), AgentAction::History(action)), &data);
@@ -1251,6 +1322,7 @@ fn palette_history_keeps_run_navigation_on_every_conversation_page() {
                     id,
                     worker: target_worker,
                     before: None,
+                    after_revision: None,
                 } if id == &recorded.id && target_worker.as_deref() == worker
             ));
             let workers = rows.iter().find(|row| row.id == "workers");
@@ -1331,6 +1403,7 @@ fn palette_history_backfill_includes_boundary_and_leading_activity() {
                 id: recorded.id.clone(),
                 worker: worker.map(str::to_owned),
                 before: None,
+                after_revision: None,
             });
             assert_eq!(events.iter().filter(|e| e.range.is_none()).count(), 30);
             assert_eq!(events.iter().filter(|e| e.range.is_some()).count(), 1);
@@ -1439,7 +1512,7 @@ fn palette_history_activity_matches_expanded_attribution() {
                             && matches!(value, DataValue::Int(revision) if revision % 3 != 2)
                     })
                 {
-                    values.retain(|(key, _)| key != "worker_id");
+                    values.retain(|(key, _)| key != "worker_id" && key != "attribution_resolved");
                 }
             }
             data.plugin_data()
@@ -1460,6 +1533,7 @@ fn palette_history_activity_matches_expanded_attribution() {
                     id: recorded.id.clone(),
                     worker: worker.map(str::to_owned),
                     before: None,
+                    after_revision: None,
                 });
                 let groups: Vec<_> = events.iter().filter(|e| e.range.is_some()).collect();
                 if worker.is_none() && parent_kinds.is_empty() {
@@ -2109,4 +2183,333 @@ fn palette_prompt_library_is_empty_before_the_archive_is_defined() {
     let temp = tempfile::tempdir().unwrap();
     let data = DataAccess::sqlite(temp.path());
     assert_eq!(history::prompt_library(&data).unwrap(), vec![]);
+}
+
+#[test]
+fn palette_history_incremental_prose_replaces_activity_outside_the_latest_page() {
+    use agent_proto::agents::{rows, RunEntryKind};
+    use std::collections::BTreeMap;
+    use yinz_bus::command_palette::{HistoryAction, HistoryEvent, HistoryReply};
+    use yinz_types::agent::history::{Cursor, Range};
+
+    for worker in [None, Some("worker")] {
+        for chronology in ["ordered", "reversed", "null"] {
+            let (temp, data) = repository();
+            let mut recorded = recorded_run(temp.path());
+            let template = recorded.entries[0].clone();
+            let entry = |revision: u64, kind, scope: Option<&str>| {
+                let mut e = template.clone();
+                e.revision = revision;
+                e.kind = kind;
+                e.worker_id = scope.map(str::to_owned);
+                e.text = format!("Record {revision}");
+                e.created_at_ms = match chronology {
+                    "null" => None,
+                    "reversed" if revision > 2 => Some(135 - revision as i64),
+                    _ => Some(revision as i64),
+                };
+                e
+            };
+            recorded.entries = vec![
+                entry(1, RunEntryKind::Message, worker),
+                entry(2, RunEntryKind::ToolCall, worker),
+            ];
+            recorded.revision = 2;
+            data.plugin_data()
+                .apply(
+                    project_data::store::SHARED,
+                    &rows::run_mutations(&recorded, REV_ABSENT),
+                )
+                .unwrap();
+            let execute = |action| {
+                let AgentReply::History(reply @ HistoryReply::Run { .. }) =
+                    run(&request(temp.path(), AgentAction::History(action)), &data)
+                        .0
+                        .unwrap()
+                else {
+                    panic!("expected history")
+                };
+                reply
+            };
+            let mut cached: BTreeMap<u64, HistoryEvent> = BTreeMap::new();
+            let merge = |cache: &mut BTreeMap<u64, HistoryEvent>, reply| {
+                let HistoryReply::Run {
+                    events,
+                    activity_ranges,
+                    rows,
+                    ..
+                } = reply
+                else {
+                    panic!("expected history")
+                };
+                cache.retain(|_, old| {
+                    old.range
+                        .as_ref()
+                        .is_none_or(|old| !activity_ranges.iter().any(|r| old.overlaps(r)))
+                });
+                cache.extend(events.into_iter().map(|e| (e.revision, e)));
+                rows
+            };
+            merge(
+                &mut cached,
+                execute(HistoryAction::Conversation {
+                    id: recorded.id.clone(),
+                    worker: worker.map(str::to_owned),
+                    before: None,
+                    after_revision: None,
+                }),
+            );
+            let open = cached.values().find(|e| e.range.is_some()).unwrap();
+            assert!(open.range.as_ref().unwrap().end.is_none());
+            assert_eq!(open.tool_calls, 1);
+
+            let mut burst: Vec<_> = (3..=132)
+                .map(|r| {
+                    entry(
+                        r,
+                        if r % 2 == 1 {
+                            RunEntryKind::Message
+                        } else {
+                            RunEntryKind::ToolCall
+                        },
+                        worker,
+                    )
+                })
+                .collect();
+            // Chronological neighbors must ignore prose from another worker, even
+            // across multiple bounded fetch batches.
+            burst.extend((133..=337).map(|r| {
+                let mut e = entry(r, RunEntryKind::Message, Some("other-worker"));
+                e.created_at_ms = Some(10);
+                e
+            }));
+            for chunk in burst.chunks(100) {
+                data.plugin_data()
+                    .apply(
+                        project_data::store::SHARED,
+                        &chunk
+                            .iter()
+                            .map(|e| rows::entry_mutation(&recorded.id, &recorded.host_id, e))
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap();
+            }
+            let key = |e: &agent_proto::agents::RunEntry| Cursor {
+                created_at_ms: e.created_at_ms,
+                revision: e.revision,
+            };
+            let mut prose = vec![recorded.entries[0].clone()];
+            prose.extend(
+                burst
+                    .iter()
+                    .filter(|e| e.worker().as_deref() == worker && e.kind == RunEntryKind::Message)
+                    .cloned(),
+            );
+            prose.sort_by_key(key);
+            let mut expected_ranges: Vec<_> = prose
+                .windows(2)
+                .map(|p| Range {
+                    start: Some(key(&p[0])),
+                    end: Some(key(&p[1])),
+                    worker: worker.map(str::to_owned),
+                })
+                .collect();
+            expected_ranges.insert(
+                0,
+                Range {
+                    start: None,
+                    end: Some(key(&prose[0])),
+                    worker: worker.map(str::to_owned),
+                },
+            );
+            expected_ranges.push(Range {
+                start: prose.last().map(key),
+                end: None,
+                worker: worker.map(str::to_owned),
+            });
+            let mut tool_entries = vec![recorded.entries[1].clone()];
+            tool_entries.extend(
+                burst
+                    .iter()
+                    .filter(|e| e.kind == RunEntryKind::ToolCall)
+                    .cloned(),
+            );
+            let mut next = 3;
+            while next <= 337 {
+                let reply = execute(HistoryAction::Conversation {
+                    id: recorded.id.clone(),
+                    worker: worker.map(str::to_owned),
+                    before: None,
+                    after_revision: Some(next),
+                });
+                let rows = merge(&mut cached, reply);
+                let groups: Vec<_> = cached.values().filter(|e| e.range.is_some()).collect();
+                for (i, group) in groups.iter().enumerate() {
+                    let range = group.range.as_ref().unwrap();
+                    assert!(
+                        expected_ranges.contains(range),
+                        "{chronology} delivery from {next}: {range:?}"
+                    );
+                    assert!(groups[..i]
+                        .iter()
+                        .all(|other| !range.overlaps(other.range.as_ref().unwrap())));
+                    let count = tool_entries
+                        .iter()
+                        .filter(|e| {
+                            range.start.is_none_or(|start| key(e) > start)
+                                && range.end.is_none_or(|end| key(e) < end)
+                        })
+                        .count();
+                    assert_eq!(group.tool_calls, count);
+                }
+                let HistoryAction::Conversation {
+                    after_revision: Some(received),
+                    ..
+                } = rows.iter().find(|r| r.id == "received").unwrap().action
+                else {
+                    panic!("expected watermark")
+                };
+                assert!(received > next);
+                // The first two delivery pages cannot acknowledge the newest
+                // chronological page's revisions or the other worker's prose.
+                if next == 3 {
+                    assert_eq!(received, 62);
+                }
+                if next == 62 {
+                    assert_eq!(received, 122);
+                }
+                next = received;
+            }
+            let groups: Vec<_> = cached.values().filter(|e| e.range.is_some()).collect();
+            let mut expanded_revisions = Vec::new();
+            for (i, group) in groups.iter().enumerate() {
+                let range = group.range.as_ref().unwrap();
+                assert!(expected_ranges.contains(range), "{chronology}: {range:?}");
+                assert!(groups[..i]
+                    .iter()
+                    .all(|other| !range.overlaps(other.range.as_ref().unwrap())));
+                let matching: Vec<_> = tool_entries
+                    .iter()
+                    .filter(|e| {
+                        range.start.is_none_or(|start| key(e) > start)
+                            && range.end.is_none_or(|end| key(e) < end)
+                    })
+                    .collect();
+                assert_eq!(group.tool_calls, matching.len());
+                assert_eq!(
+                    Cursor {
+                        created_at_ms: group.created_at_ms,
+                        revision: group.revision
+                    },
+                    matching.iter().map(|e| key(e)).min().unwrap()
+                );
+                let mut before = None;
+                loop {
+                    let HistoryReply::Run { events, rows, .. } = execute(HistoryAction::Tools {
+                        id: recorded.id.clone(),
+                        range: range.clone(),
+                        before,
+                    }) else {
+                        unreachable!()
+                    };
+                    expanded_revisions.extend(events.iter().map(|e| e.revision));
+                    let Some(earlier) = rows.iter().find(|r| r.id == "earlier") else {
+                        break;
+                    };
+                    let HistoryAction::Tools { before: cursor, .. } = earlier.action else {
+                        unreachable!()
+                    };
+                    before = cursor;
+                }
+            }
+            expanded_revisions.sort_unstable();
+            assert_eq!(expanded_revisions, (2..=132).step_by(2).collect::<Vec<_>>());
+            assert_eq!(cached.values().filter(|e| e.range.is_none()).count(), 66);
+        }
+    }
+}
+
+#[test]
+fn palette_history_tool_search_hits_and_anchored_ranges_offer_latest() {
+    use yinz_bus::command_palette::{HistoryAction, HistoryReply};
+    use yinz_types::agent::history::{Cursor, Range};
+    for worker in [None, Some("worker")] {
+        let (temp, data) = repository();
+        let mut recorded = recorded_run(temp.path());
+        let template = recorded.entries[0].clone();
+        recorded.entries = (1..=65)
+            .map(|r| {
+                let mut e = template.clone();
+                e.revision = r;
+                e.kind = agent_proto::agents::RunEntryKind::ToolCall;
+                e.worker_id = worker.map(str::to_owned);
+                e.created_at_ms = Some(r as i64);
+                e
+            })
+            .collect();
+        recorded.revision = 65;
+        data.plugin_data()
+            .apply(
+                project_data::store::SHARED,
+                &agent_proto::agents::rows::run_mutations(&recorded, REV_ABSENT),
+            )
+            .unwrap();
+        let execute = |action| {
+            let AgentReply::History(HistoryReply::Run { rows, events, .. }) =
+                run(&request(temp.path(), AgentAction::History(action)), &data)
+                    .0
+                    .unwrap()
+            else {
+                panic!("expected history")
+            };
+            (rows, events)
+        };
+        let bounded = Range {
+            start: Some(Cursor {
+                created_at_ms: Some(5),
+                revision: 5,
+            }),
+            end: Some(Cursor {
+                created_at_ms: Some(60),
+                revision: 60,
+            }),
+            worker: worker.map(str::to_owned),
+        };
+        for (action, expected_range, latest_revision) in [
+            (
+                HistoryAction::Hit {
+                    id: recorded.id.clone(),
+                    revision: 25,
+                },
+                Range {
+                    start: None,
+                    end: None,
+                    worker: worker.map(str::to_owned),
+                },
+                65,
+            ),
+            (
+                HistoryAction::Tools {
+                    id: recorded.id.clone(),
+                    range: bounded.clone(),
+                    before: Some(Cursor {
+                        created_at_ms: Some(26),
+                        revision: 26,
+                    }),
+                },
+                bounded,
+                59,
+            ),
+        ] {
+            let (rows, events) = execute(action);
+            assert!(events.iter().all(|e| e.revision <= 25));
+            let latest = rows.iter().find(|r| r.id == "latest").unwrap();
+            assert_eq!(latest.label, "Latest / Refresh");
+            assert!(
+                matches!(&latest.action, HistoryAction::Tools { id, range, before: None } if id == &recorded.id && range == &expected_range)
+            );
+            let (_, events) = execute(latest.action.clone());
+            assert_eq!(events.last().unwrap().revision, latest_revision);
+        }
+    }
 }

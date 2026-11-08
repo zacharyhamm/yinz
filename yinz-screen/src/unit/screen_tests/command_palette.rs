@@ -5824,6 +5824,7 @@ fn history_run(
             name: "Recorded run".into(),
             ..Default::default()
         },
+        activity_ranges: vec![],
         events,
         rows,
         status: String::new(),
@@ -5859,6 +5860,7 @@ fn history_workers_refresh_retains_results_until_the_new_list_arrives() {
                     id: "run".into(),
                     worker: Some(worker.into()),
                     before: None,
+                    after_revision: None,
                 },
             }],
             status: "Workers".into(),
@@ -5966,6 +5968,7 @@ fn history_workers_picker_opens_selected_conversation_and_restores_parent() {
                         id: "run".into(),
                         worker: Some(worker.into()),
                         before: None,
+                        after_revision: None,
                     },
                 })
                 .collect(),
@@ -5984,6 +5987,7 @@ fn history_workers_picker_opens_selected_conversation_and_restores_parent() {
             id,
             worker: Some(worker),
             before: None,
+            after_revision: None,
         }) if id == "run" && worker == "bravo"
     ));
     screen.plugin_palette_instruction(reply(
@@ -6045,6 +6049,7 @@ fn history_tool_navigation_remains_visible_and_pages_with_the_original_range() {
             id: "run".into(),
             worker: range.worker.clone(),
             before: None,
+            after_revision: None,
         }),
     );
     let mut conversation = history_run(history_page_rows(1..=1, false, None));
@@ -6264,6 +6269,7 @@ fn history_latest_polling_case(tools: bool, worker: Option<&str>) {
                 id: "run".into(),
                 worker: worker.map(str::to_owned),
                 before,
+                after_revision: None,
             }
         }
     };
@@ -6275,15 +6281,26 @@ fn history_latest_polling_case(tools: bool, worker: Option<&str>) {
     let assert_action =
         |request: &AgentRequest, expected: &HistoryAction| match (&request.action, expected) {
             (
-                AgentAction::History(HistoryAction::Conversation { id, worker, before }),
+                AgentAction::History(HistoryAction::Conversation {
+                    id,
+                    worker,
+                    before,
+                    after_revision,
+                }),
                 HistoryAction::Conversation {
                     id: expected_id,
                     worker: expected_worker,
                     before: expected_before,
+                    after_revision: expected_after,
                 },
             ) => assert_eq!(
-                (id, worker, before),
-                (expected_id, expected_worker, expected_before)
+                (id, worker, before, after_revision),
+                (
+                    expected_id,
+                    expected_worker,
+                    expected_before,
+                    expected_after
+                )
             ),
             (
                 AgentAction::History(HistoryAction::Tools { id, range, before }),
@@ -6300,6 +6317,19 @@ fn history_latest_polling_case(tools: bool, worker: Option<&str>) {
         };
     let reply = |request: &AgentRequest, revision| {
         let mut rows = history_page_rows(revision..=revision, false, None);
+        if !tools {
+            rows.push(HistoryRow {
+                id: "received".into(),
+                label: String::new(),
+                description: String::new(),
+                action: HistoryAction::Conversation {
+                    id: "run".into(),
+                    worker: worker.map(str::to_owned),
+                    before: None,
+                    after_revision: Some(revision + 1),
+                },
+            });
+        }
         for (id, label, action) in [
             ("context", "", anchored.clone()),
             (
@@ -6341,10 +6371,25 @@ fn history_latest_polling_case(tools: bool, worker: Option<&str>) {
         }),
     );
     screen.plugin_palette_instruction(reply(&next(), 50));
+    let delivery = |next| HistoryAction::Conversation {
+        id: "run".into(),
+        worker: worker.map(str::to_owned),
+        before: None,
+        after_revision: Some(next),
+    };
     for (label, expected_poll, revision) in [
-        ("Load earlier messages", &anchored, 49),
-        ("Latest / Refresh", &latest, 90),
-        ("Load earlier messages", &latest, 48),
+        ("Load earlier messages", anchored.clone(), 49),
+        (
+            "Latest / Refresh",
+            if tools { latest.clone() } else { delivery(91) },
+            90,
+        ),
+        // Backfill cannot move the delivery watermark backwards.
+        (
+            "Load earlier messages",
+            if tools { latest.clone() } else { delivery(92) },
+            48,
+        ),
     ] {
         // Consume the previous generation's timer before issuing a new request.
         let _obsolete = next_tick();
@@ -6371,7 +6416,7 @@ fn history_latest_polling_case(tools: bool, worker: Option<&str>) {
         screen.plugin_palette_instruction(reply(&request, revision));
         screen.plugin_palette_instruction(next_tick());
         let poll = next();
-        assert_action(&poll, expected_poll);
+        assert_action(&poll, &expected_poll);
         screen.plugin_palette_instruction(reply(&poll, revision + 1));
         if label == "Latest / Refresh" {
             let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
@@ -6456,6 +6501,7 @@ fn history_opens_at_tail_and_polls_before_explicit_backfill_preserving_manual_sc
                     created_at_ms: None,
                     revision: 50,
                 }),
+                after_revision: None,
             },
         });
     }
@@ -6805,6 +6851,7 @@ fn archived_history_keeps_earlier_action_across_search_until_prefix_is_loaded() 
                         created_at_ms: None,
                         revision: 80,
                     }),
+                    after_revision: None,
                 },
             },
         ]
@@ -6901,6 +6948,7 @@ fn history_page_rows(
                     created_at_ms: None,
                     revision: first,
                 }),
+                after_revision: None,
             },
         });
     }
@@ -6954,6 +7002,7 @@ fn history_navigation_case(worker: Option<&str>, search: bool, cancel: bool) {
             id: "run".into(),
             worker: worker.map(str::to_owned),
             before: None,
+            after_revision: None,
         },
     });
     screen.plugin_palette_instruction(reply(&initial, initial_rows));
@@ -7981,6 +8030,7 @@ fn peer_agent_quota_is_unavailable_without_local_usage_collection() {
                 step: request.step,
                 reply: Ok(AgentReply::History(HistoryReply::Run {
                     header: Default::default(),
+                    activity_ranges: vec![],
                     events: vec![],
                     rows: vec![],
                     status: "No recorded history".into(),
@@ -8052,6 +8102,7 @@ fn agent_info_usage_and_prompt_are_scoped_to_the_selected_agent() {
                     step: request.step,
                     reply: Ok(AgentReply::History(HistoryReply::Run {
                         header: Default::default(),
+                        activity_ranges: vec![],
                         events: vec![],
                         rows: vec![],
                         status: "No recorded history".into(),

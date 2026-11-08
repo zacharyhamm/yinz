@@ -553,6 +553,8 @@ fn agent_model_boundary_rejects_unknown_operations_and_invalid_arguments() {
         ("store", "unknown", json!([])),
         ("agents", "NormalizePath", json!([42])),
         ("agents", "NormalizePath", json!([])),
+        ("agents", "MessageSourceExists", json!(["source", null])),
+        ("agents", "MessageSourceExists", json!(["source", 42, []])),
         ("store", "OwnedBy", json!({"host_id": true})),
         ("providers", "WithSnapshot", json!([])),
     ] {
@@ -575,6 +577,32 @@ fn agent_model_boundary_rejects_unknown_operations_and_invalid_arguments() {
             .unwrap(),
         json!(agent_proto::store::LIST_FETCH_LIMIT)
     );
+}
+
+#[test]
+fn agent_model_recognizes_legacy_worker_sources_without_host_calls() {
+    let mut runtime = Runtime::new(|_| panic!("pure models must not call the host")).unwrap();
+    let entries = json!([{"revision":1, "kind":"message", "text":"answer",
+        "worker_id":"worker", "event_id":"message:[\"old-turn\",\"conversation:worker:reply\"]"}]);
+    for (source, worker, expected) in [
+        ("claude:conversation:worker:reply", Some("worker"), true),
+        ("claude:other:worker:reply", Some("worker"), false),
+        ("claude:conversation:worker:reply", None, false),
+    ] {
+        assert_eq!(
+            runtime
+                .invoke(
+                    "yinz-agent-model",
+                    vec![
+                        json!("agents"),
+                        json!("MessageSourceExists"),
+                        json!([source, worker, entries])
+                    ]
+                )
+                .unwrap(),
+            expected
+        );
+    }
 }
 
 #[test]

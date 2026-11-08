@@ -1768,6 +1768,92 @@ fn conversation_capture_attributes_workers_and_deduplicates_alternative_completi
 }
 
 #[test]
+fn explicit_turn_keeps_delayed_completions_on_their_original_prompt() {
+    for worker in [None, Some("worker")] {
+        for captured in [false, true] {
+            let mut runtime = conversation_capture_runtime();
+            let mut hook = |event| runtime.invoke("hook", vec![event]).unwrap();
+            hook(
+                json!({"hook_event_name":"UserPromptSubmit", "session_id":"conversation",
+                "agent_id":worker, "turn_id":"one", "prompt":"first"}),
+            );
+            if captured {
+                hook(
+                    json!({"hook_event_name":"MessageDisplay", "session_id":"conversation",
+                    "agent_id":worker, "turn_id":"one", "message_id":"reply",
+                    "index":0, "final":true, "delta":"answer"}),
+                );
+            }
+            hook(
+                json!({"hook_event_name":"UserPromptSubmit", "session_id":"conversation",
+                "agent_id":worker, "turn_id":"two", "prompt":"second"}),
+            );
+            hook(
+                json!({"hook_event_name":"Stop", "session_id":"conversation",
+                "agent_id":worker, "turn_id":"one", "last_assistant_message":"answer"}),
+            );
+            let entries = runtime.invoke("entries", vec![]).unwrap();
+            let entries = entries.as_array().unwrap();
+            assert_eq!(entries.len(), 3, "{entries:?}");
+            let answer = entries
+                .iter()
+                .find(|entry| entry["text"] == "answer")
+                .unwrap();
+            assert_eq!(answer["conversation_turn_id"], "one");
+            assert_eq!(answer["worker_id"], json!(worker));
+            assert_eq!(answer["kind"], if captured { "message" } else { "result" });
+        }
+    }
+}
+
+#[test]
+fn event_turn_prefers_prompt_then_turn_then_worker_prompt_then_revision() {
+    let mut runtime = conversation_capture_runtime();
+    runtime
+        .eval(
+            r#"
+        (define (resolve-turn run event) (event-turn run event))
+    "#,
+        )
+        .unwrap();
+    let run = json!({"revision":3,"entries":[
+        {"kind":"prompt","revision":1,"conversation_turn_id":"main"},
+        {"kind":"prompt","revision":2,"worker_id":"worker","conversation_turn_id":"work"},
+        {"kind":"prompt","revision":3,"worker_id":"other"}
+    ]});
+    for (event, expected) in [
+        (
+            json!({"hook_event_name":"Stop","agent_id":null,"prompt_id":"prompt","turn_id":"turn"}),
+            "prompt",
+        ),
+        (
+            json!({"hook_event_name":"Stop","agent_id":null,"turn_id":"turn"}),
+            "turn",
+        ),
+        (json!({"hook_event_name":"Stop","agent_id":null}), "main"),
+        (
+            json!({"hook_event_name":"Stop","agent_id":"worker"}),
+            "work",
+        ),
+        (
+            json!({"hook_event_name":"Stop","agent_id":"other"}),
+            "prompt-revision:3",
+        ),
+        (
+            json!({"hook_event_name":"UserPromptSubmit","agent_id":null}),
+            "prompt-revision:4",
+        ),
+    ] {
+        assert_eq!(
+            runtime
+                .invoke("resolve-turn", vec![run.clone(), event])
+                .unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
 fn live_messages_preserve_distinct_source_ids_with_identical_text() {
     for worker in [None, Some("worker")] {
         let mut runtime = conversation_capture_runtime();
@@ -1800,12 +1886,105 @@ fn conversation_capture_runtime() -> yinz_steel::Runtime {
         (define (hook raw)
           (define event (as-result (as-model "HookEvent" (yinz-json-string raw))))
           (as-call "record-event" 7 "claude" event 100))
-        (define (entries) (hash-ref (as-map-get "runs" 7 #f) "entries"))
+        (define (entries) (hash-ref (as-call "load-run" "claude:conversation") "entries"))
+        (define (seed run) (as-map-set! "runs" 7 run))
+        (define (flush) (as-map-set! "runs" 7 (message-flush 7 (as-map-get "runs" 7 #f) 100)))
     "#,
         json!({}),
         BTreeMap::new(),
         "",
     ).0
+}
+
+#[test]
+fn live_worker_sources_match_recovery_and_legacy_archives() {
+    let live = json!({"hook_event_name":"MessageDisplay", "session_id":"conversation",
+        "agent_id":"worker", "prompt_id":"live-turn", "message_id":"reply",
+        "index":0, "final":true, "delta":"answer"});
+    let message = json!({"source_id":"claude:conversation:worker:reply", "worker_id":"worker",
+        "turn_id":"source:reply", "created_at_ms":5, "text":"answer", "incomplete":false});
+    for hook in ["SubagentStop", "SessionEnd"] {
+        let recovery = json!({"hook_event_name":hook, "session_id":"conversation",
+            "agent_id":if hook == "SubagentStop" {Some("worker")} else {None},
+            "agent_type":"general-purpose", "last_assistant_message":if hook == "SubagentStop" {Some("answer")} else {None},
+            "assistant_messages":[message.clone()]});
+        for recovery_first in [false, true] {
+            let mut runtime = conversation_capture_runtime();
+            let events = if recovery_first {
+                [&recovery, &live]
+            } else {
+                [&live, &recovery]
+            };
+            runtime.invoke("hook", vec![events[0].clone()]).unwrap();
+            let original = runtime.invoke("entries", vec![]).unwrap();
+            for _ in 0..2 {
+                runtime.invoke("hook", vec![events[1].clone()]).unwrap();
+            }
+            assert_eq!(runtime.invoke("entries", vec![]).unwrap(), original);
+            assert_eq!(original.as_array().unwrap().len(), 1);
+            let id = original[0]["event_id"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("message:")
+                .unwrap();
+            let identity: serde_json::Value = serde_json::from_str(id).unwrap();
+            assert_eq!(identity[1], message["source_id"]);
+        }
+    }
+
+    // Old live archives remain unchanged under live replay and transcript recovery.
+    let mut runtime = conversation_capture_runtime();
+    let archived = json!({"revision":1, "kind":"message", "text":"answer", "worker_id":"worker",
+        "conversation_turn_id":"old-turn", "created_at_ms":1,
+        "event_id":"message:[\"old-turn\",\"conversation:worker:reply\"]"});
+    runtime
+        .invoke(
+            "seed",
+            vec![
+                json!({"id":"claude:conversation", "pane_id":7, "kind":"claude",
+        "session_id":"conversation", "host_id":"host", "yinz_session_name":"destination",
+        "started_at_ms":1, "outcome":"active", "revision":1, "entries":[archived.clone()]}),
+            ],
+        )
+        .unwrap();
+    runtime.invoke("hook", vec![live]).unwrap();
+    runtime
+        .invoke(
+            "hook",
+            vec![
+                json!({"hook_event_name":"SessionEnd", "session_id":"conversation",
+        "assistant_messages":[message]}),
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        runtime.invoke("entries", vec![]).unwrap(),
+        json!([archived])
+    );
+}
+
+#[test]
+fn worker_recovery_during_live_assembly_prevents_duplicate_flushes() {
+    for force in [false, true] {
+        let mut runtime = conversation_capture_runtime();
+        let mut live = json!({"hook_event_name":"MessageDisplay", "session_id":"conversation",
+            "agent_id":"worker", "prompt_id":"live-turn", "message_id":"reply",
+            "index":0, "final":false, "delta":"ans"});
+        runtime.invoke("hook", vec![live.clone()]).unwrap();
+        runtime.invoke("hook", vec![json!({"hook_event_name":"SubagentStop", "session_id":"conversation",
+            "agent_id":"worker", "assistant_messages":[{"source_id":"claude:conversation:worker:reply",
+            "worker_id":"worker", "turn_id":"source:reply", "text":"answer", "incomplete":false}]})]).unwrap();
+        let original = runtime.invoke("entries", vec![]).unwrap();
+        if !force {
+            live["index"] = json!(1);
+            live["final"] = json!(true);
+            live["delta"] = json!("wer");
+            runtime.invoke("hook", vec![live]).unwrap();
+        }
+        runtime.invoke("flush", vec![]).unwrap();
+        assert_eq!(runtime.invoke("entries", vec![]).unwrap(), original);
+        assert_eq!(original.as_array().unwrap().len(), 1);
+    }
 }
 
 #[test]
@@ -1963,6 +2142,42 @@ fn worker_completions_keep_identical_prose_in_distinct_turns() {
     assert_eq!(entries.len(), 4);
     assert_eq!(entries[3]["text"], "Done.");
     assert!(entries[3]["conversation_turn_id"].is_null());
+}
+
+#[test]
+fn conversation_repair_recognizes_live_worker_sources_without_rewriting_archives() {
+    for source in ["handoff:worker:source", "claude:handoff:worker:source"] {
+        let (mut runtime, _) = plugin_with_source(
+            "agent-service",
+            r#"
+            (require "./agent-service/state.scm" "./agent-service/messages.scm" "./agent-service/runs.scm")
+            (define (setup run)
+              (set-store run 10) (as-set! "host" "host") (as-set! "session" "destination")
+              (as-map-set! "runs" 7 run))
+            (define (repair args) (as-call "repair-history" args))
+            (define (store) (list stored store-rev attempts))
+            "#,
+            json!({}),
+            BTreeMap::new(),
+            RUN_STORE_PRELUDE,
+        );
+        let run = json!({"id":"claude:handoff", "pane_id":7, "kind":"claude", "session_id":"handoff",
+            "host_id":"host", "yinz_session_name":"destination", "started_at_ms":1, "revision":1,
+            "entries":[{"revision":1, "kind":"message", "text":"answer", "worker_id":"worker",
+                "conversation_turn_id":"live-turn", "created_at_ms":1,
+                "event_id":format!("message:{}", json!(["live-turn", source]))}]});
+        runtime.invoke("setup", vec![run.clone()]).unwrap();
+        for apply in [false, true] {
+            let args = json!({"run_id":"claude:handoff", "expected_rev":10, "expected_revision":1,
+                "apply":apply, "messages":[{"source_id":"claude:handoff:worker:source", "worker_id":"worker",
+                    "turn_id":"source:source", "created_at_ms":5, "text":"answer", "incomplete":false}]});
+            assert_eq!(runtime.invoke("repair", vec![args]).unwrap()["added"], 0);
+            assert_eq!(
+                runtime.invoke("store", vec![]).unwrap(),
+                json!([run, 10, []])
+            );
+        }
+    }
 }
 
 #[test]

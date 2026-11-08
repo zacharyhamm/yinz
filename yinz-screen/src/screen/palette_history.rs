@@ -132,6 +132,22 @@ struct HistoryCache {
     latest_received_revision: u64,
 }
 
+impl HistoryCache {
+    fn merge(
+        &mut self,
+        activity_ranges: &[yinz_types::agent::history::Range],
+        events: Vec<yinz_bus::command_palette::HistoryEvent>,
+    ) {
+        self.events.retain(|_, old| {
+            old.range
+                .as_ref()
+                .is_none_or(|old| !activity_ranges.iter().any(|range| old.overlaps(range)))
+        });
+        self.events
+            .extend(events.into_iter().map(|event| (event.revision, event)));
+    }
+}
+
 struct PromptSubmission {
     live: LiveAgent,
     action: AgentAction,
@@ -396,6 +412,7 @@ impl Screen {
                         details: "No recorded history".into(),
                         ..Default::default()
                     },
+                    activity_ranges: vec![],
                     events: vec![],
                     rows: vec![],
                     status: "No recorded history".into(),
@@ -442,6 +459,7 @@ impl Screen {
             } => state.widget.open_agent_reader(header, markdown, tool),
             HistoryReply::Run {
                 mut header,
+                activity_ranges,
                 events,
                 rows,
                 status,
@@ -487,6 +505,10 @@ impl Screen {
                             if !older
                                 && let HistoryAction::Run {
                                     from: Some(next), ..
+                                }
+                                | HistoryAction::Conversation {
+                                    after_revision: Some(next),
+                                    ..
                                 } = row.action
                             {
                                 browser.history.latest_received_revision = browser
@@ -505,16 +527,7 @@ impl Screen {
                         browser.history.earlier = earlier;
                     }
                     rows.extend(browser.history.earlier.clone());
-                    for event in events {
-                        if let Some(range) = &event.range {
-                            browser.history.events.retain(|_, old| {
-                                old.range.as_ref().is_none_or(|r| {
-                                    r.start != range.start || r.worker != range.worker
-                                })
-                            });
-                        }
-                        browser.history.events.insert(event.revision, event);
-                    }
+                    browser.history.merge(&activity_ranges, events);
                     events = browser.history.events.values().cloned().collect();
                     events.sort_by_key(|e| (e.created_at_ms, e.revision));
                     browser.continuation = continuation.clone();
@@ -940,6 +953,7 @@ impl Screen {
                         details: "No recorded history".into(),
                         ..Default::default()
                     },
+                    activity_ranges: vec![],
                     events: vec![],
                     rows: vec![],
                     status: "No recorded history".into(),
@@ -948,10 +962,15 @@ impl Screen {
             );
         } else {
             let mut action = browser.action.clone();
-            if let HistoryAction::Run { from, query, .. } = &mut action
-                && query.is_empty()
-            {
-                *from = Some(browser.history.latest_received_revision.saturating_add(1));
+            let next = Some(browser.history.latest_received_revision.saturating_add(1));
+            match &mut action {
+                HistoryAction::Run { from, query, .. } if query.is_empty() => *from = next,
+                HistoryAction::Conversation {
+                    before: None,
+                    after_revision,
+                    ..
+                } => *after_revision = next,
+                _ => {},
             }
             let action = browser.continuation.clone().unwrap_or(action);
             self.request_palette_agent(client, AgentAction::History(action), vec![]);

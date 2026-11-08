@@ -250,6 +250,8 @@ pub enum HistoryAction {
         id: String,
         worker: Option<String>,
         before: Option<yinz_types::agent::history::Cursor>,
+        /// Inclusive revision delivery cursor; used with `before: None` for live refreshes.
+        after_revision: Option<u64>,
     },
     Workers {
         id: String,
@@ -340,6 +342,9 @@ pub struct HistoryEvent {
 pub enum HistoryReply {
     Run {
         header: HistoryHeader,
+        /// Replace cached activity intersecting these intervals before merging
+        /// events. An interval with no event explicitly clears stale activity.
+        activity_ranges: Vec<yinz_types::agent::history::Range>,
         events: Vec<HistoryEvent>,
         rows: Vec<HistoryRow>,
         status: String,

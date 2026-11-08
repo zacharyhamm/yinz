@@ -197,6 +197,11 @@ pub(super) fn run(op: &str, args: Value) -> Result<Value> {
             serde_json::to_string(&arg::<wire::CompletionReply>(&args, 0)?)
                 .context("serializing completion reply")?,
         ),
+        "MessageSourceExists" => encode(agent_proto::conversation::message_source_exists(
+            &arg::<String>(&args, 0)?,
+            arg::<Option<String>>(&args, 1)?.as_deref(),
+            &arg::<Vec<agents::RunEntry>>(&args, 2)?,
+        )),
         "MissingMessages" => encode(agent_proto::conversation::missing_messages(
             arg(&args, 0)?,
             &arg::<Vec<agents::RunEntry>>(&args, 1)?,
