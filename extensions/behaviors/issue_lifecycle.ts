@@ -107,7 +107,7 @@ function recordedTransition<K extends keyof typeof ActionSchemas>(
 /** Local behavior; the issue's state and every decision are versioned Swamp data. */
 export const behavior = {
   type: "@yinz/issue-lifecycle",
-  version: "2026.11.07.2",
+  version: "2026.11.08.1",
   globalArguments: GlobalArgsSchema,
   resources: {
     driver: {
@@ -133,7 +133,7 @@ export const behavior = {
     },
     "agent-task": {
       description:
-        "Current pane assignment and its imported lifecycle evidence",
+        "Current pane assignment and its acknowledged typed Swamp evidence",
       schema: AgentTaskSchema,
       lifetime: "infinite",
       garbageCollection: 1000,

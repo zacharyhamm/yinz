@@ -5,7 +5,7 @@
         }
     },
     "tasks": {
-        "check": "deno check behaviors/issue_lifecycle.ts behaviors/merge_coordinator.ts behaviors/yinz_agent.ts",
+        "check": "deno check behaviors/issue_lifecycle.ts behaviors/issue_evidence.ts behaviors/merge_coordinator.ts behaviors/yinz_agent.ts",
         "test": "deno test --allow-read --allow-write --allow-run --allow-env behaviors/unit",
         "lint": "deno lint behaviors",
         "fmt": "deno fmt --check behaviors deno.json"

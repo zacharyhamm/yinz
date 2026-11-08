@@ -137,6 +137,16 @@ State phases are `triaging`, `classified`, `planning`, `approved`, `implementing
 `ready`, `merged` and `done`. The skill routes phases using current evidence and
 pending work, rather than treating a phase alone as permission to advance.
 
+The repository skill at
+[`.agents/skills/issue-lifecycle/SKILL.md`](../.agents/skills/issue-lifecycle/SKILL.md)
+drives the lifecycle. Use `drive` for ordinary start/resume flows and after
+restart or rollback recovery. Each task runs in a visible Yinz pane and
+submits role-specific evidence directly to its assigned `@yinz/issue-evidence`
+behavior. Swamp validates and durably acknowledges the submission before the
+worker finishes. Final chat text is presentation and is never imported as evidence. The controller
+records human authorization and performs deterministic lifecycle operations; it
+does not replace pane workers with headless agents or inline agent work.
+
 `drive` runs in the foreground to a concrete handoff or blocker. The launcher
 prints readable evidence to stderr and one handoff JSON object to stdout; the
 behavior also logs the readable result and publishes `handoff`. Its fields
@@ -189,11 +199,18 @@ but never satisfies current review or approval gates. The authoritative
 define worker obligations, response/reopening evidence and existing-field citation
 conventions.
 
-New fields are optional for existing records; saved prompts and snapshots remain
-unchanged. Results use the current contract, so an in-flight older assignment may
-need restart. Legacy plans beyond version one count as having consumed the
-automatic allowance; legacy first versions may receive one revision. Existing
-revision authorizations remain usable.
+Existing records need no bulk rewrite: new fields are optional, and saved prompts
+and snapshots are kept. Already-applied lifecycle state stays historical evidence.
+Unresolved older assignments need a typed submission supplement from their original
+worker through `continue-agent`; their final messages are never imported. A legacy
+`applying` task with a saved state-changing `next` projection can reconcile directly.
+Legacy implementation-only reports need a typed supplement because their commit
+binding was formerly stored only in chat. An unavailable original conversation
+blocks supplementation and never automatically launches another investigation. Legacy
+plans beyond version one are treated as having used the allowance; legacy
+first-version plans may receive one automatic revision. Already-recorded revision
+authorizations remain usable.
+
 
 ## Pane tasks
 
@@ -290,13 +307,27 @@ plans with checks. Approval of the presented plan approves running its checks.
 
 ## Reusable Swamp extension
 
-[extensions/yinz-agents.yaml](../extensions/yinz-agents.yaml) packages
-`@yinz/agent` and [yinz-agent-task](../workflows/workflow-yinz-agent-task.yaml)
-independently of Agenda and the lifecycle. Methods are `run {prompt}`, `resume {}`
-and `status {}`. Global arguments are `session`, `kind`, absolute `cwd` and the
-optional provider/timeout settings above. Omitted or empty optional model, effort
-and permission strings preserve defaults. Standalone `control: {session, paneId}`
-is optional and uses the same tab resolution; lifecycle workers require it.
+[`extensions/yinz-agents.yaml`](../extensions/yinz-agents.yaml) packages the
+`@yinz/agent` behavior and `yinz-agent-task` workflow independently of Agenda or
+this issue lifecycle. The behavior methods include `run {prompt}`, `resume {}`, `status {}` and
+`continue {id, prompt}`. Completion here means a correlated provider turn ended
+with no background work; presentation text is optional. Only the lifecycle can
+classify accepted evidence as a completed lifecycle task. Global arguments are `session`, `kind`, absolute `cwd`, and the
+optional model, effort, permission and timeout settings described above. Omitted
+or empty optional model, effort and permission strings preserve provider
+defaults. Standalone behavior callers may optionally pass
+`control: {session, paneId}` to use the same tab resolution; lifecycle workers
+require it. A behavior represents one original task; use a new behavior name for a new task.
+`continue` is for a retained conversation, including a submission-only supplement.
+Its ID and prompt are durable before delivery; identical calls retrieve that
+continuation rather than sending again. Original configuration, prompt and digest
+remain bound, and previous terminal turn snapshots are retained. Repeating `run` is refused, even with the same prompt. After
+submission, `resume` observes its saved ID rather than sending again. It can
+continue known startup progress before submission, but refuses an uncertain
+launch instead of spawning another pane. A structured spawn rejection with no
+retained resources is saved as `launch_rejected` with its response. Resume
+explains that lifecycle tasks can use `discard-agent`; standalone callers must
+use a new behavior identity with corrected inputs.
 
 One behavior represents one prompt task. Repeated `run` is refused even for the
 same prompt; a new task uses a new behavior identity. `resume` observes the saved
@@ -398,6 +429,77 @@ blocked presentation include phases, failed tests, summary, log and attempt
 history. `repair` appends summary/log to `lastFailure` for the next implementation
 worker. Retrying does not overwrite evidence.
 
+## Typed evidence submissions
+
+The controller saves the exact task and opens an `issue-evidence-<task UUID>`
+Swamp behavior in the canonical control checkout before launching its worker.
+The immutable assignment binds the task, role, worker configuration and prompt,
+issue requirements generation, lifecycle snapshot and rollback identity, plan
+version, and dispatched code-review commit. `status` includes the task's current
+submission resource as well as the lifecycle and provider records.
+
+The worker writes a temporary JSON submission file with `taskId`,
+`assignmentDigest`, `role` and `evidence`, then runs the supplied commands:
+
+```sh
+swamp behavior run "$EVIDENCE_BEHAVIOR" submit \
+  --repo-dir "$CONTROL_REPO" --stdin --literal-inputs --json < "$SUBMISSION_FILE"
+swamp data query "behavior(\"$EVIDENCE_BEHAVIOR\") && name == \"submission\"" \
+  --repo-dir "$CONTROL_REPO" --select content --single --json
+```
+
+Use the sanitized local environment in the assignment. `--literal-inputs` keeps
+source excerpts literal. The method's strict role schema and semantic validators
+run before a single accepted resource is published. Resource schema declarations
+alone are insufficient: Swamp's resource writer reports mismatches as warnings.
+The short submission method opts into Swamp's `rollbackOnFailure` boundary and
+performs no external mutations. Its resource has infinite lifetime and preserves
+the accepted evidence and receipt when superseded.
+
+A matching `status: accepted` receipt acknowledges the original task and payload.
+An identical replay acknowledges the existing acceptance without rewriting it;
+the query returns its original receipt. Different evidence conflicts. Validation errors are returned while the worker is still running and
+can correct its submission. If acknowledgement is lost, query this resource
+before replaying. Final prose may be arbitrary, truncated or absent. A provider
+turn ending without accepted evidence leaves the lifecycle task unresolved.
+
+The controller imports the receipt only after correlated provider completion and
+background-work checks, and rechecks current requirements and applicable Git
+state. Acceptance and projection are separate durable facts. Import uses a stable
+per-task event identity and resumes partial event/state/task writes without
+repeating investigation. Later requirements or Git changes can make accepted
+historical evidence inapplicable without deleting it.
+
+For a missing submission or legacy supplement, continue the original context:
+
+```sh
+"$LIFECYCLE_REPO/scripts/issue-lifecycle" --item "$AGENDA_ITEM_ID" \
+  continue-agent --input-file /tmp/continue-submission.json
+```
+
+The input contains the original `taskId` and a nonempty `request` to submit the
+existing findings. Identical requests reuse their saved continuation. Recovery
+checks for already-accepted evidence first. Changed continuation requests can
+start another submission-only turn in that same conversation. Missing, cleaned,
+active or replaced conversations block; no replacement worker is launched.
+
+Worker authority covers only its assigned `submit` method and receipt query.
+Approvals, adjudication, rollback, restart, worktree preparation, merge, CI waivers
+and Agenda mutations remain controller operations. Rollback and discard save their
+intent and close the evidence behavior before changing parent state. Submission
+and closing serialize on that behavior's lock, retaining earlier receipts.
+
+Submission must never acquire the issue OS lock or call a waiting issue/agent
+method: the controller holds those locks during provider work. Its separate
+behavior lock permits immediate validation without a cycle. Current direct CLI
+submission supports healthy local format-2 filesystem datastores. Preflight
+rejects solo format-3 and custom backends before dispatch; format-3's command-wide
+writer lease requires different orchestration or Swamp server execution before it
+can support this waiting pattern. Worker sandboxes need authorized access to the
+canonical submission interface; do not bypass permissions or create another store.
+Swamp's optional durable-write setting adds filesystem syncing for power-loss
+protection; atomic publication already covers process interruption.
+
 ## Parallel development and serialized integration
 
 Issues may plan, develop and review independently in isolated worktrees. Swamp
@@ -441,10 +543,15 @@ resume and handoff resume without duplicate prompts. It also fails a fake Cargo
 merge gate, checks receipt/log/blocked handoff/repair, then both attempts after a
 passing merge.
 
+The installed-command smoke test submits evidence from a second process while the
+controller waits and drives planning through review with truncated final chat.
+It also checks continuation and handoff resume without duplicate submissions.
+
 Fake Cargo checks establish ordering/recovery without running full Rust suites.
 They establish neither live provider launch nor a passed full feature gate. A
 separate live smoke check exercised installed Swamp through a visible Claude pane
-with correlated JSON; it did not cover every provider or a whole lifecycle. The
+using the earlier final-message transport; it does not establish live-provider
+coverage of the typed submission protocol. The
 real full gate runs at authorized local merge. No dedicated skill-text smoke test
 is defined here.
 

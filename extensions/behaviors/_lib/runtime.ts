@@ -35,6 +35,53 @@ export interface Context {
   };
 }
 
+/** Direct submission requires independent writers while the controller waits. */
+export async function submissionPreflight(context: Context) {
+  const result = await new Deno.Command("swamp", {
+    args: [
+      "datastore",
+      "status",
+      "--repo-dir",
+      context.repoDir,
+      "--json",
+      "--no-telemetry",
+    ],
+    env: {
+      SWAMP_NO_INBOX_NOTICE: "1",
+      SWAMP_SERVE_URL: "",
+      SWAMP_SERVER_URL: "",
+    },
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+    signal: context.signal,
+  }).output();
+  if (!result.success) {
+    throw new Error(
+      `Cannot preflight Swamp submission access: ${
+        new TextDecoder().decode(result.stderr)
+      }`,
+    );
+  }
+  assertSubmissionBackend(JSON.parse(new TextDecoder().decode(result.stdout)));
+}
+
+export function assertSubmissionBackend(raw: unknown) {
+  const backend = z.object({
+    type: z.string(),
+    healthy: z.boolean(),
+    format: z.number().optional(),
+  }).parse(raw);
+  if (
+    !backend.healthy || backend.type !== "filesystem" ||
+    (backend.format !== undefined && backend.format !== 2)
+  ) {
+    throw new Error(
+      "Typed worker submission requires a healthy local format-2 filesystem Swamp datastore; solo format-3 holds a writer lease across the waiting controller. No worker was launched",
+    );
+  }
+}
+
 export const EventSchema = z.object({
   action: z.string().min(1),
   at: z.iso.datetime(),
@@ -153,7 +200,7 @@ export async function issueName(
 
 /** Keep the Python supervisor alive until it has stopped and reaped its commands. */
 export async function gitOperation(
-  context: Context,
+  context: Pick<Context, "repoDir" | "signal" | "createFileWriter">,
   request: Record<string, unknown>,
   logName?: string,
   logSpec = "command-log",
@@ -235,7 +282,10 @@ export async function gitOperation(
   }
 }
 
-export async function inspect(context: Context, worktree?: string) {
+export async function inspect(
+  context: Pick<Context, "repoDir" | "signal" | "createFileWriter">,
+  worktree?: string,
+) {
   return InspectionSchema.parse(
     await gitOperation(context, {
       action: "inspect",
@@ -363,18 +413,30 @@ export async function saveState(
     at: new Date().toISOString(),
     state,
   });
-  const eventHandle = await context.writeResource(
-    "event",
-    eventName,
-    event,
-  );
+  const existing = await context.readResource(eventName);
+  if (existing != null) {
+    const saved = EventSchema.parse(existing);
+    if (
+      saved.action !== action ||
+      JSON.stringify(saved.state) !== JSON.stringify(state)
+    ) {
+      throw new Error(
+        "Stable lifecycle event identity conflicts with its saved transition",
+      );
+    }
+  }
+  const eventHandle = existing == null
+    ? await context.writeResource("event", eventName, event)
+    : undefined;
   const stateHandle = await context.writeResource("state", "state", state);
   context.logger.info("Issue {issue} completed {action}; phase {phase}", {
     issue: context.definition.name,
     action,
     phase: state.phase,
   });
-  return { dataHandles: [eventHandle, stateHandle] };
+  return {
+    dataHandles: eventHandle ? [eventHandle, stateHandle] : [stateHandle],
+  };
 }
 
 /** Old handoffs remain evidence, but cannot authorize a superseding attempt. */

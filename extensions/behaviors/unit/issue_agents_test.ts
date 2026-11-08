@@ -1,4 +1,9 @@
 import {
+  createEvidenceMethods,
+  type EvidenceContext,
+} from "../issue_evidence.ts";
+import { SubmissionSchema, SubmitArgsSchema } from "../_lib/issue_evidence.ts";
+import {
   AgentTaskSchema,
   assertNoPendingAgent,
   createAgentMethods,
@@ -25,6 +30,7 @@ import {
   type AgentContext,
   AgentStateSchema,
   confirmFailureAgent,
+  continueAgent,
   promptDigest,
   recoverAgent,
   runAgent,
@@ -130,6 +136,7 @@ function verify(state: LifecycleState): LifecycleState {
 function harness(initial = createState(issue), evidence: unknown = triage) {
   const resources = new Map<string, unknown>([["state", initial]]);
   const child = new Map<string, Record<string, unknown>>();
+  const submissions = new Map<string, Map<string, unknown>>();
   const writes: {
     spec: string;
     name: string;
@@ -140,6 +147,9 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
   let childBehavior: string | undefined;
   let issueLocked = false;
   const controls = {
+    failEvidenceOpen: false,
+    failEvidenceSupersede: false,
+    submitEvidence: true,
     cleanupCalls: 0,
     cleanupError: false,
     evidence,
@@ -177,6 +187,7 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
         worktreeUnchanged: boolean;
       },
     agentRunner: undefined as YinzRunner | undefined,
+    agentId: () => "submission-1",
     agendaReads: 0,
     controlTab: 0,
     placementCalls: [] as string[][],
@@ -226,18 +237,50 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
     },
     dataRepository: {
       getContent: (type, name, resource) => {
-        equal(type, "@yinz/agent");
-        equal(
-          name,
-          AgentTaskSchema.parse(resources.get("agent-task")).behaviorName,
-        );
-        const value = child.get(resource);
+        let value: unknown;
+        if (type === "@yinz/issue-evidence") {
+          value = submissions.get(name)?.get(resource);
+        } else if (type === "@yinz/issue-lifecycle") {
+          equal(name, context.modelId);
+          value = resources.get(resource);
+        } else {
+          equal(type, "@yinz/agent");
+          equal(
+            name,
+            AgentTaskSchema.parse(resources.get("agent-task")).behaviorName,
+          );
+          value = child.get(resource);
+        }
         return Promise.resolve(
-          value ? new TextEncoder().encode(JSON.stringify(value)) : null,
+          value == null
+            ? null
+            : new TextEncoder().encode(JSON.stringify(value)),
         );
       },
     },
     runModel: async (request) => {
+      if (request.modelType === "@yinz/issue-evidence") {
+        if (request.method === "open" && controls.failEvidenceOpen) {
+          throw new Error("Evidence open interrupted");
+        }
+        if (request.method === "supersede" && controls.failEvidenceSupersede) {
+          throw new Error("Evidence supersession interrupted");
+        }
+        const evidenceContext = submissionContext(request.name!);
+        const methods = evidenceMethods();
+        if (request.method === "open") {
+          await methods.open.execute(
+            methods.open.arguments.parse(request.arguments),
+            evidenceContext,
+          );
+        } else if (request.method === "supersede") {
+          await methods.supersede.execute(
+            methods.supersede.arguments.parse(request.arguments),
+            evidenceContext,
+          );
+        } else throw new Error(`Unexpected evidence method: ${request.method}`);
+        return { ok: true };
+      }
       if (request.method === "cleanup") {
         const task = AgentTaskSchema.parse(resources.get("agent-task"));
         equal(task.status, "completed");
@@ -266,7 +309,7 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
           },
         };
         const dependencies = {
-          run: (args: string[], stdin?: string, signal?: AbortSignal) => {
+          run: async (args: string[], stdin?: string, signal?: AbortSignal) => {
             if (args[3] === "list-panes") {
               controls.placementCalls.push(args);
               return Promise.resolve({
@@ -279,16 +322,26 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
                 stderr: "",
               });
             }
-            return controls.agentRunner!(args, stdin, signal);
+            const output = await controls.agentRunner!(args, stdin, signal);
+            if (args[3] === "prompt" && controls.submitEvidence) {
+              await submitEvidence();
+            }
+            return output;
           },
           realPath: (path: string) => Promise.resolve(path),
-          id: () => "submission-1",
+          id: controls.agentId,
           now: () => timestamp,
         };
         try {
           if (request.method === "run") {
             child.clear();
             await runAgent({ prompt: task.prompt }, agentContext, dependencies);
+          } else if (request.method === "continue") {
+            await continueAgent(
+              request.arguments as { id: string; prompt: string },
+              agentContext,
+              dependencies,
+            );
           } else if (request.method === "confirm_failure") {
             await confirmFailureAgent(agentContext, dependencies);
           } else {
@@ -346,6 +399,10 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
           ...controls.resultPatch,
         });
       }
+      if (
+        controls.submitEvidence &&
+        ["run", "recover", "continue"].includes(request.method)
+      ) await submitEvidence();
       controls.afterRun();
       return controls.runError
         ? { ok: false, error: { message: controls.runError } }
@@ -381,7 +438,50 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
     realPath: (path) => Promise.resolve(path),
     id: () => `a6da10b0-c980-4b82-b920-${String(++serial).padStart(12, "0")}`,
     now: () => timestamp,
+    submissionPreflight: () => Promise.resolve(),
   };
+  function submissionContext(name: string): EvidenceContext {
+    let records = submissions.get(name);
+    if (!records) {
+      records = new Map();
+      submissions.set(name, records);
+    }
+    const saved = records;
+    const task = AgentTaskSchema.parse(resources.get("agent-task"));
+    return {
+      ...context,
+      repoDir: task.submission?.controlDir ?? context.repoDir,
+      definition: { name },
+      readResource: (key) =>
+        Promise.resolve(structuredClone(saved.get(key) ?? null)),
+      writeResource: (_spec, key, value) => {
+        saved.set(key, structuredClone(value));
+        return Promise.resolve({ name: key });
+      },
+    };
+  }
+  function evidenceMethods() {
+    return createEvidenceMethods({
+      readAgenda: dependencies.readAgenda,
+      inspect: () => dependencies.inspect(context),
+      realPath: dependencies.realPath,
+      now: dependencies.now,
+    });
+  }
+  async function submitEvidence() {
+    const task = AgentTaskSchema.parse(resources.get("agent-task"));
+    if (!task.submission) return;
+    const input = SubmitArgsSchema.parse({
+      taskId: task.id,
+      assignmentDigest: task.submission.assignmentDigest,
+      role: task.role,
+      evidence: controls.evidenceForRole?.(task) ?? controls.evidence,
+    });
+    await evidenceMethods().submit.execute(
+      input,
+      submissionContext(task.submission.behaviorName),
+    );
+  }
   return {
     context,
     controls,
@@ -389,9 +489,58 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
     writes,
     calls,
     child,
+    submissions,
+    submitEvidence,
     methods: createAgentMethods(dependencies),
     drive: createDriveMethod(dependencies),
   };
+}
+
+/** Exercise the real provider state machine while controlling turn responses. */
+function observedHarness() {
+  const h = harness();
+  const cli: { args: string[]; stdin?: string }[] = [];
+  const turns: {
+    response: Record<string, unknown> | Error;
+    submit?: boolean;
+  }[] = [];
+  let serial = 0;
+  h.controls.agentId = () => `submission-${++serial}`;
+  h.controls.submitEvidence = false;
+  h.controls.agentRunner = async (args, stdin) => {
+    cli.push({ args, stdin });
+    const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    const agent = {
+      pane_id: "terminal_7",
+      session: options.session,
+      agent: { kind: "claude", session_id: "conversation-1", state: "idle" },
+      cwd: task.config.cwd,
+      ready: true,
+      status_available: true,
+      prompt_supported: true,
+    };
+    let value: Record<string, unknown>;
+    if (args[3] === "spawn") {
+      value = {
+        outcome: "ok",
+        spawned: { pane_id: "terminal_7", cwd: task.config.cwd },
+      };
+    } else if (args.includes("--until")) {
+      value = { outcome: "ok", agents: [agent] };
+    } else {
+      const turn = turns.shift();
+      assert(turn, `Unexpected turn command: ${args.join(" ")}`);
+      if (turn.submit) await h.submitEvidence();
+      if (turn.response instanceof Error) throw turn.response;
+      value = {
+        agents: [agent],
+        submission_id: args[args.indexOf("--submission") + 1],
+        ...turn.response,
+      };
+    }
+    return { code: 0, stdout: JSON.stringify(value), stderr: "" };
+  };
+  return { ...h, cli, turns };
 }
 
 Deno.test("issue agent dispatch persists prompt and configuration then imports correlated triage evidence", async () => {
@@ -421,7 +570,7 @@ Deno.test("issue agent dispatch persists prompt and configuration then imports c
   equal(h.calls.length, 1);
 });
 
-Deno.test("issue agent accepts the child's schema-normalized final message", async () => {
+Deno.test("issue agent ignores presentation differences after evidence acceptance", async () => {
   const h = harness();
   h.controls.childPatch = { message: `\n${JSON.stringify(triage)}\n` };
   await h.methods.run_agent.execute({ ...options, role: "triage" }, h.context);
@@ -434,11 +583,7 @@ Deno.test("issue agent rejects result identity mismatches and incomplete child s
     { resultPatch: { submissionId: "another-submission" } },
     { resultPatch: { paneId: "terminal_8" } },
     { resultPatch: { promptDigest: "e".repeat(64) } },
-    {
-      resultPatch: {
-        message: JSON.stringify({ ...triage, summary: "Substituted response" }),
-      },
-    },
+
     { childPatch: { prompt: "A different assignment" } },
     { childPhase: "waiting" },
     { childBackground: ["worker-still-running"] },
@@ -456,130 +601,283 @@ Deno.test("issue agent rejects result identity mismatches and incomplete child s
   }
 });
 
-Deno.test("malformed completed evidence can be explicitly discarded without applying or resubmitting it", async () => {
-  const h = harness(createState(issue), "This is not the requested JSON");
-  await rejects(
-    () =>
-      h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
-    "required JSON evidence",
-  );
-  await rejects(
-    () =>
-      h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
-    "unresolved",
-  );
-  await h.methods.discard_agent.execute({
-    request: "Discard this malformed response; the pane has finished",
-    confirmedStopped: true,
-  }, h.context);
-  equal(
-    AgentTaskSchema.parse(h.resources.get("agent-task")).status,
-    "discarded",
-  );
-  equal((h.resources.get("state") as LifecycleState).phase, "triaging");
-  await assertNoPendingAgent(h.context);
-  await h.methods.resume_agent.execute({}, h.context);
-  equal(h.calls.length, 1);
-  h.controls.evidence = triage;
-  await h.methods.run_agent.execute({ ...options, role: "triage" }, h.context);
-  equal((h.resources.get("state") as LifecycleState).phase, "classified");
-  assert(h.calls[0].name !== h.calls[1].name);
+Deno.test("truncated or arbitrary final chat cannot invalidate accepted evidence or repeat a review", async () => {
+  for (const message of ['{"findings":[', "Anything at all", "", undefined]) {
+    const h = harness();
+    h.controls.evidenceForRole = driverEvidence;
+    h.controls.resultPatch = { message };
+    h.controls.childPatch = { message: "Different presentation" };
+    await h.drive.execute({ agent: options }, h.context);
+    equal(result(h).decision, "approve_plan");
+    const receipt =
+      AgentTaskSchema.parse(h.resources.get("agent-task")).evidence;
+    assert(receipt?.payload.role === "review_plan");
+    const calls = h.calls.length;
+    await h.drive.execute({}, h.context);
+    equal(h.calls.length, calls);
+    equal(
+      AgentTaskSchema.parse(h.resources.get("agent-task")).evidence,
+      receipt,
+    );
+  }
 });
 
-Deno.test("missing final text can be explicitly discarded before dispatching replacement work", async () => {
-  for (
-    const { message, background } of [null, undefined, "", " \n\t"].flatMap((
-      message,
-    ) => [false, true].map((background) => ({ message, background })))
-  ) {
-    const h = harness();
-    let cliCalls = 0;
-    h.controls.agentRunner = (args) => {
-      cliCalls++;
-      const value = args[3] === "spawn"
-        ? {
-          outcome: "ok",
-          spawned: {
-            pane_id: "terminal_7",
-            cwd: args[args.indexOf("--cwd") + 1],
-          },
-        }
-        : {
-          outcome: args[3] === "prompt" ? "completed" : "ok",
-          agents: [{
-            pane_id: "terminal_7",
-            session: options.session,
-            agent: {
-              kind: "claude",
-              session_id: "conversation-1",
-              state: "idle",
-            },
-            ready: true,
-            status_available: true,
-            prompt_supported: true,
-          }],
-          submission_id: args[3] === "prompt" ? "submission-1" : undefined,
-          message: background && args[3] === "prompt" ? "Working" : message,
-          background_tasks: background && args[3] === "prompt"
-            ? ["worker"]
-            : [],
-        };
-      return Promise.resolve({
-        code: 0,
-        stdout: JSON.stringify(value),
-        stderr: "",
-      });
-    };
+Deno.test("provider completion without accepted evidence stays unresolved even with valid JSON chat", async () => {
+  const h = harness();
+  h.controls.submitEvidence = false;
+  await rejects(
+    () =>
+      h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+    "submission_required",
+  );
+  equal(AgentTaskSchema.parse(h.resources.get("agent-task")).status, "running");
+  equal((await loadState(h.context)).phase, "triaging");
+  await rejects(
+    () => h.methods.resume_agent.execute({}, h.context),
+    "submission_required",
+  );
+  await rejects(() => assertNoPendingAgent(h.context), "unresolved");
+  equal(h.calls.filter((c) => c.method === "run").length, 1);
+  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  h.controls.submitEvidence = true;
+  await h.methods.continue_agent.execute({
+    taskId: task.id,
+    request: "Submit the existing findings",
+  }, h.context);
+  equal(AgentTaskSchema.parse(h.resources.get("agent-task")).id, task.id);
+  equal(
+    AgentTaskSchema.parse(h.resources.get("agent-task")).status,
+    "completed",
+  );
+  equal(h.calls.map((c) => c.method), ["run", "recover", "continue"]);
+});
+
+for (const recovery of ["resume", "drive"] as const) {
+  Deno.test(`a different continuation request preserves the timed-out turn for ${recovery}`, async () => {
+    const h = observedHarness();
+    h.controls.evidenceForRole = driverEvidence;
+    h.turns.push({ response: { outcome: "completed" } });
     await rejects(
       () =>
         h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
-      "discard-agent",
+      "submission_required",
     );
-    const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
-    equal(
-      AgentStateSchema.parse(h.child.get("state")).phase,
-      "completed_unusable",
-    );
-    assert(!h.child.has("result"));
-    await rejects(
-      () => h.methods.resume_agent.execute({}, h.context),
-      "discard-agent",
-    );
-    equal(cliCalls, background ? 4 : 3);
-    await rejects(() => assertNoPendingAgent(h.context), "unresolved");
-    assert(
-      !h.methods.discard_agent.arguments.safeParse({
-        request: "Discard empty answer",
-        confirmedStopped: false,
-      }).success,
-    );
-    const discard = {
-      request: "Discard empty answer",
-      confirmedStopped: true as const,
+    const original = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    const args = {
+      taskId: original.id,
+      request: "Submit the existing findings",
     };
-    h.resources.set("state", transition(createState(issue), "triage", triage));
+    h.turns.push({ response: { outcome: "timed_out", acknowledged: true } });
     await rejects(
-      () => h.methods.discard_agent.execute(discard, h.context),
-      "may already be applied",
+      () => h.methods.continue_agent.execute(args, h.context),
+      "timed_out",
     );
-    h.resources.set("state", task.before);
-    await h.methods.discard_agent.execute(discard, h.context);
-    equal(h.resources.get("state"), task.before);
+    const pending = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    assert(pending.continuation);
+    const child = AgentStateSchema.parse(h.child.get("state"));
+    equal(child.phase, "waiting");
+    equal(child.submissionId, "submission-2");
+    equal(child.continuation?.id, pending.continuation.id);
+    const calls = h.calls.length;
+    await rejects(
+      () =>
+        h.methods.continue_agent.execute({
+          ...args,
+          request: "Different request text",
+        }, h.context),
+      "original completed, retained conversation",
+    );
     equal(
-      AgentTaskSchema.parse(h.resources.get("agent-task")).status,
-      "discarded",
+      AgentTaskSchema.parse(h.resources.get("agent-task")).continuation,
+      pending.continuation,
     );
-    await assertNoPendingAgent(h.context);
-    h.controls.agentRunner = undefined;
-    await h.methods.run_agent.execute(
-      { ...options, role: "triage" },
-      h.context,
+    equal(h.child.get("state"), child);
+    equal(h.calls.length, calls);
+    h.turns.push({ response: { outcome: "completed" }, submit: true });
+    if (recovery === "drive") {
+      h.turns.push(
+        { response: { outcome: "completed" }, submit: true },
+        { response: { outcome: "completed" }, submit: true },
+      );
+      await h.drive.execute({ agent: options }, h.context);
+      equal(result(h).decision, "approve_plan");
+    } else {
+      await h.methods.resume_agent.execute({}, h.context);
+      equal(
+        AgentTaskSchema.parse(h.resources.get("agent-task")).status,
+        "completed",
+      );
+    }
+    equal(h.calls[calls].method, "continue");
+    equal(h.calls[calls].arguments, {
+      id: pending.continuation.id,
+      prompt: pending.continuation.prompt,
+    });
+    const observation = h.cli.find((c) =>
+      c.args[3] === "wait" && c.args.includes("--submission")
     );
-    equal((h.resources.get("state") as LifecycleState).phase, "classified");
+    assert(observation);
+    equal(
+      observation.args[observation.args.indexOf("--submission") + 1],
+      child.submissionId,
+    );
+    equal(
+      observation.args[observation.args.indexOf("--conversation") + 1],
+      child.conversationId,
+    );
+    equal(h.cli.filter((c) => c.stdin === original.prompt).length, 1);
+    equal(
+      h.cli.filter((c) => c.stdin === pending.continuation!.prompt).length,
+      1,
+    );
     assert(
-      AgentTaskSchema.parse(h.resources.get("agent-task")).behaviorName !==
-        task.behaviorName,
+      h.writes.some(({ spec, value }) =>
+        spec === "agent-task" && value.id === original.id &&
+        value.status === "completed"
+      ),
     );
+  });
+}
+
+for (const continuing of [false, true]) {
+  for (const phase of ["submitting", "waiting"] as const) {
+    for (const savedEvidence of [false, true]) {
+      Deno.test(`accepted ${continuing ? "continuation" : "original turn"} evidence in ${phase} recovers through ${savedEvidence ? "saved evidence" : "submission"} without another prompt`, async () => {
+        const h = observedHarness();
+        if (continuing) {
+          h.turns.push({ response: { outcome: "completed" } });
+          await rejects(
+            () =>
+              h.methods.run_agent.execute(
+                { ...options, role: "triage" },
+                h.context,
+              ),
+            "submission_required",
+          );
+        }
+        h.turns.push({
+          response: phase === "submitting"
+            ? new Error("Lost provider response")
+            : { outcome: "timed_out", acknowledged: true },
+          submit: true,
+        });
+        const request = "Submit the findings already established";
+        await rejects(
+          () =>
+            continuing
+              ? h.methods.continue_agent.execute({
+                taskId: AgentTaskSchema.parse(h.resources.get("agent-task")).id,
+                request,
+              }, h.context)
+              : h.methods.run_agent.execute(
+                { ...options, role: "triage" },
+                h.context,
+              ),
+          phase === "submitting" ? "Lost provider response" : "timed_out",
+        );
+        const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+        const child = AgentStateSchema.parse(h.child.get("state"));
+        equal(child.phase, phase);
+        const submission = SubmissionSchema.parse(
+          h.submissions.get(task.submission!.behaviorName)?.get("submission"),
+        );
+        assert(submission.status === "accepted");
+        if (savedEvidence) {
+          h.resources.set("agent-task", {
+            ...task,
+            status: "applying",
+            next: submission.receipt.next,
+            evidence: submission.receipt,
+          });
+        }
+        const retry = () =>
+          h.methods.continue_agent.execute(
+            { taskId: task.id, request },
+            h.context,
+          );
+        h.turns.push({ response: new Error("Observation response lost") });
+        await rejects(retry, "Observation response lost");
+        equal((await loadState(h.context)).phase, "triaging");
+        equal(
+          AgentTaskSchema.parse(h.resources.get("agent-task")).continuation,
+          task.continuation,
+        );
+        h.turns.push({
+          response: { outcome: "completed", message: "Truncated prose {" },
+        });
+        await retry();
+        equal(
+          AgentTaskSchema.parse(h.resources.get("agent-task")).status,
+          "completed",
+        );
+        equal((await loadState(h.context)).phase, "classified");
+        equal(
+          h.cli.filter((c) => c.args[3] === "prompt").length,
+          continuing ? 2 : 1,
+        );
+        equal(h.cli.filter((c) => c.args[3] === "spawn").length, 1);
+        const observations = h.cli.filter((c) =>
+          c.args[3] === "wait" && c.args.includes("--submission")
+        );
+        equal(observations.length, 2);
+        for (const { args } of observations) {
+          equal(args[args.indexOf("--submission") + 1], child.submissionId);
+          equal(args[args.indexOf("--conversation") + 1], child.conversationId);
+        }
+      });
+    }
+  }
+}
+
+Deno.test("accepted evidence completes with no provider final text, including background completion", async () => {
+  for (const message of [null, undefined, "", " \n\t"]) {
+    for (const background of [false, true]) {
+      const h = harness();
+      h.controls.agentRunner = (args) =>
+        Promise.resolve({
+          code: 0,
+          stderr: "",
+          stdout: JSON.stringify(
+            args[3] === "spawn"
+              ? {
+                outcome: "ok",
+                spawned: { pane_id: "terminal_7", cwd: "/repo/control" },
+              }
+              : {
+                outcome: args[3] === "prompt" ? "completed" : "ok",
+                agents: [{
+                  pane_id: "terminal_7",
+                  session: options.session,
+                  agent: {
+                    kind: "claude",
+                    session_id: "conversation-1",
+                    state: "idle",
+                  },
+                  ready: true,
+                  status_available: true,
+                  prompt_supported: true,
+                }],
+                submission_id: args[3] === "prompt"
+                  ? "submission-1"
+                  : undefined,
+                message: background && args[3] === "prompt"
+                  ? "Working"
+                  : message,
+                background_tasks: background && args[3] === "prompt"
+                  ? ["worker"]
+                  : [],
+              },
+          ),
+        });
+      await h.methods.run_agent.execute(
+        { ...options, role: "triage" },
+        h.context,
+      );
+      const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+      equal(task.status, "completed");
+      assert(task.evidence);
+      equal(h.child.get("result")?.message, undefined);
+    }
   }
 });
 
@@ -849,7 +1147,7 @@ Deno.test("changed requirements still block unapplied transitions and unchanged-
       const failure of ["failEventOnce", "failTaskCompletionOnce"] as const
     ) {
       // A saved, state-changing triage transition is covered by reconciliation above.
-      if (role === "triage" && failure === "failTaskCompletionOnce") continue;
+      if (failure === "failTaskCompletionOnce") continue;
       const initial = role === "implement"
         ? implementing()
         : createState(issue);
@@ -1266,7 +1564,7 @@ Deno.test("rollback fences old results even when returning to the same lifecycle
   h.controls.runError = undefined;
   await rejects(
     () => h.methods.resume_agent.execute({}, h.context),
-    "Lifecycle changed",
+    "superseded",
   );
   equal(await loadState(h.context), state);
 });
@@ -1768,9 +2066,7 @@ for (
     }
 
     const contract = JSON.parse(
-      task.prompt.split(
-        "Return exactly one JSON object matching this schema, without Markdown fences or extra prose:\n\n",
-      )[1].split("\n\nCurrent lifecycle snapshot")[0],
+      task.prompt.split("Evidence schema: ")[1].split("\n\n")[0],
     );
     const finding = contract.properties.findings.items;
     equal(Object.keys(finding.properties).sort(), [
@@ -2488,6 +2784,7 @@ Deno.test("driver waits on the original acknowledged submission across timeouts 
     ]
   ) {
     const h = harness();
+    h.controls.evidenceForRole = driverEvidence;
     const cli: string[][] = [];
     let waits = 0;
     h.controls.agentRunner = (args) => {
@@ -2780,7 +3077,11 @@ Deno.test("every lifecycle role, plan revision, repair and restart resolves the 
           }],
         };
       }
-      if (prompt) h.controls.controlTab++;
+      if (prompt) {
+        h.controls.controlTab++;
+        h.controls.evidenceForRole = undefined;
+        h.controls.evidence = evidence;
+      }
       value = {
         outcome: prompt ? "completed" : "ok",
         agents: [{
@@ -2945,6 +3246,9 @@ Deno.test("legacy existing submissions resume unchanged while future workers acq
   );
   const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
   delete task.config.control;
+  delete task.submission;
+  delete task.evidence;
+  h.submissions.clear();
   h.resources.set("agent-task", task);
   const child = AgentStateSchema.parse(h.child.get("state"));
   delete child.config.control;
@@ -2953,10 +3257,17 @@ Deno.test("legacy existing submissions resume unchanged while future workers acq
   h.controls.evidenceForRole = driverEvidence;
   const control = { ...options.control, paneId: "terminal_2" };
   await h.drive.execute({ control }, h.context);
+  equal(result(h).decision, "blocked");
+  assert(result(h).reason.includes("typed submission supplement"));
+  await h.methods.continue_agent.execute({
+    taskId: task.id,
+    request: "Submit original triage findings",
+  }, h.context);
+  await h.drive.execute({ control }, h.context);
   equal(result(h).decision, "approve_plan");
   equal(h.calls[1].method, "recover");
   equal(h.calls[1].arguments?.control, undefined);
-  equal(h.calls.slice(2).map((call) => call.arguments?.control), [
+  equal(h.calls.slice(3).map((call) => call.arguments?.control), [
     control,
     control,
   ]);
@@ -2989,6 +3300,8 @@ Deno.test("legacy unlaunched workers cannot recover through automatic placement"
     );
     const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
     delete task.config.control;
+    delete task.submission;
+    delete task.evidence;
     h.resources.set("agent-task", task);
     if (missing) h.child.clear();
     else {
@@ -3230,11 +3543,10 @@ Deno.test("revision and restart deliver exact feedback and cumulative context", 
 Deno.test("revisions reject missing responses", async () => {
   {
     const h = harness(blockedInitialPlan(), driverPlan);
-    h.controls.runError = "Interrupted observation";
     await rejects(
       () =>
         h.methods.run_agent.execute({ ...options, role: "plan" }, h.context),
-      "Interrupted observation",
+      "revision",
     );
     h.controls.runError = undefined;
     h.controls.evidence = driverPlan;
@@ -3283,7 +3595,6 @@ Deno.test("a saved revision authorization resumes its original prompt", async ()
   await h.drive.execute({ revisionApproval: revisionApproval(h) }, h.context);
   const driver = DriverSchema.parse(h.resources.get("driver"));
   const task = driver.revisionAuthorization!.assignment;
-  delete task.request;
   task.prompt = "Original saved planner prompt";
   task.promptDigest = await promptDigest(task.prompt);
   h.resources.set("driver", driver);
@@ -3499,4 +3810,239 @@ Deno.test("driver blocks a failed merge attempt with its evidence and keeps it l
   }
   // A failure recorded in state is listed once, not again from the receipt.
   equal(summary.presentation.split(`- ${id}`).length, 2);
+});
+
+Deno.test("rollback can supersede a task interrupted before its evidence slot opened", async () => {
+  const h = harness();
+  h.controls.failEvidenceOpen = true;
+  await rejects(
+    () =>
+      h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+    "Evidence open interrupted",
+  );
+  equal(h.calls.length, 0);
+  await h.methods.rollback.execute({
+    step: "triage",
+    request: "Supersede the interrupted launch",
+  }, h.context);
+  equal(
+    AgentTaskSchema.parse(h.resources.get("agent-task")).status,
+    "superseded",
+  );
+  equal(h.calls.length, 0);
+});
+
+Deno.test("interrupted submission fencing preserves parent state and resumes before replacement dispatch", async () => {
+  const h = harness();
+  h.controls.runError = "Lost provider response";
+  await rejects(
+    () =>
+      h.methods.run_agent.execute({ ...options, role: "triage" }, h.context),
+    "Lost provider response",
+  );
+  const before = await loadState(h.context);
+  h.controls.failEvidenceSupersede = true;
+  await rejects(
+    () =>
+      h.methods.rollback.execute({
+        step: "triage",
+        request: "Supersede old work",
+      }, h.context),
+    "Evidence supersession interrupted",
+  );
+  equal(await loadState(h.context), before);
+  await rejects(() => assertNoPendingAgent(h.context), "resume-rollback");
+  h.controls.failEvidenceSupersede = false;
+  await h.methods.resume_rollback.execute({}, h.context);
+  equal(
+    AgentTaskSchema.parse(h.resources.get("agent-task")).status,
+    "superseded",
+  );
+  equal(h.calls.length, 1);
+});
+
+Deno.test("every provider completes lifecycle work through the same typed Swamp receipt", async () => {
+  for (const kind of ["claude", "codex", "muse", "pi", "agy"] as const) {
+    const h = harness();
+    h.controls.resultPatch = { message: "Arbitrary provider presentation" };
+    await h.methods.run_agent.execute(
+      { ...options, kind, role: "triage" },
+      h.context,
+    );
+    const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    equal(task.config.kind, kind);
+    equal(task.evidence?.payload.role, "triage");
+    equal(task.status, "completed");
+    await h.methods.resume_agent.execute({}, h.context);
+    equal(h.calls.length, 1);
+  }
+});
+
+async function pendingLegacyProjection(
+  role: "triage" | "implement" | "review_code",
+) {
+  const h = harness(
+    role === "triage" ? createState(issue) : implementing(),
+    role === "triage"
+      ? triage
+      : role === "implement"
+      ? { summary: "Implemented", commit: head }
+      : {
+        planVersion: 1,
+        commit: head,
+        steps: [{ id: "fix", status: "implemented" }],
+        findings: [],
+      },
+  );
+  h.controls.failEventOnce = true;
+  await rejects(
+    () => h.methods.run_agent.execute({ ...options, role }, h.context),
+    "event write failed",
+  );
+  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  delete task.submission;
+  delete task.evidence;
+  task.message = "This legacy final chat is not JSON";
+  h.resources.set("agent-task", task);
+  // The saved projection is authoritative; neither freshness checks nor
+  // reconciliation should need the original provider chat or state again.
+  h.child.clear();
+  return { ...h, task };
+}
+
+Deno.test("legacy applying projections import fresh evidence and reconcile applied evidence without chat", async () => {
+  for (const role of ["triage", "review_code"] as const) {
+    for (const applied of [false, true]) {
+      const h = await pendingLegacyProjection(role);
+      if (applied) {
+        h.resources.set("state", h.task.next);
+        h.controls.agenda = { ...issue, digest: "e".repeat(64) };
+        h.controls.repo = {
+          ...h.controls.repo,
+          head: "c".repeat(40),
+          branch: "another",
+          clean: false,
+        };
+      }
+      const agendaReads = h.controls.agendaReads;
+      const calls = h.calls.length;
+      await h.methods.resume_agent.execute({}, h.context);
+      equal(
+        AgentTaskSchema.parse(h.resources.get("agent-task")).status,
+        "completed",
+      );
+      equal(await loadState(h.context), h.task.next);
+      equal(h.controls.agendaReads, agendaReads + (applied ? 0 : 1));
+      equal(
+        h.writes.filter(({ spec }) => spec === "state").length,
+        applied ? 0 : 1,
+      );
+      equal(h.calls.length, calls);
+    }
+  }
+});
+
+Deno.test("pending legacy projections reject changed requirements, worktrees and unverifiable commits", async () => {
+  for (const role of ["triage", "implement", "review_code"] as const) {
+    const faults = role === "review_code"
+      ? [
+        "agenda",
+        "head",
+        "dirty",
+        "branch",
+        "lifecycle",
+        "missing commit",
+        "different commit",
+      ]
+      : role === "implement"
+      ? ["agenda", "unverifiable commit", "lifecycle"]
+      : ["agenda", "lifecycle"];
+    for (const fault of faults) {
+      const h = await pendingLegacyProjection(role);
+      if (fault === "agenda") {
+        h.controls.agenda = { ...issue, digest: "e".repeat(64) };
+      }
+      if (fault === "head") h.controls.repo.head = "c".repeat(40);
+      if (fault === "dirty") h.controls.repo.clean = false;
+      if (fault === "branch") h.controls.repo.branch = "another";
+      if (fault === "lifecycle") {
+        h.resources.set("state", {
+          ...h.task.before,
+          lastFailure: "New lifecycle evidence",
+        });
+      }
+      if (fault === "missing commit") delete h.task.next!.codeReview;
+      if (fault === "different commit") {
+        h.task.next!.codeReview!.commit = "c".repeat(40);
+        h.controls.repo.head = "c".repeat(40);
+      }
+      if (fault === "unverifiable commit") {
+        h.task.message = JSON.stringify({
+          summary: "Legacy report",
+          commit: head,
+        });
+      }
+      h.resources.set("agent-task", h.task);
+      const current = await loadState(h.context);
+      const writes = h.writes.length;
+      const calls = h.calls.length;
+      await rejects(
+        () => h.methods.resume_agent.execute({}, h.context),
+        fault === "agenda"
+          ? "requirements changed"
+          : fault === "lifecycle"
+          ? "Lifecycle changed"
+          : fault.includes("commit")
+          ? "no verifiable evidence commit"
+          : "clean issue branch's current commit",
+      );
+      equal(await loadState(h.context), current);
+      equal(
+        AgentTaskSchema.parse(h.resources.get("agent-task")).status,
+        "applying",
+      );
+      equal(h.writes.length, writes);
+      equal(h.calls.length, calls);
+      equal(
+        h.writes.filter(({ spec }) => spec === "state" || spec === "event")
+          .length,
+        0,
+      );
+    }
+  }
+});
+
+Deno.test("legacy implementation reports block pending review while accepted code review remains usable without chat parsing", async () => {
+  for (const reviewed of [false, true]) {
+    const h = harness(implementing(), { summary: "Implemented", commit: head });
+    await h.methods.run_agent.execute(
+      { ...options, role: "implement" },
+      h.context,
+    );
+    const legacy = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    delete legacy.evidence;
+    delete legacy.submission;
+    legacy.message = "Truncated legacy implementation presentation {";
+    h.resources.set("agent-task", legacy);
+    h.resources.set("driver", { agent: options, implementation: legacy });
+    if (reviewed) {
+      h.resources.set(
+        "state",
+        transition(legacy.before, "review_code", {
+          planVersion: 1,
+          commit: head,
+          steps: [{ id: "fix", status: "implemented" }],
+          findings: [],
+        }),
+      );
+    }
+    const calls = h.calls.length;
+    await h.drive.execute({}, h.context);
+    equal(result(h).decision, reviewed ? "authorize_merge" : "blocked");
+    if (!reviewed) {
+      assert(result(h).reason.includes("typed submission supplement"));
+    }
+    assert(!result(h).presentation.includes("Truncated legacy"));
+    equal(h.calls.length, calls);
+  }
 });

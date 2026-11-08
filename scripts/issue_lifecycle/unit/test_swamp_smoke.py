@@ -82,7 +82,7 @@ print(">> ci phase test: passed")
 ''')
         for program in ("claude", "codex", "muse", "pi", "agy"):
             self.stub(program, 'import sys\nraise SystemExit("A coding CLI must be launched through Yinz, never headlessly, in this smoke test")\n')
-        self.stub("yinz", '''import json, os, pathlib, sys
+        self.stub("yinz", '''import json, os, pathlib, subprocess, sys
 args = sys.argv[1:]
 assert args[:2] == ["--session", "smoke"], args
 assert args[-1] == "--json", args
@@ -123,13 +123,16 @@ else:
         else:
             assert args[args.index("--submission")+1] == state["submission"], args
             assert args[args.index("--conversation")+1] == "smoke-conversation"
-            response.update(outcome="completed", acknowledged=True, submission_id=state["submission"], turn_id="smoke-turn", message=json.dumps(state["evidence"]))
+            response.update(outcome="completed", acknowledged=True, submission_id=state["submission"], turn_id="smoke-turn", message=os.environ.get("YINZ_SMOKE_FINAL_TEXT", '{"findings":['))
     elif operation == "prompt":
         assert args[args.index("--file")+1] == "-"
         assert args[args.index("--conversation")+1] == "smoke-conversation"
         assert "--wait" in args
-        snapshot = json.loads(stdin.split("Current lifecycle snapshot (issue requirements and recorded evidence):\\n\\n", 1)[1])
-        if "Adversarially review the current plan" in stdin:
+        if "Current lifecycle snapshot (issue requirements and recorded evidence):" in stdin:
+            snapshot = json.loads(stdin.split("Current lifecycle snapshot (issue requirements and recorded evidence):\\n\\n", 1)[1])
+        if "Finish submission of the findings already established" in stdin:
+            evidence = state["evidence"]
+        elif "Adversarially review the current plan" in stdin:
             evidence = {"planVersion":snapshot["plan"]["version"], "findings":[]}
             if snapshot["plan"]["version"] <= int(os.environ.get("YINZ_SMOKE_BLOCKED_VERSIONS", "0")):
                 evidence["findings"] = [{"id":"coverage", "severity":"high", "description":"Cover the missing caller", "requirement":"Marker covers caller", "mechanism":"Caller can miss the marker", "evidence":["marker.txt"]}]
@@ -140,9 +143,21 @@ else:
         else:
             assert "Investigate the issue" in stdin
             evidence = {"classification":"maintenance","summary":"Add a smoke marker; acceptance requires the marker on local main."}
-        state.update(submission=args[args.index("--submission")+1], evidence=evidence)
+        target = json.loads(stdin.split("Swamp submission target:\\n", 1)[1].split("\\n\\n", 1)[0])
+        envelope = {"taskId":target["taskId"], "assignmentDigest":target["assignmentDigest"], "role":target["role"], "evidence":evidence}
+        if not os.environ.get("YINZ_SMOKE_NO_SUBMISSION"):
+            submit_env = {**os.environ, "SWAMP_LOCK_TIMEOUT_MS":"3000"}
+            submitted = subprocess.run(["swamp", "behavior", "run", target["behaviorName"], "submit", "--repo-dir", target["controlDir"], "--stdin", "--literal-inputs", "--json", "--no-telemetry"], input=json.dumps(envelope), text=True, capture_output=True, env=submit_env, timeout=30)
+            assert submitted.returncode == 0, submitted.stderr + submitted.stdout
+            accepted = subprocess.run(["swamp", "data", "query", 'behavior("' + target["behaviorName"] + '") && name == "submission"', "--repo-dir", target["controlDir"], "--select", "content", "--single", "--json", "--no-telemetry"], text=True, capture_output=True, env=submit_env, timeout=30)
+            assert accepted.returncode == 0, accepted.stderr + accepted.stdout
+            receipt = json.loads(accepted.stdout)
+            assert receipt["status"] == "accepted" and receipt["receipt"]["taskId"] == target["taskId"], receipt
+        state.update(submission=args[args.index("--submission")+1], evidence=evidence, evidence_target=target)
         state_file.write_text(json.dumps(state))
-        response.update(outcome="completed", acknowledged=True, submission_id=state["submission"], turn_id="smoke-turn", message=json.dumps(evidence))
+        if os.environ.get("YINZ_SMOKE_DROP_ACK") and "classification" in evidence:
+            raise SystemExit("Lost provider response after Swamp accepted the evidence")
+        response.update(outcome="completed", acknowledged=True, submission_id=state["submission"], turn_id="smoke-turn", message=os.environ.get("YINZ_SMOKE_FINAL_TEXT", '{"findings":['))
         if os.environ.get("YINZ_SMOKE_TIMEOUT") and "classification" in evidence:
             response.update(outcome="timed_out", message=None)
             response["agents"][0]["agent"]["state"] = "Busy"
@@ -246,6 +261,84 @@ print(json.dumps(response))
         self.assertEqual(prepared["decision"], "prepare_worktree")
         self.assertEqual(len(self.yinz_log.read_text().splitlines()), len(calls))
 
+    def start_submission_fixture(self):
+        worktree = self.root / "typed-worker"
+        self.git(self.repo, "worktree", "add", "-b", "typed-worker", str(worktree))
+        self.lifecycle("start", cwd=worktree)
+        return worktree
+
+    def test_installed_submission_boundary_and_concurrent_replay(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        self.start_submission_fixture()
+        self.env["YINZ_SMOKE_NO_SUBMISSION"] = "1"
+        handoff = json.loads(self.lifecycle("drive", {"agent": {"session": "smoke", "kind": "claude"}}))
+        self.assertEqual(handoff["decision"], "blocked")
+        self.assertIn("submission_required", handoff["reason"])
+        worker = json.loads(self.yinz_state.read_text())
+        target = worker["evidence_target"]
+        command = ["swamp", "behavior", "run", target["behaviorName"], "submit", "--repo-dir", str(self.repo), "--stdin", "--literal-inputs", "--json", "--no-telemetry"]
+        envelope = {"taskId": target["taskId"], "assignmentDigest": target["assignmentDigest"], "role": target["role"], "evidence": worker["evidence"]}
+        def submit(body):
+            return subprocess.run(command, input=body, cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=30)
+        for body in ('{"evidence":[', json.dumps({**envelope, "evidence": {"summary": "Missing classification"}})):
+            rejected = submit(body)
+            self.assertNotEqual(rejected.returncode, 0, rejected.stdout)
+        query = ["swamp", "data", "query", f'behavior("{target["behaviorName"]}") && name == "submission"', "--select", "content", "--single", "--json"]
+        self.assertEqual(json.loads(self.command(query))["status"], "open")
+        # Real independent CLI processes contend on the same Swamp behavior lock.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(submit, [json.dumps(envelope)] * 2))
+        for result in results:
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        original = json.loads(self.command(query))
+        self.assertEqual(original["status"], "accepted")
+        # Losing an acknowledgement does not require another provider prompt.
+        replay = submit(json.dumps(envelope))
+        self.assertEqual(replay.returncode, 0, replay.stderr + replay.stdout)
+        self.assertEqual(json.loads(self.command(query)), original)
+        conflict = submit(json.dumps({**envelope, "evidence": {**worker["evidence"], "summary": "Different findings"}}))
+        self.assertNotEqual(conflict.returncode, 0)
+        self.assertIn("Submission conflict", conflict.stderr + conflict.stdout)
+        self.lifecycle("resume-agent")
+        self.assertEqual(self.state()["phase"], "classified")
+        calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
+        self.assertEqual(sum(call["args"][3] == "prompt" for call in calls), 1)
+        self.assertEqual(sum(call["args"][3] == "spawn" for call in calls), 1)
+
+    def test_installed_submission_only_continuation_uses_retained_worker(self):
+        self.start_submission_fixture()
+        self.env["YINZ_SMOKE_NO_SUBMISSION"] = "1"
+        handoff = json.loads(self.lifecycle("drive", {"agent": {"session": "smoke", "kind": "claude"}}))
+        self.assertEqual(handoff["decision"], "blocked")
+        task_id = handoff["assignment"]["id"]
+        del self.env["YINZ_SMOKE_NO_SUBMISSION"]
+        self.lifecycle("continue-agent", {"taskId": task_id, "request": "Submit the findings already established, without repeating the investigation"})
+        self.assertEqual(self.state()["phase"], "classified")
+        completed = json.loads(self.lifecycle("drive"))
+        self.assertEqual(completed["decision"], "approve_plan")
+        calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
+        prompts = [call for call in calls if call["args"][3] == "prompt"]
+        self.assertEqual(len(prompts), 4)
+        self.assertEqual(sum(call["args"][3] == "spawn" for call in calls), 3)
+        self.assertIn("Finish submission of the findings already established", prompts[1]["stdin"])
+        self.assertNotIn("Investigate the issue against the source", prompts[1]["stdin"])
+        self.assertEqual(prompts[0]["args"][4], prompts[1]["args"][4])
+        self.assertNotEqual(prompts[0]["args"][prompts[0]["args"].index("--submission") + 1], prompts[1]["args"][prompts[1]["args"].index("--submission") + 1])
+
+    def test_installed_accepted_evidence_survives_lost_provider_response(self):
+        self.start_submission_fixture()
+        self.env["YINZ_SMOKE_DROP_ACK"] = "1"
+        handoff = json.loads(self.lifecycle("drive", {"agent": {"session": "smoke", "kind": "claude"}}))
+        self.assertEqual(handoff["decision"], "blocked")
+        records = json.loads(self.lifecycle("status"))["results"]
+        self.assertTrue(any(record.get("status") == "accepted" and "receipt" in record for record in records))
+        recovered = json.loads(self.lifecycle("drive"))
+        self.assertEqual(recovered["decision"], "approve_plan")
+        calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
+        self.assertEqual(sum(call["args"][3] == "prompt" for call in calls), 3)
+        self.assertEqual(sum(call["args"][3] == "spawn" for call in calls), 3)
+
     def test_installed_revision_approval_is_single_use(self):
         worktree = self.root / "revision"
         self.git(self.repo, "worktree", "add", "-b", "revision", str(worktree))
@@ -317,7 +410,7 @@ print(json.dumps(response))
         self.assertEqual(state["classification"]["classification"], "maintenance")
         calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
         self.assertEqual([call["args"][3] for call in calls], ["list-panes", "spawn", "wait", "prompt", "list-panes", "close-completed"])
-        self.assertIn("Return exactly one JSON object", next(call["stdin"] for call in calls if call["args"][3] == "prompt"))
+        self.assertIn("Submit evidence through Swamp before ending this task", next(call["stdin"] for call in calls if call["args"][3] == "prompt"))
         records = json.loads(self.lifecycle("status"))["results"]
         task = next(record for record in records if "behaviorName" in record)
         restart = {"taskId": task["id"], "role": "triage", "session": "smoke",

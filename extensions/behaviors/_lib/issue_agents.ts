@@ -1,22 +1,32 @@
-/** Assign lifecycle work to visible Yinz panes and import correlated structured results. */
+/** Assign pane work and consume acknowledged Swamp evidence independently of chat. */
 import { join } from "node:path";
 import { z } from "npm:zod@4.6.7";
 import {
-  ActionSchemas,
   initialPlanning,
-  previousPlanFindings,
   readAgenda,
   recordFeedback,
   refreshIssue,
   reopenAgenda,
-  RevisionPlanSchema,
   RollbackInputSchema,
   rollbackState,
   StateSchema,
   transition,
   UserRequestSchema,
-  validatePlanReview,
 } from "./lifecycle.ts";
+import {
+  assignmentCore,
+  AssignmentSchema,
+  canonical,
+  evidenceDigest,
+  EvidenceReceiptSchema,
+  EvidenceTargetSchema,
+  ImplementationResult,
+  RoleSchema,
+  submissionInstructions,
+  SubmissionSchema,
+  validateReceipt,
+} from "./issue_evidence.ts";
+export { ImplementationResult } from "./issue_evidence.ts";
 import {
   type Context,
   gitOperation,
@@ -25,25 +35,21 @@ import {
   loadState,
   normalizeReceipt,
   saveState,
+  submissionPreflight,
   withIssue,
 } from "./runtime.ts";
 import {
   AgentConfigSchema,
   AgentResultSchema,
   AgentStateSchema,
+  assertContinuationEligible,
   ControlIdentitySchema,
   isRejectedLaunch,
   isTerminalFailure,
   promptDigest,
 } from "./yinz_agent.ts";
 
-const Role = z.enum([
-  "triage",
-  "plan",
-  "review_plan",
-  "implement",
-  "review_code",
-]);
+const Role = RoleSchema;
 export const AgentInputSchema = z.object({
   role: Role,
   request: UserRequestSchema.optional(),
@@ -86,6 +92,13 @@ export const AgentTaskSchema = z.object({
   message: z.string().optional(),
   lastError: z.string().optional(),
   cleanup: z.enum(["pending", "done"]).optional(),
+  submission: EvidenceTargetSchema.optional(),
+  evidence: EvidenceReceiptSchema.optional(),
+  continuation: z.object({
+    id: z.uuid(),
+    request: UserRequestSchema,
+    prompt: z.string().min(1),
+  }).strict().optional(),
 }).strict();
 type Task = z.infer<typeof AgentTaskSchema>;
 const RestartInput = Input.extend({
@@ -133,6 +146,7 @@ export interface IssueAgentDependencies {
   realPath: (path: string) => Promise<string>;
   id: () => string;
   now: () => string;
+  submissionPreflight: typeof submissionPreflight;
 }
 export const defaultDependencies: IssueAgentDependencies = {
   withIssue,
@@ -143,18 +157,7 @@ export const defaultDependencies: IssueAgentDependencies = {
   realPath: (path) => Deno.realPath(path),
   id: () => crypto.randomUUID(),
   now: () => new Date().toISOString(),
-};
-
-export const ImplementationResult = z.object({
-  summary: z.string().trim().min(1),
-  commit: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/),
-}).strict();
-const RoleSchemas = {
-  triage: ActionSchemas.triage,
-  plan: ActionSchemas.plan,
-  review_plan: ActionSchemas.review_plan,
-  implement: ImplementationResult,
-  review_code: ActionSchemas.review_code,
+  submissionPreflight,
 };
 
 async function savedRevisions(context: Context) {
@@ -223,6 +226,7 @@ function taskPrompt(
   state: z.infer<typeof StateSchema>,
   cwd: string,
   references: string,
+  submission: string,
   commit?: string,
   request?: string,
 ) {
@@ -241,7 +245,7 @@ function taskPrompt(
   return [
     "You are working on one Yinz issue lifecycle task in a visible Yinz pane.",
     `Work only in ${cwd}. Follow its AGENTS.md and applicable repository instructions.`,
-    "Do not invoke the lifecycle launcher, Swamp lifecycle methods, or Agenda mutations; the controlling workflow owns those operations. Do not merge or contact remote Git services.",
+    "Do not invoke the lifecycle launcher. Use only the assigned Swamp evidence interface described below. Do not merge or contact remote Git services.",
     role === "implement"
       ? "Only this task may edit the issue worktree."
       : "This is investigation or review: do not edit source files, Git refs, or configuration.",
@@ -275,14 +279,7 @@ function taskPrompt(
     ...(request
       ? ["Exact user instructions for this assignment:", request]
       : []),
-    "Return exactly one JSON object matching this schema, without Markdown fences or extra prose:",
-    JSON.stringify(
-      z.toJSONSchema(
-        role === "plan" && !initialPlanning(state)
-          ? RevisionPlanSchema
-          : RoleSchemas[role],
-      ),
-    ),
+    submission,
     "Current lifecycle snapshot (issue requirements and recorded evidence):",
     JSON.stringify(state),
     ...(commit ? [`The commit being reviewed is ${commit}.`] : []),
@@ -342,7 +339,6 @@ async function completedResult(context: IssueAgentContext, task: Task) {
     result.paneId !== child.paneId ||
     result.conversationId !== child.conversationId ||
     result.submissionId !== child.submissionId ||
-    result.message !== child.message?.trim() ||
     result.turnId !== child.turnId
   ) {
     throw new Error(
@@ -381,6 +377,145 @@ async function completeTask(context: IssueAgentContext, task: Task) {
   };
 }
 
+function taskAssignment(context: IssueAgentContext, task: Task) {
+  if (!task.submission) {
+    throw new Error(
+      "Legacy task requires a typed submission supplement; use continue-agent on its original worker",
+    );
+  }
+  const core = assignmentCore(context, task, task.submission.controlDir);
+  return AssignmentSchema.parse({
+    ...core,
+    digest: task.submission.assignmentDigest,
+    promptDigest: task.promptDigest,
+  });
+}
+
+async function evidenceOperation(
+  context: IssueAgentContext,
+  task: Task,
+  method: string,
+  arguments_: Record<string, unknown>,
+) {
+  if (!task.submission) return;
+  if (
+    method === "supersede" &&
+    !await context.dataRepository.getContent(
+      "@yinz/issue-evidence",
+      task.submission.behaviorName,
+      "submission",
+    )
+  ) {
+    // Dispatch cannot reach a worker before open commits. A controller killed
+    // before that write can supersede its saved task without creating a slot.
+    return;
+  }
+  const outcome = await context.runModel({
+    modelType: "@yinz/issue-evidence",
+    name: task.submission.behaviorName,
+    method,
+    arguments: arguments_,
+  });
+  if (!outcome.ok) {
+    throw new Error(
+      `Swamp evidence ${method} blocked: ${outcome.error.message}`,
+    );
+  }
+}
+
+async function acceptedEvidence(context: IssueAgentContext, task: Task) {
+  const assignment = taskAssignment(context, task);
+  const bytes = await context.dataRepository.getContent(
+    "@yinz/issue-evidence",
+    task.submission!.behaviorName,
+    "submission",
+  );
+  const saved = bytes
+    ? SubmissionSchema.parse(JSON.parse(new TextDecoder().decode(bytes)))
+    : undefined;
+  if (!saved || saved.status === "open") {
+    throw new Error(
+      "submission_required: provider turn ended without accepted Swamp evidence; use continue-agent to finish submission in the original conversation",
+    );
+  }
+  if (
+    saved.status !== "accepted" ||
+    canonical(saved.assignment) !== canonical(assignment)
+  ) {
+    throw new Error(
+      "Swamp evidence belongs to a superseded or different assignment",
+    );
+  }
+  return validateReceipt(assignment, saved.receipt);
+}
+
+/** Typed implementation evidence, including in cached driver handoffs. */
+export function implementationEvidence(task: Task) {
+  if (
+    task.role !== "implement" || task.evidence?.payload.role !== "implement"
+  ) {
+    throw new Error(
+      "Legacy implementation needs a typed submission supplement; use continue-agent on its original worker before reviewing code",
+    );
+  }
+  if (
+    !task.submission ||
+    task.evidence.assignmentDigest !== task.submission.assignmentDigest ||
+    task.evidence.taskId !== task.id ||
+    task.evidence.payloadDigest !== evidenceDigest(task.evidence.payload)
+  ) {
+    throw new Error("Implementation receipt does not match its task");
+  }
+  return ImplementationResult.parse(task.evidence.payload.evidence);
+}
+
+async function validateResultFreshness(
+  context: IssueAgentContext,
+  task: Task,
+  current: z.infer<typeof StateSchema>,
+  dependencies: IssueAgentDependencies,
+  commit?: string,
+) {
+  const fresh = await dependencies.readAgenda(
+    current.issue.workspace,
+    current.issue.itemId,
+  );
+  if (fresh.digest !== current.issue.digest) {
+    throw new Error(
+      "Agenda requirements changed while the pane task ran; its result is stale",
+    );
+  }
+  if (canonical(current) !== canonical(task.before)) {
+    throw new Error(
+      "Lifecycle changed while the pane task ran; inspect its result before recording new evidence",
+    );
+  }
+  if (task.role === "implement" || task.role === "review_code") {
+    if (
+      !commit || (task.role === "review_code" && commit !== task.reviewCommit)
+    ) {
+      throw new Error(
+        "Pane result has no verifiable evidence commit; use continue-agent for a typed submission supplement",
+      );
+    }
+    if (!current.implementation) {
+      throw new Error("Pane implementation has no recorded issue worktree");
+    }
+    const repo = await dependencies.inspect(
+      context,
+      current.implementation.worktree,
+    );
+    if (
+      !repo.clean || repo.branch !== current.implementation.branch ||
+      repo.head !== commit
+    ) {
+      throw new Error(
+        "Pane result does not match the clean issue branch's current commit",
+      );
+    }
+  }
+}
+
 async function applyResult(
   context: IssueAgentContext,
   task: Task,
@@ -391,104 +526,76 @@ async function applyResult(
   if (["discarded", "superseded"].includes(task.status)) {
     return { dataHandles: [] };
   }
-  const result = await completedResult(context, task);
-  // A transition which changed state proves that saveState reached its state
-  // write. Reconcile it before reading requirements that may have changed since.
-  // Implementation reports leave state unchanged, so retain freshness checks and
-  // retry their event write before completing instead of losing the evidence.
+  // Reconcile applied legacy projections without reading chat. A pending
+  // projection still needs current requirements and verifiable commit evidence.
   if (
-    task.next && JSON.stringify(current) === JSON.stringify(task.next) &&
-    JSON.stringify(task.before) !== JSON.stringify(task.next)
+    !task.submission && task.status === "applying" && task.next
+  ) {
+    if (
+      canonical(task.next) !== canonical(task.before) &&
+      canonical(current) === canonical(task.next)
+    ) return completeTask(context, task);
+    if (canonical(current) !== canonical(task.before)) {
+      throw new Error(
+        "Lifecycle changed during legacy evidence reconciliation",
+      );
+    }
+    await validateResultFreshness(
+      context,
+      task,
+      current,
+      dependencies,
+      task.role === "review_code" ? task.next.codeReview?.commit : undefined,
+    );
+    await saveState(
+      context,
+      `agent_${task.role}_${task.id}`,
+      task.next,
+      `event-agent-${task.id}`,
+    );
+    return completeTask(context, task);
+  }
+  const receipt = await acceptedEvidence(context, task);
+  const result = await completedResult(context, task);
+  // An applying task carries its exact accepted receipt. State equality alone
+  // cannot prove import for implementation reports, whose next equals before.
+  const eventName = `event-agent-${task.id}`;
+  const event = await context.readResource(eventName);
+  const projection = event == null
+    ? undefined
+    : z.object({ action: z.string(), state: StateSchema }).parse(event);
+  const projected = projection?.action === `agent_${task.role}_${task.id}` &&
+    canonical(projection.state) === canonical(receipt.next) &&
+    canonical(current) === canonical(receipt.next);
+  if (
+    task.status === "applying" && task.evidence &&
+    canonical(task.evidence) === canonical(receipt) && projected
   ) {
     return completeTask(context, task);
   }
-  const fresh = await dependencies.readAgenda(
-    current.issue.workspace,
-    current.issue.itemId,
+  await validateResultFreshness(
+    context,
+    task,
+    current,
+    dependencies,
+    receipt.payload.role === "implement" ||
+      receipt.payload.role === "review_code"
+      ? receipt.payload.evidence.commit
+      : undefined,
   );
-  if (fresh.digest !== current.issue.digest) {
-    throw new Error(
-      "Agenda requirements changed while the pane task ran; its result is stale",
-    );
-  }
-  if (JSON.stringify(current) !== JSON.stringify(task.before)) {
-    throw new Error(
-      "Lifecycle changed while the pane task ran; inspect its result before recording new evidence",
-    );
-  }
-  let response: unknown;
-  try {
-    response = JSON.parse(result.message);
-  } catch (cause) {
-    throw new Error(
-      `Pane task ${task.behaviorName} did not return the required JSON evidence`,
-      { cause },
-    );
-  }
-  const evidence = RoleSchemas[task.role].parse(response);
-  if (task.role === "plan" && !initialPlanning(task.before)) {
-    const { revision } = RevisionPlanSchema.parse(response);
-    const prior = previousPlanFindings(task.before);
-    for (
-      const finding of prior.filter((f) =>
-        ["high", "critical"].includes(f.severity) && !f.resolution
-      )
-    ) {
-      if (!revision.responses.some((r) => r.findingId === finding.id)) {
-        throw new Error(
-          `Revision must respond to blocking finding ${finding.id}`,
-        );
-      }
-    }
-  }
-  if (task.role === "review_plan") {
-    validatePlanReview(
-      current,
-      evidence as z.infer<typeof ActionSchemas.review_plan>,
-    );
-  }
-  let next = current;
-  if (task.role === "implement" || task.role === "review_code") {
-    const commit = z.object({ commit: z.string() }).parse(evidence).commit;
-    if (!current.implementation) {
-      throw new Error("Pane implementation has no recorded issue worktree");
-    }
-    const repo = await dependencies.inspect(
-      context,
-      current.implementation.worktree,
-    );
-    if (
-      !repo.clean || repo.branch !== current.implementation!.branch ||
-      repo.head !== commit
-    ) {
-      throw new Error(
-        "Pane result does not match the clean issue branch's current commit",
-      );
-    }
-    if (task.role === "review_code" && commit !== task.reviewCommit) {
-      throw new Error(
-        "Pane reviewed a different commit than the dispatched task",
-      );
-    }
-  }
-  if (task.role !== "implement") {
-    const source = structuredClone(current);
-    if (task.request) {
-      recordFeedback(source, task.request, source.planVersion);
-    }
-    next = transition(source, task.role, evidence);
-  }
   const applying: Task = {
     ...task,
     status: "applying",
-    next,
+    next: receipt.next,
+    evidence: receipt,
     message: result.message,
   };
   await saveTask(context, applying);
   const handles = await saveState(
     context,
     `agent_${task.role}_${task.id}`,
-    next,
+    receipt.next,
+    eventName,
   );
   handles.dataHandles.push(
     ...(await completeTask(context, applying)).dataHandles,
@@ -581,32 +688,47 @@ export async function prepareTask(
     "issue-lifecycle",
     "references",
   );
-  const prompt = taskPrompt(
-    args.role,
-    promptState,
-    cwd,
-    references,
-    commit,
-    args.request,
-  );
+  await dependencies.submissionPreflight(context);
   const { role: _role, request: _request, ...options } = args;
   const config = AgentConfigSchema.parse({
     ...options,
     cwd,
     stackWorkers: true,
   });
-  const task: Task = {
+  const identity = {
     id: dependencies.id(),
     behaviorName: `issue-agent-${dependencies.id()}`,
     role: args.role,
     ...(args.request ? { request: args.request } : {}),
     config,
+    before: state,
+    ...(commit ? { reviewCommit: commit } : {}),
+  };
+  const controlDir = await dependencies.realPath(context.repoDir);
+  const submission = EvidenceTargetSchema.parse({
+    protocol: 1,
+    behaviorName: `issue-evidence-${identity.id}`,
+    controlDir,
+    assignmentDigest: evidenceDigest(
+      assignmentCore(context, identity, controlDir),
+    ),
+  });
+  const prompt = taskPrompt(
+    args.role,
+    promptState,
+    cwd,
+    references,
+    submissionInstructions(identity, submission),
+    commit,
+    args.request,
+  );
+  const task: Task = {
+    ...identity,
+    submission,
     prompt,
     promptDigest: await promptDigest(prompt),
-    before: state,
     createdAt: dependencies.now(),
     status: "running",
-    ...(commit ? { reviewCommit: commit } : {}),
   };
   return task;
 }
@@ -619,6 +741,12 @@ export async function runTask(
 ) {
   await saveTask(context, task);
   try {
+    if (task.submission) {
+      await dependencies.submissionPreflight(context);
+      await evidenceOperation(context, task, "open", {
+        assignment: taskAssignment(context, task),
+      });
+    }
     if (!task.config.control) {
       const child = recover ? await childState(context, task) : undefined;
       if (!child || child.phase === "preflight") {
@@ -627,11 +755,14 @@ export async function runTask(
         );
       }
     }
+    const continuing = recover && task.continuation;
     const outcome = await context.runModel({
       modelType: "@yinz/agent",
       name: task.behaviorName,
-      method: recover ? "recover" : "run",
-      arguments: { ...task.config, prompt: task.prompt },
+      method: continuing ? "continue" : recover ? "recover" : "run",
+      arguments: continuing
+        ? { id: continuing.id, prompt: continuing.prompt }
+        : { ...task.config, prompt: task.prompt },
     });
     if (!outcome.ok) throw new Error(outcome.error.message);
     return await applyResult(context, task, dependencies);
@@ -671,6 +802,11 @@ async function finishRecovery(
   }
   const handles = [];
   if (recovery.task) {
+    await evidenceOperation(context, recovery.task, "supersede", {
+      taskId: recovery.task.id,
+      assignmentDigest: recovery.task.submission?.assignmentDigest,
+      operationId: recovery.id,
+    });
     // Archive under a stable name before replacing the current assignment. Retrying
     // a partial write does not depend on the old pane, submission or child behavior.
     handles.push(
@@ -848,6 +984,106 @@ export function createAgentMethods(
   dependencies: IssueAgentDependencies = defaultDependencies,
 ) {
   return {
+    continue_agent: {
+      kind: "action",
+      description:
+        "Ask the original retained worker to submit its existing findings through Swamp, without another investigation",
+      arguments: z.object({ taskId: z.uuid(), request: UserRequestSchema })
+        .strip(),
+      execute: (
+        args: { taskId: string; request: string },
+        context: IssueAgentContext,
+      ) =>
+        dependencies.withIssue(context, async () => {
+          await assertNoPendingRecovery(context);
+          let task = AgentTaskSchema.parse(
+            await context.readResource("agent-task"),
+          );
+          if (
+            task.id !== args.taskId ||
+            ["discarded", "superseded"].includes(task.status)
+          ) {
+            throw new Error(
+              "Continuation must target the current original assignment",
+            );
+          }
+          if (task.evidence) {
+            return task.status === "completed"
+              ? applyResult(context, task, dependencies)
+              : runTask(context, task, dependencies, true);
+          }
+          const current = await loadState(context);
+          if (canonical(current) !== canonical(task.before)) {
+            throw new Error(
+              "Lifecycle changed; cannot continue a stale submission assignment",
+            );
+          }
+          if (
+            task.status === "applying" && task.next &&
+            canonical(task.next) !== canonical(task.before)
+          ) {
+            throw new Error(
+              "Resume the existing typed projection before continuing",
+            );
+          }
+          await dependencies.submissionPreflight(context);
+          if (!task.submission) {
+            const controlDir = await dependencies.realPath(context.repoDir);
+            task = {
+              ...task,
+              status: "running",
+              cleanup: undefined,
+              submission: {
+                protocol: 1,
+                behaviorName: `issue-evidence-${task.id}`,
+                controlDir,
+                assignmentDigest: evidenceDigest(
+                  assignmentCore(context, task, controlDir),
+                ),
+              },
+            };
+          }
+          await saveTask(context, task);
+          await evidenceOperation(context, task, "open", {
+            assignment: taskAssignment(context, task),
+          });
+          // A prior continuation may already have committed evidence despite a
+          // lost CLI response. Never send another prompt before inspecting it.
+          const bytes = await context.dataRepository.getContent(
+            "@yinz/issue-evidence",
+            task.submission!.behaviorName,
+            "submission",
+          );
+          if (
+            bytes &&
+            SubmissionSchema.parse(JSON.parse(new TextDecoder().decode(bytes)))
+                .status === "accepted"
+          ) return runTask(context, task, dependencies, true);
+          if (task.continuation?.request !== args.request) {
+            assertContinuationEligible(await childState(context, task));
+          }
+          const continuation = task.continuation?.request === args.request
+            ? task.continuation
+            : {
+              id: dependencies.id(),
+              request: args.request,
+              prompt: [
+                "Finish submission of the findings already established in this conversation. Preserve this task and its investigation; do not repeat the review or edit source or Git refs.",
+                args.request,
+                submissionInstructions(task, task.submission!),
+              ].join("\n\n"),
+            };
+          task = { ...task, continuation };
+          await saveTask(context, task);
+          const outcome = await context.runModel({
+            definition: task.behaviorName,
+            method: "continue",
+            arguments: { id: continuation.id, prompt: continuation.prompt },
+          });
+          if (!outcome.ok) throw new Error(outcome.error.message);
+          return applyResult(context, task, dependencies);
+        }),
+    },
     rollback: {
       kind: "action",
       description:
@@ -929,7 +1165,7 @@ export function createAgentMethods(
     run_agent: {
       kind: "action",
       description:
-        "Run a lifecycle phase in a visible Yinz agent pane and import its completed structured result",
+        "Run a lifecycle phase in a visible Yinz pane and import its accepted Swamp evidence after provider completion",
       // Swamp merges behavior globals into method arguments before parsing.
       arguments: Input.strip(),
       execute: (input: z.infer<typeof Input>, context: IssueAgentContext) =>
@@ -958,7 +1194,7 @@ export function createAgentMethods(
     discard_agent: {
       kind: "update",
       description:
-        "Discard completed unusable evidence, a confirmed stopped terminal or unsent failure, or a launch rejected without resources, with an operator reason and confirmation",
+        "Explicitly discard unapplied terminal work or a resource-free launch rejection, fencing further submissions with the operator's reason and confirmation",
       arguments: AgentTaskSchema.shape.discard.unwrap().strip(),
       execute: (
         input: z.infer<ReturnType<typeof AgentTaskSchema.shape.discard.unwrap>>,
@@ -1004,6 +1240,12 @@ export function createAgentMethods(
               "Pane evidence may already be applied; resume the task before discarding it",
             );
           }
+          await saveTask(context, { ...task, discard });
+          await evidenceOperation(context, task, "supersede", {
+            taskId: task.id,
+            assignmentDigest: task.submission?.assignmentDigest,
+            operationId: task.id,
+          });
           return {
             dataHandles: [
               await saveTask(context, {

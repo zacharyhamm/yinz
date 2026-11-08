@@ -6,6 +6,8 @@ import {
   AgentStateSchema,
   cleanupAgent,
   confirmFailureAgent,
+  continueAgent,
+  ContinueArgsSchema,
   EmptySchema,
   recoverAgent,
   resumeAgent,
@@ -16,7 +18,7 @@ import {
 
 export const behavior = {
   type: "@yinz/agent",
-  version: "2026.11.04.2",
+  version: "2026.11.08.1",
   globalArguments: AgentConfigSchema,
   resources: {
     state: {
@@ -27,7 +29,8 @@ export const behavior = {
       garbageCollection: 100,
     },
     result: {
-      description: "Confirmed final answer from a visible Yinz agent pane",
+      description:
+        "Confirmed provider-turn completion and optional presentation text",
       schema: AgentResultSchema,
       lifetime: "infinite",
       garbageCollection: 100,
@@ -41,6 +44,13 @@ export const behavior = {
     },
   },
   methods: {
+    continue: {
+      kind: "action",
+      description:
+        "Continue a retained conversation with a durable guarded prompt, without repeating its original task",
+      arguments: ContinueArgsSchema,
+      execute: continueAgent,
+    },
     cleanup: {
       kind: "action",
       description:

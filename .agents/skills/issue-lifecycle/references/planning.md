@@ -24,5 +24,9 @@ A disputed finding needs counterevidence; disagreement alone is insufficient.
 An unresolved finding stays visible. Do not fabricate a fix, silently broaden
 requirements, or treat the revision request as implementation approval. Historical
 reviews help reasoning but do not constitute current review or approval evidence.
-Return the exact JSON contract in the saved assignment. Existing assignments may
-have an older contract; follow that assignment rather than changing its format.
+Submit the role evidence through the exact Swamp evidence behavior and schema in
+the saved assignment. Inspect its matching accepted receipt before finishing.
+Final chat text is presentation and is never lifecycle evidence. Correct rejected
+submissions in the same worker using the investigation already performed. For an
+older assignment, the controller supplies a submission-only continuation; do not
+restart the investigation or treat its old final-message contract as authority.

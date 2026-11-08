@@ -163,3 +163,34 @@ explicit rollback may supersede pending recovery. History, Git changes, ownershi
 and increasing versions survive; completed Agenda tasks reopen. Landed merge and
 close-out retries reuse receipts. [Design reference](../../../docs/ISSUE_LIFECYCLE.md)
 holds persistence and input contracts.
+
+A worker is complete only after its role evidence is validated, recorded and
+acknowledged through its assigned `@yinz/issue-evidence` behavior. Final prose is
+presentation and is never parsed as lifecycle evidence. Workers may invoke only
+the supplied submission method and receipt query; approvals, rollback, merge and
+Agenda mutations remain controller operations. Validation errors are corrected
+within the same worker. Lost acknowledgements are recovered by inspecting the
+original task's durable submission; identical replay preserves its receipt.
+
+If a provider ends without accepted evidence, keep the task unresolved. Use
+`continue-agent` with `{taskId, request}` to ask that same retained conversation
+to submit its existing findings. The guarded continuation is saved before delivery
+and resumes by its original ID. Do not repeat the investigation. Legacy pending
+tasks use this supplement without changing their original prompt or configuration;
+already-applied state remains historical evidence. Missing original context blocks
+supplementation and never authorizes a replacement review.
+
+Explicit `discard-agent` still requires the operator's actual `request` and
+`confirmedStopped: true` and verifies terminality or resource-free launch rejection.
+It saves discard intent and fences submissions before marking the task discarded.
+Rollback and restart likewise fence the old submission before changing parent
+state. Old evidence remains historical; no worker can submit for a replacement
+assignment. Accepted evidence is persisted before cleanup and import recovery
+never reparses chat or repeats the worker.
+
+Submission has its own short Swamp behavior lock and must never acquire the
+issue/child lock held by the waiting controller. Direct submission currently
+requires a healthy local format-2 filesystem datastore; preflight rejects
+command-wide writer-lease backends before launching a worker. Keep canonical
+store access within provider permissions and never create a per-worktree store.
+

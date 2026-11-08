@@ -17,7 +17,7 @@ from issue_lifecycle.workspace import agenda_workspace, local_environment
 METHODS = (
     "start", "status", "triage", "plan", "review-plan", "adjudicate-plan", "approve", "implement",
     "review-code", "ready", "merge", "repair", "refresh", "summarize", "agent", "resume-agent", "discard-agent",
-    "rollback", "resume-rollback", "restart-agent", "drive", "verify",
+    "rollback", "resume-rollback", "restart-agent", "continue-agent", "drive", "verify",
 )
 
 
@@ -116,10 +116,22 @@ def main():
     if args.command == "status":
         if inputs:
             parser.error("status takes no method inputs")
-        return subprocess.run([
+        result = subprocess.run([
             "swamp", "data", "query", f"modelName == {json.dumps(name)} && (name == 'state' || name == 'agent-task' || name == 'recovery' || name == 'driver' || name == 'handoff')",
             "--select", "content", "--json", *tail,
-        ], cwd=control, env=env).returncode
+        ], cwd=control, env=env, capture_output=True, text=True)
+        if result.returncode:
+            sys.stderr.write(result.stderr + result.stdout)
+            return result.returncode
+        sys.stderr.write(result.stderr)
+        document = json.loads(result.stdout)
+        task = next((record for record in document["results"] if "before" in record and "behaviorName" in record), None)
+        if task and task.get("submission"):
+            submission = query_resource(task["submission"]["behaviorName"], "submission", tail, control, env)
+            if submission is not None:
+                document["results"].append(submission)
+        print(json.dumps(document))
+        return 0
     if args.command in ("start", "merge", "drive", "verify"):
         workflow = "yinz-issue-" + args.command
         validation = subprocess.run(["swamp", "workflow", "validate", workflow, "--json", *tail], cwd=control, env=env, text=True, capture_output=True)

@@ -5,6 +5,7 @@ import {
   cleanupAgent,
   type CommandResult,
   confirmFailureAgent,
+  continueAgent,
   type Dependencies,
   EmptySchema,
   hooksReady,
@@ -347,12 +348,11 @@ Deno.test("failed, timed out, input-needed and expired submissions preserve stat
   }
 });
 
-Deno.test("completion requires matching submission, unchanged conversation and a final message", async () => {
+Deno.test("provider completion requires matching submission and unchanged conversation", async () => {
   for (
     const [value, error] of [
       [completed({ submission_id: "someone-else" }), "saved submission"],
       [completed({ agents: [agent("replacement")] }), "conversation changed"],
-      [completed({ message: null }), "final message"],
     ] as const
   ) {
     const h = harness([spawned, ready(), value]);
@@ -364,7 +364,7 @@ Deno.test("completion requires matching submission, unchanged conversation and a
   }
 });
 
-Deno.test("missing final text persists terminal failure without reusing stale text or retrieving again", async () => {
+Deno.test("missing final text completes the provider turn without reusing stale text or retrieving again", async () => {
   for (const message of [null, undefined, "", " \n\t"]) {
     for (const recover of [false, true]) {
       const h = harness([
@@ -379,24 +379,16 @@ Deno.test("missing final text persists terminal failure without reusing stale te
           "Lost response",
         );
       }
-      await rejects(
-        () =>
-          recover
-            ? resumeAgent(h.context, h.dependencies)
-            : runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
-        "discard-agent",
-      );
+      if (recover) await resumeAgent(h.context, h.dependencies);
+      else await runAgent({ prompt: "Fix it" }, h.context, h.dependencies);
       const state = AgentStateSchema.parse(h.records.get("state"));
-      equal(state.phase, "completed_unusable");
+      equal(state.phase, "completed");
       equal(state.outcome, "completed");
       equal(state.message, undefined);
       equal(state.backgroundTasks, []);
-      assert(!h.records.has("result"));
+      equal(h.records.get("result")?.message, undefined);
       const count = h.calls.length;
-      await rejects(
-        () => resumeAgent(h.context, h.dependencies),
-        "discard-agent",
-      );
+      await resumeAgent(h.context, h.dependencies);
       equal(h.calls.length, count);
     }
   }
@@ -450,7 +442,7 @@ Deno.test("background interim completion waits for the original conversation's f
   }
 });
 
-Deno.test("empty background completion is terminal and cannot reuse interim text on resume", async () => {
+Deno.test("empty background completion completes the provider turn without reusing interim text", async () => {
   for (const message of [null, undefined, "", " \n\t"]) {
     for (const recover of [false, true]) {
       const h = harness([
@@ -467,24 +459,16 @@ Deno.test("empty background completion is terminal and cannot reuse interim text
         );
         equal(h.records.get("state")?.phase, "background");
       }
-      await rejects(
-        () =>
-          recover
-            ? resumeAgent(h.context, h.dependencies)
-            : runAgent({ prompt: "Fix it" }, h.context, h.dependencies),
-        "discard-agent",
-      );
+      if (recover) await resumeAgent(h.context, h.dependencies);
+      else await runAgent({ prompt: "Fix it" }, h.context, h.dependencies);
       const state = AgentStateSchema.parse(h.records.get("state"));
-      equal(state.phase, "completed_unusable");
+      equal(state.phase, "completed");
       equal(state.outcome, "completed");
       equal(state.message, undefined);
       equal(state.backgroundTasks, []);
-      assert(!h.records.has("result"));
+      equal(h.records.get("result")?.message, undefined);
       const count = h.calls.length;
-      await rejects(
-        () => resumeAgent(h.context, h.dependencies),
-        "discard-agent",
-      );
+      await resumeAgent(h.context, h.dependencies);
       equal(h.calls.length, count);
     }
   }
@@ -1081,4 +1065,109 @@ Deno.test("stack placement never silently falls back without a controller", asyn
     "require a control pane",
   );
   equal(h.calls.length, 0);
+});
+
+Deno.test("submission continuation retains the original conversation and recovers a lost acknowledgement without another prompt", async () => {
+  const h = harness([spawned, ready(), completed()]);
+  await runAgent(
+    { prompt: "Original investigation" },
+    h.context,
+    h.dependencies,
+  );
+  const origin = AgentStateSchema.parse(h.records.get("state"));
+  h.dependencies.id = () => "submission-2";
+  h.replies.push(ready(), new Error("Lost continuation acknowledgement"));
+  const args = {
+    id: "a6da10b0-c980-4b82-b920-000000000001",
+    prompt: "Submit the existing findings through Swamp",
+  };
+  await rejects(
+    () => continueAgent(args, h.context, h.dependencies),
+    "Lost continuation acknowledgement",
+  );
+  const pending = AgentStateSchema.parse(h.records.get("state"));
+  equal(pending.prompt, origin.prompt);
+  equal(pending.promptDigest, origin.promptDigest);
+  equal(pending.continuation?.previousSubmissionId, origin.submissionId);
+  equal(pending.submissionId, "submission-2");
+  h.replies.push(completed({ submission_id: "submission-2", message: null }));
+  await continueAgent(args, h.context, h.dependencies);
+  equal(h.calls.filter((c) => c.args.includes("spawn")).length, 1);
+  equal(h.calls.filter((c) => c.args.includes("prompt")).length, 2);
+  equal(
+    h.calls.at(-1)?.args[h.calls.at(-1)!.args.indexOf("--submission") + 1],
+    "submission-2",
+  );
+  equal(h.records.get("result")?.message, undefined);
+  await continueAgent(args, h.context, h.dependencies);
+  equal(h.calls.filter((c) => c.args.includes("prompt")).length, 2);
+});
+
+Deno.test("continuation refuses active, cleaned or replacement conversations without launching another worker", async () => {
+  const args = {
+    id: "a6da10b0-c980-4b82-b920-000000000001",
+    prompt: "Submit existing evidence",
+  };
+  for (const scenario of ["active", "cleaned", "replacement"] as const) {
+    const h = harness([spawned, ready(), completed()]);
+    await runAgent({ prompt: "Investigate" }, h.context, h.dependencies);
+    const state = AgentStateSchema.parse(h.records.get("state"));
+    if (scenario === "active") state.phase = "waiting";
+    if (scenario === "cleaned") state.cleanedUp = true;
+    h.records.set("state", state);
+    if (scenario === "replacement") h.replies.push(ready("replacement"));
+    await rejects(
+      () => continueAgent(args, h.context, h.dependencies),
+      scenario === "replacement"
+        ? "conversation changed"
+        : "original completed",
+    );
+    equal(h.calls.filter((c) => c.args.includes("spawn")).length, 1);
+    equal(h.calls.filter((c) => c.args.includes("prompt")).length, 1);
+  }
+});
+
+Deno.test("a different continuation cannot replace a timed-out turn's saved identity or prompt", async () => {
+  const h = harness([spawned, ready(), completed()]);
+  await runAgent({ prompt: "Investigate" }, h.context, h.dependencies);
+  h.dependencies.id = () => "submission-2";
+  const args = {
+    id: "a6da10b0-c980-4b82-b920-000000000001",
+    prompt: "Submit the original findings",
+  };
+  h.replies.push(
+    ready(),
+    completed({
+      outcome: "timed_out",
+      submission_id: "submission-2",
+      acknowledged: true,
+    }),
+  );
+  await rejects(
+    () => continueAgent(args, h.context, h.dependencies),
+    "timed_out",
+  );
+  const pending = structuredClone(h.records.get("state"));
+  const writes = h.writes.length;
+  const calls = h.calls.length;
+  await rejects(
+    () =>
+      continueAgent(
+        {
+          id: "a6da10b0-c980-4b82-b920-000000000002",
+          prompt: "Different request",
+        },
+        h.context,
+        h.dependencies,
+      ),
+    "original completed, retained conversation",
+  );
+  equal(h.records.get("state"), pending);
+  equal(h.writes.length, writes);
+  equal(h.calls.length, calls);
+  h.replies.push(completed({ submission_id: "submission-2" }));
+  await continueAgent(args, h.context, h.dependencies);
+  equal(h.records.get("result")?.submissionId, "submission-2");
+  equal(h.calls.filter((c) => c.args.includes("prompt")).length, 2);
+  equal(h.calls.filter((c) => c.args.includes("spawn")).length, 1);
 });

@@ -25,6 +25,10 @@ export const RunArgsSchema = z.object({
   prompt: z.string().min(1).refine((value) => value.trim().length > 0),
 }).strip();
 export const EmptySchema = z.object({}).strip();
+export const ContinueArgsSchema = z.object({
+  id: z.uuid(),
+  prompt: z.string().trim().min(1),
+}).strip();
 /**
  * Yinz reports Claude background work as `background: true`; older builds listed
  * task IDs in `background_tasks`. Fold the flag into the list so every background
@@ -101,6 +105,11 @@ export const AgentStateSchema = z.object({
   rawResponse: z.string().optional(),
   lastError: Text.optional(),
   cleanedUp: z.boolean().optional(),
+  continuation: z.object({
+    id: z.uuid(),
+    prompt: z.string().min(1),
+    previousSubmissionId: Text,
+  }).strict().optional(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 }).strict();
@@ -172,7 +181,7 @@ export const AgentResultSchema = z.object({
   submissionId: Text,
   promptDigest: Text,
   outcome: z.literal("completed"),
-  message: Text,
+  message: z.string().optional(),
   turnId: Text.optional(),
   completedAt: z.iso.datetime(),
 }).strict();
@@ -400,11 +409,10 @@ async function finish(
   dependencies: Dependencies,
 ): Promise<ResourceHandle[]> {
   if (
-    !state.paneId || !state.conversationId || !state.submissionId ||
-    !state.message?.trim()
+    !state.paneId || !state.conversationId || !state.submissionId
   ) {
     throw new Error(
-      "Completion lacks a pane, bound conversation, submission or final message",
+      "Completion lacks a pane, bound conversation or submission",
     );
   }
   const result = AgentResultSchema.parse({
@@ -465,15 +473,7 @@ async function observeBackground(
   ) {
     throw new Error("Background work has no confirmed final idle answer");
   }
-  if (!value.message?.trim()) {
-    // The original conversation is idle and both background lists are empty.
-    state.phase = "completed_unusable";
-    state.outcome = "completed";
-    delete state.message;
-    throw new Error(
-      "Completed task did not return a final message; use discard-agent to discard this unusable completion",
-    );
-  }
+  state.message = value.message?.trim() || undefined;
   return await finish(context, state, dependencies);
 }
 
@@ -502,15 +502,7 @@ async function acceptSubmission(
     await save(context, state, dependencies);
     return await observeBackground(context, state, dependencies);
   }
-  if (!value.message?.trim()) {
-    // Identity and both background lists have been verified above. Preserve
-    // terminality even though there is no answer that can become evidence.
-    state.phase = "completed_unusable";
-    delete state.message;
-    throw new Error(
-      "Completed task did not return a final message; use discard-agent to discard this unusable completion",
-    );
-  }
+  state.message = value.message?.trim() || undefined;
   return await finish(context, state, dependencies);
 }
 
@@ -573,7 +565,7 @@ async function submit(
       ...(conversation ? ["--conversation", conversation] : []),
     ]),
     dependencies,
-    state.prompt,
+    state.continuation?.prompt ?? state.prompt,
   );
   state.phase = "waiting";
   await save(context, state, dependencies);
@@ -827,9 +819,11 @@ export async function resumeAgent(
   const state = await load(context, dependencies);
   return await guarded(context, state, dependencies, async () => {
     if (state.phase === "completed_unusable") {
-      throw new Error(
-        "Completed task did not return a final message; use discard-agent to discard this unusable completion",
-      );
+      if (state.outcome !== "completed" || state.backgroundTasks.length) {
+        throw new Error("Legacy provider completion is not quiescent");
+      }
+      delete state.message;
+      return await finish(context, state, dependencies);
     }
     if (state.phase === "launch_rejected") {
       throw new Error(
@@ -885,6 +879,52 @@ export async function resumeAgent(
     throw new Error(
       "Launch outcome is uncertain; inspect the Yinz session and retained resources, do not spawn again",
     );
+  });
+}
+
+/** Check before persisting a new continuation in either controller or provider. */
+export function assertContinuationEligible(state: AgentState) {
+  if (
+    !["completed", "completed_unusable"].includes(state.phase) ||
+    state.outcome !== "completed" || state.backgroundTasks.length ||
+    !state.paneId || !state.conversationId || !state.submissionId ||
+    state.cleanedUp
+  ) {
+    throw new Error(
+      "Submission continuation requires the original completed, retained conversation with no background work; inspect the pane, do not launch a replacement",
+    );
+  }
+}
+
+/** Continue the original conversation; persist intent before any guarded prompt. */
+export async function continueAgent(
+  input: z.infer<typeof ContinueArgsSchema>,
+  context: AgentContext,
+  dependencies = defaultDependencies,
+) {
+  const args = ContinueArgsSchema.parse(input);
+  const state = await load(context, dependencies);
+  if (state.continuation?.id === args.id) {
+    if (state.continuation.prompt !== args.prompt) {
+      throw new Error("Continuation identity has a different prompt");
+    }
+    return resumeAgent(context, dependencies);
+  }
+  assertContinuationEligible(state);
+  return guarded(context, state, dependencies, async () => {
+    await context.writeResource(
+      "state",
+      `turn-${args.id}`,
+      structuredClone(state),
+    );
+    state.continuation = { ...args, previousSubmissionId: state.submissionId! };
+    state.phase = "spawned";
+    delete state.submissionId;
+    delete state.message;
+    delete state.turnId;
+    delete state.outcome;
+    await save(context, state, dependencies);
+    return submit(context, state, dependencies);
   });
 }
 

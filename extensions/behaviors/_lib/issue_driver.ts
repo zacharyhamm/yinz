@@ -5,7 +5,7 @@ import {
   AgentTaskSchema,
   childState,
   defaultDependencies,
-  ImplementationResult,
+  implementationEvidence,
   type IssueAgentContext,
   type IssueAgentDependencies,
   prepareTask,
@@ -301,10 +301,10 @@ function present(
         : ["- No findings."]),
     );
   }
-  if (handoff.implementation?.message) {
+  if (handoff.implementation?.evidence) {
     lines.push(
       `Delivered change: ${
-        ImplementationResult.parse(JSON.parse(handoff.implementation.message))
+        implementationEvidence(handoff.implementation)
           .summary
       }`,
     );
@@ -429,13 +429,14 @@ async function drive(
     const cached = raw == null ? undefined : HandoffSchema.parse(raw);
     const candidate = driver.implementation;
     const implementation = candidate?.status === "completed" &&
+        candidate.evidence?.payload.role === "implement" &&
         candidate.next?.plan?.version === state.plan?.version &&
         candidate.next?.rollbackId === state.rollbackId &&
         candidate.next?.issue.digest === state.issue.digest &&
         candidate.next?.implementation?.worktree ===
           state.implementation?.worktree &&
         (!state.codeReview ||
-          ImplementationResult.parse(JSON.parse(candidate.message!)).commit ===
+          implementationEvidence(candidate).commit ===
             state.codeReview.commit)
       ? candidate
       : undefined;
@@ -765,9 +766,7 @@ async function drive(
           implementation?.status === "completed" &&
           JSON.stringify(implementation.next) === JSON.stringify(state)
         ) {
-          const evidence = ImplementationResult.parse(
-            JSON.parse(implementation.message!),
-          );
+          const evidence = implementationEvidence(implementation);
           if (!repo.clean || repo.head !== evidence.commit) {
             throw new Error(
               "Implementation evidence is stale for the current worktree commit",

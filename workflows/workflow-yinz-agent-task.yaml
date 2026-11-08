@@ -1,6 +1,6 @@
 id: 0f80865c-3d6d-4ef5-b553-bf3e877b323e
 name: yinz-agent-task
-description: Run a reusable Swamp agent task in a visible Yinz pane, retaining exact submission identity.
+description: Observe a visible provider turn with exact submission identity and optional presentation text; lifecycle evidence requires its own accepted Swamp submission.
 tags: {}
 inputs:
   type: object

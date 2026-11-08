@@ -33,3 +33,8 @@ resolve, reject or downgrade a finding only after inspecting its cited code and
 explaining its judgment. Accepting an unresolved high/critical risk is user
 direction, not a resolution, and must remain blocked. Keep the original review
 and record dispositions separately against its exact fingerprint.
+
+Submit findings through the assigned Swamp evidence behavior and inspect the
+accepted receipt before ending the task. Final chat formatting is presentation.
+Correct submission errors using the same investigation; do not repeat the review.
+Workers may submit only their own assignment's evidence and inspect its receipt.
