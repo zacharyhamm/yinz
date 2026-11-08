@@ -68,6 +68,8 @@ pub(super) fn backend() -> store::Local {
 
 pub(super) fn entry(revision: u64, kind: RunEntryKind, text: &str, at: i64) -> RunEntry {
     RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         revision,
         event_id: Some(format!("event-{revision}")),
@@ -1598,6 +1600,8 @@ fn search_run_pages_reach_all_matches_and_full_text() {
 
 fn prompt(revision: u64, text: &str, at: Option<i64>) -> RunEntry {
     RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         created_at_ms: at,
         ..entry(revision, RunEntryKind::Prompt, text, 0)
     }

@@ -102,6 +102,12 @@ pub fn entry_mutation(run_id: &str, host_id: &HostId, entry: &RunEntry) -> Mutat
         .set("revision", entry.revision as i64)
         .set("kind", entry.kind.label())
         .set("text", entry.text.clone());
+    if let Some(worker) = entry.worker() {
+        put = put.set("worker_id", worker);
+    }
+    if let Some(turn) = &entry.conversation_turn_id {
+        put = put.set("conversation_turn_id", turn.clone());
+    }
     if let Some(tool) = &entry.tool
         && let Ok(value) = serde_json::to_string(tool)
     {
@@ -139,6 +145,13 @@ pub fn newest_entries_request(run_id: &str) -> FetchRequest {
         .limit(RUN_DETAIL_ENTRIES)
 }
 
+fn optional_text_at(rows: &DataRows, row: &[DataValue], column: &str) -> Option<String> {
+    match rows.get(row, column) {
+        Some(DataValue::Text(value)) if !value.is_empty() => Some(value.clone()),
+        _ => None,
+    }
+}
+
 fn int_at(rows: &DataRows, row: &[DataValue], column: &str) -> Option<i64> {
     match rows.get(row, column) {
         Some(DataValue::Int(value)) => Some(*value),
@@ -165,6 +178,8 @@ pub fn entries_from_rows(rows: &DataRows) -> BTreeMap<String, Vec<RunEntry>> {
             _ => None,
         };
         grouped.entry(run_id).or_default().push(RunEntry {
+            worker_id: optional_text_at(rows, row, "worker_id"),
+            conversation_turn_id: optional_text_at(rows, row, "conversation_turn_id"),
             tool: match rows.get(row, "tool") {
                 Some(DataValue::Text(value)) => serde_json::from_str(value).ok(),
                 _ => None,

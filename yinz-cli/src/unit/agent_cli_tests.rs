@@ -483,3 +483,24 @@ fn controller_stack_and_completed_close_require_explicit_identity() {
     ])
     .is_ok());
 }
+
+#[test]
+fn history_repair_defaults_to_read_only_and_requires_explicit_apply() {
+    use clap::Parser;
+    for (args, expected) in [
+        (vec!["agent", "history-repair", "run"], false),
+        (vec!["agent", "history-repair", "run", "--apply"], true),
+    ] {
+        let parsed = AgentCli::try_parse_from(args).unwrap();
+        let Agent::Archive(crate::agent_archive::AgentArchive::AgentHistoryRepair {
+            run_id,
+            apply,
+            ..
+        }) = parsed.command
+        else {
+            panic!("repair command");
+        };
+        assert_eq!(run_id, "run");
+        assert_eq!(apply, expected);
+    }
+}

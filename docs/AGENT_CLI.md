@@ -951,7 +951,7 @@ Antigravity uses `step:<stepIdx>` as its call ID and has no documented output bo
 Other agents need an adapter that emits the shared hook contract. Executable detection alone does not capture tools.
 
 Upgrade all Agent plugins and servers that share the database together.
-The additive `agent_run_entry` v4 schema adds nullable JSON `tool` metadata.
+The additive `agent_run_entry` v5 schema retains JSON `tool` metadata and adds indexed, nullable `worker_id` and `conversation_turn_id` fields.
 Existing entries remain unchanged. Older declarations reject the new column as a removal.
 Refresh installed adapters on each local or remote agent host:
 
@@ -959,6 +959,33 @@ Refresh installed adapters on each local or remote agent host:
 yinz hooks install --agent pi
 yinz hooks install --agent opencode
 ```
+
+The history browser opens the newest 30 conversation entries. Tool traffic does not
+consume those slots. Load earlier messages fetches a preceding chronological page;
+source timestamps and revisions determine order, while a separate revision watermark
+keeps live and recovered messages reachable. Activity between messages expands into
+pages of at most 30 tool records under the 30,000-byte archive budget. Oversized tool
+records show a marked preview. The raw `agent run` revision paging contract is unchanged.
+Worker conversations and tools are available from the Workers picker. Search covers
+both parent and worker prose and retained tool payloads and opens the matching context.
+
+```sh
+yinz agent history-repair RUN_ID          # read-only preview
+yinz agent history-repair RUN_ID --apply  # guarded import through the owning service
+```
+
+Select the run's owning server with `--session`. Repair currently reads local Claude
+transcripts from the provider's configured root and the recorded working directory.
+Remote and Bubblewrap transcripts require recovery in their original environment.
+Only assistant text from verified session/worker records is eligible. Existing text
+and revisions are preserved. Stable source IDs make repeated application idempotent;
+a concurrent capture or ownership change returns a conflict without retrying the write.
+The report includes original timestamps, attribution, and any incomplete scan diagnostics.
+
+Recovery scans at most 512 worker files, 128 MiB total and the final 8 MiB per file,
+and retains at most 2 MiB of assistant text. Reasoning and tool payloads are excluded.
+Partial tails carry explicit incomplete-content markers. Worker completion and session
+recovery also ingest bounded transcript prose to cover message-hook gaps.
 
 ## Scheme agent plugins
 

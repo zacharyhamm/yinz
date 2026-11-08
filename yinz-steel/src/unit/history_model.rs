@@ -26,6 +26,8 @@ fn long_histories_preserve_headers_mutations_fingerprints_and_rendering() {
     run.yinz_session_name = "history-session".into();
     run.entries
         .extend((3..=8_000).map(|revision| agents::RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             revision,
             kind: agents::RunEntryKind::ToolResult,
             text: format!("tool output {revision}"),
@@ -94,6 +96,8 @@ fn long_histories_preserve_headers_mutations_fingerprints_and_rendering() {
     for updated in [false, true] {
         if updated {
             run.entries.push(agents::RunEntry {
+                worker_id: None,
+                conversation_turn_id: None,
                 revision: 8_001,
                 kind: agents::RunEntryKind::Result,
                 text: "new result".into(),

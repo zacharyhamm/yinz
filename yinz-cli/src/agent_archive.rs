@@ -4,6 +4,16 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Subcommand, Serialize, Deserialize)]
 #[serde(tag = "op", content = "args", rename_all = "snake_case")]
 pub enum AgentArchive {
+    /// Preview missing worker prose, or import it through the owning service.
+    #[clap(name = "history-repair")]
+    AgentHistoryRepair {
+        run_id: String,
+        #[clap(long)]
+        apply: bool,
+        #[clap(long, hide = true)]
+        #[serde(skip)]
+        json: bool,
+    },
     /// List agent run headers with pagination across the archive.
     #[clap(name = "runs")]
     AgentRuns {
@@ -86,7 +96,8 @@ pub enum AgentArchive {
 impl AgentArchive {
     pub fn json(&self) -> bool {
         match self {
-            AgentArchive::AgentRuns { json, .. }
+            AgentArchive::AgentHistoryRepair { json, .. }
+            | AgentArchive::AgentRuns { json, .. }
             | AgentArchive::AgentRun { json, .. }
             | AgentArchive::AgentHistorySearch { json, .. }
             | AgentArchive::AgentPredecessors { json, .. } => *json,

@@ -82,6 +82,12 @@ impl RunEntryKind {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunEntry {
+    /// Provider worker identity; absent for the parent conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
+    /// Normalized provider prompt/turn identity, scoped to this worker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<yinz_tile::agent::tool_capture::ToolCapture>,
     pub revision: u64,
@@ -94,6 +100,21 @@ pub struct RunEntry {
     /// before the store column was added.
     #[serde(default)]
     pub created_at_ms: Option<i64>,
+}
+
+impl RunEntry {
+    /// Read legacy attribution without rewriting or deleting archived events.
+    pub fn worker(&self) -> Option<String> {
+        self.worker_id
+            .clone()
+            .or_else(|| self.tool.as_ref().and_then(|tool| tool.worker_id.clone()))
+            .or_else(|| {
+                self.text
+                    .strip_prefix("Subagent ")
+                    .and_then(|text| text.split_once(":\n"))
+                    .map(|(worker, _)| worker.to_owned())
+            })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -586,6 +607,8 @@ pub fn push_summary_entry(run: &mut AgentRun, text: &str, now_ms: i64) -> bool {
     }
     run.revision += 1;
     run.entries.push(RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         revision: run.revision,
         // No provider event behind it, so nothing to deduplicate deliveries of. The

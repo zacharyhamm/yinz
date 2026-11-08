@@ -14,3 +14,5 @@ pub use restart::{restart_args, restart_with_prompt};
 #[cfg(test)]
 #[path = "unit/agent_provider_fixture.rs"]
 pub(crate) mod provider_fixture;
+
+pub mod history;

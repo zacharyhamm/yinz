@@ -63,11 +63,11 @@ fn retained_prompt_identity_changes_with_target_but_survives_metadata_and_run_di
         cached_history: HashMap::new(),
         history_scope: None,
         continuation: None,
-        pages_since_tail: 0,
         history: HistoryCache::default(),
         usage_checked: None,
         usage: None,
         prompt: None,
+        search_return: None,
     };
     let session = "one".into();
     let values = vec!["continue".into()];

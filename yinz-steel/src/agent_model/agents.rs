@@ -197,6 +197,26 @@ pub(super) fn run(op: &str, args: Value) -> Result<Value> {
             serde_json::to_string(&arg::<wire::CompletionReply>(&args, 0)?)
                 .context("serializing completion reply")?,
         ),
+        "MissingMessages" => encode(agent_proto::conversation::missing_messages(
+            arg(&args, 0)?,
+            &arg::<Vec<agents::RunEntry>>(&args, 1)?,
+        )),
+        "RepairMessages" => {
+            let session: String = arg(&args, 0)?;
+            let messages: Vec<yinz_types::agent::CapturedMessage> = arg(&args, 1)?;
+            let valid = messages.len() <= 16384
+                && messages.iter().all(|m| {
+                    m.worker_id.as_ref().is_some_and(|w| !w.is_empty())
+                        && m.created_at_ms.is_some()
+                        && m.source_id.starts_with(&format!("claude:{session}:"))
+                })
+                && messages.iter().map(|m| m.text.len()).sum::<usize>() <= 2 * 1024 * 1024;
+            encode(if valid {
+                Ok(messages)
+            } else {
+                Err("invalid or oversized repair messages")
+            })
+        },
         "MutationParse" => encode(
             serde_json::from_str::<wire::Mutation>(&arg::<String>(&args, 0)?)
                 .map_err(|error| error.to_string()),

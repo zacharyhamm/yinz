@@ -1084,6 +1084,8 @@ fn a_run_history_is_the_whole_timeline_oldest_first() {
             .into_iter()
             .enumerate()
             .map(|(index, text)| RunEntry {
+                worker_id: None,
+                conversation_turn_id: None,
                 tool: None,
                 revision: index as u64 + 1,
                 event_id: None,
@@ -1252,6 +1254,8 @@ fn a_summary_somebody_asked_for_is_drawn_on_the_timeline_whatever_the_run_is_doi
             created_at_ms: None,
         }),
         entries: vec![RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             tool: None,
             revision: 1,
             event_id: None,
@@ -1294,6 +1298,8 @@ fn a_summary_somebody_asked_for_is_drawn_on_the_timeline_whatever_the_run_is_doi
 #[test]
 fn a_filed_summary_round_trips_as_its_own_kind() {
     let entry = RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         revision: 4,
         event_id: None,
@@ -1392,6 +1398,8 @@ fn active_and_archived_runs_keep_results_visible_after_summarization() {
         summarized_revision: 0,
         summary: None,
         entries: vec![RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             tool: None,
             revision: 1,
             event_id: None,
@@ -1485,6 +1493,8 @@ fn an_agent_run_round_trips_through_the_shared_store() {
         summarized_revision: 0,
         summary: None,
         entries: vec![RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             tool: None,
             revision: 1,
             event_id: None,
@@ -1918,6 +1928,8 @@ fn a_run_with_entries(id: &str, session: &str, pane_id: u32, entries: &[&str]) -
             .iter()
             .enumerate()
             .map(|(index, text)| RunEntry {
+                worker_id: None,
+                conversation_turn_id: None,
                 tool: None,
                 revision: index as u64 + 1,
                 event_id: None,
@@ -1993,6 +2005,8 @@ fn run_writes_reject_stale_metadata_and_roll_back_its_entries() {
     first.apply(rows::run_mutations(&winner, expected)).unwrap();
     stale.entries[0].text = "stale replacement".into();
     stale.entries.push(RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         revision: 2,
         ..stale.entries[0].clone()
     });
@@ -2076,6 +2090,8 @@ fn a_release_after_the_run_moved_on_does_not_overwrite_it() {
     let mut adopted = stored_run(&gaining, "claude:session-1").adopted_by(2, &owner("there"));
     adopted.revision += 1;
     adopted.entries.push(RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         revision: adopted.revision,
         event_id: None,
@@ -4263,6 +4279,8 @@ fn an_idle_summary_is_the_model_s_words_wrapped_to_the_half() {
 fn a_long_event_is_capped_at_four_rows_that_name_what_is_missing() {
     let mut run = a_pane_run();
     run.entries = vec![RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         revision: 1,
         event_id: None,
@@ -4294,6 +4312,8 @@ fn a_long_event_is_capped_at_four_rows_that_name_what_is_missing() {
 fn a_mixed_run() -> AgentRun {
     let mut run = a_pane_run();
     let entry = |revision: u64, kind: RunEntryKind, text: String, created_at_ms| RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         revision,
         event_id: None,
@@ -4360,6 +4380,8 @@ fn a_grown_run_parses_only_what_is_new() {
     let before = parsed.parses;
 
     run.entries.push(RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         revision: 6,
         event_id: None,
@@ -4522,6 +4544,8 @@ fn only_an_event_parsed_whole_shares_its_parse() {
 
     let mut long = a_pane_run();
     long.entries = vec![RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         revision: 1,
         event_id: None,
@@ -4562,6 +4586,8 @@ fn one_enormous_block_is_parsed_only_as_far_as_its_head() {
         assert!(text.len() >= 100_000, "{shape} is {} bytes", text.len());
         let mut run = a_pane_run();
         run.entries = vec![RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             tool: None,
             revision: 1,
             event_id: None,
@@ -4638,6 +4664,8 @@ fn a_parsed_head_draws_what_the_whole_parse_draws() {
 fn an_event_that_fits_the_cap_grows_no_marker() {
     let mut run = a_pane_run();
     run.entries = vec![RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         revision: 1,
         event_id: None,
@@ -4663,6 +4691,8 @@ fn the_event_spans_tile_the_rows_they_were_drawn_from() {
     run.summary = Some(a_summary("Ran the tests, all green.", false));
     run.entries = vec![
         RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             tool: None,
             revision: 1,
             event_id: None,
@@ -4671,6 +4701,8 @@ fn the_event_spans_tile_the_rows_they_were_drawn_from() {
             created_at_ms: Some(40),
         },
         RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             tool: None,
             revision: 2,
             event_id: None,
@@ -4709,6 +4741,8 @@ fn a_run_s_history_is_rendered_as_markdown() {
     let mut run = a_pane_run();
     run.summary = Some(a_summary("Ran the **tests**, all green.", false));
     run.entries = vec![RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         revision: 1,
         event_id: None,
@@ -4757,6 +4791,8 @@ fn outgoing_lists_keep_their_markers() {
     run.summary = None;
     run.entries = vec![
         RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             tool: None,
             revision: 1,
             event_id: None,
@@ -4765,6 +4801,8 @@ fn outgoing_lists_keep_their_markers() {
             created_at_ms: None,
         },
         RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             tool: None,
             revision: 2,
             event_id: None,
@@ -4811,6 +4849,8 @@ fn the_rolling_summary_is_the_newest_row_of_the_timeline() {
     run.summary = Some(a_summary("Ran the tests.", false));
     run.entries = vec![
         RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             tool: None,
             revision: 1,
             event_id: None,
@@ -4819,6 +4859,8 @@ fn the_rolling_summary_is_the_newest_row_of_the_timeline() {
             created_at_ms: None,
         },
         RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             tool: None,
             revision: 2,
             event_id: None,
@@ -4844,6 +4886,8 @@ fn a_rolling_summary_that_repeats_the_newest_filed_one_is_drawn_once() {
     let mut run = a_pane_run();
     run.summary = Some(a_summary("  Ran the tests.  ", false));
     run.entries = vec![RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         revision: 1,
         event_id: None,
@@ -4875,6 +4919,8 @@ fn the_half_draws_the_blocks_hard_against_each_other() {
     let mut run = a_pane_run();
     run.summary = None;
     run.entries = vec![RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         revision: 1,
         event_id: None,
@@ -4900,6 +4946,8 @@ fn a_label_never_swallows_the_block_it_names() {
     run.outcome = RunOutcome::Completed;
     run.summarized_revision = 0;
     run.entries = vec![RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         revision: 1,
         event_id: None,
@@ -4926,6 +4974,8 @@ fn no_history_row_is_wider_than_the_half() {
         false,
     ));
     run.entries = vec![RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         revision: 1,
         event_id: None,
@@ -4955,6 +5005,8 @@ fn an_entry_wears_its_age_in_the_left_hand_column() {
     let minute = 60_000;
     run.entries = vec![
         RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             tool: None,
             revision: 1,
             event_id: None,
@@ -4963,6 +5015,8 @@ fn an_entry_wears_its_age_in_the_left_hand_column() {
             created_at_ms: Some(100 * minute),
         },
         RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             tool: None,
             revision: 2,
             event_id: None,
@@ -4971,6 +5025,8 @@ fn an_entry_wears_its_age_in_the_left_hand_column() {
             created_at_ms: Some(105 * minute),
         },
         RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             tool: None,
             revision: 3,
             event_id: None,
@@ -5007,6 +5063,8 @@ fn the_age_is_the_undimmed_part_of_the_furniture() {
     let mut run = a_pane_run();
     run.summary = None;
     run.entries = vec![RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         revision: 1,
         event_id: None,
@@ -5472,6 +5530,8 @@ fn run_of_prompts(prompts: &[&str]) -> AgentRun {
         .iter()
         .enumerate()
         .map(|(index, text)| RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             tool: None,
             revision: index as u64 + 1,
             event_id: None,
@@ -5732,6 +5792,8 @@ fn an_entrys_id_is_a_function_of_the_text_it_stores() {
     // And the whole point of taking it from there: it can be computed again from the entry.
     let (_, text) = run_entry(&prompt_event(&typed)).expect("an entry");
     let stored = RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         revision: 1,
         event_id: None,
@@ -5764,6 +5826,8 @@ fn a_notification_with_windows_line_endings_is_still_one_notification() {
 fn a_run_recorded_before_ids_existed_is_still_compared_by_one() {
     let (_, text) = run_entry(&prompt_event(&task_notification(3))).expect("an entry");
     let legacy = |kind, text: &str| RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         revision: 1,
         event_id: None,
@@ -5788,6 +5852,8 @@ fn a_run_recorded_before_ids_existed_is_still_compared_by_one() {
 
     // An id it was given is the one it keeps, whatever its text now says.
     let stored = RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         event_id: Some("UserPromptSubmit:given".to_owned()),
         ..legacy(RunEntryKind::Prompt, &text)
@@ -5869,6 +5935,8 @@ fn history_messages_use_opposite_alignment_and_theme_colors() {
     for width in [22, 40, 80] {
         let mut run = run_of_prompts(&["**hello** 界"]);
         run.entries.push(RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             kind: RunEntryKind::Message,
             revision: 2,
             ..run.entries[0].clone()

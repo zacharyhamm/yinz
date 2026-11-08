@@ -114,14 +114,14 @@ pub(super) struct Browser {
     action: HistoryAction,
     rows: HashMap<String, HistoryAction>,
     generation: u64,
-    history_scope: Option<(String, String)>,
+    history_scope: Option<(String, yinz_bus::command_palette::HistoryScope)>,
     continuation: Option<HistoryAction>,
-    pages_since_tail: usize,
     history: HistoryCache,
-    cached_history: HashMap<(String, String), HistoryCache>,
+    cached_history: HashMap<(String, yinz_bus::command_palette::HistoryScope), HistoryCache>,
     usage_checked: Option<std::time::Instant>,
     usage: Option<yinz_types::agent::control::ProviderUsage>,
     prompt: Option<PromptSubmission>,
+    search_return: Option<HistoryAction>,
 }
 
 #[derive(Default)]
@@ -129,7 +129,7 @@ struct HistoryCache {
     events: BTreeMap<u64, yinz_bus::command_palette::HistoryEvent>,
     earlier: Option<HistoryRow>,
     // Highest revision covered by reads connected to the beginning of the run.
-    prefix_through: u64,
+    latest_received_revision: u64,
 }
 
 struct PromptSubmission {
@@ -303,11 +303,24 @@ impl Screen {
                     }
                 })
         });
-        let title = if live.is_some()
+        let title = if matches!(action, HistoryAction::Workers { .. }) {
+            "Workers"
+        } else if matches!(action, HistoryAction::Tools { .. }) {
+            "Tool activity"
+        } else if matches!(
+            action,
+            HistoryAction::Conversation {
+                worker: Some(_),
+                ..
+            }
+        ) {
+            "Worker history"
+        } else if live.is_some()
             || matches!(
                 action,
                 HistoryAction::Run { .. } | HistoryAction::Hit { .. }
-            ) {
+            )
+        {
             "Agent info"
         } else {
             "Archived agents"
@@ -325,7 +338,10 @@ impl Screen {
             })
             .into_iter()
             .collect();
-        if matches!(action, HistoryAction::Search(_)) {
+        if matches!(
+            action,
+            HistoryAction::Search(_) | HistoryAction::Workers { .. }
+        ) {
             state.widget.set_sections(vec![PluginSection {
                 title: title.into(),
                 entries,
@@ -364,11 +380,11 @@ impl Screen {
                 cached_history: HashMap::new(),
                 history_scope: None,
                 continuation: None,
-                pages_since_tail: 0,
                 history: HistoryCache::default(),
                 usage_checked: None,
                 usage: None,
                 prompt: None,
+                search_return: None,
             },
         );
         if missing {
@@ -397,16 +413,20 @@ impl Screen {
         reply: HistoryReply,
         request: Option<HistoryAction>,
     ) {
-        // The host serves hits as anchored run pages. Merge them like any other
-        // page; browser.action retains the hit revision until selection below.
-        let request = request.map(|action| match action {
-            HistoryAction::Hit { id, revision } => HistoryAction::Run {
-                id,
-                from: Some(revision.saturating_sub(2).max(1)),
-                query: String::new(),
-            },
-            action => action,
-        });
+        let mut request = request;
+        if matches!(request, Some(HistoryAction::Hit { .. }))
+            && let HistoryReply::Run { rows, .. } = &reply
+        {
+            if let Some(context) = rows.iter().find(|r| r.id == "context") {
+                request = Some(context.action.clone());
+            } else if let Some(HistoryAction::Hit { id, revision }) = &request {
+                request = Some(HistoryAction::Run {
+                    id: id.clone(),
+                    from: Some(*revision),
+                    query: String::new(),
+                });
+            }
+        }
         let Some(state) = self.command_palettes.get_mut(&client) else {
             return;
         };
@@ -428,139 +448,96 @@ impl Screen {
             } => {
                 let mut rows = rows;
                 let mut events = events;
-                let mut status = status;
-                if let Some(HistoryAction::Run { id, from, query }) = &request {
-                    let scope = (id.clone(), query.clone());
+                if let Some((id, query)) = request.as_ref().and_then(HistoryAction::scope) {
+                    let scope = (id.to_owned(), query.clone());
                     if browser.history_scope.as_ref() != Some(&scope) {
-                        if let Some(old_scope) = browser.history_scope.take()
-                            && old_scope.1.is_empty()
-                        {
+                        if let Some(old) = browser.history_scope.take() {
                             browser
                                 .cached_history
-                                .insert(old_scope, std::mem::take(&mut browser.history));
+                                .insert(old, std::mem::take(&mut browser.history));
                         }
-                        browser.continuation = None;
                         browser.history = browser.cached_history.remove(&scope).unwrap_or_default();
-                        browser.rows.clear();
                         browser.history_scope = Some(scope);
+                        browser.continuation = None;
                     }
-                    let page_start = events.iter().map(|event| event.revision).min();
-                    let page_end = events.iter().map(|event| event.revision).max();
-                    let covers_prefix = page_start.is_some_and(|first| {
-                        browser.history.prefix_through.saturating_add(1) >= first
-                    });
-                    let mut has_earlier = false;
-                    rows.retain(|row| {
-                        if row.id == "continue" {
+                    let older = matches!(
+                        request,
+                        Some(
+                            HistoryAction::Conversation {
+                                before: Some(_),
+                                ..
+                            } | HistoryAction::Tools {
+                                before: Some(_),
+                                ..
+                            }
+                        )
+                    );
+                    let mut earlier = None;
+                    rows.retain(|row| match row.id.as_str() {
+                        "continue" => {
                             continuation = Some(row.action.clone());
                             false
-                        } else if row.id == "earlier" {
-                            has_earlier = true;
-                            if browser.history.earlier.is_none() && !covers_prefix {
-                                browser.history.earlier = Some(row.clone());
+                        },
+                        "earlier" => {
+                            earlier = Some(row.clone());
+                            false
+                        },
+                        "context" => false,
+                        "received" => {
+                            if let HistoryAction::Run {
+                                from: Some(next), ..
+                            } = row.action
+                            {
+                                browser.history.latest_received_revision = browser
+                                    .history
+                                    .latest_received_revision
+                                    .max(next.saturating_sub(1));
                             }
                             false
-                        } else {
-                            true
-                        }
+                        },
+                        _ => true,
                     });
-                    let extends_prefix = match from {
-                        Some(from) => *from <= browser.history.prefix_through.saturating_add(1),
-                        None => !has_earlier || covers_prefix,
-                    };
-                    if query.is_empty() && extends_prefix {
-                        let through = match &continuation {
-                            Some(HistoryAction::Run {
-                                from: Some(next), ..
-                            }) => page_end.unwrap_or(0).max(next.saturating_sub(1)),
-                            _ => page_end.unwrap_or(0).max(
-                                browser
-                                    .history
-                                    .events
-                                    .last_key_value()
-                                    .map_or(0, |(&revision, _)| revision),
-                            ),
-                        };
-                        browser.history.prefix_through =
-                            browser.history.prefix_through.max(through);
+                    if older
+                        || browser.history.events.is_empty()
+                        || browser.history.earlier.is_none()
+                    {
+                        browser.history.earlier = earlier;
                     }
-                    if let Some(earlier) = &mut browser.history.earlier {
-                        if from.is_some() && extends_prefix {
-                            if let Some(action) = &continuation {
-                                earlier.action = action.clone();
-                            } else {
-                                browser.history.earlier = None;
-                            }
-                        } else if from.is_none() {
-                            if extends_prefix {
-                                browser.history.earlier = None;
-                            } else if let Some(
-                                action @ HistoryAction::Run {
-                                    from: Some(cursor), ..
-                                },
-                            ) = &browser.continuation
-                                && *cursor <= browser.history.prefix_through.saturating_add(1)
-                            {
-                                // A tail read may introduce this action midway
-                                // through automatic hit backfill.
-                                earlier.action = action.clone();
-                            }
-                        }
-                    }
-                    // Incremental tail replies do not repeat this action. Keep it
-                    // until the user loads the prefix, including across searches.
                     rows.extend(browser.history.earlier.clone());
                     for event in events {
+                        if let Some(range) = &event.range {
+                            browser.history.events.retain(|_, old| {
+                                old.range.as_ref().is_none_or(|r| {
+                                    r.start != range.start || r.worker != range.worker
+                                })
+                            });
+                        }
                         browser.history.events.insert(event.revision, event);
                     }
                     events = browser.history.events.values().cloned().collect();
-                    if query.is_empty() {
-                        events = yinz_bus::command_palette::collapse_tools(events);
-                    }
-                    if matches!(request, Some(HistoryAction::Run { from: None, .. }))
-                        && browser.continuation.is_some()
-                    {
-                        continuation = browser.continuation.clone();
-                    }
+                    events.sort_by_key(|e| (e.created_at_ms, e.revision));
                     browser.continuation = continuation.clone();
-                    if continuation.is_some() {
-                        browser.pages_since_tail += 1;
-                        // Interleave newest-page reads with backfill so long histories
-                        // do not delay live output. Retain the forward cursor above.
-                        if query.is_empty() && browser.pages_since_tail >= 10 {
-                            browser.pages_since_tail = 0;
-                            continuation = Some(HistoryAction::Run {
-                                id: id.clone(),
-                                from: None,
-                                query: String::new(),
-                            });
-                        }
-                        status = format!(
-                            "{} events loaded · Loading history…",
-                            browser.history.events.len()
-                        );
-                    }
-                    // Rebuild event actions from the complete merged timeline, including
-                    // tool groups that cross page boundaries.
-                    rows.retain(|row| !row.id.starts_with("event:"));
+                    rows.retain(|r| !r.id.starts_with("event:"));
+                    let searching = matches!(request,Some(HistoryAction::Run {ref query,..}) if !query.is_empty());
                     for event in &events {
-                        rows.push(yinz_bus::command_palette::HistoryRow {
+                        rows.push(HistoryRow {
                             id: format!("event:{}", event.revision),
                             label: String::new(),
                             description: String::new(),
-                            action: if !query.is_empty() {
+                            action: if searching {
                                 HistoryAction::Hit {
-                                    id: id.clone(),
+                                    id: id.into(),
                                     revision: event.revision,
                                 }
-                            } else if event.kind == "tools" {
+                            } else if let Some(range) = &event.range {
                                 HistoryAction::Tools {
-                                    id: id.clone(),
-                                    revisions: event.revisions.clone(),
+                                    id: id.into(),
+                                    range: range.clone(),
+                                    before: None,
                                 }
                             } else {
                                 HistoryAction::Event {
-                                    id: id.clone(),
+                                    id: id.into(),
                                     revision: event.revision,
                                 }
                             },
@@ -642,13 +619,11 @@ impl Screen {
                 state
                     .widget
                     .set_agent_history(header, events, actions, status);
-                if let HistoryAction::Hit { id, revision } = &browser.action {
+                if let HistoryAction::Hit { revision, .. } = &browser.action {
                     state.widget.select_agent_revision(*revision);
-                    browser.action = HistoryAction::Run {
-                        id: id.clone(),
-                        from: Some(revision.saturating_sub(2).max(1)),
-                        query: String::new(),
-                    };
+                    if let Some(action) = request.clone() {
+                        browser.action = action;
+                    }
                 }
             },
             HistoryReply::Rows { rows, status } => {
@@ -662,11 +637,13 @@ impl Screen {
                     aliases: vec![],
                     kind: EntryKind::Plugin,
                 };
-                entries.push(entry(
-                    "history-filters".into(),
-                    "Filters…".into(),
-                    "provider project session host run since".into(),
-                ));
+                if matches!(browser.action, HistoryAction::Search(_)) {
+                    entries.push(entry(
+                        "history-filters".into(),
+                        "Filters…".into(),
+                        "provider project session host run since".into(),
+                    ));
+                }
                 for r in rows {
                     let id = format!("history:{}:{}", state.widget.view, r.id);
                     browser.rows.insert(id.clone(), r.action);
@@ -860,6 +837,24 @@ impl Screen {
         state.widget.clear_error();
         browser.rows.clear();
         state.widget.set_sections(vec![]);
+        if state.widget.query().is_empty() {
+            if let Some(action) = browser.search_return.take() {
+                browser.action = action;
+            }
+        } else if let Some((id, _)) = browser.action.scope()
+            && matches!(
+                browser.action,
+                HistoryAction::Conversation { .. } | HistoryAction::Tools { .. }
+            )
+        {
+            let id = id.to_string();
+            browser.search_return = Some(browser.action.clone());
+            browser.action = HistoryAction::Run {
+                id,
+                from: None,
+                query: state.widget.query().into(),
+            };
+        }
         match &mut browser.action {
             HistoryAction::Search(query) => {
                 match AgentQuery::parse(state.widget.query(), ARCHIVE_FIELDS) {
@@ -874,6 +869,7 @@ impl Screen {
                 *query = state.widget.query().into();
                 *from = None;
             },
+            HistoryAction::Conversation { .. } | HistoryAction::Tools { .. } => {},
             _ => return,
         }
         browser.continuation = None;
@@ -951,11 +947,7 @@ impl Screen {
             if let HistoryAction::Run { from, query, .. } = &mut action
                 && query.is_empty()
             {
-                *from = browser
-                    .history
-                    .events
-                    .last_key_value()
-                    .map(|(revision, _)| revision.saturating_add(1));
+                *from = Some(browser.history.latest_received_revision.saturating_add(1));
             }
             let action = browser.continuation.clone().unwrap_or(action);
             self.request_palette_agent(client, AgentAction::History(action), vec![]);
@@ -1130,6 +1122,22 @@ impl Screen {
                     .agent_page_request(matches!(action, HistoryAction::Run { from: None, .. }));
                 browser.action = action.clone();
                 state.widget.set_query(String::new());
+                state.widget.clear_error();
+                state.agents.cancel();
+                self.request_palette_agent(client, AgentAction::History(action), vec![]);
+            },
+            HistoryAction::Conversation { .. } | HistoryAction::Tools { .. }
+                if action
+                    .scope()
+                    .as_ref()
+                    .map(|(id, q)| (id.to_string(), q.clone()))
+                    == browser.history_scope =>
+            {
+                state.widget.agent_page_request(matches!(
+                    action,
+                    HistoryAction::Conversation { before: None, .. }
+                        | HistoryAction::Tools { before: None, .. }
+                ));
                 state.widget.clear_error();
                 state.agents.cancel();
                 self.request_palette_agent(client, AgentAction::History(action), vec![]);

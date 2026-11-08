@@ -259,11 +259,7 @@ impl AgentView {
             self.events.len().saturating_sub(1)
         } else {
             revision
-                .and_then(|r| {
-                    self.events
-                        .iter()
-                        .position(|e| e.data.revision == r || e.data.revisions.contains(&r))
-                })
+                .and_then(|r| self.events.iter().position(|e| e.data.revision == r))
                 .unwrap_or_else(|| {
                     self.reveal = true;
                     0
@@ -282,9 +278,7 @@ impl AgentView {
                 saved
                     .revision
                     .and_then(|revision| {
-                        self.events.iter().position(|e| {
-                            e.data.revision == revision || e.data.revisions.contains(&revision)
-                        })
+                        self.events.iter().position(|e| e.data.revision == revision)
                     })
                     .unwrap_or_else(|| {
                         self.anchor = None;
@@ -321,17 +315,19 @@ impl AgentView {
     }
     pub fn select_revision(&mut self, revision: u64) {
         self.following = false;
-        if let Some(i) = self
-            .events
-            .iter()
-            .position(|e| e.data.revision == revision || e.data.revisions.contains(&revision))
-        {
+        if let Some(i) = self.events.iter().position(|e| e.data.revision == revision) {
             self.selected = i;
             self.reveal = true;
         }
     }
     pub fn page_request(&mut self, following: bool) {
-        self.reset_page(following);
+        if following || self.searching {
+            self.reset_page(following);
+        } else {
+            self.following = false;
+            self.reveal = false;
+            self.remember_anchor();
+        }
         self.focus = Focus::Messages;
         self.search_expanded = false;
     }
@@ -821,13 +817,13 @@ impl AgentView {
                 let selected = i == self.selected && self.focus == Focus::Messages;
                 let hit = Some(Hit::Event(i));
                 let preview = if event.data.kind == "tools" {
-                    let count = if event.data.tool_calls == 0 {
-                        event.data.revisions.len()
-                    } else {
-                        event.data.tool_calls
-                    };
+                    let count = event.data.tool_calls;
                     vec![clipped(
-                        &dim(format!("tools x{count}")),
+                        &dim(if count == 0 {
+                            "tool activity".into()
+                        } else {
+                            format!("tools x{count}")
+                        }),
                         width.saturating_sub(1),
                     )]
                 } else {
@@ -850,9 +846,7 @@ impl AgentView {
             if self.following {
                 self.offset = self.total.saturating_sub(page);
             } else if let Some((revision, line)) = self.anchor
-                && let Some(i) = self.events.iter().position(|e| {
-                    e.data.revision == revision || e.data.revisions.contains(&revision)
-                })
+                && let Some(i) = self.events.iter().position(|e| e.data.revision == revision)
             {
                 self.offset = self.spans[i].start + line.min(self.spans[i].len().saturating_sub(1));
             }
@@ -866,7 +860,15 @@ impl AgentView {
                     self.offset = span.end.saturating_sub(page).min(span.start);
                 }
             }
-            self.offset = self.offset.min(self.total.saturating_sub(page));
+            // A preceding page must keep the anchored line in place even when
+            // the old timeline was shorter than the viewport. Blank trailing
+            // rows are preferable to moving the reader's selected text.
+            let end = if !self.following && self.anchor.is_some() {
+                self.total.saturating_sub(1)
+            } else {
+                self.total.saturating_sub(page)
+            };
+            self.offset = self.offset.min(end);
             self.reveal = false;
             self.remember_anchor();
             if lines.is_empty() {

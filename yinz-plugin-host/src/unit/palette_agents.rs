@@ -691,6 +691,8 @@ fn recorded_run(root: &Path) -> agent_proto::agents::AgentRun {
         summary: None,
         omitted_entries: 0,
         entries: vec![agent_proto::agents::RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             tool: None,
             revision: 1,
             event_id: None,
@@ -729,6 +731,8 @@ fn live_agent_last_reply_selects_assistant_prose_and_bounds_literal_previews() {
                     &recorded.id,
                     &recorded.host_id,
                     &RunEntry {
+                        worker_id: None,
+                        conversation_turn_id: None,
                         revision,
                         kind,
                         text: text.into(),
@@ -1183,13 +1187,15 @@ fn palette_history_opens_at_tail_and_loads_earlier_revisions_only_on_request() {
                 assert_eq!(earlier.label, "Load earlier messages");
                 assert!(matches!(
                     earlier.action,
-                    HistoryAction::Run { from: Some(1), .. }
+                    HistoryAction::Conversation {
+                        before: Some(_),
+                        ..
+                    }
                 ));
                 action = earlier.action.clone();
                 continue;
             }
-            assert!(!rows.iter().any(|row| row.id == "earlier"));
-            let Some(older) = rows.iter().find(|row| row.id == "continue") else {
+            let Some(older) = rows.iter().find(|row| row.id == "earlier") else {
                 break;
             };
             action = older.action.clone();
@@ -1241,24 +1247,31 @@ fn palette_history_hit_backfills_prefix_and_finishes_forward_pagination() {
             assert!(pages <= revisions.len() + 1, "backfill must terminate");
             if pages == 1 {
                 assert!(events.iter().any(|event| event.revision == hit));
-                assert_eq!(
-                    events[0].revision,
-                    agent_proto::run_history::anchored_from(hit)
-                );
+                assert!(events.len() <= 30);
+                assert!(!rows.iter().any(|r| r.id == "continue"));
             }
             loaded.extend(events.iter().map(|event| event.revision));
-            let Some(next) = rows.iter().find(|row| row.id == "continue") else {
+            let Some(next) = rows.iter().find(|row| row.id == "earlier") else {
                 break;
             };
             if pages == 1 {
                 assert!(matches!(
                     next.action,
-                    HistoryAction::Run { from: Some(1), .. }
+                    HistoryAction::Conversation {
+                        before: Some(_),
+                        ..
+                    }
                 ));
             }
             action = next.action.clone();
         }
-        assert_eq!(loaded.into_iter().collect::<Vec<_>>(), revisions);
+        assert_eq!(
+            loaded.into_iter().collect::<Vec<_>>(),
+            revisions
+                .into_iter()
+                .filter(|r| *r <= hit)
+                .collect::<Vec<_>>()
+        );
     }
 }
 
@@ -1332,6 +1345,8 @@ fn palette_history_run_search_orders_events_and_keeps_time_and_hit_navigation() 
     recorded.revision = 3;
     recorded.entries = (1..=3)
         .map(|revision| RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             revision,
             event_id: None,
             kind: RunEntryKind::Message,
@@ -1411,6 +1426,8 @@ fn palette_history_keeps_panel_tool_entries_and_opens_full_retained_tools() {
     .into_iter()
     .enumerate()
     .map(|(i, kind)| RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         revision: i as u64 + 1,
         kind,
         text: format!(r"retained text {i}: [ERROR] C:\logs\output *literal* `code`"),
@@ -1470,206 +1487,98 @@ fn palette_history_keeps_panel_tool_entries_and_opens_full_retained_tools() {
         panic!("expected conversation");
     };
     assert!(header.session_id.contains(&recorded.session_id));
-    let events = yinz_bus::command_palette::collapse_tools(events);
-    assert_eq!(events.len(), 6);
-    assert_eq!(events[3].kind, "tools");
-    assert_eq!(events[3].tool_calls, 0);
-    assert_eq!(events[3].revisions, vec![6, 7]);
-    assert_eq!(events[5].kind, "tools");
-    assert_eq!(events[5].tool_calls, 1);
-    assert_eq!(events[5].revisions, vec![9]);
-    assert_eq!(events[1].kind, "tools");
-    assert_eq!(events[1].tool_calls, 2);
-    assert_eq!(events[1].revisions, vec![2, 3, 4]);
-    assert!(events[1].markdown.is_empty());
-    assert!(rows.iter().any(|row| row.id == "event:2"));
-    let action = HistoryAction::Tools {
+    assert_eq!(events.iter().filter(|e| e.kind == "message").count(), 2);
+    let groups: Vec<_> = events.iter().filter(|e| e.kind == "tools").collect();
+    assert_eq!(groups.len(), 3);
+    assert_eq!(groups[0].tool_calls, 2);
+    assert_eq!(groups[2].tool_calls, 1);
+    assert!(rows.iter().any(|r| r.id == "event:2"));
+    let AgentReply::History(HistoryReply::Run {
+        events: details, ..
+    }) = execute(HistoryAction::Tools {
         id: recorded.id.clone(),
-        revisions: events[1].revisions.clone(),
+        range: groups[0].range.clone().unwrap(),
+        before: None,
+    })
+    else {
+        panic!("expected activity page");
     };
-    let expected = |entry: &RunEntry| {
-        format!(
-            "{} · revision {}:\n{}\n\n{}",
-            entry.kind.label(),
-            entry.revision,
-            entry.text,
-            serde_json::to_string_pretty(entry.tool.as_ref().unwrap()).unwrap()
-        )
-    };
-    // A single tool and a group use the same retained captures, in revision order.
-    for (action, entries) in [
-        (action, &recorded.entries[1..4]),
-        (
-            HistoryAction::Tools {
-                id: recorded.id.clone(),
-                revisions: vec![4, 2, 3],
-            },
-            &recorded.entries[1..4],
-        ),
-        (
-            HistoryAction::Tools {
-                id: recorded.id.clone(),
-                revisions: vec![2],
-            },
-            &recorded.entries[1..2],
-        ),
-    ] {
-        let AgentReply::History(HistoryReply::Reader {
-            header,
-            markdown,
-            tool,
-        }) = execute(action)
-        else {
-            panic!("expected tools");
-        };
-        assert_eq!(header, "tool_call");
-        assert_eq!(
-            markdown,
-            entries
-                .iter()
-                .map(expected)
-                .collect::<Vec<_>>()
-                .join("\n\n")
-        );
-        assert!(tool.is_empty());
-    }
-    for entry in &recorded.entries[1..4] {
-        let AgentReply::History(HistoryReply::Reader { markdown, tool, .. }) =
-            execute(HistoryAction::Event {
-                id: recorded.id.clone(),
-                revision: entry.revision,
-            })
-        else {
-            panic!("expected individual tool");
-        };
-        assert_eq!(markdown, entry.text);
-        assert_eq!(
-            serde_json::from_str::<ToolCapture>(&tool).unwrap(),
-            *entry.tool.as_ref().unwrap()
-        );
-    }
-    let AgentReply::History(HistoryReply::Run { events, .. }) = execute(HistoryAction::Run {
-        id: recorded.id.clone(),
+    assert_eq!(details.len(), 3);
+    assert!(details[0].markdown.contains("captured output 1"));
+    assert!(details[0].markdown.contains("original_bytes"));
+    let AgentReply::History(HistoryReply::Run {
+        events: matches, ..
+    }) = execute(HistoryAction::Run {
+        id: recorded.id,
         from: None,
         query: "retained".into(),
-    }) else {
-        panic!("expected search results");
+    })
+    else {
+        panic!("expected search matches");
     };
-    assert_eq!(events.len(), recorded.entries.len());
-    for (event, entry) in events.iter().zip(&recorded.entries) {
-        assert_eq!(event.revisions, vec![entry.revision]);
-        assert_eq!(event.kind, entry.kind.label());
-        let expected = if matches!(
-            entry.kind,
-            RunEntryKind::ToolCall | RunEntryKind::ToolResult
-        ) {
-            entry.text.clone()
-        } else {
-            yinz_tile_markdown::escape_inline(&entry.text)
-        };
-        assert_eq!(event.markdown, expected);
-    }
+    assert_eq!(matches.len(), recorded.entries.len());
+    assert!(matches[1]
+        .markdown
+        .contains(r"C:\logs\output *literal* `code`"));
 }
 
 #[test]
-fn palette_history_opens_merged_tools_exceeding_fetch_budget() {
+fn palette_history_pages_large_tool_details_within_budgets() {
     use agent_proto::agents::{rows, RunEntryKind};
-    use yinz_bus::command_palette::{collapse_tools, HistoryAction, HistoryReply};
-    use yinz_tile::prelude::{FetchRequest, Pred};
-
+    use yinz_bus::command_palette::{HistoryAction, HistoryReply};
     let (temp, data) = repository();
     let mut recorded = recorded_run(temp.path());
     let template = recorded.entries[0].clone();
-    // Reverse insertion order so row-ID pagination differs from display order.
-    recorded.entries = (1..=30)
-        .rev()
+    recorded.entries = (1..=65)
         .map(|revision| {
-            let mut entry = template.clone();
-            entry.revision = revision;
-            entry.kind = RunEntryKind::ToolResult;
-            entry.text = format!("revision {revision}: {}", "x".repeat(100_000));
-            entry
+            let mut e = template.clone();
+            e.revision = revision;
+            e.kind = RunEntryKind::ToolResult;
+            e.text = "x".repeat(100_000);
+            e
         })
         .collect();
-    recorded.revision = 30;
+    recorded.revision = 65;
     for batch in rows::run_mutations(&recorded, REV_ABSENT).chunks(10) {
         data.plugin_data()
             .apply(project_data::store::SHARED, batch)
             .unwrap();
     }
-    let first_page = data
-        .plugin_data()
-        .fetch(
-            project_data::store::SHARED,
-            &FetchRequest::entity(rows::ENTRY_ENTITY)
-                .filter(Pred::eq("run_id", recorded.id.as_str()))
-                .limit(30),
-        )
-        .unwrap();
-    assert!(first_page.truncated);
-    assert!(first_page.rows.len() < 30);
-
-    let execute = |action| run(&request(temp.path(), AgentAction::History(action)), &data).0;
-    let mut action = HistoryAction::Run {
+    let range = yinz_types::agent::history::Range {
+        start: None,
+        end: None,
+        worker: None,
+    };
+    let mut action = HistoryAction::Tools {
         id: recorded.id.clone(),
-        from: None,
-        query: String::new(),
+        range,
+        before: None,
     };
-    let mut loaded = Vec::new();
-    let mut pages = 0;
+    let mut seen = Vec::new();
     loop {
-        let AgentReply::History(HistoryReply::Run {
-            mut events, rows, ..
-        }) = execute(action).unwrap()
+        let AgentReply::History(HistoryReply::Run { events, rows, .. }) =
+            run(&request(temp.path(), AgentAction::History(action)), &data)
+                .0
+                .unwrap()
         else {
-            panic!("expected conversation");
+            panic!("expected tool page");
         };
-        pages += 1;
-        assert!(pages <= 30, "backfill must terminate");
-        events.append(&mut loaded);
-        loaded = events;
-        let Some(older) = rows
-            .iter()
-            .find(|row| row.id == if pages == 1 { "earlier" } else { "continue" })
-        else {
+        assert!(!events.is_empty());
+        assert!(events.len() <= 30);
+        assert!(
+            events.iter().map(|e| e.markdown.len()).sum::<usize>()
+                <= agent_proto::run_history::PAGE_TEXT_BUDGET
+        );
+        seen.extend(events.iter().map(|e| e.revision));
+        if let Some(older) = rows.iter().find(|r| r.id == "earlier") {
+            action = older.action.clone();
+        } else {
             break;
-        };
-        action = older.action.clone();
+        }
+        assert!(seen.len() <= 65);
     }
-    assert!(pages > 1);
-    // Backfill overlaps the initial latest page; merge as the timeline does.
-    loaded.sort_by_key(|event| event.revision);
-    loaded.dedup_by_key(|event| event.revision);
-    let groups = collapse_tools(loaded);
-    assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0].revisions, (1..=30).collect::<Vec<_>>());
-    let AgentReply::History(HistoryReply::Reader { markdown, .. }) =
-        execute(HistoryAction::Tools {
-            id: recorded.id.clone(),
-            revisions: groups[0].revisions.clone(),
-        })
-        .unwrap()
-    else {
-        panic!("expected full tool reader");
-    };
-    let expected = recorded
-        .entries
-        .iter()
-        .rev()
-        .map(|entry| format!("tool_result · revision {}:\n{}", entry.revision, entry.text))
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    assert_eq!(markdown, expected);
-    let mut missing = groups[0].revisions.clone();
-    missing[29] = 31;
-    assert_eq!(
-        execute(HistoryAction::Tools {
-            id: recorded.id,
-            revisions: missing,
-        })
-        .unwrap_err(),
-        "Tool event no longer retained"
-    );
+    seen.sort();
+    assert_eq!(seen, (1..=65).collect::<Vec<_>>());
 }
 
 #[test]
@@ -1842,6 +1751,8 @@ fn palette_prompt_library_replies_with_described_prompts_from_a_real_store() {
         .as_millis() as i64
         - 2 * 60 * 60 * 1000;
     let prompt = |revision, text: &str, at| RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         tool: None,
         revision,
         event_id: None,

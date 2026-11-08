@@ -46,6 +46,8 @@
         (define project (or assigned (and (as-present? location) (projects-model "LabelForCwd" (as-get "repositories") registry location))))
         (if (as-present? project) (hash-insert result (number->string (hash-ref pane "pane_id")) project) result)) (hash) panes))
   (cond
+    ((equal? op "agent_history_repair_snapshot") (as-call "repair-snapshot" args))
+    ((equal? op "agent_history_repair") (as-call "repair-history" args))
     ((equal? op "context")
       (define pane (and selected (as-find (lambda (pane) (= selected (hash-ref pane "pane_id"))) panes)))
       (when (and selected (not pane)) (error "selected caller pane does not exist"))

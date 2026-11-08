@@ -299,7 +299,9 @@ pub fn agent_run_def() -> EntityDef {
 /// `revision` is the run's own monotonic counter, which is what orders the timeline; `id`
 /// order agrees with it, since a row is written when its entry is made.
 pub fn agent_run_entry_def() -> EntityDef {
-    EntityDef::new("agent_run_entry", 4)
+    EntityDef::new("agent_run_entry", 5)
+        .attr(AttrDef::text("worker_id").indexed())
+        .attr(AttrDef::text("conversation_turn_id").indexed())
         .attr(AttrDef::json("tool"))
         .attr(AttrDef::text("run_id").indexed().required())
         // Attribution rather than key: a `run_id` is unique across machines either way — the

@@ -243,7 +243,16 @@ pub mod query;
 pub enum HistoryAction {
     Tools {
         id: String,
-        revisions: Vec<u64>,
+        range: yinz_types::agent::history::Range,
+        before: Option<yinz_types::agent::history::Cursor>,
+    },
+    Conversation {
+        id: String,
+        worker: Option<String>,
+        before: Option<yinz_types::agent::history::Cursor>,
+    },
+    Workers {
+        id: String,
     },
     Hit {
         id: String,
@@ -262,6 +271,34 @@ pub enum HistoryAction {
     Resume {
         id: String,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum HistoryScope {
+    Conversation(Option<String>),
+    Tools(yinz_types::agent::history::Range),
+    Search(String),
+}
+
+impl HistoryAction {
+    /// Identity of a history view, independent of its current page cursor.
+    pub fn scope(&self) -> Option<(&str, HistoryScope)> {
+        match self {
+            Self::Run { id, query, .. } => Some((
+                id,
+                if query.is_empty() {
+                    HistoryScope::Conversation(None)
+                } else {
+                    HistoryScope::Search(query.clone())
+                },
+            )),
+            Self::Conversation { id, worker, .. } => {
+                Some((id, HistoryScope::Conversation(worker.clone())))
+            },
+            Self::Tools { id, range, .. } => Some((id, HistoryScope::Tools(range.clone()))),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -289,7 +326,7 @@ pub struct HistoryHeader {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryEvent {
-    pub revisions: Vec<u64>,
+    pub range: Option<yinz_types::agent::history::Range>,
     pub tool_calls: usize,
     pub revision: u64,
     pub kind: String,
@@ -318,24 +355,6 @@ pub enum HistoryReply {
     },
 }
 
-// Keep every revision for the full-content reader.
-pub fn collapse_tools(events: Vec<HistoryEvent>) -> Vec<HistoryEvent> {
-    let mut grouped: Vec<HistoryEvent> = Vec::new();
-    for mut event in events {
-        if matches!(event.kind.as_str(), "tool_call" | "tool_result") {
-            if let Some(previous) = grouped
-                .last_mut()
-                .filter(|e| e.kind == "tools" && e.revisions.len() < 30)
-            {
-                previous.revisions.extend(event.revisions);
-                previous.tool_calls += event.tool_calls;
-                continue;
-            }
-            event.kind = "tools".into();
-            event.markdown.clear();
-            event.truncated = false;
-        }
-        grouped.push(event);
-    }
-    grouped
-}
+#[cfg(test)]
+#[path = "unit/history_scope.rs"]
+mod history_scope_tests;

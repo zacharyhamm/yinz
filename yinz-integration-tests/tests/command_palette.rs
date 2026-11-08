@@ -408,6 +408,8 @@ fn ctrl_r_recalls_a_past_prompt_from_the_archive_into_the_draft() {
             .unwrap();
     }
     let prompt = |revision, text: &str| RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         revision,
         event_id: None,
         kind: RunEntryKind::Prompt,
@@ -1230,6 +1232,8 @@ fn command_palette_agent_history_event_back_focus_and_archive_resume() {
         summary: None,
         omitted_entries: 0,
         entries: vec![RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
             revision: 1,
             event_id: None,
             kind: RunEntryKind::Message,

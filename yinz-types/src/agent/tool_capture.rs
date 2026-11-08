@@ -369,6 +369,16 @@ impl ToolCapture {
         text
     }
 
+    /// Bounded expanded archive previews retain payload prefixes and provenance.
+    pub fn bound_payloads(&mut self, bytes: usize) {
+        for payload in [&mut self.arguments, &mut self.output, &mut self.error]
+            .into_iter()
+            .flatten()
+        {
+            payload.bound(bytes);
+        }
+    }
+
     pub fn omit_payload(&mut self) {
         for payload in [&mut self.arguments, &mut self.output, &mut self.error]
             .into_iter()

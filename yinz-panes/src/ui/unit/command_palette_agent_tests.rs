@@ -16,8 +16,8 @@ fn header() -> HistoryHeader {
 fn events(count: u64) -> Vec<HistoryEvent> {
     (1..=count)
         .map(|revision| HistoryEvent {
+            range: None,
             revision,
-            revisions: vec![revision],
             tool_calls: 0,
             created_at_ms: None,
             kind: "message".into(),
@@ -483,7 +483,6 @@ fn tools_and_prompt_envelopes_use_panel_presentation() {
     let mut view = view(0);
     let mut tools = events(1).remove(0);
     tools.kind = "tools".into();
-    tools.revisions = vec![1, 2, 3];
     tools.tool_calls = 2;
     tools.markdown = "secret tool output".into();
     view.update(header(), vec![tools], vec![], String::new());
@@ -493,7 +492,7 @@ fn tools_and_prompt_envelopes_use_panel_presentation() {
         .lines
         .iter()
         .any(|l| l.text.contains("secret tool output")));
-    view.select_revision(3);
+    view.select_revision(1);
     assert_eq!(view.selected, 0);
     // The same envelope parser and folding renderer used by the Agents panel.
     let text = "<task-notification>\n<task-id>task-1</task-id>\n<summary>done</summary>\n<result>first\nsecond\nthird</result>\n</task-notification>";
@@ -523,16 +522,13 @@ fn clearing_run_search_restores_conversation_position() {
         view.search_mode(false);
         let mut restored = events(31);
         if grouped {
-            restored[28].revisions.push(30);
-            restored.remove(29);
+            restored[28].kind = "tools".into();
+            restored[28].tool_calls = 200;
         }
         view.update(header(), restored, vec![], String::new());
         layout(&mut view, 70, 25);
         assert_eq!((view.anchor, view.offset, view.following), before);
-        assert_eq!(
-            view.events[view.selected].data.revision,
-            if grouped { 29 } else { 30 }
-        );
+        assert_eq!(view.events[view.selected].data.revision, 30);
     }
 }
 
@@ -612,10 +608,9 @@ fn explicit_page_navigation_overrides_saved_search_position() {
 #[test]
 fn tool_groups_stay_compact_and_preserve_member_selection_on_refresh() {
     let mut view = view(3);
-    view.select_revision(2);
+    view.select_revision(1);
     let mut group = events(1).remove(0);
     group.kind = "tools".into();
-    group.revisions = vec![1, 2, 3];
     group.tool_calls = 1;
     view.update(header(), vec![group.clone()], vec![], String::new());
     assert_eq!(view.selected, 0);
@@ -623,8 +618,7 @@ fn tool_groups_stay_compact_and_preserve_member_selection_on_refresh() {
     assert!(
         matches!(key(&mut view, BareKey::Enter), Outcome::Activate(id) if id == "history:42:event:1")
     );
-    group.revisions.push(4);
-    group.tool_calls = 0;
+    group.tool_calls = 4;
     view.update(header(), vec![group], vec![], String::new());
     let shown = layout(&mut view, 80, 25);
     assert!(shown
@@ -1521,6 +1515,8 @@ fn palette_messages_match_panel_text_spacing_and_styles() {
     .into_iter()
     .enumerate()
     .map(|(i, kind)| RunEntry {
+        worker_id: None,
+        conversation_turn_id: None,
         kind,
         revision: i as u64 + 1,
         created_at_ms: Some(now - 120_000),
@@ -1559,8 +1555,8 @@ fn palette_messages_match_panel_text_spacing_and_styles() {
             entries
                 .iter()
                 .map(|entry| HistoryEvent {
+                    range: None,
                     revision: entry.revision,
-                    revisions: vec![entry.revision],
                     tool_calls: 0,
                     kind: entry.kind.label().into(),
                     created_at_ms: entry.created_at_ms,

@@ -174,35 +174,151 @@ pub(super) fn execute(
     if !request.active.load(atomic::Ordering::Acquire) {
         return Err("Archive request cancelled".into());
     }
-    if let HistoryAction::Hit { id, revision } = action {
-        let mut reply = execute(
-            request,
-            &HistoryAction::Run {
-                id: id.clone(),
-                from: Some(history::anchored_from(*revision)),
-                query: String::new(),
-            },
-            senders,
-            data,
-        )?;
-        if let AgentReply::History(HistoryReply::Run { rows, .. }) = &mut reply {
-            // Show the hit immediately, then backfill the whole run. Only the
-            // initial Hit restarts at 1; Run continuations advance normally.
-            rows.retain(|row| row.id != "continue");
-            rows.push(row(
-                "continue".into(),
-                "Loading history…",
-                String::new(),
-                run_action(id, Some(1)),
-            ));
-        }
-        return Ok(reply);
+    match action {
+        HistoryAction::Run { id, from, query } if query.is_empty() => {
+            let mut reply = conversation_view(
+                request,
+                &Reader(data),
+                id,
+                ConversationRead {
+                    after: *from,
+                    ..Default::default()
+                },
+            )?;
+            if from.is_some() {
+                // Refresh activity counts at the tail while delivering newly stored
+                // revisions, including repaired messages with old source timestamps.
+                if let (
+                    AgentReply::History(HistoryReply::Run { events, rows, .. }),
+                    AgentReply::History(HistoryReply::Run {
+                        events: tail,
+                        rows: tail_rows,
+                        ..
+                    }),
+                ) = (
+                    &mut reply,
+                    conversation_view(request, &Reader(data), id, ConversationRead::default())?,
+                ) {
+                    events.extend(tail);
+                    rows.extend(tail_rows.into_iter().filter(|r| r.id != "received"));
+                }
+            }
+            return Ok(reply);
+        },
+        HistoryAction::Conversation { id, worker, before } => {
+            return conversation_view(
+                request,
+                &Reader(data),
+                id,
+                ConversationRead {
+                    worker: worker.as_deref(),
+                    before: *before,
+                    ..Default::default()
+                },
+            )
+        },
+        HistoryAction::Tools { id, range, before } => {
+            return conversation_view(
+                request,
+                &Reader(data),
+                id,
+                ConversationRead {
+                    worker: range.worker.as_deref(),
+                    before: *before,
+                    tools: Some(range),
+                    ..Default::default()
+                },
+            )
+        },
+        HistoryAction::Workers { id } => {
+            let workers = agent_proto::conversation::workers(&Reader(data), id)?;
+            return Ok(AgentReply::History(HistoryReply::Rows {
+                rows: workers
+                    .into_iter()
+                    .map(|worker| {
+                        row(
+                            worker.clone(),
+                            format!("Worker {worker}"),
+                            String::new(),
+                            HistoryAction::Conversation {
+                                id: id.clone(),
+                                worker: Some(worker),
+                                before: None,
+                            },
+                        )
+                    })
+                    .collect(),
+                status: "Workers · Enter opens attributed conversation and activity".into(),
+            }));
+        },
+        HistoryAction::Hit { id, revision } => {
+            let fetched = store::Backend::fetch(
+                &Reader(data),
+                &FetchRequest::entity("agent_run_entry")
+                    .filter(Pred::eq("run_id", id.as_str()))
+                    .filter(Pred::eq("revision", *revision as i64))
+                    .limit(1),
+            )?;
+            let entry = agent_proto::agents::rows::entries_from_rows(&fetched)
+                .remove(id)
+                .and_then(|mut es| es.pop())
+                .ok_or("Event no longer retained")?;
+            let before = Some(agent_proto::conversation::Cursor {
+                created_at_ms: entry.created_at_ms,
+                revision: entry.revision.saturating_add(1),
+            });
+            let range = matches!(
+                entry.kind,
+                agent_proto::agents::RunEntryKind::ToolCall
+                    | agent_proto::agents::RunEntryKind::ToolResult
+            )
+            .then(|| agent_proto::conversation::Range {
+                start: None,
+                end: None,
+                worker: entry.worker(),
+            });
+            let mut reply = conversation_view(
+                request,
+                &Reader(data),
+                id,
+                ConversationRead {
+                    worker: entry.worker().as_deref(),
+                    before,
+                    tools: range.as_ref(),
+                    after: None,
+                },
+            )?;
+            if let AgentReply::History(HistoryReply::Run { rows, .. }) = &mut reply {
+                rows.push(row(
+                    "context".into(),
+                    "",
+                    String::new(),
+                    match range {
+                        Some(range) => HistoryAction::Tools {
+                            id: id.clone(),
+                            range,
+                            before,
+                        },
+                        None => HistoryAction::Conversation {
+                            id: id.clone(),
+                            worker: entry.worker(),
+                            before,
+                        },
+                    },
+                ));
+            }
+            return Ok(reply);
+        },
+        _ => {},
     }
     let timestamp = |ms| request.timezone.timestamp(ms);
     let backend = Reader(data);
     let projects = project_data::projects::from_rows(&agent_control::projects(data)?);
     let reply = match action {
-        HistoryAction::Hit { .. } => unreachable!("handled above"),
+        HistoryAction::Hit { .. }
+        | HistoryAction::Conversation { .. }
+        | HistoryAction::Workers { .. }
+        | HistoryAction::Tools { .. } => unreachable!("handled above"),
         HistoryAction::Search(query) => {
             let keeps = |h: &AgentRunHeader| {
                 if h.outcome == RunOutcome::Active {
@@ -316,11 +432,7 @@ pub(super) fn execute(
                     status: "No recorded history".into(),
                 }));
             };
-            let metadata = format!("Run: {}\nProvider: {}\nTitle: {}\nAgent session: {}\nSession: {}\nHost: {}\nPane: {}\nDirectory: {}\nExecution target: {}\nStarted: {}\nEnded: {}\nOutcome: {:?}\nRevision: {}\nSummary: {}\nPrevious run: {}\nOriginal run: {}",
-                h.id, h.kind, h.title, h.session_id, h.yinz_session_name, h.host_id, h.pane_id,
-                h.cwd.as_deref().unwrap_or("Unavailable"), h.host.as_deref().unwrap_or("local"), timestamp(Some(h.started_at_ms)),
-                timestamp(h.ended_at_ms), h.outcome, h.revision,
-                h.summary.as_ref().map(|s| s.text.as_str()).unwrap_or("Unavailable"), h.previous_run_id.as_deref().unwrap_or("Unavailable"), h.origin_run_id.as_deref().unwrap_or("Unavailable"));
+            let metadata = run_details(&h, &timestamp);
             let mut rows = Vec::new();
             if h.outcome != RunOutcome::Active {
                 rows.push(row(
@@ -350,107 +462,48 @@ pub(super) fn execute(
                 run_action(id, None),
             ));
             let mut events = Vec::new();
-            let status;
-            if query.is_empty() {
-                let page = history::entry_page(&backend, id, *from, 30)?;
-                // Opening a run reads only its tail. Backfill is an explicit
-                // action so a long run does not keep loading on every open.
-                if from.is_none() && page.earlier {
-                    rows.push(row(
-                        "earlier".into(),
-                        "Load earlier messages",
-                        String::new(),
-                        run_action(id, Some(1)),
-                    ));
-                }
-                if let Some(next) = page.next_revision {
-                    rows.push(row(
-                        "continue".into(),
-                        "Loading history…",
-                        String::new(),
-                        run_action(id, Some(next)),
-                    ));
-                }
-                status = format!("{} retained events · Search filters this run · previews may be shortened; Enter expands", page.total);
-                for e in page.entries {
-                    events.push(HistoryEvent {
-                        revision: e.revision,
-                        revisions: vec![e.revision],
-                        tool_calls: usize::from(
-                            e.kind == agent_proto::agents::RunEntryKind::ToolCall,
-                        ),
-                        created_at_ms: e.created_at_ms,
-                        kind: e.kind.label().into(),
-                        time: timestamp(e.created_at_ms),
-                        truncated: page.truncated_revisions.contains(&e.revision),
-                        markdown: e.text.clone(),
-                    });
-                }
-
-                for event in &events {
-                    let action = if event.kind == "tools" {
-                        HistoryAction::Tools {
-                            id: id.clone(),
-                            revisions: event.revisions.clone(),
-                        }
+            let (hits, next) = history::search_run_page(&backend, id, query, from.unwrap_or(1))?;
+            if let Some(next) = next {
+                rows.push(row(
+                    "continue".into(),
+                    "Searching history…",
+                    String::new(),
+                    HistoryAction::Run {
+                        id: id.clone(),
+                        from: Some(next),
+                        query: query.clone(),
+                    },
+                ));
+            }
+            let status = "Matching retained events".into();
+            for hit in hits {
+                events.push(HistoryEvent {
+                    range: None,
+                    revision: hit.revision,
+                    tool_calls: 0,
+                    created_at_ms: hit.created_at_ms,
+                    kind: hit.kind.label().into(),
+                    time: timestamp(hit.created_at_ms),
+                    markdown: if matches!(
+                        hit.kind,
+                        agent_proto::agents::RunEntryKind::ToolCall
+                            | agent_proto::agents::RunEntryKind::ToolResult
+                    ) {
+                        hit.snippet.clone()
                     } else {
-                        HistoryAction::Event {
-                            id: id.clone(),
-                            revision: event.revision,
-                        }
-                    };
-                    rows.push(row(
-                        format!("event:{}", event.revision),
-                        format!("{} · {}", event.revision, event.kind),
-                        String::new(),
-                        action,
-                    ));
-                }
-            } else {
-                let (hits, next) =
-                    history::search_run_page(&backend, id, query, from.unwrap_or(1))?;
-                if let Some(next) = next {
-                    rows.push(row(
-                        "continue".into(),
-                        "Searching history…",
-                        String::new(),
-                        HistoryAction::Run {
-                            id: id.clone(),
-                            from: Some(next),
-                            query: query.clone(),
-                        },
-                    ));
-                }
-                status = "Matching retained events".into();
-                for hit in hits {
-                    events.push(HistoryEvent {
+                        yinz_tile_markdown::escape_inline(&hit.snippet)
+                    },
+                    truncated: true,
+                });
+                rows.push(row(
+                    format!("event:{}", hit.revision),
+                    format!("{} · {}", hit.revision, hit.kind.label()),
+                    hit.snippet,
+                    HistoryAction::Hit {
+                        id: id.clone(),
                         revision: hit.revision,
-                        revisions: vec![hit.revision],
-                        tool_calls: 0,
-                        created_at_ms: hit.created_at_ms,
-                        kind: hit.kind.label().into(),
-                        time: timestamp(hit.created_at_ms),
-                        markdown: if matches!(
-                            hit.kind,
-                            agent_proto::agents::RunEntryKind::ToolCall
-                                | agent_proto::agents::RunEntryKind::ToolResult
-                        ) {
-                            hit.snippet.clone()
-                        } else {
-                            yinz_tile_markdown::escape_inline(&hit.snippet)
-                        },
-                        truncated: true,
-                    });
-                    rows.push(row(
-                        format!("event:{}", hit.revision),
-                        format!("{} · {}", hit.revision, hit.kind.label()),
-                        hit.snippet,
-                        HistoryAction::Hit {
-                            id: id.clone(),
-                            revision: hit.revision,
-                        },
-                    ));
-                }
+                    },
+                ));
             }
             events.sort_by_key(|event| event.revision);
             HistoryReply::Run {
@@ -489,51 +542,6 @@ pub(super) fn execute(
                 status,
             }
         },
-        HistoryAction::Tools { id, revisions } => {
-            // Merged groups can exceed one fetch's byte budget. Paginate in row-ID
-            // order; entries_from_rows restores revision order for the reader.
-            let fetched = store::fetch_all(
-                &backend,
-                FetchRequest::entity(agent_proto::agents::rows::ENTRY_ENTITY)
-                    .filter(Pred::eq("run_id", id.as_str()))
-                    .filter(Pred::is_in(
-                        "revision",
-                        revisions
-                            .iter()
-                            .map(|r| DataValue::Int(*r as i64))
-                            .collect::<Vec<_>>(),
-                    )),
-            )?;
-            let entries = agent_proto::agents::rows::entries_from_rows(&fetched)
-                .remove(id)
-                .unwrap_or_default();
-            if entries.len() != revisions.len() {
-                return Err("Tool event no longer retained".into());
-            }
-            HistoryReply::Reader {
-                header: "tool_call".into(),
-                markdown: entries
-                    .iter()
-                    .map(|e| {
-                        let tool = e
-                            .tool
-                            .as_ref()
-                            .map(serde_json::to_string_pretty)
-                            .transpose()
-                            .map_err(|e| format!("Cannot format tool details: {e}"))?;
-                        let mut text =
-                            format!("{} · revision {}:\n{}", e.kind.label(), e.revision, e.text);
-                        if let Some(tool) = tool {
-                            text.push_str("\n\n");
-                            text.push_str(&tool);
-                        }
-                        Ok(text)
-                    })
-                    .collect::<Result<Vec<_>, String>>()?
-                    .join("\n\n"),
-                tool: String::new(),
-            }
-        },
         HistoryAction::Event { id, revision } => {
             // Read the exact retained event without the multi-entry preview budget.
             let fetched = store::Backend::fetch(
@@ -543,12 +551,19 @@ pub(super) fn execute(
                     .filter(Pred::eq("revision", *revision as i64))
                     .limit(1),
             )?;
-            let entry = agent_proto::agents::rows::entries_from_rows(&fetched)
+            let mut entry = agent_proto::agents::rows::entries_from_rows(&fetched)
                 .remove(id)
                 .and_then(|mut entries| entries.pop())
                 .ok_or("Event no longer retained")?;
             if fetched.truncated {
                 return Err("Retained event exceeds the store read limit".into());
+            }
+            if let Some(tool) = &mut entry.tool {
+                tool.bound_payloads(4000);
+                if entry.text.len() > 8000 {
+                    entry.text = entry.text.chars().take(2000).collect::<String>()
+                        + "\n[incomplete tool preview: use raw archive for retained payload]";
+                }
             }
             let tool = entry
                 .tool
@@ -600,4 +615,296 @@ pub(super) fn execute(
         },
     };
     Ok(AgentReply::History(reply))
+}
+
+#[derive(Default)]
+struct ConversationRead<'a> {
+    worker: Option<&'a str>,
+    before: Option<agent_proto::conversation::Cursor>,
+    after: Option<u64>,
+    tools: Option<&'a agent_proto::conversation::Range>,
+}
+fn conversation_view(
+    request: &AgentRequest,
+    backend: &impl store::Backend,
+    id: &str,
+    read: ConversationRead<'_>,
+) -> Result<AgentReply, String> {
+    let ConversationRead {
+        worker,
+        before,
+        after,
+        tools,
+    } = read;
+    use agent_proto::conversation::{self, Cursor, Range};
+    let h = history::run_header(backend, id)?.ok_or("Recorded history unavailable")?;
+    let page = match tools {
+        Some(range) => conversation::tools(backend, id, range, before)?,
+        None => conversation::page(backend, id, worker, before, after)?,
+    };
+    let mut rows = Vec::new();
+    if tools.is_none() {
+        if h.outcome != RunOutcome::Active {
+            rows.push(row(
+                "resume".into(),
+                "Resume",
+                "Launch and focus a new pane in the recorded directory".into(),
+                HistoryAction::Resume { id: id.into() },
+            ));
+        }
+        for (key, label, target) in [
+            ("previous", "Previous run", &h.previous_run_id),
+            ("origin", "Original run", &h.origin_run_id),
+        ] {
+            if let Some(target) = target {
+                rows.push(row(
+                    key.into(),
+                    label,
+                    target.clone(),
+                    run_action(target, None),
+                ));
+            }
+        }
+    }
+    if let Some(before) = page.earlier {
+        let action = match tools {
+            Some(range) => HistoryAction::Tools {
+                id: id.into(),
+                range: range.clone(),
+                before: Some(before),
+            },
+            None => HistoryAction::Conversation {
+                id: id.into(),
+                worker: worker.map(str::to_owned),
+                before: Some(before),
+            },
+        };
+        rows.push(row(
+            "earlier".into(),
+            "Load earlier messages",
+            String::new(),
+            action,
+        ));
+    }
+    if worker.is_some() && tools.is_none() {
+        rows.push(row(
+            "tools".into(),
+            "Tools…",
+            String::new(),
+            HistoryAction::Tools {
+                id: id.into(),
+                range: Range {
+                    start: None,
+                    end: None,
+                    worker: worker.map(str::to_owned),
+                },
+                before: None,
+            },
+        ));
+    }
+    if tools.is_none() {
+        // Delivery watermark is independent of the chronological conversation cursor.
+        rows.push(row(
+            "received".into(),
+            "",
+            String::new(),
+            run_action(id, Some(page.latest_received_revision.saturating_add(1))),
+        ));
+    }
+    let mut events = Vec::new();
+    let timestamp = |at| request.timezone.timestamp(at);
+    let mut start = None;
+    for entry in page.entries {
+        let end = Cursor {
+            created_at_ms: entry.created_at_ms,
+            revision: entry.revision,
+        };
+        if tools.is_none()
+            && after.is_none()
+            && (start.is_some() || before.is_none() && page.earlier.is_none())
+        {
+            activity(
+                backend,
+                id,
+                Range {
+                    start,
+                    end: Some(end),
+                    worker: worker.map(str::to_owned),
+                },
+                &timestamp,
+                &mut events,
+            )?;
+        }
+        start = Some(end);
+        rows.push(row(
+            format!("event:{}", entry.revision),
+            "",
+            String::new(),
+            HistoryAction::Event {
+                id: id.into(),
+                revision: entry.revision,
+            },
+        ));
+        events.push(HistoryEvent {
+            range: None,
+            revision: entry.revision,
+            tool_calls: 0,
+            created_at_ms: entry.created_at_ms,
+            kind: entry.kind.label().into(),
+            time: timestamp(entry.created_at_ms),
+            markdown: if tools.is_some() {
+                format!(
+                    "{}\n{}",
+                    entry.text,
+                    entry
+                        .tool
+                        .as_ref()
+                        .map(serde_json::to_string)
+                        .transpose()
+                        .map_err(|e| e.to_string())?
+                        .unwrap_or_default()
+                )
+            } else {
+                entry.text
+            },
+            truncated: page.shortened.contains(&entry.revision),
+        });
+    }
+    if tools.is_none() && before.is_none() && after.is_none() {
+        activity(
+            backend,
+            id,
+            Range {
+                start,
+                end: None,
+                worker: worker.map(str::to_owned),
+            },
+            &timestamp,
+            &mut events,
+        )?;
+        if worker.is_none() {
+            rows.push(row(
+                "workers".into(),
+                "Workers…",
+                "Expandable worker conversations and tools".into(),
+                HistoryAction::Workers { id: id.into() },
+            ));
+        }
+        rows.push(row(
+            "latest".into(),
+            "Latest / Refresh",
+            String::new(),
+            HistoryAction::Conversation {
+                id: id.into(),
+                worker: worker.map(str::to_owned),
+                before: None,
+            },
+        ));
+    }
+    for event in events.iter().filter(|e| e.kind == "tools") {
+        if let Some(range) = &event.range {
+            rows.push(row(
+                format!("event:{}", event.revision),
+                "",
+                String::new(),
+                HistoryAction::Tools {
+                    id: id.into(),
+                    range: range.clone(),
+                    before: None,
+                },
+            ));
+        }
+    }
+    Ok(AgentReply::History(HistoryReply::Run {
+        header: HistoryHeader {
+            name: worker
+                .map(|w| format!("Worker {w}"))
+                .unwrap_or_else(|| h.title.clone()),
+            status: format!("{} · {:?}", h.kind, h.outcome),
+            location: format!(
+                "{} · {}",
+                h.yinz_session_name,
+                h.cwd.as_deref().unwrap_or("Directory unavailable")
+            ),
+            started: timestamp(Some(h.started_at_ms)),
+            session_id: format!("session {}", h.session_id),
+            task: h.title.clone(),
+            details: run_details(&h, &timestamp),
+            project: agent_proto::agents::checkout_location(h.host.as_deref(), h.cwd.as_deref())
+                .and_then(|location| {
+                    project_data::projects::for_cwd(
+                        &project_data::projects::from_rows(
+                            &backend
+                                .fetch(&FetchRequest::entity("project").limit(1000))
+                                .ok()?,
+                        ),
+                        &location,
+                    )
+                    .map(|p| p.name.clone())
+                })
+                .unwrap_or_default(),
+            ..Default::default()
+        },
+        events,
+        rows,
+        status: if tools.is_some() {
+            "Retained tool details · 30 records per page"
+        } else {
+            "Conversation · Search includes retained tools and workers"
+        }
+        .into(),
+    }))
+}
+fn activity(
+    backend: &impl store::Backend,
+    id: &str,
+    range: agent_proto::conversation::Range,
+    timestamp: &impl Fn(Option<i64>) -> String,
+    events: &mut Vec<HistoryEvent>,
+) -> Result<(), String> {
+    let mut request = range.request(id).filter(Pred::eq("kind", "tool_call"));
+    if let Some(worker) = &range.worker {
+        request = request.filter(Pred::eq("worker_id", worker.clone()));
+    }
+    let count = backend.count(&request)? as usize;
+    let mut request = range
+        .request(id)
+        .filter(Pred::is_in("kind", ["tool_call", "tool_result"]));
+    if let Some(worker) = &range.worker {
+        request = request.filter(Pred::eq("worker_id", worker.clone()));
+    }
+    if count == 0 && backend.count(&request)? == 0 {
+        return Ok(());
+    }
+    let fetched = backend.fetch(
+        &request
+            .select(["run_id", "revision", "kind", "created_at_ms"])
+            .sort_by("created_at_ms", SortDir::Asc)
+            .sort_by("revision", SortDir::Asc)
+            .limit(1),
+    )?;
+    if let Some(entry) = agent_proto::agents::rows::entries_from_rows(&fetched)
+        .remove(id)
+        .and_then(|es| es.into_iter().next())
+    {
+        events.push(HistoryEvent {
+            revision: entry.revision,
+            tool_calls: count,
+            kind: "tools".into(),
+            time: timestamp(entry.created_at_ms),
+            created_at_ms: entry.created_at_ms,
+            markdown: String::new(),
+            truncated: false,
+            range: Some(range),
+        });
+    }
+    Ok(())
+}
+
+fn run_details(h: &AgentRunHeader, timestamp: &impl Fn(Option<i64>) -> String) -> String {
+    format!("Run: {}\nProvider: {}\nTitle: {}\nAgent session: {}\nSession: {}\nHost: {}\nPane: {}\nDirectory: {}\nExecution target: {}\nStarted: {}\nEnded: {}\nOutcome: {:?}\nRevision: {}\nSummary: {}\nPrevious run: {}\nOriginal run: {}",
+                h.id, h.kind, h.title, h.session_id, h.yinz_session_name, h.host_id, h.pane_id,
+                h.cwd.as_deref().unwrap_or("Unavailable"), h.host.as_deref().unwrap_or("local"), timestamp(Some(h.started_at_ms)),
+                timestamp(h.ended_at_ms), h.outcome, h.revision,
+                h.summary.as_ref().map(|s| s.text.as_str()).unwrap_or("Unavailable"), h.previous_run_id.as_deref().unwrap_or("Unavailable"), h.origin_run_id.as_deref().unwrap_or("Unavailable"))
 }

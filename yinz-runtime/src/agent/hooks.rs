@@ -31,6 +31,20 @@ pub fn parse_hook_event(kind: &str, json: String) -> serde_json::Result<(HookEve
             error.column()
         ))
     })?;
+    if kind == "claude" {
+        super::history::enrich(&mut event);
+        let mut value: Value = serde_json::from_str(&json)?;
+        if let Some(turn) = &event.turn_id {
+            value["turn_id"] = turn.clone().into();
+        }
+        if let Some(prompt) = &event.prompt_id {
+            value["prompt_id"] = prompt.clone().into();
+        }
+        if !event.assistant_messages.is_empty() {
+            value["assistant_messages"] = serde_json::to_value(&event.assistant_messages)?;
+        }
+        json = serde_json::to_string(&value)?;
+    }
     if let Some(capture) = &mut event.tool_capture {
         capture.normalize()?;
     } else {
@@ -317,6 +331,8 @@ fn transcript_messages(
                     .unwrap_or_else(|| format!("offset:{record_offset}"));
                 messages.push(yinz_types::agent::CapturedMessage {
                     source_id: format!("{session}:{id}"),
+                    worker_id: None,
+                    created_at_ms: None,
                     turn_id: turn_id.clone(),
                     text,
                     incomplete: false,

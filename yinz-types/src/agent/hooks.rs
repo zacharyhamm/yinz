@@ -777,6 +777,10 @@ pub struct HookEvent {
 /// Completed assistant prose extracted on the agent's host.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapturedMessage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_ms: Option<i64>,
     pub source_id: String,
     pub turn_id: String,
     pub text: String,

@@ -5166,7 +5166,12 @@ fn history_typing_preserves_pending_hit_event_and_tools_replies() {
         },
         HistoryAction::Tools {
             id: "recorded".into(),
-            revisions: vec![7, 8],
+            range: yinz_types::agent::history::Range {
+                start: None,
+                end: None,
+                worker: None,
+            },
+            before: None,
         },
     ] {
         let mut screen = screen();
@@ -5789,15 +5794,15 @@ fn theme_preview_cancel_invalidates_queued_save() {
 }
 
 fn history_run(
-    rows: Vec<yinz_bus::command_palette::HistoryRow>,
+    mut rows: Vec<yinz_bus::command_palette::HistoryRow>,
 ) -> yinz_bus::command_palette::HistoryReply {
     use yinz_bus::command_palette::{HistoryAction, HistoryEvent, HistoryHeader, HistoryReply};
-    let events = rows
+    let events: Vec<_> = rows
         .iter()
         .filter_map(|row| match row.action {
             HistoryAction::Event { revision, .. } => Some(HistoryEvent {
+                range: None,
                 revision,
-                revisions: vec![revision],
                 tool_calls: 0,
                 created_at_ms: None,
                 kind: "Message".into(),
@@ -5808,6 +5813,21 @@ fn history_run(
             _ => None,
         })
         .collect();
+    let received = events
+        .iter()
+        .map(|e: &HistoryEvent| e.revision)
+        .max()
+        .unwrap_or(0);
+    rows.push(yinz_bus::command_palette::HistoryRow {
+        id: "received".into(),
+        label: String::new(),
+        description: String::new(),
+        action: HistoryAction::Run {
+            id: "run".into(),
+            from: Some(received + 1),
+            query: String::new(),
+        },
+    });
     HistoryReply::Run {
         header: HistoryHeader {
             name: "Recorded run".into(),
@@ -5817,6 +5837,127 @@ fn history_run(
         rows,
         status: String::new(),
     }
+}
+
+#[test]
+fn history_workers_picker_opens_selected_conversation_and_restores_parent() {
+    use yinz_bus::command_palette::{
+        AgentAction, AgentReply, AgentRequest, HistoryAction, HistoryReply, HistoryRow, Instruction,
+    };
+    let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let (tx, rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let next = || loop {
+        let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let PluginInstruction::PaletteAgent(request) = instruction {
+            break *request;
+        }
+    };
+    let reply = |request: &AgentRequest, history| Instruction::AgentReply {
+        client: CLIENT,
+        opening: request.opening,
+        step: request.step,
+        reply: Ok(AgentReply::History(history)),
+    };
+    screen.toggle_command_palette(CLIENT);
+    screen.open_palette_history(
+        CLIENT,
+        None,
+        Some(HistoryAction::Run {
+            id: "run".into(),
+            from: None,
+            query: String::new(),
+        }),
+    );
+    screen.plugin_palette_instruction(reply(
+        &next(),
+        history_run(vec![
+            HistoryRow {
+                id: "event:1".into(),
+                label: "Parent message".into(),
+                description: String::new(),
+                action: HistoryAction::Event {
+                    id: "run".into(),
+                    revision: 1,
+                },
+            },
+            HistoryRow {
+                id: "workers".into(),
+                label: "Workers…".into(),
+                description: String::new(),
+                action: HistoryAction::Workers { id: "run".into() },
+            },
+        ]),
+    ));
+    let parent = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(parent.contains("Parent message"), "{parent}");
+    palette_key(&mut screen, BareKey::Tab); // Search -> messages.
+    palette_key(&mut screen, BareKey::Tab); // Messages -> Workers.
+    let parent = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    palette_key(&mut screen, BareKey::Enter);
+    let workers = next();
+    assert!(matches!(
+        &workers.action,
+        AgentAction::History(HistoryAction::Workers { id }) if id == "run"
+    ));
+    screen.plugin_palette_instruction(reply(
+        &workers,
+        HistoryReply::Rows {
+            rows: ["alpha", "bravo"]
+                .into_iter()
+                .map(|worker| HistoryRow {
+                    id: worker.into(),
+                    label: format!("Worker {worker}"),
+                    description: String::new(),
+                    action: HistoryAction::Conversation {
+                        id: "run".into(),
+                        worker: Some(worker.into()),
+                        before: None,
+                    },
+                })
+                .collect(),
+            status: "Workers".into(),
+        },
+    ));
+    let picker = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(picker.contains("Worker alpha"), "{picker}");
+    assert!(picker.contains("Worker bravo"), "{picker}");
+    palette_key(&mut screen, BareKey::Down);
+    palette_key(&mut screen, BareKey::Enter);
+    let conversation = next();
+    assert!(matches!(
+        &conversation.action,
+        AgentAction::History(HistoryAction::Conversation {
+            id,
+            worker: Some(worker),
+            before: None,
+        }) if id == "run" && worker == "bravo"
+    ));
+    screen.plugin_palette_instruction(reply(
+        &conversation,
+        history_run(vec![HistoryRow {
+            id: "event:2".into(),
+            label: "Worker message".into(),
+            description: String::new(),
+            action: HistoryAction::Event {
+                id: "run".into(),
+                revision: 2,
+            },
+        }]),
+    ));
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("Worker message"), "{frame}");
+    palette_key(&mut screen, BareKey::Esc);
+    let restored = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(restored.contains("Worker alpha"), "{restored}");
+    assert!(restored.contains("Worker bravo"), "{restored}");
+    palette_key(&mut screen, BareKey::Esc);
+    assert_eq!(
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+        parent
+    );
 }
 
 #[test]
@@ -5888,10 +6029,13 @@ fn history_opens_at_tail_and_polls_before_explicit_backfill_preserving_manual_sc
             id: "earlier".into(),
             label: "Load earlier messages".into(),
             description: String::new(),
-            action: HistoryAction::Run {
+            action: HistoryAction::Conversation {
                 id: "run".into(),
-                from: Some(1),
-                query: String::new(),
+                worker: None,
+                before: Some(yinz_types::agent::history::Cursor {
+                    created_at_ms: None,
+                    revision: 50,
+                }),
             },
         });
     }
@@ -5953,7 +6097,10 @@ fn history_opens_at_tail_and_polls_before_explicit_backfill_preserving_manual_sc
     let backfill = next();
     assert!(matches!(
         backfill.action,
-        AgentAction::History(HistoryAction::Run { from: Some(1), .. })
+        AgentAction::History(HistoryAction::Conversation {
+            before: Some(_),
+            ..
+        })
     ));
     screen.plugin_palette_instruction(reply(&backfill, 1));
     let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
@@ -6253,9 +6400,10 @@ fn archived_history_keeps_earlier_action_across_search_until_prefix_is_loaded() 
 fn history_page_rows(
     revisions: std::ops::RangeInclusive<u64>,
     earlier: bool,
-    next: Option<u64>,
+    _next: Option<u64>,
 ) -> Vec<yinz_bus::command_palette::HistoryRow> {
     use yinz_bus::command_palette::{HistoryAction, HistoryRow};
+    let first = *revisions.start();
     let mut rows: Vec<_> = revisions
         .map(|revision| HistoryRow {
             id: format!("event:{revision}"),
@@ -6267,30 +6415,27 @@ fn history_page_rows(
             },
         })
         .collect();
-    for (id, label, from) in [
-        ("earlier", "Load earlier messages", earlier.then_some(1)),
-        ("continue", "Loading history…", next),
-    ] {
-        if let Some(from) = from {
-            rows.push(HistoryRow {
-                id: id.into(),
-                label: label.into(),
-                description: String::new(),
-                action: HistoryAction::Run {
-                    id: "run".into(),
-                    from: Some(from),
-                    query: String::new(),
-                },
-            });
-        }
+    if earlier {
+        rows.push(HistoryRow {
+            id: "earlier".into(),
+            label: "Load earlier messages".into(),
+            description: String::new(),
+            action: HistoryAction::Conversation {
+                id: "run".into(),
+                worker: None,
+                before: Some(yinz_types::agent::history::Cursor {
+                    created_at_ms: None,
+                    revision: first,
+                }),
+            },
+        });
     }
     rows
 }
 
-#[test]
-fn history_hit_interrupted_by_search_keeps_access_to_missing_prefix_with_overlapping_tail() {
+fn history_navigation_case(worker: Option<&str>, search: bool, cancel: bool) {
     use yinz_bus::command_palette::{
-        AgentAction, AgentReply, AgentRequest, HistoryAction, Instruction,
+        AgentAction, AgentReply, AgentRequest, HistoryAction, HistoryReply, HistoryRow, Instruction,
     };
     let mut screen = screen();
     let (tx, rx) = channels::unbounded();
@@ -6307,110 +6452,113 @@ fn history_hit_interrupted_by_search_keeps_access_to_missing_prefix_with_overlap
         step: request.step,
         reply: Ok(AgentReply::History(history_run(rows))),
     };
+    let rows = |range, earlier| {
+        let mut rows = history_page_rows(range, earlier, None);
+        for row in &mut rows {
+            if let HistoryAction::Conversation { worker: w, .. } = &mut row.action {
+                *w = worker.map(str::to_owned);
+            }
+        }
+        rows
+    };
     screen.toggle_command_palette(CLIENT);
     screen.open_palette_history(
         CLIENT,
         None,
         Some(HistoryAction::Hit {
             id: "run".into(),
-            revision: 43,
+            revision: 100,
         }),
     );
-    screen.plugin_palette_instruction(reply(&next(), history_page_rows(41..=70, false, Some(1))));
-    let pending = next();
-    assert!(matches!(
-        pending.action,
-        AgentAction::History(HistoryAction::Run { from: Some(1), .. })
-    ));
-    palette_key(&mut screen, BareKey::Enter); // Expand Search.
-    screen.command_palette_handles_input(&None, b"needle", false, CLIENT);
-    screen.plugin_palette_instruction(reply(&next(), history_page_rows(43..=43, false, None)));
-    palette_key(&mut screen, BareKey::Esc);
-    screen.plugin_palette_instruction(reply(&next(), history_page_rows(51..=80, true, None)));
+    let initial = next();
+    let mut initial_rows = rows(98..=100, true);
+    initial_rows.push(HistoryRow {
+        id: "context".into(),
+        label: String::new(),
+        description: String::new(),
+        action: HistoryAction::Conversation {
+            id: "run".into(),
+            worker: worker.map(str::to_owned),
+            before: None,
+        },
+    });
+    screen.plugin_palette_instruction(reply(&initial, initial_rows));
+    if search {
+        palette_key(&mut screen, BareKey::Enter);
+        screen.command_palette_handles_input(&None, b"needle", false, CLIENT);
+        let query = next();
+        assert!(
+            matches!(&query.action,AgentAction::History(HistoryAction::Run {query,..}) if query=="needle")
+        );
+        screen.plugin_palette_instruction(reply(&query, rows(100..=100, false)));
+        palette_key(&mut screen, BareKey::Esc);
+        let restored = next();
+        assert!(
+            matches!(&restored.action,AgentAction::History(HistoryAction::Conversation {worker:w,..}) if w.as_deref()==worker)
+        );
+        screen.plugin_palette_instruction(reply(&restored, rows(98..=100, true)));
+    }
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
-    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(frame.contains("Load earlier messages"), "{frame}");
-    palette_key(&mut screen, BareKey::Tab); // Search -> messages.
-    palette_key(&mut screen, BareKey::Tab); // Messages -> Load earlier messages.
+    let before = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(before.contains("Event 100"), "{before}");
+    palette_key(&mut screen, BareKey::Tab);
+    palette_key(&mut screen, BareKey::Tab);
     palette_key(&mut screen, BareKey::Enter);
-    let prefix = next();
-    assert!(matches!(
-        prefix.action,
-        AgentAction::History(HistoryAction::Run { from: Some(1), .. })
-    ));
-    screen.plugin_palette_instruction(reply(&prefix, history_page_rows(1..=80, false, None)));
-    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(!frame.contains("Load earlier messages"), "{frame}");
+    let older = next();
+    let before = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(
+        matches!(&older.action,AgentAction::History(HistoryAction::Conversation {worker:w,before:Some(c),..}) if w.as_deref()==worker && c.revision==98)
+    );
+    if cancel {
+        screen.open_palette_history(
+            CLIENT,
+            None,
+            Some(HistoryAction::Event {
+                id: "run".into(),
+                revision: 100,
+            }),
+        );
+        let reader = next();
+        assert!(!older.active.load(std::sync::atomic::Ordering::Acquire));
+        screen.plugin_palette_instruction(reply(&older, rows(1..=30, false)));
+        screen.plugin_palette_instruction(Instruction::AgentReply {
+            client: CLIENT,
+            opening: reader.opening,
+            step: reader.step,
+            reply: Ok(AgentReply::History(HistoryReply::Reader {
+                header: "message".into(),
+                markdown: "Selected reply 100".into(),
+                tool: String::new(),
+            })),
+        });
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(frame.contains("Selected reply 100"), "{frame}");
+        palette_key(&mut screen, BareKey::Esc);
+        assert!(render_frame_into(&mut screen, &receiver, CLIENT, &mut grid).contains("Event 100"));
+    } else {
+        screen.plugin_palette_instruction(reply(&older, rows(68..=97, true)));
+        assert_eq!(
+            screen.command_palettes[&CLIENT]
+                .widget()
+                .agent_first_revision(),
+            Some(68)
+        );
+        assert_eq!(
+            render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+            before
+        );
+    }
 }
 
 #[test]
-fn history_hit_backfill_advances_earlier_action_introduced_by_interleaved_tail() {
-    use yinz_bus::command_palette::{
-        AgentAction, AgentReply, AgentRequest, HistoryAction, Instruction,
-    };
-    let mut screen = screen();
-    let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
-    let next = || loop {
-        let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        if let PluginInstruction::PaletteAgent(request) = instruction {
-            break *request;
-        }
-    };
-    let reply = |request: &AgentRequest, rows| Instruction::AgentReply {
-        client: CLIENT,
-        opening: request.opening,
-        step: request.step,
-        reply: Ok(AgentReply::History(history_run(rows))),
-    };
-    screen.toggle_command_palette(CLIENT);
-    screen.open_palette_history(
-        CLIENT,
-        None,
-        Some(HistoryAction::Hit {
-            id: "run".into(),
-            revision: 400,
-        }),
-    );
-    screen.plugin_palette_instruction(reply(&next(), history_page_rows(398..=427, false, Some(1))));
-    let receiver = screen_wired_to_server(&mut screen);
-    let mut grid = grid_for_render_snapshot(SIZE);
-    let mut cursor = 1;
-    let mut tail_reads = 0;
-    loop {
-        let request = next();
-        match &request.action {
-            AgentAction::History(HistoryAction::Run { from: None, .. }) => {
-                tail_reads += 1;
-                screen.plugin_palette_instruction(reply(
-                    &request,
-                    history_page_rows(421..=450, true, None),
-                ));
-                let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-                assert!(frame.contains("Load earlier messages"), "{frame}");
-            },
-            AgentAction::History(HistoryAction::Run {
-                from: Some(from), ..
-            }) => {
-                assert_eq!(*from, cursor);
-                let end = (cursor + 29).min(450);
-                screen.plugin_palette_instruction(reply(
-                    &request,
-                    history_page_rows(cursor..=end, false, (end < 450).then_some(end + 1)),
-                ));
-                cursor = end + 1;
-                if end == 450 {
-                    break;
-                }
-            },
-            action => panic!("unexpected action: {action:?}"),
-        }
-    }
-    assert!(tail_reads > 0);
-    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(!frame.contains("Load earlier messages"), "{frame}");
-    assert!(!frame.contains("Loading history…"), "{frame}");
+fn history_hit_search_restores_chronological_parent_cursor() {
+    history_navigation_case(None, true, false);
+}
+
+#[test]
+fn history_hit_worker_search_restores_its_own_cursor() {
+    history_navigation_case(Some("worker"), true, false);
 }
 
 #[test]
@@ -8131,202 +8279,13 @@ fn expanded_palette_quota_clips_notifications_and_releases_rasters_with_the_view
 }
 
 #[test]
-fn history_hit_merges_and_archived_backfill_resumes_after_reader() {
-    use std::sync::atomic::Ordering;
-    use yinz_bus::command_palette::{
-        AgentAction, AgentReply, AgentRequest, HistoryAction, HistoryReply, HistoryRow, Instruction,
-    };
-    for query in [None, Some(""), Some("needle")] {
-        let mut screen = screen();
-        let (tx, rx) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
-        let next = || loop {
-            let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
-            if let PluginInstruction::PaletteAgent(request) = instruction {
-                break *request;
-            }
-        };
-        let reply = |request: &AgentRequest, reply| Instruction::AgentReply {
-            client: CLIENT,
-            opening: request.opening,
-            step: request.step,
-            reply: Ok(AgentReply::History(reply)),
-        };
-        screen.toggle_command_palette(CLIENT);
-        screen.open_palette_history(
-            CLIENT,
-            None,
-            Some(match query {
-                None => HistoryAction::Hit {
-                    id: "run".into(),
-                    revision: 7,
-                },
-                Some(query) => HistoryAction::Run {
-                    id: "run".into(),
-                    from: None,
-                    query: query.into(),
-                },
-            }),
-        );
-        let initial = next();
-        let event = |revision| HistoryRow {
-            id: format!("event:{revision}"),
-            label: format!("Event {revision}"),
-            description: String::new(),
-            action: HistoryAction::Event {
-                id: "run".into(),
-                revision,
-            },
-        };
-        let continuation = HistoryAction::Run {
-            id: "run".into(),
-            from: Some(10),
-            query: query.unwrap_or("").into(),
-        };
-        screen.plugin_palette_instruction(reply(
-            &initial,
-            history_run(vec![
-                event(7),
-                event(8),
-                HistoryRow {
-                    id: "continue".into(),
-                    label: String::new(),
-                    description: String::new(),
-                    action: continuation.clone(),
-                },
-            ]),
-        ));
-        let pending = next();
-        assert!(
-            matches!(&pending.action, AgentAction::History(HistoryAction::Run { from: Some(10), query: actual, .. }) if actual == query.unwrap_or(""))
-        );
-        screen.open_palette_history(
-            CLIENT,
-            None,
-            Some(HistoryAction::Event {
-                id: "run".into(),
-                revision: 7,
-            }),
-        );
-        assert!(!pending.active.load(Ordering::Acquire));
-        let reader = next();
-        // An obsolete page must not replace the reader or consume its request.
-        screen.plugin_palette_instruction(reply(&pending, history_run(vec![event(99)])));
-        screen.plugin_palette_instruction(reply(
-            &reader,
-            HistoryReply::Reader {
-                header: "Event".into(),
-                markdown: "Reader".into(),
-                tool: String::new(),
-            },
-        ));
-        palette_key(&mut screen, BareKey::Esc);
-        let resumed = next();
-        assert!(
-            matches!(&resumed.action, AgentAction::History(HistoryAction::Run { from: Some(10), query: actual, .. }) if actual == query.unwrap_or(""))
-        );
-        screen.plugin_palette_instruction(reply(&resumed, history_run(vec![event(8), event(10)])));
-        let receiver = screen_wired_to_server(&mut screen);
-        let mut grid = grid_for_render_snapshot(SIZE);
-        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-        assert!(frame.contains("Event 7"), "{frame}");
-        assert!(frame.contains("Event 10"), "{frame}");
-        assert!(!frame.contains("Event 99"), "{frame}");
-        assert!(!frame.contains("Loading history"), "{frame}");
-        if query.is_none() {
-            palette_key(&mut screen, BareKey::Tab);
-            palette_key(&mut screen, BareKey::Enter);
-            assert!(matches!(
-                next().action,
-                AgentAction::History(HistoryAction::Event { revision: 7, .. })
-            ));
-        }
-    }
+fn history_hit_cancelled_earlier_page_cannot_replace_reader() {
+    history_navigation_case(None, false, true);
 }
 
 #[test]
-fn history_hit_prefix_backfill_preserves_selection_and_backward_navigation() {
-    use yinz_bus::command_palette::{
-        AgentAction, AgentReply, AgentRequest, HistoryAction, HistoryRow, Instruction,
-    };
-    let mut screen = screen();
-    let (tx, rx) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
-    let next = || loop {
-        let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        if let PluginInstruction::PaletteAgent(request) = instruction {
-            break *request;
-        }
-    };
-    let reply = |request: &AgentRequest, rows| Instruction::AgentReply {
-        client: CLIENT,
-        opening: request.opening,
-        step: request.step,
-        reply: Ok(AgentReply::History(history_run(rows))),
-    };
-    let event = |revision| HistoryRow {
-        id: format!("event:{revision}"),
-        label: format!("Event {revision}"),
-        description: String::new(),
-        action: HistoryAction::Event {
-            id: "run".into(),
-            revision,
-        },
-    };
-    screen.toggle_command_palette(CLIENT);
-    screen.open_palette_history(
-        CLIENT,
-        None,
-        Some(HistoryAction::Hit {
-            id: "run".into(),
-            revision: 100,
-        }),
-    );
-    let initial = next();
-    let mut rows: Vec<_> = (98..=102).map(event).collect();
-    rows.push(HistoryRow {
-        id: "continue".into(),
-        label: String::new(),
-        description: String::new(),
-        action: HistoryAction::Run {
-            id: "run".into(),
-            from: Some(1),
-            query: String::new(),
-        },
-    });
-    screen.plugin_palette_instruction(reply(&initial, rows));
-    let backfill = next();
-    assert!(matches!(
-        backfill.action,
-        AgentAction::History(HistoryAction::Run { from: Some(1), .. })
-    ));
-    screen.plugin_palette_instruction(reply(&backfill, (1..=102).map(event).collect()));
-    palette_key(&mut screen, BareKey::Tab);
-    palette_key(&mut screen, BareKey::Enter);
-    let selected = next();
-    assert!(matches!(
-        selected.action,
-        AgentAction::History(HistoryAction::Event { revision: 100, .. })
-    ));
-    screen.plugin_palette_instruction(Instruction::AgentReply {
-        client: CLIENT,
-        opening: selected.opening,
-        step: selected.step,
-        reply: Ok(AgentReply::History(
-            yinz_bus::command_palette::HistoryReply::Reader {
-                header: "Event".into(),
-                markdown: "Event 100".into(),
-                tool: String::new(),
-            },
-        )),
-    });
-    palette_key(&mut screen, BareKey::Esc);
-    palette_key(&mut screen, BareKey::Home);
-    palette_key(&mut screen, BareKey::Enter);
-    assert!(matches!(
-        next().action,
-        AgentAction::History(HistoryAction::Event { revision: 1, .. })
-    ));
+fn history_hit_earlier_page_preserves_selection_without_automatic_backfill() {
+    history_navigation_case(None, false, false);
 }
 
 #[test]

@@ -168,6 +168,25 @@ impl Pair {
         let mut comparable = expected.clone();
         let normalize = |mut commands: Vec<Value>| {
             for command in &mut commands {
+                if let Some(def) = command.pointer_mut("/DataDefineEntity/def")
+                    && def["name"] == agents::rows::ENTRY_ENTITY
+                    && def["version"] == 5
+                {
+                    // The retained Wasm reference predates nullable worker/turn
+                    // attribution. Assert the complete new schema before comparing
+                    // the unchanged declaration and archive paging trace.
+                    assert_eq!(
+                        *def,
+                        serde_json::to_value(store::agent_run_entry_def()).unwrap()
+                    );
+                    def["version"] = json!(4);
+                    def["attrs"].as_array_mut().unwrap().retain(|attr| {
+                        !matches!(
+                            attr["name"].as_str(),
+                            Some("worker_id" | "conversation_turn_id")
+                        )
+                    });
+                }
                 if let Some(request) = command.pointer_mut("/DataFetch/request")
                     && request["entity"] == agents::rows::RUN_ENTITY
                     && (request["select"]
@@ -317,6 +336,19 @@ impl Pair {
         for def in store::shared_defs() {
             let request = FetchRequest::entity(def.name)
                 .in_namespace(store::SHARED)
+                .select(
+                    ["id", "uid", "created_at", "updated_at", "rev"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .chain(
+                            def.attrs
+                                .iter()
+                                .filter(|a| {
+                                    !matches!(a.name.as_str(), "worker_id" | "conversation_turn_id")
+                                })
+                                .map(|a| a.name.clone()),
+                        ),
+                )
                 .limit(1000);
             assert_eq!(
                 self.databases[1].fetch(&request),
@@ -447,6 +479,8 @@ fn project_store_actual_runtimes_match_archive_pages_scopes_and_search() {
                 "kind":"claude","title":id,"started_at_ms":1_699_999_800_000i64,"cwd":cwd,"previous_run_id":previous})).unwrap();
             run.entries = (1..=18)
                 .map(|revision| agents::RunEntry {
+                    worker_id: None,
+                    conversation_turn_id: None,
                     tool: None,
                     revision,
                     event_id: Some(format!("event-{revision}")),

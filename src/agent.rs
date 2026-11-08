@@ -128,6 +128,49 @@ fn run_inner(command: Agent, opts: &CliArgs) -> Result<i32> {
             })?,
     };
     yinz_session::sessions::validate_session_name(&session).map_err(|error| anyhow!(error))?;
+    if let Agent::Archive(yinz_cli::agent_archive::AgentArchive::AgentHistoryRepair {
+        run_id,
+        apply,
+        ..
+    }) = &command
+    {
+        let send = |op: &str, args: serde_json::Value| -> Result<serde_json::Value> {
+            let reply = yinz_client::store_client::request(
+                &crate::remote_commands::target(&session.clone().into()),
+                yinz_cli::projects::pipe_action(
+                    "agent_action",
+                    serde_json::json!({"op":op,"args":args,"structured_reply":true}),
+                ),
+                caller,
+            )
+            .context("request history repair from owning agent service")?;
+            Ok(reply)
+        };
+        let snapshot = send(
+            "agent_history_repair_snapshot",
+            serde_json::json!({"run_id":run_id}),
+        )?;
+        let run = &snapshot["run"];
+        if run["kind"] != "claude" || !run["host"].is_null() || !run["bubblewrap"].is_null() {
+            bail!("history repair requires a local Claude transcript in this environment");
+        }
+        let provider_session = run["session_id"]
+            .as_str()
+            .context("recorded provider session missing")?;
+        let cwd = run["cwd"]
+            .as_str()
+            .context("recorded working directory missing")?;
+        let path = yinz_runtime::agent::history::transcript(cwd, provider_session)
+            .context("local Claude transcript unavailable")?;
+        let recovered = yinz_runtime::agent::history::recover(&path, provider_session, None);
+        let reply = send(
+            "agent_history_repair",
+            serde_json::json!({"run_id":run_id,"apply":apply,
+            "expected_rev":snapshot["expected_rev"],"expected_revision":run["revision"],"messages":recovered.messages}),
+        )?;
+        allow_closed_stdout(writeln!(std::io::stdout().lock(),"{}",serde_json::json!({"repair":reply,"files":recovered.files,"diagnostics":recovered.diagnostics})).context("write history repair report"))?;
+        return Ok(0);
+    }
     let action = match &command {
         Agent::Archive(archive) => Some(archive.action().map_err(anyhow::Error::msg)?),
         Agent::Register { pane_id, kind, .. } => Some(yinz_cli::projects::pipe_action(

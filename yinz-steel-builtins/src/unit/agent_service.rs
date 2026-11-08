@@ -1717,3 +1717,109 @@ fn waiting_manifest_preserves_one_permission_or_question_toast() {
         );
     }
 }
+
+#[test]
+fn conversation_capture_attributes_workers_and_deduplicates_alternative_completions() {
+    let (mut runtime, _) = plugin_with_source(
+        "agent-service",
+        r#"
+        (require "./agent-service/state.scm" "./agent-service/messages.scm" "./agent-service/runs.scm")
+        (as-set! "host" "host") (as-set! "session" "destination")
+        (define (hook raw)
+          (define event (as-result (as-model "HookEvent" (yinz-json-string raw))))
+          (as-call "record-event" 7 "claude" event 100))
+        (define (entries) (hash-ref (as-map-get "runs" 7 #f) "entries"))
+    "#,
+        json!({}),
+        BTreeMap::new(),
+        "",
+    );
+    let mut hook = |event: serde_json::Value| runtime.invoke("hook", vec![event]).unwrap();
+    hook(
+        json!({"hook_event_name":"UserPromptSubmit","session_id":"conversation","prompt_id":"one","prompt":"first"}),
+    );
+    hook(
+        json!({"hook_event_name":"MessageDisplay","session_id":"conversation","prompt_id":"one","message_id":"reply","index":0,"final":true,"delta":"answer"}),
+    );
+    hook(
+        json!({"hook_event_name":"Stop","session_id":"conversation","last_assistant_message":"answer"}),
+    );
+    hook(
+        json!({"hook_event_name":"Stop","session_id":"conversation","prompt_id":"one","_yinz_claude_turn_complete":true,"last_assistant_message":"answer"}),
+    );
+    hook(
+        json!({"hook_event_name":"UserPromptSubmit","session_id":"conversation","prompt_id":"two","prompt":"second"}),
+    );
+    hook(
+        json!({"hook_event_name":"Stop","session_id":"conversation","prompt_id":"two","last_assistant_message":"answer"}),
+    );
+    hook(
+        json!({"hook_event_name":"SubagentStop","session_id":"conversation","agent_id":"worker","agent_type":"general-purpose","assistant_messages":[{"source_id":"claude:conversation:worker:source","turn_id":"work","worker_id":"worker","created_at_ms":5,"text":"worker reply","incomplete":false}]}),
+    );
+    let entries = runtime.invoke("entries", vec![]).unwrap();
+    let entries = entries.as_array().unwrap();
+    assert_eq!(entries.len(), 5);
+    assert_eq!(entries[1]["kind"], "message");
+    assert_eq!(entries[1]["conversation_turn_id"], "one");
+    assert_eq!(entries[3]["kind"], "result");
+    assert_eq!(entries[3]["conversation_turn_id"], "two");
+    assert_eq!(entries[4]["worker_id"], "worker");
+    assert_eq!(entries[4]["created_at_ms"], 5);
+}
+
+#[test]
+fn conversation_repair_is_read_only_until_apply_idempotent_and_revision_guarded() {
+    for race in [false, true] {
+        let (mut runtime, _) = plugin_with_source(
+            "agent-service",
+            r#"
+        (require "./agent-service/state.scm" "./agent-service/messages.scm" "./agent-service/runs.scm")
+        (define (setup run)
+          (set-store run 10) (as-set! "host" "host") (as-set! "session" "destination")
+          (as-map-set! "runs" 7 run))
+        (define (preview args) (as-call "repair-history" args))
+        (define (snapshot) (as-call "repair-snapshot" (hash "run_id" "claude:handoff")))
+        (define (store) (list stored store-rev attempts))
+    "#,
+            json!({}),
+            BTreeMap::new(),
+            RUN_STORE_PRELUDE,
+        );
+        let run = json!({"id":"claude:handoff","pane_id":7,"kind":"claude","session_id":"handoff","host_id":"host","yinz_session_name":"destination","started_at_ms":1,"revision":0,"entries":[]});
+        runtime.invoke("setup", vec![run]).unwrap();
+        let mut args = json!({"run_id":"claude:handoff","expected_rev":10,"expected_revision":0,"apply":false,"messages":[{"source_id":"claude:handoff:worker:source","worker_id":"worker","turn_id":"turn","created_at_ms":5,"text":"recovered assistant prose","incomplete":false}]});
+        let preview = runtime.invoke("preview", vec![args.clone()]).unwrap();
+        assert_eq!(preview["added"], 1);
+        let store = runtime.invoke("store", vec![]).unwrap();
+        assert_eq!(store[1], 10);
+        assert_eq!(store[2], json!([]));
+        args["apply"] = json!(true);
+        if race {
+            runtime
+                .invoke("faults", vec![json!(null), json!(true)])
+                .unwrap();
+            assert!(runtime.invoke("preview", vec![args]).is_err());
+            let store = runtime.invoke("store", vec![]).unwrap();
+            assert_eq!(store[1], 11);
+            assert_eq!(store[0]["entries"][0]["text"], "racing source");
+            assert_eq!(store[0]["entries"].as_array().unwrap().len(), 1);
+            continue;
+        }
+        let applied = runtime.invoke("preview", vec![args.clone()]).unwrap();
+        assert_eq!(applied["added"], 1);
+        let store = runtime.invoke("store", vec![]).unwrap();
+        assert_eq!(store[1], 11);
+        assert_eq!(store[2], json!([10]));
+        assert!(
+            runtime.invoke("preview", vec![args.clone()]).is_err(),
+            "stale snapshot must conflict"
+        );
+        let snapshot = runtime.invoke("snapshot", vec![]).unwrap();
+        args["expected_rev"] = snapshot["expected_rev"].clone();
+        args["expected_revision"] = snapshot["run"]["revision"].clone();
+        assert_eq!(runtime.invoke("preview", vec![args]).unwrap()["added"], 0);
+        let store = runtime.invoke("store", vec![]).unwrap();
+        assert_eq!(store[1], 11);
+        assert_eq!(store[0]["entries"][0]["created_at_ms"], 5);
+    }
+}

@@ -477,6 +477,12 @@ pub fn entry_reply(entry: &RunEntry, now_ms: i64) -> serde_json::Value {
         "age": entry.created_at_ms.map(|at| crate::agents::short_age(now_ms, at)),
         "text": entry.text,
     });
+    if let Some(worker) = entry.worker() {
+        reply["worker_id"] = worker.into();
+    }
+    if let Some(turn) = &entry.conversation_turn_id {
+        reply["conversation_turn_id"] = turn.clone().into();
+    }
     if let Some(tool) = &entry.tool {
         reply["tool"] = serde_json::json!(tool);
     }

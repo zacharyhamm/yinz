@@ -24,3 +24,5 @@ pub use project_data::{git_probe, location, paths, projects, store};
 pub mod pane_operations;
 
 pub mod quota;
+
+pub mod conversation;
