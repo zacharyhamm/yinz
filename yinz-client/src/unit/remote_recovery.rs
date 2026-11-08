@@ -458,6 +458,96 @@ fn eof_starts_remote_recovery_but_explicit_detach_does_not() {
 }
 
 #[test]
+fn recovery_status_counts_down_the_connection_attempt_deadline_to_zero() {
+    let os = crate::test_support::FakeClientOsApi::new().capturing_stdout();
+    let mut recovery = Recovery::new(
+        "host".into(),
+        CommandIsExecuting::new(),
+        &Default::default(),
+        &Default::default(),
+    );
+    recovery.control.lost(0, "outage".into());
+    recovery.attempt_number = 1;
+    let start = Instant::now();
+    // Keep the attempt pending without starting an SSH worker or waiting in real time.
+    let (_sender, result) = mpsc::channel();
+    recovery.attempt = Some(Attempt {
+        cancelled: Arc::new(AtomicBool::new(false)),
+        deadline: start + ATTEMPT_TIMEOUT,
+        result,
+        worker: None,
+    });
+    for elapsed in 0..=30 {
+        let now = start + Duration::from_secs(elapsed);
+        assert!(recovery.poll(&os, "work", now).unwrap().is_none());
+        let before = os.stdout_bytes().len();
+        recovery.paint_status(&os, "work", now).unwrap();
+        let output = String::from_utf8(os.stdout_bytes()[before..].to_vec()).unwrap();
+        assert!(
+            output.contains(&format!("Attempt 1 · connecting ({}s left)", 30 - elapsed)),
+            "elapsed {elapsed}s: {output:?}"
+        );
+        // Whole-second ticks keep the blink unchanged, so the timer alone must repaint.
+        assert_eq!(
+            output.contains(crate::terminal_escapes::CLEAR_SCREEN),
+            elapsed == 0
+        );
+    }
+    // Allow for cancellation/cleanup taking longer than the attempt's deadline.
+    recovery
+        .paint_status(&os, "work", start + Duration::from_secs(35))
+        .unwrap();
+    assert!(recovery
+        .status
+        .as_ref()
+        .unwrap()
+        .2
+        .contains("connecting (0s left)"));
+}
+
+#[test]
+fn recovery_status_rounds_remaining_seconds_up_for_attempts_and_retry_waits() {
+    for waiting in [false, true] {
+        let os = crate::test_support::FakeClientOsApi::new().capturing_stdout();
+        let mut recovery = Recovery::new(
+            "host".into(),
+            CommandIsExecuting::new(),
+            &Default::default(),
+            &Default::default(),
+        );
+        recovery.control.lost(0, "outage".into());
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(2);
+        let (_sender, result) = mpsc::channel();
+        if waiting {
+            recovery.next_retry = Some(deadline);
+        } else {
+            recovery.attempt = Some(Attempt {
+                cancelled: Arc::new(AtomicBool::new(false)),
+                deadline,
+                result,
+                worker: None,
+            });
+        }
+        for (elapsed_ms, seconds) in [(0, 2), (999, 2), (1000, 1), (1999, 1), (2000, 0), (2500, 0)]
+        {
+            recovery
+                .paint_status(&os, "work", start + Duration::from_millis(elapsed_ms))
+                .unwrap();
+            let expected = if waiting {
+                format!("next retry {seconds}s")
+            } else {
+                format!("connecting ({seconds}s left)")
+            };
+            assert!(
+                recovery.status.as_ref().unwrap().2.contains(&expected),
+                "waiting={waiting}, elapsed={elapsed_ms}ms"
+            );
+        }
+    }
+}
+
+#[test]
 fn recovery_status_uses_client_theme_for_text_and_screen_background() {
     use yinz_config::theme::Theme;
     use yinz_types::colors::PaletteColor;

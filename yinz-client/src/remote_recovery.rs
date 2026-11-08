@@ -234,6 +234,7 @@ impl Backoff {
 
 struct Attempt {
     cancelled: Arc<AtomicBool>,
+    deadline: Instant,
     result: mpsc::Receiver<Result<PreparedConnection, ConnectionFailure>>,
     worker: Option<JoinHandle<()>>,
 }
@@ -422,24 +423,20 @@ impl Recovery {
                 ..Default::default()
             };
             let env = self.env.clone();
+            let deadline = now + ATTEMPT_TIMEOUT;
             let (sender, result) = mpsc::channel();
             let worker = std::thread::Builder::new()
                 .name("remote-reconnect".into())
                 .spawn(move || {
-                    let prepared = session_switch::prepare_recovery(
-                        host,
-                        name,
-                        assets,
-                        &stop,
-                        Instant::now() + ATTEMPT_TIMEOUT,
-                        &env,
-                    )
-                    .map_err(|error| ConnectionFailure::classify(error, &stop));
+                    let prepared =
+                        session_switch::prepare_recovery(host, name, assets, &stop, deadline, &env)
+                            .map_err(|error| ConnectionFailure::classify(error, &stop));
                     let _ = sender.send(prepared);
                 })
                 .context("start remote reconnection worker")?;
             self.attempt = Some(Attempt {
                 cancelled,
+                deadline,
                 result,
                 worker: Some(worker),
             });
@@ -506,16 +503,17 @@ impl Recovery {
             })
             .unwrap_or(self.style);
         let size = os.get_terminal_size();
-        let retry = self
-            .next_retry
-            .map(|at| {
-                format!(
-                    "next retry {}s",
-                    at.saturating_duration_since(now).as_secs()
-                        + u64::from(at.saturating_duration_since(now).subsec_nanos() != 0)
-                )
-            })
-            .unwrap_or_else(|| "connecting (30s limit)".into());
+        let seconds_left = |deadline: Instant| {
+            let remaining = deadline.saturating_duration_since(now);
+            remaining.as_secs() + u64::from(remaining.subsec_nanos() != 0)
+        };
+        let retry = if let Some(at) = self.next_retry {
+            format!("next retry {}s", seconds_left(at))
+        } else if let Some(attempt) = &self.attempt {
+            format!("connecting ({}s left)", seconds_left(attempt.deadline))
+        } else {
+            "connecting".into()
+        };
         let started = *self.status_started.get_or_insert(now);
         let indicator =
             if (now.saturating_duration_since(started).as_millis() / 500).is_multiple_of(2) {
