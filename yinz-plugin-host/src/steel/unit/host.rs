@@ -851,3 +851,107 @@ fn plugin_pane_in_place_of_pane_id_requires_open_terminals_or_plugins_and_report
     assert!(refused[1].as_str().unwrap().contains("is suppressed"));
     handler.join().unwrap();
 }
+
+#[test]
+fn client_timezone_real_dispatch_selects_actor_and_preserves_server_local_offset() {
+    const CHILD: &str = "YINZ_CLIENT_TIMEZONE_DISPATCH_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "steel::tests::client_timezone_real_dispatch_selects_actor_and_preserves_server_local_offset", "--nocapture"])
+            .env(CHILD, "1").env("TZ", "UTC").output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        return;
+    }
+
+    use chrono::{Local, Offset, TimeZone};
+    use yinz_bus::screen::ScreenInstruction;
+    let mut env = env();
+    let owner = env.client_id;
+    let (sender, receiver) = channels::unbounded();
+    env.senders.to_screen = Some(SenderWithContext::new(sender));
+    let responder = std::thread::spawn(move || {
+        while let Ok((instruction, _)) = receiver.recv() {
+            let ScreenInstruction::GetClientTimezone {
+                client_id,
+                response_channel,
+            } = instruction
+            else {
+                panic!("{instruction:?}")
+            };
+            let report = match client_id.get() {
+                9 => Some("America/Chicago"),
+                10 => Some("Asia/Kolkata"),
+                _ => None,
+            };
+            response_channel
+                .send(yinz_runtime::client_time::ClientTimeZone::from_client(
+                    report,
+                ))
+                .unwrap();
+        }
+    });
+    let mut call = |command: Value| {
+        dispatch(
+            &mut env,
+            json!({"__yinz_runtime":{"client":9,"command":command,"permission_id":null}}),
+        )
+    };
+    assert_eq!(
+        call(json!({"GetClientTimezone":{}})).unwrap(),
+        "America/Chicago"
+    );
+    assert_eq!(
+        call(json!({"GetClientTimezone":{"client_id":10}})).unwrap(),
+        "Asia/Kolkata"
+    );
+    assert_eq!(
+        call(json!({"GetClientTimezone":{"client_id":11}})).unwrap(),
+        Value::Null
+    );
+    for (epoch, chicago) in [(1767225600000i64, -21600), (1782864000000, -18000)] {
+        assert_eq!(
+            call(json!({"GetLocalUtcOffset":{"epoch_ms":epoch,"client_id":9}})).unwrap(),
+            chicago
+        );
+        assert_eq!(
+            call(json!({"GetLocalUtcOffset":{"epoch_ms":epoch,"timezone":"Asia/Kolkata"}}))
+                .unwrap(),
+            19800
+        );
+        let local = Local
+            .timestamp_millis_opt(epoch)
+            .single()
+            .unwrap()
+            .offset()
+            .fix()
+            .local_minus_utc();
+        assert_eq!(
+            call(json!({"GetLocalUtcOffset":{"epoch_ms":epoch}})).unwrap(),
+            local
+        );
+    }
+    for payload in [
+        json!({"epoch_ms":0,"client_id":11}),
+        json!({"epoch_ms":0,"timezone":"invalid/zone"}),
+        json!({"epoch_ms":i64::MAX,"client_id":9}),
+    ] {
+        assert_eq!(
+            call(json!({"GetLocalUtcOffset":payload})).unwrap(),
+            Value::Null
+        );
+    }
+    assert!(format!(
+        "{:#}",
+        call(json!({"GetLocalUtcOffset":{"epoch_ms":0,"client_id":9,"timezone":"UTC"}}))
+            .unwrap_err()
+    )
+    .contains("mutually exclusive"));
+    let local_now = Local::now().offset().fix().local_minus_utc();
+    assert_eq!(
+        call(json!({"GetLocalUtcOffset":{"epoch_ms":i64::MAX}})).unwrap(),
+        local_now
+    );
+    assert_eq!(env.client_id, owner);
+    drop(env);
+    responder.join().unwrap();
+}

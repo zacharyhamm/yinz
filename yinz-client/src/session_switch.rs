@@ -453,7 +453,7 @@ impl<'a> Sessions<'a> {
                     yinz_runtime::host_terminal_env::host_terminal_env_with_overrides(
                         &self.local_config.config.env,
                     );
-                assets.timezone = yinz_runtime::client_time::capture_timezone();
+                assets.timezone = os.capture_timezone();
                 let config = self.cli_args.config.clone();
                 let termios = os.original_termios();
                 let env = self.local_config.config.env.clone();

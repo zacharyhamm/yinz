@@ -652,3 +652,41 @@ builtin_scheme_suites! {
     scheme_builtin_configuration_palette_integration => "configuration-palette",
     scheme_builtin_agent_exit_integration => "agent-exit",
 }
+
+#[test]
+fn client_timezone_installed_mock_helpers_require_explicit_stubs() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("plugin.scm"),
+        r#"
+(yinz-declare-pane)
+(define state json-null)
+(define (load config) (set! state (yinz-client-timezone)))
+(define (update event)
+  (set! state (list (yinz-client-timezone 9) (yinz-client-utc-offset 0 9) event)) #t)
+(define (render rows cols) (yinz-json-string state))
+"#,
+    )
+    .unwrap();
+    let path = root.path().join("plugin.test.scm");
+    std::fs::write(&path, r#"
+(test "unstubbed timezone" (lambda ()
+  (assert-throws (lambda () (test-load-plugin "./plugin.scm")) "unstubbed host operation GetClientTimezone")))
+(test "nullable timezone helpers and event" (lambda ()
+  (test-load-plugin "./plugin.scm" (hash "replies" (hash "GetClientTimezone" "America/Chicago")))
+  (assert (string-contains? (test-render) "America/Chicago"))
+  (test-stub "GetClientTimezone" json-null)
+  (test-stub "GetLocalUtcOffset" json-null)
+  (test-event (hash "ClientTimezoneChanged" (hash "client_id" 9 "timezone" json-null)))
+  (assert (string-contains? (test-render) "[null,null,"))))
+"#).unwrap();
+    let report = run(
+        super::super::fixture_data().path(),
+        &path,
+        &PluginTestOptions::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(report.passed(), "{report:#?}");
+}

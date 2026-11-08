@@ -72,6 +72,7 @@ pub struct FakeClientOsApi {
     server_spawner: Arc<Mutex<Option<ServerSpawner>>>,
     env: Arc<Mutex<HashMap<String, String>>>,
     received_server_messages: Arc<Mutex<Vec<String>>>,
+    timezone: Arc<Mutex<Option<Option<String>>>>,
 }
 
 impl Clone for FakeClientOsApi {
@@ -92,6 +93,7 @@ impl Clone for FakeClientOsApi {
             server_spawner: self.server_spawner.clone(),
             env: self.env.clone(),
             received_server_messages: self.received_server_messages.clone(),
+            timezone: self.timezone.clone(),
         }
     }
 }
@@ -179,6 +181,7 @@ impl FakeClientOsApi {
             server_spawner: Arc::new(Mutex::new(server_spawner)),
             env: Arc::new(Mutex::new(env)),
             received_server_messages: received_server_messages.clone(),
+            timezone: Arc::default(),
         };
         let fake_client_handle = FakeClientHandle {
             client_screen,
@@ -189,6 +192,11 @@ impl FakeClientOsApi {
             send_instructions_to_server: fake_client_os_api.send_instructions_to_server.clone(),
         };
         (fake_client_os_api, fake_client_handle)
+    }
+
+    pub fn with_timezone(self, timezone: Option<String>) -> Self {
+        *self.timezone.lock().unwrap() = Some(timezone);
+        self
     }
 
     pub fn with_cli_stdin(mut self, stdin: Option<&str>) -> Self {
@@ -264,7 +272,16 @@ impl ServerConnection for FakeClientOsApi {
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
             + 1;
     }
-    fn send_to_server(&self, msg: ClientToServerMsg) {
+    fn send_to_server(&self, mut msg: ClientToServerMsg) {
+        if let Some(timezone) = self.timezone.lock().unwrap().clone() {
+            match &mut msg {
+                ClientToServerMsg::FirstClientConnected { cli_assets, .. }
+                | ClientToServerMsg::AttachClient { cli_assets, .. } => {
+                    cli_assets.timezone = timezone
+                },
+                _ => {},
+            }
+        }
         if !self.is_current_connection() {
             return;
         }
@@ -407,6 +424,13 @@ impl SignalSource for FakeClientOsApi {
 }
 
 impl ClientOsApi for FakeClientOsApi {
+    fn capture_timezone(&self) -> Option<String> {
+        self.timezone
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(yinz_runtime::client_time::capture_timezone)
+    }
     fn original_termios(&self) -> Option<yinz_runtime::termios::WireTermios> {
         None
     }

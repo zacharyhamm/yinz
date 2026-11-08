@@ -30,6 +30,7 @@ pub struct TestRunner {
     env: std::collections::HashMap<String, String>,
     stdout_tap: Option<crossbeam::channel::Sender<Vec<u8>>>,
     skip_concurrency_slot: bool,
+    timezone: Option<Option<String>>,
 }
 
 impl TestRunner {
@@ -42,11 +43,17 @@ impl TestRunner {
             env: std::collections::HashMap::new(),
             stdout_tap: None,
             skip_concurrency_slot: false,
+            timezone: None,
         }
     }
 
-    /// The config directory the session is told about, where `config.d/` and `plugins/` are
-    /// looked for. Tests that persist configuration point this at a folder of their own.
+    /// Override the report, including an explicit missing report, without changing process TZ.
+    pub fn with_timezone(mut self, timezone: Option<&str>) -> Self {
+        self.timezone = Some(timezone.map(str::to_owned));
+        self
+    }
+
+    /// The config directory used for config.d and plugins, isolated for each fixture.
     pub fn with_config_dir(mut self, config_dir: PathBuf) -> Self {
         self.config_dir = Some(config_dir);
         self
@@ -100,6 +107,11 @@ impl TestRunner {
 
         let (fake_client_os_api, fake_client_handle) =
             FakeClientOsApi::new_with_env(self.size, Some(server_spawner), self.env);
+        let fake_client_os_api = if let Some(timezone) = self.timezone {
+            fake_client_os_api.with_timezone(timezone)
+        } else {
+            fake_client_os_api
+        };
         if let Some(stdout_tap) = self.stdout_tap {
             fake_client_handle.client_screen.set_stdout_tap(stdout_tap);
         }
@@ -646,7 +658,25 @@ impl TestSession {
         size: Size,
         pane: Option<yinz_types::data::PaneId>,
     ) -> TestClient {
+        self.attach_client_options(size, pane, None)
+    }
+
+    pub fn attach_client_with_timezone(&self, size: Size, timezone: Option<&str>) -> TestClient {
+        self.attach_client_options(size, None, Some(timezone.map(str::to_owned)))
+    }
+
+    fn attach_client_options(
+        &self,
+        size: Size,
+        pane: Option<yinz_types::data::PaneId>,
+        timezone: Option<Option<String>>,
+    ) -> TestClient {
         let (fake_client_os_api, fake_client_handle) = FakeClientOsApi::new(size, None);
+        let fake_client_os_api = if let Some(timezone) = timezone {
+            fake_client_os_api.with_timezone(timezone)
+        } else {
+            fake_client_os_api
+        };
         let thread = spawn_client_thread(
             fake_client_os_api,
             self.cli_args.clone(),

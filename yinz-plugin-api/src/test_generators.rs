@@ -1647,6 +1647,11 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
                 tc.draw(generators::integers::<usize>()),
             )
         })),
+        CommandType::GetClientTimezone => PluginCommand::GetClientTimezone {
+            client_id: tc
+                .draw(generators::optional(generators::integers::<u16>()))
+                .map(|id| yinz_types::internal_ids::ClientId::new(id as u32)),
+        },
         CommandType::GetCellPixelSize => PluginCommand::GetCellPixelSize,
         CommandType::GetPluginIds => PluginCommand::GetPluginIds,
         CommandType::GetYinzVersion => PluginCommand::GetYinzVersion,
@@ -1672,6 +1677,10 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             ),
         },
         CommandType::GetLocalUtcOffset => PluginCommand::GetLocalUtcOffset {
+            client_id: tc
+                .draw(generators::optional(generators::integers::<u16>()))
+                .map(|id| yinz_types::internal_ids::ClientId::new(id as u32)),
+            timezone: optional_strings(tc),
             epoch_ms: yinz_types::units::SignedUnixMillis::new(
                 tc.draw(generators::integers::<i64>()),
             ),

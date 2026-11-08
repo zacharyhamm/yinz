@@ -409,3 +409,14 @@
           (%async-deliver (string-append "pipe:" (hash-ref message "name")) message waiters '()))))
      (yinz-async-poll))))
 (define (yinz-async-unloaded) %async-unloaded)
+
+; Rule strings and offsets are nullable. Always select a client for this helper:
+; omitting selectors on raw GetLocalUtcOffset deliberately means server-local.
+(define (yinz-client-timezone . client)
+  (yinz-command (hash "GetClientTimezone"
+    (if (null? client) (hash) (hash "client_id" (car client))))))
+(define (yinz-client-utc-offset epoch-ms . client)
+  (define selected (if (null? client)
+    (or %async-client (hash-ref (yinz-command "GetPluginIds") "client_id"))
+    (car client)))
+  (yinz-command (hash "GetLocalUtcOffset" (hash "epoch_ms" epoch-ms "client_id" selected))))

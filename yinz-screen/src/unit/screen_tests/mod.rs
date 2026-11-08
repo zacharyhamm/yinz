@@ -2081,6 +2081,7 @@ mod capabilities;
 mod cli_actions;
 mod cli_layouts_and_rename;
 mod cli_pane_and_tab_id;
+mod client_timezone;
 mod clients;
 #[cfg(unix)]
 mod clipboard;

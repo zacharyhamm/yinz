@@ -27,9 +27,16 @@ pub struct SessionLayoutMetadata {
     pub default_shell: Option<PathBuf>,
     pub default_editor: Option<PathBuf>,
     tabs: Vec<TabLayoutMetadata>,
+    client_timezones: BTreeMap<ClientId, Option<String>>,
 }
 
 impl SessionLayoutMetadata {
+    pub fn set_client_timezones(&mut self, timezones: BTreeMap<ClientId, Option<String>>) {
+        self.client_timezones = timezones;
+    }
+    pub fn client_timezone(&self, client: ClientId) -> Option<String> {
+        self.client_timezones.get(&client).cloned().flatten()
+    }
     pub fn new(default_layout: Box<Layout>) -> Self {
         SessionLayoutMetadata {
             default_layout,

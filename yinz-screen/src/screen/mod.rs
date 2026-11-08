@@ -3895,7 +3895,15 @@ impl Screen {
         default_shell: Option<PathBuf>,
         tab_index: Option<TabId>,
     ) -> SessionLayoutMetadata {
-        self.layout_metadata_for(default_shell, tab_index, LayoutPurpose::Dump)
+        let mut metadata = self.layout_metadata_for(default_shell, tab_index, LayoutPurpose::Dump);
+        metadata.set_client_timezones(
+            self.connected_clients
+                .borrow()
+                .iter()
+                .map(|id| (*id, self.client_timezone(*id).report().map(str::to_owned)))
+                .collect(),
+        );
+        metadata
     }
     /// The only layout metadata that carries agents to resume: see [`LayoutPurpose`].
     fn session_save_layout_metadata(

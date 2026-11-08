@@ -212,8 +212,15 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
         CommandType::GetLocalTime => {
             decode(bytes).and_then(|r: ProtobufGetLocalTimeResponse| value(r.text))
         },
+        CommandType::GetClientTimezone => decode(bytes).and_then(
+            |r: yinz_plugin_api::plugin_command::ProtobufGetClientTimezoneResponse| {
+                value(r.timezone)
+            },
+        ),
         CommandType::GetLocalUtcOffset => {
-            decode(bytes).and_then(|r: ProtobufGetLocalUtcOffsetResponse| value(r.offset_seconds))
+            decode(bytes).and_then(|r: ProtobufGetLocalUtcOffsetResponse| {
+                value((!r.unavailable).then_some(r.offset_seconds))
+            })
         },
         CommandType::GetLayoutDir => {
             decode(bytes).and_then(|r: ProtobufGetLayoutDirResponse| value(r.layout_dir))

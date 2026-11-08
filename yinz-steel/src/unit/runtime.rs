@@ -1023,3 +1023,69 @@ fn pane_snapshot_cache_keeps_views_and_revalidates_changed_inputs() {
         ["#true"]
     );
 }
+
+#[test]
+fn client_timezone_helpers_select_the_actor_and_preserve_null_and_raw_events() {
+    use std::sync::{Arc, Mutex};
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let sent = commands.clone();
+    let mut runtime = Runtime::new(move |envelope| {
+        let actor = envelope
+            .pointer("/__yinz_runtime/client")
+            .cloned()
+            .unwrap_or(json!(3));
+        let command = envelope
+            .pointer("/__yinz_runtime/command")
+            .cloned()
+            .unwrap_or(envelope);
+        sent.lock().unwrap().push(command.clone());
+        Ok(if command == "GetPluginIds" {
+            json!({"client_id":actor})
+        } else if let Some(payload) = command.get("GetClientTimezone") {
+            if payload.get("client_id").unwrap_or(&actor) == 9 {
+                Value::Null
+            } else {
+                json!("Asia/Kolkata")
+            }
+        } else if command.get("GetLocalUtcOffset").is_some() {
+            json!(19800)
+        } else {
+            Value::Null
+        })
+    })
+    .unwrap();
+    runtime
+        .eval("(define (update event) (set! last-event event) #t) (define last-event #f)")
+        .unwrap();
+    assert_eq!(
+        runtime.invoke("yinz-client-timezone", vec![]).unwrap(),
+        json!("Asia/Kolkata")
+    );
+    assert_eq!(
+        runtime
+            .invoke("yinz-client-timezone", vec![json!(9)])
+            .unwrap(),
+        Value::Null
+    );
+    assert_eq!(
+        runtime
+            .invoke("yinz-client-utc-offset", vec![json!(0)])
+            .unwrap(),
+        json!(19800)
+    );
+    assert!(commands
+        .lock()
+        .unwrap()
+        .contains(&json!({"GetLocalUtcOffset":{"epoch_ms":0,"client_id":3}})));
+    runtime.invoke("yinz-async-enter", vec![json!(7)]).unwrap();
+    runtime
+        .invoke("yinz-client-utc-offset", vec![json!(-1)])
+        .unwrap();
+    assert!(commands
+        .lock()
+        .unwrap()
+        .contains(&json!({"GetLocalUtcOffset":{"epoch_ms":-1,"client_id":7}})));
+    let event = json!({"ClientTimezoneChanged":{"client_id":9,"timezone":null}});
+    runtime.update(event.clone()).unwrap();
+    assert_eq!(runtime.value("last-event").unwrap(), event);
+}

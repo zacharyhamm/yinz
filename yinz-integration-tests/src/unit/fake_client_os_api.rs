@@ -124,3 +124,15 @@ fn cancelling_an_idle_fake_listener_releases_callbacks() {
         Err(std::sync::mpsc::TryRecvError::Disconnected)
     );
 }
+
+#[test]
+fn client_timezone_override_survives_cloning_and_prepared_attachment_capture() {
+    let (client, _) = FakeClientOsApi::new(crate::TERMINAL_SIZE, None);
+    assert!(client.timezone.lock().unwrap().is_none());
+    let client = client.with_timezone(Some("America/Chicago".into()));
+    let clone = client.box_clone();
+    assert_eq!(clone.capture_timezone().as_deref(), Some("America/Chicago"));
+    let client = client.with_timezone(None);
+    assert_eq!(client.capture_timezone(), None);
+    assert_eq!(clone.capture_timezone(), None);
+}

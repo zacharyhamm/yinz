@@ -67,9 +67,11 @@ pub(crate) fn default_reply(command: &PluginCommand) -> Option<Vec<u8>> {
                 .unwrap_or_default(),
         }
         .encode_to_vec(),
-        PluginCommand::GetLocalUtcOffset { .. } => {
-            ProtobufGetLocalUtcOffsetResponse { offset_seconds: 0 }.encode_to_vec()
-        },
+        PluginCommand::GetLocalUtcOffset { .. } => ProtobufGetLocalUtcOffsetResponse {
+            offset_seconds: 0,
+            unavailable: false,
+        }
+        .encode_to_vec(),
         PluginCommand::OpenFile(..) => ProtobufOpenFileResponse::default().encode_to_vec(),
         PluginCommand::OpenTerminal(..) => ProtobufOpenTerminalResponse::default().encode_to_vec(),
         PluginCommand::OpenFileInPlaceOfPlugin(..) => {

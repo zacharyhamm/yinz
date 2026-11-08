@@ -107,3 +107,26 @@ fn pane_tabs_metadata_roundtrip_omits_terminal_backed_wrappers() {
         }
     }
 }
+
+#[test]
+fn client_timezone_metadata_is_transient_and_survives_pty_enrichment() {
+    let mut metadata = SessionLayoutMetadata::default();
+    let first = yinz_types::internal_ids::ClientId::new(1);
+    metadata.set_client_timezones([(first, Some("America/Chicago".into()))].into());
+    metadata.update_default_shell("/bin/sh".into());
+    let snapshot = metadata.clone();
+    metadata.set_client_timezones(Default::default());
+    assert_eq!(
+        snapshot.client_timezone(first).as_deref(),
+        Some("America/Chicago")
+    );
+    assert_eq!(metadata.client_timezone(first), None);
+    let serialize = |value: SessionLayoutMetadata| {
+        yinz_session::session_serialization::serialize_session_layout(value.into()).unwrap()
+    };
+    assert_eq!(
+        serialize(snapshot),
+        serialize(metadata),
+        "timezone projection must not change saved layouts"
+    );
+}

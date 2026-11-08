@@ -459,6 +459,9 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::SetSelectable(selectable) => set_selectable(env, selectable),
             PluginCommand::ShowCursor(cursor_position) => show_cursor(env, cursor_position),
             PluginCommand::GetCellPixelSize => get_cell_pixel_size(env)?,
+            PluginCommand::GetClientTimezone { client_id } => {
+                plugins::get_client_timezone(env, client_id)?
+            },
             PluginCommand::GetPluginIds => get_plugin_ids(env),
             PluginCommand::GetYinzVersion => get_yinz_version(env),
             PluginCommand::GenerateRandomName => generate_random_name(env),
@@ -837,7 +840,11 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::DataCount { request } => data_count(env, request),
             PluginCommand::DataWatch { request, mode } => data_watch(env, request, mode),
             PluginCommand::DataCatalog { namespace } => data_catalog(env, namespace),
-            PluginCommand::GetLocalUtcOffset { epoch_ms } => get_local_utc_offset(env, epoch_ms),
+            PluginCommand::GetLocalUtcOffset {
+                epoch_ms,
+                client_id,
+                timezone,
+            } => get_local_utc_offset(env, epoch_ms, client_id, timezone)?,
             PluginCommand::GetLocalTime { epoch_ms } => get_local_time(env, epoch_ms),
             PluginCommand::DataUnwatch { watch_id } => data_unwatch(env, watch_id),
             PluginCommand::ScanHostFolder(folder_to_scan) => scan_host_folder(env, folder_to_scan),

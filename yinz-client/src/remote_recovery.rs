@@ -419,7 +419,7 @@ impl Recovery {
                 update_resume: self.update_resume.clone(),
                 host_terminal_env:
                     yinz_runtime::host_terminal_env::host_terminal_env_with_overrides(&self.env),
-                timezone: yinz_runtime::client_time::capture_timezone(),
+                timezone: os.capture_timezone(),
                 ..Default::default()
             };
             let env = self.env.clone();

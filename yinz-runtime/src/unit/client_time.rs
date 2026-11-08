@@ -146,3 +146,51 @@ fn capture_uses_client_tz_override() {
         assert!(output.status.success(), "{output:?}");
     }
 }
+
+#[test]
+fn client_timezone_reports_and_offsets_follow_rules_at_the_instant() {
+    for (report, winter, summer) in [
+        ("America/Chicago", -21600, -18000),
+        ("Asia/Kolkata", 19800, 19800),
+        ("CST6CDT,M3.2.0,M11.1.0", -21600, -18000),
+        ("+05:45", 20700, 20700),
+    ] {
+        let zone = ClientTimeZone::from_client(Some(report));
+        assert_eq!(zone.report(), Some(report));
+        for (instant, expected) in [
+            ("2026-01-01T18:00:00Z", winter),
+            ("2026-07-01T18:00:00Z", summer),
+        ] {
+            assert_eq!(
+                zone.utc_offset(instant.parse::<Timestamp>().unwrap().as_millisecond()),
+                Some(expected)
+            );
+        }
+        assert_eq!(zone.utc_offset(i64::MAX), None);
+        assert_eq!(zone.utc_offset(i64::MIN), None);
+    }
+    let zone = ClientTimeZone::from_client(Some("America/Chicago"));
+    for (instant, before, after) in [
+        ("2026-03-08T08:00:00Z", -21600, -18000),
+        ("2026-11-01T07:00:00Z", -18000, -21600),
+    ] {
+        let ms = instant.parse::<Timestamp>().unwrap().as_millisecond();
+        assert_eq!(zone.utc_offset(ms - 1), Some(before));
+        assert_eq!(zone.utc_offset(ms), Some(after));
+    }
+    let wire = format!("tzif:{}", STANDARD.encode(anonymous_rules()));
+    let zone = ClientTimeZone::from_client(Some(&wire));
+    assert_eq!(zone.report(), Some(wire.as_str()));
+    assert_eq!(zone.utc_offset(-1), Some(7200));
+    assert_eq!(zone.utc_offset(0), Some(1800));
+    for report in [
+        None,
+        Some("bad/zone"),
+        Some("tzif:invalid"),
+        Some("/etc/localtime"),
+    ] {
+        let zone = ClientTimeZone::from_client(report);
+        assert_eq!(zone.report(), None);
+        assert_eq!(zone.utc_offset(0), None);
+    }
+}

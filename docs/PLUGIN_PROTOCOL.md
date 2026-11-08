@@ -56,6 +56,7 @@ type PipeSource = { Cli: string } | { Plugin: number } | "Keybind";
 
 interface EventPayloads {
   CellPixelSizeChanged: { width: Integer; height: Integer } | null;
+  ClientTimezoneChanged: { client_id: number; timezone: string | null };
   ModeUpdate: ModeInfo; TabUpdate: TabInfo[]; PaneUpdate: PaneManifest; Key: KeyWithModifier;
   Mouse: Mouse; Timer: number; CopyToClipboard: 'Command' | 'Primary' | 'System'; Visible: boolean; CustomMessage: [string, string];
   FileSystemCreate: [string, FileMetadata | null][]; FileSystemRead: [string, FileMetadata | null][];
@@ -122,7 +123,7 @@ interface CommandArgs {
   CheckPlugin: {name: string; source: string; mode: PluginCheckMode};
   AgentControl: {id: string; request: string};
   Subscribe: EventType[]; Unsubscribe: EventType[]; SetSelectable: boolean;
-  ShowCursor: [Integer, Integer] | null; GetPluginIds: undefined; GetCellPixelSize: undefined; GetPluginIdsForUrl: string; GetPluginInfo: number | null; Pick: PickCommand; GetPluginIdsForUrlWithConfiguration: { url: string; configuration: Record<string, string> }; GetYinzVersion: undefined;
+  ShowCursor: [Integer, Integer] | null; GetPluginIds: undefined; GetCellPixelSize: undefined; GetClientTimezone: {client_id?: number}; GetPluginIdsForUrl: string; GetPluginInfo: number | null; Pick: PickCommand; GetPluginIdsForUrlWithConfiguration: { url: string; configuration: Record<string, string> }; GetYinzVersion: undefined;
   OpenFile: [FileToOpen, StringMap]; OpenFileFloating: [FileToOpen, FloatingPaneCoordinates | null, StringMap];
   OpenTerminal: FileToOpen; OpenTerminalFloating: [FileToOpen, FloatingPaneCoordinates | null];
   OpenCommandPane: [CommandToRun, StringMap]; OpenCommandPaneFloating: [CommandToRun, FloatingPaneCoordinates | null, StringMap];
@@ -226,13 +227,13 @@ interface CommandArgs {
   ProjectConfigRead: {directory: string}; ProjectConfigWrite: {directory: string; source: string; expected: string | null};
   SpawnAgent: {spec: AgentSpawnSpec; source_directory?: string | null; cwd?: string | null; name?: string | null; context?: StringMap; start_suppressed?: boolean};
   SetQuitNotice: {notice: string | null; guard: boolean}; ReloadPluginByUrl: string;
-  ReadPluginLog: {name: string; lines: Integer}; GetLocalUtcOffset: {epoch_ms: Integer}; GetLocalTime: {epoch_ms: Integer};
+  ReadPluginLog: {name: string; lines: Integer}; GetLocalUtcOffset: {epoch_ms: Integer; client_id?: number; timezone?: string}; GetLocalTime: {epoch_ms: Integer};
 }
 
 interface CommandReplies {
   CheckPlugin: PluginCheckReport;
-  GetPluginIds: PluginIds; GetCellPixelSize: { width: Integer; height: Integer } | null; GetPluginIdsForUrl: number[]; GetPluginInfo: PluginInfo | null; Pick: { options: PickOptions; cwd: string } | null; GetPluginIdsForUrlWithConfiguration: number[]; GetYinzVersion: string; GetUserPluginDir: string | null; GetLayoutDir: string | null;
-  GetLocalUtcOffset: number; GetLocalTime: string; GetSessionEnvironmentVariables: StringMap; GetPluginAliasConfiguration: StringMap;
+  GetPluginIds: PluginIds; GetCellPixelSize: { width: Integer; height: Integer } | null; GetClientTimezone: string | null; GetPluginIdsForUrl: number[]; GetPluginInfo: PluginInfo | null; Pick: { options: PickOptions; cwd: string } | null; GetPluginIdsForUrlWithConfiguration: number[]; GetYinzVersion: string; GetUserPluginDir: string | null; GetLayoutDir: string | null;
+  GetLocalUtcOffset: number | null; GetLocalTime: string; GetSessionEnvironmentVariables: StringMap; GetPluginAliasConfiguration: StringMap;
   GetFocusedPaneInfo: {tab_id: number; pane_id: PaneId}; GetPaneInfo: PaneInfo | null; GetTabInfo: TabInfo | null;
   GetPaneCwd: string | null; GetPanePid: number | null; GetPaneRunningCommand: string[] | null; GetPaneGitProbe: PaneGitProbe | null;
   GetPaneScrollback: PaneContents; GetDisconnectTargets: number[]; GetSessionList: SessionListSnapshot; CurrentSessionLastSavedTime: Integer | null;
@@ -423,7 +424,7 @@ interface PaneGitProbe {host: string; cwd: string; exit_code: number | null; met
 
 interface OrphanedPane {host_id: string; session_name: string | null; command: string; cwd: string | null; child_pid: number | null; started_at_unix: Integer; exit_status: number | null; buffered_bytes: Integer;}
 
-interface ClientInfo {client_id: number; pane_id: PaneId; running_command: string; is_current_client: boolean;}
+interface ClientInfo {client_id: number; pane_id: PaneId; running_command: string; is_current_client: boolean; timezone: string | null;}
 
 type NotificationSource = "Toast" | "Osc9" | "Osc99" | "Osc777";
 
@@ -928,3 +929,42 @@ The protobuf command carries `resolve_project_payload` as a directory string.
 Its reply uses the existing `AgentProvidersResponse` JSON result envelope:
 `{"Ok": ResolvedProject | null}` or `{"Err": string}`. The Steel bridge unwraps
 this envelope and raises errors.
+
+`GetClientTimezone {client_id?}` defaults to the acting client. Its nullable string
+is the validated report: an IANA name, POSIX rules, a fixed UTC offset, or `tzif:`
+followed by base64 TZif data. Missing, invalid, disconnected and unknown reports
+return null. Explicit rules are parsed as rules, never as filesystem paths.
+
+`GetLocalUtcOffset {epoch_ms, client_id?, timezone?}` returns seconds east of UTC
+at the requested instant, including DST and historical transitions. Select either
+a client or an explicit rule string; supplying both is an error. Missing/invalid
+selected rules or an out-of-range selected timestamp return null, with no
+server-zone fallback. Omitted selectors preserve the server-local behavior and
+its fallback to the current server offset for out-of-range timestamps.
+`GetLocalTime` also remains server-local. These queries require no permission;
+`ListClients` still requires `ReadApplicationState`.
+
+`ClientTimezoneChanged` requires no permission and broadcasts every subject
+client to all subscribed instances (pane, background/headless and shared).
+Successful attachments publish their current value, including null. Validated
+report changes publish updates; identical reports within an attachment are
+suppressed. Disconnect clears the state and publishes null. Every new attachment
+publishes again, including reused IDs. Subscription requests a snapshot of all
+attached interactive clients, including unknown zones, ordered with live updates;
+snapshot duplicates are allowed. Snapshots are scoped to the subscribing instance
+and its runtime generation. The payload's `client_id` is the subject, while the
+callback retains the recipient's normal actor. Select the subject explicitly
+when resolving its offset.
+
+`ListClients` captures each client's `timezone` with the listing snapshot, before
+asynchronous process enrichment. Palette discovery, source refresh and execution
+contexts carry `timezone: string | null` for the requesting client at the time of
+each request. Older omitted fields decode as null.
+
+Rust callers use `PluginCommand::GetClientTimezone { client_id: None }` and decode
+`ProtobufGetClientTimezoneResponse::timezone`. Offset commands specify
+`PluginCommand::GetLocalUtcOffset { epoch_ms, client_id, timezone }` and decode
+`ProtobufGetLocalUtcOffsetResponse`. Its existing scalar `offset_seconds` field
+and tag remain unchanged; additive `unavailable = true` means null. A missing
+flag means available, preserving legacy scalar zero replies. Old decoders cannot
+distinguish unavailable replies from zero and should upgrade before using selectors.

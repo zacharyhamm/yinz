@@ -851,6 +851,41 @@ pub fn screen_thread_main(
                         .with_context(err_context)
                         .non_fatal();
                 },
+                ScreenInstruction::GetClientTimezone {
+                    client_id,
+                    response_channel,
+                } => {
+                    response_channel
+                        .send(screen.client_timezone(client_id))
+                        .context("reply with client timezone")
+                        .non_fatal();
+                },
+                ScreenInstruction::ReportClientTimezones {
+                    plugin_id,
+                    client_id,
+                    instance,
+                    generation,
+                } => {
+                    let mut clients: Vec<_> =
+                        screen.connected_clients.borrow().iter().copied().collect();
+                    clients.sort();
+                    let events = clients
+                        .into_iter()
+                        .map(|id| screen.client_timezone_event(id))
+                        .collect();
+                    screen
+                        .bus
+                        .senders
+                        .send_to_plugin(PluginInstruction::ClientTimezoneSnapshot {
+                            plugin_id,
+                            client_id,
+                            instance,
+                            generation,
+                            events,
+                        })
+                        .context("reply with timezone subscription snapshot")
+                        .non_fatal();
+                },
                 ScreenInstruction::GetCellPixelSize {
                     client_id,
                     response_channel,
@@ -2214,10 +2249,7 @@ pub fn screen_thread_main(
                     screen.host_terminal_focus_changed(client_id, focused);
                 },
                 ScreenInstruction::SetClientTimezone(client_id, timezone) => {
-                    screen.client_timezones.insert(
-                        client_id,
-                        yinz_runtime::client_time::ClientTimeZone::from_client(timezone.as_deref()),
-                    );
+                    screen.set_client_timezone(client_id, timezone.as_deref());
                 },
                 ScreenInstruction::SetClientHostTerminalEnv(client_id, host_terminal_env) => {
                     screen.set_client_host_terminal_env(client_id, host_terminal_env);

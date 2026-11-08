@@ -255,6 +255,11 @@ pub enum Event {
     BeforeClose,
     /// The acting client's terminal cell geometry, or unknown before a valid report.
     CellPixelSizeChanged(Option<crate::pane_size::SizeInPixels>),
+    /// Session-wide notification; the subject is independent of the callback actor.
+    ClientTimezoneChanged {
+        client_id: ClientId,
+        timezone: Option<String>,
+    },
     InterceptedKeyPress(KeyWithModifier),
     /// An action was performed by the user (requires InterceptInput permission)
     UserAction(
@@ -1357,6 +1362,8 @@ pub struct ClientInfo {
     pub pane_id: PaneId,
     pub running_command: String,
     pub is_current_client: bool,
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 impl ClientInfo {
@@ -1371,6 +1378,7 @@ impl ClientInfo {
             pane_id,
             running_command,
             is_current_client,
+            timezone: None,
         }
     }
 }
@@ -2752,6 +2760,10 @@ pub enum PluginCommand {
     ShowCursor(Option<(usize, usize)>),
     GetPluginIds,
     GetCellPixelSize,
+    GetClientTimezone {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_id: Option<ClientId>,
+    },
     GetYinzVersion,
     OpenFile(FileToOpen, Context),
     OpenFileFloating(FileToOpen, Option<FloatingPaneCoordinates>, Context),
@@ -3414,7 +3426,8 @@ pub enum PluginCommand {
         name: String,
         lines: usize,
     },
-    /// Seconds east of UTC where this session is running, at the instant `epoch_ms`.
+    /// Seconds east of UTC at `epoch_ms`. With no selector, use the server zone.
+    /// Select either a client or explicit rules; unavailable selected rules return null.
     ///
     /// Plugins have no ambient timezone database or process environment, so the host
     /// supplies its local UTC offset for formatting absolute timestamps.
@@ -3424,6 +3437,10 @@ pub enum PluginCommand {
     /// offset would put it an hour out for exactly as long as anyone still cares.
     GetLocalUtcOffset {
         epoch_ms: SignedUnixMillis,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_id: Option<ClientId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timezone: Option<String>,
     },
     /// A readable date and time in the host's local timezone, including its abbreviation.
     GetLocalTime {

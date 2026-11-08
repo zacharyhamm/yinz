@@ -914,3 +914,32 @@ interrupted update preserves its channel and selected version, including when a
 different update action is used. Missing channel fields in older journals mean
 stable. Participants without prerelease support fail with instructions to update
 manually. This opt-in never changes the installation's future default channel.
+
+## Client timezones
+
+`(yinz-client-timezone [client-id])` returns the selected client's validated
+reusable rule string, or `json-null` when unavailable. With no argument it queries
+the acting client, including shared callbacks, deferred continuations and workers.
+Reports may be IANA names (`"America/Chicago"`), POSIX rules, fixed offsets
+(`"+05:30"`), or anonymous historical rules encoded as `tzif:` plus base64 TZif.
+
+`(yinz-client-utc-offset epoch-ms [client-id])` explicitly selects that client and
+returns seconds east of UTC at that epoch, including DST, or `json-null`. Raw
+`GetLocalUtcOffset` also accepts a `"timezone"` selector for any supported report.
+The `"client_id"` and `"timezone"` selectors are mutually exclusive. Unavailable
+selected rules and out-of-range instants return null. Omitting both selectors in
+the raw command retains its server-local behavior, as does `GetLocalTime`.
+Timezone queries and `ClientTimezoneChanged` require no permission.
+
+Subscribe to `ClientTimezoneChanged` for an attachment snapshot and live changes:
+`(hash "ClientTimezoneChanged" (hash "client_id" 2 "timezone" "Asia/Kolkata"))`.
+Null denotes an unknown zone or disconnect. Events describe every subject client,
+including clients other than the instance owner. The subject does not become the
+callback actor: pass its ID explicitly to query its offset. Cache presentation
+per client, invalidate on events, and accept duplicate subscription snapshots.
+Each new attachment publishes even if its report matches an earlier attachment.
+Long-running and headless plugins receive the same subscription snapshots.
+
+`ListClients` entries and palette callback contexts contain nullable `timezone`
+fields. Listing requires `ReadApplicationState`; palette contexts reflect the
+requesting client's current report at discovery, refresh and execution.

@@ -251,6 +251,8 @@ impl Screen {
                 | ScreenInstruction::ResumePaneAfterForward { .. }
                 | ScreenInstruction::DumpLayoutToPlugin { .. }
                 | ScreenInstruction::GetCellPixelSize { .. }
+                | ScreenInstruction::GetClientTimezone { .. }
+                | ScreenInstruction::ReportClientTimezones { .. }
                 | ScreenInstruction::GetFocusedPaneInfo { .. }
                 | ScreenInstruction::GetPaneInfo { .. }
                 | ScreenInstruction::GetTabInfo { .. }
@@ -446,6 +448,8 @@ impl Screen {
                 | ScreenInstruction::Notify(..)
                 | ScreenInstruction::DumpLayoutToPlugin { .. }
                 | ScreenInstruction::GetCellPixelSize { .. }
+                | ScreenInstruction::GetClientTimezone { .. }
+                | ScreenInstruction::ReportClientTimezones { .. }
                 | ScreenInstruction::GetFocusedPaneInfo { .. }
                 | ScreenInstruction::GetPaneInfo { .. }
                 | ScreenInstruction::GetTabInfo { .. }

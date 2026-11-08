@@ -651,6 +651,7 @@ mod props {
             | PluginCommand::ReloadPluginByUrl(_)
             | PluginCommand::ReadPluginLog { .. }
             | PluginCommand::GetLocalUtcOffset { .. }
+            | PluginCommand::GetClientTimezone { .. }
             | PluginCommand::GetLocalTime { .. }
             | PluginCommand::Unsubscribe(_)
             | PluginCommand::SetSelectable(_)

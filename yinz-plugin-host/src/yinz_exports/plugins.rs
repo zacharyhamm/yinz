@@ -84,6 +84,7 @@ pub(crate) fn broadcast_agent_providers(senders: &ThreadSenders) {
 }
 
 pub(super) fn subscribe(env: &PluginEnv, event_list: HashSet<EventType>) -> Result<()> {
+    let wants_timezones = event_list.contains(&EventType::ClientTimezoneChanged);
     let background_subscriptions = {
         let mut subscriptions = env.subscriptions.lock().to_anyhow()?;
         subscriptions.extend(event_list.clone());
@@ -100,6 +101,18 @@ pub(super) fn subscribe(env: &PluginEnv, event_list: HashSet<EventType>) -> Resu
             background_subscriptions,
             env.instance_id,
         ))
+        .context("register plugin subscriptions")?;
+    if wants_timezones {
+        env.senders
+            .send_to_screen(ScreenInstruction::ReportClientTimezones {
+                plugin_id: env.plugin_id,
+                client_id: env.client_id,
+                instance: env.instance_id,
+                generation: env.generation,
+            })
+            .context("request timezone subscription snapshot")?;
+    }
+    Ok(())
 }
 
 pub(super) fn unblock_cli_pipe_input(env: &PluginEnv, pipe_name: String) {
@@ -395,32 +408,60 @@ pub(super) fn check_plugin(
         .non_fatal();
 }
 
-/// Seconds east of UTC here, at the instant `epoch_ms`.
-///
-/// The guest has no ambient environment or timezone database. The host supplies the
-/// session's local offset for formatting absolute timestamps.
-///
-/// The offset is taken *at that instant* rather than now, so a timestamp from before a
-/// daylight-saving change reads back with the offset that was in force when it was taken. An
-/// instant `chrono` cannot place - out of range, or an hour that a clock change made ambiguous
-/// or skipped - falls back to the offset in force now, which is off by an hour at worst and is
-/// still the right answer for every timestamp taken today.
-pub(super) fn get_local_utc_offset(env: &mut PluginEnv, epoch_ms: SignedUnixMillis) {
-    use chrono::{Local, Offset, TimeZone};
-    let offset_seconds = Local
-        .timestamp_millis_opt(epoch_ms.get())
-        .single()
-        .map(|at| at.offset().fix().local_minus_utc())
-        .unwrap_or_else(|| Local::now().offset().fix().local_minus_utc());
-    let response = ProtobufGetLocalUtcOffsetResponse { offset_seconds };
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| {
-            format!(
-                "failed to send utc offset response to plugin {}",
-                env.name()
-            )
+/// Read Screen's authoritative snapshot for a selected client.
+fn client_timezone(
+    env: &PluginEnv,
+    client_id: yinz_types::internal_ids::ClientId,
+) -> Result<yinz_runtime::client_time::ClientTimeZone> {
+    let (response_channel, receiver) = crossbeam::channel::bounded(1);
+    env.senders
+        .send_to_screen(ScreenInstruction::GetClientTimezone {
+            client_id,
+            response_channel,
         })
-        .non_fatal();
+        .context("request client timezone")?;
+    receiver
+        .recv_timeout(Duration::from_secs(5))
+        .context("wait for client timezone")
+}
+
+pub(super) fn get_client_timezone(
+    env: &mut PluginEnv,
+    client_id: Option<yinz_types::internal_ids::ClientId>,
+) -> Result<()> {
+    let timezone = client_timezone(env, client_id.unwrap_or(env.client_id))?;
+    let response = yinz_plugin_api::plugin_command::ProtobufGetClientTimezoneResponse {
+        timezone: timezone.report().map(str::to_owned),
+    };
+    write_response(env, &response.encode_to_vec()).context("write client timezone response")
+}
+
+pub(super) fn get_local_utc_offset(
+    env: &mut PluginEnv,
+    epoch_ms: SignedUnixMillis,
+    client_id: Option<yinz_types::internal_ids::ClientId>,
+    timezone: Option<String>,
+) -> Result<()> {
+    use chrono::{Local, Offset, TimeZone};
+    let offset = match (client_id, timezone) {
+        (Some(_), Some(_)) => return Err(anyhow!("client_id and timezone are mutually exclusive")),
+        (Some(client), None) => client_timezone(env, client)?.utc_offset(epoch_ms.get()),
+        (None, Some(zone)) => yinz_runtime::client_time::ClientTimeZone::from_client(Some(&zone))
+            .utc_offset(epoch_ms.get()),
+        // Preserve the legacy server-local behavior, including the out-of-range fallback.
+        (None, None) => Some(
+            Local
+                .timestamp_millis_opt(epoch_ms.get())
+                .single()
+                .map(|at| at.offset().fix().local_minus_utc())
+                .unwrap_or_else(|| Local::now().offset().fix().local_minus_utc()),
+        ),
+    };
+    let response = ProtobufGetLocalUtcOffsetResponse {
+        offset_seconds: offset.unwrap_or_default(),
+        unavailable: offset.is_none(),
+    };
+    write_response(env, &response.encode_to_vec()).context("write UTC offset response")
 }
 
 pub(super) fn plugin_log_lines(

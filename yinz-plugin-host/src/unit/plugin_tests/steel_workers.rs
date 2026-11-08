@@ -1006,3 +1006,104 @@ fn steel_worker_binary_events_preserve_bytes_and_release_the_job_fifo() {
     harness.rendered("starting decoded fifo");
     harness.finish();
 }
+
+#[test]
+fn client_timezone_shared_callbacks_deferred_continuations_and_workers_use_actor() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("timezone.scm");
+    std::fs::write(&path, r#"
+(yinz-declare-pane)
+(define state "timezone ready")
+(yinz-register-workers (hash "zone" (lambda (name payload)
+  (define before (yinz-client-timezone))
+  (yinz-then (yinz-sleep 0.001) (lambda (_)
+    (yinz-post-plugin "zone" (yinz-json-string (list before (yinz-client-timezone) (yinz-client-utc-offset 0)))))))))
+(define (load config)
+  (yinz-command (hash "Subscribe" '("Key" "CustomMessage"))))
+(define (update event)
+  (when (hash-contains? event "Key")
+    (define before (yinz-client-timezone))
+    (yinz-then (yinz-sleep 0.001) (lambda (_)
+      (unless (equal? before (yinz-client-timezone)) (error "deferred lost actor"))
+      (yinz-post-worker "zone" "go" ""))))
+  (when (hash-contains? event "CustomMessage")
+    (set! state (string-append "timezone reply " (yinz-json-string
+      (list (cadr (hash-ref event "CustomMessage")) (yinz-client-timezone)))))) #t)
+(define (render rows cols) state)
+"#).unwrap();
+    let (sender, server_receiver, receiver, teardown) =
+        create_plugin_thread_with_server_receiver(Some(directory.path().to_owned()), None);
+    let log = Watched::new(vec![]);
+    let server_log = Watched::new(vec![]);
+    let server_logger = log_until_disconnect(&server_log, server_receiver);
+    let logger = std::thread::spawn({
+        let log = log.clone();
+        move || {
+            while let Ok((event, _)) = receiver.recv_timeout(FAKE_SCREEN_RECV_TIMEOUT) {
+                if let ScreenInstruction::GetClientTimezone {
+                    client_id,
+                    response_channel,
+                } = &event
+                {
+                    let report = if *client_id == CLIENT {
+                        "America/Chicago"
+                    } else {
+                        "Asia/Kolkata"
+                    };
+                    response_channel
+                        .send(yinz_runtime::client_time::ClientTimeZone::from_client(
+                            Some(report),
+                        ))
+                        .unwrap();
+                }
+                log.lock().push(event);
+            }
+        }
+    });
+    sender.send(PluginInstruction::AddClient(CLIENT)).unwrap();
+    let harness = Harness {
+        sender,
+        log,
+        server_log,
+        server_logger: Some(server_logger),
+        directory,
+        path,
+        teardown: Some(teardown),
+        logger: Some(logger),
+    };
+    harness.load_shared();
+    harness.rendered("timezone ready");
+    let other = ClientId::new(2);
+    harness
+        .sender
+        .send(PluginInstruction::AddClient(other))
+        .unwrap();
+    harness
+        .sender
+        .send(PluginInstruction::Update(vec![(
+            Some(PLUGIN),
+            Some(other),
+            Event::Key(KeyWithModifier::new(BareKey::Char('a'))),
+        )]))
+        .unwrap();
+    harness.rendered("timezone reply");
+    let log = harness.finish();
+    let frames: String = log
+        .iter()
+        .filter_map(|instruction| {
+            if let ScreenInstruction::PluginBytes(assets) = instruction {
+                Some(
+                    assets
+                        .iter()
+                        .map(|asset| String::from_utf8_lossy(&asset.bytes).to_string())
+                        .collect::<String>(),
+                )
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(frames.contains("Asia/Kolkata"), "{frames}");
+    assert!(!frames.contains("America/Chicago"), "{frames}");
+    assert!(frames.contains("19800"), "{frames}");
+}

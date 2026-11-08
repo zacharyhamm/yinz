@@ -8681,3 +8681,99 @@ fn plugin_thread_handlers_never_wait_for_a_busy_guest() {
     );
     test.bridge.unload_plugin(plugin).unwrap();
 }
+
+#[test]
+fn client_timezone_broadcast_and_subscription_replay_preserve_recipient_context() {
+    for shared in [false, true] {
+        let mut test = TestBridge::new();
+        let id = PluginId::new(1);
+        let owner = ClientId::new(1);
+        let subject = ClientId::new(2);
+        let mut context = test.context(1, 1, r#"
+(yinz-declare-pane)
+(define received "none")
+(define (update event)
+  (when (hash-contains? event "ClientTimezoneChanged")
+    (define change (hash-ref event "ClientTimezoneChanged"))
+    (set! received (string-append
+      (number->string (hash-ref (yinz-command "GetPluginIds") "client_id")) ":"
+      (number->string (hash-ref change "client_id")) ":" (yinz-json-string (hash-ref change "timezone"))))) #t)
+(define (render rows cols) (string-append "size " received ";"))
+"#);
+        if shared {
+            context
+                .plugin_config
+                .initial_userspace_configuration
+                .insert("shared", "true");
+        }
+        test.load(context).unwrap();
+        if shared {
+            test.bridge.shared_plugin_ids.insert(id);
+        }
+        test.connect(&[owner, subject]);
+        let event = Event::ClientTimezoneChanged {
+            client_id: subject,
+            timezone: Some("Asia/Kolkata".into()),
+        };
+        let (instance, generation) = {
+            let map = test.bridge.plugin_map.lock().unwrap();
+            let plugin = map.get_running_plugin(id, Some(owner)).unwrap();
+            let plugin = plugin.lock().unwrap();
+            plugin
+                .env()
+                .subscriptions
+                .lock()
+                .unwrap()
+                .insert(EventType::ClientTimezoneChanged);
+            assert_eq!(
+                check_event_permission(plugin.env(), &event),
+                (PermissionStatus::Granted, None)
+            );
+            (plugin.instance_id, plugin.generation())
+        };
+        frames(&mut test, id);
+        let (shutdown, _) = tokio::sync::mpsc::channel(1);
+        test.bridge
+            .update_plugins(vec![(None, None, event.clone())], shutdown.clone())
+            .unwrap();
+        test.settle(id);
+        let rendered = frames(&mut test, id);
+        assert!(!rendered.is_empty());
+        assert!(
+            rendered
+                .iter()
+                .all(|frame| frame == "size 1:2:\"Asia/Kolkata\""),
+            "{rendered:?}"
+        );
+        test.bridge.cache_plugin_events(id);
+        test.bridge
+            .client_timezone_snapshot(
+                id,
+                owner,
+                instance,
+                generation,
+                vec![Event::ClientTimezoneChanged {
+                    client_id: subject,
+                    timezone: None,
+                }],
+                shutdown.clone(),
+            )
+            .unwrap();
+        test.bridge
+            .apply_cached_events(vec![id], true, shutdown.clone())
+            .unwrap();
+        test.settle(id);
+        assert!(frames(&mut test, id)
+            .iter()
+            .any(|frame| frame == "size 1:2:null"));
+        test.bridge.plugin_map.lock().unwrap().retire_instances(id);
+        test.bridge
+            .client_timezone_snapshot(id, owner, instance, generation, vec![event], shutdown)
+            .unwrap();
+        test.settle(id);
+        assert!(
+            frames(&mut test, id).is_empty(),
+            "retired instance received a snapshot"
+        );
+    }
+}

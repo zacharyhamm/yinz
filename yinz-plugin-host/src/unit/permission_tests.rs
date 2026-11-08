@@ -1440,6 +1440,7 @@ fn the_commands_that_need_no_permission_are_exactly_these() {
         CommandType::SetTimeout,
         CommandType::ReportPanic,
         CommandType::GetCellPixelSize,
+        CommandType::GetClientTimezone,
         CommandType::GetPluginIds,
         CommandType::GetYinzVersion,
         CommandType::PostMessageTo,

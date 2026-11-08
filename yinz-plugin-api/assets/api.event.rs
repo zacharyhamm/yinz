@@ -10,7 +10,7 @@ pub struct EventNameList {
 pub struct Event {
     #[prost(enumeration="EventType", tag="1")]
     pub name: i32,
-    #[prost(oneof="event::Payload", tags="59, 60, 67, 65, 66, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 42, 43, 44, 45, 49, 50, 51, 52, 53, 54, 55, 62, 63, 64")]
+    #[prost(oneof="event::Payload", tags="59, 60, 67, 65, 66, 68, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 42, 43, 44, 45, 49, 50, 51, 52, 53, 54, 55, 62, 63, 64")]
     pub payload: ::core::option::Option<event::Payload>,
 }
 /// Nested message and enum types in `Event`.
@@ -28,6 +28,8 @@ pub mod event {
         PickResultPayload(::prost::alloc::string::String),
         #[prost(message, tag="66")]
         CellPixelSizeChangedPayload(super::CellPixelSizeChangedPayload),
+        #[prost(message, tag="68")]
+        ClientTimezoneChangedPayload(super::ClientTimezoneChangedPayload),
         #[prost(message, tag="2")]
         ModeUpdatePayload(super::ModeUpdatePayload),
         #[prost(message, tag="3")]
@@ -354,6 +356,8 @@ pub struct ClientInfo {
     pub running_command: ::prost::alloc::string::String,
     #[prost(bool, tag="4")]
     pub is_current_client: bool,
+    #[prost(string, optional, tag="5")]
+    pub timezone: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1156,6 +1160,14 @@ pub struct CellPixelSizeChangedPayload {
     #[prost(message, optional, tag="1")]
     pub size: ::core::option::Option<CellPixelSize>,
 }
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ClientTimezoneChangedPayload {
+    #[prost(uint32, tag="1")]
+    pub client_id: u32,
+    #[prost(string, optional, tag="2")]
+    pub timezone: ::core::option::Option<::prost::alloc::string::String>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum EventType {
@@ -1238,6 +1250,7 @@ pub enum EventType {
     ProjectProvidersChanged = 70,
     PickResult = 68,
     CellPixelSizeChanged = 69,
+    ClientTimezoneChanged = 71,
     NotificationReceived = 65,
     NotificationRequested = 66,
     NotificationResolved = 67,
@@ -1308,6 +1321,7 @@ impl EventType {
             EventType::ProjectProvidersChanged => "ProjectProvidersChanged",
             EventType::PickResult => "PickResult",
             EventType::CellPixelSizeChanged => "CellPixelSizeChanged",
+            EventType::ClientTimezoneChanged => "ClientTimezoneChanged",
             EventType::NotificationReceived => "NotificationReceived",
             EventType::NotificationRequested => "NotificationRequested",
             EventType::NotificationResolved => "NotificationResolved",
@@ -1375,6 +1389,7 @@ impl EventType {
             "ProjectProvidersChanged" => Some(Self::ProjectProvidersChanged),
             "PickResult" => Some(Self::PickResult),
             "CellPixelSizeChanged" => Some(Self::CellPixelSizeChanged),
+            "ClientTimezoneChanged" => Some(Self::ClientTimezoneChanged),
             "NotificationReceived" => Some(Self::NotificationReceived),
             "NotificationRequested" => Some(Self::NotificationRequested),
             "NotificationResolved" => Some(Self::NotificationResolved),

@@ -36,7 +36,10 @@ fn capture() -> Result<String> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct ClientTimeZone(Option<TimeZone>);
+pub struct ClientTimeZone {
+    rules: Option<TimeZone>,
+    report: Option<String>,
+}
 
 impl ClientTimeZone {
     pub fn from_client(value: Option<&str>) -> Self {
@@ -62,13 +65,27 @@ impl ClientTimeZone {
                 },
             }
         });
-        Self(timezone)
+        Self {
+            report: timezone.as_ref().and(value.map(str::to_owned)),
+            rules: timezone,
+        }
+    }
+
+    /// The original validated, reusable report, including anonymous TZif rules.
+    pub fn report(&self) -> Option<&str> {
+        self.report.as_deref()
+    }
+
+    /// Seconds east of UTC at this instant; unavailable rules never use server time.
+    pub fn utc_offset(&self, epoch_ms: i64) -> Option<i32> {
+        let timestamp = Timestamp::from_second(epoch_ms.div_euclid(1000)).ok()?;
+        Some(self.rules.as_ref()?.to_offset(timestamp).seconds())
     }
 
     /// An absent or invalid timezone must not silently use the server's timezone.
     pub fn timestamp(&self, epoch_ms: Option<i64>) -> String {
         let Some((timezone, timestamp)) = self
-            .0
+            .rules
             .as_ref()
             // TZif lookups use whole seconds. Floor negative fractions so an instant
             // just before a transition is rendered with the preceding offset.

@@ -196,6 +196,13 @@ pub enum PluginInstruction {
     PaletteAgent(Box<crate::command_palette::AgentRequest>),
     PaletteAgentLabels(crate::command_palette::AgentLabelsRequest),
     PluginEvent(PluginId, ClientId, u64, Event),
+    ClientTimezoneSnapshot {
+        plugin_id: PluginId,
+        client_id: ClientId,
+        instance: PluginInstanceId,
+        generation: Option<u64>,
+        events: Vec<Event>,
+    },
     PluginReply(
         PluginId,
         ClientId,

@@ -247,3 +247,13 @@ For repository development, run the builtin harness regression tests with:
 ```sh
 cargo x test -p yinz-plugin-host -E 'test(scheme_builtin_) | test(scheme_installed_)'
 ```
+
+Timezone operations must be explicitly stubbed in installed Scheme mock suites:
+`(test-stub "GetClientTimezone" "America/Chicago")` and
+`(test-stub "GetLocalUtcOffset" -21600)`. Stub `GetPluginIds` with a `client_id`
+when using `(yinz-client-utc-offset epoch-ms)` without an explicit client.
+Use `json-null` stubs to exercise unavailable rules/offsets and send raw
+`ClientTimezoneChanged` hashes with `client_id` and nullable `timezone` fields.
+Unstubbed timezone queries fail like other host operations. Real session tests
+should provide distinct client reports with an unrelated server zone and check
+both winter and summer instants; avoid mutating process-global `TZ` during tests.

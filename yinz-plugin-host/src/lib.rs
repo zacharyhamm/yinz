@@ -488,6 +488,22 @@ pub fn plugin_thread_main(
             PluginInstruction::PluginTick(plugin_id, _client_id, generation) => {
                 plugin_bridge.plugin_tick(plugin_id, generation, shutdown_send.clone());
             },
+            PluginInstruction::ClientTimezoneSnapshot {
+                plugin_id,
+                client_id,
+                instance,
+                generation,
+                events,
+            } => {
+                plugin_bridge.client_timezone_snapshot(
+                    plugin_id,
+                    client_id,
+                    instance,
+                    generation,
+                    events,
+                    shutdown_send.clone(),
+                )?;
+            },
             PluginInstruction::PluginEvent(plugin_id, client_id, generation, event) => {
                 let events = drain_plugin_events(
                     &bus,
@@ -1163,7 +1179,9 @@ pub fn plugin_thread_main(
                     &mut session_layout_metadata,
                     &plugin_bridge,
                     &plugin_aliases,
-                    Some(plugin_id),
+                    // Cached plugin metadata does not lock the guest. Keep its pane so
+                    // clients focused on the requesting plugin remain in the listing.
+                    None,
                     None,
                 );
                 let mut clients_metadata = session_layout_metadata.all_clients_metadata();
@@ -1171,12 +1189,14 @@ pub fn plugin_thread_main(
                 let default_editor = session_layout_metadata.default_editor.clone();
                 for (client_metadata_id, client_metadata) in clients_metadata.iter_mut() {
                     let is_current_client = client_metadata_id == &client_id;
-                    client_list_for_plugin.push(ClientInfo::new(
+                    let mut info = ClientInfo::new(
                         *client_metadata_id,
                         client_metadata.get_pane_id(),
                         client_metadata.stringify_command(&default_editor),
                         is_current_client,
-                    ));
+                    );
+                    info.timezone = session_layout_metadata.client_timezone(*client_metadata_id);
+                    client_list_for_plugin.push(info);
                 }
                 let event = Event::ListClients(client_list_for_plugin);
                 if let Some(generation) = generation {

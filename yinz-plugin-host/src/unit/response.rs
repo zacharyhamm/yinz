@@ -57,3 +57,39 @@ fn remote_git_probe_keeps_large_metadata_and_config_compact() {
         assert_eq!(yinz_steel::binary::decode(&value[field]).unwrap(), bytes);
     }
 }
+
+#[test]
+fn client_timezone_decoder_distinguishes_unavailable_and_legacy_zero_offsets() {
+    for (bytes, expected) in [
+        (vec![], serde_json::json!(0)),
+        (
+            ProtobufGetLocalUtcOffsetResponse {
+                offset_seconds: 0,
+                unavailable: true,
+            }
+            .encode_to_vec(),
+            serde_json::Value::Null,
+        ),
+        (
+            ProtobufGetLocalUtcOffsetResponse {
+                offset_seconds: 19800,
+                unavailable: false,
+            }
+            .encode_to_vec(),
+            serde_json::json!(19800),
+        ),
+    ] {
+        assert_eq!(
+            decode_response(CommandType::GetLocalUtcOffset, &bytes)
+                .unwrap()
+                .unwrap(),
+            DecodedResponse::Json(expected)
+        );
+    }
+    assert_eq!(
+        decode_response(CommandType::GetClientTimezone, &[])
+            .unwrap()
+            .unwrap(),
+        DecodedResponse::Json(serde_json::Value::Null)
+    );
+}

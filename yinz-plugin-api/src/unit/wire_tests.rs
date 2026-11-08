@@ -385,3 +385,105 @@ fn cell_pixel_geometry_roundtrips_and_rejects_invalid_dimensions() {
         command
     );
 }
+
+#[test]
+fn client_timezone_wire_roundtrips_and_preserves_legacy_clock_messages() {
+    use crate::plugin_command::{
+        ProtobufGetClientTimezoneResponse, ProtobufGetLocalUtcOffsetResponse,
+    };
+    use yinz_types::{
+        data::ClientInfo,
+        data::PaneId,
+        internal_ids::{ClientId, TerminalId},
+        units::SignedUnixMillis,
+    };
+    for client_id in [None, Some(ClientId::new(9))] {
+        let command = PluginCommand::GetClientTimezone { client_id };
+        assert_eq!(
+            PluginCommand::try_from(ProtobufPluginCommand::try_from(command.clone()).unwrap())
+                .unwrap(),
+            command
+        );
+        for timezone in [None, Some("Asia/Kolkata".to_owned())] {
+            let command = PluginCommand::GetLocalUtcOffset {
+                epoch_ms: SignedUnixMillis::new(-1),
+                client_id,
+                timezone,
+            };
+            assert_eq!(
+                PluginCommand::try_from(ProtobufPluginCommand::try_from(command.clone()).unwrap())
+                    .unwrap(),
+                command
+            );
+        }
+    }
+    let legacy = serde_json::json!({"GetLocalUtcOffset":{"epoch_ms":0}});
+    let command: PluginCommand = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&command).unwrap(), legacy);
+    // CommandName 280 and the original payload tag 221, containing an epoch of zero.
+    let legacy_bytes = [8, 152, 2, 234, 13, 0];
+    assert_eq!(
+        ProtobufPluginCommand::try_from(command.clone())
+            .unwrap()
+            .encode_to_vec(),
+        legacy_bytes
+    );
+    assert_eq!(
+        PluginCommand::try_from(ProtobufPluginCommand::decode(legacy_bytes.as_slice()).unwrap())
+            .unwrap(),
+        command
+    );
+    // Legacy proto3 scalar zero is an empty message and remains an available UTC offset.
+    let zero = ProtobufGetLocalUtcOffsetResponse::decode(&[][..]).unwrap();
+    assert_eq!(zero.offset_seconds, 0);
+    assert!(!zero.unavailable);
+    for unavailable in [false, true] {
+        let reply = ProtobufGetLocalUtcOffsetResponse {
+            offset_seconds: 0,
+            unavailable,
+        };
+        assert_eq!(
+            ProtobufGetLocalUtcOffsetResponse::decode(reply.encode_to_vec().as_slice()).unwrap(),
+            reply
+        );
+    }
+    for timezone in [None, Some("America/Chicago".to_owned())] {
+        let reply = ProtobufGetClientTimezoneResponse {
+            timezone: timezone.clone(),
+        };
+        assert_eq!(
+            ProtobufGetClientTimezoneResponse::decode(reply.encode_to_vec().as_slice()).unwrap(),
+            reply
+        );
+        let event = Event::ClientTimezoneChanged {
+            client_id: ClientId::new(7),
+            timezone: timezone.clone(),
+        };
+        assert_eq!(
+            Event::try_from(ProtobufEvent::try_from(event.clone()).unwrap()).unwrap(),
+            event
+        );
+        let mut info = ClientInfo::new(
+            ClientId::new(7),
+            PaneId::Terminal(TerminalId::new(1)),
+            "shell".into(),
+            true,
+        );
+        info.timezone = timezone;
+        let event = Event::ListClients(vec![info]);
+        assert_eq!(
+            Event::try_from(ProtobufEvent::try_from(event.clone()).unwrap()).unwrap(),
+            event
+        );
+    }
+    let info: ClientInfo = serde_json::from_value(serde_json::json!({"client_id":7,"pane_id":{"Terminal":1},"running_command":"shell","is_current_client":true})).unwrap();
+    assert_eq!(info.timezone, None);
+    let old = crate::event::ProtobufClientInfo {
+        client_id: 7,
+        pane_id: Some(PaneId::Terminal(TerminalId::new(1)).try_into().unwrap()),
+        running_command: "shell".into(),
+        is_current_client: true,
+        timezone: None,
+    };
+    assert_eq!(ClientInfo::try_from(old).unwrap().timezone, None);
+}

@@ -237,6 +237,7 @@ pub(super) fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::SetTimeout
         | CommandType::ReportPanic
         | CommandType::GetCellPixelSize
+        | CommandType::GetClientTimezone
         | CommandType::GetPluginIds
         | CommandType::GetYinzVersion => return None,
         // A message to the plugin's own worker, and the worker's reply to the plugin: both stay

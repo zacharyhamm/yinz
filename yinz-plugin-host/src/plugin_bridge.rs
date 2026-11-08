@@ -661,6 +661,44 @@ impl PluginBridge {
         )
     }
 
+    pub(crate) fn client_timezone_snapshot(
+        &mut self,
+        plugin_id: PluginId,
+        client_id: ClientId,
+        instance: PluginInstanceId,
+        generation: Option<u64>,
+        events: Vec<Event>,
+        shutdown: Sender<()>,
+    ) -> Result<()> {
+        if self
+            .plugin_map
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .instance_is_retired(instance)
+        {
+            return Ok(());
+        }
+        if let Some(generation) = generation {
+            self.plugin_replies(
+                plugin_id,
+                generation,
+                events
+                    .into_iter()
+                    .map(|event| (client_id, event, None))
+                    .collect(),
+                shutdown,
+            )
+        } else {
+            self.update_plugins(
+                events
+                    .into_iter()
+                    .map(|event| (Some(plugin_id), Some(client_id), event))
+                    .collect(),
+                shutdown,
+            )
+        }
+    }
+
     pub fn plugin_replies(
         &mut self,
         plugin_id: PluginId,
@@ -2770,6 +2808,7 @@ pub(crate) fn check_event_permission(
         | EventType::Timer
         | EventType::Visible
         | EventType::CellPixelSizeChanged
+        | EventType::ClientTimezoneChanged
         | EventType::BeforeClose
         | EventType::CustomMessage
         | EventType::PermissionRequestResult

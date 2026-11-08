@@ -1416,3 +1416,6 @@ overlay_tab_plugins {{ launcher label="Launch"; content label="Content"; denied 
     });
     yinz.quit();
 }
+
+#[path = "unit/steel_plugins/client_timezone.rs"]
+mod client_timezone;

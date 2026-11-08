@@ -23,6 +23,8 @@ pub struct Context {
     pub pane_id: PaneId,
     pub tab_id: u64,
     pub current_project: Option<String>,
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

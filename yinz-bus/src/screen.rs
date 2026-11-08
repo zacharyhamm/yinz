@@ -169,6 +169,16 @@ pub enum ScreenInstruction {
         response_channel: crossbeam::channel::Sender<Option<yinz_types::pane_size::SizeInPixels>>,
     },
     ReportCellPixelSize(PluginId, ClientId),
+    GetClientTimezone {
+        client_id: ClientId,
+        response_channel: crossbeam::channel::Sender<yinz_runtime::client_time::ClientTimeZone>,
+    },
+    ReportClientTimezones {
+        plugin_id: PluginId,
+        client_id: ClientId,
+        instance: crate::plugins::PluginInstanceId,
+        generation: Option<u64>,
+    },
     GetFocusedPaneInfo {
         client_id: ClientId,
         response_channel: crossbeam::channel::Sender<GetFocusedPaneInfoResponse>,

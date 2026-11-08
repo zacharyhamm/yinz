@@ -464,6 +464,15 @@ impl TryFrom<ProtobufEvent> for Event {
                 None => Ok(Event::ConfigWasWrittenToDisk),
                 _ => Err("Malformed payload for the ConfigWasWrittenToDisk Event"),
             },
+            Ok(ProtobufEventType::ClientTimezoneChanged) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::ClientTimezoneChangedPayload(payload)) => {
+                    Ok(Event::ClientTimezoneChanged {
+                        client_id: ClientId::new(payload.client_id),
+                        timezone: payload.timezone,
+                    })
+                },
+                _ => Err("Malformed payload for ClientTimezoneChanged Event"),
+            },
             Ok(ProtobufEventType::CellPixelSizeChanged) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::CellPixelSizeChangedPayload(payload)) => Ok(
                     Event::CellPixelSizeChanged(payload.size.map(TryInto::try_into).transpose()?),
@@ -845,7 +854,7 @@ impl TryFrom<ProtobufEvent> for Event {
 impl TryFrom<ProtobufClientInfo> for ClientInfo {
     type Error = &'static str;
     fn try_from(protobuf_client_info: ProtobufClientInfo) -> Result<Self, &'static str> {
-        Ok(ClientInfo::new(
+        let mut client = ClientInfo::new(
             ClientId::new(protobuf_client_info.client_id),
             protobuf_client_info
                 .pane_id
@@ -853,7 +862,9 @@ impl TryFrom<ProtobufClientInfo> for ClientInfo {
                 .try_into()?,
             protobuf_client_info.running_command,
             protobuf_client_info.is_current_client,
-        ))
+        );
+        client.timezone = protobuf_client_info.timezone;
+        Ok(client)
     }
 }
 
@@ -865,6 +876,7 @@ impl TryFrom<ClientInfo> for ProtobufClientInfo {
             pane_id: Some(client_info.pane_id.try_into()?),
             running_command: client_info.running_command,
             is_current_client: client_info.is_current_client,
+            timezone: client_info.timezone,
         })
     }
 }
@@ -1265,6 +1277,18 @@ impl TryFrom<Event> for ProtobufEvent {
             Event::ConfigWasWrittenToDisk => Ok(ProtobufEvent {
                 name: ProtobufEventType::ConfigWasWrittenToDisk as i32,
                 payload: None,
+            }),
+            Event::ClientTimezoneChanged {
+                client_id,
+                timezone,
+            } => Ok(ProtobufEvent {
+                name: ProtobufEventType::ClientTimezoneChanged as i32,
+                payload: Some(ProtobufEventPayload::ClientTimezoneChangedPayload(
+                    super::generated_api::api::event::ClientTimezoneChangedPayload {
+                        client_id: client_id.get(),
+                        timezone,
+                    },
+                )),
             }),
             Event::CellPixelSizeChanged(size) => Ok(ProtobufEvent {
                 name: ProtobufEventType::CellPixelSizeChanged as i32,
@@ -2755,6 +2779,7 @@ impl TryFrom<ProtobufEventType> for EventType {
             ProtobufEventType::FailedToChangeHostFolder => EventType::FailedToChangeHostFolder,
             ProtobufEventType::PastedText => EventType::PastedText,
             ProtobufEventType::ConfigWasWrittenToDisk => EventType::ConfigWasWrittenToDisk,
+            ProtobufEventType::ClientTimezoneChanged => EventType::ClientTimezoneChanged,
             ProtobufEventType::CellPixelSizeChanged => EventType::CellPixelSizeChanged,
             ProtobufEventType::BeforeClose => EventType::BeforeClose,
             ProtobufEventType::InterceptedKeyPress => EventType::InterceptedKeyPress,
@@ -2825,6 +2850,7 @@ impl TryFrom<EventType> for ProtobufEventType {
             EventType::FailedToChangeHostFolder => ProtobufEventType::FailedToChangeHostFolder,
             EventType::PastedText => ProtobufEventType::PastedText,
             EventType::ConfigWasWrittenToDisk => ProtobufEventType::ConfigWasWrittenToDisk,
+            EventType::ClientTimezoneChanged => ProtobufEventType::ClientTimezoneChanged,
             EventType::CellPixelSizeChanged => ProtobufEventType::CellPixelSizeChanged,
             EventType::BeforeClose => ProtobufEventType::BeforeClose,
             EventType::InterceptedKeyPress => ProtobufEventType::InterceptedKeyPress,

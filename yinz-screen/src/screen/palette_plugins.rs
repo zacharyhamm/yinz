@@ -231,6 +231,7 @@ impl CommandPaletteState {
         senders: &yinz_bus::thread_bus::ThreadSenders,
         client: ClientId,
         provider: ProviderKey,
+        timezone: Option<String>,
         execution: Option<Execution>,
         source: Option<String>,
     ) {
@@ -245,6 +246,7 @@ impl CommandPaletteState {
             pane_id: self.context.pane_id,
             tab_id: self.context.tab_id.get() as u64,
             current_project: self.context.current_project.clone(),
+            timezone,
         };
         let active = Arc::new(AtomicBool::new(true));
         let label = execution
@@ -466,7 +468,16 @@ impl Screen {
             vec![]
         };
         for (provider, source) in requests {
-            state.request(&self.bus.senders, client, provider, None, source);
+            state.request(
+                &self.bus.senders,
+                client,
+                provider,
+                self.client_timezones
+                    .get(&client)
+                    .and_then(|zone| zone.report().map(str::to_owned)),
+                None,
+                source,
+            );
         }
         changed
     }
@@ -554,6 +565,9 @@ impl Screen {
             &self.bus.senders,
             client,
             provider,
+            self.client_timezones
+                .get(&client)
+                .and_then(|zone| zone.report().map(str::to_owned)),
             Some(Execution {
                 handle,
                 values,

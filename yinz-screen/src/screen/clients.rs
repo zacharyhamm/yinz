@@ -53,6 +53,7 @@ impl Screen {
                 // Shared plugins can retain state for a recycled client id. Send even unknown
                 // geometry, but only after plugin registration and the screen's attach commit.
                 self.report_cell_pixel_size(None, client_id);
+                self.broadcast_client_timezone(client_id);
                 Ok(retired_source)
             },
             Err(error) => {
@@ -318,7 +319,7 @@ impl Screen {
             .remove(&client_id);
         // Plugin subscriptions stay: they belong to a plugin instance, which can outlive the
         // connection that owns it, and go when it is disposed or moves to another owner.
-        self.connected_clients.borrow_mut().remove(&client_id);
+        let was_attached = self.connected_clients.borrow_mut().remove(&client_id);
         self.client_kitty_host_state.borrow_mut().remove(&client_id);
         self.kitty_probe_answers.remove(&client_id);
         let removed_kitty_capability = self
@@ -352,6 +353,9 @@ impl Screen {
         self.client_notification_protocols.remove(&client_id);
         self.client_host_terminal_env.remove(&client_id);
         self.client_timezones.remove(&client_id);
+        if was_attached {
+            self.broadcast_client_timezone(client_id);
+        }
         self.last_forwarded_osc7.remove(&client_id);
         // This entry describes the terminal on the other end: its probed
         // `capabilities.kitty_graphics`, its theme, its keybinds. Left behind, a departed client
@@ -461,6 +465,53 @@ impl Screen {
         if let Some(watcher_state) = self.watcher_clients.get_mut(&client_id) {
             watcher_state.set_size(size);
             watcher_state.set_force_render();
+        }
+    }
+}
+
+impl Screen {
+    pub(super) fn client_timezone(
+        &self,
+        client: ClientId,
+    ) -> yinz_runtime::client_time::ClientTimeZone {
+        if !self.connected_clients.borrow().contains(&client) {
+            return Default::default();
+        }
+        self.client_timezones
+            .get(&client)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub(super) fn client_timezone_event(&self, client_id: ClientId) -> yinz_types::data::Event {
+        yinz_types::data::Event::ClientTimezoneChanged {
+            client_id,
+            timezone: self.client_timezone(client_id).report().map(str::to_owned),
+        }
+    }
+
+    pub(super) fn broadcast_client_timezone(&self, client_id: ClientId) {
+        self.bus
+            .senders
+            .send_to_plugin(PluginInstruction::Update(vec![(
+                None,
+                None,
+                self.client_timezone_event(client_id),
+            )]))
+            .context("broadcast client timezone")
+            .non_fatal();
+    }
+
+    pub(super) fn set_client_timezone(&mut self, client_id: ClientId, report: Option<&str>) {
+        let timezone = yinz_runtime::client_time::ClientTimeZone::from_client(report);
+        let changed = self
+            .client_timezones
+            .get(&client_id)
+            .and_then(|old| old.report())
+            != timezone.report();
+        self.client_timezones.insert(client_id, timezone);
+        if changed && self.connected_clients.borrow().contains(&client_id) {
+            self.broadcast_client_timezone(client_id);
         }
     }
 }

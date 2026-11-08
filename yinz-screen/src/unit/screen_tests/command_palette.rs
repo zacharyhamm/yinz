@@ -9531,3 +9531,92 @@ fn created_project_choices_replace_the_form_and_open_a_local_terminal() {
     assert_eq!(command.cwd, Some(root));
     assert_eq!(command.target, PaneTarget::Local);
 }
+
+#[test]
+fn client_timezone_palette_discovery_execution_and_refresh_use_current_report() {
+    use std::sync::{atomic::AtomicBool, Arc};
+    use yinz_bus::command_palette::{Instruction, Owner};
+    use yinz_types::command_palette::{Action as PaletteAction, Command, Message, Reply};
+    let mut screen = screen();
+    let (sender, requests) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    let command = |command| Instruction::Command {
+        owner: Owner {
+            plugin_id: PluginId::new(50),
+            generation: 9,
+            client_id: None,
+        },
+        client: CLIENT,
+        unavailable: Arc::new(AtomicBool::new(false)),
+        command,
+    };
+    let next = || {
+        requests
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PluginInstruction::PluginPalette(delivery) => match delivery.message {
+                    message @ (Message::Discover { .. } | Message::Execute { .. }) => Some(message),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("palette request")
+    };
+    screen.set_client_timezone(CLIENT, Some("America/Chicago"));
+    screen.plugin_palette_instruction(command(Command::Register {
+        id: "timezone".into(),
+        title: "Timezone".into(),
+        registration: "1".into(),
+        static_actions: false,
+    }));
+    screen.toggle_command_palette(CLIENT);
+    let Message::Discover { scope, context, .. } = next() else {
+        panic!()
+    };
+    assert_eq!(context.timezone.as_deref(), Some("America/Chicago"));
+    let opening = scope.opening;
+    let revision = scope.revision;
+    screen.plugin_palette_instruction(command(Command::Reply {
+        scope,
+        result: Ok(Reply::Actions {
+            actions: vec![PaletteAction {
+                id: "unique-timezone".into(),
+                label: "unique-timezone".into(),
+                handle: "timezone-handle".into(),
+                description: String::new(),
+                aliases: vec![],
+                cells: None,
+            }],
+        }),
+    }));
+    screen.set_client_timezone(CLIENT, Some("Asia/Kolkata"));
+    screen.command_palette_handles_input(&None, b"unique-timezone", false, CLIENT);
+    // Refresh explicitly to avoid depending on the debounce worker's scheduling.
+    screen.plugin_palette_instruction(Instruction::Discover {
+        client: CLIENT,
+        opening,
+        revision: revision + 1,
+    });
+    let Message::Discover { scope, context, .. } = next() else {
+        panic!()
+    };
+    assert_eq!(context.timezone.as_deref(), Some("Asia/Kolkata"));
+    screen.plugin_palette_instruction(command(Command::Reply {
+        scope,
+        result: Ok(Reply::Actions {
+            actions: vec![PaletteAction {
+                id: "unique-timezone".into(),
+                label: "unique-timezone".into(),
+                handle: "timezone-handle".into(),
+                description: String::new(),
+                aliases: vec![],
+                cells: None,
+            }],
+        }),
+    }));
+    palette_key(&mut screen, BareKey::Enter);
+    let Message::Execute { context, .. } = next() else {
+        panic!()
+    };
+    assert_eq!(context.timezone.as_deref(), Some("Asia/Kolkata"));
+}

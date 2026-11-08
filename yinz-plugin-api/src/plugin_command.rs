@@ -195,6 +195,7 @@ pub use super::generated_api::api::{
     plugin_permission::PermissionType as ProtobufPermissionType,
     resize::ResizeAction as ProtobufResizeAction,
 };
+pub use generated::GetClientTimezoneResponse as ProtobufGetClientTimezoneResponse;
 use yinz_types::internal_ids::ContextMenuRequestId;
 use yinz_types::internal_ids::DataWatchId;
 use yinz_types::internal_ids::NotificationId;
@@ -863,6 +864,16 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     Ok(PluginCommand::ShowCursor(cursor_position))
                 },
                 _ => Err("Mismatched payload for ShowCursor"),
+            },
+            Some(CommandName::GetClientTimezone) => match protobuf_plugin_command.payload {
+                Some(Payload::GetClientTimezonePayload(payload)) => {
+                    Ok(PluginCommand::GetClientTimezone {
+                        client_id: payload
+                            .client_id
+                            .map(yinz_types::internal_ids::ClientId::new),
+                    })
+                },
+                _ => Err("Mismatched payload for GetClientTimezone"),
             },
             Some(CommandName::GetCellPixelSize) => {
                 if protobuf_plugin_command.payload.is_some() {
@@ -3668,6 +3679,10 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 Some(Payload::GetLocalUtcOffsetPayload(payload)) => {
                     Ok(PluginCommand::GetLocalUtcOffset {
                         epoch_ms: yinz_types::units::SignedUnixMillis::new(payload.epoch_ms),
+                        client_id: payload
+                            .client_id
+                            .map(yinz_types::internal_ids::ClientId::new),
+                        timezone: payload.timezone,
                     })
                 },
                 _ => Err("Mismatched payload for GetLocalUtcOffset"),
@@ -3772,6 +3787,14 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     payload: Some(Payload::ShowCursorPayload(ShowCursorPayload { position })),
                 })
             },
+            PluginCommand::GetClientTimezone { client_id } => Ok(ProtobufPluginCommand {
+                name: CommandName::GetClientTimezone as i32,
+                payload: Some(Payload::GetClientTimezonePayload(
+                    generated::GetClientTimezonePayload {
+                        client_id: client_id.map(|id| id.get()),
+                    },
+                )),
+            }),
             PluginCommand::GetCellPixelSize => Ok(ProtobufPluginCommand {
                 name: CommandName::GetCellPixelSize as i32,
                 payload: None,
@@ -5734,11 +5757,17 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::GetLocalTime as i32,
                 payload: Some(Payload::GetLocalTimePayload(epoch_ms.get())),
             }),
-            PluginCommand::GetLocalUtcOffset { epoch_ms } => Ok(ProtobufPluginCommand {
+            PluginCommand::GetLocalUtcOffset {
+                epoch_ms,
+                client_id,
+                timezone,
+            } => Ok(ProtobufPluginCommand {
                 name: CommandName::GetLocalUtcOffset as i32,
                 payload: Some(Payload::GetLocalUtcOffsetPayload(
                     GetLocalUtcOffsetPayload {
                         epoch_ms: (epoch_ms).get(),
+                        client_id: client_id.map(|id| id.get()),
+                        timezone,
                     },
                 )),
             }),

@@ -343,3 +343,6 @@ fn detach_and_attach_session() {
     reattached_client.quit();
     yinz.quit();
 }
+
+#[path = "unit/clients/client_timezone.rs"]
+mod client_timezone;

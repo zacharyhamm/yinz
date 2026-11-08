@@ -91,6 +91,7 @@ enum EventType {
     ProjectProvidersChanged = 70;
     PickResult = 68;
     CellPixelSizeChanged = 69;
+    ClientTimezoneChanged = 71;
     NotificationReceived = 65;
     NotificationRequested = 66;
     NotificationResolved = 67;
@@ -110,6 +111,7 @@ message Event {
     string project_providers_changed_payload = 67;
     string pick_result_payload = 65;
     CellPixelSizeChangedPayload cell_pixel_size_changed_payload = 66;
+    ClientTimezoneChangedPayload client_timezone_changed_payload = 68;
     ModeUpdatePayload mode_update_payload = 2;
     TabUpdatePayload tab_update_payload = 3;
     PaneUpdatePayload pane_update_payload = 4;
@@ -301,6 +303,7 @@ message ClientInfo {
   PaneId pane_id = 2;
   string running_command = 3;
   bool is_current_client = 4;
+  optional string timezone = 5;
 }
 
 message FailedToWriteConfigToDiskPayload {
@@ -811,4 +814,9 @@ message CellPixelSize {
 
 message CellPixelSizeChangedPayload {
   optional CellPixelSize size = 1;
+}
+
+message ClientTimezoneChangedPayload {
+  uint32 client_id = 1;
+  optional string timezone = 2;
 }

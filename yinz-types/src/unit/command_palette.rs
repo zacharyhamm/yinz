@@ -315,3 +315,14 @@ fn table_round_trip_defaults_shapes_and_limits() {
         .validate()
         .is_err());
 }
+
+#[test]
+fn client_timezone_palette_context_accepts_older_json() {
+    let old =
+        serde_json::json!({"clientId":7,"paneId":{"Terminal":1},"tabId":0,"currentProject":null});
+    let mut context: Context = serde_json::from_value(old).unwrap();
+    assert_eq!(context.timezone, None);
+    context.timezone = Some("Asia/Kolkata".into());
+    let json = serde_json::to_value(context).unwrap();
+    assert_eq!(json["timezone"], "Asia/Kolkata");
+}

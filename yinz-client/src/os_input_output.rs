@@ -477,6 +477,10 @@ pub trait ClientOsApi:
 {
     /// Returns a [`Box`] pointer to this [`ClientOsApi`] struct.
     fn box_clone(&self) -> Box<dyn ClientOsApi>;
+    /// Capture the host timezone for an attachment, including prepared session handoffs.
+    fn capture_timezone(&self) -> Option<String> {
+        yinz_runtime::client_time::capture_timezone()
+    }
     /// Terminal settings captured before the client entered raw mode.
     fn original_termios(&self) -> Option<yinz_runtime::termios::WireTermios>;
     fn should_install_panic_hook(&self) -> bool {

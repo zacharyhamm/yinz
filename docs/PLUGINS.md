@@ -453,3 +453,11 @@ and a 100 ms timeout; send failures, timeout, and closed channels return errors.
 Recheck the IDs before disconnecting and request confirmation again if they
 changed. Revalidation and disconnection are separate operations, so connections
 can still change between them.
+
+Plugins can format timestamps in the acting client's zone with
+`(yinz-client-timezone)` and `(yinz-client-utc-offset epoch-ms)`. Both accept an
+optional client ID and return `json-null` when unavailable. Subscribe to
+`ClientTimezoneChanged` to invalidate per-client displays; the event identifies
+the subject separately from the callback actor. Client listings and palette
+contexts also include `timezone`. See [the SDK reference](PLUGIN_SDK.md#client-timezones)
+for supported rule strings, offset selectors and server-local compatibility.
