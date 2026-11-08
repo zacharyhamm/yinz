@@ -16,19 +16,19 @@ workspace = true
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
-yinz-routing = { path = "../yinz-routing", version = "0.1.2-alpha.8" }
+yinz-routing = { path = "../yinz-routing", version = "0.1.2-alpha.9" }
 yinz-config = { workspace = true }
 yinz-ipc = { workspace = true }
 yinz-storage = { workspace = true }
 yinz-runtime = { workspace = true }
 yinz-types = { workspace = true }
-yinz-bus = { path = "../yinz-bus", version = "0.1.2-alpha.8" }
-yinz-panes = { path = "../yinz-panes", version = "0.1.2-alpha.8" }
-yinz-plugin-host = { path = "../yinz-plugin-host", version = "0.1.2-alpha.8" }
-yinz-pty = { path = "../yinz-pty", version = "0.1.2-alpha.8" }
-yinz-screen = { path = "../yinz-screen", version = "0.1.2-alpha.8" }
-yinz-terminal = { path = "../yinz-terminal", version = "0.1.2-alpha.8" }
-yinz-process = { path = "../yinz-process", version = "0.1.2-alpha.8" }
+yinz-bus = { path = "../yinz-bus", version = "0.1.2-alpha.9" }
+yinz-panes = { path = "../yinz-panes", version = "0.1.2-alpha.9" }
+yinz-plugin-host = { path = "../yinz-plugin-host", version = "0.1.2-alpha.9" }
+yinz-pty = { path = "../yinz-pty", version = "0.1.2-alpha.9" }
+yinz-screen = { path = "../yinz-screen", version = "0.1.2-alpha.9" }
+yinz-terminal = { path = "../yinz-terminal", version = "0.1.2-alpha.9" }
+yinz-process = { path = "../yinz-process", version = "0.1.2-alpha.9" }
 interprocess = { workspace = true }
 log = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
