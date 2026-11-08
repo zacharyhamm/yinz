@@ -54,6 +54,34 @@ fn mounted(path: &Path) -> PathBuf {
     Path::new("/usr/src/yinz").join(path.strip_prefix(repo().join("target")).unwrap())
 }
 
+#[derive(serde::Deserialize)]
+struct UpdateFixtures {
+    local_binary: PathBuf,
+    remote_binary: PathBuf,
+    remote_worker: PathBuf,
+}
+impl UpdateFixtures {
+    fn load() -> Self {
+        let bytes = fs::read(repo().join("target/remote-test/update-fixtures.json"))
+            .expect("run cargo x remote-test --build --update-fixtures");
+        let fixtures: Self = serde_json::from_slice(&bytes).expect(
+            "incompatible fixture metadata; run cargo x remote-test --build --update-fixtures",
+        );
+        for path in [
+            &fixtures.local_binary,
+            &fixtures.remote_binary,
+            &fixtures.remote_worker,
+        ] {
+            assert!(
+                path.is_file(),
+                "missing fixture {}; run cargo x remote-test --build --update-fixtures",
+                path.display()
+            );
+        }
+        fixtures
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Preparation {
     executable: PathBuf,
@@ -128,6 +156,8 @@ struct Sessions {
     local: Fixture,
     far: PathBuf,
     remote_socket: PathBuf,
+    remote_binary: PathBuf,
+    remote_worker: PathBuf,
     candidate: PathBuf,
     version: String,
     _installation: tempfile::TempDir,
@@ -147,16 +177,8 @@ impl Sessions {
         ));
         let candidate = installation.path().join("candidate");
         fs::create_dir(&candidate).unwrap();
-        let metadata: serde_json::Value = serde_json::from_slice(
-            &fs::read(repo().join("target/remote-test/update-fixtures.json"))
-                .expect("run cargo x remote-test --build --update-fixtures"),
-        )
-        .unwrap();
-        let newer = PathBuf::from(metadata["binary"].as_str().unwrap());
-        assert!(
-            newer.is_file(),
-            "run cargo x remote-test --build --update-fixtures"
-        );
+        let fixtures = UpdateFixtures::load();
+        let newer = fixtures.local_binary;
         fs::copy(&newer, candidate.join("yinz")).unwrap();
         yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), &candidate).unwrap();
         fs::write(
@@ -169,15 +191,7 @@ impl Sessions {
             NEW_PLUGIN,
         )
         .unwrap();
-        let version = String::from_utf8(
-            Command::new(&newer)
-                .arg("--version")
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap();
-        let version = version.trim().strip_prefix("yinz ").unwrap().to_owned();
+        let version = installed_version(&newer);
         assert!(
             crate::update::version(&version).unwrap()
                 > crate::update::version(yinz_runtime::consts::VERSION).unwrap()
@@ -191,7 +205,7 @@ impl Sessions {
             "detachable_panes true\nload_plugins clear-defaults=true\ndefault_mode \"locked\"\n",
         )
         .unwrap();
-        remote(&format!("mkdir -p {f}/home {f}/tmp {f}/sockets {f}/cache {f}/config {f}/runtime {f}/data {f}/bin {f}/candidate; cp {} {f}/yinz; cp {} {f}/candidate/yinz; cp -R /usr/src/yinz/remote-test/data/plugins {f}/data/; cp -R {f}/data/plugins {f}/candidate/", quote("/usr/src/yinz/remote-test/yinz"), quote(mounted(&newer).to_str().unwrap()), f=far.display()));
+        remote(&format!("mkdir -p {f}/home {f}/tmp {f}/sockets {f}/cache {f}/config {f}/runtime {f}/data {f}/bin {f}/candidate; cp {} {f}/yinz; cp {} {f}/candidate/yinz; cp -R /usr/src/yinz/remote-test/data/plugins {f}/data/; cp -R {f}/data/plugins {f}/candidate/", quote("/usr/src/yinz/remote-test/yinz"), quote(mounted(&fixtures.remote_binary).to_str().unwrap()), f=far.display()));
         write_remote(
             &far.join("config.kdl"),
             "detachable_panes true\nload_plugins clear-defaults=true\ndefault_mode \"locked\"\n",
@@ -224,6 +238,8 @@ impl Sessions {
             local,
             far,
             remote_socket,
+            remote_binary: fixtures.remote_binary,
+            remote_worker: fixtures.remote_worker,
             candidate,
             version,
             _installation: installation,
@@ -417,16 +433,7 @@ impl Sessions {
             docker(&[
                 "env",
                 &format!("YINZ_SEQUENTIAL_PREPARATION={}", path.display()),
-                mounted(&PathBuf::from(
-                    serde_json::from_slice::<serde_json::Value>(
-                        &fs::read(repo().join("target/remote-test/update-fixtures.json")).unwrap(),
-                    )
-                    .unwrap()["worker"]
-                        .as_str()
-                        .unwrap(),
-                ))
-                .to_str()
-                .unwrap(),
+                mounted(&self.remote_worker).to_str().unwrap(),
                 "--exact",
                 WORKER,
                 "--ignored",
@@ -785,10 +792,15 @@ fn sequence(remote_first: bool) {
         );
         assert_eq!(after.running_version, fixture.version);
         assert_ne!(after.running_binary_sha256, before.running_binary_sha256);
+        let candidate = if far {
+            fixture.remote_binary.clone()
+        } else {
+            fixture.candidate.join("yinz")
+        };
         assert_eq!(
             after.running_binary_sha256.as_deref(),
             Some(
-                crate::live_update::artifacts::digest_file(&fixture.candidate.join("yinz"))
+                crate::live_update::artifacts::digest_file(&candidate)
                     .unwrap()
                     .as_str()
             )

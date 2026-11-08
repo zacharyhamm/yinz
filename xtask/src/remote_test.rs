@@ -93,59 +93,48 @@ pub fn remote_test_dir() -> PathBuf {
     crate::target_dir().join("remote-test")
 }
 
-/// A second real compilation, with Cargo's version stamping and matching wire
-/// contracts. Copy sources only: this checkout and the fixture each own a real
-/// target directory. Never relabel an inventory or patch executable bytes.
+/// Real compilations with Cargo's version stamping and matching wire contracts.
+/// The host and Debian guest each need a candidate linked against their own
+/// libraries. Each source checkout owns its target directory; only source bytes
+/// are copied, never build artifacts or metadata.
 fn build_update_fixture(sh: &Shell, native: bool) -> anyhow::Result<()> {
     let root = crate::project_root();
-    let checkout = remote_test_dir().join("update-release");
-    std::fs::create_dir_all(&checkout).context("create update fixture checkout")?;
-    let files = std::process::Command::new("git")
-        .args([
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-        ])
-        .current_dir(&root)
-        .output()
-        .context("list update fixture sources")?;
-    anyhow::ensure!(files.status.success(), "cannot list update fixture sources");
+    let host_checkout = remote_test_dir().join("update-release-host");
+    let guest_checkout = remote_test_dir().join("update-release");
     let current = yinz_runtime::consts::VERSION;
     // A prerelease extension sorts after the running alpha, using the real
     // prerelease-inclusive release decision in the coordinator.
     let next = format!("{current}.update-fixture");
-    for name in files
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|name| !name.is_empty())
-    {
-        let name = std::str::from_utf8(name).context("decode update fixture source path")?;
-        let source = root.join(name);
-        if !source.is_file() {
-            continue;
-        }
-        let destination = checkout.join(name);
-        std::fs::create_dir_all(destination.parent().context("fixture source parent")?)?;
-        if source
-            .file_name()
-            .is_some_and(|name| name == "Cargo.toml" || name == "Cargo.lock")
-        {
-            let text = std::fs::read_to_string(&source).context("read fixture manifest")?;
-            let stamped = text.replace(current, &next);
-            if std::fs::read_to_string(&destination).ok().as_deref() != Some(&stamped) {
-                std::fs::write(&destination, stamped).context("stamp fixture Cargo manifest")?;
-            }
-        } else {
-            let bytes = std::fs::read(&source).context("read update fixture source")?;
-            if std::fs::read(&destination).ok().as_deref() != Some(bytes.as_slice()) {
-                std::fs::copy(&source, &destination).context("copy update fixture source")?;
-            }
-        }
+    let mut checkouts = vec![host_checkout.as_path()];
+    if !native {
+        checkouts.push(&guest_checkout);
     }
-    let _pd = sh.push_dir(&checkout);
+    copy_update_fixture_sources(&root, &checkouts, current, &next)?;
+
     let target = crate::ci::linux_target(std::env::consts::ARCH)?;
+    let cargo = crate::cargo()?;
+    {
+        let _pd = sh.push_dir(&host_checkout);
+        cmd!(sh, "{cargo} build --locked --bin yinz --target {target}")
+            .run()
+            .context("build newer update fixture for the host")?;
+    }
+    let local_binary = host_checkout.join("target").join(target).join("debug/yinz");
+    let reported = cmd!(sh, "{local_binary} --version")
+        .read()
+        .context("verify stamped host fixture")?;
+    anyhow::ensure!(
+        reported.trim() == format!("yinz {next}"),
+        "host fixture reported an unexpected version: {reported}"
+    );
+
+    // --native explicitly opts into using the host libraries in the guest.
+    let checkout = if native {
+        &host_checkout
+    } else {
+        &guest_checkout
+    };
+    let _pd = sh.push_dir(checkout);
     let project_mount = format!("{}:{}", root.display(), root.display());
     let user = format!("{}:{}", unsafe { libc::getuid() }, unsafe {
         libc::getgid()
@@ -155,15 +144,12 @@ fn build_update_fixture(sh: &Shell, native: bool) -> anyhow::Result<()> {
         "CARGO_HOME={}",
         root.join("target/linux-build/cargo").display()
     );
-    let cargo = crate::cargo()?;
-    let mut command = if native {
-        cmd!(sh, "{cargo}")
-    } else {
-        cmd!(sh, "docker run --rm --user {user} -v {project_mount} -w {checkout} -e {home} -e {cargo_home} yinz-test-builder:trixie-slim cargo")
+    if !native {
+        cmd!(sh, "docker run --rm --user {user} -v {project_mount} -w {checkout} -e {home} -e {cargo_home} yinz-test-builder:trixie-slim cargo build --locked --bin yinz --target {target}")
             .env("PODMAN_USERNS", "keep-id")
-    };
-    command = command.args(["build", "--locked", "--bin", "yinz", "--target", target]);
-    command.run().context("build newer update fixture")?;
+            .run()
+            .context("build newer update fixture for the Debian guest")?;
+    }
     let command = if native {
         cmd!(sh, "{cargo}")
     } else {
@@ -183,7 +169,7 @@ fn build_update_fixture(sh: &Shell, native: bool) -> anyhow::Result<()> {
         ])
         .read()
         .context("build remote preparation worker")?;
-    let worker = output
+    let remote_worker = output
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .find_map(|value| {
@@ -193,21 +179,104 @@ fn build_update_fixture(sh: &Shell, native: bool) -> anyhow::Result<()> {
                 .map(PathBuf::from)
         })
         .context("locate remote preparation worker")?;
-    let binary = checkout.join("target").join(target).join("debug/yinz");
-    let reported = cmd!(sh, "{binary} --version")
+    let remote_binary = checkout.join("target").join(target).join("debug/yinz");
+    let mounted = |path: &Path| -> anyhow::Result<PathBuf> {
+        Ok(Path::new("/usr/src/yinz").join(
+            path.strip_prefix(crate::target_dir())
+                .context("remote fixture must be under target/")?,
+        ))
+    };
+    // Validate on the real guest, including native mode's runtime libraries.
+    let _pd = sh.push_dir(&root);
+    let reported = compose(sh, &["exec", "-T", "--user", "test", "remote"])
+        .arg(mounted(&remote_binary)?)
+        .arg("--version")
         .read()
-        .context("verify stamped fixture")?;
+        .context(
+            "verify stamped guest fixture; native builds need Debian-compatible runtime libraries",
+        )?;
     anyhow::ensure!(
         reported.trim() == format!("yinz {next}"),
-        "fixture reported an unexpected version: {reported}"
+        "guest fixture reported an unexpected version: {reported}"
     );
-    println!("Sequential update fixture: {current} -> {next}");
+    compose(sh, &["exec", "-T", "--user", "test", "remote"])
+        .arg(mounted(&remote_worker)?)
+        .arg("--list")
+        .args([
+            "--exact",
+            "live_update::tests::client_update_real::sequential_ssh::prepare_worker",
+        ])
+        .run()
+        .context("verify remote preparation worker runtime libraries")?;
+    println!("Sequential update fixtures: {current} -> {next}");
     std::fs::write(
         remote_test_dir().join("update-fixtures.json"),
-        serde_json::to_vec(&serde_json::json!({"binary":binary,"worker":worker}))
-            .context("encode fixture paths")?,
+        serde_json::to_vec(&serde_json::json!({
+            "local_binary": local_binary,
+            "remote_binary": remote_binary,
+            "remote_worker": remote_worker,
+        }))
+        .context("encode fixture paths")?,
     )
     .context("record update fixture paths")?;
+    Ok(())
+}
+
+fn copy_update_fixture_sources(
+    root: &Path,
+    checkouts: &[&Path],
+    current: &str,
+    next: &str,
+) -> anyhow::Result<()> {
+    let files = std::process::Command::new("git")
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
+        .current_dir(root)
+        .output()
+        .context("list update fixture sources")?;
+    anyhow::ensure!(files.status.success(), "cannot list update fixture sources");
+    for name in files
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|name| !name.is_empty())
+    {
+        let name = std::str::from_utf8(name).context("decode update fixture source path")?;
+        let source = root.join(name);
+        if !source.is_file() {
+            continue;
+        }
+        let bytes = if source
+            .file_name()
+            .is_some_and(|name| name == "Cargo.toml" || name == "Cargo.lock")
+        {
+            std::fs::read_to_string(&source)
+                .context("read fixture manifest")?
+                .replace(current, next)
+                .into_bytes()
+        } else {
+            std::fs::read(&source).context("read update fixture source")?
+        };
+        for checkout in checkouts {
+            let destination = checkout.join(name);
+            std::fs::create_dir_all(destination.parent().context("fixture source parent")?)
+                .context("create fixture source directory")?;
+            if std::fs::read(&destination).ok().as_deref() != Some(bytes.as_slice()) {
+                std::fs::write(&destination, &bytes).context("write update fixture source")?;
+                std::fs::set_permissions(
+                    &destination,
+                    std::fs::metadata(&source)
+                        .context("read fixture source permissions")?
+                        .permissions(),
+                )
+                .context("preserve fixture source permissions")?;
+            }
+        }
+    }
     Ok(())
 }
 

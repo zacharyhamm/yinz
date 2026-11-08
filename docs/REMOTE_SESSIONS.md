@@ -149,13 +149,18 @@ cargo x remote-test --test -- --exact live_update::tests::client_update_real::se
 cargo x remote-test --test -- --exact live_update::tests::client_update_real::sequential_ssh::remote_then_local
 ```
 
-`--update-fixtures` copies sources into `target/remote-test/update-release` and
-compiles a newer Cargo-stamped prerelease with the same wire contracts and its own
-real `target/` directory. The Debian builder avoids requiring published release
-downloads or host libc compatibility. `--native` is also supported when the host
-binary runs in Debian 13. Tests seed pinned release preparation receipts using
-the production installation transaction, then request the production coordinator
-through each running server. Release discovery and downloading are excluded;
+`--update-fixtures` copies the same sources into
+`target/remote-test/update-release-host` and `target/remote-test/update-release`,
+each with its own real `target/` directory. It builds a newer Cargo-stamped
+prerelease natively for local preparation and client reexec, and in Debian for
+the SSH guest and its preparation worker. Both candidates have the same version
+and wire contracts; the host need not run Debian-linked binaries. Published
+release downloads are not required. With `--native`, only the host checkout is
+built and its artifacts are also used in the guest, so the host binary and worker
+must run with Debian 13's libraries. Candidates are checked in their respective
+environments before fixture paths are saved. Tests seed pinned release preparation
+receipts using the production installation transaction, then request the production
+coordinator through each running server. Release discovery and downloading are excluded;
 running/installed version decisions, client reexec, SSH reconnection, retained
 builtins, readiness, commit, and installation claim cleanup are exercised.
 
