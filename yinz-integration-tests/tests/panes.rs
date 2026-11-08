@@ -100,7 +100,8 @@ fn new_pane_while_fullscreen_breaks_out_of_fullscreen() {
                 && grid_snapshot.contains("Pane #1")
                 && grid_snapshot.contains("Pane #2")
                 && grid_snapshot.contains("Pane #3")
-                && grid_snapshot.cursor.is_some()
+                // The layout can render before the new terminal's prompt arrives.
+                && grid_snapshot.cursor_is_at(col(62).row(13))
         },
     );
     assert_snapshot!(normalized(&grid_snapshot));
