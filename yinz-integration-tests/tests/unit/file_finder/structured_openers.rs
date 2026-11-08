@@ -284,8 +284,10 @@ fn reader_permission_denial_and_missing_source_leave_no_finder() {
     assert_retired(&yinz, &finder, &selection);
     // A reader whose source cannot be read gets no pane to paint its error into. The host
     // reports the load failure and the finder its failed handoff, both as notifications.
+    // The host toast prefixes its error with the temporary source path, which can wrap
+    // "failed to find the plugin" across rows. Match a whole word from "failed to load:".
     yinz.wait_until("missing reader load error is visible", |g| {
-        g.contains("failed to open reader") && g.contains("to find the plugin")
+        g.contains("failed to open reader") && g.contains("load:")
     });
     assert!(!panes(&yinz).iter().any(|pane| pane
         .pane_info
