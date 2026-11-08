@@ -9,11 +9,11 @@ description = "The yinz server's screen thread: tabs, focus, overlays and render
 workspace = true
 
 [dependencies]
-yinz-bus = { path = "../yinz-bus", version = "0.1.2-alpha.7" }
-yinz-panes = { path = "../yinz-panes", version = "0.1.2-alpha.7" }
-yinz-tab = { path = "../yinz-tab", version = "0.1.2-alpha.7" }
-yinz-routing = { path = "../yinz-routing", version = "0.1.2-alpha.7" }
-yinz-terminal = { path = "../yinz-terminal", version = "0.1.2-alpha.7" }
+yinz-bus = { path = "../yinz-bus", version = "0.1.2-alpha.8" }
+yinz-panes = { path = "../yinz-panes", version = "0.1.2-alpha.8" }
+yinz-tab = { path = "../yinz-tab", version = "0.1.2-alpha.8" }
+yinz-routing = { path = "../yinz-routing", version = "0.1.2-alpha.8" }
+yinz-terminal = { path = "../yinz-terminal", version = "0.1.2-alpha.8" }
 yinz-config = { workspace = true }
 yinz-host-protocol = { workspace = true }
 yinz-ipc = { workspace = true }
