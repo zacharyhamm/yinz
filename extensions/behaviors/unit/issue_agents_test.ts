@@ -689,7 +689,8 @@ for (const recovery of ["resume", "drive"] as const) {
     assert(pending.continuation);
     const child = AgentStateSchema.parse(h.child.get("state"));
     equal(child.phase, "waiting");
-    equal(child.submissionId, "submission-2");
+    // Launch intent reserves the first ID before the initial submission.
+    equal(child.submissionId, "submission-3");
     equal(child.continuation?.id, pending.continuation.id);
     const calls = h.calls.length;
     await rejects(
