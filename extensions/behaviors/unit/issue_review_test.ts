@@ -124,3 +124,28 @@ Deno.test("production review prompts retain independent duties, standards and ex
       );}
   }
 });
+
+Deno.test("review evaluation sources retain the byte identities used by live reviewers", async () => {
+  const identities = {
+    technical:
+      "a93312b9d026a31204f99c6b1f1c4d22ad7d735e17b0d38cae72547d020093e2",
+    ux: "a827a2e564c77062efd8abfbe7d3c5aeae5691a6bdec88c56dae0c8ef19c0728",
+    control: "5adaeb48a7a59f05c5ed55c86dd29c7f5c97ba145c286d7456d33663350ebad9",
+  };
+  for (const [name, expected] of Object.entries(identities)) {
+    const source = await Deno.readFile(
+      new URL(`fixtures/issue_review/${name}.ts`, import.meta.url),
+    );
+    const digest = new Uint8Array(
+      await crypto.subtle.digest("SHA-256", source),
+    );
+    const actual = Array.from(
+      digest,
+      (byte) => byte.toString(16).padStart(2, "0"),
+    ).join("");
+    assert(
+      actual === expected,
+      `${name} changed: repeat and record the bounded live evaluation before updating its identity`,
+    );
+  }
+});

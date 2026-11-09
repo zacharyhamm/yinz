@@ -4,7 +4,8 @@ These are actual read-only reviewer conversations, separate from issue 72's
 technical/UX approvals. They evaluate three deliberately small scenarios, not
 general review reliability. `issue_review_test.ts` deterministically establishes
 the scenarios and assignment contract; its passing assertions do not prove a
-reviewer detects defects.
+reviewer detects defects. A byte-identity test pins the evaluated fixture sources;
+changing them requires repeating and recording the bounded live evaluation.
 
 ## Identity and method
 
