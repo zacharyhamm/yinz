@@ -8765,6 +8765,22 @@ Config {
                 relative_path: None,
                 declared_path: None,
             },
+            "web": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "web",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "shared": "true",
+                    },
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
         },
     },
     ui: UiConfig {
@@ -9037,5 +9053,17 @@ Config {
                 separator: false,
             },
         ],
+    },
+    web: WebConfig {
+        enabled: None,
+        address: None,
+        port: None,
+        allow_non_loopback: None,
+        plugin: None,
+        allowed_hosts: [],
+        allowed_origins: [],
+        tailscale_users: [],
+        session_days: None,
+        https_port_hint: None,
     },
 }

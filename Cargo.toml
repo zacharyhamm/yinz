@@ -255,7 +255,7 @@ bytes = { version = "1.11", default-features = false, features = ["std"] }
 argon2 = { version = "0.5.3", default-features = false, features = ["alloc", "password-hash"] }
 getrandom = { version = "0.4.3", default-features = false }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
-zeroize = { version = "1.8", default-features = false, features = ["alloc"] }
+zeroize = { version = "1.8", features = ["alloc"] }
 
 [profile.dev]
 debug = "line-tables-only"

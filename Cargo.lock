@@ -5644,7 +5644,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-web"
-version = "0.1.2-alpha.6"
+version = "0.1.2-alpha.10"
 dependencies = [
  "anyhow",
  "argon2",
