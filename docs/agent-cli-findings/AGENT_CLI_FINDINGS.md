@@ -28,9 +28,31 @@ Each one found its session from the environment, then ran spawn, wait, prompt,
 | 35 | P2 | **Not reproduced; watch for it.** A worker spawned into `.worktrees/fix-sub` once edited the main checkout's file by absolute path, and `prompt --wait` reported success. Later runs stayed inside their own worktrees. |
 | 37 | P2 | **Not reproduced; watch for it.** Haiku once called a 55 KB paste ending in an instruction a "prompt injection" and ignored it, despite `PASTE_LEAD_IN`. A later 56 KB sample worked. |
 
+## Root notification obligations, issue 69 subset
+
+The current adapter adds bounded positive notification obligations alongside the
+registry design below. Successful native root Bash/Agent launches are retained
+before synchronous PostToolUse reporting returns. Root task/tool/run acceptance
+and the receiving prompt's confirmed answer settle each obligation; exact local
+Bash TaskStop uses the cancelling answer. Registry idle, empty Stop snapshots and
+elapsed time do not settle them. Aggregate waits, watch, plugins and presentation
+share this state; original launching submissions keep their own results. Transfer
+retains attribution, deduplication and remaining operational budget.
+
+The [S1 mapping](issue-69-s1-adapter-mapping.md) and its sanitized evidence are
+pinned provider/input proof. The [prior investigation](issue-69-notification-investigation.md)
+retains installed-binary capture provenance. Automated worktree parser, native
+pruning/relay, screen, reporter-process and selected IPC tests verify the
+implementation separately; they are not a fresh live adverse-order reproduction.
+Issue 69 remains open for worker-owned/unattributed resumed processing, anonymous
+hook-declined removals, gated tool-result and unvalidated alternate delivery.
+Unsupported or unavailable observation retains registry/hooks. Operational budget
+or capacity exhaustion is unavailable observation, never successful settlement.
+The historical ledger, epochs and sidechain scanner below remain superseded.
+
 ## Claude session registry activity, 2026-11-07
 
-Yinz no longer reconstructs Claude background work from transcripts. Claude Code
+The registry remains an independent execution hint. Claude Code
 2.1.312+ rewrites `$CLAUDE_CONFIG_DIR/sessions/<pid>.json` whenever its `status`
 changes: `busy` (a turn, background agents, workflows or forked skills), `shell`
 (only background Bash), `idle`, or `waiting` (blocked on a person). Each prompt's
@@ -47,7 +69,7 @@ background record must be newer than the process start, since background agents
 keep the `busy` written before the prompt. A missing, unreadable or unrecognized
 registry yields no background signal, so the pane follows hooks as before.
 
-The task-notification parsing, run-ID joining, sidechain scanning, SendMessage
+The former general task-notification parsing, run-ID joining, sidechain scanning, SendMessage
 resumption tracking and per-execution `SubagentStart`/`SubagentStop` reports
 described in the sections below were removed, with their fixtures. Those sections
 are investigation history.

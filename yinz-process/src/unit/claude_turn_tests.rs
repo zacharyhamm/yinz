@@ -1522,3 +1522,95 @@ fn completion_observer_initialization_failure_kills_and_reaps_child() {
         assert_observer_child_reaped(pid);
     }
 }
+
+#[test]
+fn root_notification_mapping_requires_structural_origin_and_exact_turn() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/claude-notification-settlement.json")).unwrap();
+    let row = fixture["accepted"].clone();
+    assert_eq!(
+        notifications::accepted(&row, "conversation", "prompt")
+            .unwrap()
+            .task,
+        "task"
+    );
+    for patch in [
+        json!({"origin":null}),
+        json!({"isSidechain":true}),
+        json!({"sessionId":"foreign"}),
+        json!({"promptId":"other"}),
+        json!({"message":{"content":"ordinary prose <task-notification><task-id>task</task-id></task-notification>"}}),
+    ] {
+        let mut invalid = row.clone();
+        invalid
+            .as_object_mut()
+            .unwrap()
+            .extend(patch.as_object().unwrap().clone());
+        assert!(notifications::accepted(&invalid, "conversation", "prompt").is_none());
+    }
+}
+
+#[test]
+fn notification_follow_reports_acceptance_and_only_ancestral_answer_completion() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("root.jsonl");
+    let rows = [
+        json!({"type":"user", "isSidechain":false,"sessionId":"conversation","promptId":"prompt","uuid":"accepted",
+            "origin":{"kind":"task-notification","producer":"session-task","runId":"run"},
+            "message":{"content":"<task-notification><task-id>task</task-id><tool-use-id>tool</tool-use-id></task-notification>"}}),
+        json!({"type":"assistant","uuid":"answer","parentUuid":"accepted","message":{"content":[{"type":"text","text":"FINAL"}]}}),
+        json!({"type":"system","subtype":"turn_duration","parentUuid":"answer"}),
+    ];
+    std::fs::write(
+        &path,
+        rows.iter().map(|r| format!("{r}\n")).collect::<String>(),
+    )
+    .unwrap();
+    let observation = observation(&path, None);
+    let mut reports = Vec::new();
+    let turn = follow_with_api_reporting(&observation, None, |h| {
+        reports.push(h.clone());
+        Ok(())
+    })
+    .unwrap();
+    assert!(turn.answer_boundary);
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0].hook_event_name, "NotificationAccepted");
+    assert_eq!(reports[1].claude_turn_complete, Some(true));
+    assert_eq!(reports[1].last_assistant_message.as_deref(), Some("FINAL"));
+    assert_eq!(
+        reports[0].claude_notifications,
+        reports[1].claude_notifications
+    );
+}
+
+#[test]
+fn a_registry_only_notice_end_is_unavailable_answer_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("root.jsonl");
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/claude-notification-settlement.json")).unwrap();
+    std::fs::write(&path, format!("{}\n", fixture["accepted"])).unwrap();
+    let mut observation = observation(&path, None);
+    let status = dir.path().join("status.json");
+    observation.claude_status = Some(ClaudeStatusObservation {
+        path: status.clone(),
+        after_ms: now_ms(),
+    });
+    std::fs::write(status, registry("idle", now_ms() + 1)).unwrap();
+    let mut reports = Vec::new();
+    follow_with_api_reporting(&observation, None, |h| {
+        reports.push(h.clone());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[1].claude_turn_complete, Some(false));
+    assert!(
+        reports[1]
+            .claude_notifications
+            .as_ref()
+            .unwrap()
+            .unavailable
+    );
+}

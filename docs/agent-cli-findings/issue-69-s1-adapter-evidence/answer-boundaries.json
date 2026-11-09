@@ -1,0 +1,271 @@
+{
+  "evidence": "measured structural rows from prior raw captures, existing identity aliases, no prose; ancestry closes holes omitted by original projection",
+  "boundaries": [
+    {
+      "run": "run2",
+      "prompt": "prompt-1",
+      "end_uuid": "record-17",
+      "chain": [
+        {
+          "source": "run2/raw/root.jsonl:41",
+          "type": "system",
+          "uuid": "record-17",
+          "parentUuid": "record-16"
+        },
+        {
+          "source": "run2/raw/root.jsonl:40",
+          "type": "system",
+          "uuid": "record-16",
+          "parentUuid": "record-15"
+        },
+        {
+          "source": "run2/raw/root.jsonl:39",
+          "type": "assistant",
+          "uuid": "record-15",
+          "parentUuid": "record-14"
+        },
+        {
+          "source": "run2/raw/root.jsonl:38",
+          "type": "attachment",
+          "uuid": "record-14",
+          "parentUuid": "record-13"
+        },
+        {
+          "source": "run2/raw/root.jsonl:28",
+          "type": "attachment",
+          "uuid": "record-13",
+          "parentUuid": "record-12"
+        },
+        {
+          "source": "run2/raw/root.jsonl:27",
+          "type": "user",
+          "uuid": "record-12",
+          "parentUuid": "record-11",
+          "promptId": "prompt-1"
+        }
+      ]
+    },
+    {
+      "run": "run2",
+      "prompt": "prompt-2",
+      "end_uuid": "record-21",
+      "chain": [
+        {
+          "source": "run2/raw/root.jsonl:49",
+          "type": "system",
+          "uuid": "record-21",
+          "parentUuid": "record-20"
+        },
+        {
+          "source": "run2/raw/root.jsonl:48",
+          "type": "system",
+          "uuid": "record-20",
+          "parentUuid": "record-19"
+        },
+        {
+          "source": "run2/raw/root.jsonl:47",
+          "type": "assistant",
+          "uuid": "record-19",
+          "parentUuid": "record-18"
+        },
+        {
+          "source": "run2/raw/root.jsonl:46",
+          "type": "user",
+          "uuid": "record-18",
+          "parentUuid": "record-17",
+          "promptId": "prompt-2"
+        }
+      ]
+    },
+    {
+      "run": "run2",
+      "prompt": "prompt-3",
+      "end_uuid": "record-40",
+      "chain": [
+        {
+          "source": "run2/raw/root.jsonl:69",
+          "type": "system",
+          "uuid": "record-40",
+          "parentUuid": "record-39"
+        },
+        {
+          "source": "run2/raw/root.jsonl:68",
+          "type": "system",
+          "uuid": "record-39",
+          "parentUuid": "record-38"
+        },
+        {
+          "source": "run2/raw/root.jsonl:67",
+          "type": "assistant",
+          "uuid": "record-38",
+          "parentUuid": "record-37"
+        },
+        {
+          "source": "run2/raw/root.jsonl:66",
+          "type": "attachment",
+          "uuid": "record-37",
+          "parentUuid": "record-36"
+        },
+        {
+          "source": "run2/raw/root.jsonl:61",
+          "type": "user",
+          "uuid": "record-36",
+          "parentUuid": "record-35",
+          "promptId": "prompt-3"
+        }
+      ]
+    },
+    {
+      "run": "run2",
+      "prompt": "prompt-4",
+      "end_uuid": "record-45",
+      "chain": [
+        {
+          "source": "run2/raw/root.jsonl:83",
+          "type": "system",
+          "uuid": "record-45",
+          "parentUuid": "record-44"
+        },
+        {
+          "source": "run2/raw/root.jsonl:82",
+          "type": "system",
+          "uuid": "record-44",
+          "parentUuid": "record-43"
+        },
+        {
+          "source": "run2/raw/root.jsonl:81",
+          "type": "assistant",
+          "uuid": "record-43",
+          "parentUuid": "record-42"
+        },
+        {
+          "source": "run2/raw/root.jsonl:80",
+          "type": "user",
+          "uuid": "record-42",
+          "parentUuid": "record-40",
+          "promptId": "prompt-4"
+        }
+      ]
+    },
+    {
+      "run": "run2",
+      "prompt": "prompt-5",
+      "end_uuid": "record-54",
+      "chain": [
+        {
+          "source": "run2/raw/root.jsonl:92",
+          "type": "system",
+          "uuid": "record-54",
+          "parentUuid": "record-53"
+        },
+        {
+          "source": "run2/raw/root.jsonl:91",
+          "type": "system",
+          "uuid": "record-53",
+          "parentUuid": "record-52"
+        },
+        {
+          "source": "run2/raw/root.jsonl:90",
+          "type": "assistant",
+          "uuid": "record-52",
+          "parentUuid": "record-51"
+        },
+        {
+          "source": "run2/raw/root.jsonl:89",
+          "type": "assistant",
+          "uuid": "record-51",
+          "parentUuid": "record-50"
+        },
+        {
+          "source": "run2/raw/root.jsonl:88",
+          "type": "user",
+          "uuid": "record-50",
+          "parentUuid": "record-45",
+          "promptId": "prompt-5"
+        }
+      ]
+    },
+    {
+      "run": "run3",
+      "prompt": "prompt-6",
+      "end_uuid": "record-71",
+      "chain": [
+        {
+          "source": "run3/raw/root.jsonl:42",
+          "type": "system",
+          "uuid": "record-71",
+          "parentUuid": "record-70"
+        },
+        {
+          "source": "run3/raw/root.jsonl:41",
+          "type": "system",
+          "uuid": "record-70",
+          "parentUuid": "record-69"
+        },
+        {
+          "source": "run3/raw/root.jsonl:40",
+          "type": "assistant",
+          "uuid": "record-69",
+          "parentUuid": "record-68"
+        },
+        {
+          "source": "run3/raw/root.jsonl:39",
+          "type": "attachment",
+          "uuid": "record-68",
+          "parentUuid": "record-67"
+        },
+        {
+          "source": "run3/raw/root.jsonl:29",
+          "type": "attachment",
+          "uuid": "record-67",
+          "parentUuid": "record-66"
+        },
+        {
+          "source": "run3/raw/root.jsonl:28",
+          "type": "user",
+          "uuid": "record-66",
+          "parentUuid": "record-65",
+          "promptId": "prompt-6"
+        }
+      ]
+    },
+    {
+      "run": "run3",
+      "prompt": "prompt-7",
+      "end_uuid": "record-79",
+      "chain": [
+        {
+          "source": "run3/raw/root.jsonl:59",
+          "type": "system",
+          "uuid": "record-79",
+          "parentUuid": "record-78"
+        },
+        {
+          "source": "run3/raw/root.jsonl:58",
+          "type": "system",
+          "uuid": "record-78",
+          "parentUuid": "record-77"
+        },
+        {
+          "source": "run3/raw/root.jsonl:57",
+          "type": "assistant",
+          "uuid": "record-77",
+          "parentUuid": "record-76"
+        },
+        {
+          "source": "run3/raw/root.jsonl:56",
+          "type": "attachment",
+          "uuid": "record-76",
+          "parentUuid": "record-75"
+        },
+        {
+          "source": "run3/raw/root.jsonl:55",
+          "type": "user",
+          "uuid": "record-75",
+          "parentUuid": "record-74",
+          "promptId": "prompt-7"
+        }
+      ]
+    }
+  ]
+}

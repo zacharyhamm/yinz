@@ -1,0 +1,8 @@
+{
+  "source": "issue-69-s1-adapter-mapping.md: A1-A13, accepted root row C27, answer ancestry C29/C33/C35; sanitized shape, synthetic IDs",
+  "accepted": {
+    "type": "user", "isSidechain": false, "sessionId": "conversation", "promptId": "prompt", "uuid": "row",
+    "origin": {"kind": "task-notification", "producer": "session-task", "runId": "run"},
+    "message": {"content": "<task-notification>\n<task-id>task</task-id>\n<tool-use-id>tool</tool-use-id>\n<status>completed</status>\n</task-notification>"}
+  }
+}

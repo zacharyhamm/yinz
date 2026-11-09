@@ -62,6 +62,8 @@ pub struct LifecycleState {
 /// Parent presentation, worker waits, and retained turn confirmations have separate lifetimes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ClaudeActivity {
+    #[serde(default)]
+    pub obligations: super::claude_notifications::Pending,
     pub parent: Option<AgentInfo>,
     /// Tool identity of each worker's visible input wait. Missing identity never permits
     /// an unrelated tool event to release the wait, including after execution completion.

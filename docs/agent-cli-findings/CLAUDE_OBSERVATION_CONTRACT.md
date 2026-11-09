@@ -1,12 +1,29 @@
 # Claude activity observation and historical completeness investigation
 
-## Current design: session registry status
+## Current design: registry hints and positive root notification obligations
 
-Claude's own session registry (`sessions/<pid>.json`) now decides whether a Claude
-pane is still working after a turn ends. See "Claude session registry activity,
-2026-11-07" in `AGENT_CLI_FINDINGS.md`. The transcript correlation described below
-was removed. The sanitized fixtures it cites were deleted with it and remain in
-git history.
+The registry remains an execution hint. In the validated local Claude Code
+2.1.319 root subset, native successful asynchronous Bash/Agent results acquire
+identified obligations before launching confirmation. A structural accepted root
+notice and its correlated confirmed answer settle the matching obligation;
+successful exact local Bash TaskStop waits for the cancelling answer instead.
+Registry false, empty snapshots, EOF and elapsed time are not answer evidence.
+The screen retains these responsibilities independently of per-prompt observers,
+preserves launch results, and publishes final text before aggregate idle waits.
+
+See the [adapter mapping](issue-69-s1-adapter-mapping.md) for pinned source proof,
+measured input/ancestry projections and explicitly synthetic schedules. The
+[earlier investigation](issue-69-notification-investigation.md) preserves its
+original verdict/provenance. This subset supersedes its all-path implementation
+gate; it does not resolve anonymous worker removal or prove sidechain answer ends.
+Overall issue 69 stays open. Unsupported formats/routes, unproved resumed passes,
+worker-owned tasks and gated tool-result delivery retain existing fallback.
+Observation loss, capacity and the 24-hour operational budget degrade observation;
+none proves completion. Handoff preserves pending facts and the remaining budget.
+No complete execution ledger, epochs or replay prerequisite is restored.
+
+The general transcript/sidechain reconstruction described below was removed. Its
+old fixtures remain in Git history; it is not the implementation of this subset.
 
 ## Superseded acceptance: best-effort activity tracking
 

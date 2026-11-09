@@ -1143,3 +1143,65 @@ fn warp_tracking_does_not_resume_partial_prompt_delivery() {
     report(&mut destination, hook("Stop"));
     assert!(!destination.agent_status_for_test().ready);
 }
+
+#[test]
+fn warp_tracking_retains_identified_obligations_and_run_tombstones() {
+    for path in ["pane", "tab", "companion"] {
+        let (mut source, _, _) = setup("claude");
+        report_kind(&mut source, "claude", hook("SessionStart"));
+        report_kind(&mut source, "claude", hook("UserPromptSubmit"));
+        report_kind(
+            &mut source,
+            "claude",
+            native_background_launch("bash", "tool", "Bash"),
+        );
+        report_kind(
+            &mut source,
+            "claude",
+            claude_stop("prompt", "LAUNCH", false),
+        );
+        let (mut destination, _) = adopt_tracking(&mut source, path, false, true);
+        assert_eq!(
+            destination.agent_status_for_test().agent.state,
+            AgentState::Busy
+        );
+        let pending = destination
+            .agent_lifecycle
+            .get(&PANE)
+            .unwrap()
+            .handoff_for_test();
+        assert!(pending.claude.obligations.active());
+        assert!(
+            pending.claude.obligations.launches[0].remaining_ms
+                <= yinz_types::agent::control::MAX_TIMEOUT_MS
+        );
+        report_kind(
+            &mut destination,
+            "claude",
+            task_notification("notice", &["bash"]),
+        );
+        let accepted = identified_notice("notice", "bash", "tool", "run");
+        report_kind(&mut destination, "claude", accepted.clone());
+        let mut stop = claude_stop("notice", "FINAL", false);
+        stop.claude_notifications = accepted.claude_notifications;
+        report_kind(&mut destination, "claude", stop);
+        assert_eq!(
+            destination.agent_status_for_test().agent.state,
+            AgentState::Idle
+        );
+        assert_eq!(
+            destination
+                .agent_lifecycle
+                .get(&PANE)
+                .unwrap()
+                .last_message_for_test(),
+            Some("FINAL")
+        );
+        report_kind(
+            &mut destination,
+            "claude",
+            native_background_launch("bash", "tool", "Bash"),
+        );
+        assert!(!destination.claude_background_pending_for_test());
+    }
+}

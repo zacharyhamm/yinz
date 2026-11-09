@@ -1,4 +1,5 @@
 mod handoff;
+mod notifications;
 // Agent control is serialized with state reports and terminal input on the screen thread.
 use super::Screen;
 use crate::ClientId;
@@ -34,6 +35,7 @@ pub(super) struct Lifecycle {
     input_revision: Option<u64>,
     /// When the last hook from this pane arrived, worker and stateless hooks included.
     pub(super) last_report: Instant,
+    notification_tick: Instant,
     /// The provider turn last reported as interrupted or failed, until the next prompt. Codex
     /// finishes a cancelled turn's tool call after its `Interrupt`, and that hook must not make
     /// the idle agent busy again. `Stop` is not an end here: a blocking Stop hook continues
@@ -55,7 +57,7 @@ pub(super) struct Lifecycle {
 
 impl Lifecycle {
     pub(super) fn event_background(&self) -> bool {
-        self.claude_background.is_some()
+        self.claude_background.is_some() || self.claude.obligations.active()
     }
 
     #[cfg(test)]
@@ -83,10 +85,17 @@ impl Lifecycle {
 
 impl Lifecycle {
     fn handoff(&self) -> LifecycleState {
+        let mut claude = self.claude.clone();
+        claude.obligations.elapse(
+            self.notification_tick
+                .elapsed()
+                .as_millis()
+                .min(u64::MAX as u128) as u64,
+        );
         LifecycleState {
             kind: self.kind.clone(),
             conversation: self.conversation.clone(),
-            claude: self.claude.clone(),
+            claude,
             input_revision: self.input_revision,
             ended_turn: self.ended_turn.clone(),
             claude_prompt_id: self.claude_prompt_id.clone(),
@@ -102,6 +111,7 @@ impl Lifecycle {
 impl From<LifecycleState> for Lifecycle {
     fn from(state: LifecycleState) -> Self {
         Self {
+            notification_tick: Instant::now(),
             last_report: Instant::now(),
             kind: state.kind,
             conversation: state.conversation,
@@ -448,14 +458,21 @@ impl Screen {
         let Some(hook) = hook.filter(|hook| event.kind == "claude" && !hook.archive_only) else {
             return;
         };
+        if !self.has_agent_lifecycle(pane, "claude", &hook.session_id) {
+            return;
+        }
+        self.reconcile_claude_parent(pane);
+    }
+
+    fn reconcile_claude_parent(&mut self, pane: PaneId) {
         let Some(mut visible) = self.get_pane_info(pane).and_then(|p| p.agent) else {
             return;
         };
-        let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane).filter(|l| {
-            l.kind == "claude"
-                && l.conversation == hook.session_id
-                && visible.session_id.as_ref() == Some(&l.conversation)
-        }) else {
+        let Some(lifecycle) = self
+            .agent_lifecycle
+            .get_mut(&pane)
+            .filter(|l| l.kind == "claude" && visible.session_id.as_ref() == Some(&l.conversation))
+        else {
             return;
         };
         let parent = lifecycle.claude.parent.get_or_insert_with(|| {
@@ -476,6 +493,7 @@ impl Screen {
             visible.wait_needs_a_person = parent.wait_needs_a_person;
             if visible.state == AgentState::Idle
                 && (lifecycle.claude_background.is_some()
+                    || lifecycle.claude.obligations.active()
                     || !lifecycle.claude_notifications.is_empty())
             {
                 visible.state = AgentState::Busy;
@@ -525,6 +543,7 @@ impl Screen {
         self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
             lifecycle.kind == "claude"
                 && (lifecycle.claude_background.is_some()
+                    || lifecycle.claude.obligations.active()
                     || !lifecycle.claude_notifications.is_empty())
         })
     }
@@ -1295,7 +1314,7 @@ impl Screen {
             background: self.agent_lifecycle.get(&pane_id).is_some_and(|lifecycle| {
                 lifecycle.kind == agent.kind
                     && agent.session_id.as_ref() == Some(&lifecycle.conversation)
-                    && lifecycle.claude_background.is_some()
+                    && lifecycle.event_background()
             }),
             agent,
         })
@@ -2561,6 +2580,11 @@ impl Screen {
         if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
             lifecycle.input_revision = Some(revision);
             lifecycle.claude_background = None;
+            for obligation in &mut lifecycle.claude.obligations.launches {
+                if !obligation.settled {
+                    obligation.unavailable = true;
+                }
+            }
             lifecycle.claude_notifications.clear();
             lifecycle.claude.worker_wait_tools.clear();
             lifecycle.claude.uncorrelated_worker_waits.clear();
@@ -2750,6 +2774,7 @@ impl Screen {
     }
 
     pub(crate) fn refresh_agent_controls_at(&mut self, now: Instant) {
+        self.expire_claude_observations(now);
         self.refresh_claude_permission_waits();
         self.refresh_draft_clears(now);
         self.agent_clear_inputs
@@ -3345,6 +3370,8 @@ impl Screen {
                         kind: "muse".to_owned(),
                         conversation: String::new(),
                         input_revision,
+                        notification_tick: previous
+                            .map_or_else(Instant::now, |l| l.notification_tick),
                         last_report: Instant::now(),
                         ended_turn: previous.and_then(|previous| previous.ended_turn.clone()),
                         claude_prompt_id: None,
@@ -3456,6 +3483,8 @@ impl Screen {
                         kind: event.kind.clone(),
                         conversation: conversation.clone(),
                         input_revision,
+                        notification_tick: previous
+                            .map_or_else(Instant::now, |l| l.notification_tick),
                         last_report: Instant::now(),
                         ended_turn,
                         claude_prompt_id: if event.hook == "UserPromptSubmit" && !notification {
@@ -3528,6 +3557,11 @@ impl Screen {
             if let Some(hook) = hook.filter(|_| notification || event.hook == "UserPromptSubmit") {
                 self.track_agent_turn(pane, event, hook);
             }
+        }
+        if event.kind == "claude"
+            && let Some(hook) = hook
+        {
+            self.retain_claude_evidence(pane, hook);
         }
         self.reconcile_claude_activity(pane, event, hook);
         self.correlate_agent_submissions(event, hook);

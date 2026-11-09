@@ -14,6 +14,7 @@ use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::HookEvent;
 
+mod notifications;
 mod prompts;
 mod recovery;
 
@@ -162,7 +163,12 @@ pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
         return Ok(());
     }
     let result = (|| {
-        let process = agent_ancestor(kind);
+        let process = hook
+            .claude_notifications
+            .as_ref()
+            .and_then(|e| e.source.as_ref())
+            .map(|s| (s.pid, s.started))
+            .or_else(|| agent_ancestor(kind));
         // A clear/resume can leave the old transcript intact. Host-side lifecycle hooks
         // replace this process's conversation marker so its detached observers stop too.
         let conversation_file = process.map(|(pid, started)| {
@@ -208,6 +214,10 @@ pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
         unavailable.prompt = None;
         if kind == "claude" {
             unavailable.claude_turn_complete = Some(false);
+            unavailable
+                .claude_notifications
+                .get_or_insert_with(Default::default)
+                .unavailable = true;
         } else if kind == "agy" {
             unavailable.agy_turn_complete = Some(false);
         }
@@ -265,6 +275,22 @@ fn stop_observer(child: &mut Child) {
         .wait()
         .context("reap Claude completion observer")
         .non_fatal();
+}
+
+/// Capture the provider incarnation while the synchronous reporter is still its descendant.
+pub fn prepare_hook(hook: &mut HookEvent, local: bool) {
+    use yinz_types::agent::claude_notifications::{Evidence, Source};
+    let evidence = hook
+        .claude_notifications
+        .get_or_insert_with(Evidence::default);
+    if !local {
+        evidence.source = None;
+    } else if evidence.source.is_none() {
+        evidence.source = agent_ancestor("claude").map(|(pid, started)| Source { pid, started });
+    }
+    if evidence.source.is_none() {
+        evidence.unavailable = true;
+    }
 }
 
 fn agent_ancestor(kind: &str) -> Option<(u32, u64)> {
@@ -332,6 +358,13 @@ pub fn run() -> Result<()> {
     observation.hook.prompt_sha256 = None;
     if observation.kind == "claude" {
         observation.hook.claude_turn_complete = Some(completed.is_ok());
+        if completed.is_err() {
+            observation
+                .hook
+                .claude_notifications
+                .get_or_insert_with(Default::default)
+                .unavailable = true;
+        }
     } else if observation.kind == "agy" {
         observation.hook.agy_turn_complete = Some(completed.is_ok());
     }
@@ -514,6 +547,18 @@ fn follow_with_api_reporting(
             let record: Value = serde_json::from_slice(&line)
                 .with_context(|| format!("parse {kind} transcript record"))?;
             line.clear();
+            if kind == "claude"
+                && let Some(notice) = notifications::accepted(&record, &turn.session, &turn.prompt)
+            {
+                let mut hook = observation.hook.clone();
+                hook.hook_event_name = "NotificationAccepted".into();
+                hook.prompt = None;
+                hook.claude_notifications
+                    .get_or_insert_with(Default::default)
+                    .notice = Some(notice.clone());
+                report(&hook)?;
+                turn.notice = Some(notice);
+            }
             if !completed && turn.record(&record)? {
                 completed = true;
                 if kind != "claude" {
@@ -578,6 +623,17 @@ fn confirm(
     hook.prompt_sha256 = None;
     hook.claude_turn_complete = Some(true);
     hook.last_assistant_message = turn.last_text.clone();
+    if let Some(notice) = &turn.notice {
+        if !turn.answer_boundary {
+            hook.claude_turn_complete = Some(false);
+            hook.claude_notifications
+                .get_or_insert_with(Default::default)
+                .unavailable = true;
+        }
+        hook.claude_notifications
+            .get_or_insert_with(Default::default)
+            .notice = Some(notice.clone());
+    }
     hook.claude_background = settle_background(observation);
     report(&hook)?;
     turn.reported = true;
@@ -679,6 +735,8 @@ fn alive(system: &mut System, observation: &Observation) -> Result<()> {
 }
 
 struct Turn {
+    notice: Option<yinz_types::agent::claude_notifications::Notice>,
+    answer_boundary: bool,
     reported: bool,
     kind: String,
     session: String,
@@ -698,6 +756,8 @@ impl Turn {
             .as_deref()
             .and_then(|id| id.parse::<u64>().ok());
         Self {
+            notice: None,
+            answer_boundary: false,
             reported: false,
             kind: kind.to_owned(),
             session: hook.session_id.clone(),
@@ -774,9 +834,9 @@ impl Turn {
                             })
                         })
                 };
-            return Ok(
-                interrupted || (record["type"] == "system" && record["subtype"] == "turn_duration")
-            );
+            self.answer_boundary =
+                record["type"] == "system" && record["subtype"] == "turn_duration";
+            return Ok(interrupted || self.answer_boundary);
         }
 
         if self.kind == "agy" {

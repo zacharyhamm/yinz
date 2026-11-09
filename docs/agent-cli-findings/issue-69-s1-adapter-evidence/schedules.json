@@ -1,0 +1,870 @@
+{
+  "schema": 1,
+  "note": "All schedules synthetic. at_ms is inert explanatory metadata. Candidate inputs are explicit assumptions, not proven native interfaces.",
+  "cases": [
+    {
+      "name": "registry_idle_before_notification",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "registry",
+          "busy": false,
+          "expect": "pending"
+        },
+        {
+          "op": "root",
+          "answer": "N",
+          "tool": "T",
+          "task": "A",
+          "run": "R",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "N",
+          "text": "FINAL_B",
+          "expect": "idle"
+        }
+      ],
+      "message": "FINAL_B"
+    },
+    {
+      "name": "notification_before_registry_idle",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "registry",
+          "busy": true,
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "root",
+          "answer": "N",
+          "tool": "T",
+          "task": "A",
+          "run": "R",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "N",
+          "text": "FINAL_B",
+          "expect": "pending"
+        },
+        {
+          "op": "registry",
+          "busy": false,
+          "expect": "idle"
+        }
+      ],
+      "message": "FINAL_B"
+    },
+    {
+      "name": "short_work_before_first_registry_read",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "at_ms": 1,
+          "expect": "pending"
+        },
+        {
+          "op": "advance",
+          "at_ms": 2,
+          "note": "task finishes before first sample; no terminal observation",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "LAUNCH",
+          "at_ms": 3,
+          "expect": "pending"
+        },
+        {
+          "op": "registry",
+          "busy": false,
+          "expect": "pending"
+        },
+        {
+          "op": "root",
+          "answer": "N",
+          "tool": "T",
+          "task": "A",
+          "run": "R",
+          "at_ms": 800,
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "N",
+          "text": "FINAL_SHORT",
+          "expect": "idle"
+        }
+      ],
+      "message": "FINAL_SHORT"
+    },
+    {
+      "name": "completion_during_settle_background",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "raw_stop",
+          "at_ms": 0,
+          "expect": "pending"
+        },
+        {
+          "op": "registry",
+          "busy": true,
+          "expect": "pending"
+        },
+        {
+          "op": "advance",
+          "at_ms": 300,
+          "expect": "pending"
+        },
+        {
+          "op": "registry",
+          "busy": false,
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "root",
+          "answer": "N",
+          "tool": "T",
+          "task": "A",
+          "run": "R",
+          "at_ms": 800,
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "N",
+          "text": "FINAL_SETTLE",
+          "expect": "idle"
+        }
+      ],
+      "message": "FINAL_SETTLE"
+    },
+    {
+      "name": "newer_false_marker_does_not_replace_obligation",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "marker_false",
+          "prompt": "NEW",
+          "expect": "pending"
+        },
+        {
+          "op": "empty_stop",
+          "expect": "pending"
+        },
+        {
+          "op": "dequeue",
+          "expect": "pending"
+        },
+        {
+          "op": "registry",
+          "busy": false,
+          "expect": "pending"
+        },
+        {
+          "op": "root",
+          "answer": "N",
+          "tool": "T",
+          "task": "A",
+          "run": "R",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "N",
+          "text": "FINAL",
+          "expect": "idle"
+        }
+      ],
+      "message": "FINAL"
+    },
+    {
+      "name": "shell_TaskStop_no_notice",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "cancel",
+          "prompt": "C",
+          "tool": "K",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "raw_stop",
+          "expect": "pending"
+        },
+        {
+          "op": "empty_stop",
+          "expect": "pending"
+        },
+        {
+          "op": "registry",
+          "busy": false,
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "C",
+          "text": "CANCELLED_E",
+          "expect": "idle"
+        }
+      ],
+      "message": "CANCELLED_E"
+    },
+    {
+      "name": "arbitrary_notification_lag",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "registry",
+          "busy": false,
+          "expect": "pending"
+        },
+        {
+          "op": "advance",
+          "at_ms": 2000,
+          "expect": "pending"
+        },
+        {
+          "op": "advance",
+          "at_ms": 86400000,
+          "expect": "pending"
+        },
+        {
+          "op": "root",
+          "answer": "N",
+          "tool": "T",
+          "task": "A",
+          "run": "R",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "N",
+          "text": "FINAL_LATE",
+          "expect": "idle"
+        }
+      ],
+      "message": "FINAL_LATE"
+    },
+    {
+      "name": "confirmed_answer_arrives_before_accepted_row",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "N",
+          "text": "FINAL",
+          "expect": "pending"
+        },
+        {
+          "op": "root",
+          "answer": "N",
+          "tool": "T",
+          "task": "A",
+          "run": "R",
+          "expect": "idle"
+        }
+      ],
+      "message": "FINAL"
+    },
+    {
+      "name": "same_task_repeated_run_old_clear_cannot_settle_new",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "root",
+          "answer": "N",
+          "tool": "T",
+          "task": "A",
+          "run": "R",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "N",
+          "text": "FIRST",
+          "expect": "idle"
+        },
+        {
+          "op": "acquire",
+          "prompt": "P2",
+          "tool": "T2",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P2",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "root",
+          "answer": "N",
+          "tool": "T2",
+          "task": "A",
+          "run": "R",
+          "expect": "pending"
+        },
+        {
+          "op": "marker_false",
+          "expect": "pending"
+        },
+        {
+          "op": "root",
+          "answer": "N2",
+          "tool": "T2",
+          "task": "A",
+          "run": "R2",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "N2",
+          "text": "SECOND",
+          "expect": "idle"
+        }
+      ],
+      "message": "SECOND"
+    },
+    {
+      "name": "same_task_same_tool_new_prompt_requires_new_run",
+      "evidence": "synthetic repeated-identity guard; positive resume acquisition assumed, not established for every provider resume route",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "root",
+          "answer": "N",
+          "tool": "T",
+          "task": "A",
+          "run": "R",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "N",
+          "text": "FIRST",
+          "expect": "idle"
+        },
+        {
+          "op": "acquire",
+          "prompt": "P2",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P2",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "root",
+          "answer": "N",
+          "tool": "T",
+          "task": "A",
+          "run": "R",
+          "expect": "pending"
+        },
+        {
+          "op": "root",
+          "answer": "N2",
+          "tool": "T",
+          "task": "A",
+          "run": "R2",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "N2",
+          "text": "SECOND",
+          "expect": "idle"
+        }
+      ],
+      "message": "SECOND"
+    },
+    {
+      "name": "tool_result_delivery_waits_for_receiving_turn",
+      "evidence": "synthetic normalized candidate; native receiving-turn join remains source candidate",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "tool_result",
+          "task": "A",
+          "tool": "T",
+          "run": "R",
+          "answer": "RECEIVER",
+          "expect": "pending"
+        },
+        {
+          "op": "dequeue",
+          "expect": "pending"
+        },
+        {
+          "op": "registry",
+          "busy": false,
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "RECEIVER",
+          "text": "TOOL_FINAL",
+          "expect": "idle"
+        }
+      ],
+      "message": "TOOL_FINAL"
+    },
+    {
+      "name": "sidechain_delivery_waits_for_attributed_answer",
+      "evidence": "synthetic normalized candidate; correlated worker-pass answer end is an unproved provider input",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "sidechain",
+          "task": "A",
+          "tool": "T",
+          "run": "R",
+          "receiver": "worker",
+          "answer": "USER-UUID",
+          "expect": "pending"
+        },
+        {
+          "op": "raw_stop",
+          "owner": "worker",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "WRONG",
+          "owner": "worker",
+          "text": "wrong",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "USER-UUID",
+          "owner": "worker",
+          "text": "SIDECHAIN_FINAL",
+          "expect": "idle"
+        }
+      ],
+      "message": "SIDECHAIN_FINAL"
+    },
+    {
+      "name": "identified_agent_stopped",
+      "evidence": "synthetic enriched terminal input; not a guarantee the existing journal supplies this identity or no-reroute proof",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "discard",
+          "task": "A",
+          "tool": "T",
+          "run": "R",
+          "reason": "agent_stopped",
+          "expect": "idle"
+        }
+      ]
+    },
+    {
+      "name": "identified_resume_failed",
+      "evidence": "synthetic enriched terminal input; not a guarantee the existing journal supplies this identity or no-reroute proof",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "discard",
+          "task": "A",
+          "tool": "T",
+          "run": "R",
+          "reason": "resume_failed",
+          "expect": "idle"
+        }
+      ]
+    },
+    {
+      "name": "identified_dropped_by_hook",
+      "evidence": "synthetic enriched terminal input; not a guarantee the existing journal supplies this identity or no-reroute proof",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "discard",
+          "task": "A",
+          "tool": "T",
+          "run": "R",
+          "reason": "dropped_by_hook",
+          "expect": "idle"
+        }
+      ]
+    },
+    {
+      "name": "anonymous_hook_decline_cannot_settle",
+      "evidence": "synthetic schedule using exact identity-free source-supported removal shape",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "anonymous_remove",
+          "reason": "dropped_by_hook",
+          "expect": "pending"
+        },
+        {
+          "op": "registry",
+          "busy": false,
+          "expect": "pending"
+        },
+        {
+          "op": "advance",
+          "at_ms": 86400000,
+          "expect": "pending"
+        }
+      ]
+    },
+    {
+      "name": "foreign_scope_cannot_settle",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "root",
+          "answer": "N",
+          "tool": "T",
+          "task": "A",
+          "run": "R",
+          "scope": "other-process:conversation",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "N",
+          "scope": "other-process:conversation",
+          "expect": "pending"
+        },
+        {
+          "op": "registry",
+          "busy": false,
+          "expect": "pending"
+        },
+        {
+          "op": "root",
+          "answer": "N",
+          "tool": "T",
+          "task": "A",
+          "run": "R",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "N",
+          "text": "FINAL",
+          "expect": "idle"
+        }
+      ],
+      "message": "FINAL"
+    },
+    {
+      "name": "observation_loss_is_distinct_from_success",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "LAUNCH",
+          "expect": "pending"
+        },
+        {
+          "op": "unavailable",
+          "reason": "report timeout",
+          "expect": "unavailable"
+        },
+        {
+          "op": "registry",
+          "busy": false,
+          "expect": "unavailable"
+        }
+      ]
+    },
+    {
+      "name": "no_positive_background_work",
+      "evidence": "synthetic foreground-only example; no global completeness assertion",
+      "events": [
+        {
+          "op": "end",
+          "prompt": "P",
+          "text": "FOREGROUND",
+          "expect": "idle"
+        },
+        {
+          "op": "registry",
+          "busy": false,
+          "expect": "idle"
+        }
+      ],
+      "message": "FOREGROUND"
+    },
+    {
+      "name": "duplicate_acquisition_and_notice_after_settlement",
+      "evidence": "synthetic idempotent positive-evidence delivery",
+      "events": [
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "P",
+          "expect": "pending"
+        },
+        {
+          "op": "root",
+          "answer": "N",
+          "tool": "T",
+          "task": "A",
+          "run": "R",
+          "expect": "pending"
+        },
+        {
+          "op": "end",
+          "prompt": "N",
+          "text": "FINAL",
+          "expect": "idle"
+        },
+        {
+          "op": "acquire",
+          "prompt": "P",
+          "tool": "T",
+          "task": "A",
+          "expect": "idle"
+        },
+        {
+          "op": "root",
+          "answer": "N",
+          "tool": "T",
+          "task": "A",
+          "run": "R",
+          "expect": "idle"
+        }
+      ],
+      "message": "FINAL"
+    }
+  ]
+}

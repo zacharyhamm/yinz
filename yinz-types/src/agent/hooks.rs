@@ -648,6 +648,13 @@ pub struct HookEvent {
         skip_serializing_if = "Option::is_none"
     )]
     pub claude_background: Option<bool>,
+    /// Bounded host-local positive notification evidence; independent of registry sampling.
+    #[serde(
+        default,
+        rename = "_yinz_claude_notifications",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub claude_notifications: Option<super::claude_notifications::Evidence>,
     /// Antigravity's host-side turn confirmation.
     #[serde(
         default,
@@ -852,6 +859,7 @@ impl HookEvent {
             claude_turn_complete: self.claude_turn_complete,
             claude_recovered_after: self.claude_recovered_after.clone(),
             claude_background: self.claude_background,
+            claude_notifications: self.claude_notifications.as_ref().map(|e| e.bounded()),
             agy_turn_complete: self.agy_turn_complete,
             prompt_sha256: self.prompt_sha256.clone(),
             codex_hooks_ready: self.codex_hooks_ready,

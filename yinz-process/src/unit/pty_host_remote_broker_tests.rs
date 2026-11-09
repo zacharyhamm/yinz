@@ -647,6 +647,15 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
         prompt_id: Some("remote-prompt".into()),
         claude_turn_complete: Some(true),
         last_assistant_message: Some("final remote answer".into()),
+        claude_notifications: Some(yinz_types::agent::claude_notifications::Evidence {
+            unavailable: true,
+            tasks: vec![yinz_types::agent::claude_notifications::TaskSnapshot {
+                id: "task".into(),
+                kind: "local_bash".into(),
+                status: "running".into(),
+            }],
+            ..Default::default()
+        }),
         ..Default::default()
     };
     crate::claude_turn::send(

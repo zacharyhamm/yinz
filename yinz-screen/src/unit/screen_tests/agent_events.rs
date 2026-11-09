@@ -1368,3 +1368,42 @@ fn lifecycle_warp_preserves_turn_observation_without_migrating_subscribers() {
         }
     }
 }
+
+#[test]
+fn lifecycle_identified_notification_gap_never_publishes_idle() {
+    let (mut screen, messages, _) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    start(&mut screen, &messages, Default::default());
+    let mut trace = Vec::new();
+    for hook in [
+        native_background_launch("bash", "tool", "Bash"),
+        claude_stop("prompt", "LAUNCH", false),
+        background_idle("prompt"),
+        task_notification("notice", &["bash"]),
+        identified_notice("notice", "bash", "tool", "run"),
+    ] {
+        report_kind(&mut screen, "claude", hook);
+        trace.extend(events(&mut screen, &messages));
+    }
+    assert!(
+        !trace.iter().any(|event| event["state"] == "idle"),
+        "{trace:?}"
+    );
+    assert!(trace.iter().any(|event| event["background"] == true));
+    let mut stop = claude_stop("notice", "FINAL", false);
+    stop.claude_notifications =
+        identified_notice("notice", "bash", "tool", "run").claude_notifications;
+    report_kind(&mut screen, "claude", stop);
+    assert!(events(&mut screen, &messages)
+        .iter()
+        .any(|event| event["state"] == "idle"));
+    assert_eq!(
+        screen
+            .agent_lifecycle
+            .get(&PANE)
+            .unwrap()
+            .last_message_for_test(),
+        Some("FINAL")
+    );
+}

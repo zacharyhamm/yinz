@@ -59,7 +59,19 @@ pub fn run(mut action: CliAction, session: Option<String>, started: Instant) -> 
             None,
         )
         .map_err(|_| anyhow!("invalid agent report input"))?;
-        let (pane_id, state, event) = report_parts(actions)?;
+        let (pane_id, state, mut event) = report_parts(actions)?;
+        if let Some(event) = event.as_mut().filter(|e| e.kind == "claude") {
+            let mut hook: yinz_types::agent::HookEvent =
+                serde_json::from_str(&event.raw).context("parse local Claude evidence")?;
+            yinz_process::claude_turn::prepare_hook(&mut hook, !remote);
+            let mut raw: serde_json::Value =
+                serde_json::from_str(&event.raw).context("parse native Claude payload")?;
+            raw["_yinz_claude_notifications"] = serde_json::to_value(&hook.claude_notifications)
+                .context("serialize local Claude identities")?;
+            event.raw = hook.broadcast_json(
+                serde_json::to_string(&raw).context("serialize local Claude evidence")?,
+            );
+        }
         let report = {
             let mut t = trace.lock().map_err(|_| anyhow!("report trace poisoned"))?;
             t.pane = format!("{pane_id:?}");

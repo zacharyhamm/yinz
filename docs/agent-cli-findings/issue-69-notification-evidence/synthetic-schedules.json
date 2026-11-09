@@ -1,0 +1,151 @@
+{
+  "classification": "synthetic scheduling/projection counterexamples only; no invented watermark, no claim of absent signals in other adapters",
+  "cases": [
+    {
+      "name": "registry_before_notification",
+      "events": [
+        [
+          0,
+          "launch_confirm_bg"
+        ],
+        [
+          300,
+          "registry_idle"
+        ],
+        [
+          800,
+          "notification_accept"
+        ],
+        [
+          1100,
+          "notification_confirm"
+        ]
+      ],
+      "first_false_idle_ms": 300,
+      "basis": "Supplied race order; times are synthetic."
+    },
+    {
+      "name": "notification_before_registry",
+      "events": [
+        [
+          0,
+          "launch_confirm_bg"
+        ],
+        [
+          200,
+          "notification_accept"
+        ],
+        [
+          300,
+          "registry_idle"
+        ],
+        [
+          1100,
+          "notification_confirm"
+        ]
+      ],
+      "first_false_idle_ms": null,
+      "basis": "Fresh run2 observes this relative order; synthetic times."
+    },
+    {
+      "name": "initial_busy_settle_bypass",
+      "events": [
+        [
+          0,
+          "transcript_end_registry_busy"
+        ],
+        [
+          300,
+          "registry_idle_confirm_false"
+        ],
+        [
+          800,
+          "notification_accept"
+        ],
+        [
+          1100,
+          "notification_confirm"
+        ]
+      ],
+      "first_false_idle_ms": 300,
+      "basis": "Current settle_background returns false at the 300 ms sample, before its one-second deadline; supplied scheduling variant."
+    },
+    {
+      "name": "new_false_confirmation_replaces_marker",
+      "events": [
+        [
+          0,
+          "launch_confirm_bg"
+        ],
+        [
+          300,
+          "registry_idle"
+        ],
+        [
+          400,
+          "new_confirm_false"
+        ],
+        [
+          900,
+          "notification_accept"
+        ],
+        [
+          1200,
+          "notification_confirm"
+        ]
+      ],
+      "first_false_idle_ms": 400,
+      "basis": "Existing newer sampled-false confirmation replacement bypass; old watcher assumed delayed beyond 400 ms."
+    },
+    {
+      "name": "two_second_debounce",
+      "events": [
+        [
+          0,
+          "launch_confirm_bg"
+        ],
+        [
+          300,
+          "registry_idle"
+        ],
+        [
+          2300,
+          "debounce_expires"
+        ],
+        [
+          3500,
+          "notification_accept"
+        ],
+        [
+          3800,
+          "notification_confirm"
+        ]
+      ],
+      "first_false_idle_ms": 2300,
+      "basis": "Constructed arbitrary-delay counterexample, not a live provider queue delay."
+    },
+    {
+      "name": "root_notice_only_on_cancellation",
+      "events": [
+        [
+          0,
+          "launch_confirm_bg"
+        ],
+        [
+          300,
+          "successful_TaskStop"
+        ],
+        [
+          500,
+          "cancel_turn_confirm_empty"
+        ],
+        [
+          600,
+          "registry_idle"
+        ]
+      ],
+      "notice_only_idle_ms": null,
+      "basis": "Fresh run3 plus pinned source S6/S7: root-notice-only obligation has no release path for this explicit disposition."
+    }
+  ]
+}

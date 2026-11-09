@@ -6,13 +6,16 @@ use std::{
 };
 use yinz_types::agent::HookEvent;
 
+#[path = "claude_notifications.rs"]
+mod claude_notifications;
+
 const METADATA_BYTES: u64 = 64 * 1024;
 const TAIL_BYTES: u64 = 4 * 1024 * 1024;
 const REVIEWER_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Preserve small hooks verbatim; bound larger hooks without losing turn or prompt identity.
 pub fn prune_for_forward(kind: &str, raw: String) -> serde_json::Result<String> {
-    if raw.len() <= yinz_types::agent::HOOK_BROADCAST_MAX_BYTES {
+    if kind != "claude" && raw.len() <= yinz_types::agent::HOOK_BROADCAST_MAX_BYTES {
         return Ok(raw);
     }
     let (event, json) = parse_hook_event(kind, raw)?;
@@ -32,8 +35,13 @@ pub fn parse_hook_event(kind: &str, json: String) -> serde_json::Result<(HookEve
         ))
     })?;
     if kind == "claude" {
+        let native: Value = serde_json::from_str(&json)?;
+        event.claude_notifications = claude_notifications::normalize(&event, &native);
         super::history::enrich(&mut event);
         let mut value: Value = serde_json::from_str(&json)?;
+        if let Some(evidence) = &event.claude_notifications {
+            value["_yinz_claude_notifications"] = serde_json::to_value(evidence)?;
+        }
         if let Some(turn) = &event.turn_id {
             value["turn_id"] = turn.clone().into();
         }

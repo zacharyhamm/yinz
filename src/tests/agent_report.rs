@@ -1259,3 +1259,119 @@ mod hooks_provider;
 
 #[path = "../unit/muse_launch.rs"]
 mod muse_launch;
+
+#[test]
+fn claude_observer_preserves_native_acquisition_until_acknowledged() {
+    struct Provider(Option<Child>);
+    impl Drop for Provider {
+        fn drop(&mut self) {
+            if let Some(child) = &mut self.0 {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+    warm_binary();
+    let dir = tempfile::tempdir().unwrap();
+    let listener = listener(dir.path());
+    let provider = dir.path().join("claude");
+    // The provider stays alive through both synchronous reporting and the notice observer.
+    yinz_test_support::write_warm_script(&provider,
+        "\"$@\" < \"$YINZ_TEST_LAUNCH\"\n\"$YINZ_TEST_BINARY\" --claude-turn-observer < \"$YINZ_TEST_OBSERVATION\"");
+    let launch = dir.path().join("launch.json");
+    std::fs::write(&launch,serde_json::json!({"hook_event_name":"PostToolUse","session_id":"conversation","prompt_id":"launch",
+        "tool_name":"Bash","tool_use_id":"tool","tool_response":{"backgroundTaskId":"short-task"}}).to_string()).unwrap();
+    let observation = dir.path().join("observation.json");
+    let transcript = dir.path().join("root.jsonl");
+    let base = command(dir.path());
+    let mut cmd = Command::new(&provider);
+    cmd.arg(base.get_program())
+        .args(base.get_args())
+        .arg("--hook-json");
+    for (key, value) in base.get_envs() {
+        if let Some(value) = value {
+            cmd.env(key, value);
+        } else {
+            cmd.env_remove(key);
+        }
+    }
+    let child = cmd
+        .env("YINZ_TEST_BINARY", env!("CARGO_BIN_EXE_yinz"))
+        .env("YINZ_TEST_LAUNCH", &launch)
+        .env("YINZ_TEST_OBSERVATION", &observation)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut provider = Provider(Some(child));
+    let mut receiver = IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
+    receiver
+        .set_recv_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let IpcRecv::Msg(ClientToServerMsg::AgentReport(report), _) = receiver.recv_client_msg() else {
+        panic!("expected acquisition")
+    };
+    let hook: yinz_types::agent::HookEvent =
+        serde_json::from_str(&report.event.unwrap().raw).unwrap();
+    let facts = hook.claude_notifications.unwrap();
+    assert_eq!(facts.launches[0].task, "short-task");
+    let source = facts.source.unwrap();
+    assert!(!facts.unavailable);
+    assert!(
+        provider.0.as_mut().unwrap().try_wait().unwrap().is_none(),
+        "synchronous hook awaits acquisition acknowledgement"
+    );
+    let rows = [
+        serde_json::json!({"type":"user","isSidechain":false,"sessionId":"conversation","promptId":"notice","uuid":"row",
+        "origin":{"kind":"task-notification","producer":"session-task","runId":"run"},
+        "message":{"content":"<task-notification><task-id>short-task</task-id><tool-use-id>tool</tool-use-id></task-notification>"}}),
+        serde_json::json!({"type":"assistant","parentUuid":"row","uuid":"answer","message":{"content":[{"type":"text","text":"FINAL"}]}}),
+        serde_json::json!({"type":"system","subtype":"turn_duration","parentUuid":"answer"}),
+    ];
+    std::fs::write(
+        &transcript,
+        rows.iter().map(|r| format!("{r}\n")).collect::<String>(),
+    )
+    .unwrap();
+    std::fs::write(&observation,serde_json::json!({"kind":"claude","hook":{"hook_event_name":"UserPromptSubmit","session_id":"conversation",
+        "prompt_id":"notice","transcript_path":transcript,"_yinz_claude_notifications":{"source":source}},
+        "route":{"Local":{"session":"report-test","pane":"terminal_7"}},"process":[source.pid,source.started]}).to_string()).unwrap();
+    receiver
+        .get_sender::<ServerToClientMsg>()
+        .unwrap()
+        .send_server_msg(ServerToClientMsg::AgentReportAccepted {
+            report_id: report.report_id,
+        })
+        .unwrap();
+    for expected in ["NotificationAccepted", "Stop"] {
+        let mut receiver =
+            IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
+        receiver
+            .set_recv_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        let IpcRecv::Msg(ClientToServerMsg::AgentReport(report), _) = receiver.recv_client_msg()
+        else {
+            panic!("expected {expected}")
+        };
+        let hook: yinz_types::agent::HookEvent =
+            serde_json::from_str(&report.event.unwrap().raw).unwrap();
+        assert_eq!(hook.hook_event_name, expected);
+        let evidence = hook.claude_notifications.unwrap();
+        assert_eq!(evidence.source.as_ref(), Some(&source));
+        assert_eq!(evidence.notice.unwrap().run, "run");
+        if expected == "Stop" {
+            assert_eq!(hook.claude_turn_complete, Some(true));
+            assert_eq!(hook.last_assistant_message.as_deref(), Some("FINAL"));
+        }
+        receiver
+            .get_sender::<ServerToClientMsg>()
+            .unwrap()
+            .send_server_msg(ServerToClientMsg::AgentReportAccepted {
+                report_id: report.report_id,
+            })
+            .unwrap();
+    }
+    let output = provider.0.take().unwrap().wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+}

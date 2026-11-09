@@ -709,9 +709,31 @@ elicitation also produce `needs_input` for their parent conversation. The pane
 stays `waiting` until all worker waits clear. Claude then shows `busy` while its
 parent turn or task-notification processing is active, or while Claude's session
 registry reports background agents, workflows or Bash still running after a
-confirmed turn. Prompt replies and status then set `background: true`. Without a
-readable registry (older Claude versions), Claude follows hooks alone. `wait --until idle` waits for all of that work; completing one prompt does
-not imply the pane is idle.
+confirmed turn. Prompt replies and status set `background: true` for registry work
+or identified notification obligations.
+
+For ordinary local interactive Claude Code 2.1.319, successful native asynchronous
+Bash and Agent results acquire bounded, process/conversation-scoped obligations
+before the launching hook returns. They stay pending across registry idle, short
+work completed before the first status read, newer false confirmations, and delayed
+notification journals. A structural root task/tool/run identity binds the obligation
+to its notification prompt; that prompt's correlated confirmed answer releases it.
+The final relevant answer is published before an idle wait returns. The launching
+submission retains its own result and text independently. Exact successful local
+Bash `TaskStop` instead waits for the cancelling prompt's confirmed answer.
+
+This guarantee covers root-owned launches answered by root task notifications.
+Sidechain-owned work, unattributed resumed passes, anonymous hook-declined wakes,
+gated GetTask/tool-result delivery, remote/served shells and other unvalidated
+shapes retain registry/hook fallback. Missing hooks, failed observation, capacity
+limits, process replacement and the 24-hour operational observation budget also
+degrade to that fallback; expiry never proves task completion. Pane transfer
+preserves the remaining budget and dependent identities. No idle debounce or
+empty task snapshot settles an identified obligation. Older Claude versions or
+unreadable registries retain available hooks and supported positive evidence.
+`wait --until idle` observes the aggregate; completing one prompt does not imply
+the pane is idle. See the [pinned adapter mapping](agent-cli-findings/issue-69-s1-adapter-mapping.md)
+for input provenance and limits. Overall issue 69 remains open for the deferred paths.
 
 The default deadline is 30 seconds. `prompt --wait` defaults to 10 minutes.
 `--timeout` accepts durations from `1ms` to `24h` and includes acceptance time.

@@ -14215,3 +14215,306 @@ fn launch_transaction_changed_group_or_tab_incarnation_cannot_authorize_start() 
         assert!(!gate.claim());
     }
 }
+
+fn notification_source() -> yinz_types::agent::claude_notifications::Source {
+    yinz_types::agent::claude_notifications::Source {
+        pid: 123,
+        started: 456,
+    }
+}
+
+fn native_background_launch(task: &str, tool: &str, kind: &str) -> HookEvent {
+    let raw = serde_json::json!({"hook_event_name":"PostToolUse", "session_id":"conversation", "prompt_id":"prompt",
+        "tool_name":kind,"tool_use_id":tool,"tool_response":if kind == "Bash" {
+            serde_json::json!({"backgroundTaskId":task})
+        } else { serde_json::json!({"isAsync":true,"status":"async_launched","agentId":task}) }});
+    let (mut event, _) =
+        yinz_runtime::agent::hooks::parse_hook_event("claude", raw.to_string()).unwrap();
+    event.claude_notifications.as_mut().unwrap().source = Some(notification_source());
+    event
+}
+
+fn identified_notice(prompt: &str, task: &str, tool: &str, run: &str) -> HookEvent {
+    use yinz_types::agent::claude_notifications::{Evidence, Notice};
+    HookEvent {
+        hook_event_name: "NotificationAccepted".into(),
+        session_id: "conversation".into(),
+        prompt_id: Some(prompt.into()),
+        claude_notifications: Some(Evidence {
+            source: Some(notification_source()),
+            notice: Some(Notice {
+                task: task.into(),
+                tool: tool.into(),
+                run: run.into(),
+                prompt: prompt.into(),
+                row: format!("row-{prompt}"),
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn identified_launches_survive_every_sampled_idle_until_their_correlated_answers() {
+    for answer_before_acceptance in [false, true] {
+        for working in [false, true] {
+            let (mut screen, messages, writes) = setup("claude");
+            report_kind(&mut screen, "claude", hook("SessionStart"));
+            screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
+            finish_paste(&writes);
+            report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+            for (task, tool, kind) in [
+                ("bash", "bash-tool", "Bash"),
+                ("agent", "agent-tool", "Agent"),
+            ] {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    native_background_launch(task, tool, kind),
+                );
+            }
+            report_kind(
+                &mut screen,
+                "claude",
+                claude_stop("prompt", "LAUNCH_MIX", working),
+            );
+            let launched = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(launched.message.as_deref(), Some("LAUNCH_MIX"));
+            assert_eq!(launched.outcome, AgentOutcome::Completed);
+            draft_frame(&mut screen, "claude", "", 0, Instant::now());
+            screen.agent_control(wait(AgentState::Idle), CLIENT);
+            for (prompt, task, tool, run, text) in [
+                ("first", "bash", "bash-tool", "run1", "FIRST"),
+                ("second", "agent", "agent-tool", "run2", "FINAL_MIX"),
+            ] {
+                // A registry clear before acceptance and arbitrary journal delay provide no disposition.
+                report_kind(&mut screen, "claude", background_idle("prompt"));
+                assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Busy);
+                assert!(screen.agent_status_for_test().background);
+                assert!(replies(&messages, CLIENT).is_empty());
+                report_kind(&mut screen, "claude", task_notification(prompt, &[task]));
+                let notice = identified_notice(prompt, task, tool, run);
+                let mut stop = claude_stop(prompt, text, false);
+                // Observer failure/early-interruption cannot fabricate a successful answer.
+                if !answer_before_acceptance {
+                    report_kind(&mut screen, "claude", notice.clone());
+                }
+                stop.claude_notifications =
+                    Some(yinz_types::agent::claude_notifications::Evidence {
+                        source: Some(notification_source()),
+                        ..Default::default()
+                    });
+                report_kind(&mut screen, "claude", stop);
+                if answer_before_acceptance {
+                    report_kind(&mut screen, "claude", notice);
+                }
+                if prompt == "first" {
+                    assert!(replies(&messages, CLIENT).is_empty());
+                }
+            }
+            let done = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(done.message.as_deref(), Some("FINAL_MIX"));
+            assert_eq!(done.agents[0].agent.state, AgentState::Idle);
+            screen.agent_control(wait(AgentState::Idle), CLIENT);
+            assert_eq!(
+                replies(&messages, CLIENT).pop().unwrap().message.as_deref(),
+                Some("FINAL_MIX")
+            );
+            // Duplicate run and acquisition cannot reopen settled work.
+            report_kind(
+                &mut screen,
+                "claude",
+                identified_notice("first", "bash", "bash-tool", "run1"),
+            );
+            report_kind(
+                &mut screen,
+                "claude",
+                native_background_launch("bash", "bash-tool", "Bash"),
+            );
+            assert!(!screen.claude_background_pending_for_test());
+        }
+    }
+}
+
+#[test]
+fn exact_local_cancellation_waits_for_cancelling_answer_and_budget_loss_is_not_settlement() {
+    for cancel in [true, false] {
+        let (mut screen, messages, _writes) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        report_kind(
+            &mut screen,
+            "claude",
+            native_background_launch("bash", "tool", "Bash"),
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_stop("prompt", "LAUNCH", false),
+        );
+        draft_frame(&mut screen, "claude", "", 0, Instant::now());
+        screen.agent_control(wait(AgentState::Idle), CLIENT);
+        if cancel {
+            let mut submit = hook("UserPromptSubmit");
+            submit.prompt_id = Some("cancel".into());
+            report_kind(&mut screen, "claude", submit);
+            let raw = serde_json::json!({"hook_event_name":"PostToolUse","session_id":"conversation","prompt_id":"cancel",
+                "tool_use_id":"cancel-tool","tool_name":"TaskStop","tool_input":{"task_id":"bash"},
+                "tool_response":{"task_id":"bash","task_type":"local_bash","command":"private"}});
+            let (mut post, _) =
+                yinz_runtime::agent::hooks::parse_hook_event("claude", raw.to_string()).unwrap();
+            post.claude_notifications.as_mut().unwrap().source = Some(notification_source());
+            report_kind(&mut screen, "claude", post);
+            assert!(replies(&messages, CLIENT).is_empty());
+            let mut stop = claude_stop("cancel", "CANCELLED", false);
+            stop.claude_notifications = Some(yinz_types::agent::claude_notifications::Evidence {
+                source: Some(notification_source()),
+                ..Default::default()
+            });
+            report_kind(&mut screen, "claude", stop);
+            assert_eq!(
+                replies(&messages, CLIENT).pop().unwrap().message.as_deref(),
+                Some("CANCELLED")
+            );
+        } else {
+            screen.refresh_agent_controls_at(
+                Instant::now() + Duration::from_millis(yinz_types::agent::control::MAX_TIMEOUT_MS),
+            );
+            let state = screen
+                .agent_lifecycle
+                .get(&PANE)
+                .unwrap()
+                .handoff_for_test();
+            assert!(state.claude.obligations.launches[0].unavailable);
+            assert!(!state.claude.obligations.launches[0].settled);
+            assert!(!screen.claude_background_pending_for_test());
+        }
+    }
+}
+
+#[test]
+fn unrelated_scope_old_runs_and_reused_tasks_cannot_settle_new_launches() {
+    let (mut screen, _, _) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    report_kind(
+        &mut screen,
+        "claude",
+        native_background_launch("bash", "tool", "Bash"),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("prompt", "LAUNCH", false),
+    );
+    for mutate in ["worker", "archive", "foreign", "old-process", "wrong-tool"] {
+        let mut notice = identified_notice("notice", "bash", "tool", "run");
+        match mutate {
+            "worker" => notice.agent_id = Some("worker".into()),
+            "archive" => notice.archive_only = true,
+            "foreign" => notice.session_id = "foreign".into(),
+            "old-process" => {
+                notice
+                    .claude_notifications
+                    .as_mut()
+                    .unwrap()
+                    .source
+                    .as_mut()
+                    .unwrap()
+                    .started -= 1
+            },
+            _ => {
+                notice
+                    .claude_notifications
+                    .as_mut()
+                    .unwrap()
+                    .notice
+                    .as_mut()
+                    .unwrap()
+                    .tool = "wrong-tool".into()
+            },
+        }
+        report_kind(&mut screen, "claude", notice);
+        assert!(screen.claude_background_pending_for_test());
+    }
+    // A journal delay longer than the historical debounce still has no clearing transition.
+    screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(30));
+    assert!(screen.claude_background_pending_for_test());
+    report_kind(
+        &mut screen,
+        "claude",
+        task_notification("notice", &["bash"]),
+    );
+    let accepted = identified_notice("notice", "bash", "tool", "actual-run");
+    report_kind(&mut screen, "claude", accepted.clone());
+    let mut stop = claude_stop("notice", "FINAL", false);
+    stop.claude_notifications = accepted.claude_notifications;
+    report_kind(&mut screen, "claude", stop);
+    assert!(!screen.claude_background_pending_for_test());
+    // Reusing a task with a different positively acquired tool is a separate obligation.
+    let mut submit = hook("UserPromptSubmit");
+    submit.prompt_id = Some("new".into());
+    report_kind(&mut screen, "claude", submit);
+    let mut launch = native_background_launch("bash", "new-tool", "Bash");
+    launch.prompt_id = Some("new".into());
+    launch.claude_notifications.as_mut().unwrap().launches[0].prompt = "new".into();
+    report_kind(&mut screen, "claude", launch);
+    report_kind(
+        &mut screen,
+        "claude",
+        identified_notice("notice", "bash", "tool", "actual-run"),
+    );
+    assert!(screen.claude_background_pending_for_test());
+    let state = screen
+        .agent_lifecycle
+        .get(&PANE)
+        .unwrap()
+        .handoff_for_test();
+    assert!(state.claude.obligations.launches[0].settled);
+    assert!(!state.claude.obligations.launches[1].settled);
+}
+
+#[test]
+fn unsupported_cancellation_degrades_only_unbound_observation_without_settling() {
+    for bound in [false, true] {
+        let (mut screen, _, _) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        report_kind(
+            &mut screen,
+            "claude",
+            native_background_launch("agent", "tool", "Agent"),
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_stop("prompt", "LAUNCH", false),
+        );
+        if bound {
+            report_kind(
+                &mut screen,
+                "claude",
+                task_notification("notice", &["agent"]),
+            );
+            report_kind(
+                &mut screen,
+                "claude",
+                identified_notice("notice", "agent", "tool", "run"),
+            );
+        }
+        let (mut unsupported,_)=yinz_runtime::agent::hooks::parse_hook_event("claude",serde_json::json!({
+            "hook_event_name":"PostToolUse","session_id":"conversation","prompt_id":"cancel","tool_use_id":"cancel-tool",
+            "tool_name":"TaskStop","tool_input":{"task_id":"agent"},"tool_response":{"task_id":"agent","task_type":"local_agent","command":"private"}
+        }).to_string()).unwrap();
+        unsupported.claude_notifications.as_mut().unwrap().source = Some(notification_source());
+        report_kind(&mut screen, "claude", unsupported);
+        let state = screen
+            .agent_lifecycle
+            .get(&PANE)
+            .unwrap()
+            .handoff_for_test();
+        assert_eq!(state.claude.obligations.launches[0].unavailable, !bound);
+        assert!(!state.claude.obligations.launches[0].settled);
+    }
+}

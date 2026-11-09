@@ -1473,3 +1473,54 @@ fn recovered_claude_prompt_metadata_survives_serialization_and_pruning() {
     let old: HookEvent = serde_json::from_str(r#"{"hook_event_name":"UserPromptSubmit"}"#).unwrap();
     assert!(old.claude_recovered_after.is_none());
 }
+
+#[test]
+fn notification_identity_is_never_truncated_and_transfer_retains_remaining_budget() {
+    use crate::agent::claude_notifications::*;
+    let mut hook = HookEvent {
+        claude_notifications: Some(Evidence {
+            launches: vec![Launch {
+                task: "task".into(),
+                tool: "tool".into(),
+                prompt: "prompt".into(),
+                kind: TaskKind::Bash,
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        hook.pruned_to(0).claude_notifications,
+        hook.claude_notifications
+    );
+    hook.claude_notifications.as_mut().unwrap().launches[0].task = "x".repeat(MAX_ID_BYTES + 1);
+    let bounded = hook.pruned_to(0).claude_notifications.unwrap();
+    assert!(bounded.unavailable && bounded.launches.is_empty());
+    let mut pending = Pending {
+        launches: vec![Obligation {
+            launch: Launch {
+                task: "task".into(),
+                tool: "tool".into(),
+                prompt: "prompt".into(),
+                kind: TaskKind::Bash,
+            },
+            answer_prompt: None,
+            remaining_ms: 900,
+            settled: false,
+            unavailable: false,
+        }],
+        ..Default::default()
+    };
+    pending.elapse(300);
+    let mut transferred: Pending =
+        serde_json::from_str(&serde_json::to_string(&pending).unwrap()).unwrap();
+    assert_eq!(transferred.launches[0].remaining_ms, 600);
+    transferred.elapse(600);
+    assert!(!transferred.active());
+    assert!(!transferred.launches[0].settled);
+    assert!(transferred.launches[0].unavailable);
+    let old: crate::agent::tracking::ClaudeActivity = serde_json::from_value(serde_json::json!({
+        "parent":null, "turns":{}, "sequence":0, "message_sequence":0}))
+    .unwrap();
+    assert!(!old.obligations.active());
+}

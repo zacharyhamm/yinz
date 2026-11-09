@@ -176,6 +176,7 @@ pub(super) fn apply_queued_agent_report(
         })
     {
         screen.correlate_claude_terminal_hook(pane_id, hook);
+        screen.retain_claude_evidence(pane_id, hook);
     }
     if report.kind == "claude"
         && let Some(hook) = hook

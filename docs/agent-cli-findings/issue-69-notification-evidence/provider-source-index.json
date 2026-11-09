@@ -1,0 +1,169 @@
+{
+  "provider": "Claude Code",
+  "version": "2.1.319",
+  "sha256": "dabafec82ca1319fa43d8be36a10fc61b1d11821cb98ad5df04ad95e199b8eed",
+  "offset_convention": "Zero-based byte offsets into the Linux installed executable, not source lines. Excerpts are kept only under the raw capture directory. Annotations are investigation inferences from these call paths, not a provider compatibility promise.",
+  "entries": [
+    {
+      "id": "S1",
+      "offset": 285421755,
+      "length": 1800,
+      "excerpt_sha256": "1130bcdca84481584bc6dafbc0eabc53395d1dcb1d60c4daf661657c6c25cc87",
+      "annotation": "SDK event queue accepts events only in noninteractive mode or with an active REPL bridge."
+    },
+    {
+      "id": "S2",
+      "offset": 281874443,
+      "length": 200,
+      "excerpt_sha256": "ac52a8b91ec763cde3f371b4582ea8e9a43bb0e09bda01db08bbedc8a2fda4ba",
+      "annotation": "Resolve ye from the imported launch-options module, rather than from an unrelated minified symbol."
+    },
+    {
+      "id": "S3",
+      "offset": 281910229,
+      "length": 250,
+      "excerpt_sha256": "f5e859068228c696dce2efcf827477d978d110ee8f63c14adda3462111c3abc0",
+      "annotation": "Resolve Du: REPL bridge availability, not an interactive stdout or journal contract."
+    },
+    {
+      "id": "S4",
+      "offset": 296979867,
+      "length": 2250,
+      "excerpt_sha256": "d037c3c91cc8a39cc062f9e03aed7cca87c73d3f0f2fab34233ef0eede1d072b",
+      "annotation": "Normal shell completion awaits output processing, updates task status, claims notification, and then calls enqueuePendingNotification. Task status publication is not journal publication."
+    },
+    {
+      "id": "S5",
+      "offset": 296968383,
+      "length": 900,
+      "excerpt_sha256": "5f6516fe3cfa749ff329b296e4b97816bd5df1d2419e2bc6f3a438d6eaef68bf",
+      "annotation": "Shell notification chooses owner agent or main session and carries task/tool identity; queue stamping adds the run id."
+    },
+    {
+      "id": "S6",
+      "offset": 291365588,
+      "length": 350,
+      "excerpt_sha256": "2e52ceea1a548a54e801432cea369ec36b24fb42620488bd91b2045904c6f39a",
+      "annotation": "Notification claim stamps notified before enqueue; a prior claim suppresses another notification."
+    },
+    {
+      "id": "S7",
+      "offset": 294233193,
+      "length": 1200,
+      "excerpt_sha256": "e8160bb081886865cfce9f9d237b8bae6f3b18bd4e4bc3410711a7d7c0a9e62b",
+      "annotation": "Explicit shell stop stamps killed and notified and emits the SDK terminal event; it does not enqueue the normal root notification. Later normal completion cannot reclaim it."
+    },
+    {
+      "id": "S8",
+      "offset": 292578440,
+      "length": 1500,
+      "excerpt_sha256": "dcc8d45cecf589d8ef3d192cc93a524de305a5c3e23969c28400a12ff113022b",
+      "annotation": "Interactive enqueue stamps run id, may defer via Ho, mutates queue and notifies subscribers before recording the enqueue operation."
+    },
+    {
+      "id": "S9",
+      "offset": 292571744,
+      "length": 650,
+      "excerpt_sha256": "a33ad3f0be4268b3dcada3fd95959991fcdcc7293866901b5e86b1f5a83b4522",
+      "annotation": "Queue-operation record schema: ordinary enqueue/dequeue need not carry command UUID or run identity."
+    },
+    {
+      "id": "S10",
+      "offset": 292564079,
+      "length": 1800,
+      "excerpt_sha256": "2cc5351e9aaaa03d8226526fcb805249d80ece75f04e4442bd8ad2aee0a004cd",
+      "annotation": "Queue record publication can be held behind an existing promise and content-hook processing; it is separate from queue state."
+    },
+    {
+      "id": "S11",
+      "offset": 292568018,
+      "length": 300,
+      "excerpt_sha256": "5230975b1926657c34ddcc34130df277ffa378ab48ff99024704f03426aeaa85",
+      "annotation": "Default record callback invokes async ypr without awaiting it; diskless mode does not write this journal."
+    },
+    {
+      "id": "S12",
+      "offset": 292418875,
+      "length": 100,
+      "excerpt_sha256": "582d11959571fe00de08ebb4a3f3786e7945fa0d75fff378c706dba640a653fe",
+      "annotation": "Queue journal writer is asynchronous."
+    },
+    {
+      "id": "S13",
+      "offset": 292394180,
+      "length": 750,
+      "excerpt_sha256": "b97cd9cef0e79f38c8384c500140b33553db32cc3759d423299af5d7f149a45b",
+      "annotation": "Journal insert tracks an async append; another-session writes may wait for another queued write."
+    },
+    {
+      "id": "S14",
+      "offset": 292584899,
+      "length": 1150,
+      "excerpt_sha256": "040f48af13fd0995829abfbd34c56b62cb94c8a84df14f1a242c1693537e9664",
+      "annotation": "Ordinary dequeue records lack correlated command identities; removal is not completed notification processing."
+    },
+    {
+      "id": "S15",
+      "offset": 292588399,
+      "length": 850,
+      "excerpt_sha256": "f22248ccd550ce4e32477c52d9c860c6c7ec2a721eb960f52f724e6a05b50088",
+      "annotation": "Attributed removal records can carry reason, command UUID, delivery ID and content; consumed and discarded paths share this recorder."
+    },
+    {
+      "id": "S16",
+      "offset": 319954901,
+      "length": 2800,
+      "excerpt_sha256": "034a5dd6ab8ba668201812aa4181878211b55ce71a1db7f17557053bb89587d1",
+      "annotation": "Interactive wake router consumes after delivery commit with delivered_to_agent; stopped/resume failure/hook decline have different dispositions."
+    },
+    {
+      "id": "S17",
+      "offset": 300745582,
+      "length": 180,
+      "excerpt_sha256": "8196d6d5fefc6b244eb523f80c99da3ea645eb5aa54ca033b7813ce46cfe2814",
+      "annotation": "Sidechain user records can retain joined notification run identities. Does not itself establish complete sidechain settlement."
+    },
+    {
+      "id": "S18",
+      "offset": 321043195,
+      "length": 850,
+      "excerpt_sha256": "7516baadb09555ad0e3ad1509027a9e1a35e83568b3540de4096859c1c2506a2",
+      "annotation": "Interactive presence computes busy from loading/delegated work, not pending notification queue membership."
+    },
+    {
+      "id": "S19",
+      "offset": 321054529,
+      "length": 1300,
+      "excerpt_sha256": "cf6a184a58cfdbc9ac8d409df6299aa445079141ac61eee16699f3ddfeab6756",
+      "annotation": "Shell status derives from live Bash task status; React effect asynchronously writes registry status. Queue length is read separately for dialog/UI handling."
+    },
+    {
+      "id": "S20",
+      "offset": 290199831,
+      "length": 200,
+      "excerpt_sha256": "d7154936e7e16d2ac2b45e9c90d5859a9b6ca0607636da00cbe08098e03f0c68",
+      "annotation": "Completed shell tasks stop contributing to shell status independently of notification delivery."
+    },
+    {
+      "id": "S21",
+      "offset": 296970678,
+      "length": 700,
+      "excerpt_sha256": "1f9b4d9289a8ac1343fc6be3c5ef075c3da9bac737e8422a70686dc799d1e4e2",
+      "annotation": "Queued shell notification can instead be consumed as a tool result, with delivered_as_tool_result."
+    },
+    {
+      "id": "S22",
+      "offset": 300716660,
+      "length": 450,
+      "excerpt_sha256": "8980cbf135f854dd153ca0a6bcdff6d4301f5d54b787d1c74e137837227c059a",
+      "annotation": "Resumed worker call-path signature binds onDeliveryCommitted to the callback invoked in S23."
+    },
+    {
+      "id": "S23",
+      "offset": 300738909,
+      "length": 1450,
+      "excerpt_sha256": "9e22030337e6f29309df55dba5d7cb230be19a5e4bc03dbe0a326852215e7d2c",
+      "annotation": "Delivery callback is invoked before constructing and dispatching resumed-worker execution; delivery is not the completed answer."
+    }
+  ]
+}

@@ -1,0 +1,283 @@
+{
+  "synthetic": [
+    {
+      "name": "registry_idle_before_notification",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "result": "pass"
+    },
+    {
+      "name": "notification_before_registry_idle",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "result": "pass"
+    },
+    {
+      "name": "short_work_before_first_registry_read",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "result": "pass"
+    },
+    {
+      "name": "completion_during_settle_background",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "result": "pass"
+    },
+    {
+      "name": "newer_false_marker_does_not_replace_obligation",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "result": "pass"
+    },
+    {
+      "name": "shell_TaskStop_no_notice",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "result": "pass"
+    },
+    {
+      "name": "arbitrary_notification_lag",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "result": "pass"
+    },
+    {
+      "name": "confirmed_answer_arrives_before_accepted_row",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "result": "pass"
+    },
+    {
+      "name": "same_task_repeated_run_old_clear_cannot_settle_new",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "result": "pass"
+    },
+    {
+      "name": "same_task_same_tool_new_prompt_requires_new_run",
+      "evidence": "synthetic repeated-identity guard; positive resume acquisition assumed, not established for every provider resume route",
+      "result": "pass"
+    },
+    {
+      "name": "tool_result_delivery_waits_for_receiving_turn",
+      "evidence": "synthetic normalized candidate; native receiving-turn join remains source candidate",
+      "result": "pass"
+    },
+    {
+      "name": "sidechain_delivery_waits_for_attributed_answer",
+      "evidence": "synthetic normalized candidate; correlated worker-pass answer end is an unproved provider input",
+      "result": "pass"
+    },
+    {
+      "name": "identified_agent_stopped",
+      "evidence": "synthetic enriched terminal input; not a guarantee the existing journal supplies this identity or no-reroute proof",
+      "result": "pass"
+    },
+    {
+      "name": "identified_resume_failed",
+      "evidence": "synthetic enriched terminal input; not a guarantee the existing journal supplies this identity or no-reroute proof",
+      "result": "pass"
+    },
+    {
+      "name": "identified_dropped_by_hook",
+      "evidence": "synthetic enriched terminal input; not a guarantee the existing journal supplies this identity or no-reroute proof",
+      "result": "pass"
+    },
+    {
+      "name": "anonymous_hook_decline_cannot_settle",
+      "evidence": "synthetic schedule using exact identity-free source-supported removal shape",
+      "result": "pass"
+    },
+    {
+      "name": "foreign_scope_cannot_settle",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "result": "pass"
+    },
+    {
+      "name": "observation_loss_is_distinct_from_success",
+      "evidence": "synthetic schedule over source-mapped root/native-hook inputs",
+      "result": "pass"
+    },
+    {
+      "name": "no_positive_background_work",
+      "evidence": "synthetic foreground-only example; no global completeness assertion",
+      "result": "pass"
+    },
+    {
+      "name": "duplicate_acquisition_and_notice_after_settlement",
+      "evidence": "synthetic idempotent positive-evidence delivery",
+      "result": "pass"
+    }
+  ],
+  "measured": {
+    "provenance": "measured projection; modeled transitions, not live runtime",
+    "counts": {
+      "acquire": 4,
+      "root": 3,
+      "cancel": 1,
+      "end": 7
+    },
+    "events": [
+      {
+        "projection_line": 12,
+        "source": "run2/hooks/364479343563681-2565655.json",
+        "event": {
+          "op": "acquire",
+          "task": "task-1",
+          "scope": "run2:conversation-1",
+          "owner": "root",
+          "prompt": "prompt-1",
+          "tool": "tool-1"
+        }
+      },
+      {
+        "projection_line": 18,
+        "source": "run2/raw/root.jsonl:41",
+        "event": {
+          "op": "end",
+          "prompt": "prompt-1",
+          "scope": "run2:conversation-1",
+          "text": "LAUNCH_B"
+        }
+      },
+      {
+        "projection_line": 27,
+        "source": "run2/raw/root.jsonl:46",
+        "event": {
+          "op": "root",
+          "task": "task-1",
+          "tool": "tool-1",
+          "run": "run-2",
+          "answer": "prompt-2",
+          "scope": "run2:conversation-1"
+        }
+      },
+      {
+        "projection_line": 35,
+        "source": "run2/raw/root.jsonl:49",
+        "event": {
+          "op": "end",
+          "prompt": "prompt-2",
+          "scope": "run2:conversation-1",
+          "text": "FINAL_B"
+        }
+      },
+      {
+        "projection_line": 47,
+        "source": "run2/hooks/364523799626775-2566768.json",
+        "event": {
+          "op": "acquire",
+          "task": "task-4",
+          "scope": "run2:conversation-1",
+          "owner": "root",
+          "prompt": "prompt-3",
+          "tool": "tool-2"
+        }
+      },
+      {
+        "projection_line": 51,
+        "source": "run2/hooks/364524148192030-2566822.json",
+        "event": {
+          "op": "acquire",
+          "task": "task-5",
+          "scope": "run2:conversation-1",
+          "owner": "root",
+          "prompt": "prompt-3",
+          "tool": "tool-3"
+        }
+      },
+      {
+        "projection_line": 60,
+        "source": "run2/raw/root.jsonl:69",
+        "event": {
+          "op": "end",
+          "prompt": "prompt-3",
+          "scope": "run2:conversation-1",
+          "text": "LAUNCH_MIX"
+        }
+      },
+      {
+        "projection_line": 71,
+        "source": "run2/raw/root.jsonl:80",
+        "event": {
+          "op": "root",
+          "task": "task-5",
+          "tool": "tool-3",
+          "run": "run-3",
+          "answer": "prompt-4",
+          "scope": "run2:conversation-1"
+        }
+      },
+      {
+        "projection_line": 75,
+        "source": "run2/raw/root.jsonl:83",
+        "event": {
+          "op": "end",
+          "prompt": "prompt-4",
+          "scope": "run2:conversation-1",
+          "text": "ACK task-5"
+        }
+      },
+      {
+        "projection_line": 86,
+        "source": "run2/raw/root.jsonl:88",
+        "event": {
+          "op": "root",
+          "task": "task-4",
+          "tool": "tool-2",
+          "run": "run-4",
+          "answer": "prompt-5",
+          "scope": "run2:conversation-1"
+        }
+      },
+      {
+        "projection_line": 98,
+        "source": "run2/raw/root.jsonl:92",
+        "event": {
+          "op": "end",
+          "prompt": "prompt-5",
+          "scope": "run2:conversation-1",
+          "text": "ACK task-4\n\nFINAL_MIX"
+        }
+      },
+      {
+        "projection_line": 114,
+        "source": "run3/hooks/364639215652043-2569451.json",
+        "event": {
+          "op": "acquire",
+          "task": "task-9",
+          "scope": "run3:conversation-2",
+          "owner": "root",
+          "prompt": "prompt-6",
+          "tool": "tool-5"
+        }
+      },
+      {
+        "projection_line": 120,
+        "source": "run3/raw/root.jsonl:42",
+        "event": {
+          "op": "end",
+          "prompt": "prompt-6",
+          "scope": "run3:conversation-2",
+          "text": "LAUNCH_E"
+        }
+      },
+      {
+        "projection_line": 129,
+        "source": "run3/hooks/364641598401795-2569539.json",
+        "event": {
+          "op": "cancel",
+          "task": "task-9",
+          "scope": "run3:conversation-2",
+          "owner": "root",
+          "prompt": "prompt-7",
+          "tool": "tool-6"
+        }
+      },
+      {
+        "projection_line": 139,
+        "source": "run3/raw/root.jsonl:59",
+        "event": {
+          "op": "end",
+          "prompt": "prompt-7",
+          "scope": "run3:conversation-2",
+          "text": "CANCELLED_E"
+        }
+      }
+    ]
+  },
+  "anonymous_drop_projection": "collision demonstrated; no task/run join",
+  "verified_source_excerpts": 54
+}

@@ -1004,3 +1004,102 @@ fn supplied_tool_capture_identity_and_status_errors_do_not_quote_values() {
         }
     }
 }
+
+#[test]
+fn claude_native_notification_facts_survive_pruning_and_relay() {
+    for (tool, response) in [
+        ("Bash", json!({"backgroundTaskId":"task"})),
+        (
+            "Agent",
+            json!({"isAsync":true,"status":"async_launched","agentId":"task"}),
+        ),
+    ] {
+        let native = json!({"hook_event_name":"PostToolUse", "session_id":"conversation", "prompt_id":"launch",
+            "tool_use_id":"tool", "tool_name":tool, "tool_response":response, "message":"雪".repeat(OVERSIZE_CHARS)});
+        let (event, raw) = parse_hook_event("claude", native.to_string()).unwrap();
+        let facts = event.claude_notifications.clone().unwrap();
+        assert_eq!(facts.launches[0].task, "task");
+        assert_eq!(
+            event.pruned_to(0).claude_notifications.as_ref(),
+            Some(&facts)
+        );
+        let forwarded = prune_for_forward("claude", raw).unwrap();
+        assert!(forwarded.len() <= yinz_types::agent::HOOK_BROADCAST_MAX_BYTES);
+        let forwarded: HookEvent = serde_json::from_str(&forwarded).unwrap();
+        assert_eq!(forwarded.claude_notifications, Some(facts));
+        assert!(forwarded.tool_response.is_none());
+    }
+}
+
+#[test]
+fn claude_native_notification_mapping_rejects_unsupported_or_invalid_launches() {
+    for patch in [
+        json!({"tool_name":"Task"}),
+        json!({"is_error":true}),
+        json!({"agent_id":"worker"}),
+        json!({"tool_response":{}}),
+        json!({"hook_event_name":"PreToolUse"}),
+    ] {
+        let mut native = json!({"hook_event_name":"PostToolUse", "session_id":"conversation", "prompt_id":"launch",
+            "tool_use_id":"tool", "tool_name":"Bash", "tool_response":{"backgroundTaskId":"task"}});
+        native
+            .as_object_mut()
+            .unwrap()
+            .extend(patch.as_object().unwrap().clone());
+        let (event, _) = parse_hook_event("claude", native.to_string()).unwrap();
+        assert!(event.claude_notifications.is_none());
+    }
+    for task in ["".to_owned(), "x".repeat(257), "task with space".into()] {
+        let native = json!({"hook_event_name":"PostToolUse", "prompt_id":"launch", "tool_use_id":"tool",
+            "tool_name":"Bash", "tool_response":{"backgroundTaskId":task}});
+        let (event, _) = parse_hook_event("claude", native.to_string()).unwrap();
+        let facts = event.claude_notifications.unwrap();
+        assert!(facts.unavailable);
+        assert!(facts.launches.is_empty());
+    }
+}
+
+#[test]
+fn claude_cancellation_requires_exact_successful_local_result_and_snapshots_are_positive() {
+    let native = json!({"hook_event_name":"PostToolUse", "session_id":"conversation", "prompt_id":"cancel", "tool_use_id":"stop-tool",
+        "tool_name":"TaskStop", "tool_input":{"task_id":"task"},
+        "tool_response":{"task_id":"task","task_type":"local_bash","command":"private"}});
+    let (event, _) = parse_hook_event("claude", native.to_string()).unwrap();
+    assert_eq!(
+        event
+            .claude_notifications
+            .unwrap()
+            .cancellation
+            .unwrap()
+            .task,
+        "task"
+    );
+    for patch in [
+        json!({"tool_response":{"task_id":"task","task_type":"local_bash"}}),
+        json!({"tool_input":{"task_id":"tas"}}),
+        json!({"is_error":true}),
+        json!({"tool_response":{"task_id":"task","task_type":"local_agent","command":"private"}}),
+    ] {
+        let mut rejected = native.clone();
+        rejected
+            .as_object_mut()
+            .unwrap()
+            .extend(patch.as_object().unwrap().clone());
+        let (event, _) = parse_hook_event("claude", rejected.to_string()).unwrap();
+        assert!(event
+            .claude_notifications
+            .as_ref()
+            .is_none_or(|e| e.cancellation.is_none()));
+    }
+    let (event, _) = parse_hook_event(
+        "claude",
+        json!({"hook_event_name":"Stop", "background_tasks":[
+        {"id":"task", "type":"local_bash", "status":"running"}]})
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        event.pruned_to(0).claude_notifications.unwrap().tasks.len(),
+        1
+    );
+}

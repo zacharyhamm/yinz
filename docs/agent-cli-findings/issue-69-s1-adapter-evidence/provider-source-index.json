@@ -1,0 +1,225 @@
+{
+  "provider": "Claude Code",
+  "version": "2.1.319",
+  "sha256": "dabafec82ca1319fa43d8be36a10fc61b1d11821cb98ad5df04ad95e199b8eed",
+  "offset_convention": "Zero-based executable byte offsets. Excerpts private under /tmp/issue-69-s1-adapter/A*.txt. Local source, not vendor guarantee.",
+  "entries": [
+    {
+      "id": "A1",
+      "offset": 295619217,
+      "length": 735,
+      "excerpt_sha256": "21532a9f0080f35d78b69029b2953ca4bd17fdf4ba30a9aa90936191aa3bc6cb",
+      "annotation": "Native common hook fields: conversation, root transcript, current prompt id and worker attribution."
+    },
+    {
+      "id": "A2",
+      "offset": 295603150,
+      "length": 2320,
+      "excerpt_sha256": "6440f83cf42a4b6c691eb054c1636b23dc0e385ac7fa02f60baf5711ffb82291",
+      "annotation": "PreToolUse and PostToolUse inputs and generator dispatch; Post includes unmodified native result."
+    },
+    {
+      "id": "A3",
+      "offset": 296160500,
+      "length": 1830,
+      "excerpt_sha256": "54134a6a3e06b194d8e5348e70cfae813291c4305214f44042d43ca1ce796d27",
+      "annotation": "Tool caller exhausts PostToolUse hook generator before returning the tool result."
+    },
+    {
+      "id": "A4",
+      "offset": 295686244,
+      "length": 1860,
+      "excerpt_sha256": "1cc5ade9ed797df35b6a5a08d12389fe2cb2e7dcc40efd25b363ef40cdc2c2db",
+      "annotation": "Native hook generator dispatch awaits the configured hook chain."
+    },
+    {
+      "id": "A5",
+      "offset": 295712000,
+      "length": 1350,
+      "excerpt_sha256": "d12b3ac61e2ea326edb26bef13ed05255d3e4b127bc55bc2b93b644cda727e3b",
+      "annotation": "Command hook executor awaits E1 before interpreting success or failure."
+    },
+    {
+      "id": "A6",
+      "offset": 295641760,
+      "length": 1050,
+      "excerpt_sha256": "76acc0bf7cf2cbdd0b2c90ac3dba587e76abb7fed27c444beb6011d46cacafea",
+      "annotation": "Only explicitly async/asyncRewake configuration backgrounds this command path."
+    },
+    {
+      "id": "A7",
+      "offset": 295644400,
+      "length": 1750,
+      "excerpt_sha256": "3ce2f353c1b7e8418aff9bd7e0ccf8f502836bbe7a8280dbd5df154c1742ca20",
+      "annotation": "Synchronous hook waits for child exit and stream processing; normal return versus bounded failure."
+    },
+    {
+      "id": "A8",
+      "offset": 295720700,
+      "length": 1250,
+      "excerpt_sha256": "919e27a5d8232e54d3c299a659302fce6051cbe421a7fb73e3aba5f79d3a6c17",
+      "annotation": "Configured hooks are drained through an awaited asynchronous iterator."
+    },
+    {
+      "id": "A9",
+      "offset": 295597092,
+      "length": 2680,
+      "excerpt_sha256": "6b5ca40d7c8e25e1b4d3c09a630b6b72abe260282a47e5793cbaa50d578c1480",
+      "annotation": "Stop snapshot retains in-flight tasks, then yields the Stop hook chain."
+    },
+    {
+      "id": "A10",
+      "offset": 290226465,
+      "length": 185,
+      "excerpt_sha256": "b0aa5bebd634d96373d2a1b1f265f7eea2a531698c6cfb3cfc97436e5601e3d5",
+      "annotation": "Task snapshot filter accepts running/pending and excludes explicitly foreground tasks."
+    },
+    {
+      "id": "A11",
+      "offset": 297099420,
+      "length": 675,
+      "excerpt_sha256": "e9a413282912439ad98c63d6ef7f745b2dc1288477598de105db42967f17bd39",
+      "annotation": "Explicit asynchronous Bash returns backgroundTaskId even in local already-completed branch."
+    },
+    {
+      "id": "A12",
+      "offset": 300800250,
+      "length": 850,
+      "excerpt_sha256": "0024119f55755129a2e4a1e01eafdc4ce01610eb576f0fffe950191e194ea50b",
+      "annotation": "Asynchronous Agent returns isAsync/status/agentId after dispatching worker."
+    },
+    {
+      "id": "A13",
+      "offset": 300805420,
+      "length": 680,
+      "excerpt_sha256": "572a588433fc378005bf9393ff7c4f8a7a88aa6137f7bf8f630799086972db06",
+      "annotation": "Foreground Agent moved to background also returns async launch result."
+    },
+    {
+      "id": "A14",
+      "offset": 301018746,
+      "length": 3500,
+      "excerpt_sha256": "ca3236d5005d9d8415dd107ac2165efd8c6e57a4716c1b651d93687a74fafd57",
+      "annotation": "TaskStop resolves exact task, checks running/type/owner, invokes type-specific kill and returns resolved ID."
+    },
+    {
+      "id": "A15",
+      "offset": 301025600,
+      "length": 850,
+      "excerpt_sha256": "b4b3b990750ce0481140ba5de17f5acd837da735bed4a643b71c93f9071d094e",
+      "annotation": "TaskStop successful result shape; remote-shell success text has different guarantees and is excluded."
+    },
+    {
+      "id": "A16",
+      "offset": 292588399,
+      "length": 730,
+      "excerpt_sha256": "29888e3dad9a96a0403220d888da593a2e67dd0c6aabf60b4492ea874a6d05ef",
+      "annotation": "Removal suppresses content for dropped_by_hook; optional commandUuid and deliveryId only."
+    },
+    {
+      "id": "A17",
+      "offset": 292594360,
+      "length": 390,
+      "excerpt_sha256": "f877cd03fda5bcf8cb56d61ed12c88cbe2862d2ec46e3d530739b0fe55726f8b",
+      "annotation": "ll forwards directly to enqueuePendingNotification, without adding UUID."
+    },
+    {
+      "id": "A18",
+      "offset": 300729800,
+      "length": 755,
+      "excerpt_sha256": "2f09ee175e8250a6ef1ea9707bd8fbebf298c4e6a976a15b6e4b77f50fb34fd0",
+      "annotation": "Resume plugin/function-hook denial returns before delivery commit or resumed execution."
+    },
+    {
+      "id": "A19",
+      "offset": 320000450,
+      "length": 930,
+      "excerpt_sha256": "83d2dc4f00f16bcbc3d26692d25d2c20023575622301f3736c1690e5b5b4c9b3",
+      "annotation": "Interactive host installs Mqe and wires g8 with joined run IDs and delivery callback."
+    },
+    {
+      "id": "A20",
+      "offset": 300735400,
+      "length": 600,
+      "excerpt_sha256": "4549d4beec047743c47cf95b7819cbc969f34335769e8e7691ea2c4fa1a8f079",
+      "annotation": "Resumed sidechain user message includes joined run identities and notification origin."
+    },
+    {
+      "id": "A21",
+      "offset": 300651300,
+      "length": 4430,
+      "excerpt_sha256": "b41f8862dc13f9a0554e4cfff79e2e178ea0f479bc7c5dad1ac771e790753a6c",
+      "annotation": "Worker pass finalization and owner-notification boundary after stream ends; parked duration has other semantics."
+    },
+    {
+      "id": "A22",
+      "offset": 300740000,
+      "length": 4330,
+      "excerpt_sha256": "bb9b16e2be14c14e793072c1abce5f7f5ac12648b245a64fb6b86b872ebaba04",
+      "annotation": "Resumed-worker execution; owner-notification policy and dispatch lifetime differ from delivery commit."
+    },
+    {
+      "id": "A23",
+      "offset": 321167200,
+      "length": 1250,
+      "excerpt_sha256": "60547f3399dbf899de0dc8e02ecbda026d8ab2ebc382fb9decb698802f5f37a3",
+      "annotation": "Interactive root duration append after turn-end handling/reset loading; may defer for agents/detached work."
+    },
+    {
+      "id": "A24",
+      "offset": 296940676,
+      "length": 2160,
+      "excerpt_sha256": "bb300e7e14a2fa4b463190b459d46f684e28369e907df9f8a3bbf0bfe207db32",
+      "annotation": "Agent TaskStop differs from shell: worker kill can notify owner; shell no-root rule cannot generalize."
+    },
+    {
+      "id": "A25",
+      "offset": 291365906,
+      "length": 450,
+      "excerpt_sha256": "ecb94e4afce4c012db005165681f22f4ff45c4a761e01947543524509400bc54",
+      "annotation": "Notification envelope fields are structural task/tool/status metadata, not inferred prose."
+    },
+    {
+      "id": "A26",
+      "offset": 315930500,
+      "length": 600,
+      "excerpt_sha256": "04b1c4a78f510f3e1c8e7b617b78ac681a01f5292a8635210e5f2d608c586117",
+      "annotation": "SendMessage successful resume can expose resumedAgentId/revivedAgentId; fresh live mapping not established."
+    },
+    {
+      "id": "A27",
+      "offset": 322477000,
+      "length": 3150,
+      "excerpt_sha256": "8c76eb5bc122f577d8425089940f81efff9ed67a7dc0af1e6aeb6053f1c52dcd",
+      "annotation": "Alternate runner wake-router branch may requeue stopped-agent notices to root; not simply terminal discard."
+    },
+    {
+      "id": "A28",
+      "offset": 301088100,
+      "length": 3380,
+      "excerpt_sha256": "7972dbe871c4ce6d8419a5f3e47ac949e17d5fa078b73d061ceaa4b1901f373d",
+      "annotation": "Actual tool-result withdrawal caller is gated GetTask, not assumed TaskOutput. It receives taskId and requeues the notice if its signal aborts; tool is disabled in this surface."
+    },
+    {
+      "id": "A29",
+      "offset": 296969700,
+      "length": 500,
+      "excerpt_sha256": "aeb65b348c12cfc03d7016a662ec9374bd101626c989a28b0f1be66fac756329",
+      "annotation": "Shell completion registers withdrawal callback only when task snapshot feature is enabled."
+    },
+    {
+      "id": "A30",
+      "offset": 301407800,
+      "length": 1400,
+      "excerpt_sha256": "c69b0f20765439893c85d8f52fd8b42a6284042d94e280f612e147c143b954d6",
+      "annotation": "Normal blockable end-turn caller exhausts Stop/SubagentStop generator before continuing."
+    },
+    {
+      "id": "A31",
+      "offset": 301396450,
+      "length": 1200,
+      "excerpt_sha256": "d2e93b839798e34ed3c0a4be7309d880e28eee449ca692b436a26bce482a7385",
+      "annotation": "Loop-tick end-turn caller exhausts Stop hook generator; nonblocking errors do not block provider progress."
+    }
+  ]
+}

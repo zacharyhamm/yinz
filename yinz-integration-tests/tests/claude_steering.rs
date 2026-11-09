@@ -169,6 +169,22 @@ fn claude_steering_delivers_without_interrupting_and_publishes_background_activi
     yinz.wait_until("Claude consumed the steering prompt", |snapshot| {
         snapshot.contains("Steering accepted")
     });
+    // Native Post acquisition protects even work completed before the first registry sample.
+    let (mut launch, _) = yinz_runtime::agent::hooks::parse_hook_event(
+        "claude",
+        serde_json::json!({
+            "hook_event_name":"PostToolUse","session_id":"claude-session","prompt_id":"initial",
+            "tool_name":"Bash","tool_use_id":"bash-tool","tool_response":{"backgroundTaskId":"bash"}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    launch.claude_notifications.as_mut().unwrap().source =
+        Some(yinz_types::agent::claude_notifications::Source {
+            pid: 123,
+            started: 456,
+        });
+    send_report(launch);
     // Claude's session registry still shows the worker and background Bash running.
     report("Stop", "initial", None, Some(true));
     report("Stop", "steering", None, Some(true));
@@ -185,7 +201,32 @@ fn claude_steering_delivers_without_interrupting_and_publishes_background_activi
     let background = status();
     assert_eq!(background.agents[0].agent.state, AgentState::Busy);
     assert!(background.agents[0].background);
+    // Registry completion is deliberately applied before the notice becomes visible.
+    report(CLAUDE_BACKGROUND_IDLE, "steering", None, Some(false));
+    let gap = status();
+    assert_eq!(gap.agents[0].agent.state, AgentState::Busy);
+    assert!(gap.agents[0].background);
     report("UserPromptSubmit", "notification", None, None);
+    send_report(HookEvent {
+        hook_event_name: "NotificationAccepted".into(),
+        session_id: "claude-session".into(),
+        prompt_id: Some("notification".into()),
+        claude_notifications: Some(yinz_types::agent::claude_notifications::Evidence {
+            source: Some(yinz_types::agent::claude_notifications::Source {
+                pid: 123,
+                started: 456,
+            }),
+            notice: Some(yinz_types::agent::claude_notifications::Notice {
+                task: "bash".into(),
+                tool: "bash-tool".into(),
+                run: "run".into(),
+                prompt: "notification".into(),
+                row: "row".into(),
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
     // A status reply is a screen-thread barrier after every preceding report.
     sender
         .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Status {
@@ -218,12 +259,40 @@ fn claude_steering_delivers_without_interrupting_and_publishes_background_activi
             timeout_ms: 30_000,
         }))
         .unwrap();
-    report("Stop", "notification", None, Some(false));
+    let mut confirmation = HookEvent {
+        hook_event_name: "Stop".into(),
+        session_id: "claude-session".into(),
+        prompt_id: Some("notification".into()),
+        claude_turn_complete: Some(true),
+        claude_background: Some(false),
+        last_assistant_message: Some("finished notification".into()),
+        ..Default::default()
+    };
+    confirmation.claude_notifications = Some(yinz_types::agent::claude_notifications::Evidence {
+        source: Some(yinz_types::agent::claude_notifications::Source {
+            pid: 123,
+            started: 456,
+        }),
+        ..Default::default()
+    });
+    send_report(confirmation);
     let idle = reply(&mut receiver);
     assert_eq!(idle.outcome, AgentOutcome::Ok);
     assert_eq!(idle.message.as_deref(), Some("finished notification"));
     assert_eq!(idle.agents[0].agent.state, AgentState::Idle);
     assert!(!idle.agents[0].background);
+    sender
+        .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Wait {
+            pane_id: pane,
+            expected_session_id: None,
+            until: AgentState::Idle,
+            timeout_ms: 30_000,
+        }))
+        .unwrap();
+    assert_eq!(
+        reply(&mut receiver).message.as_deref(),
+        Some("finished notification")
+    );
     yinz.wait_until(
         "the idle pane is published after background processing",
         |_| {
