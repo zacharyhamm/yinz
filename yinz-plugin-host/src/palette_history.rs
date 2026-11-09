@@ -156,7 +156,7 @@ pub(super) fn last_reply(
 }
 
 /// Every distinct prompt in the archive, described for the palette's picker.
-pub(super) fn prompt_library(data: &DataAccess) -> Result<Vec<PromptRecord>, String> {
+pub(crate) fn prompt_library(data: &DataAccess) -> Result<Vec<PromptRecord>, String> {
     let now_ms = agent_proto::agents::now_ms();
     Ok(history::prompt_library(&Reader(data))?
         .into_iter()
@@ -538,40 +538,9 @@ pub(super) fn execute(
             }
         },
         HistoryAction::Event { id, revision } => {
-            // Read the exact retained event without the multi-entry preview budget.
-            let fetched = store::Backend::fetch(
-                &backend,
-                &FetchRequest::entity(agent_proto::agents::rows::ENTRY_ENTITY)
-                    .filter(Pred::eq("run_id", id.as_str()))
-                    .filter(Pred::eq("revision", *revision as i64))
-                    .limit(1),
-            )?;
-            let mut entry = agent_proto::agents::rows::entries_from_rows(&fetched)
-                .remove(id)
-                .and_then(|mut entries| entries.pop())
-                .ok_or("Event no longer retained")?;
-            if fetched.truncated {
-                return Err("Retained event exceeds the store read limit".into());
-            }
-            if let Some(tool) = &mut entry.tool {
-                tool.bound_payloads(4000);
-                if entry.text.len() > 8000 {
-                    entry.text = entry.text.chars().take(2000).collect::<String>()
-                        + "\n[incomplete tool preview: use raw archive for retained payload]";
-                }
-            }
-            let tool = entry
-                .tool
-                .as_ref()
-                .map(serde_json::to_string_pretty)
-                .transpose()
-                .map_err(|e| format!("Cannot format tool details: {e}"))?
-                .unwrap_or_default();
-            HistoryReply::Reader {
-                header: entry.kind.label().into(),
-                markdown: entry.text,
-                tool,
-            }
+            return read_event(data, id, *revision)
+                .map(AgentReply::History)
+                .map_err(|error| error.to_string());
         },
         HistoryAction::Resume { id } => {
             let h = history::run_header(&backend, id)?.ok_or("Run no longer retained")?;
@@ -949,4 +918,62 @@ fn run_details(h: &AgentRunHeader, timestamp: &impl Fn(Option<i64>) -> String) -
                 h.cwd.as_deref().unwrap_or("Unavailable"), h.host.as_deref().unwrap_or("local"), timestamp(Some(h.started_at_ms)),
                 timestamp(h.ended_at_ms), h.outcome, h.revision,
                 h.summary.as_ref().map(|s| s.text.as_str()).unwrap_or("Unavailable"), h.previous_run_id.as_deref().unwrap_or("Unavailable"), h.origin_run_id.as_deref().unwrap_or("Unavailable"))
+}
+
+#[derive(Debug)]
+pub(crate) enum RetainedEventError {
+    NotFound,
+    Failed(String),
+}
+impl std::fmt::Display for RetainedEventError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => f.write_str("Event no longer retained"),
+            Self::Failed(e) => f.write_str(e),
+        }
+    }
+}
+pub(crate) fn read_event(
+    data: &DataAccess,
+    id: &str,
+    revision: u64,
+) -> Result<HistoryReply, RetainedEventError> {
+    let backend = Reader(data);
+    // Read the exact retained event without the multi-entry preview budget.
+    let fetched = store::Backend::fetch(
+        &backend,
+        &FetchRequest::entity(agent_proto::agents::rows::ENTRY_ENTITY)
+            .filter(Pred::eq("run_id", id))
+            .filter(Pred::eq("revision", revision as i64))
+            .limit(1),
+    )
+    .map_err(RetainedEventError::Failed)?;
+    let mut entry = agent_proto::agents::rows::entries_from_rows(&fetched)
+        .remove(id)
+        .and_then(|mut entries| entries.pop())
+        .ok_or(RetainedEventError::NotFound)?;
+    if fetched.truncated {
+        return Err(RetainedEventError::Failed(
+            "Retained event exceeds the store read limit".into(),
+        ));
+    }
+    if let Some(tool) = &mut entry.tool {
+        tool.bound_payloads(4000);
+        if entry.text.len() > 8000 {
+            entry.text = entry.text.chars().take(2000).collect::<String>()
+                + "\n[incomplete tool preview: use raw archive for retained payload]";
+        }
+    }
+    let tool = entry
+        .tool
+        .as_ref()
+        .map(serde_json::to_string_pretty)
+        .transpose()
+        .map_err(|e| RetainedEventError::Failed(format!("Cannot format tool details: {e}")))?
+        .unwrap_or_default();
+    Ok(HistoryReply::Reader {
+        header: entry.kind.label().into(),
+        markdown: entry.text,
+        tool,
+    })
 }

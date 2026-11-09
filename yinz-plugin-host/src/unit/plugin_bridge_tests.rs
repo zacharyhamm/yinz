@@ -9058,3 +9058,141 @@ fn web_transport_crash_fails_request_and_releases_other_waiters() {
     ));
     assert!(slot.is_closed());
 }
+
+#[test]
+fn web_agents_generation_replacement_fences_a_real_outstanding_native_reply() {
+    const HANDLER: &str = r#"
+(define pending (hash))
+(define (load config) (yinz-command (hash "Subscribe" (list "CustomMessage"))))
+(define (yinz-web-dispatch request)
+  (define id (hash-ref request "id"))
+  (define correlation (string-append "native-" (number->string id)))
+  (set! pending (hash-insert pending correlation id))
+  (yinz-command (hash "AgentView" (hash "id" correlation "request" "{\"op\":\"list\"}"))) #f)
+(define (update event)
+  (when (and (hash? event) (hash-contains? event "CustomMessage"))
+    (define message (hash-ref event "CustomMessage"))
+    (when (equal? (list-ref message 0) "agent-view-response")
+      (define result (yinz-json-parse (list-ref message 1)))
+      (define correlation (hash-ref result "id"))
+      (when (hash-contains? pending correlation)
+        (yinz-command (hash "HttpRespond" (hash "request_id" (hash-ref pending correlation)
+          "response" (yinz-json-string (hash "status" 200 "headers" (hash "content-type" "application/json")
+            "body" (yinz-json-string (hash-ref result "reply")))))))))) #f)
+"#;
+    let (mut test, plugin, generation) = web_transport_fixture(HANDLER);
+    let next_call = |test: &TestBridge| loop {
+        let (instruction, _) = test
+            .receiver::<PluginInstruction>()
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap();
+        if let PluginInstruction::Web(yinz_bus::web::WebInstruction::AgentView(call)) = instruction
+        {
+            break *call;
+        }
+    };
+    let next_snapshot = |test: &TestBridge| loop {
+        let (instruction, _) = test
+            .receiver::<ScreenInstruction>()
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap();
+        if let ScreenInstruction::WebLiveAgents { reply } = instruction {
+            break reply;
+        }
+    };
+    let deliver = |test: &mut TestBridge| {
+        loop {
+            let (instruction, _) = test
+                .receiver::<PluginInstruction>()
+                .recv_timeout(yinz_test_support::default_timeout())
+                .unwrap();
+            let (id, client, generation, event, reply) = match instruction {
+                PluginInstruction::PluginEvent(id, client, generation, event) => {
+                    (id, client, generation, event, None)
+                },
+                PluginInstruction::PluginReply(id, client, generation, event, reply) => {
+                    (id, client, generation, event, Some(reply))
+                },
+                _ => continue,
+            };
+            if !matches!(&event,Event::CustomMessage(name,_) if name=="agent-view-response") {
+                continue;
+            }
+            let (shutdown, _) = tokio::sync::mpsc::channel(1);
+            test.bridge
+                .plugin_replies(id, generation, vec![(client, event, reply)], shutdown)
+                .unwrap();
+            break;
+        }
+        test.wait_for_executor(plugin);
+    };
+    let tasks = crate::update_quiescence::NativeTasks::default();
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    let (_, mut old) = web_transport_request(&test, plugin, generation, 1, "/api/native");
+    test.wait_for_executor(plugin);
+    let call = next_call(&test);
+    assert_eq!(call.generation, Some(generation));
+    let job = crate::web_agent_tasks::dispatch(
+        call,
+        false,
+        &tasks,
+        test.bridge.senders.clone(),
+        test.bridge.data_access.clone(),
+        shutdown.clone(),
+    )
+    .unwrap();
+    let release = next_snapshot(&test);
+    // Hold the actual native read across replacement, rather than fabricating its response.
+    test.bridge.reload_plugin_with_id(plugin).unwrap();
+    test.finish_reload(plugin);
+    assert!(matches!(
+        old.try_recv().unwrap(),
+        yinz_types::web::WebReply::Unavailable { .. }
+    ));
+    let replacement = test.bridge.web.selected(plugin).unwrap();
+    assert_ne!(replacement, generation);
+    let instance = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(plugin, None)
+        .unwrap();
+    *instance.lock().unwrap().env().permissions.lock().unwrap() =
+        Some(HashSet::from([PermissionType::RunCommands]));
+    let (_, mut new) = web_transport_request(&test, plugin, replacement, 1, "/api/native");
+    test.wait_for_executor(plugin);
+    let call = next_call(&test);
+    assert_eq!(call.generation, Some(replacement));
+    release.send(vec![]).unwrap();
+    yinz_bus::global_async_runtime::get_tokio_runtime()
+        .block_on(job)
+        .unwrap();
+    deliver(&mut test);
+    assert!(
+        matches!(
+            new.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ),
+        "old native completion cannot answer reused correlation in a new generation"
+    );
+    let job = crate::web_agent_tasks::dispatch(
+        call,
+        false,
+        &tasks,
+        test.bridge.senders.clone(),
+        test.bridge.data_access.clone(),
+        shutdown,
+    )
+    .unwrap();
+    next_snapshot(&test).send(vec![]).unwrap();
+    yinz_bus::global_async_runtime::get_tokio_runtime()
+        .block_on(job)
+        .unwrap();
+    deliver(&mut test);
+    let yinz_types::web::WebReply::Response(response) = new.try_recv().unwrap() else {
+        panic!("native response")
+    };
+    let body: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(body["ok"]["agents"], serde_json::json!([]));
+}

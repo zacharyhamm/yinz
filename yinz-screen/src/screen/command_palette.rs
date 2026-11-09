@@ -1020,27 +1020,7 @@ impl Screen {
         }
         let mut live = self.live_palette_agents();
         state.agents.refresh_labels(
-            live.iter()
-                .map(|agent| yinz_bus::command_palette::AgentLabelSource {
-                    id: agent.id(),
-                    host: agent.pane.host.clone(),
-                    cwd: agent
-                        .pane
-                        .agent
-                        .as_ref()
-                        .and_then(|agent| agent.cwd.as_ref())
-                        .filter(|cwd| !cwd.is_empty())
-                        .or(agent.pane.cwd.as_ref())
-                        .cloned(),
-                    run: agent
-                        .run()
-                        .map(|id| yinz_bus::command_palette::AgentRunSource {
-                            id,
-                            host_id: yinz_runtime::host_identity::host_id(),
-                            session: agent.session.clone(),
-                        }),
-                })
-                .collect(),
+            live.iter().map(|agent| agent.label_source()).collect(),
             client,
             &self.bus.senders,
         );
@@ -1049,20 +1029,18 @@ impl Screen {
         state.widget.agent_presentations = live
             .iter()
             .filter_map(|agent| {
-                crate::ui::command_palette::AgentPresentation::from_pane(&agent.pane).map(
-                    |mut presentation| {
-                        presentation.focused = agent.session == self.session_name
-                            && Some(agent.pane.id) == focused_pane;
-                        presentation.hook_flash = agent.session == self.session_name
-                            && self.agent_hook_is_flashing(&agent.pane, self.frame_now());
-                        if let Some(labels) = state.agents.labels.get(&agent.id()) {
-                            presentation.project.clone_from(&labels.project);
-                            presentation.branch.clone_from(&labels.branch);
-                            presentation.last_reply.clone_from(&labels.last_reply);
-                        }
-                        (agent.id(), presentation)
-                    },
-                )
+                agent.presentation().map(|mut presentation| {
+                    presentation.focused =
+                        agent.session == self.session_name && Some(agent.pane.id) == focused_pane;
+                    presentation.hook_flash = agent.session == self.session_name
+                        && self.agent_hook_is_flashing(&agent.pane, self.frame_now());
+                    if let Some(labels) = state.agents.labels.get(&agent.id()) {
+                        presentation.project.clone_from(&labels.project);
+                        presentation.branch.clone_from(&labels.branch);
+                        presentation.last_reply.clone_from(&labels.last_reply);
+                    }
+                    (agent.id(), presentation)
+                })
             })
             .collect();
         live.sort_by(|left, right| {
@@ -1451,7 +1429,7 @@ impl Screen {
         }
     }
 
-    fn palette_target_exists(&self, pane: PaneId, tab: TabId, action: &Action) -> bool {
+    pub(super) fn palette_target_exists(&self, pane: PaneId, tab: TabId, action: &Action) -> bool {
         if !self.tabs.contains_key(&tab) || self.tab_containing_pane(pane).is_none() {
             return false;
         }

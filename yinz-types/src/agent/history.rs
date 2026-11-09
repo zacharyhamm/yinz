@@ -2,6 +2,7 @@
 use crate::plugin_data::{FetchRequest, Pred};
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Cursor {
     // Null timestamps sort before dated entries, then by revision (legacy archives).
     pub created_at_ms: Option<i64>,
@@ -19,6 +20,7 @@ impl Cursor {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Range {
     pub start: Option<Cursor>,
     pub end: Option<Cursor>,

@@ -927,6 +927,113 @@ protobuf wire refuses them with "Web commands are Steel-only". Each requires
 web plugin (`web { plugin … }`) and builtin plugins; any other plugin gets the
 error "reserved for the configured web plugin".
 
+### Native agent views
+
+`AgentView.request` is a JSON object of at most 64 KiB. Subscribe to
+`CustomMessage` and correlate `agent-view-response` by the caller's `id`.
+Only the configured web plugin and builtins with `RunCommands` may call it.
+Use the existing `shared true` plugin configuration for a session-lifetime web
+handler that survives terminal detach. Operations reject unknown fields. No native action enum is accepted from a guest.
+
+| `op` | Fields | `ok` payload |
+| --- | --- | --- |
+| `list` | none | `{session, now_ms, counts:{waiting,busy,idle}, agents:[row]}` |
+| `history` | `run`, optional `agent` (live ID), `query` (default empty), `from`, `worker`, `before`, `after_revision`, `tz` | History page below |
+| `hit` | `run`, `revision`, optional `tz` | History page with context/latest navigation |
+| `event` | `run`, `revision`, optional `tz` | `{header:string, markdown:string, tool:string}` |
+| `tools` | `run`, either `revisions` (1–30) or `range` with optional `before`, optional `tz` | Reader; range mode also includes `page` |
+| `usage` | `agent` (live ID) | `{usage:ProviderUsage}` |
+| `prompts` | none | `{prompts:[{text,description}]}` (at most 500) |
+| `prompt` | `agent:AgentRef`, `submission_id`, `text` | `{response:AgentResponse}` |
+| `screen` | `agent:AgentRef`, `lines` (1–200, default 80) | `{response:AgentResponse}` |
+| `keys` | `agent:AgentRef`, `keys` (1–8) | `{response:AgentResponse}` |
+| `focus` | `agent:AgentRef` | `true` |
+
+`AgentRef` is `{id, kind, session_id}`. All identity strings must be nonblank
+and contain no control characters. Actions take a fresh snapshot and require the
+complete identity. Only peers represented in that snapshot can be routed.
+Prompt, screen and keys also recheck kind and conversation on the owning screen
+using the distinct `WebGuarded` IPC variant; unsupported peers fail closed.
+Focus revalidates selectability and suppression and uses the first attached
+terminal. Local focus executes in that same screen turn through the palette's
+focus core; a pending terminal layout returns recoverable `unavailable` for retry.
+Peers use the palette's session-switch behavior.
+Peer focus uses the current session cache, without an atomic cross-server handoff.
+
+Rows contain `id`, `ref`, `session`, `current_session`, `pane_id` (canonical),
+`pane` (display number), `provider`, `state`, `glyph`, `status`, `host`, `title`,
+`activity`, `project`, `branch`, `last_reply` (`{text,truncated}` or null),
+`last_hook_at_ms`, `focused`, `selectable`, `suppressed`, `directory`, `run`,
+`wait_needs_a_person`, `source`, `can_prompt`, `prompt_unavailable` and
+`usage_unavailable`. Population, ordering, labels, presentation, live headers and
+quota reasons reuse the terminal palette. Exited panes and Exited agent records
+are excluded from both live lists; their retained run history remains readable.
+`can_prompt` describes complete identity, independently of current input readiness.
+Missing conversation IDs report `Agent has no conversation ID`.
+
+History pages contain `run`, `retargeted`, `agent_gone`, `live` (row or null),
+`header` (`name,status,location,started,task,project,branch,session_id,details`),
+`events`, `earlier`, `next_from`, `previous_run`, `origin_run`, `resumable:false`,
+`status`, `navigation` and `activity_ranges`. Run-only reads need no live snapshot.
+A missing live ID sets `agent_gone` and still reads the supplied run. A live ID
+whose current run changed sets `retargeted`, returns the new run and clears old
+worker/page/delivery cursors. Clients must replace their cached run on retarget.
+`tz` uses the palette's requesting-client timezone rules; omitted/invalid zones
+use its explicit unavailable-zone behavior, never the server's local timezone.
+
+Each event has `revision`, `revisions` (one revision for ordinary events, empty
+for grouped activity), `range`, `kind`, `created_at_ms`, `time`, `markdown`,
+`truncated`, `tool_calls` and a closed `request` for its event/hit/tools reader.
+`navigation` maps native row IDs (`earlier`, `continue`, `latest`, `context`,
+`received`, `previous`, `origin`, `event:…`, `tools`) to callable requests.
+It omits archived search, workers-picker and resume actions. Reapply `tz` when
+following navigation. Worker scopes can be supplied on history/range requests.
+
+Chronological `before` is `{created_at_ms:number|null, revision:number}`; null
+sorts before dated entries, with revision breaking timestamp ties. `range` is
+`{start:Cursor|null, end:Cursor|null, worker:string|null}` with exclusive, ordered
+prose boundaries. `after_revision` is an inclusive revision delivery watermark;
+it cannot be combined with `before`. `from` is the search continuation (or a
+legacy empty-query delivery watermark), independent of chronological paging.
+Search cannot combine with worker/before/after_revision; `from` cannot combine
+with worker/before/after_revision. Revisions must be positive (delivery/from may
+be zero) and below `i64::MAX`, leaving space for the next revision. Cursor times
+are bounded to years -9999 through 9999.
+
+Follow `earlier` navigation for older messages, `continue` for search pages and
+`received` for live revision delivery. Before merging events, remove cached tool
+activity whose range overlaps any `activity_ranges` interval in the same worker
+scope. Preserve replacement intervals even when no new event occupies them.
+Then merge by revision and order by timestamp/revision. This retains tools across
+earlier pages and handles late revisions without duplicate prose. A boolean
+`earlier` and scalar `next_from` alone do not encode current palette navigation.
+Range tools return a Reader with readable retained previews and the native page
+under `page`; `header` remains a string. Truncation/status remain visible; these
+are bounded previews, not full raw archived payloads.
+
+Prompts are nonblank, at most 32 KiB UTF-8 and contain no control characters
+except newline/tab. Submission IDs are 1–64 ASCII letters, digits, `.`, `_`, `-`.
+Prompt delivery reuses `wait:false`, a 30000 ms timeout and the existing retry
+state machine. Keep the same submission ID after uncertain delivery; there is
+no automatic resubmission. A retained rejection remains a rejection on retry.
+Keys are exactly `esc`, `enter`, `tab`, `up`, `down`, `left`, `right`, `backspace`,
+`y`, `n`, `1`–`9`. Screen output removes Unicode controls except newline/tab.
+No restart, interrupt, pane close or spawn action is exposed.
+
+Errors use `{error:{code,message}}`: `invalid` for request validation,
+`not_found` for missing usage targets/retained events, `target_changed` for
+missing/stale action refs, `paused` during update pause, `unavailable` for
+snapshot/focus timeout or detached focus (`No terminal attached`), and `failed`
+for routing/storage failures. Snapshot/focus replies have 5 s bounds; peer
+controls share one 32 s send/receive/cleanup deadline. Non-success native
+`AgentResponse` outcomes remain under `ok.response`, including uncertain prompt
+outcomes with the original submission ID. Detached list/history/prompt/read/key
+requests do not require a palette or terminal client. Focus succeeds as
+`{"ok":true}`, not a fabricated `AgentResponse`.
+
+Production SDK/frontend, safe HTML/Markdown rendering, archived-agent search,
+archived-run resume, and phone/Tailscale verification are separate work.
+
 ### Directory project resolution
 
 `ResolveProject {directory}` requires `ReadApplicationState`. It resolves a local

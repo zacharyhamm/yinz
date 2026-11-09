@@ -1711,6 +1711,47 @@ impl Screen {
 
     pub(super) fn agent_control_at(&mut self, request: AgentRequest, client: Reply, now: Instant) {
         use AgentRequest::*;
+        // Check the complete identity in this instruction turn, before lowering to the
+        // existing control state machine (which keeps its asynchronous identity fences).
+        let request = match request {
+            WebGuarded {
+                pane_id,
+                expected_kind,
+                expected_session_id,
+                action,
+            } => {
+                let submission_id = action.submission_id().map(str::to_owned);
+                let valid = yinz_types::agent::control::valid_web_identity(&expected_kind)
+                    && yinz_types::agent::control::valid_web_identity(&expected_session_id);
+                let status = self.agent_status(pane_id, None);
+                let matches = valid
+                    && status.as_ref().is_some_and(|status| {
+                        status.agent.kind == expected_kind
+                            && status.agent.session_id.as_deref()
+                                == Some(expected_session_id.as_str())
+                    });
+                let lowered = if matches {
+                    action.lower(pane_id, expected_session_id)
+                } else {
+                    let mut response = AgentResponse::new(AgentOutcome::TargetChanged);
+                    response.message = Some("Agent disappeared or changed identity".into());
+                    response.submission_id = submission_id;
+                    self.agent_reply(&client, response);
+                    return;
+                };
+                match lowered {
+                    Ok(request) => request,
+                    Err(message) => {
+                        let mut response = AgentResponse::new(AgentOutcome::Rejected);
+                        response.message = Some(message);
+                        response.submission_id = submission_id;
+                        self.agent_reply(&client, response);
+                        return;
+                    },
+                }
+            },
+            request => request,
+        };
         if matches!(
             &request,
             CloseoutSupport | CloseoutSnapshot { .. } | CloseoutClose { .. }
@@ -1719,6 +1760,7 @@ impl Screen {
             return;
         }
         let (pane, expected) = match &request {
+            WebGuarded { .. } => unreachable!("lowered above"),
             Restart {
                 pane_id,
                 prompt,
@@ -2689,7 +2731,8 @@ impl Screen {
             | CloseoutSupport
             | CloseoutSnapshot { .. }
             | CloseoutClose { .. }
-            | SpawnBubblewrapSupport => {},
+            | SpawnBubblewrapSupport
+            | WebGuarded { .. } => {},
         }
     }
 

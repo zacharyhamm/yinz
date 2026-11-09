@@ -143,6 +143,7 @@ pub struct WebLiveHeader {
 
 /// The identity a browser holds for an agent: actions are refused when it no longer matches.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WebAgentRef {
     pub id: String,
     pub kind: String,
@@ -155,9 +156,9 @@ impl WebLiveAgent {
         let Some(agent) = self.pane.agent.as_ref() else {
             return false;
         };
-        !r.id.is_empty()
-            && !r.kind.is_empty()
-            && !r.session_id.is_empty()
+        yinz_types::agent::control::valid_web_identity(&r.id)
+            && yinz_types::agent::control::valid_web_identity(&r.kind)
+            && yinz_types::agent::control::valid_web_identity(&r.session_id)
             && self.id == r.id
             && agent.kind == r.kind
             && agent.session_id.as_deref() == Some(r.session_id.as_str())
@@ -167,3 +168,12 @@ impl WebLiveAgent {
 #[cfg(test)]
 #[path = "unit/web_tests.rs"]
 mod tests;
+
+/// Typed screen focus failures; native adapters must not classify diagnostic strings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WebFocusError {
+    TargetChanged,
+    NoTerminal,
+    Unavailable(String),
+    Failed(String),
+}

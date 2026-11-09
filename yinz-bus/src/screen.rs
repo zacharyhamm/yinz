@@ -1041,7 +1041,7 @@ pub enum ScreenInstruction {
     /// Focus a live agent for the first connected client, as the palette would.
     WebFocusAgent {
         agent: crate::web::WebAgentRef,
-        reply: crossbeam::channel::Sender<Result<(), String>>,
+        reply: crossbeam::channel::Sender<Result<(), crate::web::WebFocusError>>,
     },
     ResolveAgentTab {
         placement: yinz_types::agent::control::AgentPlacement,

@@ -1817,3 +1817,51 @@ fn claude_permission_status_observes_needs_input_without_claiming_completion() {
         );
     }
 }
+
+#[test]
+fn web_guarded_control_is_a_distinct_closed_wire_contract() {
+    let request = AgentRequest::WebGuarded {
+        pane_id: PaneId::Terminal(TerminalId::new(7)),
+        expected_kind: "codex".into(),
+        expected_session_id: "conversation".into(),
+        action: WebAgentAction::Prompt {
+            text: "continue".into(),
+            submission_id: "retry".into(),
+        },
+    };
+    let wire = serde_json::to_value(&request).unwrap();
+    assert!(wire.get("WebGuarded").is_some());
+    assert_eq!(
+        serde_json::from_value::<AgentRequest>(wire.clone()).unwrap(),
+        request
+    );
+    // An older server's enum cannot mistake the distinct variant for Prompt or Read.
+    #[derive(Debug, Deserialize)]
+    enum OldRequest {
+        Read { lines: usize },
+    }
+    assert!(serde_json::from_value::<OldRequest>(wire).is_err());
+    let OldRequest::Read { lines } =
+        serde_json::from_value(serde_json::json!({"Read":{"lines":1}})).unwrap();
+    assert_eq!(lines, 1);
+    for key in WEB_KEYS {
+        WebAgentAction::SendKeys {
+            keys: vec![(*key).into()],
+        }
+        .validate()
+        .unwrap();
+        assert!(key.parse::<KeyWithModifier>().is_ok());
+    }
+    for action in [
+        WebAgentAction::Read { lines: 201 },
+        WebAgentAction::SendKeys {
+            keys: vec!["Ctrl c".into()],
+        },
+        WebAgentAction::Prompt {
+            text: "x".into(),
+            submission_id: "id".repeat(33),
+        },
+    ] {
+        assert!(action.validate().is_err());
+    }
+}

@@ -2198,7 +2198,7 @@ fn palette_prompt_peer_bounds_sending_and_cleanup_when_peer_does_not_read() {
         scope.spawn(move || {
             let budget = Duration::from_millis(500);
             let started = Instant::now();
-            let response = prompt_peer_with_deadline(&name.into(), request, started + budget);
+            let response = control_peer(&name.into(), request, started + budget);
             done.send((response, started.elapsed(), budget)).unwrap();
         });
         let connection = listener.accept().unwrap();

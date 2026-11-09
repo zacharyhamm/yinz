@@ -16646,3 +16646,292 @@ fn closeout_claude_busy_controller_uses_the_native_prompt_identity() {
     );
     assert!(screen.tab_containing_pane(PANE).is_none());
 }
+
+fn web_agents_snapshot(screen: &mut Screen) -> Vec<yinz_bus::web::WebLiveAgent> {
+    let (tx, rx) = channels::bounded(1);
+    screen.web_live_agents(tx);
+    rx.recv().unwrap()
+}
+fn web_agents_reference(live: &yinz_bus::web::WebLiveAgent) -> yinz_bus::web::WebAgentRef {
+    let agent = live.pane.agent.as_ref().unwrap();
+    yinz_bus::web::WebAgentRef {
+        id: live.id.clone(),
+        kind: agent.kind.clone(),
+        session_id: agent.session_id.clone().unwrap(),
+    }
+}
+#[test]
+fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_exclusion() {
+    let (mut screen, _, _) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    screen.log_and_report_session_state().unwrap();
+    let mut peer = screen.peer_sessions_cache[&screen.session_name].clone();
+    peer.name = "web-peer".into();
+    peer.is_current_session = false;
+    screen.peer_sessions_cache.insert(peer.name.clone(), peer);
+    let live = web_agents_snapshot(&mut screen);
+    let palette = screen.live_palette_agents();
+    assert_eq!(live.len(), 2);
+    assert_eq!(live.len(), palette.len());
+    for row in &live {
+        let same = palette.iter().find(|a| a.id() == row.id).unwrap();
+        assert_eq!(row.label_source, same.label_source());
+        let presentation = same.presentation().unwrap();
+        assert_eq!(row.provider, presentation.provider);
+        assert_eq!(row.activity, presentation.activity);
+        assert_eq!(row.details, same.text());
+        let mut header = yinz_bus::command_palette::HistoryHeader::default();
+        same.header_overlay(&mut header, None);
+        assert_eq!(row.header.name, header.name);
+        assert_eq!(row.header.status, header.status);
+        assert_eq!(
+            row.header.session_id.as_deref(),
+            Some(header.session_id.as_str())
+        );
+        assert_eq!(
+            row.usage_unavailable,
+            same.usage_unavailable(&screen.session_name)
+        );
+    }
+    assert_ne!(
+        live[0].id, live[1].id,
+        "same pane number is qualified by owning session"
+    );
+    screen.active_tab_ids.clear();
+    let detached = web_agents_snapshot(&mut screen);
+    assert_eq!(detached.len(), 2);
+    assert!(detached.iter().all(|a| !a.focused));
+    let reference = web_agents_reference(detached.iter().find(|a| a.current_session).unwrap());
+    let (tx, rx) = channels::bounded(1);
+    screen.web_focus_agent(reference, tx);
+    assert_eq!(
+        rx.recv().unwrap(),
+        Err(yinz_bus::web::WebFocusError::NoTerminal)
+    );
+    screen.with_pane(PANE, |pane| {
+        let mut a = pane.agent_info().unwrap().clone();
+        a.state = AgentState::Exited;
+        pane.set_agent_info(Some(a));
+    });
+    assert_eq!(web_agents_snapshot(&mut screen).len(), 1);
+}
+#[test]
+fn web_agents_focus_revalidates_provider_conversation_selectability_and_peer_membership() {
+    use yinz_bus::web::WebFocusError;
+    for change in ["provider", "conversation", "suppressed", "peer-gone"] {
+        let (mut screen, _, _) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        let mut reference = web_agents_reference(&web_agents_snapshot(&mut screen)[0]);
+        match change {
+            "provider" => reference.kind = "claude".into(),
+            "conversation" => reference.session_id = "old".into(),
+            "suppressed" => {
+                screen
+                    .tab_containing_pane_mut(PANE)
+                    .unwrap()
+                    .suppress_pane(PANE, None);
+            },
+            _ => reference.id = "live-agent:unknown-peer:7".into(),
+        }
+        let (tx, rx) = channels::bounded(1);
+        screen.web_focus_agent(reference, tx);
+        assert_eq!(
+            rx.recv().unwrap(),
+            Err(WebFocusError::TargetChanged),
+            "{change}"
+        );
+    }
+}
+#[test]
+fn web_agents_owning_screen_rejects_replacements_and_invalid_actions_without_input() {
+    use yinz_types::agent::control::WebAgentAction;
+    for action in [
+        WebAgentAction::Prompt {
+            text: "continue".into(),
+            submission_id: "retry".into(),
+        },
+        WebAgentAction::Read { lines: 80 },
+        WebAgentAction::SendKeys {
+            keys: vec!["enter".into()],
+        },
+    ] {
+        for change in [
+            "provider",
+            "conversation",
+            "empty-kind",
+            "empty-conversation",
+            "invalid-action",
+        ] {
+            let (mut screen, _messages, writes) = setup("codex");
+            report(&mut screen, hook("SessionStart"));
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut kind = "codex".to_owned();
+            let mut conversation = "conversation".to_owned();
+            match change {
+                "provider" => kind = "claude".into(),
+                "conversation" => conversation = "old".into(),
+                "empty-kind" => kind.clear(),
+                "empty-conversation" => conversation.clear(),
+                _ => {},
+            }
+            let action = if change == "invalid-action" {
+                WebAgentAction::SendKeys {
+                    keys: vec!["Ctrl c".into()],
+                }
+            } else {
+                action.clone()
+            };
+            screen.agent_control_with_reply(
+                AgentRequest::WebGuarded {
+                    pane_id: PANE,
+                    expected_kind: kind,
+                    expected_session_id: conversation,
+                    action,
+                },
+                crate::screen::agent_control::Reply::Host(tx),
+            );
+            let response = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert_eq!(
+                response.outcome,
+                if change == "invalid-action" {
+                    AgentOutcome::Rejected
+                } else {
+                    AgentOutcome::TargetChanged
+                }
+            );
+            assert!(response.output.is_none());
+            assert!(finish_paste(&writes).is_empty());
+        }
+    }
+}
+#[test]
+fn web_agents_guarded_read_keys_and_prompt_retry_use_existing_control_state_machine() {
+    use yinz_types::agent::control::WebAgentAction;
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    let guarded = |action| AgentRequest::WebGuarded {
+        pane_id: PANE,
+        expected_kind: "codex".into(),
+        expected_session_id: "conversation".into(),
+        action,
+    };
+    screen.agent_control(guarded(WebAgentAction::Read { lines: 80 }), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Ok
+    );
+    screen.agent_control(
+        guarded(WebAgentAction::SendKeys {
+            keys: vec!["y".into()],
+        }),
+        CLIENT,
+    );
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Ok
+    );
+    assert_eq!(finish_paste(&writes), b"y");
+    // Reject after submission registration, during asynchronous preparation. Restoring the
+    // original identity permits retrieving that retained failure, never a second preparation.
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    let original = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+    let prompt = guarded(WebAgentAction::Prompt {
+        text: "continue".into(),
+        submission_id: "web-retry".into(),
+    });
+    let now = Instant::now();
+    screen.agent_control_at(
+        prompt.clone(),
+        crate::screen::agent_control::Reply::Client(CLIENT),
+        now,
+    );
+    assert!(!finish_paste(&writes).is_empty());
+    let mut changed = original.clone();
+    changed.kind = "claude".into();
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .set_pane_agent(PANE, Some(changed));
+    screen.refresh_agent_controls_at(now + Duration::from_millis(2));
+    let first = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(first.outcome, AgentOutcome::TargetChanged);
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .set_pane_agent(PANE, Some(original));
+    screen.agent_control(prompt, CLIENT);
+    let retry = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(retry.outcome, AgentOutcome::Rejected);
+    assert!(retry
+        .message
+        .as_deref()
+        .unwrap()
+        .contains("already retained"));
+    assert_eq!(retry.submission_id, first.submission_id);
+    assert!(finish_paste(&writes).is_empty());
+}
+
+#[test]
+fn web_agents_local_focus_finishes_before_reply_in_the_validated_screen_turn() {
+    let (mut screen, _, _) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    let (tx, _rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let reference = web_agents_reference(&web_agents_snapshot(&mut screen)[0]);
+    screen
+        .focus_pane_with_id(PaneId::Terminal(TerminalId::new(1)), true, false, CLIENT)
+        .unwrap();
+    let (reply, rx) = channels::bounded(1);
+    screen.web_focus_agent(reference, reply);
+    assert_eq!(rx.recv().unwrap(), Ok(()));
+    assert_eq!(
+        screen.get_active_pane_id(&CLIENT),
+        Some(PANE),
+        "focus cannot be queued after identity validation"
+    );
+}
+
+#[test]
+fn web_agents_guarded_prompt_delivers_once_and_preserves_submission_identity() {
+    use yinz_types::agent::control::WebAgentAction;
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    let request = AgentRequest::WebGuarded {
+        pane_id: PANE,
+        expected_kind: "codex".into(),
+        expected_session_id: "conversation".into(),
+        action: WebAgentAction::Prompt {
+            text: "review".into(),
+            submission_id: "web-once".into(),
+        },
+    };
+    let now = Instant::now();
+    screen.agent_control_at(
+        request.clone(),
+        crate::screen::agent_control::Reply::Client(CLIENT),
+        now,
+    );
+    screen.refresh_agent_controls_at(now + Duration::from_millis(1));
+    let marker = finish_paste(&writes);
+    assert!(marker.starts_with(b"\x1b[200~yz") && marker.ends_with(b"\x1b[201~"));
+    screen.refresh_agent_controls_at(now + Duration::from_millis(2));
+    assert_eq!(finish_paste(&writes), [3]);
+    screen.refresh_agent_controls_at(now + Duration::from_millis(3));
+    screen.refresh_agent_controls_at(now + Duration::from_millis(252));
+    assert!(finish_paste(&writes).is_empty());
+    screen.refresh_agent_controls_at(now + Duration::from_millis(253));
+    assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+    screen.refresh_agent_controls_at(now + Duration::from_millis(254));
+    screen.refresh_agent_controls_at(now + Duration::from_secs(1));
+    assert_eq!(finish_paste(&writes), b"\r");
+    report(&mut screen, hook("UserPromptSubmit"));
+    let response = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(response.outcome, AgentOutcome::Submitted);
+    assert_eq!(response.submission_id.as_deref(), Some("web-once"));
+    screen.agent_control(request, CLIENT);
+    let retry = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(retry.outcome, AgentOutcome::Rejected);
+    assert_eq!(retry.submission_id, response.submission_id);
+    assert!(finish_paste(&writes).is_empty());
+}

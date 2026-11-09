@@ -67,24 +67,42 @@ impl Screen {
                     completion_tx,
                 ));
         } else {
-            let already_focused = self
-                .get_active_pane_id(&client_id)
-                .map(|active| active == pane_id)
-                .unwrap_or(false);
-            if !already_focused {
-                self.focus_pane_with_id(
-                    pane_id,
-                    should_float_if_hidden,
-                    should_be_in_place_if_hidden,
-                    client_id,
-                )?;
-                self.clear_bell_for_pane_id(pane_id, client_id);
-                self.sync_scroll_mode_on_focus(client_id)?;
-                self.log_and_report_session_state()?;
-                // Quiet panes may produce no subsequent PTY or plugin activity.
-                // Publish the new cursor, focus frame and host directory ourselves.
-                self.render()?;
-            }
+            self.focus_existing_pane_now(
+                pane_id,
+                should_float_if_hidden,
+                should_be_in_place_if_hidden,
+                client_id,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Execute focus while the caller owns the screen turn and layouts are ready.
+    /// Web identity checks must not be separated from local focus by another queued action.
+    pub(super) fn focus_existing_pane_now(
+        &mut self,
+        pane_id: PaneId,
+        should_float_if_hidden: bool,
+        should_be_in_place_if_hidden: bool,
+        client_id: ClientId,
+    ) -> Result<()> {
+        let already_focused = self
+            .get_active_pane_id(&client_id)
+            .map(|active| active == pane_id)
+            .unwrap_or(false);
+        if !already_focused {
+            self.focus_pane_with_id(
+                pane_id,
+                should_float_if_hidden,
+                should_be_in_place_if_hidden,
+                client_id,
+            )?;
+            self.clear_bell_for_pane_id(pane_id, client_id);
+            self.sync_scroll_mode_on_focus(client_id)?;
+            self.log_and_report_session_state()?;
+            // Quiet panes may produce no subsequent PTY or plugin activity.
+            // Publish the new cursor, focus frame and host directory ourselves.
+            self.render()?;
         }
         Ok(())
     }

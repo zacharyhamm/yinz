@@ -92,3 +92,95 @@ fn update_pause_retirement_releases_waiters_without_allowing_guest_work() {
     gate.retire();
     worker.join().unwrap();
 }
+
+#[test]
+fn web_agents_native_snapshot_blocks_quiescence_and_paused_calls_never_dispatch() {
+    use yinz_bus::{screen::ScreenInstruction, thread_bus::ThreadSenders, web::AgentViewCall};
+    use yinz_runtime::channels::{self, SenderWithContext};
+    let directory = tempfile::tempdir().unwrap();
+    let data = std::sync::Arc::new(yinz_storage::data_access::DataAccess::sqlite(
+        directory.path(),
+    ));
+    for def in project_data::store::shared_defs() {
+        data.plugin_data()
+            .define_entity(project_data::store::SHARED, "test", &def, false)
+            .unwrap();
+    }
+    let (to_screen, screen) = channels::unbounded();
+    let (to_plugin, plugin) = channels::unbounded();
+    let senders = ThreadSenders {
+        to_screen: Some(SenderWithContext::new(to_screen)),
+        to_plugin: Some(SenderWithContext::new(to_plugin)),
+        ..Default::default()
+    };
+    let call = AgentViewCall {
+        plugin_id: crate::PluginId::new(8),
+        client: crate::ClientId::new(2),
+        generation: Some(91),
+        id: "native-list".into(),
+        request: r#"{"op":"list"}"#.into(),
+    };
+    let tasks = NativeTasks::default();
+    let (shutdown, _shutdown_rx) = tokio::sync::mpsc::channel(1);
+    let job = crate::web_agent_tasks::dispatch(
+        call.clone(),
+        false,
+        &tasks,
+        senders.clone(),
+        data.clone(),
+        shutdown.clone(),
+    )
+    .unwrap();
+    let (ScreenInstruction::WebLiveAgents { reply }, _) = screen
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap()
+    else {
+        panic!("real native snapshot")
+    };
+    assert!(tasks.wait_until(Instant::now()).is_err());
+    // The reply sender is the observed barrier: until released the native read is outstanding.
+    assert!(
+        crate::web_agent_tasks::dispatch(call.clone(), true, &tasks, senders, data, shutdown)
+            .is_none()
+    );
+    assert!(screen.is_empty());
+    let (paused, _) = plugin
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap();
+    let crate::PluginInstruction::PluginEvent(
+        id,
+        client,
+        generation,
+        yinz_types::data::Event::CustomMessage(name, body),
+    ) = paused
+    else {
+        panic!("correlated paused reply")
+    };
+    assert_eq!(id, call.plugin_id);
+    assert_eq!(client, call.client);
+    assert_eq!(generation, 91);
+    assert_eq!(name, "agent-view-response");
+    let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["id"], call.id);
+    assert_eq!(body["reply"]["error"]["code"], "paused");
+    assert!(tasks.wait_until(Instant::now()).is_err());
+    reply.send(vec![]).unwrap();
+    yinz_bus::global_async_runtime::get_tokio_runtime()
+        .block_on(job)
+        .unwrap();
+    tasks.wait_until(Instant::now()).unwrap();
+    let (done, _) = plugin
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap();
+    let crate::PluginInstruction::PluginEvent(
+        _,
+        _,
+        91,
+        yinz_types::data::Event::CustomMessage(_, body),
+    ) = done
+    else {
+        panic!("native completion")
+    };
+    let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["reply"]["ok"]["agents"], serde_json::json!([]));
+}

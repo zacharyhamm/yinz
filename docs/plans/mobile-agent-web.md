@@ -705,6 +705,22 @@ impl WebLiveAgent { pub fn matches(&self, r: &WebAgentRef) -> bool; } // id == r
   2. Find the live agent with `matches_ref`; with none, reply `Err("Agent disappeared or changed identity")`.
   3. Call `focus_live_agent`.
 
+### Issue 80 native contract update
+
+The implemented native contract is documented in
+[PLUGIN_PROTOCOL.md](../PLUGIN_PROTOCOL.md#native-agent-views). It supersedes the
+older cursor/scaffold descriptions below: current palette history is chronological,
+with `before`, inclusive `after_revision`, worker scopes, typed `navigation`,
+`activity_ranges`, event ranges and ranged tools' separate `page` extension.
+`revisions[]` tools compatibility remains available. Retargeting clears old
+worker/page/delivery cursors. Exited agents remain excluded from both live lists,
+with stored history available through `agent_gone`. Focus returns `{"ok":true}`;
+no attached terminal returns `unavailable` / `No terminal attached`. Controls use
+a distinct kind-and-conversation-guarded IPC variant and never downgrade for an
+older peer. These are native capabilities only; the production SDK/frontend,
+safe Markdown/HTML, archived-agent search/resume and phone/Tailscale checks remain
+deferred.
+
 ### 4.2 Plugin-host side: `yinz-plugin-host/src/web_agents.rs` (WS-D)
 
 Declare it in `yinz_exports.rs` as `#[path = "web_agents.rs"] pub(crate) mod web_agents;` (WS-A writes the stub), next to `palette_agents` (`yinz_exports.rs:43-44`).

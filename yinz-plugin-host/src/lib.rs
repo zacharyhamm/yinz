@@ -25,6 +25,7 @@ mod plugin_map;
 mod plugin_panes;
 pub(crate) mod response;
 mod watch_filesystem;
+mod web_agent_tasks;
 mod web_assets;
 mod web_host;
 mod web_requests;
@@ -504,49 +505,14 @@ pub fn plugin_thread_main(
                 );
             },
             PluginInstruction::Web(yinz_bus::web::WebInstruction::AgentView(call)) => {
-                let call = *call;
-                let deliver = |senders: &yinz_bus::thread_bus::ThreadSenders,
-                               call: &yinz_bus::web::AgentViewCall,
-                               reply: serde_json::Value| {
-                    senders
-                        .send_to_plugin(PluginInstruction::for_plugin_event(
-                            call.plugin_id,
-                            call.client,
-                            call.generation,
-                            Event::CustomMessage(
-                                "agent-view-response".into(),
-                                serde_json::json!({"id": call.id, "reply": reply}).to_string(),
-                            ),
-                        ))
-                        .context("deliver agent view response")
-                        .non_fatal();
-                };
-                if update_pause.is_some() {
-                    deliver(
-                        &bus.senders,
-                        &call,
-                        serde_json::json!({"error": {
-                            "code": "paused",
-                            "message": "session update has paused agent actions; retry after reconnect",
-                        }}),
-                    );
-                    continue;
-                }
-                let native_task = native_tasks.start();
-                let senders = bus.senders.clone();
-                let data = palette_data.clone();
-                let shutdown = shutdown_send.clone();
-                yinz_bus::global_async_runtime::get_tokio_runtime().spawn_blocking(move || {
-                    let _shutdown = shutdown;
-                    let _native_task = native_task;
-                    let reply = yinz_exports::web_agents::handle(
-                        &call.request,
-                        call.client,
-                        &senders,
-                        &data,
-                    );
-                    deliver(&senders, &call, reply);
-                });
+                web_agent_tasks::dispatch(
+                    *call,
+                    update_pause.is_some(),
+                    &native_tasks,
+                    bus.senders.clone(),
+                    palette_data.clone(),
+                    shutdown_send.clone(),
+                );
             },
             PluginInstruction::PaletteAgentLabels(request) => {
                 let senders = bus.senders.clone();

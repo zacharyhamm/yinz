@@ -21,29 +21,14 @@ use yinz_types::command::PaneTarget;
 use yinz_types::data::{GetPaneCwdResponse, PaneInfo};
 
 #[path = "palette_history.rs"]
-mod history;
+pub(crate) mod history;
 
 pub(crate) fn labels(
     request: yinz_bus::command_palette::AgentLabelsRequest,
     senders: &ThreadSenders,
     data: &DataAccess,
 ) {
-    let labels = agent_control::projects(data).map(|rows| {
-        let mut labels = resolve_labels(
-            request.sources.clone(),
-            &project_data::projects::from_rows(&rows),
-            &crate::project_provider::presentation_snapshot(),
-        );
-        for source in &request.sources {
-            if let Some(run) = &source.run {
-                match history::last_reply(data, run) {
-                    Ok(reply) => labels.entry(source.id.clone()).or_default().last_reply = reply,
-                    Err(error) => log::error!("Could not read palette agent reply: {error}"),
-                }
-            }
-        }
-        labels
-    });
+    let labels = compute_labels(request.sources, data);
     senders
         .send_to_screen(ScreenInstruction::CommandPalette(
             Instruction::AgentLabels {
@@ -55,6 +40,28 @@ pub(crate) fn labels(
         ))
         .context("replying with palette agent labels")
         .non_fatal();
+}
+
+pub(crate) fn compute_labels(
+    sources: Vec<yinz_bus::command_palette::AgentLabelSource>,
+    data: &DataAccess,
+) -> Result<std::collections::BTreeMap<String, yinz_bus::command_palette::AgentLabels>, String> {
+    agent_control::projects(data).map(|rows| {
+        let mut labels = resolve_labels(
+            sources.clone(),
+            &project_data::projects::from_rows(&rows),
+            &crate::project_provider::presentation_snapshot(),
+        );
+        for source in &sources {
+            if let Some(run) = &source.run {
+                match history::last_reply(data, run) {
+                    Ok(reply) => labels.entry(source.id.clone()).or_default().last_reply = reply,
+                    Err(error) => log::error!("Could not read palette agent reply: {error}"),
+                }
+            }
+        }
+        labels
+    })
 }
 
 fn resolve_labels(
@@ -204,7 +211,7 @@ fn project_root(
     }
 }
 
-fn execute(
+pub(crate) fn execute(
     request: &AgentRequest,
     senders: &ThreadSenders,
     data: &DataAccess,
@@ -632,20 +639,32 @@ fn prompt_peer(
     session: &yinz_types::internal_ids::SessionName,
     request: yinz_types::agent::control::AgentRequest,
 ) -> Result<yinz_types::agent::control::AgentResponse, String> {
-    prompt_peer_with_deadline(
+    control_peer(
         session,
         request,
         std::time::Instant::now() + Duration::from_secs(32),
     )
 }
 
-fn prompt_peer_with_deadline(
+pub(crate) fn control_peer(
     session: &yinz_types::internal_ids::SessionName,
     request: yinz_types::agent::control::AgentRequest,
     deadline: std::time::Instant,
 ) -> Result<yinz_types::agent::control::AgentResponse, String> {
     use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
-    const UNCERTAIN: &str = "Prompt outcome unknown; inspect agent before retrying";
+    let is_prompt = matches!(
+        request,
+        yinz_types::agent::control::AgentRequest::Prompt { .. }
+            | yinz_types::agent::control::AgentRequest::WebGuarded {
+                action: yinz_types::agent::control::WebAgentAction::Prompt { .. },
+                ..
+            }
+    );
+    let uncertain = if is_prompt {
+        "Prompt outcome unknown; inspect agent before retrying"
+    } else {
+        "Agent request outcome unknown; inspect agent before retrying"
+    };
     let socket =
         yinz_ipc::consts::ipc_connect(&yinz_runtime::consts::YINZ_SOCK_DIR.join(session.as_str()))
             .map_err(|e| format!("Cannot connect to agent session: {e}"))?;
@@ -656,32 +675,36 @@ fn prompt_peer_with_deadline(
     let result = (|| {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
-            return Err(UNCERTAIN.into());
+            return Err(uncertain.into());
         }
         sender
             .set_send_timeout(Some(remaining))
             .map_err(|e| e.to_string())?;
         sender
             .send_client_msg_until(ClientToServerMsg::AgentControl(request), deadline)
-            .map_err(|e| format!("{UNCERTAIN}: {e}"))?;
+            .map_err(|e| format!("{uncertain}: {e}"))?;
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
-                break Err(UNCERTAIN.into());
+                break Err(uncertain.into());
             }
             receiver
                 .set_recv_timeout(Some(remaining))
-                .map_err(|e| format!("{UNCERTAIN}: {e}"))?;
+                .map_err(|e| format!("{uncertain}: {e}"))?;
             match receiver.recv_server_msg() {
                 IpcRecv::Msg(ServerToClientMsg::AgentControl(response), _) => break Ok(response),
                 IpcRecv::Msg(ServerToClientMsg::LogError { lines }, _) => {
                     break Err(lines.join("\n"))
                 },
                 IpcRecv::Msg(ServerToClientMsg::Exit { .. }, _) | IpcRecv::Eof => {
-                    break Err("Agent session disconnected; prompt outcome unknown".into())
+                    break Err(if is_prompt {
+                        "Agent session disconnected; prompt outcome unknown".into()
+                    } else {
+                        "Agent session disconnected; request outcome unknown".into()
+                    })
                 },
                 IpcRecv::Msg(_, _) => {},
-                _ => break Err(UNCERTAIN.into()),
+                _ => break Err(uncertain.into()),
             }
         }
     })();

@@ -127,8 +127,122 @@ pub struct CloseoutFence {
 
 pub const CLOSEOUT_CAPABILITY: &str = "agent-controller-closeout-v1";
 
+/// Closed web control surface. A distinct wire variant fails closed on older peers.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum WebAgentAction {
+    Prompt { text: String, submission_id: String },
+    Read { lines: usize },
+    SendKeys { keys: Vec<String> },
+}
+
+pub const WEB_KEYS: &[&str] = &[
+    "esc",
+    "enter",
+    "tab",
+    "up",
+    "down",
+    "left",
+    "right",
+    "backspace",
+    "y",
+    "n",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+];
+
+pub fn valid_web_identity(value: &str) -> bool {
+    !value.trim().is_empty() && !value.chars().any(char::is_control)
+}
+
+impl WebAgentAction {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            Self::Prompt {
+                text,
+                submission_id,
+            } => {
+                if text.trim().is_empty()
+                    || text.len() > 32 * 1024
+                    || text
+                        .chars()
+                        .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\t'))
+                {
+                    return Err("prompt must be nonblank, at most 32 KiB, and contain no controls except newline/tab");
+                }
+                if submission_id.len() > 64 || validate_submission_id(submission_id).is_err() {
+                    return Err(
+                        "submission ID must be 1 to 64 ASCII letters, digits, '.', '_' or '-'",
+                    );
+                }
+                Ok(())
+            },
+            Self::Read { lines } if !(1..=200).contains(lines) => Err("lines must be 1 to 200"),
+            Self::SendKeys { keys }
+                if keys.is_empty()
+                    || keys.len() > 8
+                    || keys.iter().any(|key| !WEB_KEYS.contains(&key.as_str())) =>
+            {
+                Err("keys must contain 1 to 8 allowlisted keys")
+            },
+            _ => Ok(()),
+        }
+    }
+
+    pub fn submission_id(&self) -> Option<&str> {
+        match self {
+            Self::Prompt { submission_id, .. } => Some(submission_id),
+            _ => None,
+        }
+    }
+
+    pub fn lower(self, pane_id: PaneId, session_id: String) -> Result<AgentRequest, String> {
+        self.validate().map_err(str::to_owned)?;
+        Ok(match self {
+            Self::Prompt {
+                text,
+                submission_id,
+            } => AgentRequest::Prompt {
+                pane_id,
+                expected_session_id: Some(session_id),
+                submission_id: Some(submission_id),
+                preserve_draft: false,
+                prompt: text,
+                wait: false,
+                timeout_ms: 30_000,
+            },
+            Self::Read { lines } => AgentRequest::Read {
+                pane_id,
+                expected_session_id: Some(session_id),
+                lines,
+            },
+            Self::SendKeys { keys } => AgentRequest::SendKeys {
+                pane_id,
+                expected_session_id: Some(session_id),
+                keys: keys
+                    .iter()
+                    .map(|key| key.parse::<KeyWithModifier>())
+                    .collect::<Result<_, _>>()
+                    .map_err(|error| error.to_string())?,
+            },
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum AgentRequest {
+    WebGuarded {
+        pane_id: PaneId,
+        expected_kind: String,
+        expected_session_id: String,
+        action: WebAgentAction,
+    },
     /// Read-only feature negotiation before sending placement to an older server.
     LaunchSupport,
     LaunchStatus {

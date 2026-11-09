@@ -483,3 +483,230 @@ fn web_transport_authenticated_steel_and_native_frozen_site() {
     session.quit();
     records.empty();
 }
+
+// This handler answers HTTP only after the matching native AgentView response.
+const WEB_AGENTS_HANDLER: &str = r#"
+(define pending (hash))
+(define (load config)
+  (yinz-command (hash "Subscribe" (list "CustomMessage")))
+  (yinz-then (yinz-wait-for-permissions '("RunCommands")) (lambda (_)
+    (yinz-command (hash "HttpPublish" (hash "path" "/" "content_type" "text/plain; charset=utf-8" "body" "native agent fixture ready"))) #f)))
+(define (yinz-web-dispatch request)
+  (define id (hash-ref request "id"))
+  (define correlation (string-append "native-" (number->string id)))
+  (set! pending (hash-insert pending correlation id))
+  (yinz-command (hash "AgentView" (hash "id" correlation "request" (hash-ref request "body")))) #f)
+(define (update event)
+  (when (and (hash? event) (hash-contains? event "CustomMessage"))
+    (define message (hash-ref event "CustomMessage"))
+    (when (equal? (list-ref message 0) "agent-view-response")
+      (define result (yinz-json-parse (list-ref message 1)))
+      (define correlation (hash-ref result "id"))
+      (when (hash-contains? pending correlation)
+        (yinz-command (hash "HttpRespond" (hash "request_id" (hash-ref pending correlation)
+          "response" (yinz-json-string (hash "status" 200 "headers" (hash "content-type" "application/json")
+            "body" (yinz-json-string (hash-ref result "reply")))))))))) #f)
+"#;
+#[track_caller]
+fn web_agents_call(
+    addr: SocketAddr,
+    token: &str,
+    operation: serde_json::Value,
+) -> serde_json::Value {
+    let response = api(
+        addr,
+        "POST",
+        "/api/agents",
+        Some(token),
+        &operation.to_string(),
+    );
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "{operation}: {response}\n{}",
+        std::fs::read_to_string(&*yinz_runtime::consts::YINZ_TMP_LOG_FILE).unwrap_or_default()
+    );
+    serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
+}
+#[test]
+fn web_agents_configured_steel_native_list_history_guarded_screen_and_detached_focus() {
+    use agent_proto::{
+        agents::{rows, AgentRun, RunEntry, RunEntryKind, RunOutcome},
+        store,
+    };
+    use serde_json::json;
+    use yinz_types::plugin_data::REV_ABSENT;
+    yinz_integration_tests::test_env::init();
+    let dir = private_data();
+    set(dir.path());
+    let data = yinz_storage::data_access::DataAccess::sqlite(dir.path());
+    for definition in store::shared_defs() {
+        data.plugin_data()
+            .define_entity(store::SHARED, "test", &definition, false)
+            .unwrap();
+    }
+    let run = AgentRun {
+        id: "codex:web-native".into(),
+        pane_id: 1,
+        yinz_session_name: "retained-session".into(),
+        host_id: yinz_runtime::host_identity::host_id(),
+        origin_run_id: None,
+        previous_run_id: Some("previous".into()),
+        session_id: "web-native".into(),
+        kind: "codex".into(),
+        cwd: None,
+        host: None,
+        bubblewrap: None,
+        started_at_ms: 100,
+        ended_at_ms: Some(200),
+        outcome: RunOutcome::Completed,
+        revision: 1,
+        summarized_revision: 0,
+        summary: None,
+        omitted_entries: 0,
+        entries: vec![RunEntry {
+            worker_id: None,
+            conversation_turn_id: None,
+            revision: 1,
+            event_id: None,
+            kind: RunEntryKind::Message,
+            text: "Native web retained conversation".into(),
+            created_at_ms: Some(150),
+            tool: None,
+        }],
+    };
+    data.plugin_data()
+        .apply(store::SHARED, &rows::run_mutations(&run, REV_ABSENT))
+        .unwrap();
+    let plugin_dir = tempfile::tempdir().unwrap();
+    let source = plugin_dir.path().join("web-agents.scm");
+    std::fs::write(&source, WEB_AGENTS_HANDLER).unwrap();
+    let url = format!("file:{}", source.display());
+    let cache_path = yinz_runtime::consts::YINZ_PLUGIN_PERMISSIONS_CACHE.clone();
+    std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+    let mut cache =
+        yinz_config::permission::PermissionCache::from_path_or_default(Some(cache_path));
+    cache.cache(
+        yinz_runtime::plugin_location::parse_plugin_location(&url, None)
+            .unwrap()
+            .to_string(),
+        vec![yinz_types::data::PermissionType::RunCommands],
+    );
+    cache.write_to_file().unwrap();
+    let records = Records::new(dir.path().to_owned());
+    let mut session = TestRunner::new(TERMINAL_SIZE)
+        .with_data_dir(dir.path().to_owned())
+        .with_config(&format!("plugins {{ native-web-fixture location={url:?} {{ shared true; }}; }}\nweb {{ enabled true; port 0; plugin \"native-web-fixture\"; }}"))
+        .start();
+    let terminal = claim_first_terminal_and_wait_for_prompt(&session);
+    let addr = records.serving(session.session_name());
+    let token = login(addr);
+    wait_public(addr, "/", "native agent fixture ready");
+    let empty = web_agents_call(addr, &token, json!({"op":"list"}));
+    assert_eq!(empty["ok"]["session"], session.session_name());
+    assert_eq!(empty["ok"]["agents"], json!([]));
+    let history = web_agents_call(
+        addr,
+        &token,
+        json!({"op":"history","run":run.id,"tz":"UTC"}),
+    );
+    assert_eq!(
+        history["ok"]["events"][0]["markdown"],
+        "Native web retained conversation"
+    );
+    assert_eq!(history["ok"]["previous_run"], "previous");
+    // Use the real report IPC contract; the in-process CLI action builder reads hook
+    // JSON before the fake client's stdin exists.
+    {
+        use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
+        use yinz_types::agent::{
+            hook_outcome,
+            report::{AgentReport, AgentReportState},
+            AgentEvent, HookEvent, HookOutcome,
+        };
+        let hook = HookEvent {
+            hook_event_name: "SessionStart".into(),
+            session_id: "web-native".into(),
+            source: Some("startup".into()),
+            ..Default::default()
+        };
+        let trace = yinz_runtime::agent::report::ReportTrace::new(std::time::Instant::now());
+        let socket = yinz_ipc::consts::ipc_connect(
+            &yinz_runtime::consts::YINZ_SOCK_DIR.join(session.session_name()),
+        )
+        .unwrap();
+        let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(socket);
+        let mut receiver = sender.get_receiver::<ServerToClientMsg>().unwrap();
+        receiver.set_recv_timeout(Some(default_timeout())).unwrap();
+        sender
+            .send_client_msg(ClientToServerMsg::AgentReport(AgentReport {
+                report_id: trace.report_id,
+                pane_id: yinz_types::pane_id::PaneId::Terminal(terminal.terminal_id()),
+                state: match hook_outcome("codex", &hook) {
+                    HookOutcome::Reported(agent) => AgentReportState::Set(agent),
+                    _ => panic!("session start"),
+                },
+                event: Some(AgentEvent::from_hook(
+                    "codex",
+                    terminal.terminal_id(),
+                    &hook,
+                    serde_json::to_string(&hook).unwrap(),
+                )),
+                trace: false,
+                process_id: trace.process_id,
+                kind: "codex".into(),
+            }))
+            .unwrap();
+        assert!(matches!(
+            receiver.recv_server_msg(),
+            IpcRecv::Msg(ServerToClientMsg::AgentReportAccepted { .. }, _)
+        ));
+    }
+    terminal.output(b"WEB GUARDED READ CONTENT\r\n");
+    session.wait_until("native agent screen content", |s| {
+        s.contains("WEB GUARDED READ CONTENT")
+    });
+    let list = web_agents_call(addr, &token, json!({"op":"list"}));
+    let agent = list["ok"]["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["ref"]["session_id"] == "web-native")
+        .unwrap();
+    let reference = agent["ref"].clone();
+    let read = web_agents_call(addr, &token, json!({"op":"screen","agent":reference}));
+    assert_eq!(read["ok"]["response"]["outcome"], "ok");
+    assert!(read["ok"]["response"]["output"]
+        .as_str()
+        .unwrap()
+        .contains("WEB GUARDED READ CONTENT"));
+    let focus = web_agents_call(addr, &token, json!({"op":"focus","agent":reference}));
+    assert_eq!(focus["ok"], true);
+    let mut stale = reference.clone();
+    stale["kind"] = json!("claude");
+    assert_eq!(
+        web_agents_call(
+            addr,
+            &token,
+            json!({"op":"keys","agent":stale,"keys":["enter"]})
+        )["error"]["code"],
+        "target_changed"
+    );
+    session.detach_main_client();
+    assert_eq!(
+        web_agents_call(addr, &token, json!({"op":"list"}))["ok"]["agents"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        web_agents_call(addr, &token, json!({"op":"screen","agent":reference}))["ok"]["response"]
+            ["outcome"],
+        "ok"
+    );
+    let focus = web_agents_call(addr, &token, json!({"op":"focus","agent":reference}));
+    assert_eq!(focus["error"]["code"], "unavailable");
+    assert_eq!(focus["error"]["message"], "No terminal attached");
+    session.quit();
+    records.empty();
+}

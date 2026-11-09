@@ -17,13 +17,13 @@ use yinz_types::{
 
 #[derive(Clone)]
 pub(in crate::screen) struct LiveAgent {
-    pub(super) session: SessionName,
+    pub(in crate::screen) session: SessionName,
     host: String,
     pub(in crate::screen) pane: PaneInfo,
     pub(in crate::screen) metadata: BTreeMap<String, String>,
 }
 impl LiveAgent {
-    pub(super) fn id(&self) -> String {
+    pub(in crate::screen) fn id(&self) -> String {
         format!(
             "live-agent:{}:{}:{}:{}",
             self.host.len(),
@@ -46,6 +46,94 @@ impl LiveAgent {
             self.session.as_str(),
         )
     }
+    pub(in crate::screen) fn label_source(&self) -> yinz_bus::command_palette::AgentLabelSource {
+        yinz_bus::command_palette::AgentLabelSource {
+            id: self.id(),
+            host: self.pane.host.clone(),
+            cwd: self
+                .pane
+                .agent
+                .as_ref()
+                .and_then(|a| a.cwd.as_ref())
+                .filter(|cwd| !cwd.is_empty())
+                .or(self.pane.cwd.as_ref())
+                .cloned(),
+            run: self
+                .run()
+                .map(|id| yinz_bus::command_palette::AgentRunSource {
+                    id,
+                    host_id: yinz_runtime::host_identity::host_id(),
+                    session: self.session.clone(),
+                }),
+        }
+    }
+
+    pub(in crate::screen) fn presentation(
+        &self,
+    ) -> Option<crate::ui::command_palette::AgentPresentation> {
+        crate::ui::command_palette::AgentPresentation::from_pane(&self.pane)
+    }
+
+    pub(in crate::screen) fn usage_unavailable(
+        &self,
+        session: &SessionName,
+    ) -> Option<&'static str> {
+        match &self.pane.target {
+            _ if self.session != *session => Some("Quota unavailable for peer-session agents"),
+            yinz_types::command::PaneTarget::Ssh { .. } => Some("Quota unavailable for SSH agents"),
+            yinz_types::command::PaneTarget::Bubblewrap { .. } => {
+                Some("Quota unavailable for isolated agents")
+            },
+            _ => None,
+        }
+    }
+
+    pub(in crate::screen) fn header_overlay(
+        &self,
+        header: &mut HistoryHeader,
+        labels: Option<&yinz_bus::command_palette::AgentLabels>,
+    ) {
+        header.live = Some(self.pane.clone());
+        if let Some(labels) = labels {
+            header.project.clone_from(&labels.project);
+            header.branch.clone_from(&labels.branch);
+        }
+        header.name = self.pane.title.clone();
+        header.status = ["provider", "state"]
+            .iter()
+            .filter_map(|key| self.metadata.get(*key).cloned())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        header.location = ["session", "directory"]
+            .iter()
+            .filter_map(|key| self.metadata.get(*key).cloned())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        header.details = format!("{}\n{}", self.text(), header.details);
+        header.task = self.pane.title.clone();
+        if header.project.is_empty() {
+            header.project = self.metadata.get("project").cloned().unwrap_or_default();
+        }
+        header.session_id = self
+            .metadata
+            .get("agent-session")
+            .map(|id| format!("session {id}"))
+            .unwrap_or_else(|| header.session_id.clone());
+        if let Some(agent) = &self.pane.agent {
+            header.status = format!(
+                "[{}] · {} · {}",
+                self.pane.id.legacy_parts().0,
+                agent.kind,
+                match agent.state {
+                    yinz_types::agent::AgentState::Busy => "working",
+                    yinz_types::agent::AgentState::Waiting => "needs input",
+                    yinz_types::agent::AgentState::Idle => "idle",
+                    yinz_types::agent::AgentState::Exited => "exited",
+                }
+            );
+        }
+    }
+
     pub(super) fn description(&self) -> String {
         ["provider", "state", "session", "directory"]
             .iter()
@@ -74,7 +162,7 @@ impl LiveAgent {
                             .is_none_or(|id| b.run_id.as_ref() == Some(id))
                 })
     }
-    pub(super) fn run(&self) -> Option<String> {
+    pub(in crate::screen) fn run(&self) -> Option<String> {
         let a = self.pane.agent.as_ref()?;
         a.run_id
             .as_deref()
@@ -88,7 +176,7 @@ impl LiveAgent {
                     .map(|s| format!("{}:{}", a.kind, s.trim()))
             })
     }
-    fn text(&self) -> String {
+    pub(in crate::screen) fn text(&self) -> String {
         let mut text = LIVE_FIELDS
             .iter()
             .map(|k| {
@@ -559,46 +647,8 @@ impl Screen {
                     }
                 }
                 if let Some(live) = &browser.live {
-                    header.live = Some(live.pane.clone());
-                    if let Some(labels) = state.agents.labels.get(&live.id()) {
-                        header.project.clone_from(&labels.project);
-                        header.branch.clone_from(&labels.branch);
-                    }
-                    header.name = live.pane.title.clone();
-                    header.status = ["provider", "state"]
-                        .iter()
-                        .filter_map(|key| live.metadata.get(*key).cloned())
-                        .collect::<Vec<_>>()
-                        .join(" · ");
-                    header.location = ["session", "directory"]
-                        .iter()
-                        .filter_map(|key| live.metadata.get(*key).cloned())
-                        .collect::<Vec<_>>()
-                        .join(" · ");
-                    header.details = format!("{}\n{}", live.text(), header.details);
-                    header.task = live.pane.title.clone();
-                    if header.project.is_empty() {
-                        header.project = live.metadata.get("project").cloned().unwrap_or_default();
-                    }
-                    header.session_id = live
-                        .metadata
-                        .get("agent-session")
-                        .map(|id| format!("session {id}"))
-                        .unwrap_or(header.session_id);
+                    live.header_overlay(&mut header, state.agents.labels.get(&live.id()));
                     header.usage = browser.usage.clone();
-                    if let Some(agent) = &live.pane.agent {
-                        header.status = format!(
-                            "[{}] · {} · {}",
-                            live.pane.id.legacy_parts().0,
-                            agent.kind,
-                            match agent.state {
-                                yinz_types::agent::AgentState::Busy => "working",
-                                yinz_types::agent::AgentState::Waiting => "needs input",
-                                yinz_types::agent::AgentState::Idle => "idle",
-                                yinz_types::agent::AgentState::Exited => "exited",
-                            }
-                        );
-                    }
                 }
                 let entry = |id: String, label: String| Entry {
                     id,
@@ -738,16 +788,7 @@ impl Screen {
             return;
         };
         let provider = agent.kind.replace('◆', "");
-        let reason = match &live.pane.target {
-            _ if live.session != self.session_name => {
-                Some("Quota unavailable for peer-session agents")
-            },
-            yinz_types::command::PaneTarget::Ssh { .. } => Some("Quota unavailable for SSH agents"),
-            yinz_types::command::PaneTarget::Bubblewrap { .. } => {
-                Some("Quota unavailable for isolated agents")
-            },
-            _ => None,
-        };
+        let reason = live.usage_unavailable(&self.session_name);
         if let Some(reason) = reason {
             let usage = yinz_types::agent::control::ProviderUsage {
                 provider,
@@ -977,31 +1018,42 @@ impl Screen {
         }
     }
 
-    fn focus_palette_agent(&mut self, client: ClientId, target: LiveAgent) {
+    pub(in crate::screen) fn live_agent_focus_action(
+        &self,
+        target: &LiveAgent,
+    ) -> Result<Action, &'static str> {
         if !self
             .live_palette_agents()
             .iter()
             .any(|a| target.same(a) && a.pane.is_selectable && !a.pane.is_suppressed)
         {
-            if let Some(state) = self.command_palettes.get_mut(&client) {
-                let message = "Agent disappeared or changed identity; Focus is unavailable";
-                super::notify(&self.bus.senders, message.into());
-                state.widget.set_error(message.into());
-            }
-            return;
+            return Err("Agent disappeared or changed identity; Focus is unavailable");
         }
-        let action = if target.session == self.session_name {
+        Ok(if target.session == self.session_name {
             Action::FocusPaneByPaneId {
                 pane_id: target.pane.id,
             }
         } else {
             Action::SwitchSession {
-                name: target.session,
+                name: target.session.clone(),
                 pane_id: Some(target.pane.id),
                 tab_position: None,
                 layout: None,
                 cwd: None,
             }
+        })
+    }
+
+    fn focus_palette_agent(&mut self, client: ClientId, target: LiveAgent) {
+        let action = match self.live_agent_focus_action(&target) {
+            Ok(action) => action,
+            Err(message) => {
+                if let Some(state) = self.command_palettes.get_mut(&client) {
+                    super::notify(&self.bus.senders, message.into());
+                    state.widget.set_error(message.into());
+                }
+                return;
+            },
         };
         let Some(state) = self.command_palettes.get(&client) else {
             return;
