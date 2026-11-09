@@ -152,6 +152,7 @@ async function validate(
     await deps.git(context, {
       action: "receipt",
       attemptId: request.attemptId,
+      failIfBusy: true,
     }),
     state,
   );
@@ -293,7 +294,11 @@ export async function offerCloseout(
     return saveOfferedRecovery(context, state, deps);
   }
   const target = CloseoutTargetSchema.parse(
-    await deps.git(context, { action: "closeout-preview", ...binding(state) }),
+    await deps.git(context, {
+      action: "closeout-preview",
+      ...binding(state),
+      failIfBusy: true,
+    }),
   );
   if (state.closeout) (state.closeoutHistory ??= []).push(state.closeout);
   state.closeout = {
@@ -511,6 +516,7 @@ export async function closeout(
       const result = CloseoutGitResultSchema.parse(
         await deps.git(context, {
           action: "closeout-cleanup",
+          failIfBusy: true,
           ...binding(state),
           cleanupId: c.id,
           target: c.target,

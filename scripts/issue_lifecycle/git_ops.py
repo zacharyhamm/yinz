@@ -37,6 +37,30 @@ class Cancelled(LifecycleError):
     """The caller cancelled the active operation."""
 
 
+class LockBusy(LifecycleError):
+    """Optional closeout defers instead of queuing behind another Git operation."""
+
+    def __init__(self, stage, label):
+        self.stage = stage
+        self.label = label
+        super().__init__(
+            f"Optional closeout deferred during {stage}: {label} lock is busy; "
+            "another lifecycle Git operation (possibly merge/CI) may be running. "
+            "The completed outcome and recorded cleanup progress are unchanged. "
+            "Let that operation finish, then retry closeout or resume-closeout."
+        )
+
+
+def optional_lock_stage(request):
+    stages = {"receipt": "merge-receipt validation", "closeout-preview": "cleanup preview",
+              "closeout-cleanup": "Git cleanup"}
+    if "failIfBusy" not in request:
+        return None
+    if type(request["failIfBusy"]) is not bool or request.get("action") not in stages:
+        raise LifecycleError("failIfBusy must be a boolean for receipt, closeout-preview or closeout-cleanup only")
+    return stages[request["action"]] if request["failIfBusy"] else None
+
+
 _cancelled = False
 _lock_fds = []
 CI_COMMAND = ["cargo", "x", "ci", "check"]
@@ -630,7 +654,7 @@ def isolated_target(worktree):
 
 
 @contextmanager
-def merge_lock(common, wait_seconds=14400, *, name="merge", label="repository merge"):
+def merge_lock(common, wait_seconds=14400, *, name="merge", label="repository merge", busy_stage=None):
     directory = common / "yinz-lifecycle"
     directory.mkdir(exist_ok=True)
     # Keep this inode permanently: unlinking a lock path creates two lock domains.
@@ -643,6 +667,8 @@ def merge_lock(common, wait_seconds=14400, *, name="merge", label="repository me
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
+                if busy_stage is not None:
+                    raise LockBusy(busy_stage, label)
                 if time.monotonic() >= deadline:
                     raise LifecycleError(f"Timed out waiting for the {label} lock; retry later")
                 if not waiting:
@@ -760,6 +786,7 @@ def validate_receipt(receipt):
 
 
 def receipt_action(request):
+    busy_stage = optional_lock_stage(request)
     repo, common = canonical_repo(text_field(request, "repoPath"))
     if request.get("failedOnly") is True:
         # A failed receipt is terminal and replaced atomically, so it needs no
@@ -774,7 +801,7 @@ def receipt_action(request):
         if receipt["status"] != "failed":
             return {"status": "not_failed", "attemptId": request["attemptId"]}
         return receipt
-    with merge_lock(common) as directory:
+    with merge_lock(common, busy_stage=busy_stage) as directory:
         path = attempt_path(directory, request)
         if not path.is_file():
             return {"status": "missing", "attemptId": request["attemptId"]}
@@ -1073,20 +1100,22 @@ def closeout_target(request, repo, common, directory, receipt):
 
 
 def closeout_preview(request):
+    busy_stage = optional_lock_stage(request)
     repo, common = canonical_repo(text_field(request, "repoPath"))
-    with merge_lock(common) as directory:
-        with merge_lock(common, 60, name="worktree-ownership", label="worktree ownership"):
+    with merge_lock(common, busy_stage=busy_stage) as directory:
+        with merge_lock(common, 60, name="worktree-ownership", label="worktree ownership", busy_stage=busy_stage):
             receipt = closeout_merge(request, repo, directory)
             return closeout_target(request, repo, common, directory, receipt)
 
 
 def closeout_cleanup(request):
+    busy_stage = optional_lock_stage(request)
     repo, common = canonical_repo(text_field(request, "repoPath"))
     cleanup_id = text_field(request, "cleanupId")
     if str(uuid.UUID(cleanup_id)) != cleanup_id:
         raise LifecycleError("cleanupId must be a canonical UUID")
-    with merge_lock(common) as directory:
-        with merge_lock(common, 60, name="worktree-ownership", label="worktree ownership"):
+    with merge_lock(common, busy_stage=busy_stage) as directory:
+        with merge_lock(common, 60, name="worktree-ownership", label="worktree ownership", busy_stage=busy_stage):
             merge = closeout_merge(request, repo, directory)
             receipts = directory / "closeouts"
             receipts.mkdir(exist_ok=True)
@@ -1190,12 +1219,15 @@ def main():
         action = request.get("action")
         if not isinstance(action, str) or action not in actions:
             raise LifecycleError(f"Unknown action: {action}")
+        optional_lock_stage(request)
         result = actions[action](request)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0
     except (LifecycleError, OSError, ValueError, subprocess.SubprocessError) as error:
         print(str(error), file=sys.stderr)
         result = {"error": str(error)}
+        if isinstance(error, LockBusy):
+            result.update(code="lock_busy", stage=error.stage, lock=error.label)
         if isinstance(request, dict) and request.get("action") == "closeout-cleanup":
             try:
                 progress = closeout_failure_receipt(request)

@@ -268,6 +268,18 @@ helper receipt and completes worktree removal before branch deletion. It never
 forces dirty/locked/moved/reused resources. Do not manually recycle a reserved
 ownership entry or infer absence from a parent checkout.
 
+Optional receipt validation, preview and cleanup return promptly when a required
+lifecycle Git lock is busy. The diagnostic names the stage and lock, for example
+`Optional closeout deferred during cleanup preview: worktree ownership lock is busy`.
+Before an offer exists, this creates no consent or cleanup authority. After an
+accepted partial operation, `Git cleanup` contention preserves the original UUID,
+recorded deletions, uncertain progress and reservation, and leaves the pane open;
+it does not mean all resources remain or that cleanup finished. Inspect the
+existing operation, let it finish, then explicitly retry `closeout` or
+`resume-closeout`. Another issue may be running its required merge/CI gate. Do not
+cancel that gate, remove a lock file or use manual deletion. Retry retains all
+target checks and expired-fence consent requirements.
+
 If self-close lost its acknowledgement, recover in another pane with
 `resume-closeout`; it observes the frozen original session/pane, never the
 recovery caller. Same-incarnation exact absence can be reconciled; a new server,

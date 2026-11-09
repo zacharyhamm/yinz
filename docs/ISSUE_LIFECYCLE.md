@@ -661,6 +661,25 @@ the expected local branch OID. It retains a helper receipt after releasing the
 exact ownership entry. Arbitrary manual Git and external processes do not share
 these locks; uncertain or changed targets fail closed. No remote Git is used.
 
+Optional close-out attempts its Git locks without queuing. If another lifecycle
+Git operation holds a required lock, receipt validation, preview or cleanup
+returns promptly with the blocked stage, lock and retry action. For example:
+
+> Optional closeout deferred during merge-receipt validation: repository merge
+> lock is busy; another lifecycle Git operation (possibly merge/CI) may be running.
+> The completed outcome and recorded cleanup progress are unchanged.
+> Let that operation finish, then retry closeout or resume-closeout.
+
+Receipt/preview contention creates no new offer or consent. For an already accepted
+partial cleanup, a busy result during `Git cleanup` leaves the pane open and keeps
+the same cleanup UUID, prior deletions and ownership reservation. It performs no
+new cleanup step and does not mean all resources still exist. Inspect the existing
+operation, let it finish, then explicitly retry `closeout` or `resume-closeout`.
+Do not cancel another issue's merge gate, remove lock files or delete resources
+manually. Retry still revalidates targets and may require fresh pane consent.
+Mandatory integration and pre-completion receipt reconciliation retain their
+existing lock-wait behavior.
+
 Git results are saved in Swamp before the final pane-close intent. The server
 compares the exact fence and closes within the same screen-thread operation;
 it refuses later input/turns, background or additional control work and closes

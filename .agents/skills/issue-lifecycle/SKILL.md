@@ -92,6 +92,15 @@ inspection/dialogs.
 | `complete` | Present completed result and retained cleanup decision/results. |
 | `blocked` | Read matching recovery section below, resolve deliberately, then `drive`. |
 
+For `authorize_closeout` or `resume_closeout`, optional Git-lock contention returns
+promptly with the blocked stage, lock and retry action. Before an offer exists,
+no consent is created; after acceptance, saved progress, prior deletions and any
+reservation remain recorded and the pane stays open. Inspect the existing
+operation and let it finish, then explicitly retry `closeout`/`resume-closeout`.
+Do not cancel another issue's merge/CI gate, remove lock files or delete resources
+manually. Retry still requires target validation and fresh consent for an expired
+pane fence. See [close-out recovery](references/recovery.md#close-out-failures).
+
 ## Review and authorization
 
 One automatic targeted revision/review is reserved with its exact assignment before

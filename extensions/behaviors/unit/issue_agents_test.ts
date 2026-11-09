@@ -26,7 +26,7 @@ import {
   refreshIssue,
   transition,
 } from "../_lib/lifecycle.ts";
-import { loadState, saveState } from "../_lib/runtime.ts";
+import { GitOperationError, loadState, saveState } from "../_lib/runtime.ts";
 import {
   AgentConfigSchema,
   type AgentContext,
@@ -4773,6 +4773,30 @@ Deno.test("driver closeout renewed consent and declined partial cleanup reach th
         pane: "expired",
         authorizedRequest: "Original bundled authorization",
       };
+      if (decision === "offered") {
+        for (const authorized of [false, true]) {
+          for (const stage of ["merge-receipt validation", "cleanup preview"]) {
+            const contended = structuredClone(initial);
+            if (!authorized) delete contended.closeout;
+            else contended.closeout!.decision = "accepted";
+            const reason =
+              `Optional closeout deferred during ${stage}: repository merge lock is busy; another lifecycle Git operation may be running. Retry closeout or resume-closeout after it finishes.`;
+            const busy = harness(contended, triage, () => {
+              throw new GitOperationError(reason, {
+                code: "lock_busy",
+                stage,
+                lock: "repository merge",
+              });
+            });
+            const beforeBusy = await loadState(busy.context);
+            await busy.drive.execute({}, busy.context);
+            equal(result(busy).decision, authorized ? "blocked" : "complete");
+            assert(result(busy).reason.includes(reason));
+            equal(await loadState(busy.context), beforeBusy);
+            equal(dispatchedRoles(busy), []);
+          }
+        }
+      }
       const h = harness(initial);
       await h.drive.execute({}, h.context);
       equal(

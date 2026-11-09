@@ -10,6 +10,7 @@ import {
   type Context,
   EventSchema,
   gitOperation,
+  GitOperationError,
   issueName,
   loadState,
   normalizeFailure,
@@ -192,6 +193,158 @@ Deno.test("adapter resource writes use declared names and round-trip identity", 
   await rejects(() => loadState(fixture.context), "identity does not match");
   fixture.resources.set("state", null);
   await rejects(() => loadState(fixture.context), "Invalid input");
+});
+
+Deno.test("closeout adapter retains busy metadata and exact progress from the foreground helper", async () => {
+  const repo = await Deno.makeTempDir({
+    prefix: "yinz-closeout-busy-adapter-",
+  });
+  try {
+    const helper = join(repo, "scripts", "issue_lifecycle");
+    await Deno.mkdir(helper, { recursive: true });
+    await Deno.writeTextFile(
+      join(helper, "git_ops.py"),
+      `import json, sys
+request = json.load(sys.stdin)
+assert request["failIfBusy"] is True
+print(json.dumps(request["fixtureReply"]))
+print("lock busy", file=sys.stderr, flush=True)
+sys.exit(1)
+`,
+    );
+    const { context } = fakeContext(repo);
+    for (const action of ["receipt", "closeout-preview", "closeout-cleanup"]) {
+      const reply = {
+        error:
+          "Optional closeout deferred: worktree ownership lock is busy; retry resume-closeout",
+        code: "lock_busy",
+        stage: action,
+        lock: "worktree ownership",
+        ...(action === "closeout-cleanup"
+          ? {
+            closeout: {
+              cleanupId: "original",
+              worktree: "removed",
+              branch: "deleting",
+            },
+          }
+          : {}),
+      };
+      try {
+        await gitOperation(context, {
+          action,
+          failIfBusy: true,
+          fixtureReply: reply,
+        });
+        throw new Error("Expected a non-success busy response");
+      } catch (error) {
+        assert(error instanceof GitOperationError, String(error));
+        equal(error.result, reply);
+        equal(error.message, reply.error);
+      }
+    }
+    // Deno resource/operation sanitizers verify every helper and pipe is reaped.
+  } finally {
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("closeout busy after summarize preserves completion and publishes the actionable reason", async () => {
+  const repo = await tempRepo();
+  const previousPath = Deno.env.get("PATH");
+  try {
+    const state = createState({ ...issue, digest: await digestIssue(issue) });
+    state.phase = "merged";
+    state.receipt = {
+      attemptId: "a6da10b0-c980-4b82-b920-640238095f1a",
+      originalCommit: "a".repeat(40),
+      rebasedCommit: "b".repeat(40),
+      mergedCommit: "b".repeat(40),
+      baseCommit: "c".repeat(40),
+      worktree: repo,
+      branch: "fixture",
+      ciStatus: "passed",
+      mergedAt: "2026-11-09T12:00:00.000Z",
+    };
+    const raw = {
+      ...state.receipt,
+      status: "merged",
+      issueKey: "default/85",
+      issueDigest: state.issue.digest,
+      ci: { status: "passed", command: ["cargo", "x", "ci", "check"] },
+    };
+    const reason =
+      "Optional closeout deferred during merge-receipt validation: repository merge lock is busy; another lifecycle Git operation (possibly merge/CI) may be running. The completed outcome and recorded cleanup progress are unchanged. Let that operation finish, then retry closeout or resume-closeout.";
+    await Deno.writeTextFile(
+      join(repo, "scripts", "issue_lifecycle", "git_ops.py"),
+      `import json, sys
+request = json.load(sys.stdin)
+action = request["action"]
+if action == "agenda-workspace":
+    result = {"workspace": "default"}
+elif action == "inspect":
+    result = {"commonDir": ${JSON.stringify(join(repo, ".git"))}, "worktree": ${
+        JSON.stringify(repo)
+      }, "branch": "fixture", "head": "${"a".repeat(40)}", "main": "${
+        "b".repeat(40)
+      }", "clean": True}
+elif action == "receipt":
+    if request.get("failIfBusy"):
+        print(json.dumps({"error": ${
+        JSON.stringify(reason)
+      }, "code": "lock_busy", "stage": "merge-receipt validation", "lock": "repository merge"}))
+        sys.exit(1)
+    result = json.loads(${JSON.stringify(JSON.stringify(raw))})
+else:
+    raise AssertionError(request)
+print(json.dumps(result))
+`,
+    );
+    const agendaItem = {
+      id: 85,
+      kind: "task",
+      text: issue.text,
+      note: issue.note,
+      completed: true,
+      blocked: false,
+      discarded_at: null,
+      assignments: [],
+    };
+    const bin = join(repo, "vault-bin");
+    await Deno.writeTextFile(
+      join(bin, "agenda"),
+      `#!/usr/bin/env python3
+import json, sys
+assert sys.argv[1:6] in (["--workspace", "default", "--json", "item", "show"], ["--workspace", "default", "--json", "item", "done"])
+item = json.loads(${JSON.stringify(JSON.stringify(agendaItem))})
+result = {"schema_version": 0, "item": item} if sys.argv[5] == "show" else {"schema_version": 0, "items": [item], "completion": {"completed": 1, "reopened": 0, "created": 0, "created_items": []}}
+print(json.dumps(result))
+`,
+    );
+    await Deno.chmod(join(bin, "agenda"), 0o755);
+    Deno.env.set("PATH", `${bin}:${previousPath ?? ""}`);
+    const fixture = fakeContext(repo, state);
+    const before = await loadState(fixture.context);
+    await behavior.methods.summarize.execute(
+      { outcomeMet: true, summary: "Delivered" },
+      fixture.context,
+    );
+    const completed = await loadState(fixture.context);
+    equal(completed.phase, "done");
+    equal(completed.receipt, before.receipt);
+    equal(completed.outcome, { outcomeMet: true, summary: "Delivered" });
+    assert(!completed.closeout);
+    const handoff = fixture.resources.get("handoff") as {
+      decision: string;
+      presentation: string;
+    };
+    equal(handoff.decision, "complete");
+    assert(handoff.presentation.includes(reason));
+  } finally {
+    if (previousPath === undefined) Deno.env.delete("PATH");
+    else Deno.env.set("PATH", previousPath);
+    await Deno.remove(repo, { recursive: true });
+  }
 });
 
 Deno.test("existing lifecycle start resumes without writing or consulting Agenda", async () => {

@@ -105,6 +105,7 @@ function fixture() {
   let otherPanes: unknown[] = [];
   let fence = { ...initialFence };
   let serial = 0;
+  const gitRequests: Record<string, unknown>[] = [];
   const context: Context = {
     repoDir: "/control",
     modelId: "fixture",
@@ -134,6 +135,8 @@ function fixture() {
       `a11e72b8-2904-4c92-9abc-${(++serial).toString(16).padStart(12, "0")}`,
     completed: () => Promise.resolve(),
     git: (_context, request) => {
+      gitRequests.push(request);
+      equal(request.failIfBusy, true);
       if (request.action === "receipt") {
         return Promise.resolve({
           ...receipt,
@@ -233,6 +236,7 @@ function fixture() {
     deps,
     resources,
     events,
+    gitRequests,
     initial,
     state: () => StateSchema.parse(resources.get("state")),
     offer: () => closeout(context, {}, deps),
@@ -292,6 +296,127 @@ Deno.test("closeout explicit accept refreshes accepting turn and persists Git be
   equal(h.state().outcome, h.initial.outcome);
   await closeout(h.context, {}, h.deps);
   equal(h.events.filter((e) => e.startsWith("effect:")).length, 3);
+});
+
+function lockBusy(stage: string, progress?: unknown) {
+  return new GitOperationError(
+    `Optional closeout deferred during ${stage}: repository merge lock is busy; another lifecycle Git operation (possibly merge/CI) may be running. The completed outcome and recorded cleanup progress are unchanged. Let that operation finish, then retry closeout or resume-closeout.`,
+    {
+      code: "lock_busy",
+      stage,
+      lock: "repository merge",
+      ...(progress ? { closeout: progress } : {}),
+    },
+  );
+}
+
+Deno.test("closeout receipt and preview busy defer without creating an offer or authority", async () => {
+  for (
+    const [action, stage] of [
+      ["receipt", "merge-receipt validation"],
+      ["closeout-preview", "cleanup preview"],
+    ]
+  ) {
+    const h = fixture();
+    const git = h.deps.git;
+    h.deps.git = (context, request) => {
+      equal(request.failIfBusy, true);
+      if (request.action === action) throw lockBusy(stage);
+      return git(context, request);
+    };
+    await rejects(h.offer, `${stage}: repository merge lock is busy`);
+    await rejects(h.offer, "retry closeout or resume-closeout");
+    equal(h.state(), StateSchema.parse(h.initial));
+    equal(h.events, []);
+    assert(!h.resources.has("handoff"));
+    h.deps.git = git;
+    await h.offer();
+    equal(h.state().closeout?.decision, "offered");
+    assert(!h.events.some((event) => event.startsWith("effect:")));
+  }
+});
+
+Deno.test("closeout cleanup busy retains initial partial and unknown progress then resumes the same operation", async () => {
+  for (const history of ["initial", "partial", "unknown"] as const) {
+    const h = fixture();
+    await h.offer();
+    const git = h.deps.git;
+    if (history === "partial") {
+      h.failBranch(true);
+      await rejects(h.accept, "Branch deletion failed");
+      h.failBranch(false);
+    } else if (history === "unknown") {
+      h.loseGitAck();
+      await rejects(h.accept, "Lost Git acknowledgement");
+    }
+    const before = h.state();
+    const effects = h.events.filter((event) => event.startsWith("effect:"));
+    h.deps.git = (context, request) => {
+      equal(request.failIfBusy, true);
+      if (request.action === "closeout-cleanup") {
+        equal(request.cleanupId, before.closeout!.id);
+        equal(request.target, before.closeout!.target);
+        throw lockBusy("Git cleanup", before.closeout!.gitResult);
+      }
+      return git(context, request);
+    };
+    await rejects(
+      history === "initial" ? h.accept : h.offer,
+      "Git cleanup: repository merge lock is busy",
+    );
+    const busy = h.state();
+    equal(busy.receipt, before.receipt);
+    equal(busy.outcome, before.outcome);
+    equal(busy.closeout!.id, before.closeout!.id);
+    equal(busy.closeout!.target, before.closeout!.target);
+    equal(busy.closeout!.gitResult, before.closeout!.gitResult);
+    equal(busy.closeout!.decision, "accepted");
+    equal(busy.closeout!.git, "pending");
+    equal(busy.closeout!.pane, "pending");
+    assert(busy.closeout!.authorizedRequest);
+    if (history !== "initial") {
+      equal(
+        busy.closeout!.authorizedRequest,
+        before.closeout!.authorizedRequest,
+      );
+      equal(busy.closeout!.fence, before.closeout!.fence);
+    }
+    equal(busy.closeout!.failure!.stage, "git");
+    assert(busy.closeout!.failure!.message.includes("resume-closeout"));
+    equal(h.events.filter((event) => event.startsWith("effect:")), effects);
+    assert(!h.events.includes("write:closeout_pane_intent"));
+    // A busy response without helper progress cannot erase saved partial facts.
+    h.deps.git = (context, request) => {
+      if (request.action === "closeout-cleanup") throw lockBusy("Git cleanup");
+      return git(context, request);
+    };
+    await rejects(h.offer, "Git cleanup: repository merge lock is busy");
+    equal(h.state().closeout!.gitResult, before.closeout!.gitResult);
+    const saved = h.state();
+    h.deps.git = () => {
+      throw lockBusy("merge-receipt validation");
+    };
+    await rejects(h.offer, "merge-receipt validation");
+    equal(h.state(), saved);
+    h.deps.git = git;
+    if (history === "partial") h.changeFence({ turn: "later-turn" });
+    await h.offer();
+    equal(h.state().closeout!.id, before.closeout!.id);
+    if (history === "partial") {
+      equal(h.state().closeout!.pane, "expired");
+      equal(h.state().closeout!.decision, "offered");
+      assert(!h.events.includes("effect:pane"));
+      await h.accept();
+    }
+    equal(h.state().closeout!.git, "complete");
+    equal(h.state().closeout!.pane, "closed");
+    equal(h.events.filter((event) => event.startsWith("effect:")), [
+      "effect:worktree",
+      "effect:branch",
+      "effect:pane",
+    ]);
+    assert(h.gitRequests.every((request) => request.failIfBusy === true));
+  }
 });
 Deno.test("closeout decline retains completion and is terminal", async () => {
   const h = fixture();
