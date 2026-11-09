@@ -743,6 +743,119 @@ fn launch_transaction_revoked_preparation_is_cancelled_without_provider_executio
 }
 
 #[test]
+fn launch_transaction_revoked_launch_stays_pending_until_preparation_resources_are_recorded() {
+    use std::{sync::mpsc, time::Duration};
+    use yinz_bus::pty::PtyInstruction;
+    use yinz_types::pane_id::PaneId;
+
+    for preparation_fails in [false, true] {
+        let (root, data, request) = repository();
+        if preparation_fails {
+            std::fs::write(root.path().join(".worktrees"), "occupied").unwrap();
+        }
+        let host = Host::new(false, true, true);
+        let id = format!("{}.blocked", server_instance());
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = {
+            let data = data.clone();
+            let senders = host.senders.clone();
+            let request = request.clone();
+            let id = id.clone();
+            std::thread::spawn(move || {
+                let cwd = request.cwd.clone();
+                launch_with_prepare(
+                    id,
+                    request,
+                    crate::ClientId::new(1),
+                    &senders,
+                    &data,
+                    OpeningPromptPolicy::Reject,
+                    None,
+                    None,
+                    Some(Box::new(|spec| {
+                        entered_tx.send(()).unwrap();
+                        release_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+                        prepare_automation_agent(
+                            spec,
+                            cwd,
+                            None,
+                            None,
+                            &data,
+                            &senders.session.current(),
+                        )
+                    })),
+                )
+            })
+        };
+        entered_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        let gate = host
+            .senders
+            .launches
+            .gates
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        let terminal_id = gate.snapshot().allocated.unwrap();
+        gate.revoke(LaunchReason::ControllerMoved);
+        let (reply, receiver) = mpsc::channel();
+        host.senders
+            .send_to_screen(ScreenInstruction::ReleaseAgentLaunch { terminal_id, reply })
+            .unwrap();
+        assert!(receiver.recv_timeout(Duration::from_secs(30)).unwrap());
+        host.senders
+            .send_to_pty(PtyInstruction::ClosePane(
+                PaneId::Terminal(terminal_id),
+                None,
+            ))
+            .unwrap();
+        assert!(gate.wait_cleanup(Duration::from_secs(30)));
+        let observed = status(&id, &host.senders, &data).launch.unwrap();
+        let retry = launch(
+            id.clone(),
+            request,
+            crate::ClientId::new(2),
+            &host.senders,
+            &data,
+        )
+        .launch
+        .unwrap();
+        release_tx.send(()).unwrap();
+        let finished = worker.join().unwrap().launch.unwrap();
+
+        for pending in [observed, retry] {
+            assert_eq!(pending.outcome, LaunchOutcome::Pending);
+            assert_eq!(pending.phase, LaunchPhase::Aborts);
+            assert!(pending.resources.cleanup_pending);
+            assert_eq!(pending.reason, Some(LaunchReason::ControllerMoved));
+        }
+        assert_eq!(finished.outcome, LaunchOutcome::Cancelled);
+        assert_eq!(finished.phase, LaunchPhase::Finished);
+        assert!(!finished.resources.cleanup_pending);
+        assert_eq!(finished.process, ProcessState::NotStarted);
+        let checkout = root.path().join(".worktrees/review");
+        assert_eq!(
+            finished.resources.checkout.as_ref().unwrap().cwd.as_ref(),
+            Some(&checkout)
+        );
+        assert_eq!(finished.resources.git[0].path, checkout);
+        assert!(host.commands.lock().is_empty());
+        assert_eq!(
+            Journal::new(&data, &host.senders, &id)
+                .unwrap()
+                .read()
+                .unwrap()
+                .unwrap()
+                .0,
+            finished
+        );
+    }
+}
+
+#[test]
 fn launch_transaction_concurrent_identical_requests_observe_the_original_preparation() {
     let (root, data, request) = repository();
     let host = Host::new(false, true, false);

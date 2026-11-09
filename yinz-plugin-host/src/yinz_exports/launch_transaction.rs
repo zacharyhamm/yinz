@@ -185,6 +185,9 @@ pub(super) fn status(id: &str, senders: &ThreadSenders, data: &DataAccess) -> Ag
             .cloned();
         if let Some(gate) = gate {
             let state = gate.snapshot();
+            // Wait for a published abort receipt, which includes retained checkout resources,
+            // before inferring a terminal outcome. Pane/PTY cleanup can finish during preparation.
+            let abort_ready = receipt.phase == LaunchPhase::Aborts;
             receipt.resources.slot = state.slot.clone();
             receipt.resources.terminal_allocated = state.allocated.is_some();
             receipt.resources.placeholder_owned = state.slot.is_some();
@@ -229,7 +232,7 @@ pub(super) fn status(id: &str, senders: &ThreadSenders, data: &DataAccess) -> Ag
                     WorkerDisposition::Unknown
                 };
                 receipt.resources.cleanup_pending = true;
-                if receipt.outcome == LaunchOutcome::Pending {
+                if receipt.outcome == LaunchOutcome::Pending && abort_ready {
                     receipt.outcome = LaunchOutcome::Unknown;
                 }
             }
@@ -238,7 +241,7 @@ pub(super) fn status(id: &str, senders: &ThreadSenders, data: &DataAccess) -> Ag
                 && receipt.outcome == LaunchOutcome::Pending
             {
                 receipt.reason = receipt.reason.or(state.revoked);
-                if state.cleanup_confirmed && state.layout_released {
+                if abort_ready && state.cleanup_confirmed && state.layout_released {
                     receipt.outcome = match receipt.reason {
                         Some(
                             LaunchReason::PrepareFailed

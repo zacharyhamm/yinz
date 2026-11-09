@@ -326,6 +326,22 @@ impl Tab {
         use yinz_types::agent::launch::LaunchReason;
         self.ensure_worker_pane_capacity()
             .map_err(|_| LaunchReason::PaneLimit)?;
+        if self.get_tiled_pane_ids().is_empty() {
+            // A floating controller needs no split anchor when its entire tiled layer is free.
+            let viewport = self.get_viewport();
+            if viewport.rows < yinz_panes::pane::MIN_TERMINAL_HEIGHT
+                || viewport.cols < yinz_panes::pane::MIN_TERMINAL_WIDTH
+            {
+                return Err(LaunchReason::InsufficientRoom);
+            }
+            let pane = self
+                .build_pane(pid, title, run, None)
+                .map_err(|_| LaunchReason::InvalidRequest)?;
+            self.add_tiled_pane_with_policy(pane, pid, false, None, true)
+                .map_err(|_| LaunchReason::PlacementRevoked)?;
+            self.swap_layouts.set_is_tiled_damaged();
+            return Ok(());
+        }
         let members = self.worker_region_members(anchor);
         let visible = self
             .stack_list_id_of_member(&anchor)

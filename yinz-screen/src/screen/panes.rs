@@ -607,7 +607,9 @@ impl Screen {
                     if let Some(active_tab) = self.tabs.get_mut(&tab_index) {
                         if let Some((controller, _)) = worker_stack {
                             let anchor = if separate_worker {
-                                if active_tab.can_anchor_tiled_stack(controller) {
+                                if active_tab.can_anchor_tiled_stack(controller)
+                                    || active_tab.get_tiled_pane_ids().is_empty()
+                                {
                                     controller
                                 } else {
                                     // Floating/overlay controllers still own workers in this
