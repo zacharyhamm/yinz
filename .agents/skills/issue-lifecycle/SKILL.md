@@ -72,7 +72,7 @@ inspection/dialogs.
 | `classified` | `drive` plans steps/files/risks, focused tests and verbatim argv `checks` covering steps, then runs adversarial review. Present checks: plan approval approves running them. |
 | `planning` | Missing/current-version-mismatched review: review. Blocking current review: one automatic revision/review if available, otherwise `authorize_plan_revision`. Clean review: `approve_plan`. Missing plan blocks. |
 | `approved` | `prepare_worktree`: adopt recorded worktree/existing feature branch; conflicting paths are rejected before Git preparation. |
-| `implementing` | `drive` implements/commits with focused tests, then reviews; completed implementation or rollback to `review_code` routes to review. Clean current review runs checks at that commit. Stale evidence, code blockers or failed verification block; passing gate yields `authorize_merge`. |
+| `implementing` | `drive` implements/commits with focused tests, then runs technical code review followed by separate UX review; completed implementation or rollback to `review_code` routes to review. Both clean current reviews run checks at the same full commit and plan version. UX-only rollback retains technical review and repeats UX. Stale evidence, technical/UX blockers or failed verification block; passing gate yields `authorize_merge`. |
 | `ready` | Active merge failure: `blocked`, read log and repair. Otherwise `integrate`. |
 | `merged` | `summarize` compares outcome to original requirements using landed receipt. |
 | `done` | `complete`: report recorded outcome without repeating work/merge. |
@@ -82,7 +82,7 @@ inspection/dialogs.
 | `authorize_plan_revision` | Supported adjudication or authorization for one targeted revision, below. |
 | `approve_plan` | Present reviewed plan; `approve {planVersion, request}` records explicit approval. Existing session authorization within scope suffices; ask only if absent. |
 | `prepare_worktree` | `implement {worktree, branch}`, then `drive`. |
-| `authorize_merge` | Show change, review and verification; `ready {commit, mergeRequest}` records explicit merge authorization, including an existing explicit request. Plan approval does not authorize merge. |
+| `authorize_merge` | Show change, technical review, UX assessment/findings and verification; `ready {commit, mergeRequest}` records explicit merge authorization, including an existing explicit request. Plan approval does not authorize merge. |
 | `integrate` | `merge` from control checkout serializes rebase onto current local `main`, full `cargo x ci check` and local fast-forward merge. |
 | `summarize` | `summarize {outcomeMet: true, summary}` only after merge and met outcome; otherwise keep Agenda open and explain remaining work. |
 | `complete` | Present completed result. |
@@ -112,7 +112,7 @@ for that assignment. Revision, implementation, merge and CI-waiver authorization
 are separate; the driver grants none itself.
 
 Planners/reviewers read [planning](references/planning.md) and
-[review](references/review.md); plan/code reviewers also read applicable
+[review](references/review.md); plan/code/UX reviewers also read applicable
 [Yinz review dimensions](references/dimensions.md). Preserve unaffected steps,
 accepted tradeoffs and finding IDs. Reopening disposed concerns needs new evidence
 explaining why the disposition no longer holds. History never replaces current
@@ -120,12 +120,35 @@ review; repairs need fresh review. Ad-hoc code still needs real planning/review/
 verification. Never fabricate evidence. Keep human descriptions in Agenda;
 launcher transitions retain evidence and history in Swamp.
 
+Technical review assesses requirements independently of plan compliance, including
+wrong design assumptions and weak tests. A distinct visible `review_ux` worker
+then traces affected users/tasks, interactions and indirect usability effects over
+the same full commit and plan version. `uxReview` stores its assessment, findings
+and advisory checks separately; no-impact requires an explicit rationale and
+assessed paths, never an inferred skip. Present both reviews, assessed UX paths
+and limitations in the merge handoff. Direct `review-code`/`review-ux` methods
+record evidence and never replace the visible review workers.
+
+Both reviews must be current without unresolved high/critical findings before
+verification, `ready` or integration. New technical evidence invalidates UX;
+code repairs require fresh technical and UX review plus verification. UX-only
+rollback retains matching technical evidence/head and drops UX and downstream
+decisions; ready-only rollback retains the pair and exact-commit verification.
+Historical records parse without fabricated UX. Legacy implementing work with
+technical review proceeds to UX. A legacy unmerged ready state needs explicit
+rollback to `review_ux`, drive/checks, and new merge authorization; an unlanded
+active attempt requires repair and fresh reviews. Already-landed durable receipts
+remain facts and merge/close-out replay does not require retrospective reviews.
+The bounded [reviewer evaluation](references/review-evaluation.md) measures seeded
+scenarios and documents limitations, not current implementation approval.
+
 Keep each worktree's real `target/` isolated: no `CARGO_TARGET_DIR`, changed
 `build.target-dir` or shared/copied mutable build artifacts. Fix defects/flakes in
-this branch through the worker. After clean review, lifecycle checks run at the
+this branch through the worker. After both clean reviews, lifecycle checks run at the
 exact commit outside the merge lock, recording exit codes/durations/logs; reviewer
 checks are advisory. `ready` needs passing exact-commit verification. Legacy plans
-without checks explicitly retain the reviewer-reported gate. Failed verification
+without checks explicitly retain the reviewer-reported gate, including failed
+checks from either role, and still require a separate current UX assessment. Failed verification
 is not automatically rerun. Full merge CI can be skipped only for the user's
 explicit waiver for that merge, recorded with scope in `skipCiRequest`; previous
 checks, time pressure and agent judgment do not suffice. The shared repository
@@ -155,7 +178,7 @@ The actual user request authorizes superseding any prior outcome: no successful
 resume, non-delivery proof, `confirmedStopped` or renewed approval is required.
 `rollback {step, request}` retains prerequisites and invalidates downstream
 decisions. Steps: `triage`, `plan`, `review_plan`, `approve`, `implement`,
-`review_code`, `ready`, `merge`, `summarize`; changed requirements require `triage`.
+`review_code`, `review_ux`, `ready`, `merge`, `summarize`; changed requirements require `triage`.
 `restart-agent` uses current `taskId`, actual `request` and ordinary agent inputs
 with the intended running session. Identical inputs resume the replacement;
 another restart targets its new task ID. Inspect/stop surviving workers before

@@ -22,11 +22,18 @@ import {
   type LifecycleState,
   mergeGate,
   planningGeneration,
+  requireCurrentReviews,
   reviewFingerprint,
   StateSchema,
+  transition,
   UserRequestSchema,
 } from "./lifecycle.ts";
-import { type Handle, loadState } from "./runtime.ts";
+import {
+  type Handle,
+  loadState,
+  normalizeReceipt,
+  saveState,
+} from "./runtime.ts";
 import {
   checkLogQuery,
   checkOutcome,
@@ -281,6 +288,7 @@ function present(
     const [label, review] of [
       ["Plan review", state.planReview],
       ["Code review", state.codeReview],
+      ["UX review", state.uxReview],
     ] as const
   ) {
     if (!review) continue;
@@ -309,6 +317,23 @@ function present(
       }`,
     );
   }
+  if (state.uxReview) {
+    const assessment = state.uxReview.assessment;
+    lines.push(
+      `UX assessment: ${assessment.impact}. ${assessment.summary}`,
+      "Assessed user tasks, workflows and paths:",
+      ...assessment.assessedPaths.map((path) => `- ${path}`),
+      `UX limitations: ${
+        assessment.limitations.join("; ") || "None recorded."
+      }`,
+      "UX reviewer-reported checks (advisory):",
+      ...(state.uxReview.preliminaryChecks?.length
+        ? state.uxReview.preliminaryChecks.map((check) =>
+          `- ${check.command}: ${check.result}. ${check.summary}`
+        )
+        : ["- No preliminary checks recorded."]),
+    );
+  }
   if (state.codeReview) {
     lines.push("Delivered change coverage:");
     for (const step of state.codeReview.steps) {
@@ -320,7 +345,12 @@ function present(
     }
     lines.push("Verification results:");
     const gate = state.plan &&
-      mergeGate(state.plan, state.codeReview, state.verification);
+      mergeGate(
+        state.plan,
+        state.codeReview,
+        state.verification,
+        state.uxReview,
+      );
     if (gate?.kind === "legacy") {
       lines.push(
         `- No deterministic verification: plan version ${
@@ -692,6 +722,7 @@ async function drive(
             state.plan,
             state.codeReview,
             state.verification,
+            state.uxReview,
           );
           // A check that dirtied or moved the worktree makes the review look
           // stale. Its recorded failure is the actionable explanation.
@@ -709,74 +740,104 @@ async function drive(
               "Resolve code review blockers, then obtain fresh review evidence",
             );
           }
-          if (gate.kind === "legacy" && gate.failedPreliminary) {
+          if (!state.uxReview) {
+            role = "review_ux";
+          } else {
+            requireCurrentReviews(
+              state,
+              atReview ? repo.head : state.codeReview.commit,
+            );
+            if (gate.kind === "legacy" && gate.failedPreliminary) {
+              return await handoff(
+                "blocked",
+                "Resolve failed verification, then obtain fresh review evidence",
+              );
+            }
+            if (gate.kind === "unverified") {
+              // Deterministic and authorization-free. Run inline: this method
+              // already holds the issue lock that a nested method would need.
+              handles.push(
+                ...(await runVerification(context, state, dependencies))
+                  .dataHandles,
+              );
+              continue;
+            }
+            if (gate.kind === "failed") {
+              const { verification } = gate;
+              const failures = verification.checks
+                .filter((check) => check.status === "failed")
+                .map((check) =>
+                  `${check.id} (${
+                    check.skipped ??
+                      `${checkOutcome(check)}; log: ${
+                        checkLogQuery(context.definition.name, check.log!)
+                      }`
+                  })`
+                );
+              return await handoff(
+                "blocked",
+                `Verification ${verification.id} failed at ${verification.commit}: ${
+                  failures.join("; ")
+                }. Repair and obtain review of a new commit, or rerun verify explicitly for an environment failure${
+                  atReview
+                    ? ""
+                    : ". The worktree is no longer clean at the reviewed commit: obtain review of its new commit, or restore the reviewed commit before rerunning verify"
+                }`,
+              );
+            }
             return await handoff(
-              "blocked",
-              "Resolve failed verification, then obtain fresh review evidence",
+              "authorize_merge",
+              "Explicit merge authorization for this reviewed commit is required; plan approval does not authorize merging",
             );
           }
-          if (gate.kind === "unverified") {
-            // Deterministic and authorization-free. Run inline: this method
-            // already holds the issue lock that a nested method would need.
+        } else {
+          // A discarded review launch does not erase the completed implementation.
+          const implementation = assignment?.role === "implement"
+            ? assignment
+            : driver.implementation;
+          if (
+            recovery?.status === "completed" &&
+            recovery.id === state.rollbackId &&
+            recovery.step === "review_code"
+          ) {
+            role = "review_code";
+          } else if (
+            implementation?.status === "completed" &&
+            JSON.stringify(implementation.next) === JSON.stringify(state)
+          ) {
+            const evidence = implementationEvidence(implementation);
+            if (!repo.clean || repo.head !== evidence.commit) {
+              throw new Error(
+                "Implementation evidence is stale for the current worktree commit",
+              );
+            }
+            driver = { ...driver, implementation };
             handles.push(
-              ...(await runVerification(context, state, dependencies))
-                .dataHandles,
+              await context.writeResource("driver", "driver", driver),
+            );
+            role = "review_code";
+          } else role = "implement";
+        }
+      } else if (state.phase === "ready") {
+        if (state.attempt) {
+          const raw = await dependencies.gitOperation(context, {
+            action: "receipt",
+            attemptId: state.attempt.id,
+          });
+          if (z.object({ status: z.string() }).parse(raw).status === "merged") {
+            handles.push(
+              ...(await saveState(
+                context,
+                "reconcile_merge",
+                transition(state, "merged", {
+                  receipt: normalizeReceipt(raw, state),
+                }),
+              )).dataHandles,
             );
             continue;
           }
-          if (gate.kind === "failed") {
-            const { verification } = gate;
-            const failures = verification.checks
-              .filter((check) => check.status === "failed")
-              .map((check) =>
-                `${check.id} (${
-                  check.skipped ??
-                    `${checkOutcome(check)}; log: ${
-                      checkLogQuery(context.definition.name, check.log!)
-                    }`
-                })`
-              );
-            return await handoff(
-              "blocked",
-              `Verification ${verification.id} failed at ${verification.commit}: ${
-                failures.join("; ")
-              }. Repair and obtain review of a new commit, or rerun verify explicitly for an environment failure${
-                atReview
-                  ? ""
-                  : ". The worktree is no longer clean at the reviewed commit: obtain review of its new commit, or restore the reviewed commit before rerunning verify"
-              }`,
-            );
-          }
-          return await handoff(
-            "authorize_merge",
-            "Explicit merge authorization for this reviewed commit is required; plan approval does not authorize merging",
-          );
         }
-        // A discarded review launch does not erase the completed implementation.
-        const implementation = assignment?.role === "implement"
-          ? assignment
-          : driver.implementation;
-        if (
-          recovery?.status === "completed" &&
-          recovery.id === state.rollbackId &&
-          recovery.step === "review_code"
-        ) {
-          role = "review_code";
-        } else if (
-          implementation?.status === "completed" &&
-          JSON.stringify(implementation.next) === JSON.stringify(state)
-        ) {
-          const evidence = implementationEvidence(implementation);
-          if (!repo.clean || repo.head !== evidence.commit) {
-            throw new Error(
-              "Implementation evidence is stale for the current worktree commit",
-            );
-          }
-          driver = { ...driver, implementation };
-          handles.push(await context.writeResource("driver", "driver", driver));
-          role = "review_code";
-        } else role = "implement";
-      } else if (state.phase === "ready") {
+        requireCurrentReviews(state, state.mergeAuthorization?.commit);
         const failure = activeMergeFailure(state);
         if (failure) {
           return await handoff(

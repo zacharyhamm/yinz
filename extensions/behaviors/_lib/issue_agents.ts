@@ -221,7 +221,7 @@ async function saveTask(context: Context, task: Task) {
   );
 }
 
-function taskPrompt(
+export function taskPrompt(
   role: z.infer<typeof Role>,
   state: z.infer<typeof StateSchema>,
   cwd: string,
@@ -236,11 +236,13 @@ function taskPrompt(
     plan:
       "Develop or revise a concrete implementation plan from the issue and investigation. Address existing review findings. Include affected files, risks in step descriptions, assumptions, and a testingStrategy explaining the test selection. Return checks: focused development checks selected per AGENTS.md (never unfiltered full suites), each with a short id, an argv array run verbatim without a shell in the issue worktree, and the plan step IDs it covers. The lifecycle runs every check at the reviewed commit and requires them to pass before merge authorization. Full cargo x ci check is mandatory later in the merge gate unless the user explicitly waives it.",
     review_plan:
-      "Adversarially review the current plan against the actual code, including whether its checks are correct argv, focused, safe to run unattended, and cover the changed behavior and affected callers. Return planVersion and every actionable finding. Do not approve the plan or invent resolutions. An empty findings array is appropriate only after a real review found none.",
+      "Adversarially review the current plan against the actual code, including whether its checks are valid command argument arrays that execute directly without a shell, use supported flags, are focused and safe to run unattended, and cover the changed behavior and affected callers. Return planVersion and every actionable finding. Do not approve the plan or invent resolutions. An empty findings array is appropriate only after a real review found none.",
     implement:
       "Implement the approved plan in this existing issue worktree. Run focused checks following AGENTS.md, investigate failures, and commit the intended changes on the existing feature branch. Return a summary and the full resulting commit hash. Do not rebase, merge, push, or run the full CI gate here. If lastFailure records a failed merge gate, read its log first and fix the cause, selecting focused tests that reproduce it; treat a flake or timeout as a defect, not something a rerun resolves.",
     review_code:
-      "Review the committed diff against local main and the approved plan. Cover each plan step exactly once, justify deviations, and record code findings and any preliminary checks you actually ran. Preliminary checks are advisory; the lifecycle runs the plan's checks itself. Do not invent passing checks. Return the supplied full commit hash and planVersion.",
+      "Review the committed diff against local main, issue requirements and the approved plan. Independently assess whether the behavior is correct, including incorrect assumptions or defects in the approved approach. Trace affected callers and relevant state transitions, failure paths, cleanup, ownership, concurrency and platform behavior as applicable. Inspect tests for missing cases and assertions that could pass despite incorrect behavior. Prioritize actionable defects introduced or exposed by this change. For each finding identify the trigger, consequence and concrete source locations, explain severity and distinguish demonstrated behavior from assumptions. Avoid speculative concerns and unrelated cleanup. An empty findings array is valid after a real review. Cover each plan step exactly once and justify deviations. Record only preliminary checks actually performed. Preliminary checks are advisory; the lifecycle runs the approved plan checks itself. Do not invent passing checks. Return the supplied full commit hash and planVersion.",
+    review_ux:
+      "Review the supplied committed change specifically for its impact on the user experience. Use the issue requirements, actual implementation, affected callers, tests, help and documentation to identify affected users and tasks. Trace representative end-to-end workflows through discovery, normal use, repeat use, waiting, failure, cancellation and recovery as applicable. Independently assess whether the experience remains understandable, consistent, responsive and usable, even when the code follows the approved plan. Inspect relevant terminal UI, keyboard navigation and focus, rendering/readability, CLI commands and output, configuration/defaults, help/documentation, feedback, errors and lifecycle handoffs. Consider indirect responsiveness, compatibility surprises, extra interaction steps and loss of user work. Can users understand what happened, what is happening and what to do next? Keep implementation details out of user flows unless they support a meaningful user decision. Exercise representative interactions when practical; distinguish observed results from source-based conclusions and state material limitations. Report concrete actionable UX defects introduced or exposed by the change. Each finding needs the affected user/task, triggering interaction sequence, observed or source-derived behavior, user consequence, severity and concrete source or interaction evidence. Avoid personal aesthetic preferences, speculative concerns and unrelated redesigns. An empty findings array is valid after a real review. Always submit assessment with impact, a nonempty rationale, assessedPaths describing affected user tasks/workflows and source paths, and limitations. A no_material_impact result requires a source-based rationale; absence of UI-file changes is insufficient. Preliminary checks are advisory; record only checks actually performed. Return the supplied full commit hash and planVersion.",
   }[role];
   return [
     "You are working on one Yinz issue lifecycle task in a visible Yinz pane.",
@@ -267,9 +269,12 @@ function taskPrompt(
           : []),
       ]
       : []),
-    ...(["review_plan", "review_code"].includes(role)
+    ...(["review_plan", "review_code", "review_ux"].includes(role)
       ? [
-        `Read ${join(references, "dimensions.md")} before reviewing.`,
+        `Read ${join(references, "review.md")} and ${
+          join(references, "dimensions.md")
+        } before reviewing.`,
+        "Follow the shared evidence and severity standards. Leave resolution unset for a newly reported defect: a proposed fix is not a resolution. Use resolution only for a concern verified fixed or otherwise supported as resolved. Preserve finding IDs and supported dispositions; reopening a disposed concern requires new evidence and an explanation of why its disposition no longer holds. Historical evidence is not current approval. Follow AGENTS.md focused-test selection; do not run unfiltered full suites.",
         role === "review_plan"
           ? "Apply relevant Yinz review dimensions to the proposed behavior and verification coverage against source."
           : "Apply relevant Yinz review dimensions to the committed implementation and affected callers.",
@@ -490,9 +495,12 @@ async function validateResultFreshness(
       "Lifecycle changed while the pane task ran; inspect its result before recording new evidence",
     );
   }
-  if (task.role === "implement" || task.role === "review_code") {
+  if (
+    task.role === "implement" || task.role === "review_code" ||
+    task.role === "review_ux"
+  ) {
     if (
-      !commit || (task.role === "review_code" && commit !== task.reviewCommit)
+      !commit || (task.role !== "implement" && commit !== task.reviewCommit)
     ) {
       throw new Error(
         "Pane result has no verifiable evidence commit; use continue-agent for a typed submission supplement",
@@ -546,7 +554,11 @@ async function applyResult(
       task,
       current,
       dependencies,
-      task.role === "review_code" ? task.next.codeReview?.commit : undefined,
+      task.role === "review_code"
+        ? task.next.codeReview?.commit
+        : task.role === "review_ux"
+        ? task.next.uxReview?.commit
+        : undefined,
     );
     await saveState(
       context,
@@ -580,7 +592,8 @@ async function applyResult(
     current,
     dependencies,
     receipt.payload.role === "implement" ||
-      receipt.payload.role === "review_code"
+      (receipt.payload.role === "review_code" ||
+        receipt.payload.role === "review_ux")
       ? receipt.payload.evidence.commit
       : undefined,
   );
@@ -643,6 +656,7 @@ export async function prepareTask(
     review_plan: ["planning"],
     implement: ["implementing"],
     review_code: ["implementing", "ready"],
+    review_ux: ["implementing", "ready"],
   };
   if (!phases[args.role].includes(state.phase)) {
     throw new Error(`Cannot run ${args.role} in ${state.phase}`);
@@ -656,7 +670,10 @@ export async function prepareTask(
     state.workerWorktree ?? state.implementation?.worktree ?? context.repoDir,
   );
   let commit: string | undefined;
-  if (args.role === "implement" || args.role === "review_code") {
+  if (
+    args.role === "implement" || args.role === "review_code" ||
+    args.role === "review_ux"
+  ) {
     if (
       !state.implementation || !state.plan ||
       state.approval?.planVersion !== state.plan.version
@@ -668,13 +685,26 @@ export async function prepareTask(
     const repo = await dependencies.inspect(context, cwd);
     if (
       repo.branch !== state.implementation.branch ||
-      (args.role === "review_code" && !repo.clean)
+      (args.role !== "implement" && !repo.clean)
     ) {
       throw new Error(
         "Commit implementation changes before requesting code review",
       );
     }
-    if (args.role === "review_code") commit = repo.head;
+    if (args.role !== "implement") commit = repo.head;
+    if (
+      args.role === "review_ux" &&
+      (!state.codeReview || state.codeReview.commit !== commit ||
+        state.implementation.head !== commit ||
+        state.codeReview.planVersion !== state.plan.version ||
+        state.codeReview.findings.some((f) =>
+          ["high", "critical"].includes(f.severity) && !f.resolution
+        ))
+    ) {
+      throw new Error(
+        "UX dispatch requires current technical review of the same clean implementation commit without blockers",
+      );
+    }
   }
   // The dispatched commit belongs to task evidence, not prior code review.
   const promptState = structuredClone(state);

@@ -104,7 +104,7 @@ export async function runVerification(
     branch: implementation.branch,
     startedAt,
   };
-  // Validate phase, approval and commit binding before running any command.
+  // Validate phase, approval, both current reviews and commit binding before running any command.
   transition(state, "verify", {
     verification: {
       ...record,

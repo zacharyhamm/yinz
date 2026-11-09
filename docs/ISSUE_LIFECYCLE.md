@@ -18,8 +18,9 @@ flowchart LR
     A[Agenda issue] --> T[Triage]
     T --> P[Plan and review]
     P --> I[Approved implementation]
-    I --> R[Code review]
-    R --> C[Deterministic plan checks]
+    I --> R[Technical code review]
+    R --> U[UX review]
+    U --> C[Deterministic plan checks]
     C --> M[Merge authorization]
     M --> Q[Wait for integration lock]
     Q --> B[Rebase onto local main]
@@ -28,6 +29,7 @@ flowchart LR
     F --> S[Outcome and Agenda completion]
     P -->|Revise| P
     R -->|Fix findings| I
+    U -->|Fix UX findings| I
     C -->|Failure| I
     B -->|Conflict| I
     V -->|Failure| I
@@ -54,7 +56,7 @@ reused by returned ID; automation has no dependency on fixed category IDs.
 
 Operator actions (approval, worktree preparation, merge authorization and
 close-out) belong to the controlling workflow. Direct `triage`, `plan`,
-`review-plan` and `review-code` methods record evidence; they do not replace pane
+`review-plan`, `review-code` and `review-ux` methods record evidence; they do not replace pane
 workers. Neither input objects nor worker claims establish human authorization.
 Existing authorization remains valid within its actual scope. Implementation
 approval, merge authorization and a CI waiver are separate decisions.
@@ -159,7 +161,7 @@ identity across resume; changed state or assignments invalidate them.
 The driver supplies role-specific prompts and validates results against the
 original task and current issue, plan and commit before import. Implementation
 returns the clean worktree's full committed HEAD. Reviews contain actual evidence.
-`implement` and `review_code` roles require current-plan approval and preparation.
+`implement`, `review_code` and `review_ux` roles require current-plan approval and preparation.
 A completed provider turn alone does not establish code correctness.
 
 ### Planning generations and adjudication
@@ -285,6 +287,7 @@ identifiers are full issue-worktree Git IDs, never branch names or abbreviations
 | `implement` | Recorded absolute `worktree`, existing feature `branch`; matching worktree is adopted. |
 | Implementation result | `summary`; full `commit` of clean issue worktree. |
 | Code review result | `planVersion`, `commit`, `steps` covering plan step IDs with `implemented` or `deviated` status; deviations require `justification`; `findings`; optional advisory `preliminaryChecks`. |
+| UX review result (`review-ux`) | `planVersion`, full `commit`, `assessment: {impact: material\|no_material_impact, summary, assessedPaths, limitations}`, shared `findings`, optional advisory `preliminaryChecks`. Rationale and assessed paths are nonempty even for no material impact. |
 | `verify` | No input; plan checks run at reviewed commit through `yinz-issue-verify`. |
 | `ready` | `commit`; `mergeRequest`: user authorization to merge. |
 | `merge` | Normally no input; explicit exception is `skipCiRequest`. |
@@ -306,6 +309,44 @@ Checks are focused according to `AGENTS.md`, not unfiltered full suites already
 covered by the merge gate. Reviewer preliminary checks contain `command`,
 `result` (`passed`, `failed`, `skipped`) and `summary`; they are advisory for
 plans with checks. Approval of the presented plan approves running its checks.
+
+### Separate implementation reviews
+
+Normal drive runs implement -> technical code review -> UX review -> approved
+checks -> merge authorization. Both visible workers review the same full commit,
+issue requirements and current approved plan. Technical review independently
+challenges behavior and design assumptions, traces affected callers and lifecycle
+paths, and inspects weak assertions while reporting every plan step. UX review
+traces affected users/tasks through discovery, normal/repeat use, waiting,
+failure, cancellation and recovery, including indirect usability effects.
+Both read the shared evidence/severity standards and applicable review dimensions.
+
+`state.uxReview` is optional historical storage, never defaulted to completion.
+Status and handoffs show its impact, rationale, assessed workflows/source paths,
+limitations, findings and actual advisory checks alongside technical findings,
+step coverage and lifecycle verification. Empty findings and supported no-impact
+assessments are valid; no UI-file change alone is not a rationale. Proposed fixes
+must not be marked as resolutions of newly reported defects.
+
+Verification preflight, `ready`, `begin_merge` and resumed unlanded integration
+require both current reviews with no unresolved high/critical findings. Technical
+approval never substitutes for UX. New technical evidence or a repaired commit
+invalidates UX and downstream evidence. UX-only rollback retains matching
+technical review/head but clears UX, verification and authorization. Ready-only
+rollback retains both reviews and same-commit verification. Saved original tasks,
+prompts, submissions and accepted receipts resume without duplicate reviewers.
+
+Legacy pending tasks finish under their saved contract and never count as UX.
+Legacy implementing work with current technical review proceeds to UX. An
+unmerged ready state without UX blocks with rollback-to-review_ux/drive guidance
+and requires checks and new merge authorization; an unlanded active attempt
+requires repair and fresh reviews. Integration first reconciles durable landed
+receipts; landed merges and merge/close-out rollback/replay do not require
+retrospective review or fabricated evidence. See [recovery](../.agents/skills/issue-lifecycle/references/recovery.md).
+
+The [bounded reviewer evaluation](../.agents/skills/issue-lifecycle/references/review-evaluation.md)
+records actual planted-defect and no-impact outcomes separately from lifecycle
+approval. Prompt assertions test the assignment contract, not review quality.
 
 ## Reusable Swamp extension
 
@@ -356,7 +397,7 @@ an answer, not correctness evidence replacing lifecycle review/verification.
 
 ## Deterministic verification
 
-After clean code review, `drive` (or explicit `verify`) runs the approved plan's
+After clean technical code review and separate UX review, `drive` (or explicit `verify`) runs the approved plan's
 checks in order outside the repository merge lock. Before each check, the Git
 helper requires a clean issue branch at the reviewed commit with its own real
 `target/`. Each check records exit code, duration and output.
@@ -375,15 +416,15 @@ are `check-log-<verification id>-<check id>` of type `check-log`, retrievable wi
 including any hashed behavior identity.
 
 `ready` requires passing verification of the reviewed commit and current plan.
-New plan, worktree adoption, code review, repair, refresh or rollback to
-`review_code` or earlier discards verification. Rollback of only `ready` retains
+New plan, worktree adoption, technical or UX review, repair, refresh or rollback to
+`review_ux` or earlier discards verification. Rollback of only `ready` retains
 verification for an unchanged commit. Failed runs block and are not automatically
 rerun by `drive`; environment-only explicit reruns and repair procedures are in
 the recovery reference. Every run remains in event history. The launcher prints
 the checklist on stderr and JSON on stdout, exiting 2 on failure.
 
-Legacy plans without `checks` retain the reviewer-reported gate: `ready` rejects
-failed preliminary checks and the handoff states no deterministic verification
+Legacy plans without `checks` still require both current reviews and retain the reviewer-reported gate: `ready` rejects
+failed preliminary checks from either reviewer and the handoff states no deterministic verification
 ran. New plans/revisions require checks. Empty or cancelled checks are not success.
 
 ## Development checks and the merge gate
@@ -432,7 +473,7 @@ The controller saves the exact task and opens an `issue-evidence-<task UUID>`
 Swamp behavior in the canonical control checkout before launching its worker.
 The immutable assignment binds the task, role, worker configuration and prompt,
 issue requirements generation, lifecycle snapshot and rollback identity, plan
-version, and dispatched code-review commit. `status` includes the task's current
+version, and dispatched technical/UX review commit. `status` includes the task's current
 submission resource as well as the lifecycle and provider records.
 
 The worker writes a temporary JSON submission file with `taskId`,

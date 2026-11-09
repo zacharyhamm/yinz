@@ -38,6 +38,20 @@ import {
   type YinzRunner,
 } from "../_lib/yinz_agent.ts";
 
+function withUx(state: LifecycleState): LifecycleState {
+  return transition(state, "review_ux", {
+    planVersion: state.plan!.version,
+    commit: state.codeReview!.commit,
+    assessment: {
+      impact: "no_material_impact",
+      summary: "Fixture caller behavior and command output remain unchanged.",
+      assessedPaths: ["src/lib.rs: affected caller and repeat command use"],
+      limitations: ["Source-based fixture assessment"],
+    },
+    findings: [],
+  });
+}
+
 function assert(
   condition: unknown,
   message = "Assertion failed",
@@ -112,6 +126,7 @@ function implementing(): LifecycleState {
 }
 
 function verify(state: LifecycleState): LifecycleState {
+  state = withUx(state);
   const id = "c6da10b0-c980-4b82-b920-640238095f1a";
   return transition(state, "verify", {
     verification: {
@@ -1981,6 +1996,8 @@ function driverEvidence(
         summary: "Repaired the affected caller and added a regression",
         commit: head,
       };
+    case "review_ux":
+      return withUx(task.before).uxReview;
     case "review_code":
       return {
         planVersion: task.before.plan!.version,
@@ -2011,6 +2028,7 @@ for (
     { role: "review_plan", prepared: false },
     { role: "review_plan", prepared: true },
     { role: "review_code", prepared: true },
+    { role: "review_ux", prepared: true },
   ] as const
 ) {
   Deno.test(`${role} reads Yinz dimensions from the ${prepared ? "control" : "worker"} checkout and retains the finding contract`, async () => {
@@ -2020,6 +2038,14 @@ for (
       : transition(createState(issue, origin), "triage", triage);
     if (role === "review_plan") {
       state = transition(state, "plan", driverPlan);
+    }
+    if (role === "review_ux") {
+      state = transition(state, "review_code", {
+        planVersion: 1,
+        commit: head,
+        steps: [{ id: "fix", status: "implemented" }],
+        findings: [],
+      });
     }
     const h = harness(state);
     h.controls.evidenceForRole = driverEvidence;
@@ -2031,7 +2057,7 @@ for (
     }/.agents/skills/issue-lifecycle/references`;
     assert(
       task.prompt.includes(
-        `Read ${references}/dimensions.md before reviewing.`,
+        `Read ${references}/review.md and ${references}/dimensions.md before reviewing.`,
       ),
     );
     assert(
@@ -2080,7 +2106,11 @@ for (
         task.prompt.includes("committed implementation and affected callers"),
       );
       assert(
-        task.prompt.includes("Review the committed diff against local main"),
+        task.prompt.includes(
+          role === "review_code"
+            ? "Review the committed diff against local main"
+            : "Review the supplied committed change specifically",
+        ),
       );
       assert(task.prompt.includes("Preliminary checks are advisory"));
       assert(task.prompt.includes(`The commit being reviewed is ${head}.`));
@@ -2476,7 +2506,7 @@ Deno.test("driver requires worktree preparation after explicit approval, then im
   equal(h.calls.length, 0);
   h.resources.set("state", initial);
   await h.drive.execute({}, h.context);
-  equal(dispatchedRoles(h), ["implement", "review_code"]);
+  equal(dispatchedRoles(h), ["implement", "review_code", "review_ux"]);
   equal(result(h).decision, "authorize_merge");
   equal(result(h).commit, head);
   assert(result(h).presentation.includes("Repaired the affected caller"));
@@ -2485,7 +2515,7 @@ Deno.test("driver requires worktree preparation after explicit approval, then im
   const id = result(h).id;
   await h.drive.execute({}, h.context);
   equal(result(h).id, id);
-  equal(h.calls.length, 2);
+  equal(h.calls.length, 3);
 });
 
 Deno.test("driver returns code review blockers instead of running checks or requesting merge authorization", async () => {
@@ -2915,13 +2945,18 @@ Deno.test("driver reuses implementation after explicitly discarding unusable rev
   h.controls.evidenceForRole = driverEvidence;
   await h.drive.execute({}, h.context);
   equal(result(h).decision, "authorize_merge");
-  equal(dispatchedRoles(h), ["implement", "review_code", "review_code"]);
+  equal(dispatchedRoles(h), [
+    "implement",
+    "review_code",
+    "review_code",
+    "review_ux",
+  ]);
   assert(result(h).presentation.includes("Repaired the affected caller"));
   h.controls.repo.head = "c".repeat(40);
   await h.drive.execute({}, h.context);
   equal(result(h).decision, "blocked");
   assert(result(h).reason.includes("review evidence is stale"));
-  equal(h.calls.length, 3);
+  equal(h.calls.length, 4);
 });
 
 Deno.test("driver survives controller interruption and resumes its saved assignment with no second submission", async () => {
@@ -2984,7 +3019,13 @@ Deno.test("driver honors a completed review-only rollback without repeating impl
     request: "Repeat code review",
   }, h.context);
   await h.drive.execute({}, h.context);
-  equal(dispatchedRoles(h), ["implement", "review_code", "review_code"]);
+  equal(dispatchedRoles(h), [
+    "implement",
+    "review_code",
+    "review_ux",
+    "review_code",
+    "review_ux",
+  ]);
   equal(result(h).decision, "authorize_merge");
   equal(result(h).commit, head);
 });
@@ -3011,8 +3052,10 @@ Deno.test("driver ignores unrelated or superseded review rollback records", asyn
     equal(dispatchedRoles(h), [
       "implement",
       "review_code",
+      "review_ux",
       "implement",
       "review_code",
+      "review_ux",
     ]);
     equal(result(h).decision, "authorize_merge");
   }
@@ -3165,7 +3208,7 @@ Deno.test("every lifecycle role, plan revision, repair and restart resolves the 
   const count = launched.length;
   await h.methods.restart_agent.execute(restart, h.context);
   await h.drive.execute({}, h.context);
-  equal(launched.length, count);
+  equal(launched.length, count + 1);
   equal(launched.map((launch) => launch.role), [
     "triage",
     "plan",
@@ -3174,15 +3217,18 @@ Deno.test("every lifecycle role, plan revision, repair and restart resolves the 
     "review_plan",
     "implement",
     "review_code",
+    "review_ux",
     "implement",
     "review_code",
+    "review_ux",
     "review_code",
+    "review_ux",
   ]);
   equal(
     launched.map((launch) => launch.tab),
-    Array.from({ length: count }, (_, index) => String(index)),
+    Array.from({ length: count + 1 }, (_, index) => String(index)),
   );
-  equal(h.controls.placementCalls.length, count);
+  equal(h.controls.placementCalls.length, count + 1);
 });
 
 for (const legacy of [false, true]) {
@@ -3232,6 +3278,7 @@ for (const legacy of [false, true]) {
       await h.drive.execute({}, h.context);
       equal(result(h).decision, "authorize_merge");
       equal(h.calls.slice(count).map((call) => call.arguments?.control), [
+        control,
         control,
         control,
       ]);
@@ -3690,6 +3737,7 @@ Deno.test("origin persists across all worker roles, later drive and explicit res
     "review_plan",
     "implement",
     "review_code",
+    "review_ux",
   ]);
   const old = AgentTaskSchema.parse(h.resources.get("agent-task"));
   const restart = {
@@ -3703,7 +3751,7 @@ Deno.test("origin persists across all worker roles, later drive and explicit res
   await h.drive.execute({}, h.context);
   // Recovery persists its replacement before runTask saves it again; count
   // actual child calls rather than the duplicate running-task writes.
-  equal(h.calls.length, 7);
+  equal(h.calls.length, 8);
   assert(h.calls.every((call) => call.arguments?.cwd === origin));
   equal((await loadState(h.context)).workerWorktree, origin);
   equal((await loadState(h.context)).planVersion, 2);
@@ -4140,7 +4188,7 @@ Deno.test("pending legacy projections reject changed requirements, worktrees and
   }
 });
 
-Deno.test("legacy implementation reports block pending review while accepted code review remains usable without chat parsing", async () => {
+Deno.test("legacy implementation reports block pending review while accepted technical evidence proceeds to fresh UX review", async () => {
   for (const reviewed of [false, true]) {
     const h = harness(implementing(), { summary: "Implemented", commit: head });
     await h.methods.run_agent.execute(
@@ -4164,6 +4212,7 @@ Deno.test("legacy implementation reports block pending review while accepted cod
         }),
       );
     }
+    h.controls.evidenceForRole = driverEvidence;
     const calls = h.calls.length;
     await h.drive.execute({}, h.context);
     equal(result(h).decision, reviewed ? "authorize_merge" : "blocked");
@@ -4171,6 +4220,165 @@ Deno.test("legacy implementation reports block pending review while accepted cod
       assert(result(h).reason.includes("typed submission supplement"));
     }
     assert(!result(h).presentation.includes("Truncated legacy"));
-    equal(h.calls.length, calls);
+    equal(h.calls.length, calls + (reviewed ? 1 : 0));
   }
+});
+
+Deno.test("UX blockers and stale evidence stop all checks and are presented separately", async () => {
+  for (const defect of ["high", "stale"] as const) {
+    const state = withUx(
+      transition(
+        implementing(),
+        "review_code",
+        driverEvidence(
+          { role: "review_code", before: implementing() } as ReturnType<
+            typeof AgentTaskSchema.parse
+          >,
+        ),
+      ),
+    );
+    if (defect === "high") {
+      state.uxReview!.findings = [{
+        id: "ux-loss",
+        severity: "high",
+        description: "Cancel hides draining work",
+        evidence: ["cli.ts:42"],
+      }];
+    } else state.uxReview!.commit = "b".repeat(40);
+    const h = harness(state);
+    await h.drive.execute({ agent: options }, h.context);
+    equal(result(h).decision, "blocked");
+    equal(h.controls.checkCalls.length, 0);
+    equal(h.calls.length, 0);
+    assert(
+      result(h).presentation.includes("UX assessment: no_material_impact"),
+    );
+    assert(result(h).presentation.includes("UX review findings"));
+    assert(
+      result(h).reason.includes(
+        defect === "high" ? "ux-loss" : "Current UX review",
+      ),
+    );
+  }
+});
+
+Deno.test("UX accepted submission survives interrupted import and cleanup without duplicate dispatch", async () => {
+  for (const fault of ["event", "cleanup", "task"] as const) {
+    const state = transition(implementing(), "review_code", {
+      planVersion: 1,
+      commit: head,
+      steps: [{ id: "fix", status: "implemented" }],
+      findings: [],
+    });
+    const h = harness(state);
+    h.controls.evidenceForRole = driverEvidence;
+    h.controls.failEventOnce = fault === "event";
+    h.controls.cleanupError = fault === "cleanup";
+    h.controls.failTaskCompletionOnce = fault === "task";
+    await h.drive.execute({ agent: options }, h.context);
+    equal(result(h).decision, "blocked");
+    const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    equal(task.role, "review_ux");
+    const original = {
+      id: task.id,
+      prompt: task.prompt,
+      submission: task.submission,
+    };
+    h.controls.cleanupError = false;
+    await h.drive.execute({}, h.context);
+    equal(result(h).decision, "authorize_merge");
+    equal(dispatchedRoles(h), ["review_ux"]);
+    const completed = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    equal({
+      id: completed.id,
+      prompt: completed.prompt,
+      submission: completed.submission,
+    }, original);
+    const id = result(h).id;
+    await h.drive.execute({}, h.context);
+    equal(result(h).id, id);
+    assert(
+      result(h).presentation.includes(
+        "UX limitations: Source-based fixture assessment",
+      ),
+    );
+  }
+});
+
+Deno.test("UX-only rollback and restart retain technical review and require new verification", async () => {
+  const h = harness(implementing());
+  h.controls.evidenceForRole = driverEvidence;
+  await h.drive.execute({ agent: options }, h.context);
+  const technical = (await loadState(h.context)).codeReview;
+  await h.methods.rollback.execute({
+    step: "review_ux",
+    request: "Repeat UX review",
+  }, h.context);
+  const rewound = await loadState(h.context);
+  equal(rewound.codeReview, technical);
+  assert(!rewound.uxReview && !rewound.verification);
+  await h.drive.execute({}, h.context);
+  equal(dispatchedRoles(h), [
+    "implement",
+    "review_code",
+    "review_ux",
+    "review_ux",
+  ]);
+  const task = AgentTaskSchema.parse(h.resources.get("agent-task"));
+  await h.methods.restart_agent.execute({
+    ...options,
+    role: "review_ux",
+    taskId: task.id,
+    request: "Restart UX",
+  }, h.context);
+  await h.drive.execute({}, h.context);
+  // Recovery saves its running replacement twice; child calls count launches.
+  equal(h.calls.length, 5);
+  equal((await loadState(h.context)).codeReview, technical);
+  equal(result(h).decision, "authorize_merge");
+});
+
+Deno.test("UX worker failure missing submission and accepted-before-completion cannot advance", async () => {
+  for (const fault of ["missing", "failed", "busy"] as const) {
+    const state = transition(implementing(), "review_code", {
+      planVersion: 1,
+      commit: head,
+      steps: [{ id: "fix", status: "implemented" }],
+      findings: [],
+    });
+    const h = harness(state);
+    h.controls.evidenceForRole = driverEvidence;
+    if (fault === "missing") h.controls.submitEvidence = false;
+    if (fault === "failed") h.controls.childOutcome = "failed";
+    if (fault === "busy") h.controls.childPhase = "running";
+    await h.drive.execute({ agent: options }, h.context);
+    equal(result(h).decision, "blocked");
+    equal(h.controls.checkCalls.length, 0);
+    assert(!(await loadState(h.context)).uxReview);
+    const first = AgentTaskSchema.parse(h.resources.get("agent-task"));
+    equal(first.role, "review_ux");
+    await h.drive.execute({}, h.context);
+    equal(AgentTaskSchema.parse(h.resources.get("agent-task")).id, first.id);
+    equal(h.calls.filter((call) => call.method === "run").length, 1);
+  }
+});
+
+Deno.test("legacy ready without UX blocks with recovery guidance and no worker or checks", async () => {
+  let state = transition(implementing(), "review_code", {
+    planVersion: 1,
+    commit: head,
+    steps: [{ id: "fix", status: "implemented" }],
+    findings: [],
+  });
+  state = transition(verify(state), "ready", {
+    commit: head,
+    mergeRequest: "Old authorization",
+  });
+  delete state.uxReview;
+  const h = harness(state);
+  await h.drive.execute({ agent: options }, h.context);
+  equal(result(h).decision, "blocked");
+  assert(result(h).reason.includes("rollback to review_ux and drive"));
+  equal(h.calls.length, 0);
+  equal(h.controls.checkCalls.length, 0);
 });

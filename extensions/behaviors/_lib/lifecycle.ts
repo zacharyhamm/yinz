@@ -204,6 +204,20 @@ const CodeReviewSchema = z.object({
     }).strict(),
   ).optional(),
 }).strict();
+/** UX review deliberately has no technical per-step conformance field. */
+export const UxReviewSchema = CodeReviewSchema.pick({
+  planVersion: true,
+  commit: true,
+  findings: true,
+  preliminaryChecks: true,
+}).extend({
+  assessment: z.object({
+    impact: z.enum(["material", "no_material_impact"]),
+    summary: Text,
+    assessedPaths: z.array(Text).min(1),
+    limitations: z.array(Text),
+  }).strict(),
+}).strict();
 const CheckResultSchema = CheckSchema.extend({
   // Null when the executable could not be started.
   exitCode: z.number().int().nullable(),
@@ -255,13 +269,14 @@ export function mergeGate(
     "commit" | "preliminaryChecks"
   >,
   verification: Verification | undefined,
+  uxReview?: Pick<z.infer<typeof UxReviewSchema>, "preliminaryChecks">,
 ): MergeGate {
   if (isLegacyPlan(plan)) {
     return {
       kind: "legacy",
-      failedPreliminary: review.preliminaryChecks?.some((check) =>
-        check.result === "failed"
-      ) ?? false,
+      failedPreliminary: [review, uxReview].some((r) =>
+        r?.preliminaryChecks?.some((check) => check.result === "failed")
+      ),
     };
   }
   if (
@@ -349,6 +364,7 @@ export const StateSchema = z.object({
   approval: ApprovalSchema.optional(),
   implementation: ImplementationSchema.optional(),
   codeReview: CodeReviewSchema.optional(),
+  uxReview: UxReviewSchema.optional(),
   verification: VerificationSchema.optional(),
   mergeAuthorization: z.object({
     commit: Commit,
@@ -548,6 +564,7 @@ export const LifecycleStepSchema = z.enum([
   "approve",
   "implement",
   "review_code",
+  "review_ux",
   "ready",
   "merge",
   "summarize",
@@ -574,9 +591,19 @@ export function rollbackState(
     state.approval,
     state.implementation,
     state.codeReview,
+    state.uxReview,
     state.mergeAuthorization,
     state.receipt,
   ];
+  if (index >= 8 && state.receipt) {
+    archivePlanning(state);
+    state.rollbackId = z.uuid().parse(id);
+    delete state.outcome;
+    delete state.lastFailure;
+    delete state.attempt;
+    state.phase = "merged";
+    return state;
+  }
   for (let previous = 0; previous < index; previous++) {
     if (!required[previous]) {
       throw new Error(
@@ -586,18 +613,28 @@ export function rollbackState(
       );
     }
   }
+  if (
+    step === "review_ux" &&
+    (state.codeReview?.planVersion !== state.plan?.version ||
+      state.approval?.planVersion !== state.plan?.version ||
+      state.implementation?.head !== state.codeReview?.commit)
+  ) {
+    throw new Error(
+      "Restart review_code first: technical evidence no longer matches the approved implementation",
+    );
+  }
+  if (index >= 7) requireCurrentReviews(state, state.implementation?.head);
   archivePlanning(state);
   state.rollbackId = z.uuid().parse(id);
   delete state.outcome;
   delete state.lastFailure;
   delete state.attempt;
-  // A merge which already landed is a fact. Retrying merge/close-out reuses its receipt.
-  if (index >= 7 && state.receipt) {
-    state.phase = "merged";
-    return state;
-  }
   delete state.receipt;
-  if (index <= 6) delete state.mergeAuthorization;
+  if (index <= 7) delete state.mergeAuthorization;
+  if (index <= 6) {
+    delete state.uxReview;
+    delete state.verification;
+  }
   if (index <= 5) {
     delete state.codeReview;
     delete state.verification;
@@ -614,6 +651,7 @@ export function rollbackState(
     "planning",
     "planning",
     "approved",
+    "implementing",
     "implementing",
     "implementing",
     "ready",
@@ -634,6 +672,7 @@ export const ActionSchemas = {
   approve: ApprovalSchema,
   implement: ImplementationSchema.omit({ head: true }).strict(),
   review_code: CodeReviewSchema,
+  review_ux: UxReviewSchema,
   verify: z.object({ verification: VerificationSchema }).strict(),
   ready: z.object({ commit: Commit, mergeRequest: Text }).strict(),
   begin_merge: z.object({ attempt: AttemptSchema }).strict(),
@@ -688,6 +727,35 @@ function requireResolved(findings: z.infer<typeof FindingsSchema>): void {
   }
 }
 
+/** All unlanded advancement paths require the same pair of current reviews. */
+export function requireCurrentReviews(
+  state: LifecycleState,
+  commit?: string,
+): void {
+  const plan = requirePlan(state);
+  const technical = state.codeReview;
+  const ux = state.uxReview;
+  if (
+    !technical || technical.planVersion !== plan.version ||
+    state.approval?.planVersion !== plan.version ||
+    state.implementation?.head !== technical.commit ||
+    (commit !== undefined && commit !== technical.commit)
+  ) {
+    throw new Error(
+      "Current code review must match the reviewed commit and approved plan",
+    );
+  }
+  requireResolved(technical.findings);
+  if (
+    !ux || ux.planVersion !== plan.version || ux.commit !== technical.commit
+  ) {
+    throw new Error(
+      "Current UX review must match the reviewed commit and approved plan; rollback to review_ux and drive, or repair an unlanded active attempt first",
+    );
+  }
+  requireResolved(ux.findings);
+}
+
 /** The recorded failure of the active merge attempt, if it has one. */
 export function activeMergeFailure(
   state: LifecycleState,
@@ -727,6 +795,7 @@ export function recordMergeFailure(
 
 function clearReview(state: LifecycleState): void {
   delete state.codeReview;
+  delete state.uxReview;
   delete state.verification;
   delete state.mergeAuthorization;
   delete state.attempt;
@@ -938,10 +1007,33 @@ export function transition(
       state.phase = "implementing";
       break;
     }
+    case "review_ux": {
+      requirePhase(state, ["implementing", "ready"]);
+      const review = ActionSchemas.review_ux.parse(args);
+      const plan = requirePlan(state, review.planVersion);
+      if (
+        !state.codeReview || state.codeReview.planVersion !== plan.version ||
+        state.codeReview.commit !== review.commit ||
+        state.implementation?.head !== review.commit ||
+        state.approval?.planVersion !== plan.version
+      ) {
+        throw new Error(
+          "UX review requires current technical review of the same approved implementation commit",
+        );
+      }
+      requireResolved(state.codeReview.findings);
+      state.uxReview = review;
+      delete state.verification;
+      delete state.mergeAuthorization;
+      delete state.attempt;
+      state.phase = "implementing";
+      break;
+    }
     case "verify": {
       requirePhase(state, ["implementing"]);
       const { verification } = ActionSchemas.verify.parse(args);
       const plan = requirePlan(state, verification.planVersion);
+      requireCurrentReviews(state, verification.commit);
       if (!plan.checks) {
         throw new Error(
           "This legacy plan has no structured checks to verify; revise the plan to add checks",
@@ -1006,8 +1098,13 @@ export function transition(
           "Merge authorization must match the reviewed commit and approved plan",
         );
       }
-      requireResolved(state.codeReview.findings);
-      const gate = mergeGate(plan, state.codeReview, state.verification);
+      requireCurrentReviews(state, ready.commit);
+      const gate = mergeGate(
+        plan,
+        state.codeReview,
+        state.verification,
+        state.uxReview,
+      );
       if (gate.kind === "legacy" && gate.failedPreliminary) {
         throw new Error(
           "Resolve failed preliminary checks before requesting a merge",
@@ -1042,6 +1139,7 @@ export function transition(
       ) {
         throw new Error("Merge attempt does not match the authorized commit");
       }
+      requireCurrentReviews(state, attempt.originalHead);
       state.attempt = attempt;
       delete state.lastFailure;
       break;

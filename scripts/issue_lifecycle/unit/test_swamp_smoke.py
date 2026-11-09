@@ -129,9 +129,15 @@ else:
         assert args[args.index("--conversation")+1] == "smoke-conversation"
         assert "--wait" in args
         if "Current lifecycle snapshot (issue requirements and recorded evidence):" in stdin:
-            snapshot = json.loads(stdin.split("Current lifecycle snapshot (issue requirements and recorded evidence):\\n\\n", 1)[1])
+            snapshot = json.loads(stdin.split("Current lifecycle snapshot (issue requirements and recorded evidence):\\n\\n", 1)[1].split("\\n\\nThe commit being reviewed is ", 1)[0])
         if "Finish submission of the findings already established" in stdin:
             evidence = state["evidence"]
+        elif "Review the committed diff against local main" in stdin:
+            evidence = {"planVersion":snapshot["plan"]["version"], "commit":snapshot["implementation"]["head"], "steps":[{"id":step["id"],"status":"implemented"} for step in snapshot["plan"]["steps"]], "findings":[]}
+        elif "Review the supplied committed change specifically" in stdin:
+            evidence = {"planVersion":snapshot["plan"]["version"], "commit":snapshot["implementation"]["head"], "assessment":{"impact":"no_material_impact","summary":"The marker is internal fixture data; command discovery, output and repeat use are unchanged.","assessedPaths":["marker.txt: internal fixture data and repeat CLI use"],"limitations":["Protocol stub; no real interaction evaluation"]},"findings":[]}
+            if os.environ.get("YINZ_SMOKE_BLOCK_UX"):
+                evidence["findings"] = [{"id":"ux-feedback","severity":"high","description":"Fixture cancellation hides continuing work", "requirement":"Understand progress", "mechanism":"Feedback claims completion before settlement", "evidence":["fixture.ts:42"]}]
         elif "Adversarially review the current plan" in stdin:
             evidence = {"planVersion":snapshot["plan"]["version"], "findings":[]}
             if snapshot["plan"]["version"] <= int(os.environ.get("YINZ_SMOKE_BLOCKED_VERSIONS", "0")):
@@ -444,6 +450,8 @@ print(json.dumps(response))
             "steps": [{"id": "marker", "status": "implemented"}], "findings": [],
             "preliminaryChecks": [{"command": "inspect fixture marker", "result": "passed", "summary": "marker.txt contains the expected fixture text."}],
         })
+        self.record_ux(original)
+        self.assertEqual(self.git(self.repo, "status", "--short"), "")
         ready = {"commit": original, "mergeRequest": "Merge the disposable smoke fixture locally."}
         launcher = [sys.executable, str(self.repo / "scripts" / "issue-lifecycle"), "--control", str(self.repo), "--item", str(self.item_id)]
         refused = subprocess.run([*launcher, "ready", "--input-file", "-"], input=json.dumps(ready), cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=120)
@@ -492,12 +500,68 @@ print(json.dumps(response))
         self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), receipt["mergedCommit"])
         self.assertEqual(self.git(self.repo, "status", "--short"), "")
 
+    def test_installed_review_sequence_and_resume(self):
+        worktree = self.root / "review-worktree"
+        self.git(self.repo, "worktree", "add", "-b", "review-issue", str(worktree))
+        self.lifecycle("start", cwd=worktree)
+        handoff = json.loads(self.lifecycle("drive", {"agent": {"session": "smoke", "kind": "claude"}}))
+        self.assertEqual(handoff["decision"], "approve_plan")
+        self.lifecycle("approve", {"planVersion": 1, "request": "Implement fixture"})
+        self.lifecycle("implement", {"worktree": str(worktree), "branch": "review-issue"})
+        (worktree / "marker.txt").write_text("smoke marker\n")
+        self.git(worktree, "add", "marker.txt")
+        self.git(worktree, "commit", "-m", "fixture marker")
+        commit = self.git(worktree, "rev-parse", "HEAD")
+        self.lifecycle("review-code", {"planVersion": 1, "commit": commit,
+                                      "steps": [{"id": "marker", "status": "implemented"}], "findings": []})
+        # Technical approval alone cannot run a check or authorize merging.
+        launcher = [sys.executable, str(self.repo / "scripts" / "issue-lifecycle"), "--control", str(self.repo), "--item", str(self.item_id)]
+        refused = subprocess.run([*launcher, "verify"], cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=120)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("Current UX review", refused.stdout + refused.stderr)
+        self.assertNotIn("verification", self.state())
+        self.env["YINZ_SMOKE_BLOCK_UX"] = "1"
+        blocked = json.loads(self.lifecycle("drive"))
+        self.assertEqual(blocked["decision"], "blocked")
+        self.assertIn("ux-feedback", blocked["presentation"])
+        self.assertNotIn("verification", self.state())
+        # UX-only rollback retains technical evidence and runs one fresh UX worker.
+        del self.env["YINZ_SMOKE_BLOCK_UX"]
+        self.lifecycle("rollback", {"step": "review_ux", "request": "Repeat fixture UX"})
+        clean = json.loads(self.lifecycle("drive"))
+        self.assertEqual(clean["decision"], "authorize_merge")
+        self.assertEqual(clean["state"]["uxReview"]["assessment"]["impact"], "no_material_impact")
+        self.assertEqual(clean["state"]["verification"]["status"], "passed")
+        for label in ("Code review findings", "UX review findings", "UX assessment", "UX limitations"):
+            self.assertIn(label, clean["presentation"])
+        def roles():
+            calls = [json.loads(line) for line in self.yinz_log.read_text().splitlines()]
+            return [json.loads(call["stdin"].split("Swamp submission target:\n", 1)[1].split("\n\n", 1)[0])["role"]
+                    for call in calls if call["args"][3] == "prompt"]
+        self.assertEqual(roles(), ["triage", "plan", "review_plan", "review_ux", "review_ux"])
+        replay = json.loads(self.lifecycle("drive"))
+        self.assertEqual(replay["id"], clean["id"])
+        self.assertEqual(roles(), ["triage", "plan", "review_plan", "review_ux", "review_ux"])
+        # Repeat from technical review to exercise the visible two-role sequence.
+        self.lifecycle("rollback", {"step": "review_code", "request": "Repeat both fixture reviews"})
+        again = json.loads(self.lifecycle("drive"))
+        self.assertEqual(again["decision"], "authorize_merge")
+        self.assertEqual(roles()[-2:], ["review_code", "review_ux"])
+
+    def record_ux(self, commit):
+        self.lifecycle("review-ux", {
+            "planVersion": 1, "commit": commit, "findings": [],
+            "assessment": {"impact": "no_material_impact", "summary": "Internal fixture marker does not change command interaction or output.",
+                           "assessedPaths": ["marker.txt: internal data and repeated CLI checks"], "limitations": ["Protocol fixture"]},
+        })
+
     def reviewed_and_ready(self, worktree, request):
         commit = self.git(worktree, "rev-parse", "HEAD")
         self.lifecycle("review-code", {
             "planVersion": 1, "commit": commit,
             "steps": [{"id": "marker", "status": "implemented"}], "findings": [],
         })
+        self.record_ux(commit)
         self.assertEqual(json.loads(self.lifecycle("verify"))["status"], "passed")
         self.lifecycle("ready", {"commit": commit, "mergeRequest": request})
         return commit

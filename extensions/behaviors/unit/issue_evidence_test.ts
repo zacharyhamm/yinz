@@ -55,10 +55,10 @@ const plan = {
 async function fixture(role: RoleEvidence["role"] = "triage") {
   let state = createState(issue);
   if (role !== "triage") state = transition(state, "triage", triage);
-  if (["review_plan", "implement", "review_code"].includes(role)) {
+  if (["review_plan", "implement", "review_code", "review_ux"].includes(role)) {
     state = transition(state, "plan", plan);
   }
-  if (["implement", "review_code"].includes(role)) {
+  if (["implement", "review_code", "review_ux"].includes(role)) {
     state = transition(state, "review_plan", { planVersion: 1, findings: [] });
     state = transition(state, "approve", {
       planVersion: 1,
@@ -67,6 +67,14 @@ async function fixture(role: RoleEvidence["role"] = "triage") {
     state = transition(state, "implement", {
       worktree: "/repo/issue",
       branch: "issue-85",
+    });
+  }
+  if (role === "review_ux") {
+    state = transition(state, "review_code", {
+      planVersion: 1,
+      commit: head,
+      steps: [{ id: "fix", status: "implemented" }],
+      findings: [],
     });
   }
   const prompt = "Investigate once and submit through Swamp";
@@ -83,7 +91,9 @@ async function fixture(role: RoleEvidence["role"] = "triage") {
     status: "running",
     prompt,
     promptDigest: await promptDigest(prompt),
-    ...(role === "review_code" ? { reviewCommit: head } : {}),
+    ...(["review_code", "review_ux"].includes(role)
+      ? { reviewCommit: head }
+      : {}),
   };
   const parent = {
     modelId: "parent-id",
@@ -165,6 +175,17 @@ async function fixture(role: RoleEvidence["role"] = "triage") {
     plan,
     review_plan: { planVersion: 1, findings: [] },
     implement: { summary: "Implemented", commit: head },
+    review_ux: {
+      planVersion: 1,
+      commit: head,
+      findings: [],
+      assessment: {
+        impact: "no_material_impact",
+        summary: "Caller use is unchanged",
+        assessedPaths: ["src/lib.rs caller"],
+        limitations: [],
+      },
+    },
     review_code: {
       planVersion: 1,
       commit: head,
@@ -203,6 +224,7 @@ for (
     "review_plan",
     "implement",
     "review_code",
+    "review_ux",
   ] as const
 ) {
   Deno.test(`${role} evidence is validated and acknowledged in one Swamp resource`, async () => {
@@ -347,20 +369,22 @@ Deno.test("worker cannot submit another role, task, digest or controller mutatio
 });
 
 Deno.test("code evidence binds a clean branch and the dispatched reviewed commit", async () => {
-  for (const change of ["dirty", "branch", "head", "reviewed"] as const) {
-    const h = await fixture("review_code");
-    if (change === "dirty") h.controls.clean = false;
-    if (change === "branch") h.controls.branch = "other";
-    if (change === "head") h.controls.head = "b".repeat(40);
-    const evidence = {
-      ...h.input().evidence,
-      ...(change === "reviewed" ? { commit: "b".repeat(40) } : {}),
-    };
-    await rejects(
-      () => h.submit(evidence),
-      change === "reviewed" ? "different commit" : "clean issue branch",
-    );
-    equal(h.writes.length, 1);
+  for (const role of ["review_code", "review_ux"] as const) {
+    for (const change of ["dirty", "branch", "head", "reviewed"] as const) {
+      const h = await fixture(role);
+      if (change === "dirty") h.controls.clean = false;
+      if (change === "branch") h.controls.branch = "other";
+      if (change === "head") h.controls.head = "b".repeat(40);
+      const evidence = {
+        ...h.input().evidence,
+        ...(change === "reviewed" ? { commit: "b".repeat(40) } : {}),
+      };
+      await rejects(
+        () => h.submit(evidence),
+        change === "reviewed" ? "different commit" : "clean issue branch",
+      );
+      equal(h.writes.length, 1);
+    }
   }
 });
 
@@ -418,4 +442,97 @@ Deno.test("submission preflight rejects a shared writer lease before launching w
       "No worker was launched",
     );
   }
+});
+
+Deno.test("UX evidence persistence replay conflicts and supersession retain original assignment", async () => {
+  const h = await fixture("review_ux");
+  h.controls.failWrite = true;
+  await rejects(h.submit, "Write interrupted");
+  equal(SubmissionSchema.parse(h.records.get("submission")).status, "open");
+  await h.submit();
+  const accepted = SubmissionSchema.parse(h.records.get("submission"));
+  assert(accepted.status === "accepted");
+  equal(accepted.assignment, h.assignment);
+  await h.submit();
+  equal(h.records.get("submission"), accepted);
+  const payload = h.input().evidence as Extract<
+    RoleEvidence,
+    { role: "review_ux" }
+  >["evidence"];
+  await rejects(
+    () =>
+      h.submit({
+        ...payload,
+        assessment: { ...payload.assessment, summary: "Changed assessment" },
+      }),
+    "Submission conflict",
+  );
+  h.parents.set("recovery", {
+    id: operationId,
+    status: "pending",
+    task: { id: taskId },
+  });
+  await h.methods.supersede.execute({
+    taskId,
+    assignmentDigest: h.assignment.digest,
+    operationId,
+  }, h.context);
+  const old = SubmissionSchema.parse(h.records.get("submission"));
+  assert(old.status === "superseded");
+  equal(old.receipt, accepted.receipt);
+  await rejects(h.submit, "superseded");
+});
+
+Deno.test("UX assignments reject changed requirements state plan role and pending recovery", async () => {
+  for (
+    const change of [
+      "requirements",
+      "plan",
+      "rollback",
+      "role",
+      "task",
+      "recovery",
+      "discard",
+    ] as const
+  ) {
+    const h = await fixture("review_ux");
+    if (change === "requirements") {
+      h.controls.agenda = { ...issue, digest: "e".repeat(64) };
+    }
+    if (change === "plan") {
+      h.parents.set("state", { ...h.task.before, planVersion: 2 });
+    }
+    if (change === "rollback") {
+      h.parents.set("state", { ...h.task.before, rollbackId: operationId });
+    }
+    const parent = h.parents.get("agent-task") as Record<string, unknown>;
+    if (change === "role") parent.role = "review_code";
+    if (change === "task") parent.id = operationId;
+    if (change === "recovery") h.parents.set("recovery", { status: "pending" });
+    if (change === "discard") {
+      parent.discard = { request: "Discard", confirmedStopped: true };
+    }
+    await rejects(
+      h.submit,
+      ["recovery", "discard"].includes(change)
+        ? "no longer accepting"
+        : change === "requirements"
+        ? "requirements changed"
+        : "stale",
+    );
+    equal(SubmissionSchema.parse(h.records.get("submission")).status, "open");
+  }
+  const h = await fixture("review_ux");
+  await rejects(
+    () =>
+      h.methods.submit.execute({
+        ...h.input(),
+        assignmentDigest: "e".repeat(64),
+      }, h.context),
+    "different assignment",
+  );
+  await rejects(
+    () => h.submit({ ...h.input().evidence, planVersion: 2 }),
+    "current plan version",
+  );
 });

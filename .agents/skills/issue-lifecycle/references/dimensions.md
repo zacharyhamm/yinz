@@ -1,6 +1,6 @@
 # Yinz review dimensions
 
-Read these dimensions for plan and code review alongside the
+Read these dimensions for plan, technical code and UX review alongside the
 [planning standards](planning.md) and [review standards](review.md). The names
 below are stable descriptive categories. Apply only dimensions relevant to the
 change; an inapplicable dimension creates no finding or additional testing
@@ -10,7 +10,11 @@ policy when a local guide suggests full suites.
 
 For plan review, inspect the proposed behavior, affected callers and
 verification coverage against source. For code review, inspect the committed
-implementation, affected callers and actual verification evidence. A dimension
+implementation, affected callers and actual verification evidence. For UX review,
+trace the affected user tasks and interaction surfaces through normal, waiting,
+failure, cancellation, recovery and repeat use; consider indirect effects even
+when no UI file changed. Apply relevant dimensions to user consequences and
+evidence, without inventing aesthetic blockers or unrelated redesigns. A dimension
 is a review lens, not evidence of a defect. Every actionable concern needs
 concrete source evidence.
 

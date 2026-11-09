@@ -16,6 +16,7 @@ plugin-data.db
 
 # Per-task pane definitions created by Swamp's nested runModel API.
 models/@yinz/agent/issue-agent-*.yaml
+models/@yinz/issue-evidence/issue-evidence-*.yaml
 
 # BEGIN swamp managed section - DO NOT EDIT
 

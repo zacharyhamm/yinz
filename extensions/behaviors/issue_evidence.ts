@@ -192,7 +192,8 @@ export function createEvidenceMethods(dependencies = evidenceDependencies) {
         }
         if (
           validated.payload.role === "implement" ||
-          validated.payload.role === "review_code"
+          validated.payload.role === "review_code" ||
+          validated.payload.role === "review_ux"
         ) {
           if (!current.implementation) {
             throw new Error(

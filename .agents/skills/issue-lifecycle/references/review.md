@@ -1,11 +1,11 @@
-# Plan review standards
+# Shared review standards
 
 Inspect source and requirements, not just the plan's prose. Review correctness,
 scope and unnecessary complexity. For revisions, compare the previous plan,
 findings, planner responses, controller dispositions and current plan. Verify
 claimed fixes and look for new defects while preserving supported tradeoffs.
 
-For plan and code review, read the [Yinz review dimensions](dimensions.md) and
+For plan, technical code and UX review, read the [Yinz review dimensions](dimensions.md) and
 apply those relevant to the change. Findings may cite a dimension name in
 `description` and its authoritative source in `evidence`, alongside concrete
 affected code or plan locations. Use the existing finding fields, without a
@@ -24,7 +24,9 @@ history. Retain valid resolved or rejected decisions. Reopening a disposed or
 previously fixed concern requires `reopening: {rationale, evidence}`: cite new
 evidence and explain why the previous disposition no longer holds. A planner's
 claim of a fix is not proof; inspect the relevant code or plan change. Retain a
-finding with a supported `resolution`, or omit it once verified fixed. Neither
+finding with a supported `resolution`, or omit it once verified fixed. Leave
+`resolution` unset for a newly reported defect. A proposed repair belongs in the
+description and does not resolve the concern. Neither
 history nor stale review evidence can approve a new plan.
 
 The controller owns adjudication. Workers supply evidence and disagreements;
@@ -38,3 +40,41 @@ Submit findings through the assigned Swamp evidence behavior and inspect the
 accepted receipt before ending the task. Final chat formatting is presentation.
 Correct submission errors using the same investigation; do not repeat the review.
 Workers may submit only their own assignment's evidence and inspect its receipt.
+
+
+## Implementation review ownership
+
+Technical review independently assesses requirements and behavior, including
+incorrect assumptions in an approved design. Compare the committed change with
+local main, trace affected callers, state transitions, failure/cleanup paths,
+ownership, concurrency and platforms as applicable. Inspect missing coverage and
+assertions that can pass with incorrect behavior. Also account for each approved
+plan step exactly once and justify deviations; conformance alone is insufficient.
+
+The separate `review_ux` worker reviews the same full commit and plan version.
+Identify affected users/tasks and trace discovery, normal/repeat use, waiting,
+failure, cancellation and recovery. Inspect relevant terminal UI, keys/focus,
+readability, CLI/output, defaults/configuration, help/docs and lifecycle handoffs.
+Include indirect responsiveness, interaction burden, compatibility and loss of
+work. Can users understand what happened, what is happening and what to do next?
+Keep implementation details out of user flows unless they support a meaningful
+decision. Exercise representative interactions when practical; distinguish
+observations from source-derived conclusions and state material limitations.
+
+UX findings identify the user/task, interaction trigger, behavior, consequence,
+severity and concrete evidence using the shared finding fields. Aesthetic
+preferences, speculative concerns and unrelated redesigns are not blockers.
+An empty findings array is valid after a real review. Always record an assessment:
+`impact` (`material` or `no_material_impact`), nonempty `summary` rationale,
+nonempty `assessedPaths` describing user tasks/workflows and source paths, and
+`limitations` (possibly empty). No-impact conclusions require tracing affected
+paths; absence of UI-file changes is insufficient.
+
+Both reviews must be current and free of unresolved high/critical findings before
+lifecycle verification or merge authorization. Checks actually performed by either
+reviewer remain advisory for structured plans; the lifecycle runs approved checks.
+Follow AGENTS.md's focused-test policy; review never authorizes full suites.
+Plan checks are valid command argument arrays executed directly without a shell,
+using supported flags and covering changed behavior and affected callers.
+See the bounded [reviewer evaluation](review-evaluation.md) for measured outcomes
+and limits; fixture reviews are not approval of a real implementation.

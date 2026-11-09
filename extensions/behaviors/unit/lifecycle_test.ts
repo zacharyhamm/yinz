@@ -19,6 +19,20 @@ import {
   VerificationSchema,
 } from "../_lib/lifecycle.ts";
 
+function withUx(state: LifecycleState): LifecycleState {
+  return transition(state, "review_ux", {
+    planVersion: state.plan!.version,
+    commit: state.codeReview!.commit,
+    assessment: {
+      impact: "no_material_impact",
+      summary: "Fixture caller behavior and command output remain unchanged.",
+      assessedPaths: ["src/lib.rs: affected caller and repeat command use"],
+      limitations: ["Source-based fixture assessment"],
+    },
+    findings: [],
+  });
+}
+
 function assert(
   condition: unknown,
   message = "Assertion failed",
@@ -120,7 +134,7 @@ function verification(
   };
 }
 function reviewed(): LifecycleState {
-  return transition(implementing(), "review_code", review);
+  return withUx(transition(implementing(), "review_code", review));
 }
 function verified(): LifecycleState {
   const state = reviewed();
@@ -201,6 +215,7 @@ Deno.test("every lifecycle step can be restarted while retaining only prerequisi
     "approval",
     "implementation",
     "codeReview",
+    "uxReview",
     "mergeAuthorization",
     "receipt",
   ] as const;
@@ -213,13 +228,13 @@ Deno.test("every lifecycle step can be restarted while retaining only prerequisi
     assert(!state.outcome && !state.attempt && !state.lastFailure);
     for (const [fieldIndex, field] of fields.entries()) {
       // Worktree ownership survives rollback; already-landed merges are retained for retries.
-      if (field === "implementation" || (field === "receipt" && index >= 7)) {
+      if (field === "implementation" || (field === "receipt" && index >= 8)) {
         continue;
       }
       equal(Boolean(state[field]), fieldIndex < index);
     }
     if (index <= 5) assert(!state.implementation?.head);
-    if (index >= 7) equal(state.receipt, original.receipt);
+    if (index >= 8) equal(state.receipt, original.receipt);
   }
   equal(original, snapshot);
   // Plan numbers never rewind: evidence for an abandoned version cannot authorize a new plan.
@@ -543,7 +558,7 @@ Deno.test("ready requires a passing verification of the reviewed commit; reviewe
   });
   equal(
     transition(
-      transition(advisory, "verify", verification(advisory)),
+      transition(withUx(advisory), "verify", verification(advisory)),
       "ready",
       { commit: head, mergeRequest: "Merge" },
     ).phase,
@@ -609,14 +624,14 @@ Deno.test("legacy plans without checks keep the reviewer-reported gate", () => {
     transition(state, "ready", { commit: head, mergeRequest: "Merge" }).phase,
     "ready",
   );
-  const failed = legacy(transition(implementing(), "review_code", {
+  const failed = legacy(withUx(transition(implementing(), "review_code", {
     ...review,
     preliminaryChecks: [{
       command: "cargo x test selected_test",
       result: "failed",
       summary: "Behavior regression",
     }],
-  }));
+  })));
   rejects(
     () => transition(failed, "ready", { commit: head, mergeRequest: "Merge" }),
     "failed preliminary",
@@ -1289,4 +1304,164 @@ Deno.test("open findings may escalate, dispositions accumulate, and history keep
     state.planningContext!.history.map((h) => [h.plan.version, !!h.review]),
     [[1, true], [2, true]],
   );
+});
+
+Deno.test("UX review requires a real distinct assessment and matching technical review", () => {
+  const state = reviewed();
+  const ux = state.uxReview!;
+  for (const impact of ["material", "no_material_impact"] as const) {
+    const next = transition(state, "review_ux", {
+      ...ux,
+      assessment: { ...ux.assessment, impact },
+    });
+    equal(next.uxReview?.assessment.impact, impact);
+    equal(next.codeReview, state.codeReview);
+    equal(next.implementation?.head, head);
+  }
+  for (
+    const assessment of [undefined, {}, { ...ux.assessment, summary: " " }, {
+      ...ux.assessment,
+      assessedPaths: [],
+    }]
+  ) {
+    rejects(
+      () => transition(state, "review_ux", { ...ux, assessment }),
+      "assessment",
+    );
+  }
+  rejects(
+    () => transition(state, "review_ux", { ...ux, steps: review.steps }),
+    "Unrecognized key",
+  );
+  rejects(() =>
+    transition(state, "review_ux", {
+      ...ux,
+      findings: [
+        { id: "same", severity: "low", description: "One" },
+        { id: "same", severity: "low", description: "Two" },
+      ],
+    }), "unique");
+  rejects(
+    () => transition(implementing(), "review_ux", ux),
+    "current technical review",
+  );
+  rejects(
+    () => transition(state, "review_ux", { ...ux, commit: changedHead }),
+    "same approved",
+  );
+});
+
+Deno.test("missing stale and blocking UX evidence cannot verify authorize or begin merge", () => {
+  for (
+    const kind of [
+      "missing",
+      "commit",
+      "plan",
+      "high",
+      "critical",
+      "technical",
+    ] as const
+  ) {
+    const state = reviewed();
+    if (kind === "missing") delete state.uxReview;
+    if (kind === "commit") state.uxReview!.commit = changedHead;
+    if (kind === "plan") state.uxReview!.planVersion++;
+    if (["high", "critical", "technical"].includes(kind)) {
+      (kind === "technical" ? state.codeReview! : state.uxReview!).findings = [
+        {
+          id: "defect",
+          severity: kind === "critical" ? "critical" : "high",
+          description: "Concrete blocker",
+        },
+      ];
+    }
+    const message = ["high", "critical", "technical"].includes(kind)
+      ? "Resolve high/critical"
+      : "Current UX review";
+    rejects(() => transition(state, "verify", verification(state)), message);
+    rejects(
+      () => transition(state, "ready", { commit: head, mergeRequest: "Merge" }),
+      message,
+    );
+    state.phase = "ready";
+    state.mergeAuthorization = {
+      commit: head,
+      planVersion: 1,
+      request: "Old authorization",
+    };
+    rejects(
+      () =>
+        transition(state, "begin_merge", {
+          attempt: {
+            id: "a6da10b0-c980-4b82-b920-640238095f1b",
+            originalHead: head,
+            startedAt: "2026-11-03T12:00:00.000Z",
+          },
+        }),
+      message,
+    );
+  }
+});
+
+Deno.test("UX rollback retains technical evidence only and legacy landed receipts remain facts", () => {
+  const state = verified();
+  const id = "a6da10b0-c980-4b82-b920-640238095f1b";
+  const next = rollbackState(state, "review_ux", id);
+  equal(next.codeReview, state.codeReview);
+  equal(next.implementation?.head, head);
+  assert(!next.uxReview && !next.verification && !next.mergeAuthorization);
+  const fresh = transition(next, "review_ux", state.uxReview);
+  rejects(
+    () => transition(fresh, "ready", { commit: head, mergeRequest: "Merge" }),
+    "Run verify",
+  );
+  const legacy = done();
+  delete legacy.uxReview;
+  for (const step of ["merge", "summarize"] as const) {
+    const resumed = rollbackState(legacy, step, id);
+    equal(resumed.receipt, legacy.receipt);
+    equal(resumed.phase, "merged");
+    assert(!resumed.uxReview);
+  }
+  for (
+    const next of [
+      transition(state, "review_code", review),
+      transition(state, "repair", { reason: "Repair" }),
+      refreshIssue(state, { ...issue, digest: "e".repeat(64) }),
+    ]
+  ) assert(!next.uxReview && !next.verification && !next.mergeAuthorization);
+});
+
+Deno.test("failed UX advisory checks block only the legacy reviewer-reported gate", () => {
+  const state = reviewed();
+  state.uxReview!.preliminaryChecks = [{
+    command: "interaction",
+    result: "failed",
+    summary: "Failure observed",
+  }];
+  const old = legacy(state);
+  rejects(
+    () => transition(old, "ready", { commit: head, mergeRequest: "Merge" }),
+    "failed preliminary",
+  );
+  equal(
+    transition(transition(state, "verify", verification(state)), "ready", {
+      commit: head,
+      mergeRequest: "Merge",
+    }).phase,
+    "ready",
+  );
+});
+
+Deno.test("rollback cannot retain stale technical or UX review as current prerequisites", () => {
+  const id = "a6da10b0-c980-4b82-b920-640238095f1b";
+  const state = verified();
+  state.codeReview!.commit = changedHead;
+  rejects(
+    () => rollbackState(state, "review_ux", id),
+    "Restart review_code first",
+  );
+  const ux = verified();
+  ux.uxReview!.planVersion++;
+  rejects(() => rollbackState(ux, "ready", id), "Current UX review");
 });

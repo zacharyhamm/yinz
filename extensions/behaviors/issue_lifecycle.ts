@@ -20,6 +20,7 @@ import {
   readAgenda,
   recordMergeFailure,
   refreshIssue,
+  requireCurrentReviews,
   StateSchema,
   transition,
 } from "./_lib/lifecycle.ts";
@@ -95,7 +96,10 @@ function recordedTransition<K extends keyof typeof ActionSchemas>(
       withIssue(context, async () => {
         const state = await mutableState(context);
         await currentIssue(state);
-        if (action === "review_code" || action === "ready") {
+        if (
+          action === "review_code" || action === "review_ux" ||
+          action === "ready"
+        ) {
           const { commit } = z.object({ commit: z.string() }).parse(args);
           await reviewedHead(context, state, commit);
         }
@@ -288,6 +292,10 @@ export const behavior = {
       "review_code",
       "Record coverage of every plan step at a committed HEAD",
     ),
+    review_ux: recordedTransition(
+      "review_ux",
+      "Record the separate UX assessment of the committed implementation",
+    ),
     verify: {
       kind: "action",
       description:
@@ -404,6 +412,23 @@ export const behavior = {
               "Cannot change the CI exception on an existing attempt; repair and authorize a new attempt",
             );
           }
+          // A landed receipt remains a historical fact, even without new review fields.
+          const existing = await gitOperation(context, {
+            action: "receipt",
+            attemptId: state.attempt!.id,
+          });
+          if (
+            z.object({ status: z.string() }).parse(existing).status === "merged"
+          ) {
+            return saveState(
+              context,
+              "reconcile_merge",
+              transition(state, "merged", {
+                receipt: normalizeReceipt(existing, state),
+              }),
+            );
+          }
+          requireCurrentReviews(state, state.attempt!.originalHead);
           const attempt = state.attempt!;
           const implementation = state.implementation!;
           try {

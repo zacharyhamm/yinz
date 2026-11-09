@@ -137,7 +137,7 @@ proof of non-delivery, a terminal provider result, `confirmedStopped` or another
 permission question. Ordinary timeouts do not authorize automatic restart.
 
 `rollback` takes `{step, request}`. Steps are `triage`, `plan`, `review_plan`,
-`approve`, `implement`, `review_code`, `ready`, `merge` and `summarize`. It retains
+`approve`, `implement`, `review_code`, `review_ux`, `ready`, `merge` and `summarize`. It retains
 preceding evidence and invalidates decisions from the selected step onward;
 prerequisites still apply (for example, `review_plan` needs a plan). Changed
 requirements require rollback to `triage`. Completed Agenda tasks are reopened
@@ -176,12 +176,28 @@ restart step. `status` includes the latest recovery; `recovery-<id>` and
 
 Plan blockers use the skill's `authorize_plan_revision` route: supported
 adjudication or separately authorized targeted revision, never implied approval.
-Code blockers require repair in the issue worktree and fresh review. Existing
+Technical or UX blockers require repair in the issue worktree and fresh
+technical and UX reviews of the resulting commit. A failed, unaccepted or stale
+UX assignment never counts as approval; resume its original saved submission. Existing
 ad-hoc code still needs a real plan, review and verification; never fabricate
 evidence. Stale review cannot cover a new plan or repaired implementation.
 
+Rollback to `review_ux` retains matching technical review and implementation head,
+but clears UX, verification, merge authorization and attempt eligibility. Rollback
+to `review_code` or earlier clears both reviews. Ready-only rollback retains both
+reviews and same-commit verification. A new technical review clears prior UX.
+
+Old saved assignments, receipts and prompts retain their original contracts.
+Legacy unmerged implementing work with technical review proceeds to UX; it is not
+synthetic approval. An unmerged ready state missing UX blocks: explicitly
+`rollback {step: "review_ux", request: <actual request>}`, then `drive`, checks and
+new merge authorization. An unlanded active attempt needs `repair` before fresh
+reviews. First consult its durable receipt: an already-landed merge is a fact,
+and merge/close-out replay (including rollback to merge/summarize) reuses it
+without retroactively inventing UX evidence.
+
 For a failed verification, read the checklist and each failing check's log. Fix
-the defect in the current branch, commit and obtain fresh review and verification
+the defect in the current branch, commit and obtain fresh technical review, UX review and verification
 of that exact commit. `drive` never automatically reruns failed verification.
 Only an environment failure at the same reviewed commit permits an explicit
 `verify` rerun. A dirty worktree or changed branch/HEAD must be inspected and

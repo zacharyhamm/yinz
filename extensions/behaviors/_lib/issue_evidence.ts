@@ -22,6 +22,7 @@ export const RoleSchema = z.enum([
   "review_plan",
   "implement",
   "review_code",
+  "review_ux",
 ]);
 export const ImplementationResult = z.object({
   summary: z.string().trim().min(1),
@@ -33,6 +34,7 @@ export const RoleSchemas = {
   review_plan: ActionSchemas.review_plan,
   implement: ImplementationResult,
   review_code: ActionSchemas.review_code,
+  review_ux: ActionSchemas.review_ux,
 };
 export const RoleEvidenceSchema = z.discriminatedUnion("role", [
   z.object({ role: z.literal("triage"), evidence: RoleSchemas.triage })
@@ -50,6 +52,8 @@ export const RoleEvidenceSchema = z.discriminatedUnion("role", [
     evidence: RoleSchemas.review_code,
   })
     .strict(),
+  z.object({ role: z.literal("review_ux"), evidence: RoleSchemas.review_ux })
+    .strict(),
 ]);
 export type RoleEvidence = z.infer<typeof RoleEvidenceSchema>;
 const Envelope = { taskId: z.uuid(), assignmentDigest: Digest };
@@ -59,6 +63,7 @@ export const SubmitArgsSchema = z.discriminatedUnion("role", [
   RoleEvidenceSchema.options[2].extend(Envelope),
   RoleEvidenceSchema.options[3].extend(Envelope),
   RoleEvidenceSchema.options[4].extend(Envelope),
+  RoleEvidenceSchema.options[5].extend(Envelope),
 ]);
 export const EvidenceTargetSchema = z.object({
   protocol: z.literal(1),
@@ -187,7 +192,7 @@ export function validateEvidence(assignment: Assignment, raw: unknown) {
     validatePlanReview(state, payload.evidence);
   }
   if (
-    payload.role === "review_code" &&
+    (payload.role === "review_code" || payload.role === "review_ux") &&
     payload.evidence.commit !== assignment.reviewCommit
   ) {
     throw new Error(

@@ -18,6 +18,20 @@ import {
   withIssue,
 } from "../_lib/runtime.ts";
 
+function withUx(state: LifecycleState): LifecycleState {
+  return transition(state, "review_ux", {
+    planVersion: state.plan!.version,
+    commit: state.codeReview!.commit,
+    assessment: {
+      impact: "no_material_impact",
+      summary: "Fixture caller behavior and command output remain unchanged.",
+      assessedPaths: ["src/lib.rs: affected caller and repeat command use"],
+      limitations: ["Source-based fixture assessment"],
+    },
+    findings: [],
+  });
+}
+
 function assert(
   condition: unknown,
   message = "Assertion failed",
@@ -545,6 +559,7 @@ Deno.test("verify runs approved checks at the reviewed commit and refuses a move
         findings: [],
       }),
     );
+    fixture.resources.set("state", withUx(await loadState(fixture.context)));
     await behavior.methods.verify.execute({}, fixture.context);
     const verification = (await loadState(fixture.context)).verification!;
     equal(verification.commit, head);
@@ -563,6 +578,7 @@ Deno.test("verify runs approved checks at the reviewed commit and refuses a move
     const quoting = fixture.files.get(verification.checks[1].log!)!.text;
     assert(quoting.includes("\na b; c\nexit 3 after"), quoting);
     // An explicit rerun replaces the failed record at the same commit.
+    fixture.resources.set("state", withUx(await loadState(fixture.context)));
     await behavior.methods.verify.execute({}, fixture.context);
     const rerun = (await loadState(fixture.context)).verification!;
     assert(rerun.id !== verification.id);
@@ -714,6 +730,7 @@ print("\\n>> All checks passed")
           findings: [],
         }),
       );
+      fixture.resources.set("state", withUx(await loadState(fixture.context)));
       await behavior.methods.verify.execute({}, fixture.context);
       fixture.resources.set(
         "state",
@@ -995,6 +1012,155 @@ Deno.test("synchronous log-writer creation failure also reaps the supervisor", a
       () => gitOperation(context, { action: "inspect" }, "fixture-log"),
       "Fixture writer creation failed",
     );
+  } finally {
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("review pair rejects direct verification before any subprocess", async () => {
+  const { runVerification } = await import("../_lib/verification.ts");
+  let state = transition(createState(issue), "triage", {
+    classification: "feature",
+    summary: "Fixture",
+  });
+  state = transition(state, "plan", {
+    summary: "Fixture",
+    steps: [{ id: "fix", description: "Fix", files: [] }],
+    testingStrategy: "Focused",
+    checks: [{ id: "fix", command: ["/usr/bin/true"], covers: ["fix"] }],
+  });
+  state = transition(state, "review_plan", { planVersion: 1, findings: [] });
+  state = transition(state, "approve", {
+    planVersion: 1,
+    request: "Implement",
+  });
+  state = transition(state, "implement", {
+    worktree: "/tmp/fixture",
+    branch: "fixture",
+  });
+  state = transition(state, "review_code", {
+    planVersion: 1,
+    commit: "a".repeat(40),
+    steps: [{ id: "fix", status: "implemented" }],
+    findings: [],
+  });
+  for (const kind of ["missing", "stale", "blocking"] as const) {
+    const test = kind === "missing" ? structuredClone(state) : withUx(state);
+    if (kind === "stale") test.uxReview!.commit = "b".repeat(40);
+    if (kind === "blocking") {
+      test.uxReview!.findings = [{
+        id: "ux",
+        severity: "high",
+        description: "User loses work",
+      }];
+    }
+    const fixture = fakeContext("/tmp/fixture", test);
+    let subprocesses = 0;
+    await rejects(() =>
+      runVerification(fixture.context, test, {
+        gitOperation: () => {
+          subprocesses++;
+          return Promise.resolve({});
+        },
+        id: () => "a6da10b0-c980-4b82-b920-640238095f1a",
+        now: () => "2026-11-03T12:00:00.000Z",
+      }), kind === "blocking" ? "Resolve high/critical" : "Current UX review");
+    equal(subprocesses, 0);
+    equal(fixture.writes.length, 0);
+  }
+});
+
+Deno.test("review pair guards unlanded legacy attempts but reconciles a landed merge receipt", async () => {
+  const repo = await tempRepo();
+  try {
+    const head = "a".repeat(40);
+    const state: LifecycleState = {
+      ...createState(issue),
+      phase: "ready",
+      planVersion: 1,
+      plan: {
+        version: 1,
+        summary: "Fixture",
+        steps: [{ id: "fix", description: "Fix", files: [] }],
+        testingStrategy: "Legacy",
+      },
+      approval: { planVersion: 1, request: "Implement" },
+      implementation: { worktree: repo, branch: "fixture", head },
+      codeReview: {
+        planVersion: 1,
+        commit: head,
+        steps: [{ id: "fix", status: "implemented" }],
+        findings: [],
+      },
+      mergeAuthorization: {
+        planVersion: 1,
+        commit: head,
+        request: "Legacy authorization",
+      },
+      attempt: {
+        id: "a6da10b0-c980-4b82-b920-640238095f1a",
+        originalHead: head,
+        startedAt: "2026-11-03T12:00:00.000Z",
+      },
+    };
+    const log = join(repo, "operations.jsonl");
+    const helper = join(repo, "scripts", "issue_lifecycle", "git_ops.py");
+    for (const status of ["missing", "verified", "failed", "merged"]) {
+      const raw = {
+        status,
+        attemptId: state.attempt!.id,
+        originalCommit: head,
+        rebasedCommit: "b".repeat(40),
+        mergedCommit: "b".repeat(40),
+        baseCommit: "c".repeat(40),
+        worktree: repo,
+        branch: "fixture",
+        issueKey: "default/85",
+        issueDigest: issue.digest,
+        mergedAt: "2026-11-03T13:00:00.000Z",
+        ci: { status: "passed", command: ["cargo", "x", "ci", "check"] },
+      };
+      await Deno.writeTextFile(log, "");
+      await Deno.writeTextFile(
+        helper,
+        `import json,sys\nfrom pathlib import Path\nrequest=json.load(sys.stdin)\nwith Path(${
+          JSON.stringify(log)
+        }).open("a") as f: f.write(request["action"]+"\\n")\nif request["action"] == "agenda-workspace":
+ print(json.dumps({"workspace":"default"}))
+ sys.exit(0)
+if request["action"] == "inspect":
+ print(json.dumps({"commonDir":${
+          JSON.stringify(join(repo, ".git"))
+        },"worktree":${
+          JSON.stringify(repo)
+        },"branch":"fixture","head":"${head}","main":"${head}","clean":True}))
+ sys.exit(0)
+assert request["action"] == "receipt", request
+print(${JSON.stringify(JSON.stringify(raw))})\n`,
+      );
+      const fixture = fakeContext(repo, state);
+      if (status === "merged") {
+        await behavior.methods.integrate.execute(
+          { skipCiRequest: "" },
+          fixture.context,
+        );
+        equal((await loadState(fixture.context)).phase, "merged");
+        assert(!(await loadState(fixture.context)).uxReview);
+      } else {
+        await rejects(
+          () =>
+            behavior.methods.integrate.execute(
+              { skipCiRequest: "" },
+              fixture.context,
+            ),
+          "Current UX review",
+        );
+      }
+      equal(
+        await Deno.readTextFile(log),
+        "agenda-workspace\ninspect\nreceipt\n",
+      );
+    }
   } finally {
     await Deno.remove(repo, { recursive: true });
   }
