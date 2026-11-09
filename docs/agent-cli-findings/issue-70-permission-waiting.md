@@ -216,3 +216,43 @@ Socket-binding checks used escalation on their first attempts and built this
 worktree's own binary with its real target directory. These checks do not claim a
 full merge gate, live Claude, remote SSH or macOS measurement. The inherited
 permission implementation and additive dependency resolution remain intact.
+
+## Merge-gate repair: split rejection and complete search query
+
+The controller's merge attempt `6dcbe016-f1e5-4b94-805e-e27ab25754ea`
+failed at clean HEAD `7f2519385ec7a649bb01db5742c4303b24d36af4`.
+Read its durable `ci-check.log` before edits: the workspace phases passed, but
+the integration snapshots captured a normal narrow pane title instead of the
+split rejection and `SEARCHING: NEEDL` instead of the full query. Neither
+snapshot needed an update.
+
+The split test's PTY `done` output and chrome predicate did not establish that
+the asynchronous rejection had rendered. The test now requires the second-row
+`CA…` title, the narrow rendering of `CAN'T SPLIT!`, before taking the snapshot.
+An initial focused run with only that stronger final predicate exposed a second
+synchronization gap: 40 tests passed but this test timed out after 46.448 seconds.
+It started the split after the prompt alone, while plugins were still loading;
+the temporary error could expire before the required chrome was ready. The
+test now waits for the prompt and narrow chrome before sending the split, then
+waits for the rejection content. This fixes the observed timeout's cause rather
+than accepting a passing retry. Width and snapshot assertions remain intact.
+
+The search test already scrolled to line05 for a prefix of `NEEDLE`, so its
+mode, match and scroll checks could accept incomplete input. Its snapshot wait
+now also requires `SEARCHING: NEEDLE`. Both repairs use existing observable
+content waits, without sleeps or production behavior changes.
+
+Focused validation on Linux (2026-11-09), after both synchronization repairs:
+
+- `cargo x integration-test --test panes --test search -j 16`: passed,
+  41 tests across two binaries, zero skipped; 9.168 seconds in nextest.
+- `cargo x format --check`: passed.
+- `git diff --check`: passed.
+
+No competing Cargo/nextest/rustc processes were present before integration runs.
+Socket binding used escalation on the first attempt; xtask built this worktree's
+own binary and retained its real, isolated target directory. Existing snapshots,
+permission tracking, fallback release, quiet-pane rendering and dependency
+resolution are unchanged. These are focused fake-OS integration checks, not a
+full CI gate, live Claude, remote SSH or macOS measurement. No background jobs
+or subagents were started by this repair task.
