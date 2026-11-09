@@ -655,6 +655,79 @@ fn claude_steering_unavailable_notification_falls_back_without_stranding_other_w
 }
 
 #[test]
+fn claude_steering_observer_loss_keeps_native_permission_wait_until_release() {
+    for worker in [false, true] {
+        let fixture = NotificationIpc::new();
+        fixture.submit("launch", None);
+        fixture.launch("bash", "tool");
+        fixture.report(fixture.stop("launch", "LAUNCH"));
+        fixture.submit("notice", Some("bash"));
+        fixture.report(fixture.notice("notice", "bash", "tool"));
+        let waiting_hook = if worker {
+            HookEvent {
+                agent_id: Some("worker".into()),
+                tool_name: Some("AskUserQuestion".into()),
+                tool_use_id: Some("question".into()),
+                ..fixture.hook("PreToolUse", "notice")
+            }
+        } else {
+            HookEvent {
+                tool_name: Some("Bash".into()),
+                tool_use_id: Some("permission-tool".into()),
+                notification_type: Some("permission_prompt".into()),
+                ..fixture.hook("Notification", "notice")
+            }
+        };
+        let before = fixture.report(waiting_hook.clone());
+        assert_eq!(before.agents[0].agent.state, AgentState::Waiting);
+        assert!(before.agents[0].agent.wait_needs_a_person);
+        // This is the real follow-error shape: no structural notice in the Stop,
+        // no confirmed answer, and source-scoped unavailable evidence only.
+        let mut loss = fixture.stop("notice", "");
+        loss.claude_turn_complete = Some(false);
+        loss.claude_notifications.as_mut().unwrap().unavailable = true;
+        let after = fixture.report(loss.clone());
+        assert_eq!(after.agents[0].agent.state, AgentState::Waiting);
+        assert!(after.agents[0].agent.wait_needs_a_person);
+        assert!(!after.agents[0].background);
+        // Status is a screen-applied barrier; the query must report input needed,
+        // never a completed idle wait with the old launching answer.
+        let wait = || AgentRequest::Wait {
+            pane_id: fixture.pane,
+            expected_session_id: None,
+            until: AgentState::Idle,
+            timeout_ms: 30_000,
+        };
+        let result = fixture.request(wait());
+        assert_eq!(result.outcome, AgentOutcome::NeedsInput);
+        assert_eq!(result.agents[0].agent.state, AgentState::Waiting);
+        assert_ne!(result.message.as_deref(), Some("LAUNCH"));
+        fixture.report(loss);
+        assert_eq!(fixture.status().agents[0].agent.state, AgentState::Waiting);
+        let mut released = waiting_hook;
+        released.hook_event_name = "PostToolUse".into();
+        released.notification_type = None;
+        if worker {
+            let mut unrelated = released.clone();
+            unrelated.tool_use_id = Some("unrelated".into());
+            assert_eq!(
+                fixture.report(unrelated).agents[0].agent.state,
+                AgentState::Waiting
+            );
+        }
+        assert_eq!(
+            fixture.report(released).agents[0].agent.state,
+            AgentState::Idle
+        );
+        fixture.submit("later", None);
+        fixture.report(fixture.stop("later", "LATER"));
+        let done = fixture.request(wait());
+        assert_eq!(done.outcome, AgentOutcome::Ok);
+        assert_eq!(done.message.as_deref(), Some("LATER"));
+    }
+}
+
+#[test]
 fn claude_steering_exact_cancellation_waits_for_its_answer_in_both_registry_orders() {
     notification_disposition_over_ipc("cancel");
 }

@@ -1545,3 +1545,21 @@ fn reordered_notification_answer_dependency_survives_handoff_and_old_payloads() 
     assert_eq!(pending, restored);
     assert!(restored.answers[0].notification);
 }
+
+#[test]
+fn notification_observation_loss_and_native_wait_have_independent_handoff_lifetimes() {
+    use crate::agent::tracking::ClaudeNotification;
+    let old: ClaudeNotification = serde_json::from_value(serde_json::json!({
+        "waiting": null, "permission_revision": 17
+    }))
+    .unwrap();
+    assert!(!old.observation_unavailable);
+    let failed = ClaudeNotification {
+        observation_unavailable: true,
+        ..old
+    };
+    let restored: ClaudeNotification =
+        serde_json::from_str(&serde_json::to_string(&failed).unwrap()).unwrap();
+    assert_eq!(restored, failed);
+    assert_eq!(restored.permission_revision, Some(17));
+}

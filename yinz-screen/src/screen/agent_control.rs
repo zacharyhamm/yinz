@@ -630,6 +630,7 @@ impl Screen {
                 lifecycle.claude_notifications.insert(
                     prompt,
                     ClaudeNotification {
+                        observation_unavailable: false,
                         waiting: None,
                         permission_revision: None,
                     },
@@ -968,7 +969,16 @@ impl Screen {
                                             "UserPromptSubmit" | "SessionStart" | "SessionEnd"
                                         )
                                         && hook.claude_turn_complete.is_none())
-                                    .then(|| lifecycle.claude_notifications.keys().next().cloned())
+                                    .then(|| {
+                                        lifecycle
+                                            .claude_notifications
+                                            .iter()
+                                            // After observation loss, anonymous or
+                                            // other-prompt progress cannot answer the
+                                            // retained native wait's known owner.
+                                            .find(|(_, n)| !n.observation_unavailable)
+                                            .map(|(prompt, _)| prompt.clone())
+                                    })
                                     .flatten()
                                 })
                         });
@@ -977,17 +987,21 @@ impl Screen {
                             .and_then(|id| lifecycle.claude_notifications.get_mut(id))
                         {
                             notification_report = true;
-                            notification.waiting =
-                                (agent.state == AgentState::Waiting).then(|| agent.clone());
-                            notification.permission_revision = hook
-                                .filter(|hook| {
-                                    notification.waiting.is_some()
-                                        && hook.hook_event_name == "Notification"
-                                        && hook.notification_type.as_deref()
-                                            == Some("permission_prompt")
-                                        && !hook.archive_only
-                                })
-                                .map(|_| input_revision);
+                            // A source-only failed Stop is observer evidence, not
+                            // native progress answering a person or worker wait.
+                            if !hook.is_some_and(|hook| hook.claude_turn_complete == Some(false)) {
+                                notification.waiting =
+                                    (agent.state == AgentState::Waiting).then(|| agent.clone());
+                                notification.permission_revision = hook
+                                    .filter(|hook| {
+                                        notification.waiting.is_some()
+                                            && hook.hook_event_name == "Notification"
+                                            && hook.notification_type.as_deref()
+                                                == Some("permission_prompt")
+                                            && !hook.archive_only
+                                    })
+                                    .map(|_| input_revision);
+                            }
                         }
                         if notification
                             || notification_id.is_some()
@@ -1038,6 +1052,9 @@ impl Screen {
                 input_revision: self.agent_input_revision(pane),
             })
         };
+        if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
+            notifications::prune_released_notification_waits(lifecycle);
+        }
         if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane).filter(|l| {
             report.kind == "claude"
                 && l.kind == "claude"
@@ -3103,6 +3120,7 @@ impl Screen {
             if !changed {
                 continue;
             }
+            notifications::prune_released_notification_waits(lifecycle);
             let Some(parent) = lifecycle.claude.parent.clone() else {
                 continue;
             };

@@ -90,6 +90,10 @@ pub struct ClaudeTurn {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaudeNotification {
+    /// Processing observation can fail independently of a native input wait. Keep
+    /// that wait and its permission ownership until normal input release.
+    #[serde(default)]
+    pub observation_unavailable: bool,
     pub waiting: Option<AgentInfo>,
     pub permission_revision: Option<u64>,
 }

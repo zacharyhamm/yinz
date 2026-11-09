@@ -823,6 +823,85 @@ fn warp_tracking_notification_permission_wait_clears_after_delivered_enter() {
 }
 
 #[test]
+fn warp_tracking_failed_notification_observer_keeps_native_permission_ownership() {
+    for loss_after_transfer in [false, true] {
+        let (mut source, _, _) = setup_tracking("claude");
+        report_kind(&mut source, "claude", hook("SessionStart"));
+        report_kind(&mut source, "claude", hook("UserPromptSubmit"));
+        report_kind(
+            &mut source,
+            "claude",
+            native_background_launch("bash", "tool", "Bash"),
+        );
+        report_kind(&mut source, "claude", sourced_stop("prompt", "LAUNCH"));
+        report_kind(
+            &mut source,
+            "claude",
+            task_notification("notice", &["bash"]),
+        );
+        report_kind(
+            &mut source,
+            "claude",
+            identified_notice("notice", "bash", "tool", "run"),
+        );
+        report_kind(
+            &mut source,
+            "claude",
+            HookEvent {
+                prompt_id: Some("notice".into()),
+                ..claude_permission_prompt()
+            },
+        );
+        if !loss_after_transfer {
+            lose_notification_observation(&mut source, "notice");
+        }
+        for i in 0..2 {
+            let (mut destination, _, writes) = setup_tracking("claude");
+            report_kind(&mut destination, "claude", hook("SessionStart"));
+            permission_key(&mut destination, KeyWithModifier::new(BareKey::Enter), true);
+            finish_paste(&writes);
+            transfer_into(&mut source, &mut destination);
+            if loss_after_transfer && i == 0 {
+                lose_notification_observation(&mut destination, "budget");
+            }
+            destination.refresh_agent_controls();
+            let status = destination.agent_status_for_test();
+            assert_eq!(status.agent.state, AgentState::Waiting);
+            assert!(status.agent.wait_needs_a_person);
+            let state = claude_lifecycle(&destination);
+            let notification = &state.claude_notifications["notice"];
+            assert!(notification.observation_unavailable);
+            assert!(notification.permission_revision.is_some());
+            assert_eq!(state.last_message.as_deref(), Some("LAUNCH"));
+            permission_key(&mut destination, KeyWithModifier::new(BareKey::Down), true);
+            finish_paste(&writes);
+            assert_eq!(
+                destination.agent_status_for_test().agent.state,
+                AgentState::Waiting
+            );
+            if i == 1 {
+                permission_key(&mut destination, KeyWithModifier::new(BareKey::Enter), true);
+                assert_eq!(finish_paste(&writes), b"\r");
+                assert!(claude_lifecycle(&destination)
+                    .claude_notifications
+                    .is_empty());
+                assert_eq!(
+                    destination.agent_status_for_test().agent.state,
+                    AgentState::Idle
+                );
+                report_kind(&mut destination, "claude", steering_ack("later"));
+                report_kind(&mut destination, "claude", sourced_stop("later", "LATER"));
+                assert_eq!(
+                    destination.agent_lifecycle[&PANE].last_message_for_test(),
+                    Some("LATER")
+                );
+            }
+            source = destination;
+        }
+    }
+}
+
+#[test]
 fn warp_tracking_completed_parent_background_permission_restores_idle_after_approval() {
     for cli in [false, true] {
         for caller_id in [false, true] {

@@ -14233,6 +14233,206 @@ fn sourced_stop(prompt: &str, text: &str) -> HookEvent {
     }
 }
 
+fn lose_notification_observation(screen: &mut Screen, loss: &str) {
+    match loss {
+        "budget" => {
+            let mut state = claude_lifecycle(screen);
+            state.claude.obligations.launches[0].remaining_ms = 1;
+            screen.agent_lifecycle.insert(PANE, state.into());
+            screen.refresh_agent_controls_at(Instant::now() + Duration::from_millis(10));
+        },
+        "capacity" => {
+            report_kind(
+                screen,
+                "claude",
+                native_background_launch("overflow", "overflow-tool", "Bash"),
+            );
+            assert!(claude_lifecycle(screen).claude.obligations.disabled);
+        },
+        _ => {
+            let mut failed = sourced_stop(
+                if loss == "launch" { "prompt" } else { "notice" },
+                "not an answer",
+            );
+            failed.claude_turn_complete = Some(false);
+            failed.claude_notifications.as_mut().unwrap().unavailable = true;
+            if loss == "source" {
+                failed.prompt_id = None;
+            }
+            report_kind(screen, "claude", failed);
+        },
+    }
+}
+
+fn fill_notification_capacity(screen: &mut Screen) {
+    // Fill before any wait is established. Only the final report should trigger
+    // observation loss; earlier tool progress is ordinary native hook fallback.
+    for i in 1..yinz_types::agent::claude_notifications::MAX_FACTS {
+        report_kind(
+            screen,
+            "claude",
+            native_background_launch(&format!("task-{i}"), &format!("tool-{i}"), "Bash"),
+        );
+    }
+}
+
+#[test]
+fn unavailable_notification_observation_preserves_explicit_wait_until_native_release() {
+    // R69-5: input ownership is independent of failed processing observation,
+    // including the direct, attributed, source-wide, expiry and capacity paths.
+    for loss in ["notice", "launch", "source", "budget", "capacity"] {
+        for needs_person in [false, true] {
+            let (mut screen, messages, _writes) = setup("claude");
+            report_kind(&mut screen, "claude", hook("SessionStart"));
+            report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+            report_kind(
+                &mut screen,
+                "claude",
+                native_background_launch("bash", "tool", "Bash"),
+            );
+            if loss == "capacity" {
+                fill_notification_capacity(&mut screen);
+            }
+            report_kind(&mut screen, "claude", sourced_stop("prompt", "LAUNCH"));
+            report_kind(
+                &mut screen,
+                "claude",
+                task_notification("notice", &["bash"]),
+            );
+            report_kind(
+                &mut screen,
+                "claude",
+                identified_notice("notice", "bash", "tool", "run"),
+            );
+            let waiting_hook = HookEvent {
+                prompt_id: Some("notice".into()),
+                tool_use_id: Some("permission-tool".into()),
+                ..claude_permission_prompt()
+            };
+            let HookOutcome::Reported(mut waiting) = hook_outcome("claude", &waiting_hook) else {
+                panic!("expected wait")
+            };
+            // State reports can also carry an explicit wait on a worker. Preserve
+            // the complete fact, not just person waits or permission revisions.
+            waiting.wait_needs_a_person = needs_person;
+            waiting.waiting_on = Some(if needs_person { "permission" } else { "worker" }.into());
+            report_state(
+                &mut screen,
+                "claude",
+                waiting_hook,
+                AgentReportState::Set(waiting.clone()),
+            );
+            let before = claude_lifecycle(&screen).claude_notifications["notice"].clone();
+            lose_notification_observation(&mut screen, loss);
+            let state = claude_lifecycle(&screen);
+            let after = state
+                .claude_notifications
+                .get("notice")
+                .unwrap_or_else(|| panic!("lost wait: {loss}, needs_person={needs_person}"));
+            assert!(after.observation_unavailable, "{loss}");
+            assert_eq!(after.waiting, before.waiting, "{loss}");
+            assert_eq!(
+                after.permission_revision, before.permission_revision,
+                "{loss}"
+            );
+            assert_eq!(screen.agent_status_for_test().agent, waiting, "{loss}");
+            assert_eq!(state.last_message.as_deref(), Some("LAUNCH"));
+            assert!(!state.claude.obligations.active());
+            assert!(state.claude.obligations.launches.iter().all(|o| !o.settled));
+            draft_frame(&mut screen, "claude", "", 0, Instant::now());
+            screen.agent_control(wait(AgentState::Idle), CLIENT);
+            let response = replies(&messages, CLIENT);
+            if needs_person {
+                assert_eq!(response.len(), 1);
+                assert_eq!(response[0].outcome, AgentOutcome::NeedsInput);
+                assert_ne!(response[0].message.as_deref(), Some("LAUNCH"));
+            } else {
+                assert!(response.is_empty(), "a worker wait stays pending: {loss}");
+            }
+            // The same real native release still finds the notification owner.
+            report_kind(
+                &mut screen,
+                "claude",
+                HookEvent {
+                    prompt_id: Some("notice".into()),
+                    tool_use_id: Some("permission-tool".into()),
+                    ..hook("PostToolUse")
+                },
+            );
+            assert!(claude_lifecycle(&screen).claude_notifications.is_empty());
+            // Later normal use proves no failed processing latch was retained.
+            report_kind(&mut screen, "claude", steering_ack("later"));
+            report_kind(&mut screen, "claude", sourced_stop("later", "LATER"));
+            screen.agent_control(wait(AgentState::Idle), ClientId::new(3));
+            assert_eq!(
+                replies(&messages, ClientId::new(3))[0].message.as_deref(),
+                Some("LATER")
+            );
+        }
+    }
+}
+
+#[test]
+fn unavailable_notification_observation_preserves_worker_tool_wait_ownership() {
+    for loss in ["notice", "launch", "source", "budget", "capacity"] {
+        let (mut screen, _, _writes) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        report_kind(
+            &mut screen,
+            "claude",
+            native_background_launch("bash", "tool", "Bash"),
+        );
+        if loss == "capacity" {
+            fill_notification_capacity(&mut screen);
+        }
+        report_kind(&mut screen, "claude", sourced_stop("prompt", "LAUNCH"));
+        report_kind(
+            &mut screen,
+            "claude",
+            task_notification("notice", &["bash"]),
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            identified_notice("notice", "bash", "tool", "run"),
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker_input("PreToolUse", "worker", Some("question")),
+        );
+        lose_notification_observation(&mut screen, loss);
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
+        assert!(screen.agent_status_for_test().agent.wait_needs_a_person);
+        assert!(claude_lifecycle(&screen).claude.worker_wait_tools["worker"].contains("question"));
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker_input("PostToolUse", "worker", Some("unrelated")),
+        );
+        assert_eq!(
+            screen.agent_status_for_test().agent.state,
+            AgentState::Waiting
+        );
+        report_kind(
+            &mut screen,
+            "claude",
+            claude_worker_input("PostToolUse", "worker", Some("question")),
+        );
+        assert!(screen
+            .agent_worker_waits
+            .get(&PANE)
+            .is_none_or(|w| w.waits.is_empty()));
+        report_kind(&mut screen, "claude", steering_ack("later"));
+        report_kind(&mut screen, "claude", sourced_stop("later", "LATER"));
+        assert_eq!(screen.agent_status_for_test().agent.state, AgentState::Idle);
+    }
+}
+
 #[test]
 fn unavailable_identified_notification_releases_only_its_processing_lifetime() {
     // R69-3: registry-only turn_over ends the observer without proving an answer.

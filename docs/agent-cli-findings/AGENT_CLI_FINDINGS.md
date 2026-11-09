@@ -49,8 +49,11 @@ hook-declined removals, gated tool-result and unvalidated alternate delivery.
 Unsupported or unavailable observation retains registry/hooks. Operational budget
 or capacity exhaustion is unavailable observation, never successful settlement.
 Unavailable notification observers also release their accepted processing lifetime,
-without manufacturing an answer or releasing independent work. Late confirmed
-answers retain sequence ordering. Unrelated foreground answers are pruned from a
+without manufacturing an answer or releasing independent work. Explicit person
+and worker input waits, including permission revision ownership, survive that
+cleanup and handoff until their normal native release. A source-only failed Stop
+does not answer input. Late confirmed answers retain sequence ordering.
+Unrelated foreground answers are pruned from a
 bounded cache rather than disabling future notification acquisitions; identified
 answer/acceptance/cancellation dependencies and run tombstones remain protected.
 The historical ledger, epochs and sidechain scanner below remain superseded.

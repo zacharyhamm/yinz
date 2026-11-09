@@ -22,7 +22,11 @@ Observation loss, capacity and the 24-hour operational budget degrade observatio
 none proves completion. Handoff preserves pending facts and the remaining budget.
 An explicit unavailable notification observer (including a registry-only turn end
 without an answer boundary), or expiry of its attributed obligation, releases that
-notification's activity lifetime as unavailable. It does not settle the task or
+notification's processing lifetime as unavailable. Explicit person and worker
+waits and their permission ownership survive direct loss, operational expiry,
+capacity loss and handoff. Only normal native input release clears those waits;
+a failed observer Stop supplies no input release. After release, the failed
+processing entry does not keep a new Busy latch. Loss does not settle the task or
 replace final text. Independent work remains pending, and a later real confirmed
 answer may still update text in turn order. Ordinary foreground answer history
 cannot exhaust the adapter: only identified dependencies are protected from the

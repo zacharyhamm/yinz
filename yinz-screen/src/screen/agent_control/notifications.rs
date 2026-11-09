@@ -176,19 +176,43 @@ fn answer_needed(pending: &Pending, prompt: &str) -> bool {
             .any(|o| o.answer_prompt.as_deref() == Some(prompt))
 }
 
-/// Unavailable observation releases only its accepted processing lifetime. It
-/// supplies neither an answer nor a successful settlement. Keep turn/run tombstones
-/// so duplicate accepts cannot reopen it and a later confirmed answer can still apply.
+/// Unavailable observation releases only its accepted processing lifetime. Native
+/// input waits retain their own ownership until normal release. Keep turn/run
+/// tombstones so duplicate accepts cannot reopen processing and real answers still apply.
 fn release_unavailable_notifications(lifecycle: &mut Lifecycle) {
-    lifecycle.claude_notifications.retain(|prompt, _| {
-        let mut bound = lifecycle
-            .claude
-            .obligations
-            .launches
-            .iter()
-            .filter(|o| o.answer_prompt.as_ref() == Some(prompt))
-            .peekable();
-        bound.peek().is_none() || bound.any(|o| !o.unavailable)
+    lifecycle
+        .claude_notifications
+        .retain(|prompt, notification| {
+            let mut bound = lifecycle
+                .claude
+                .obligations
+                .launches
+                .iter()
+                .filter(|o| o.answer_prompt.as_ref() == Some(prompt))
+                .peekable();
+            bound.peek().is_none()
+                || bound.any(|o| !o.unavailable)
+                || retain_notification_wait(notification)
+        });
+}
+
+fn retain_notification_wait(notification: &mut ClaudeNotification) -> bool {
+    notification.observation_unavailable = true;
+    notification.waiting.is_some() || notification.permission_revision.is_some()
+}
+
+fn release_notification_observation(lifecycle: &mut Lifecycle, prompt: &str) {
+    lifecycle
+        .claude_notifications
+        .retain(|id, notification| id != prompt || retain_notification_wait(notification));
+}
+
+/// Drop a failed processing entry once its independently known native wait releases.
+pub(super) fn prune_released_notification_waits(lifecycle: &mut Lifecycle) {
+    lifecycle.claude_notifications.retain(|_, notification| {
+        !notification.observation_unavailable
+            || notification.waiting.is_some()
+            || notification.permission_revision.is_some()
     });
 }
 
@@ -277,16 +301,23 @@ impl Screen {
         if evidence.source.is_some() && evidence.source == lifecycle.claude.obligations.source {
             if !was_disabled && lifecycle.claude.obligations.disabled {
                 for prompt in lost_prompts {
-                    lifecycle.claude_notifications.remove(&prompt);
+                    release_notification_observation(lifecycle, &prompt);
                 }
             }
             if evidence.unavailable {
                 if let Some(prompt) = &hook.prompt_id {
-                    lifecycle.claude_notifications.remove(prompt);
+                    release_notification_observation(lifecycle, prompt);
                 } else {
                     // Source-wide loss may release only structurally attributed notices.
-                    for notice in &lifecycle.claude.obligations.notices {
-                        lifecycle.claude_notifications.remove(&notice.prompt);
+                    let prompts: Vec<_> = lifecycle
+                        .claude
+                        .obligations
+                        .notices
+                        .iter()
+                        .map(|notice| notice.prompt.clone())
+                        .collect();
+                    for prompt in prompts {
+                        release_notification_observation(lifecycle, &prompt);
                     }
                 }
             }

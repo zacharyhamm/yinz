@@ -6364,6 +6364,7 @@ fn warp_agent_tracking_roundtrip_preserves_provider_evidence() {
                 claude_notifications: [(
                     "notification".into(),
                     ClaudeNotification {
+                        observation_unavailable: true,
                         waiting: Some(agent.clone()),
                         permission_revision: Some(91),
                     },
