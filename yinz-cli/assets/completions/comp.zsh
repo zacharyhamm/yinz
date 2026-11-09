@@ -11,3 +11,5 @@ function yzpipe () {
     yinz pipe -p $1;
   fi
 }
+# set-password --password-stdin / --clear / --revoke-sessions are generated
+# from the CLI schema above. Password values are never arguments or completions.

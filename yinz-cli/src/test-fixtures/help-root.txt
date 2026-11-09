@@ -33,6 +33,7 @@ Commands:
                        per line, `{"event": <type>, "payload": <the event>}`, until the session ends
   plugins              Write, check, reload and read logs of Scheme plugins
   hooks                Install, inspect or remove coding-agent hooks
+  set-password         Set or clear the local web password and revoke web sessions
   pty-host             Inspect and clean up detached pane supervisors. Panes outlive a server that
                        was killed rather than shut down, and this is how you find them
   help                 Print this message or the help of the given subcommand(s)

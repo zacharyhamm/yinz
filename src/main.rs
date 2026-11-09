@@ -10,6 +10,7 @@ mod remote_commands;
 mod remote_session;
 mod repl;
 mod session_menu;
+mod set_password;
 #[cfg(test)]
 mod tests;
 mod update;
@@ -379,9 +380,24 @@ fn main() {
         remote_commands::exit(0);
     }
 
-    // Local file work only - a hook is installed into Claude Code's settings, not
-    // into a session - so it branches here beside the other two commands that need
-    // neither a client nor a server.
+    // Local provisioning branches before attachment; no session or remote host is needed.
+    if let Some(Command::SetPassword {
+        password_stdin,
+        clear,
+        revoke_sessions,
+    }) = opts.command
+    {
+        let data_dir = opts
+            .data_dir
+            .clone()
+            .unwrap_or_else(yinz_runtime::home::get_default_data_dir);
+        if let Err(error) = set_password::run(&data_dir, password_stdin, clear, revoke_sessions) {
+            eprintln!("Error: {error:#}");
+            remote_commands::exit(1);
+        }
+        remote_commands::exit(0);
+    }
+
     if let Some(Command::Hooks(hooks)) = opts.command.clone() {
         if let Err(e) = agent_hooks::run(
             hooks,

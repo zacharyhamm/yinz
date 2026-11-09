@@ -178,3 +178,6 @@ fn edit_scrollback() {
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
 }
+
+#[path = "unit/web.rs"]
+mod web;

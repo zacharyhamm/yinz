@@ -26,6 +26,7 @@ pub struct TestRunner {
     size: Size,
     extra_config_kdl: String,
     config_dir: Option<PathBuf>,
+    data_dir: Option<PathBuf>,
     layout: Option<LayoutInfo>,
     env: std::collections::HashMap<String, String>,
     stdout_tap: Option<crossbeam::channel::Sender<Vec<u8>>>,
@@ -39,6 +40,7 @@ impl TestRunner {
             size,
             extra_config_kdl: String::new(),
             config_dir: None,
+            data_dir: None,
             layout: None,
             env: std::collections::HashMap::new(),
             stdout_tap: None,
@@ -56,6 +58,12 @@ impl TestRunner {
     /// The config directory used for config.d and plugins, isolated for each fixture.
     pub fn with_config_dir(mut self, config_dir: PathBuf) -> Self {
         self.config_dir = Some(config_dir);
+        self
+    }
+
+    /// A private data directory for tests that mutate persistent host files.
+    pub fn with_data_dir(mut self, data_dir: PathBuf) -> Self {
+        self.data_dir = Some(data_dir);
         self
     }
 
@@ -84,7 +92,9 @@ impl TestRunner {
         test_env::init();
         let session_name = test_env::unique_session_name();
         let config_path = test_env::write_config(&session_name, &self.extra_config_kdl);
-        let data_dir = test_env::init().join("data");
+        let data_dir = self
+            .data_dir
+            .unwrap_or_else(|| test_env::init().join("data"));
 
         let cli_args = CliArgs {
             config: Some(config_path),

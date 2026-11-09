@@ -561,6 +561,19 @@ pub enum Command {
     #[clap(subcommand)]
     Hooks(Hooks),
 
+    /// Set or clear the local web password and revoke web sessions.
+    SetPassword {
+        /// Read one password line from stdin (at most 1024 bytes).
+        #[clap(long, conflicts_with_all = ["clear", "revoke_sessions"])]
+        password_stdin: bool,
+        /// Remove the password and sessions; close enabled web listeners.
+        #[clap(long, conflicts_with = "revoke_sessions")]
+        clear: bool,
+        /// Keep the password and invalidate all web sessions.
+        #[clap(long)]
+        revoke_sessions: bool,
+    },
+
     /// Inspect and clean up detached pane supervisors. Panes outlive a server
     /// that was killed rather than shut down, and this is how you find them.
     #[cfg(unix)]

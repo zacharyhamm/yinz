@@ -1291,3 +1291,13 @@ Human input cancels subsequent stages. Lifecycle changes, replacement, process e
 and client disconnection also stop clearing. Queued writes retain ownership until they finish.
 Failure can leave a partially cleared draft. Inspect the terminal before manual recovery.
 Clearing preserves the conversation and does not verify task completion or promise deletion from provider history.
+
+## Native web prerequisite
+
+`yinz --data-dir PATH set-password` sets a hidden, confirmed local web password.
+Use `--password-stdin` explicitly for one bounded input line, `--clear` to remove
+the password and sessions, or `--revoke-sessions` to rotate the verifier while
+keeping the password. These modes are mutually exclusive and always local,
+including with `--remote`. See [WEB.md](WEB.md) for installation, enabled config
+and health/starting-page smoke checks. Config changes apply at the next session
+start. Bearer login, browser sessions and the mobile agent API remain deferred.

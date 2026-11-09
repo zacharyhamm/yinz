@@ -303,3 +303,22 @@ fn ssh_request_quotes_json_without_a_remote_terminal() {
     assert!(args.last().unwrap().contains("'\\''"));
     assert!(ssh_command("-oProxyCommand=bad", &request, &Default::default()).is_err());
 }
+
+#[test]
+fn set_password_is_always_local() {
+    for (password_stdin, clear, revoke_sessions) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        assert_eq!(
+            route(Some(&Command::SetPassword {
+                password_stdin,
+                clear,
+                revoke_sessions
+            })),
+            Route::Local
+        );
+    }
+}

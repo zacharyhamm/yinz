@@ -108,7 +108,7 @@ impl Auth {
         }
     }
 
-    /// Missing, Invalid or Ready, from a stat-cached read (at most 1 s old).
+    /// Missing, Invalid or Ready, from a fresh read; the listener polls off-runtime at most 500 ms apart.
     pub fn password_state(&self) -> PasswordStateKind {
         match password::read_state(&self.data_dir) {
             password::PasswordState::Missing => PasswordStateKind::Missing,

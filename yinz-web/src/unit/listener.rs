@@ -1,0 +1,550 @@
+use super::*;
+use crate::{Backend, DispatchFuture, WebServer, WebSettings};
+use std::{
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        RwLock,
+    },
+};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use yinz_types::web::{Site, StaticFile, WebRequest};
+
+#[derive(Default)]
+struct Fake {
+    quiesced: AtomicBool,
+    activations: AtomicUsize,
+    dispatches: AtomicUsize,
+    site: RwLock<Option<Arc<Site>>>,
+    name: RwLock<String>,
+    rename_on_activate: std::sync::Mutex<Option<String>>,
+}
+impl Backend for Fake {
+    fn dispatch(&self, _: WebRequest) -> DispatchFuture {
+        self.dispatches.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { None })
+    }
+    fn site(&self) -> Option<Arc<Site>> {
+        self.site.read().unwrap().clone()
+    }
+    fn quiesced(&self) -> bool {
+        self.quiesced.load(Ordering::Acquire)
+    }
+    fn activate(&self) {
+        self.activations.fetch_add(1, Ordering::SeqCst);
+        if let Some(name) = self.rename_on_activate.lock().unwrap().take() {
+            *self.name.write().unwrap() = name;
+        }
+    }
+    fn session_name(&self) -> String {
+        self.name.read().unwrap().clone()
+    }
+}
+fn settings(dir: &std::path::Path) -> WebSettings {
+    let config = yinz_types::input::web::WebConfig {
+        port: Some(0),
+        ..Default::default()
+    };
+    let mut settings = WebSettings::from_config(&config, dir).unwrap();
+    settings.retry_interval = Duration::from_millis(50);
+    settings.header_timeout = Duration::from_secs(3);
+    settings
+}
+async fn state(server: &WebServer, wanted: impl Fn(&WebStatus) -> bool) -> WebStatus {
+    let mut receiver = server.status_receiver();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let status = receiver.borrow_and_update().clone();
+            if wanted(&status) {
+                return status;
+            }
+            receiver.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("web state: {:?}", server.status()))
+}
+async fn serving(server: &WebServer) -> SocketAddr {
+    match state(server, |s| matches!(s, WebStatus::Serving { .. })).await {
+        WebStatus::Serving { addr } => addr,
+        _ => unreachable!(),
+    }
+}
+async fn stop(server: &WebServer) {
+    server.stop();
+    state(server, |s| *s == WebStatus::Stopped).await;
+}
+async fn request(addr: SocketAddr, text: &str) -> String {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream.write_all(text.as_bytes()).await.unwrap();
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).await.unwrap();
+        String::from_utf8(bytes).unwrap()
+    })
+    .await
+    .expect("HTTP response")
+}
+async fn get(addr: SocketAddr, path: &str) -> String {
+    request(
+        addr,
+        &format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"),
+    )
+    .await
+}
+fn records(dir: &std::path::Path) -> Vec<crate::listener_file::ListenerRecord> {
+    std::fs::read_dir(dir.join("web/listeners"))
+        .into_iter()
+        .flatten()
+        .map(|e| serde_json::from_slice(&std::fs::read(e.unwrap().path()).unwrap()).unwrap())
+        .collect()
+}
+fn fixture() -> (tempfile::TempDir, Arc<Fake>) {
+    let temp = tempfile::tempdir().unwrap();
+    crate::auth::password::tests::ready(temp.path());
+    let backend = Arc::new(Fake::default());
+    *backend.name.write().unwrap() = "<session & \"name\">".into();
+    (temp, backend)
+}
+
+#[tokio::test]
+async fn native_health_starting_security_and_no_dispatch() {
+    let (temp, backend) = fixture();
+    let server = WebServer::start(
+        settings(temp.path()),
+        backend.clone(),
+        &tokio::runtime::Handle::current(),
+    );
+    let addr = serving(&server).await;
+    let health = get(addr, "/healthz").await;
+    assert!(health.starts_with("HTTP/1.1 200"), "{health}");
+    assert!(health.contains("\"ok\":true"));
+    assert!(health.contains("x-frame-options: DENY"));
+    assert!(health.contains("cache-control: no-store"));
+    let proxied = request(addr, "GET /healthz HTTP/1.1\r\nHost: localhost\r\nX-Forwarded-For: 100.64.0.1\r\nConnection: close\r\n\r\n").await;
+    assert!(!proxied.contains("\"session\""));
+    let starting = get(addr, "/").await;
+    assert!(starting.starts_with("HTTP/1.1 503"));
+    assert!(starting.contains("retry-after: 1"));
+    assert!(starting.contains("&lt;session &amp; &quot;name&quot;&gt;"));
+    for path in ["/api/session", "/api/agents", "/api/login"] {
+        let reply = request(addr, &format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer forged\r\nAuthorization: Bearer another\r\nConnection: close\r\n\r\n")).await;
+        assert!(reply.starts_with("HTTP/1.1 401"));
+        assert!(reply.contains("www-authenticate: Bearer"));
+    }
+    let reply = request(addr, "POST /api/login HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await;
+    assert!(reply.starts_with("HTTP/1.1 401"));
+    assert_eq!(backend.dispatches.load(Ordering::SeqCst), 0);
+    assert_eq!(records(temp.path())[0].address, addr);
+    stop(&server).await;
+    assert!(records(temp.path()).is_empty());
+}
+
+#[tokio::test]
+async fn frozen_site_etags_head_and_parallel_requests() {
+    let (temp, backend) = fixture();
+    let file = StaticFile {
+        bytes: Arc::from(b"hello world".as_slice()),
+        content_type: "text/plain",
+        etag: "\"test\"".into(),
+    };
+    let mut site = Site::default();
+    site.pages.insert("/".into(), file.clone());
+    site.assets
+        .insert("/static/".into(), [("test.txt".into(), file)].into());
+    *backend.site.write().unwrap() = Some(Arc::new(site));
+    let server = WebServer::start(
+        settings(temp.path()),
+        backend.clone(),
+        &tokio::runtime::Handle::current(),
+    );
+    let addr = serving(&server).await;
+    let mut parallel = JoinSet::new();
+    for _ in 0..16 {
+        parallel.spawn(async move {
+            assert!(get(addr, "/static/test.txt").await.ends_with("hello world"));
+        });
+    }
+    while let Some(result) = parallel.join_next().await {
+        result.unwrap();
+    }
+    for etag in ["*", "W/\"test\"", "\"other\", \"test\""] {
+        let reply = request(addr, &format!("GET / HTTP/1.1\r\nHost: localhost\r\nIf-None-Match: {etag}\r\nConnection: close\r\n\r\n")).await;
+        assert!(reply.starts_with("HTTP/1.1 304"));
+        assert!(reply.ends_with("\r\n\r\n"));
+        assert!(reply.contains("cache-control: no-cache"));
+    }
+    for (path, status) in [
+        ("/", 200),
+        ("/healthz", 200),
+        ("/missing", 404),
+        ("/api/session", 401),
+        ("/%2f", 400),
+    ] {
+        let reply = request(
+            addr,
+            &format!("HEAD {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"),
+        )
+        .await;
+        assert!(reply.starts_with(&format!("HTTP/1.1 {status}")), "{reply}");
+        assert!(reply.ends_with("\r\n\r\n"));
+    }
+    assert!(get(addr, "/missing").await.starts_with("HTTP/1.1 404"));
+    stop(&server).await;
+}
+
+#[tokio::test]
+async fn policy_and_bodies_apply_to_every_route() {
+    let (temp, backend) = fixture();
+    let server = WebServer::start(
+        settings(temp.path()),
+        backend.clone(),
+        &tokio::runtime::Handle::current(),
+    );
+    let addr = serving(&server).await;
+    for path in ["/healthz", "/", "/api/login", "/api/agents"] {
+        for (headers, body, status) in [
+            ("Content-Length: 2\r\nContent-Type: application/json\r\n", "{}", 403),
+            ("Origin: http://localhost\r\nContent-Length: 2\r\n", "{}", 415),
+            ("Origin: http://localhost\r\nContent-Type: application/json\r\nContent-Length: 65537\r\n", "", 413),
+        ] {
+            let reply = request(addr, &format!("POST {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n{headers}\r\n{body}")).await;
+            assert!(reply.starts_with(&format!("HTTP/1.1 {status}")), "{reply}");
+            assert!(reply.contains("content-security-policy:"));
+        }
+        let reply = request(addr, &format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{{}}GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n")).await;
+        assert!(reply.starts_with("HTTP/1.1 400"));
+        assert_eq!(reply.matches("HTTP/1.1").count(), 1);
+    }
+    for (line, headers, status) in [
+        ("OPTIONS /healthz", "Host: localhost\r\n", 405),
+        ("GET /healthz", "Host: evil.example\r\n", 421),
+        (
+            "GET /healthz",
+            "Host: localhost\r\nTailscale-Funnel-Request: true\r\n",
+            403,
+        ),
+        ("GET /%2F", "Host: localhost\r\n", 400),
+        ("GET /?q=%ff", "Host: localhost\r\n", 400),
+    ] {
+        let reply = request(
+            addr,
+            &format!("{line} HTTP/1.1\r\n{headers}Connection: close\r\n\r\n"),
+        )
+        .await;
+        assert!(reply.starts_with(&format!("HTTP/1.1 {status}")), "{reply}");
+    }
+    assert_eq!(backend.dispatches.load(Ordering::SeqCst), 0);
+    stop(&server).await;
+}
+
+#[tokio::test]
+async fn password_loss_quiesce_rebind_rename_and_stop() {
+    let temp = tempfile::tempdir().unwrap();
+    let backend = Arc::new(Fake::default());
+    let server = WebServer::start(
+        settings(temp.path()),
+        backend.clone(),
+        &tokio::runtime::Handle::current(),
+    );
+    state(&server, |s| *s == WebStatus::WaitingForPassword).await;
+    let dir = temp.path().to_owned();
+    tokio::task::spawn_blocking(move || crate::auth::password::tests::ready(&dir))
+        .await
+        .unwrap();
+    let addr = serving(&server).await;
+    let mut keepalive = TcpStream::connect(addr).await.unwrap();
+    keepalive
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+    let mut buf = [0; 4096];
+    let len = keepalive.read(&mut buf).await.unwrap();
+    assert!(String::from_utf8_lossy(&buf[..len]).contains("200"));
+    backend.quiesced.store(true, Ordering::Release);
+    state(&server, |s| *s == WebStatus::Quiesced).await;
+    assert!(TcpStream::connect(addr).await.is_err());
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        keepalive.read_to_end(&mut Vec::new()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    backend.quiesced.store(false, Ordering::Release);
+    let addr = serving(&server).await;
+    *backend.name.write().unwrap() = "renamed".into();
+    assert!(get(addr, "/healthz").await.contains("renamed"));
+    // Observe a refreshed record via condition polling, without a fixed sleep.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if records(temp.path()).iter().any(|r| r.session == "renamed") {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    crate::auth::password::clear(temp.path()).unwrap();
+    state(&server, |s| *s == WebStatus::WaitingForPassword).await;
+    assert!(TcpStream::connect(addr).await.is_err());
+    assert!(backend.activations.load(Ordering::SeqCst) >= 2);
+    stop(&server).await;
+    assert!(records(temp.path()).is_empty());
+}
+
+#[tokio::test]
+async fn port_takeover_and_idle_early_reset() {
+    let (temp, backend) = fixture();
+    let mut config = settings(temp.path());
+    config.header_timeout = Duration::from_millis(300);
+    let holder = WebServer::start(
+        config.clone(),
+        backend.clone(),
+        &tokio::runtime::Handle::current(),
+    );
+    let addr = serving(&holder).await;
+    config.bind = addr;
+    let waiter = WebServer::start(config, backend, &tokio::runtime::Handle::current());
+    state(&waiter, |s| matches!(s, WebStatus::Binding { .. })).await;
+    let mut idle = TcpStream::connect(addr).await.unwrap();
+    let reset = TcpStream::connect(addr).await.unwrap();
+    drop(reset);
+    assert!(get(addr, "/healthz").await.starts_with("HTTP/1.1 200"));
+    tokio::time::timeout(Duration::from_secs(5), idle.read_to_end(&mut Vec::new()))
+        .await
+        .unwrap()
+        .unwrap();
+    let started = std::time::Instant::now();
+    holder.stop();
+    assert!(started.elapsed() < Duration::from_millis(100));
+    assert_eq!(serving(&waiter).await, addr);
+    state(&holder, |s| *s == WebStatus::Stopped).await;
+    assert!(get(addr, "/healthz").await.starts_with("HTTP/1.1 200"));
+    stop(&waiter).await;
+    assert!(records(temp.path()).is_empty());
+}
+
+#[tokio::test]
+async fn connection_and_header_limits_and_parser_errors() {
+    let (temp, backend) = fixture();
+    let mut config = settings(temp.path());
+    config.max_connections = 2;
+    let server = WebServer::start(config, backend.clone(), &tokio::runtime::Handle::current());
+    let addr = serving(&server).await;
+    let mut first = TcpStream::connect(addr).await.unwrap();
+    let mut second = TcpStream::connect(addr).await.unwrap();
+    // A completed request on each proves both permits have actually been acquired.
+    for stream in [&mut first, &mut second] {
+        stream
+            .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buffer = [0; 4096];
+        assert!(stream.read(&mut buffer).await.unwrap() > 0);
+    }
+    let mut third = TcpStream::connect(addr).await.unwrap();
+    let mut b = [0; 1];
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), third.read(&mut b))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    drop(first);
+    drop(second);
+    stop(&server).await;
+    let server = WebServer::start(
+        settings(temp.path()),
+        backend.clone(),
+        &tokio::runtime::Handle::current(),
+    );
+    let addr = serving(&server).await;
+    for extra in [
+        (0..65).map(|i| format!("x-{i}: a\r\n")).collect::<String>(),
+        format!("x-large: {}\r\n", "a".repeat(17000)),
+        "Content-Length: 1\r\nContent-Length: 2\r\n".into(),
+    ] {
+        let reply = request(
+            addr,
+            &format!(
+                "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n{extra}\r\n"
+            ),
+        )
+        .await;
+        assert!(
+            reply.starts_with("HTTP/1.1 431") || reply.starts_with("HTTP/1.1 400"),
+            "{reply}"
+        );
+    }
+    assert_eq!(backend.dispatches.load(Ordering::SeqCst), 0);
+    stop(&server).await;
+}
+
+async fn read_reply(stream: &mut TcpStream) -> String {
+    let mut bytes = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let mut byte = [0];
+            assert_eq!(stream.read(&mut byte).await.unwrap(), 1);
+            bytes.push(byte[0]);
+            if bytes.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head = String::from_utf8(bytes.clone()).unwrap();
+        let length: usize = head
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length: "))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let mut body = vec![0; length];
+        stream.read_exact(&mut body).await.unwrap();
+        bytes.extend(body);
+    })
+    .await
+    .expect("keep-alive response");
+    String::from_utf8(bytes).unwrap()
+}
+
+#[tokio::test]
+async fn keepalive_repeated_requests_idle_expiry_and_drop() {
+    let (temp, backend) = fixture();
+    let mut config = settings(temp.path());
+    config.header_timeout = Duration::from_millis(300);
+    let server = WebServer::start(config, backend.clone(), &tokio::runtime::Handle::current());
+    let addr = serving(&server).await;
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    for (path, status) in [("/healthz", 200), ("/", 503), ("/api/session", 401)] {
+        stream
+            .write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        assert!(read_reply(&mut stream)
+            .await
+            .starts_with(&format!("HTTP/1.1 {status}")));
+    }
+    assert_eq!(backend.dispatches.load(Ordering::SeqCst), 0);
+    let mut bytes = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut bytes))
+        .await
+        .unwrap()
+        .unwrap();
+    let mut status = server.status_receiver();
+    drop(server);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if *status.borrow_and_update() == WebStatus::Stopped {
+                break;
+            }
+            status.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    assert!(TcpStream::connect(addr).await.is_err());
+    assert!(records(temp.path()).is_empty());
+}
+
+#[tokio::test]
+async fn chunked_overflow_invalid_utf8_and_body_deadlines() {
+    let (temp, backend) = fixture();
+    let mut config = settings(temp.path());
+    config.header_timeout = Duration::from_secs(20);
+    let server = WebServer::start(
+        config.clone(),
+        backend.clone(),
+        &tokio::runtime::Handle::current(),
+    );
+    let addr = serving(&server).await;
+    for (body, status) in [
+        (b"1\r\n\xff\r\n0\r\n\r\n".to_vec(), 400),
+        (
+            format!("10001\r\n{}\r\n0\r\n\r\n", "x".repeat(65537)).into_bytes(),
+            413,
+        ),
+    ] {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream.write_all(b"POST /healthz HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").await.unwrap();
+        stream.write_all(&body).await.unwrap();
+        let mut reply = String::new();
+        stream.read_to_string(&mut reply).await.unwrap();
+        assert!(reply.starts_with(&format!("HTTP/1.1 {status}")), "{reply}");
+    }
+    let mut slow = TcpStream::connect(addr).await.unwrap();
+    slow.write_all(b"POST /api/login HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{").await.unwrap();
+    let mut reply = String::new();
+    tokio::time::timeout(Duration::from_secs(15), slow.read_to_string(&mut reply))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(reply.starts_with("HTTP/1.1 408"), "{reply}");
+    stop(&server).await;
+    config.post_timeout = Duration::from_millis(100);
+    let server = WebServer::start(config, backend.clone(), &tokio::runtime::Handle::current());
+    let addr = serving(&server).await;
+    let reply = request(addr, "POST / HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{").await;
+    assert!(reply.starts_with("HTTP/1.1 504"), "{reply}");
+    assert_eq!(backend.dispatches.load(Ordering::SeqCst), 0);
+    stop(&server).await;
+}
+
+#[tokio::test]
+async fn header_deadline_and_listener_publication_failure_are_fail_closed() {
+    let (temp, backend) = fixture();
+    let mut config = settings(temp.path());
+    config.header_timeout = Duration::from_millis(100);
+    let server = WebServer::start(
+        config.clone(),
+        backend.clone(),
+        &tokio::runtime::Handle::current(),
+    );
+    let addr = serving(&server).await;
+    let mut slow = TcpStream::connect(addr).await.unwrap();
+    slow.write_all(b"GET /healthz HTTP/1.1\r\nHost:")
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), slow.read_to_end(&mut Vec::new()))
+        .await
+        .unwrap()
+        .unwrap();
+    stop(&server).await;
+    std::fs::remove_dir(temp.path().join("web/listeners")).unwrap();
+    std::os::unix::fs::symlink("missing", temp.path().join("web/listeners")).unwrap();
+    config.bind = addr;
+    let server = WebServer::start(config, backend, &tokio::runtime::Handle::current());
+    state(&server, |s| matches!(s, WebStatus::Binding { .. })).await;
+    assert!(TcpStream::connect(addr).await.is_err());
+    stop(&server).await;
+}
+
+#[tokio::test]
+async fn rename_during_activation_refreshes_initial_record() {
+    let (temp, backend) = fixture();
+    *backend.rename_on_activate.lock().unwrap() = Some("renamed during bind".into());
+    let server = WebServer::start(
+        settings(temp.path()),
+        backend,
+        &tokio::runtime::Handle::current(),
+    );
+    serving(&server).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut tick = tokio::time::interval(Duration::from_millis(10));
+        loop {
+            tick.tick().await;
+            if records(temp.path())
+                .iter()
+                .any(|record| record.session == "renamed during bind")
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("record follows rename during bind");
+    stop(&server).await;
+}

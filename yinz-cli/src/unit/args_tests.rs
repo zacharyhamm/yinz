@@ -501,3 +501,36 @@ fn neutral_agent_cli_keeps_hooks_separate_from_launchers() {
         assert!(try_parse_cli(args).is_err());
     }
 }
+
+#[test]
+fn set_password_modes_and_no_secret_arguments() {
+    std::thread::Builder::new()
+        .stack_size(4 * 1024 * 1024)
+        .spawn(|| {
+            use clap::Parser;
+            for mode in [
+                vec![],
+                vec!["--password-stdin"],
+                vec!["--clear"],
+                vec!["--revoke-sessions"],
+            ] {
+                let mut args = vec!["yinz", "set-password"];
+                args.extend(mode);
+                assert!(CliArgs::try_parse_from(args).is_ok());
+            }
+            for args in [
+                vec!["--clear", "--password-stdin"],
+                vec!["--clear", "--revoke-sessions"],
+                vec!["--password-stdin", "--revoke-sessions"],
+                vec!["secret"],
+                vec!["--password", "secret"],
+            ] {
+                let mut argv = vec!["yinz", "set-password"];
+                argv.extend(args);
+                assert!(CliArgs::try_parse_from(argv).is_err());
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

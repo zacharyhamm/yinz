@@ -149,6 +149,7 @@ first attempt.
 
 | Path | Purpose |
 |---|---|
+| `yinz-web/` | Native HTTP/1 listener, request policy, frozen sites and private password storage |
 | `yinz-server/` | Session bootstrap, client routing, server thread |
 | `yinz-screen/` | Screen thread: tabs, focus, overlays, rendering to clients |
 | `yinz-pty/` | Pty thread: spawning and supervising pane processes |

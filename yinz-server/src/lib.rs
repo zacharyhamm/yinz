@@ -26,6 +26,7 @@ pub use yinz_plugin_host::plugin_authoring;
 pub use yinz_process::pty_host;
 mod client_router;
 mod update;
+mod web;
 pub(crate) use yinz_bus::pty_writer;
 mod route;
 pub(crate) use yinz_bus::screen;
@@ -158,6 +159,7 @@ pub use yinz_types::internal_ids::{ClientId, PluginId, TerminalId};
 
 pub(crate) struct SessionMetaData {
     shutdown: Shutdown,
+    web_server: Option<yinz_web::WebServer>,
     pub senders: ThreadSenders,
     pub data_access: Arc<DataAccess>,
     pub default_shell: Option<TerminalAction>,
@@ -321,6 +323,7 @@ impl Drop for SessionMetaData {
         let started = std::time::Instant::now();
         log::info!("shutdown: worker joins starting");
         self.shutdown.begin();
+        drop(self.web_server.take());
         let screen_thread = self.screen_thread.take();
         let plugin_thread = self.plugin_thread.take();
         self.senders.exit_threads(
@@ -3089,6 +3092,17 @@ fn init_session(
         host_id: yinz_runtime::host_identity::host_id(),
         ..Default::default()
     });
+    let web_configuration = web::configure(&config, &data_dir)
+        .context("configure session web listener")
+        .unwrap_or_else(|error| {
+            Err::<(), _>(error).non_fatal();
+            None
+        });
+    let web_settings = web_configuration
+        .as_ref()
+        .map(|(settings, _)| settings.clone());
+    let web_params = web_configuration.map(|(_, params)| params);
+    let web_site = web_params.as_ref().map(|params| params.site.clone());
     let session_update_quiesced = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let session = starting_session.insert(SessionMetaData {
         shutdown: shutdown.clone(),
@@ -3114,6 +3128,7 @@ fn init_session(
         screen_thread: None,
         pty_thread: None,
         plugin_thread: None,
+        web_server: None,
         pty_writer_thread: None,
         background_jobs_thread: None,
         key_passthrough_clients: HashMap::new(),
@@ -3308,8 +3323,7 @@ fn init_session(
                 client_id,
                 plugin_session,
                 update_operation,
-                // The mobile web interface is wired by the server's web module.
-                None,
+                web_params,
             )
             .fatal()
         }
@@ -3363,6 +3377,13 @@ fn init_session(
             .fatal()
         }
     })?);
+    if let Some((settings, site)) = web_settings.zip(web_site) {
+        session.web_server = Some(yinz_web::WebServer::start(
+            settings,
+            Arc::new(web::PluginBackend::new(session.senders.clone(), site)),
+            global_async_runtime::get_tokio_runtime().handle(),
+        ));
+    }
     if let Some(config_file_path) = cli_assets.config_file_path.clone() {
         startup_stage("server.watch_config", || {
             report_changes_in_config_file(

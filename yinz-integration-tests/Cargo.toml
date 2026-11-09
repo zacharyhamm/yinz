@@ -37,6 +37,8 @@ vte = { workspace = true }
 yinz-test-support = { path = "../yinz-test-support" }
 
 [dev-dependencies]
+yinz-web = { workspace = true }
+zeroize = { workspace = true }
 yinz-bus = { path = "../yinz-bus" }
 url = { workspace = true }
 agent-proto = { path = "../default-plugins/agent-proto" }

@@ -107,16 +107,23 @@ impl WebServer {
         backend: Arc<dyn Backend>,
         rt: &tokio::runtime::Handle,
     ) -> Self {
-        let _ = (backend, rt);
-        log::warn!(
-            "the web interface on {} is not available in this build",
-            settings.bind
-        );
-        let (_status, receiver) = watch::channel(WebStatus::Stopped);
+        let cancel = CancellationToken::new();
+        let (status, receiver) = watch::channel(WebStatus::WaitingForPassword);
+        let state = Arc::new(crate::service::State {
+            settings,
+            backend,
+            funnel_warning: std::sync::Mutex::new(None),
+        });
+        rt.spawn(crate::listener::run(state, cancel.clone(), status));
         WebServer {
-            cancel: CancellationToken::new(),
+            cancel,
             status: receiver,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn status_receiver(&self) -> watch::Receiver<WebStatus> {
+        self.status.clone()
     }
 
     pub fn status(&self) -> WebStatus {

@@ -207,6 +207,7 @@ fn reconfiguration_session(senders: ThreadSenders) -> SessionMetaData {
         screen_thread: None,
         pty_thread: None,
         plugin_thread: None,
+        web_server: None,
         pty_writer_thread: None,
         background_jobs_thread: None,
         config_file_path: None,

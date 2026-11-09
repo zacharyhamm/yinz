@@ -4842,6 +4842,7 @@ dependencies = [
  "yinz-test-support",
  "yinz-types",
  "yinz-web",
+ "zeroize",
 ]
 
 [[package]]
@@ -5036,6 +5037,8 @@ dependencies = [
  "yinz-terminal-graphics",
  "yinz-test-support",
  "yinz-types",
+ "yinz-web",
+ "zeroize",
 ]
 
 [[package]]
