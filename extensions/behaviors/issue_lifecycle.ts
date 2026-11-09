@@ -582,7 +582,7 @@ export const behavior = {
           } catch (error) {
             // Optional cleanup cannot undo successful Agenda/outcome completion.
             const reason =
-              `The issue is merged and its outcome is recorded. Optional closeout is unavailable; resources are retained: ${error}`;
+              `The issue is merged and its outcome is recorded. Optional closeout is unavailable; remaining resources and recorded cleanup progress are retained: ${error}`;
             const handoff = await context.writeResource("handoff", "handoff", {
               id: crypto.randomUUID(),
               status: "current",

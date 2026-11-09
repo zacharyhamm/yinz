@@ -2,6 +2,7 @@ import {
   captureCloseoutOrigin,
   closeout,
   type CloseoutDependencies,
+  closeoutPresentation,
   offerCloseout,
 } from "../_lib/issue_closeout.ts";
 import {
@@ -94,9 +95,13 @@ function fixture() {
   let failGit = false;
   let lostGitAck = false;
   let gitRemoved = false;
+  let worktreeRemoved = false;
+  let failBranch = false;
+  let reservedId: unknown;
   let closeLostAck = false;
   let paneAbsent = false;
   let failObserve = false;
+  let snapshotReply: unknown;
   let otherPanes: unknown[] = [];
   let fence = { ...initialFence };
   let serial = 0;
@@ -138,11 +143,38 @@ function fixture() {
           ci: { status: "passed", command: ["cargo", "x", "ci", "check"] },
         });
       }
-      if (request.action === "closeout-preview") return Promise.resolve(target);
+      if (request.action === "closeout-preview") {
+        events.push("observe:preview");
+        if (worktreeRemoved) {
+          throw new Error(
+            "Closeout worktree is absent or not registered; cannot offer deletion",
+          );
+        }
+        if (reservedId && request.cleanupId !== reservedId) {
+          throw new Error("Ownership reserved for another cleanup");
+        }
+        return Promise.resolve(target);
+      }
       assert(request.action === "closeout-cleanup");
+      equal(request.target, target);
       if (failGit) throw new Error("Dirty worktree");
-      if (!gitRemoved) {
+      if (reservedId) equal(request.cleanupId, reservedId);
+      reservedId = request.cleanupId;
+      if (!worktreeRemoved) {
         events.push("effect:worktree");
+        worktreeRemoved = true;
+      }
+      if (failBranch) {
+        throw new GitOperationError("Branch deletion failed", {
+          closeout: {
+            cleanupId: request.cleanupId,
+            target,
+            worktree: "removed",
+            branch: "deleting",
+          },
+        });
+      }
+      if (!gitRemoved) {
         events.push("effect:branch");
         gitRemoved = true;
       }
@@ -171,7 +203,7 @@ function fixture() {
         };
       } else if (args[3] === "closeout-snapshot") {
         if (failObserve) throw new Error("Cannot observe server");
-        reply = {
+        reply = snapshotReply ?? {
           outcome: paneAbsent ? "target_not_found" : "ok",
           server_instance: fence.server_instance,
           ...(paneAbsent ? {} : { closeout_target: fence }),
@@ -216,11 +248,20 @@ function fixture() {
     failGit: (value: boolean) => {
       failGit = value;
     },
+    failBranch: (value: boolean) => {
+      failBranch = value;
+    },
+    snapshotReply: (value: unknown) => {
+      snapshotReply = value;
+    },
     loseGitAck: () => {
       lostGitAck = true;
     },
     losePaneAck: () => {
       closeLostAck = true;
+    },
+    paneAbsent: (value: boolean) => {
+      paneAbsent = value;
     },
     observeFailure: (value: boolean) => {
       failObserve = value;
@@ -563,4 +604,243 @@ Deno.test("closeout explicit legacy binding survives rollback without permitting
   await closeout(h.context, {}, h.deps);
   equal(h.state().closeout?.origin, origin);
   assert(!h.events.some((e) => e.startsWith("effect:")));
+});
+
+async function recomplete(h: ReturnType<typeof fixture>) {
+  const rolled = rollbackState(h.state(), "summarize", crypto.randomUUID());
+  h.resources.set("state", rolled);
+  await rejects(() => h.offer(), "requires a confirmed merge");
+  h.resources.set(
+    "state",
+    transition(rolled, "done", {
+      outcomeMet: true,
+      summary: "Corrected outcome",
+    }),
+  );
+}
+
+for (
+  const interrupted of [
+    "pane-pending",
+    "git-partial",
+    "git-unknown",
+    "pane-unknown",
+    "closed",
+  ]
+) {
+  Deno.test(`closeout rollback re-completion recovers ${interrupted} with original operation and fresh authority`, async () => {
+    const h = fixture();
+    await h.offer();
+    const firstOffer = h.state().closeout!.offerId;
+    if (interrupted === "pane-pending") h.failWrite("closeout_pane_intent");
+    if (interrupted === "git-partial") h.failBranch(true);
+    if (interrupted === "git-unknown") h.loseGitAck();
+    if (interrupted === "pane-unknown") h.losePaneAck();
+    try {
+      await h.accept();
+    } catch (error) {
+      assert(
+        /write interruption|Branch deletion failed|Lost Git acknowledgement/
+          .test(String(error)),
+        String(error),
+      );
+    }
+    const prior = h.state().closeout!;
+    await recomplete(h);
+    // summarize calls offerCloseout directly; exercise it as well as resume-closeout.
+    await offerCloseout(h.context, h.state(), h.deps);
+    const recovered = h.state().closeout!;
+    equal(recovered.id, prior.id);
+    equal(recovered.target, prior.target);
+    equal(recovered.origin, prior.origin);
+    equal(recovered.gitResult, prior.gitResult);
+    equal(recovered.authorizedRequest, prior.authorizedRequest);
+    equal(recovered.rollbackId, h.state().rollbackId);
+    assert(recovered.offerId !== firstOffer);
+    equal(h.events.filter((e) => e === "observe:preview").length, 1);
+    if (["closed", "pane-unknown"].includes(interrupted)) {
+      equal(recovered.pane, interrupted === "closed" ? "closed" : "absent");
+      await h.offer();
+    } else {
+      equal(recovered.decision, "offered");
+      const effects = h.events.filter((e) => e.startsWith("effect:"));
+      await h.offer();
+      equal(h.events.filter((e) => e.startsWith("effect:")), effects);
+      await rejects(() =>
+        closeout(h.context, {
+          handoffId: firstOffer,
+          decision: "accept",
+          request: "Old approval",
+        }, h.deps), "current exact");
+      h.failBranch(false);
+      await h.accept();
+      equal(h.state().closeout?.pane, "closed");
+    }
+    equal(h.events.filter((e) => e === "effect:worktree").length, 1);
+    equal(h.events.filter((e) => e === "effect:branch").length, 1);
+    equal(h.events.filter((e) => e === "effect:pane").length, 1);
+  });
+}
+
+Deno.test("closeout renewed pane-only offer can be declined terminally with Git facts intact", async () => {
+  const h = fixture();
+  await h.offer();
+  h.failWrite("closeout_pane_intent");
+  await rejects(() => h.accept(), "write interruption");
+  const prior = h.state().closeout!;
+  h.changeFence({ turn: "keep-conversation", input_revision: 10 });
+  await h.offer();
+  const current = h.state().closeout!;
+  const text = closeoutPresentation(h.state());
+  assert(text.includes("already removed"));
+  assert(text.includes("Decline keeps that pane"));
+  assert(!text.includes("Decline retains all resources"));
+  await rejects(() =>
+    closeout(h.context, {
+      handoffId: prior.offerId,
+      decision: "decline",
+      request: "Keep pane",
+    }, h.deps), "current exact");
+  await closeout(h.context, {
+    handoffId: current.offerId,
+    decision: "decline",
+    request: "Keep this conversation",
+  }, h.deps);
+  equal(h.state().closeout?.decision, "declined");
+  equal(h.state().closeout?.gitResult, prior.gitResult);
+  equal(h.state().closeout?.authorizedRequest, prior.authorizedRequest);
+  const writes = h.events.length;
+  await h.offer();
+  await offerCloseout(h.context, h.state(), h.deps);
+  equal(h.events.length, writes);
+  assert(!h.events.includes("effect:pane"));
+});
+
+Deno.test("closeout partial rollback recovery decline preserves reservation and stops further effects", async () => {
+  const h = fixture();
+  await h.offer();
+  h.failBranch(true);
+  await rejects(() => h.accept(), "Branch deletion failed");
+  const prior = h.state().closeout!;
+  await recomplete(h);
+  await h.offer();
+  assert(
+    closeoutPresentation(h.state()).includes(
+      "unresolved ownership reservation",
+    ),
+  );
+  await closeout(h.context, {
+    handoffId: h.state().closeout!.offerId,
+    decision: "decline",
+    request: "Stop remaining cleanup",
+  }, h.deps);
+  h.failBranch(false);
+  await h.offer();
+  equal(h.state().closeout?.id, prior.id);
+  equal(h.state().closeout?.gitResult, prior.gitResult);
+  equal(h.state().closeout?.git, "pending");
+  assert(
+    closeoutPresentation(h.state()).includes(
+      "worktree removed, branch deleting",
+    ),
+  );
+  equal(h.events.filter((e) => e.startsWith("effect:")), ["effect:worktree"]);
+});
+
+Deno.test("closeout unused rollback offer gets new identity but executed changed targets cannot be rebound", async () => {
+  const unused = fixture();
+  await unused.offer();
+  const first = unused.state().closeout!.id;
+  await recomplete(unused);
+  await unused.offer();
+  assert(unused.state().closeout!.id !== first);
+  equal(unused.state().closeoutHistory?.[0].id, first);
+  for (const change of ["digest", "attempt", "target"]) {
+    const h = fixture();
+    await h.offer();
+    h.loseGitAck();
+    await rejects(() => h.accept(), "Lost Git acknowledgement");
+    await recomplete(h);
+    const state = h.state();
+    // Tamper the historical binding, leaving the independently validated receipt unchanged.
+    if (change === "digest") state.closeout!.issueDigest = "changed";
+    if (change === "attempt") state.closeout!.attemptId = crypto.randomUUID();
+    if (change === "target") state.closeout!.target.branch = "replacement";
+    h.resources.set("state", state);
+    await rejects(() => h.offer(), "historical progress");
+    equal(h.state(), state);
+    equal(h.events.filter((e) => e === "observe:preview").length, 1);
+    assert(!h.events.includes("effect:pane"));
+  }
+});
+
+for (const outcome of ["rejected", "target_not_found"]) {
+  Deno.test(`closeout ${outcome} snapshot preserves actionable diagnostic during capture and offer`, async () => {
+    const h = fixture();
+    h.resources.delete("controller-origin");
+    const message = "Controller closeout would affect other panes";
+    h.snapshotReply({ outcome, message, server_instance: "incarnation" });
+    await captureCloseoutOrigin(h.context, {
+      session: "original",
+      paneId: "terminal_7",
+    }, h.deps);
+    assert(
+      JSON.stringify(h.resources.get("controller-origin")).includes(message),
+    );
+    await rejects(() => h.offer(), message);
+    h.resources.set("controller-origin", { origin });
+    await rejects(() => h.offer(), message);
+    equal(
+      h.events.filter((e) =>
+        e.startsWith("effect:") || e === "observe:preview"
+      ),
+      [],
+    );
+  });
+}
+Deno.test("closeout malformed successful snapshot fails closed", async () => {
+  const h = fixture();
+  h.snapshotReply({ outcome: "ok", server_instance: "incarnation" });
+  await rejects(() => h.offer(), "expected object");
+  assert(
+    !h.events.some((e) => e.startsWith("effect:") || e === "observe:preview"),
+  );
+});
+
+Deno.test("closeout recovery offer can reconcile delayed exact absence without renewed consent", async () => {
+  const h = fixture();
+  await h.offer();
+  h.losePaneAck();
+  await h.accept();
+  h.paneAbsent(false);
+  await recomplete(h);
+  await h.offer();
+  equal(h.state().closeout?.decision, "offered");
+  equal(h.state().closeout?.pane, "unknown");
+  h.paneAbsent(true);
+  await h.offer();
+  equal(h.state().closeout?.pane, "absent");
+  equal(h.events.filter((e) => e === "effect:pane").length, 1);
+});
+
+Deno.test("closeout legacy accepted expired state renews a declinable offer without losing authorization", async () => {
+  const h = fixture();
+  await h.offer();
+  h.failWrite("closeout_pane_intent");
+  await rejects(() => h.accept(), "write interruption");
+  const legacy = h.state();
+  legacy.closeout!.pane = "expired";
+  h.resources.set("state", legacy);
+  await h.offer();
+  const renewed = h.state().closeout!;
+  equal(renewed.decision, "offered");
+  assert(renewed.offerId !== legacy.closeout!.offerId);
+  equal(renewed.authorizedRequest, legacy.closeout!.authorizedRequest);
+  await closeout(h.context, {
+    handoffId: renewed.offerId,
+    decision: "decline",
+    request: "Keep the original pane",
+  }, h.deps);
+  equal(h.state().closeout?.decision, "declined");
+  assert(!h.events.includes("effect:pane"));
 });

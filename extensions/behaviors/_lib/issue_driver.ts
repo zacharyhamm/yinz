@@ -943,7 +943,7 @@ async function drive(
         ) {
           return await handoff(
             "complete",
-            "The issue is merged and its outcome is recorded; closeout choice and results are retained",
+            closeoutPresentation(state),
           );
         }
         let offered = state;
@@ -957,8 +957,14 @@ async function drive(
           if (state.closeout?.authorizedRequest) throw error;
           return await handoff(
             "complete",
-            `The issue is merged and its outcome is recorded. Optional closeout is unavailable; resources are retained: ${error}`,
+            `The issue is merged and its outcome is recorded. Optional closeout is unavailable; remaining resources and recorded cleanup progress are retained: ${error}`,
           );
+        }
+        if (
+          offered.closeout?.git === "complete" &&
+          ["closed", "absent"].includes(offered.closeout.pane)
+        ) {
+          return await handoff("complete", closeoutPresentation(offered));
         }
         return await handoff(
           offered.closeout?.decision === "accepted"

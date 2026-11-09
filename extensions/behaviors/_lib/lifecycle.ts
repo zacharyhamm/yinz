@@ -665,6 +665,8 @@ export function rollbackState(
   id: string,
 ): LifecycleState {
   const state = StateSchema.parse(current);
+  // Revoke this generation's consent, retaining the operation UUID, authorization
+  // history and even uncertain effects for guarded recovery after re-completion.
   if (state.closeout) state.closeout.decision = "invalidated";
   const index = LifecycleStepSchema.options.indexOf(
     LifecycleStepSchema.parse(step),

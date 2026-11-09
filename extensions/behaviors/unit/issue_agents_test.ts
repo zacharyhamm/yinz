@@ -150,7 +150,11 @@ function verify(state: LifecycleState): LifecycleState {
   });
 }
 
-function harness(initial = createState(issue), evidence: unknown = triage) {
+function harness(
+  initial = createState(issue),
+  evidence: unknown = triage,
+  offerCloseout?: IssueAgentDependencies["offerCloseout"],
+) {
   const resources = new Map<string, unknown>([["state", initial]]);
   const child = new Map<string, Record<string, unknown>>();
   const submissions = new Map<string, Map<string, unknown>>();
@@ -439,6 +443,7 @@ function harness(initial = createState(issue), evidence: unknown = triage) {
     },
   };
   const dependencies: IssueAgentDependencies = {
+    offerCloseout,
     withIssue: async (_context, operation) => {
       assert(!issueLocked, "Nested issue lock");
       issueLocked = true;
@@ -4718,4 +4723,81 @@ Deno.test("legacy ready state with outstanding findings returns to user directio
   equal((await loadState(h.context)).phase, "implementing");
   await h.drive.execute({}, h.context);
   equal(result(h).decision, "authorize_merge");
+});
+
+Deno.test("driver closeout renewed consent and declined partial cleanup reach the correct terminal handoffs", async () => {
+  for (const decision of ["offered", "declined"] as const) {
+    for (const git of ["pending", "complete"] as const) {
+      const initial = createState(issue);
+      initial.phase = "done";
+      initial.outcome = { outcomeMet: true, summary: "Delivered" };
+      const identity = { device: "1", inode: "2" };
+      initial.closeout = {
+        id: crypto.randomUUID(),
+        offerId: crypto.randomUUID(),
+        issueDigest: issue.digest,
+        attemptId: crypto.randomUUID(),
+        origin: {
+          session: "development",
+          paneId: "terminal_1",
+          server_instance: "server",
+          provider: "codex",
+          conversation: "original",
+        },
+        fence: {
+          server_instance: "server",
+          pane_id: "terminal_1",
+          provider: "codex",
+          conversation: "original",
+          input_revision: 1,
+          turn: "turn",
+        },
+        target: {
+          worktree: "/repo/issue",
+          branch: "issue-85",
+          head,
+          gitDir: "/repo/.git/worktrees/issue",
+          branchIdentity: "ref",
+          directoryIdentity: identity,
+          registrationIdentity: identity,
+          linkIdentity: identity,
+          gitLink: "gitdir: /repo/.git/worktrees/issue",
+          owner: {
+            issueKey: "default/85",
+            worktree: "/repo/issue",
+            branch: "issue-85",
+          },
+        },
+        decision,
+        git,
+        pane: "expired",
+        authorizedRequest: "Original bundled authorization",
+      };
+      const h = harness(initial);
+      await h.drive.execute({}, h.context);
+      equal(
+        result(h).decision,
+        decision === "declined" ? "complete" : "authorize_closeout",
+      );
+      if (decision === "offered") equal(result(h).id, initial.closeout.offerId);
+      const before = result(h);
+      await h.drive.execute({}, h.context);
+      equal(result(h), before);
+      equal(dispatchedRoles(h), []);
+      if (git === "complete" && decision === "offered") {
+        assert(before.reason.includes("already removed"));
+        assert(before.reason.includes("Decline keeps that pane"));
+        // Recovery can reconcile exact absence while preparing its new offer.
+        initial.closeout.decision = "invalidated";
+        const recovered = harness(initial, triage, async (context, state) => {
+          state.closeout!.pane = "absent";
+          state.closeout!.decision = "offered";
+          await saveState(context, "offer_closeout_recovery", state);
+          return { state, dataHandles: [] };
+        });
+        await recovered.drive.execute({}, recovered.context);
+        equal(result(recovered).decision, "complete");
+      }
+    }
+  }
 });

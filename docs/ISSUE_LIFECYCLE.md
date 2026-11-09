@@ -624,7 +624,11 @@ These launcher methods dispatch directly to Swamp's issue behavior (`closeout`
 and `resume_closeout`). `decision: "decline"` records retention and ends the
 automatic offer for that completion. Omitting a decision creates or presents an
 offer; it grants no deletion permission. `status` shows the offer, targets and
-results. A decline leaves the merged/done outcome and all resources intact.
+results. An initial decline leaves the merged/done outcome and all resources intact.
+Renewed offers describe only remaining actions: after Git deletion, decline keeps
+the original pane and completed outcome; it cannot restore deleted resources.
+Declining partial cleanup stops further effects and preserves saved progress and
+any unresolved ownership reservation, without claiming cleanup finished.
 
 The first successfully observed controller binding is stored independently of
 later worker placement. An offer pins that session, server incarnation, terminal
@@ -637,6 +641,9 @@ bind an unavailable legacy origin, inspect the exact intended controller using
 `closeout` with `bind: {session, paneId, server_instance, provider, conversation}`.
 This creates an offer only; present it before a separate accept/decline request.
 An existing qualified original binding cannot be replaced by this operation.
+Snapshot refusals retain the server's diagnostic, for example `Controller closeout
+would affect other panes`. Resolve that reported condition before requesting an
+offer again; a refusal never authorizes a replacement controller.
 
 Before deletion, the behavior checks completed, unchanged Agenda requirements,
 the durable local merge receipt, unresolved workers/recovery/reservations, and
@@ -672,10 +679,21 @@ Self-close may terminate the caller before its reply. The saved pane result stay
 of the exact pane in the same server incarnation reconciles as absent. Changed
 incarnation/conversation or unobservable state cannot prove success or authorize
 closing a replacement. A later turn/input expires the fence, producing a fresh
-offer ID; present it and record fresh explicit acceptance for the same controller.
-Git deletion is retained and not repeated. No background close job is scheduled.
-Rollback/refresh preserve historical cleanup facts while invalidating unused
-authority. After accepted cleanup, implementation must deliberately select a new
+offer ID; present it and record fresh explicit acceptance or decline for the same
+controller. With Git complete, the offer says the worktree and branch are already
+removed: accept closes that conversation; decline keeps its pane and makes drive
+complete without another offer. Git deletion is retained and not repeated. No
+background close job is scheduled.
+Rollback/refresh preserve historical cleanup facts while revoking current consent.
+After rollback to summarize, record the corrected outcome before recovering a
+saved cleanup operation. Re-completion with unchanged requirements, merge attempt
+and targets preserves its cleanup UUID and progress, including uncertain helper
+results. It offers fresh consent before partial Git cleanup or a pending pane close;
+recovery never previews the removed worktree or replaces a reserved operation.
+An unknown pane close can still reconcile same-incarnation exact absence without
+another close. Confirmed closure remains a fact. Changed requirements, merge
+identity or targets block reuse and retain historical progress without granting
+new authority. After accepted cleanup, implementation must deliberately select a new
 valid worktree; repeated start/status/drive/summarize do not inspect a removed one.
 
 ## Validation boundaries

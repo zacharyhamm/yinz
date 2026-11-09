@@ -256,7 +256,11 @@ After successful completion, `authorize_closeout` offers optional bundled cleanu
 Present the directory (including build outputs), local branch and original
 controller session/pane. Acceptance ends that conversation; record separate
 explicit consent with `closeout {handoffId, decision: "accept", request}`.
-Decline retains everything and is terminal for automatic drive.
+Initial decline retains everything and is terminal for automatic drive. A renewed
+offer describes only remaining actions. If Git is complete, decline keeps the
+original pane and completed outcome; deleted resources remain deleted. Declining
+partial cleanup stops further effects, retaining remaining resources, saved
+progress and any unresolved ownership reservation without claiming completion.
 
 On a Git failure the pane stays open. Read the saved `closeout.failure`, repair
 its cause, then run `resume-closeout`. The Swamp behavior reconciles its exact
@@ -269,11 +273,21 @@ If self-close lost its acknowledgement, recover in another pane with
 recovery caller. Same-incarnation exact absence can be reconciled; a new server,
 conversation, input or turn cannot authorize closing a replacement. Unknown
 observations remain unconfirmed. An expired fence yields a fresh offer ID: present
-it and obtain fresh explicit acceptance for the still-pending original pane.
-Successful Git deletion and the completed issue remain recorded.
+it and obtain fresh explicit acceptance or decline for the still-pending original
+pane. Decline is terminal for drive and resume, with no repeated offer. Successful
+Git deletion and the completed issue remain recorded.
 
 Legacy/missing origins and older servers retain resources. Use the explicit
 exact-target `bind` procedure in the [lifecycle guide](../../../../docs/ISSUE_LIFECYCLE.md#optional-resource-close-out)
 to create an offer before consent; never choose the latest worker or invoking
-pane. Accepted cleanup facts survive rollback/refresh. Before restarting
+pane. Snapshot refusals preserve the server reason, such as `Controller closeout
+would affect other panes`; resolve that condition before retrying the offer.
+Accepted cleanup facts survive rollback/refresh while current consent is revoked.
+After rollback to summarize, record the corrected outcome again. With the same
+requirements, merge attempt and targets, recovery keeps the cleanup UUID and
+partial/uncertain helper progress rather than previewing the removed directory.
+Present its new offer and obtain fresh consent before any remaining effects.
+Same-incarnation exact absence can reconcile an unknown pane close; confirmed
+closure remains a fact. Changed requirements/merge identity/targets block reuse
+without discarding historical effects. Before restarting
 implementation after cleanup, deliberately select a new valid worktree.

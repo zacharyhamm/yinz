@@ -83,6 +83,16 @@ async function snapshot(
   }
   return command(context, origin, ["closeout-snapshot", origin.paneId], deps);
 }
+function successfulFence(observed: z.infer<typeof ReplySchema>) {
+  if (observed.outcome !== "ok") {
+    throw new Error(
+      `Original controller unavailable; retain remaining resources: ${
+        observed.message ?? observed.outcome
+      }`,
+    );
+  }
+  return CloseoutFenceSchema.parse(observed.closeout_target);
+}
 /** First successful control binding is frozen independently of future placement settings. */
 export async function captureCloseoutOrigin(
   context: Context,
@@ -93,8 +103,8 @@ export async function captureCloseoutOrigin(
   let record: Record<string, unknown>;
   try {
     const observed = await snapshot(context, control, deps);
-    const fence = CloseoutFenceSchema.parse(observed.closeout_target);
-    if (observed.outcome !== "ok" || fence.pane_id !== control.paneId) {
+    const fence = successfulFence(observed);
+    if (fence.pane_id !== control.paneId) {
       throw new Error("Original controller unavailable");
     }
     record = {
@@ -236,24 +246,51 @@ export async function offerCloseout(
     return { state, dataHandles: [] };
   }
   const raw = await context.readResource("controller-origin");
-  const saved = z.object({ origin: CloseoutOriginSchema.optional() }).loose()
-    .parse(raw ?? {});
+  const saved = z.object({
+    origin: CloseoutOriginSchema.optional(),
+    unavailable: z.string().optional(),
+  }).loose().parse(raw ?? {});
   const remembered = saved.origin ?? state.closeout?.origin;
   const origin = bind ?? remembered;
   if (!origin) {
     throw new Error(
-      "Original controller identity unavailable. Retain resources, or call closeout with bind containing the exact session, paneId, server_instance, provider and conversation to create an offer before consenting",
+      `Original controller identity unavailable. ${
+        saved.unavailable ?? ""
+      } Retain remaining resources, or call closeout with bind containing the exact session, paneId, server_instance, provider and conversation to create an offer before consenting`,
     );
   }
   if (remembered && JSON.stringify(remembered) !== JSON.stringify(origin)) {
     throw new Error("Binding cannot replace the original controller");
   }
+  const prior = state.closeout;
+  // An accepted operation may have executed even without a returned helper result.
+  // Keep its UUID/reservation and exact targets; rollback revoked authority, not facts.
+  const recovering = prior &&
+    (prior.authorizedRequest || prior.gitResult || prior.git === "complete");
+  if (recovering) assertOperation(state);
+  if (
+    recovering && prior.git === "complete" &&
+    ["closed", "absent"].includes(prior.pane)
+  ) {
+    return saveOfferedRecovery(context, state, deps);
+  }
   const observed = await snapshot(context, origin, deps);
-  const fence = CloseoutFenceSchema.parse(observed.closeout_target);
-  if (observed.outcome !== "ok" || !sameOrigin(origin, fence)) {
+  if (
+    recovering && prior.git === "complete" &&
+    prior.pane === "unknown" && observed.outcome === "target_not_found" &&
+    observed.server_instance === prior.fence.server_instance
+  ) {
+    prior.pane = "absent";
+    return saveOfferedRecovery(context, state, deps);
+  }
+  const fence = successfulFence(observed);
+  if (!sameOrigin(origin, fence)) {
     throw new Error(
       "Original controller incarnation or conversation changed; retain resources",
     );
+  }
+  if (recovering) {
+    return saveOfferedRecovery(context, state, deps);
   }
   const target = CloseoutTargetSchema.parse(
     await deps.git(context, { action: "closeout-preview", ...binding(state) }),
@@ -276,6 +313,43 @@ export async function offerCloseout(
   const handoff = await publishCloseoutOffer(context, state);
   return { state, dataHandles: [...savedState.dataHandles, handoff] };
 }
+async function saveOfferedRecovery(
+  context: Context,
+  state: LifecycleState,
+  deps: CloseoutDependencies,
+) {
+  const c = state.closeout!;
+  c.offerId = deps.id();
+  c.rollbackId = state.rollbackId;
+  // The original request and all executed/uncertain effects remain historical.
+  c.decision = "offered";
+  const saved = await saveState(context, "offer_closeout_recovery", state);
+  return {
+    state,
+    dataHandles: [
+      ...saved.dataHandles,
+      await publishCloseoutOffer(context, state),
+    ],
+  };
+}
+function assertOperation(state: LifecycleState) {
+  const c = state.closeout!;
+  const receipt = state.receipt!;
+  if (
+    c.issueDigest !== state.issue.digest || c.attemptId !== receipt.attemptId ||
+    c.target.worktree !== receipt.worktree ||
+    c.target.branch !== receipt.branch ||
+    c.target.head !== receipt.mergedCommit ||
+    c.target.owner.issueKey !==
+      `${state.issue.workspace}/${state.issue.itemId}` ||
+    c.target.owner.worktree !== c.target.worktree ||
+    c.target.owner.branch !== c.target.branch
+  ) {
+    throw new Error(
+      "Saved closeout operation no longer matches the issue and merge target; retain its historical progress",
+    );
+  }
+}
 function assertCurrent(state: LifecycleState) {
   const closeout = state.closeout;
   if (
@@ -288,15 +362,28 @@ function assertCurrent(state: LifecycleState) {
       "Closeout offer no longer matches the issue and merge identity",
     );
   }
+  assertOperation(state);
   return closeout;
 }
 export function closeoutPresentation(state: LifecycleState) {
   const c = state.closeout!;
-  return `Offer ${c.offerId}: delete ${c.target.worktree} including its build outputs, delete local branch ${c.target.branch}, then close the original controller ${c.origin.session}/${c.origin.paneId}. Accepting ends that conversation. Decline retains all resources and the completed outcome. Call closeout with this handoffId, decision accept/decline and the actual user request. Git: ${c.git}${
+  const gitProgress = `Git: ${c.git}${
     c.gitResult
       ? ` (worktree ${c.gitResult.worktree}, branch ${c.gitResult.branch})`
       : ""
-  }; pane: ${c.pane}.${
+  }; pane: ${c.pane}.`;
+  if (c.decision === "declined") {
+    return `Closeout declined; remaining resources and the completed outcome are retained. ${gitProgress} Recorded Git effects and any unresolved ownership reservation remain preserved.`;
+  }
+  if (c.git === "complete" && ["closed", "absent"].includes(c.pane)) {
+    return `Closeout complete: worktree ${c.target.worktree} and local branch ${c.target.branch} removed; original controller ${c.origin.session}/${c.origin.paneId} ${c.pane}. The completed outcome is retained.`;
+  }
+  const actions = c.git === "complete"
+    ? `Worktree ${c.target.worktree} and local branch ${c.target.branch} are already removed. Accept closes the original controller ${c.origin.session}/${c.origin.paneId}. Decline keeps that pane and the completed outcome.`
+    : c.authorizedRequest
+    ? `Resume saved cleanup of ${c.target.worktree} and local branch ${c.target.branch}, then close the original controller ${c.origin.session}/${c.origin.paneId}. Prior Git effects may already have occurred; saved progress is shown below. Decline stops further cleanup and retains remaining resources, the completed outcome and any unresolved ownership reservation.`
+    : `Delete ${c.target.worktree} including its build outputs, delete local branch ${c.target.branch}, then close the original controller ${c.origin.session}/${c.origin.paneId}. Decline retains all resources and the completed outcome.`;
+  return `Offer ${c.offerId}: ${actions} Accepting ends that conversation. Call closeout with this handoffId, decision accept/decline and the actual user request. ${gitProgress}${
     c.failure
       ? ` ${c.failure.stage} failed: ${c.failure.message}. Use resume-closeout from another pane.`
       : ""
@@ -307,7 +394,9 @@ function publishCloseoutOffer(context: Context, state: LifecycleState) {
   return context.writeResource("handoff", "handoff", {
     id: c.offerId,
     status: "current",
-    decision: "authorize_closeout",
+    decision: c.git === "complete" && ["closed", "absent"].includes(c.pane)
+      ? "complete"
+      : "authorize_closeout",
     reason: closeoutPresentation(state),
     createdAt: new Date().toISOString(),
     state: StateSchema.parse(state),
@@ -331,6 +420,23 @@ export async function closeout(
     return { dataHandles: offered.dataHandles };
   }
   const c = assertCurrent(state);
+  if (
+    c.decision === "offered" && c.git === "complete" && c.pane === "unknown"
+  ) {
+    // A prior self-close can become observable after the recovery offer was saved.
+    // Absence is a fact to reconcile, never authority for another close.
+    const observed = await snapshot(context, c.origin, deps);
+    if (
+      observed.outcome === "target_not_found" &&
+      observed.server_instance === c.fence.server_instance
+    ) {
+      c.pane = "absent";
+      return saveState(context, "closeout_pane_absent", state);
+    }
+  }
+  if (c.git === "complete" && ["closed", "absent"].includes(c.pane)) {
+    return { dataHandles: [] };
+  }
   if (args.bind) {
     throw new Error("An existing offer freezes the original controller");
   }
@@ -340,10 +446,6 @@ export async function closeout(
         "Closeout consent requires the current exact handoffId and actual user request",
       );
     }
-    if (
-      c.decision === "accepted" && c.git === "complete" &&
-      ["closed", "absent"].includes(c.pane)
-    ) return { dataHandles: [] };
     if (c.decision === "declined") {
       if (args.decision !== "decline") {
         throw new Error(
@@ -352,13 +454,8 @@ export async function closeout(
       }
       return { dataHandles: [] };
     }
-    if (args.decision === "decline") {
-      if (c.decision !== "offered") {
-        throw new Error("Accepted closeout must reconcile its saved progress");
-      }
-      c.decision = "declined";
-      c.request = args.request;
-      return saveState(context, "decline_closeout", state);
+    if (c.decision !== "offered") {
+      throw new Error("Accepted closeout must reconcile its saved progress");
     }
     const handoff = z.object({
       id: z.string(),
@@ -369,6 +466,11 @@ export async function closeout(
       handoff.id !== c.offerId || handoff.status !== "current" ||
       JSON.stringify(handoff.state) !== JSON.stringify(state)
     ) throw new Error("Closeout handoff is stale");
+    if (args.decision === "decline") {
+      c.decision = "declined";
+      c.request = args.request;
+      return saveState(context, "decline_closeout", state);
+    }
     const observed = await snapshot(context, c.origin, deps);
     if (observed.outcome !== "ok") {
       throw new Error(
@@ -385,7 +487,7 @@ export async function closeout(
     if (c.git !== "complete") await otherUsers(context, state, c.origin, deps);
     c.fence = fresh;
     c.request = args.request;
-    c.authorizedRequest = args.request;
+    c.authorizedRequest ??= args.request;
     c.decision = "accepted";
     c.pane = "pending";
     delete c.failure;
@@ -397,6 +499,10 @@ export async function closeout(
   if (c.decision !== "accepted") return { dataHandles: [] };
   if (["closed", "absent"].includes(c.pane)) return { dataHandles: [] };
   if (c.pane === "expired") {
+    // Compatibility with saved accepted/expired offers from before renewable decisions.
+    c.decision = "offered";
+    c.offerId = deps.id();
+    await saveState(context, "offer_closeout_recovery", state);
     return { dataHandles: [await publishCloseoutOffer(context, state)] };
   }
   if (c.git !== "complete") {
@@ -468,6 +574,7 @@ export async function closeout(
         "Original pane fence expired; obtain fresh explicit consent for the same controller",
     };
     c.offerId = deps.id();
+    c.decision = "offered";
     await saveState(context, "closeout_pane_expired", state);
     return { dataHandles: [await publishCloseoutOffer(context, state)] };
   }

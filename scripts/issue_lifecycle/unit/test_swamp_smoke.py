@@ -107,6 +107,9 @@ if operation in ("closeout-snapshot", "closeout-close"):
         assert args[4] == "terminal_0", args
         response.update({"outcome":"target_not_found"} if controller["closed"] else {"closeout_target":fence})
     else:
+        if os.environ.get("YINZ_SMOKE_CLOSEOUT_REFUSE_CLOSE"):
+            print(json.dumps({"outcome":"rejected", "server_instance":fence["server_instance"], "message":"Injected non-closing pane refusal"}))
+            sys.exit(1)
         assert json.loads(args[args.index("--fence")+1]) == fence
         name = os.environ["YINZ_SMOKE_ISSUE_BEHAVIOR"]
         query = subprocess.run(["swamp", "data", "query", 'behavior("' + name + '") && name == "state"', "--repo-dir", os.getcwd(), "--select", "content", "--single", "--json"], capture_output=True, text=True, timeout=30)
@@ -535,6 +538,58 @@ raise SystemExit(result.returncode)
         self.env.pop("YINZ_SMOKE_CLOSEOUT_FAIL_BRANCH")
         self.lifecycle("resume-closeout")
         self.assertEqual([e["effect"] for e in self.closeout_events()], ["worktree", "branch", "pane"])
+
+    def test_installed_closeout_partial_rollback_recompletion_reuses_reserved_operation(self):
+        worktree, handoff = self.closeout_fixture()
+        self.env["YINZ_SMOKE_CLOSEOUT_FAIL_BRANCH"] = "1"
+        launcher = [sys.executable, str(self.repo / "scripts/issue-lifecycle"), "--control", str(self.repo), "--item", str(self.item_id), "closeout", "--input-file", "-"]
+        result = subprocess.run(launcher, input=json.dumps({"handoffId":handoff["id"], "decision":"accept", "request":"Clean fixture"}), cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=120)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("pane retained", result.stdout + result.stderr)
+        previous = self.state()["closeout"]
+        self.assertFalse(worktree.exists())
+        self.assertEqual(previous["gitResult"]["branch"], "deleting")
+        self.lifecycle("rollback", {"step":"summarize", "request":"Correct the fixture outcome"})
+        self.lifecycle("summarize", {"outcomeMet":True, "summary":"Corrected fixture outcome"})
+        recovered = self.state()["closeout"]
+        self.assertEqual(recovered["id"], previous["id"])
+        self.assertEqual(recovered["target"], previous["target"])
+        self.assertEqual(recovered["gitResult"], previous["gitResult"])
+        self.assertNotEqual(recovered["offerId"], handoff["id"])
+        self.lifecycle("resume-closeout")
+        self.assertEqual([e["effect"] for e in self.closeout_events()], ["worktree"])
+        self.env.pop("YINZ_SMOKE_CLOSEOUT_FAIL_BRANCH")
+        self.closeout_accept({"id":recovered["offerId"]})
+        self.assertEqual([e["effect"] for e in self.closeout_events()], ["worktree", "branch", "pane"])
+        self.assertEqual(json.loads(self.lifecycle("drive"))["decision"], "complete")
+        self.assertTrue((self.repo / "marker.txt").is_file())
+
+    def test_installed_closeout_renewed_decline_retains_pane_after_completed_git(self):
+        worktree, handoff = self.closeout_fixture()
+        self.env["YINZ_SMOKE_CLOSEOUT_REFUSE_CLOSE"] = "1"
+        self.closeout_accept(handoff)
+        previous = self.state()["closeout"]
+        self.assertEqual((previous["git"], previous["pane"]), ("complete", "unknown"))
+        self.assertFalse(worktree.exists())
+        self.env.pop("YINZ_SMOKE_CLOSEOUT_REFUSE_CLOSE")
+        self.env["YINZ_SMOKE_CLOSEOUT_TURN"] = "retaining-turn"
+        self.env["YINZ_SMOKE_CLOSEOUT_REVISION"] = "2"
+        self.lifecycle("resume-closeout")
+        renewed = json.loads(self.lifecycle("drive"))
+        self.assertEqual(renewed["decision"], "authorize_closeout")
+        self.assertIn("already removed", renewed["presentation"])
+        self.assertIn("Decline keeps that pane", renewed["presentation"])
+        self.lifecycle("closeout", {"handoffId":renewed["id"], "decision":"decline", "request":"Keep this conversation"})
+        self.lifecycle("resume-closeout")
+        saved = self.state()["closeout"]
+        self.assertEqual(saved["decision"], "declined")
+        self.assertEqual(saved["authorizedRequest"], previous["authorizedRequest"])
+        self.assertEqual(saved["gitResult"], previous["gitResult"])
+        self.assertEqual(json.loads(self.lifecycle("drive"))["decision"], "complete")
+        self.assertEqual([e["effect"] for e in self.closeout_events()], ["worktree", "branch"])
+        observation = Path(self.env["YINZ_SMOKE_CLOSEOUT_OBSERVATION"])
+        self.assertFalse(observation.exists() and json.loads(observation.read_text())["closed"])
+        self.assertTrue((self.repo / "marker.txt").is_file())
 
     def test_installed_closeout_unavailable_legacy_origin_requires_binding_then_separate_consent(self):
         self.env["YINZ_SMOKE_CLOSEOUT_UNAVAILABLE"] = "1"
