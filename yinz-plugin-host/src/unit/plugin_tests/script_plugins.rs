@@ -514,12 +514,37 @@ fn spawned_agent_command(key: char) -> yinz_types::input::command::RunCommand {
     let size = Size { cols: 80, rows: 10 };
 
     let received_pty_instructions = Watched::new(vec![]);
-    let pty_thread = log_actions_in_thread!(
-        received_pty_instructions,
-        PtyInstruction::SpawnTerminal,
-        pty_receiver,
-        1
-    );
+    let observed = received_pty_instructions.clone();
+    let pty_thread = std::thread::spawn(move || {
+        while let Ok((mut instruction, _)) = pty_receiver.recv() {
+            if let PtyInstruction::SpawnTerminal(_, _, _, _, _, Some(completion), _) =
+                &mut instruction
+            {
+                let gate = completion.launch.as_ref().unwrap();
+                let terminal = yinz_types::internal_ids::TerminalId::new(42);
+                gate.allocated(terminal);
+                gate.admit(yinz_types::agent::launch::LaunchSlot {
+                    pane_id: PaneId::Terminal(terminal),
+                    process_generation: 1,
+                    tab_id: TabId::new(1),
+                    tab_incarnation: "script-test".into(),
+                    controller: None,
+                    worker_region: None,
+                    placement_generation: 1,
+                });
+                completion.set_affected_pane_id(PaneId::Terminal(terminal));
+                completion.complete_pane_placement(TabId::new(1));
+            }
+            if let PtyInstruction::SpawnTerminal(_, _, _, _, _, completion, _) = &mut instruction {
+                drop(completion.take());
+            }
+            let started = matches!(instruction, PtyInstruction::StartAgentReservation { .. });
+            observed.lock().push(instruction);
+            if started {
+                break;
+            }
+        }
+    });
     let received_screen_instructions = Watched::new(vec![]);
     let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
         received_screen_instructions,
@@ -560,7 +585,7 @@ fn spawned_agent_command(key: char) -> yinz_types::input::command::RunCommand {
     pty_thread.join().unwrap();
     teardown();
 
-    let (run, placement): (RunCommand, ClientTabIndexOrPaneId) = received_pty_instructions
+    let (_reservation, placement): (RunCommand, ClientTabIndexOrPaneId) = received_pty_instructions
         .lock()
         .iter()
         .find_map(|instruction| match instruction {
@@ -580,6 +605,14 @@ fn spawned_agent_command(key: char) -> yinz_types::input::command::RunCommand {
                 received_pty_instructions.lock()
             )
         });
+    let run = received_pty_instructions
+        .lock()
+        .iter()
+        .find_map(|instruction| match instruction {
+            PtyInstruction::StartAgentReservation { command, .. } => Some(command.clone()),
+            _ => None,
+        })
+        .expect("the admitted reservation receives its prepared command");
     // Beside the plugin, or - when it has none, having been loaded before any client attached -
     // wherever this client is looking. Anchoring to the pane alone would have the screen forget
     // the pane and close the agent the pty thread had already started.

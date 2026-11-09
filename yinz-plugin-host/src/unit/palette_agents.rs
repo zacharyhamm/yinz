@@ -171,6 +171,7 @@ fn run(request: &AgentRequest, data: &DataAccess) -> (Result<AgentReply, String>
     };
     thread::scope(|scope| {
         let source = request.source.clone();
+        let runtime = senders.launches.clone();
         scope.spawn(move || {
             while let Ok((instruction, _)) = screen_rx.recv() {
                 match instruction {
@@ -179,14 +180,46 @@ fn run(request: &AgentRequest, data: &DataAccess) -> (Result<AgentReply, String>
                     } => {
                         response_channel.send(Some(source.clone())).unwrap();
                     },
-                    ScreenInstruction::AgentSpawned(_) => {},
+                    ScreenInstruction::AgentSpawned(_) | ScreenInstruction::ClosePane(..) => {},
+                    ScreenInstruction::ReleaseAgentLaunch { terminal_id, reply } => {
+                        runtime.gate(terminal_id).unwrap().layout_released();
+                        reply.send(true).unwrap();
+                    },
+                    ScreenInstruction::RegisterAgentLaunch { spawned, reply } => {
+                        if let PaneId::Terminal(id) = spawned.pane_id {
+                            runtime.gate(id).unwrap().registered();
+                        }
+                        reply.send(true).unwrap();
+                    },
+                    ScreenInstruction::CommitAgentLaunch { terminal_id, reply } => {
+                        reply
+                            .send(runtime.gate(terminal_id).unwrap().handoff())
+                            .unwrap();
+                    },
                     _ => panic!("unexpected screen instruction {instruction:?}"),
                 }
             }
         });
+        let runtime = senders.launches.clone();
         let worker = scope.spawn(move || {
             let mut commands = Vec::new();
             while let Ok((instruction, _)) = pty_rx.recv() {
+                if let PtyInstruction::ClosePane(PaneId::Terminal(id), _) = instruction {
+                    runtime.gate(id).unwrap().cleaned();
+                    continue;
+                }
+                if let PtyInstruction::StartAgentReservation {
+                    terminal_id,
+                    command,
+                    completion: _completion,
+                } = instruction
+                {
+                    let gate = runtime.gate(terminal_id).unwrap();
+                    assert!(gate.claim());
+                    gate.running();
+                    commands.push(command);
+                    continue;
+                }
                 let PtyInstruction::SpawnTerminal(
                     Some(TerminalAction::RunCommand(command)),
                     _,
@@ -204,7 +237,20 @@ fn run(request: &AgentRequest, data: &DataAccess) -> (Result<AgentReply, String>
                     ClientTabIndexOrPaneId::ClientIdNoFocus(ClientId::new(1))
                 );
                 assert_eq!(placement, TILED);
-                commands.push(command);
+                assert!(command.hold_on_start);
+                let terminal = TerminalId::new(42);
+                let gate = completion.launch.as_ref().unwrap().clone();
+                gate.allocated(terminal);
+                runtime.gates.lock().unwrap().insert(terminal, gate.clone());
+                gate.admit(yinz_types::agent::launch::LaunchSlot {
+                    pane_id: PaneId::Terminal(terminal),
+                    process_generation: 1,
+                    tab_id: TabId::new(2),
+                    tab_incarnation: "palette-test".into(),
+                    controller: None,
+                    worker_region: None,
+                    placement_generation: 1,
+                });
                 completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(42)));
                 completion.set_affected_tab_id(TabId::new(2));
             }
@@ -409,7 +455,7 @@ fn palette_new_project_form_validation_and_launch_use_the_shared_backend() {
         let AgentReply::Launched(response) = reply.unwrap() else {
             panic!("expected backend rejection");
         };
-        assert_eq!(response.outcome, AgentOutcome::Rejected, "{response:?}");
+        assert_eq!(response.outcome, AgentOutcome::Failed, "{response:?}");
         assert!(response.message.unwrap().contains(error));
         assert!(commands.is_empty());
         assert!(!destination.exists());

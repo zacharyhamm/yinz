@@ -93,6 +93,10 @@ pub fn control_agent(
                 remote_host,
                 placement,
             } => {
+                let mut spec = spec;
+                if let Err(error) = validate_automation_spec(&mut spec) {
+                    return Ok(*error.0);
+                }
                 return Ok(super::launch_transaction::launch(
                     format!(
                         "{}.{}",
