@@ -3,7 +3,7 @@ export class ExportJob {
   state: "running" | "draining" | "cancelled" = "running";
   pendingRows = 2;
   cancel() {
-    this.state = "draining";
+    if (this.state === "running") this.state = "draining";
   }
   tick() {
     if (this.state === "draining" && --this.pendingRows === 0) {
